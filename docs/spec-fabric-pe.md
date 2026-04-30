@@ -11,12 +11,27 @@ in `include/Fabric/IR/FabricOps.td`; verifier rules live in
 
 `fabric.pe` is a single op specialized by a mandatory `schedule` enum
 attribute. The schedule appears in `[...]` immediately after the op
-keyword, mirroring `fabric.op [@arith.muli]`:
+keyword (and after the optional `@sym_name`), mirroring
+`fabric.op [@arith.muli]`. The op exists in two disjoint syntactic
+forms by `sym_name` presence (anonymous vs named template).
+
+Anonymous form:
 
 ```mlir
 %out:2 = fabric.pe [spatial] (%a = %x : !fabric.bits<32>)
                    -> (!fabric.bits<32>, !fabric.bits<32>) {
   fabric.fu(...) -> ...
+}
+```
+
+Named template form:
+
+```mlir
+fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
+                         -> (!fabric.bits<32>) {
+^bb0(%pa: !fabric.bits<32>, %pb: !fabric.bits<32>):
+  fabric.fu(...) -> ...
+  fabric.yield %pa : !fabric.bits<32>
 }
 ```
 
@@ -63,19 +78,42 @@ Compared to allowing arbitrary multi-FU placement:
 
 ## Structural model
 
+### Anonymous vs named template form
+
+The op carries an optional `sym_name`. The two forms are syntactically
+disjoint:
+
+* **Anonymous form** (no `sym_name`). Definition + use combined: the
+  op has variadic SSA operands and variadic SSA results, the body has
+  no terminator (per the PE-level routing model below).
+* **Named template form** (with `sym_name`). Template-only: zero SSA
+  operands, zero SSA results in the host scope; signature recorded in
+  a `function_type : FunctionType` attribute. Body's entry block
+  arguments match `function_type.getInputs()`. Body terminator is
+  `fabric.yield` whose value list matches
+  `function_type.getResults()`. Actual usage goes through
+  `fabric.instantiate @sym(...)`. See `docs/spec-fabric-instantiate.md`
+  for symbol resolution and the per-form `fabric.instantiate` rules.
+
+Both forms share the body whitelist and the `bits<W>` uniform width
+rule below.
+
 ### Body whitelist
 
 The body of `fabric.pe [spatial]` is a single block whose only legal
 contents are `fabric.fu` ops and `fabric.instantiate` ops (the latter
 must resolve to a `fabric.fu` symbol; see
-`docs/spec-fabric-instantiate.md`). No other op kind is permitted in
-the body. Specifically:
+`docs/spec-fabric-instantiate.md`). The named template form
+additionally terminates the body with `fabric.yield`. No other op
+kind is permitted in the body. Specifically:
 
 * No `fabric.op`, `fabric.mux`, `fabric.demux`, or `fabric.fifo` may
   appear directly in the PE body. They are only allowed inside an
   inner `fabric.fu`.
-* No `fabric.yield` may appear in the PE body. The PE has no
-  terminator (see below).
+* No `fabric.yield` may appear directly in the anonymous-form PE
+  body. The anonymous PE has no terminator (see below). In the named
+  template form `fabric.yield` is the body terminator and supplies the
+  values that match the PE's declared `function_type` results.
 * No `fabric.pe [spatial]`, `fabric.pe [temporal]`, `fabric.module`, or
   any other body-bearing fabric op may be nested directly inside a
   PE body.

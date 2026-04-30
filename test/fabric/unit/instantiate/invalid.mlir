@@ -43,13 +43,14 @@ fabric.module @recursive_self(%a : !fabric.bits<32>) {
 fabric.module @host_forward(%a : !fabric.bits<32>) {
   // expected-error @+1 {{forward reference to symbol '@LATER'}}
   %s = fabric.instantiate @LATER(%a : !fabric.bits<32>) -> (!fabric.bits<32>)
-  %r = fabric.pe @LATER [spatial] (%pa = %a : !fabric.bits<32>)
-                              -> !fabric.bits<32> {
+  fabric.pe @LATER [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
+    fabric.yield %pa : !fabric.bits<32>
   }
   fabric.yield
 }
@@ -58,13 +59,14 @@ fabric.module @host_forward(%a : !fabric.bits<32>) {
 // Out-of-scope reference: a top-level fabric.instantiate cannot reach a
 // pe symbol that is nested inside another fabric.module's body.
 fabric.module @scope_leak_host(%a : !fabric.bits<32>) {
-  %r = fabric.pe @INNER [spatial] (%pa = %a : !fabric.bits<32>)
-                              -> !fabric.bits<32> {
+  fabric.pe @INNER [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
+    fabric.yield %pa : !fabric.bits<32>
   }
   fabric.yield
 }
@@ -110,5 +112,55 @@ fabric.module @host_mem_relax(%m : memref<8xi32>) {
   // expected-error @+1 {{memref operands cannot use the 'to <inner-type>' clause}}
   %r = fabric.instantiate @leaf_mem(%m : memref<8xi32> to memref<4xi32>)
        -> (memref<8xi32>)
+  fabric.yield
+}
+
+// -----
+// Named fabric.pe template attempting to declare SSA results: once @sym is
+// present the parser switches to the template signature form. Anonymous-
+// style operand binding `(%pa = %a : ...)` is therefore rejected.
+fabric.module @host_named_with_results(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{expected non-function type}}
+  %r = fabric.pe @ALU [spatial] (%pa = %a : !fabric.bits<32>)
+                                   -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// Anonymous fabric.fu attempting to attach a sym_name on an in-pe-body
+// instance (the legacy "named instance" shape). With the template-only
+// dichotomy the named form is template syntax (zero operands) and the
+// anonymous-style `(%fa = ...)` binding is rejected by the parser.
+fabric.module @host_named_fu_anon_shape(%a : !fabric.bits<32>) {
+  %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+    // expected-error @+1 {{expected non-function type}}
+    fabric.fu @F (%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// Instantiate site references an anonymous (unnamed) fabric.pe: the
+// symbol lookup fails because the op carries no @sym attribute.
+fabric.module @host_target_anon(%a : !fabric.bits<32>) {
+  %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  // expected-error @+1 {{references undefined symbol '@anon_pe'}}
+  %s = fabric.instantiate @anon_pe(%a : !fabric.bits<32>) -> (!fabric.bits<32>)
   fabric.yield
 }

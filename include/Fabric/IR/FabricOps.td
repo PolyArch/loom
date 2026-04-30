@@ -210,6 +210,7 @@ def Fabric_PeOp : Fabric_Op<"pe", [
     SingleBlock,
     NoTerminator,
     DeclareOpInterfaceMethods<RegionKindInterface>,
+    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>,
     HasParent<"::fabric::ModuleOp">,
     SymbolTable
 ]> {
@@ -221,32 +222,47 @@ def Fabric_PeOp : Fabric_Op<"pe", [
     carries a mandatory `schedule` predicate (`spatial` | `temporal`) that
     declares how the contained FUs are time-shared.
 
-    Textually, the schedule appears in `[...]` right after the op keyword,
-    mirroring `fabric.op [@arith.muli]`:
+    The op exists in two disjoint syntactic forms by `sym_name` presence:
 
-      fabric.pe [spatial] (%fa = %a : !fabric.bits<W>) -> !fabric.bits<W> {
+    Anonymous form (definition + use combined). Carries variadic SSA
+    operands and variadic SSA results. The body has no terminator and
+    inner FUs are not SSA-wired to the PE results.
+
+      %r:2 = fabric.pe [spatial]
+                 (%pa = %a : !fabric.bits<W>,
+                  %pb = %b : !fabric.bits<W>)
+                 -> (!fabric.bits<W>, !fabric.bits<W>) {
         fabric.fu(...) -> ...
       }
 
-    Spatial schedule: a configuration of the PE selects at most one inner FU
-    as architecturally active and routes the PE's external input ports to
-    that FU's input ports via the PE-level input-mux fields, and the active
-    FU's output ports back onto the PE's external output ports via the PE-
-    level output-demux fields. The PE has no terminator: inner FUs are not
-    SSA-wired to the PE results. Wiring is described by the PE's runtime
-    configuration record (see the PE spec), not by `fabric.yield`.
+    Named template form (declaration only). Has zero SSA operands and zero
+    SSA results in the host scope; the port signature is captured in the
+    `function_type` attribute. The body's entry block carries the input
+    port types as block arguments, and the body terminator
+    `fabric.yield` supplies the values that match the function-type
+    results. Actual usage of a named PE goes through `fabric.instantiate`.
+
+      fabric.pe @ALU [spatial]
+                (!fabric.bits<W>, !fabric.bits<W>) -> (!fabric.bits<W>) {
+      ^bb0(%pa: !fabric.bits<W>, %pb: !fabric.bits<W>):
+        fabric.fu(%fa = %pa : !fabric.bits<W>) -> !fabric.bits<W> { ... }
+        fabric.yield %pa : !fabric.bits<W>
+      }
 
     Temporal schedule: parsable but not yet implemented; the verifier
     rejects it with a "not yet implemented" diagnostic.
 
-    Constraints (spatial):
-      * `K = numInputs() >= 1` and `L = numOutputs() >= 1`.
-      * Every PE operand and every PE result is `!fabric.bits<W>` with the
-        same `W`. Mixing widths or non-`bits` fabric types on the PE
-        boundary is rejected.
-      * The body holds one or more `fabric.fu` ops and nothing else. No
-        `fabric.op`, `fabric.mux`, `fabric.demux`, `fabric.fifo`,
-        `fabric.pe`, or `fabric.yield` may appear directly in the body.
+    Constraints (spatial, both forms):
+      * `K = numInputs() >= 1` and `L = numOutputs() >= 1`. For the
+        anonymous form `K`/`L` are the operand/result counts; for the
+        named form they are the function-type input/output counts.
+      * Every PE port is `!fabric.bits<W>` with the same `W`. Mixing
+        widths or non-`bits` fabric types on the PE boundary is rejected.
+      * The body holds `fabric.fu` and `fabric.instantiate` ops and at
+        least one such compute member. No `fabric.op`, `fabric.mux`,
+        `fabric.demux`, `fabric.fifo`, or `fabric.pe` may appear
+        directly in the body. `fabric.yield` may appear only in the
+        named form.
       * For every inner FU `f`, `f.numInputs() <= K` and
         `f.numOutputs() <= L`. Every FU outer input port and every FU
         outer output port has type `!fabric.bits<W>` matching the PE's
@@ -258,6 +274,7 @@ def Fabric_PeOp : Fabric_Op<"pe", [
 
   let arguments = (ins
       OptionalAttr<SymbolNameAttr>:$sym_name,
+      OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_ScheduleAttr:$schedule,
       Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
@@ -270,31 +287,38 @@ def Fabric_PeOp : Fabric_Op<"pe", [
 def Fabric_FuOp : Fabric_Op<"fu", [
     IsolatedFromAbove,
     SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<RegionKindInterface>
+    DeclareOpInterfaceMethods<RegionKindInterface>,
+    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>
 ]> {
   let summary =
       "fabric function unit (FU): a graph-region tile of fabric.op / mux / demux";
   let description = [{
-    Container for one CGRA-style functional unit. Inputs and outputs
-    are `fabric.bits<N>` ports. The body is a single graph-kind block
-    (no SSA dominance: cycles / feedback edges are permitted) whose
-    only permitted ops are `fabric.op`, `fabric.mux`, `fabric.demux`
-    and the `fabric.yield` terminator. The mux / demux ops inside an
-    FU let different software configurations realize different
-    internal compute graphs over the same hardware: they are *not*
-    required to attach to the FU's external inputs / outputs, their
-    role is to reshape the in-FU op connectivity. Allowing back-edges
-    in the body lets configurable compute ops (e.g.
-    `fabric.op[@dataflow.carry]`) and user-facing cyclic
-    `dataflow.subgraph`s map onto a single FU.
+    Container for one CGRA-style functional unit. The op exists in two
+    disjoint syntactic forms by `sym_name` presence:
 
-    The FU input boundary supports high-bit truncation. The textual
-    form `(%fa = %src : !fabric.bits<W> to !fabric.bits<F>)` declares
-    an outer operand of width `W` and an inner block argument of width
-    `F` with `F <= W`; the high `W - F` bits of `%src` are dropped at
-    the FU boundary. Without the `to ...` clause the inner type
-    defaults to the outer type. Output ports stay strict (yield value
-    types must match the FU's outer result types).
+    Anonymous form (definition + use combined). Carries variadic SSA
+    operands (with optional per-operand `to <inner-type>` clause for the
+    FU input boundary's high-bit truncation) and variadic SSA results.
+    The body's entry block argument types are the inner port types and
+    the `fabric.yield` terminator supplies the values that match the
+    FU's outer result types.
+
+      %r = fabric.fu(%fa = %a : !fabric.bits<W> [to !fabric.bits<F>])
+                 -> !fabric.bits<W> { ... fabric.yield %v : !fabric.bits<W> }
+
+    Named template form (declaration only). Has zero SSA operands and
+    zero SSA results; the port signature is captured in the
+    `function_type` attribute. The body's entry block carries the input
+    port types as block arguments and the `fabric.yield` terminator
+    supplies values matching the function-type results. Actual usage of
+    a named FU goes through `fabric.instantiate`.
+
+      fabric.fu @F (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W> {
+      ^bb0(%fa: !fabric.bits<W>, %fb: !fabric.bits<W>):
+        %v = fabric.op [@arith.muli] (%fa, %fb)
+             : (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W>
+        fabric.yield %v : !fabric.bits<W>
+      }
 
     Constraints:
       * The body must contain at least one `fabric.op`.
@@ -302,13 +326,14 @@ def Fabric_FuOp : Fabric_Op<"fu", [
       * `fabric.fifo` is not permitted in the body.
       * The FU itself carries no `[hw_params]` / `{sw_configs}`;
         all configuration lives on the inner ops.
-      * For each input port `i`, the outer operand width must be
-        greater than or equal to the inner block-arg width
-        (`outer >= inner`).
+      * For each input port `i` (anonymous form only), the outer operand
+        width must be greater than or equal to the inner block-arg width
+        (`outer >= inner`). The named form has no outer operands.
   }];
 
   let arguments = (ins
       OptionalAttr<SymbolNameAttr>:$sym_name,
+      OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Variadic<Fabric_BitsType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
   let regions = (region SizedRegion<1>:$body);

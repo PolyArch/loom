@@ -48,9 +48,12 @@ static bool sameModulePortKind(Type src, Type dst) {
   return false;
 }
 
-// Returns the declared input port types of a fabric symbol target.
-// Returns failure when the target kind is not one of fabric.{module, pe,
-// fu}; the caller is expected to issue a kind-specific diagnostic.
+// Returns the declared input/output port types of a fabric symbol target.
+// Named fabric.pe / fabric.fu definitions are template-only and carry the
+// signature in their `function_type` attribute; the anonymous form is not
+// a legal instantiate target. Returns failure when the target kind is not
+// one of fabric.{module, pe, fu} or when a pe/fu target is anonymous; the
+// caller is expected to issue a kind-specific diagnostic.
 static LogicalResult
 getTargetPortTypes(Operation *target, SmallVectorImpl<Type> &inputs,
                    SmallVectorImpl<Type> &outputs) {
@@ -62,16 +65,32 @@ getTargetPortTypes(Operation *target, SmallVectorImpl<Type> &inputs,
     return success();
   }
   if (auto pe = dyn_cast<PeOp>(target)) {
-    for (Type t : pe.getInputs().getTypes())
+    if (!pe.getSymNameAttr())
+      return failure();
+    auto fta = pe.getFunctionTypeAttr();
+    if (!fta)
+      return failure();
+    auto ft = dyn_cast<FunctionType>(fta.getValue());
+    if (!ft)
+      return failure();
+    for (Type t : ft.getInputs())
       inputs.push_back(t);
-    for (Type t : pe.getOutputs().getTypes())
+    for (Type t : ft.getResults())
       outputs.push_back(t);
     return success();
   }
   if (auto fu = dyn_cast<FuOp>(target)) {
-    for (Type t : fu.getInputs().getTypes())
+    if (!fu.getSymNameAttr())
+      return failure();
+    auto fta = fu.getFunctionTypeAttr();
+    if (!fta)
+      return failure();
+    auto ft = dyn_cast<FunctionType>(fta.getValue());
+    if (!ft)
+      return failure();
+    for (Type t : ft.getInputs())
       inputs.push_back(t);
-    for (Type t : fu.getOutputs().getTypes())
+    for (Type t : ft.getResults())
       outputs.push_back(t);
     return success();
   }

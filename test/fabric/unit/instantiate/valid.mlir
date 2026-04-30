@@ -28,33 +28,36 @@ fabric.module @host_calls_leaf(%a : !fabric.bits<32>) {
   fabric.yield
 }
 
-// Named fabric.pe defined inside a fabric.module body, then instantiated
-// later in the same body.
+// Named fabric.pe defined inside a fabric.module body as a TEMPLATE
+// (no SSA results in the host scope), then instantiated later in the
+// same body.
 // CHECK-LABEL: fabric.module @named_pe_host
-// CHECK: fabric.pe @ALU [spatial]
+// CHECK: fabric.pe @ALU [spatial] (!fabric.bits<32>) -> !fabric.bits<32>
 // CHECK: fabric.instantiate @ALU
 fabric.module @named_pe_host(%a : !fabric.bits<32>) {
-  %r = fabric.pe @ALU [spatial] (%pa = %a : !fabric.bits<32>)
-                              -> !fabric.bits<32> {
+  fabric.pe @ALU [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
+    fabric.yield %pa : !fabric.bits<32>
   }
   %s = fabric.instantiate @ALU(%a : !fabric.bits<32>) -> (!fabric.bits<32>)
   fabric.yield
 }
 
-// Named fabric.fu defined inside a fabric.pe body, then instantiated later
-// in the same pe body.
+// Named fabric.fu defined inside a fabric.pe body as a TEMPLATE, then
+// instantiated later in the same pe body.
 // CHECK-LABEL: fabric.module @named_fu_host
 // CHECK: fabric.pe [spatial]
-// CHECK: fabric.fu @F
+// CHECK: fabric.fu @F (!fabric.bits<32>) -> !fabric.bits<32>
 // CHECK: fabric.instantiate @F
 fabric.module @named_fu_host(%a : !fabric.bits<32>) {
   %r = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
-    fabric.fu @F(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+    fabric.fu @F (!fabric.bits<32>) -> (!fabric.bits<32>) {
+    ^bb0(%fa: !fabric.bits<32>):
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>

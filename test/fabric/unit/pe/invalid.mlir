@@ -107,7 +107,7 @@ fabric.module @pe_body_has_yield(%a : !fabric.bits<32>) {
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %w : !fabric.bits<32>
     }
-    // expected-error @+1 {{body may only contain fabric.fu}}
+    // expected-error @+1 {{fabric.yield is not allowed in an anonymous fabric.pe body}}
     fabric.yield
   }
   fabric.yield

@@ -923,16 +923,28 @@ LogicalResult OpOp::verify() {
 // always reported in the FU op's signature (visible to the enclosing PE);
 // the inner type only governs the body block.
 
+// fabric.fu has two disjoint syntactic forms by `sym_name` presence.
+// Anonymous form (definition+use, original syntax):
+//
+//   fabric.fu (%fa = %src : <T_outer> [to <T_inner>], ...) -> (<T_res>, ...)
+//             { ... fabric.yield %v : <T_res> ... }
+//
+// Named template form (template-only):
+//
+//   fabric.fu @F (<T_in0>, <T_in1>, ...) -> (<T_res0>, ...) {
+//   ^bb0(%a0: <T_in0>, %a1: <T_in1>, ...):
+//     ...
+//     fabric.yield %v : <T_res0>
+//   }
+//
+// In the named form the op carries zero SSA operands and zero SSA results;
+// the function signature is recorded in the `function_type` attribute.
 ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
   // Optional `@sym_name` immediately after the op keyword. When present,
-  // this `fabric.fu` is itself a named definition; subsequent
-  // `fabric.instantiate @sym` ops can create additional instances.
+  // the parser switches to the template form (no SSA operands/results).
   StringAttr nameAttr;
-  if (succeeded(parser.parseOptionalSymbolName(
-          nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
-          result.attributes))) {
-    // Symbol name parsed; fall through.
-  }
+  bool isNamed = succeeded(parser.parseOptionalSymbolName(
+      nameAttr, ::mlir::SymbolTable::getSymbolAttrName(), result.attributes));
 
   SmallVector<OpAsmParser::Argument, 4> blockArgs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
@@ -941,56 +953,85 @@ ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
 
   if (parser.parseLParen())
     return failure();
-  if (failed(parser.parseOptionalRParen())) {
-    auto parseOne = [&]() -> ParseResult {
-      OpAsmParser::Argument arg;
-      OpAsmParser::UnresolvedOperand op;
-      Type outerTy;
-      if (parser.parseArgument(arg) || parser.parseEqual() ||
-          parser.parseOperand(op) || parser.parseColon() ||
-          parser.parseType(outerTy))
-        return failure();
-      // Optional `to <inner-type>` clause: the FU declares an inner block-arg
-      // type narrower than its outer operand type. When absent, inner == outer
-      // (current behavior, no truncation).
-      Type innerTy = outerTy;
-      if (succeeded(parser.parseOptionalKeyword("to")))
-        if (parser.parseType(innerTy))
-          return failure();
-      arg.type = innerTy;
-      blockArgs.push_back(arg);
-      operands.push_back(op);
-      operandTypes.push_back(outerTy);
-      return success();
-    };
-    if (parseOne())
-      return failure();
-    while (succeeded(parser.parseOptionalComma()))
-      if (parseOne())
-        return failure();
-    if (parser.parseRParen())
-      return failure();
-  }
 
-  if (parser.resolveOperands(operands, operandTypes, operandsLoc,
-                             result.operands))
-    return failure();
-
-  if (parser.parseArrow())
-    return failure();
-  SmallVector<Type, 4> resultTypes;
-  if (succeeded(parser.parseOptionalLParen())) {
+  if (isNamed) {
+    // Template signature: `(<T_in0>, <T_in1>, ...)` with optional empty list.
+    SmallVector<Type, 4> argTypes;
     if (failed(parser.parseOptionalRParen())) {
-      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+      if (parser.parseTypeList(argTypes) || parser.parseRParen())
         return failure();
     }
-  } else {
-    Type ty;
-    if (parser.parseType(ty))
+    for (Type t : argTypes) {
+      OpAsmParser::Argument arg;
+      arg.type = t;
+      blockArgs.push_back(arg);
+    }
+    if (parser.parseArrow())
       return failure();
-    resultTypes.push_back(ty);
+    SmallVector<Type, 4> resultTypes;
+    if (succeeded(parser.parseOptionalLParen())) {
+      if (failed(parser.parseOptionalRParen())) {
+        if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+          return failure();
+      }
+    } else {
+      Type ty;
+      if (parser.parseType(ty))
+        return failure();
+      resultTypes.push_back(ty);
+    }
+    auto funcType =
+        FunctionType::get(parser.getContext(), argTypes, resultTypes);
+    result.addAttribute("function_type", TypeAttr::get(funcType));
+  } else {
+    // Anonymous form: `(%fa = %src : T [to T_inner], ...)`.
+    if (failed(parser.parseOptionalRParen())) {
+      auto parseOne = [&]() -> ParseResult {
+        OpAsmParser::Argument arg;
+        OpAsmParser::UnresolvedOperand op;
+        Type outerTy;
+        if (parser.parseArgument(arg) || parser.parseEqual() ||
+            parser.parseOperand(op) || parser.parseColon() ||
+            parser.parseType(outerTy))
+          return failure();
+        Type innerTy = outerTy;
+        if (succeeded(parser.parseOptionalKeyword("to")))
+          if (parser.parseType(innerTy))
+            return failure();
+        arg.type = innerTy;
+        blockArgs.push_back(arg);
+        operands.push_back(op);
+        operandTypes.push_back(outerTy);
+        return success();
+      };
+      if (parseOne())
+        return failure();
+      while (succeeded(parser.parseOptionalComma()))
+        if (parseOne())
+          return failure();
+      if (parser.parseRParen())
+        return failure();
+    }
+    if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+                               result.operands))
+      return failure();
+
+    if (parser.parseArrow())
+      return failure();
+    SmallVector<Type, 4> resultTypes;
+    if (succeeded(parser.parseOptionalLParen())) {
+      if (failed(parser.parseOptionalRParen())) {
+        if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+          return failure();
+      }
+    } else {
+      Type ty;
+      if (parser.parseType(ty))
+        return failure();
+      resultTypes.push_back(ty);
+    }
+    result.addTypes(resultTypes);
   }
-  result.addTypes(resultTypes);
 
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -1003,39 +1044,56 @@ ParseResult FuOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void FuOp::print(OpAsmPrinter &p) {
-  if (auto sym = getSymNameAttr()) {
+  bool isNamed = static_cast<bool>(getSymNameAttr());
+  if (isNamed) {
     p << ' ';
-    p.printSymbolName(sym.getValue());
-  }
-  p << '(';
-  Block &entry = getBody().front();
-  llvm::interleaveComma(
-      llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
-        BlockArgument bb;
-        Value outer;
-        std::tie(bb, outer) = pair;
-        p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
-        p << " = " << outer << " : " << outer.getType();
-        // Emit the optional `to <inner-type>` clause only when the inner
-        // block-arg type differs from the outer operand type; this expresses
-        // the high-bit truncation at the FU boundary.
-        if (outer.getType() != bb.getType())
-          p << " to " << bb.getType();
-      });
-  p << ") -> ";
-  auto rTypes = getResultTypes();
-  if (rTypes.size() == 1) {
-    p << rTypes.front();
+    p.printSymbolName(getSymNameAttr().getValue());
+    // Template signature: `(<T_in0>, ...) -> (<T_res0>, ...)`.
+    FunctionType ft;
+    if (auto fta = getFunctionTypeAttr())
+      ft = cast<FunctionType>(fta.getValue());
+    p << " (";
+    if (ft)
+      llvm::interleaveComma(ft.getInputs(), p);
+    p << ") -> ";
+    if (ft && ft.getNumResults() == 1) {
+      p << ft.getResult(0);
+    } else {
+      p << '(';
+      if (ft)
+        llvm::interleaveComma(ft.getResults(), p);
+      p << ')';
+    }
   } else {
     p << '(';
-    llvm::interleaveComma(rTypes, p);
-    p << ')';
+    Block &entry = getBody().front();
+    llvm::interleaveComma(
+        llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
+          BlockArgument bb;
+          Value outer;
+          std::tie(bb, outer) = pair;
+          p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
+          p << " = " << outer << " : " << outer.getType();
+          if (outer.getType() != bb.getType())
+            p << " to " << bb.getType();
+        });
+    p << ") -> ";
+    auto rTypes = getResultTypes();
+    if (rTypes.size() == 1) {
+      p << rTypes.front();
+    } else {
+      p << '(';
+      llvm::interleaveComma(rTypes, p);
+      p << ')';
+    }
   }
-  // Elide `sym_name` from the attr-dict; it's printed inline (if present).
-  SmallVector<StringRef, 1> elided{::mlir::SymbolTable::getSymbolAttrName()};
+  // Elide attributes already serialized inline.
+  SmallVector<StringRef, 2> elided{::mlir::SymbolTable::getSymbolAttrName(),
+                                   "function_type"};
   p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   p << ' ';
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
+  p.printRegion(getBody(),
+                /*printEntryBlockArgs=*/isNamed,
                 /*printBlockTerminators=*/true);
 }
 
@@ -1044,14 +1102,115 @@ RegionKind FuOp::getRegionKind(unsigned /*index*/) {
 }
 
 LogicalResult FuOp::verify() {
-  // FU boundary truncation:
-  // The FU's outer operand type is what the enclosing PE sees on the input
-  // side. The inner block-arg type is what the FU body manipulates. Both
-  // must be `!fabric.bits<*>`; the inner width may be less than or equal
-  // to the outer width. When inner < outer, hardware drops the high
-  // (outerW - innerW) bits at the FU boundary on each token. The output
-  // direction stays strict (this op enforces nothing here; the enclosing
-  // pe and the inner `fabric.yield` together pin the output side).
+  // The op exists in two disjoint forms by `sym_name` presence:
+  //   * Named form (template-only): no SSA operands, no SSA results; port
+  //     signature comes from the `function_type` attribute. Body entry
+  //     block arg types must equal `function_type.getInputs()`. Yield
+  //     types must equal `function_type.getResults()`. Parent must be a
+  //     fabric.module body (siblings host fabric.fu templates).
+  //   * Anonymous form (definition + use): variadic SSA operands and SSA
+  //     results; the FU input boundary supports high-bit truncation. Must
+  //     live inside a fabric.pe.
+  bool isNamed = static_cast<bool>(getSymNameAttr());
+
+  if (isNamed) {
+    // Cross-form rejections.
+    if (!getInputs().empty())
+      return emitOpError(
+          "named fabric.fu template must have zero SSA operands; got ")
+          << getInputs().size();
+    if (!getResultTypes().empty())
+      return emitOpError(
+          "named fabric.fu template must have zero SSA results; got ")
+          << getResultTypes().size();
+    auto fta = getFunctionTypeAttr();
+    if (!fta)
+      return emitOpError(
+          "named fabric.fu template requires a 'function_type' attribute");
+    auto ft = dyn_cast<FunctionType>(fta.getValue());
+    if (!ft)
+      return emitOpError(
+          "'function_type' attribute must be a FunctionType");
+
+    // Parent: a named fabric.fu lives in a fabric.module body or fabric.pe
+    // body (the latter form mirrors the existing in-PE named-fu template).
+    Operation *parent = (*this)->getParentOp();
+    if (!isa_and_nonnull<fabric::ModuleOp, PeOp>(parent))
+      return emitOpError(
+          "named fabric.fu template must live inside a fabric.module or "
+          "fabric.pe body");
+
+    // Block-arg types match function_type inputs.
+    Block &entry = getBody().front();
+    if (entry.getNumArguments() != ft.getNumInputs())
+      return emitOpError("entry block argument count (")
+             << entry.getNumArguments()
+             << ") must match declared input count (" << ft.getNumInputs()
+             << ")";
+    for (auto [i, pair] :
+         llvm::enumerate(llvm::zip(entry.getArguments(), ft.getInputs()))) {
+      BlockArgument bb;
+      Type t;
+      std::tie(bb, t) = pair;
+      if (bb.getType() != t)
+        return emitOpError("entry block argument #")
+               << i << " type " << bb.getType()
+               << " must equal declared input type " << t;
+      if (!bitsWidth(t))
+        return emitOpError("declared input #")
+               << i << " must be fabric.bits<N>, got " << t;
+    }
+    for (auto [i, t] : llvm::enumerate(ft.getResults())) {
+      if (!bitsWidth(t))
+        return emitOpError("declared result #")
+               << i << " must be fabric.bits<N>, got " << t;
+    }
+
+    // Body whitelist + at-least-one-fabric.op.
+    unsigned numCompute = 0;
+    for (Operation &op : entry.without_terminator()) {
+      if (isa<OpOp>(op)) {
+        ++numCompute;
+        continue;
+      }
+      if (isa<MuxOp, DemuxOp>(op))
+        continue;
+      return op.emitOpError(
+          "is not allowed inside fabric.fu; only fabric.op, fabric.mux, "
+          "fabric.demux are permitted (no fabric.fu nesting, no fabric.fifo)");
+    }
+    if (numCompute < 1)
+      return emitOpError(
+          "fabric.fu body requires at least one fabric.op; got 0");
+
+    // Yield types must equal function_type.getResults().
+    auto yield = dyn_cast<YieldOp>(entry.getTerminator());
+    if (!yield)
+      return emitOpError(
+          "named fabric.fu body must terminate with fabric.yield");
+    if (yield.getValues().size() != ft.getNumResults())
+      return emitOpError("yield value count (")
+             << yield.getValues().size()
+             << ") must match declared result count (" << ft.getNumResults()
+             << ")";
+    for (auto [i, pair] :
+         llvm::enumerate(llvm::zip(yield.getValues(), ft.getResults()))) {
+      Value v;
+      Type t;
+      std::tie(v, t) = pair;
+      if (v.getType() != t)
+        return emitOpError("yield value #")
+               << i << " type " << v.getType()
+               << " must equal declared result type " << t;
+    }
+    return success();
+  }
+
+  // Anonymous form. Reject stray function_type.
+  if (getFunctionTypeAttr())
+    return emitOpError(
+        "anonymous fabric.fu must not carry a 'function_type' attribute");
+
   Operation *parent = (*this)->getParentOp();
   if (!isa_and_nonnull<PeOp>(parent))
     return emitOpError(
@@ -1099,6 +1258,8 @@ LogicalResult FuOp::verify() {
   return success();
 }
 
+bool FuOp::isOptionalSymbol() { return true; }
+
 //===----------------------------------------------------------------------===//
 // fabric.pe
 //===----------------------------------------------------------------------===//
@@ -1111,15 +1272,26 @@ LogicalResult FuOp::verify() {
 //
 // `[temporal]` parses but the verifier currently rejects it.
 
+// fabric.pe has two disjoint syntactic forms by `sym_name` presence.
+// Anonymous form (definition+use, original syntax):
+//
+//   %r:N = fabric.pe [schedule]
+//              (%pa = %a : <T_outer> [to <T_inner>], ...)
+//              -> (<T_res>, ...) { ... }
+//
+// Named template form (template-only):
+//
+//   fabric.pe @S [schedule] (<T_in0>, <T_in1>, ...) -> (<T_res0>, ...) {
+//   ^bb0(%a0: <T_in0>, %a1: <T_in1>, ...):
+//     ...
+//     fabric.yield %v0 : <T_res0>
+//   }
 ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Optional `@sym_name` immediately after the op keyword, before the
-  // mandatory `[<schedule>]` predicate. When present, this `fabric.pe` is
-  // a named definition; subsequent `fabric.instantiate @sym` ops in the
-  // same enclosing fabric.module body create additional independent
-  // instances using the same body / signature.
+  // Optional `@sym_name` immediately after the op keyword. When present
+  // the parser switches to the template form (no SSA operands/results).
   StringAttr nameAttr;
-  (void)parser.parseOptionalSymbolName(
-      nameAttr, ::mlir::SymbolTable::getSymbolAttrName(), result.attributes);
+  bool isNamed = succeeded(parser.parseOptionalSymbolName(
+      nameAttr, ::mlir::SymbolTable::getSymbolAttrName(), result.attributes));
 
   // Mandatory `[<schedule>]` predicate.
   StringRef scheduleKw;
@@ -1144,56 +1316,83 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
 
   if (parser.parseLParen())
     return failure();
-  if (failed(parser.parseOptionalRParen())) {
-    auto parseOne = [&]() -> ParseResult {
-      OpAsmParser::Argument arg;
-      OpAsmParser::UnresolvedOperand op;
-      Type outerTy;
-      if (parser.parseArgument(arg) || parser.parseEqual() ||
-          parser.parseOperand(op) || parser.parseColon() ||
-          parser.parseType(outerTy))
-        return failure();
-      // Optional `to <inner-type>` clause: lets the SSA source operand have
-      // a different (same-kind) fabric type than the PE block-arg / inner
-      // PE operand type. Without the clause, inner == outer (no relaxation).
-      Type innerTy = outerTy;
-      if (succeeded(parser.parseOptionalKeyword("to")))
-        if (parser.parseType(innerTy))
-          return failure();
-      arg.type = innerTy;
-      blockArgs.push_back(arg);
-      operands.push_back(op);
-      operandTypes.push_back(outerTy);
-      return success();
-    };
-    if (parseOne())
-      return failure();
-    while (succeeded(parser.parseOptionalComma()))
-      if (parseOne())
-        return failure();
-    if (parser.parseRParen())
-      return failure();
-  }
 
-  if (parser.resolveOperands(operands, operandTypes, operandsLoc,
-                             result.operands))
-    return failure();
-
-  if (parser.parseArrow())
-    return failure();
-  SmallVector<Type, 4> resultTypes;
-  if (succeeded(parser.parseOptionalLParen())) {
+  if (isNamed) {
+    SmallVector<Type, 4> argTypes;
     if (failed(parser.parseOptionalRParen())) {
-      if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+      if (parser.parseTypeList(argTypes) || parser.parseRParen())
         return failure();
     }
-  } else {
-    Type ty;
-    if (parser.parseType(ty))
+    for (Type t : argTypes) {
+      OpAsmParser::Argument arg;
+      arg.type = t;
+      blockArgs.push_back(arg);
+    }
+    if (parser.parseArrow())
       return failure();
-    resultTypes.push_back(ty);
+    SmallVector<Type, 4> resultTypes;
+    if (succeeded(parser.parseOptionalLParen())) {
+      if (failed(parser.parseOptionalRParen())) {
+        if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+          return failure();
+      }
+    } else {
+      Type ty;
+      if (parser.parseType(ty))
+        return failure();
+      resultTypes.push_back(ty);
+    }
+    auto funcType =
+        FunctionType::get(parser.getContext(), argTypes, resultTypes);
+    result.addAttribute("function_type", TypeAttr::get(funcType));
+  } else {
+    if (failed(parser.parseOptionalRParen())) {
+      auto parseOne = [&]() -> ParseResult {
+        OpAsmParser::Argument arg;
+        OpAsmParser::UnresolvedOperand op;
+        Type outerTy;
+        if (parser.parseArgument(arg) || parser.parseEqual() ||
+            parser.parseOperand(op) || parser.parseColon() ||
+            parser.parseType(outerTy))
+          return failure();
+        Type innerTy = outerTy;
+        if (succeeded(parser.parseOptionalKeyword("to")))
+          if (parser.parseType(innerTy))
+            return failure();
+        arg.type = innerTy;
+        blockArgs.push_back(arg);
+        operands.push_back(op);
+        operandTypes.push_back(outerTy);
+        return success();
+      };
+      if (parseOne())
+        return failure();
+      while (succeeded(parser.parseOptionalComma()))
+        if (parseOne())
+          return failure();
+      if (parser.parseRParen())
+        return failure();
+    }
+    if (parser.resolveOperands(operands, operandTypes, operandsLoc,
+                               result.operands))
+      return failure();
+
+    if (parser.parseArrow())
+      return failure();
+    SmallVector<Type, 4> resultTypes;
+    if (succeeded(parser.parseOptionalLParen())) {
+      if (failed(parser.parseOptionalRParen())) {
+        if (parser.parseTypeList(resultTypes) || parser.parseRParen())
+          return failure();
+      }
+    } else {
+      Type ty;
+      if (parser.parseType(ty))
+        return failure();
+      resultTypes.push_back(ty);
+    }
+    result.addTypes(resultTypes);
   }
-  result.addTypes(resultTypes);
 
   if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
     return failure();
@@ -1205,43 +1404,60 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void PeOp::print(OpAsmPrinter &p) {
-  if (auto sym = getSymNameAttr()) {
+  bool isNamed = static_cast<bool>(getSymNameAttr());
+  if (isNamed) {
     p << ' ';
-    p.printSymbolName(sym.getValue());
+    p.printSymbolName(getSymNameAttr().getValue());
   }
-  p << " [" << stringifySchedule(getSchedule()) << "] (";
-  Block &entry = getBody().front();
-  llvm::interleaveComma(
-      llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
-        BlockArgument bb;
-        Value outer;
-        std::tie(bb, outer) = pair;
-        p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
-        p << " = " << outer << " : " << outer.getType();
-        // Emit `to <inner-type>` only when the inner block-arg type differs
-        // from the outer operand type (width relaxation under the
-        // module-level connection-point rule).
-        if (outer.getType() != bb.getType())
-          p << " to " << bb.getType();
-      });
-  p << ") -> ";
-  auto rTypes = getResultTypes();
-  if (rTypes.size() == 1) {
-    p << rTypes.front();
+  p << " [" << stringifySchedule(getSchedule()) << "]";
+  if (isNamed) {
+    FunctionType ft;
+    if (auto fta = getFunctionTypeAttr())
+      ft = cast<FunctionType>(fta.getValue());
+    p << " (";
+    if (ft)
+      llvm::interleaveComma(ft.getInputs(), p);
+    p << ") -> ";
+    if (ft && ft.getNumResults() == 1) {
+      p << ft.getResult(0);
+    } else {
+      p << '(';
+      if (ft)
+        llvm::interleaveComma(ft.getResults(), p);
+      p << ')';
+    }
   } else {
-    p << '(';
-    llvm::interleaveComma(rTypes, p);
-    p << ')';
+    p << " (";
+    Block &entry = getBody().front();
+    llvm::interleaveComma(
+        llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
+          BlockArgument bb;
+          Value outer;
+          std::tie(bb, outer) = pair;
+          p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
+          p << " = " << outer << " : " << outer.getType();
+          if (outer.getType() != bb.getType())
+            p << " to " << bb.getType();
+        });
+    p << ") -> ";
+    auto rTypes = getResultTypes();
+    if (rTypes.size() == 1) {
+      p << rTypes.front();
+    } else {
+      p << '(';
+      llvm::interleaveComma(rTypes, p);
+      p << ')';
+    }
   }
-  // Elide the `schedule` attribute from the optional attr-dict; it's already
-  // serialized in the `[...]` predicate. Elide `sym_name` too: the optional
-  // name is printed inline before the schedule predicate.
-  SmallVector<StringRef, 2> elided{"schedule",
-                                   ::mlir::SymbolTable::getSymbolAttrName()};
+  // Elide attributes already serialized inline.
+  SmallVector<StringRef, 3> elided{"schedule",
+                                   ::mlir::SymbolTable::getSymbolAttrName(),
+                                   "function_type"};
   p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   p << ' ';
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false,
-                /*printBlockTerminators=*/false);
+  p.printRegion(getBody(),
+                /*printEntryBlockArgs=*/isNamed,
+                /*printBlockTerminators=*/isNamed);
 }
 
 RegionKind PeOp::getRegionKind(unsigned /*index*/) {
@@ -1257,42 +1473,89 @@ LogicalResult PeOp::verify() {
         "fabric.pe in 'temporal' schedule is not yet implemented");
   // From here on, schedule is Spatial.
 
-  // 1. K >= 1.
-  if (getInputs().empty())
-    return emitOpError("requires at least 1 input port (K >= 1)");
+  bool isNamed = static_cast<bool>(getSymNameAttr());
+  Block &entry = getBody().front();
 
+  // Resolve the per-form (input, output) type lists.
+  SmallVector<Type, 4> declaredIns;
+  SmallVector<Type, 4> declaredOuts;
+
+  if (isNamed) {
+    // Cross-form rejections.
+    if (!getInputs().empty())
+      return emitOpError(
+          "named fabric.pe template must have zero SSA operands; got ")
+          << getInputs().size();
+    if (!getResultTypes().empty())
+      return emitOpError(
+          "named fabric.pe template must have zero SSA results; got ")
+          << getResultTypes().size();
+    auto fta = getFunctionTypeAttr();
+    if (!fta)
+      return emitOpError(
+          "named fabric.pe template requires a 'function_type' attribute");
+    auto ft = dyn_cast<FunctionType>(fta.getValue());
+    if (!ft)
+      return emitOpError("'function_type' attribute must be a FunctionType");
+    declaredIns.assign(ft.getInputs().begin(), ft.getInputs().end());
+    declaredOuts.assign(ft.getResults().begin(), ft.getResults().end());
+
+    // Block-arg types must equal declaredIns.
+    if (entry.getNumArguments() != declaredIns.size())
+      return emitOpError("entry block argument count (")
+             << entry.getNumArguments()
+             << ") must match declared input count (" << declaredIns.size()
+             << ")";
+    for (auto [i, pair] :
+         llvm::enumerate(llvm::zip(entry.getArguments(), declaredIns))) {
+      BlockArgument bb;
+      Type t;
+      std::tie(bb, t) = pair;
+      if (bb.getType() != t)
+        return emitOpError("entry block argument #")
+               << i << " type " << bb.getType()
+               << " must equal declared input type " << t;
+    }
+  } else {
+    // Anonymous form. Reject stray function_type.
+    if (getFunctionTypeAttr())
+      return emitOpError(
+          "anonymous fabric.pe must not carry a 'function_type' attribute");
+
+    if (entry.getNumArguments() != getInputs().size())
+      return emitOpError("region entry block argument count (")
+             << entry.getNumArguments() << ") must equal operand count ("
+             << getInputs().size() << ")";
+    for (BlockArgument arg : entry.getArguments())
+      declaredIns.push_back(arg.getType());
+    for (Type t : getOutputs().getTypes())
+      declaredOuts.push_back(t);
+  }
+
+  // 1. K >= 1.
+  if (declaredIns.empty())
+    return emitOpError("requires at least 1 input port (K >= 1)");
   // 2. L >= 1.
-  if (getOutputs().empty())
+  if (declaredOuts.empty())
     return emitOpError("requires at least 1 output port (L >= 1)");
 
-  // 3. Determine W from the first block argument (the inner / PE-side
-  // type) and walk all PE-internal ports. Outer operand widths may
-  // differ from the inner block-arg width per the
-  // fabric.module width-relaxation rule (low-bit alignment, same-kind);
-  // see docs/spec-fabric-module.md. The PE's uniform W is enforced on
-  // the PE-internal side: every block argument and every result must
-  // be `!fabric.bits<W>` with the same `W`.
-  Block &entry = getBody().front();
-  if (entry.getNumArguments() != getInputs().size())
-    return emitOpError("region entry block argument count (")
-           << entry.getNumArguments() << ") must equal operand count ("
-           << getInputs().size() << ")";
-
-  auto firstW = bitsWidth(entry.getArgument(0).getType());
+  // 3. Uniform W on all PE ports (the inner / PE-side types).
+  auto firstW = bitsWidth(declaredIns[0]);
   if (!firstW)
     return emitOpError(
-        "requires uniform 'bits<W>' on all PE ports; PE input #0 has type ")
-        << entry.getArgument(0).getType();
+               "requires uniform 'bits<W>' on all PE ports; PE input #0 has "
+               "type ")
+           << declaredIns[0];
   unsigned W = *firstW;
-  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
-    auto w = bitsWidth(arg.getType());
+  for (auto [i, t] : llvm::enumerate(declaredIns)) {
+    auto w = bitsWidth(t);
     if (!w || *w != W)
       return emitOpError("requires uniform 'bits<W>' on all PE ports; PE "
                          "input #")
-             << i << " has type " << arg.getType() << " (expected '!fabric.bits<"
-             << W << ">')";
+             << i << " has type " << t << " (expected '!fabric.bits<" << W
+             << ">')";
   }
-  for (auto [i, t] : llvm::enumerate(getOutputs().getTypes())) {
+  for (auto [i, t] : llvm::enumerate(declaredOuts)) {
     auto w = bitsWidth(t);
     if (!w || *w != W)
       return emitOpError("requires uniform 'bits<W>' on all PE ports; PE "
@@ -1301,39 +1564,40 @@ LogicalResult PeOp::verify() {
              << ">')";
   }
 
-  // 4. Outer-vs-inner per operand: the outer operand SSA type may differ
-  // from the inner block-arg type only in width and only for the same
-  // fabric kind (bits / bits_tag). Since the PE-internal type is
-  // already constrained to fabric.bits<W>, the outer must also be
-  // fabric.bits<*> (any width). Emit a clear diagnostic when the kind
-  // disagrees.
-  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
-    Type outerTy = getInputs()[i].getType();
-    Type innerTy = arg.getType();
-    if (outerTy == innerTy)
-      continue;
-    if (!sameModulePortKind(outerTy, innerTy))
-      return emitOpError("operand #")
-             << i << " outer type " << outerTy
-             << " and PE block-arg inner type " << innerTy
-             << " must share the same fabric kind (bits, bits_tag)";
-    if (isa<MemRefType>(outerTy))
-      return emitOpError("operand #")
-             << i
-             << ": memref operands cannot use the 'to <inner-type>' clause; "
-                "memref types must match exactly";
+  // 4. Outer-vs-inner per operand (anonymous form only): outer SSA type
+  // may differ from inner block-arg type only in width and only for the
+  // same fabric kind. The named form has no SSA operands.
+  if (!isNamed) {
+    for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
+      Type outerTy = getInputs()[i].getType();
+      Type innerTy = arg.getType();
+      if (outerTy == innerTy)
+        continue;
+      if (!sameModulePortKind(outerTy, innerTy))
+        return emitOpError("operand #")
+               << i << " outer type " << outerTy
+               << " and PE block-arg inner type " << innerTy
+               << " must share the same fabric kind (bits, bits_tag)";
+      if (isa<MemRefType>(outerTy))
+        return emitOpError("operand #")
+               << i
+               << ": memref operands cannot use the 'to <inner-type>' clause; "
+                  "memref types must match exactly";
+    }
   }
 
-  // 5./6. Body whitelist: fabric.fu (named or anonymous) plus
-  // fabric.instantiate. The PE body must contain at least one compute
-  // resource: either a fabric.fu or a fabric.instantiate whose target is
-  // a fabric.fu.
+  // 5./6. Body whitelist: fabric.fu plus fabric.instantiate. Named form
+  // additionally permits fabric.yield as terminator.
   unsigned numCompute = 0;
   for (Operation &op : entry) {
     if (isa<InstantiateOp>(op)) {
-      // Cross-checks against the resolved target run inside the
-      // InstantiateOp verifier (port count, per-port type, scope rules).
       ++numCompute;
+      continue;
+    }
+    if (isa<YieldOp>(op)) {
+      if (!isNamed)
+        return op.emitOpError(
+            "fabric.yield is not allowed in an anonymous fabric.pe body");
       continue;
     }
     auto fu = dyn_cast<FuOp>(op);
@@ -1344,18 +1608,39 @@ LogicalResult PeOp::verify() {
     ++numCompute;
 
     // 7. Per-FU constraints.
-    unsigned fuNumIns = fu.getInputs().size();
-    unsigned fuNumOuts = fu.getOutputs().size();
-    if (fuNumIns > getInputs().size())
+    unsigned fuNumIns;
+    unsigned fuNumOuts;
+    SmallVector<Type, 4> fuIns;
+    SmallVector<Type, 4> fuOuts;
+    if (fu.getSymNameAttr()) {
+      auto fta = fu.getFunctionTypeAttr();
+      if (!fta)
+        continue; // FU verifier flags the missing attr.
+      auto ft = dyn_cast<FunctionType>(fta.getValue());
+      if (!ft)
+        continue;
+      fuNumIns = ft.getNumInputs();
+      fuNumOuts = ft.getNumResults();
+      fuIns.assign(ft.getInputs().begin(), ft.getInputs().end());
+      fuOuts.assign(ft.getResults().begin(), ft.getResults().end());
+    } else {
+      fuNumIns = fu.getInputs().size();
+      fuNumOuts = fu.getOutputs().size();
+      for (Type t : fu.getInputs().getTypes())
+        fuIns.push_back(t);
+      for (Type t : fu.getOutputs().getTypes())
+        fuOuts.push_back(t);
+    }
+    if (fuNumIns > declaredIns.size())
       return fu.emitOpError("inner fabric.fu has ")
              << fuNumIns << " inputs which exceeds fabric.pe input count K="
-             << getInputs().size();
-    if (fuNumOuts > getOutputs().size())
+             << declaredIns.size();
+    if (fuNumOuts > declaredOuts.size())
       return fu.emitOpError("inner fabric.fu has ")
              << fuNumOuts
              << " outputs which exceeds fabric.pe output count L="
-             << getOutputs().size();
-    for (auto [i, t] : llvm::enumerate(fu.getInputs().getTypes())) {
+             << declaredOuts.size();
+    for (auto [i, t] : llvm::enumerate(fuIns)) {
       auto w = bitsWidth(t);
       if (!w || *w != W)
         return fu.emitOpError(
@@ -1363,7 +1648,7 @@ LogicalResult PeOp::verify() {
                    "width W=")
                << W << "; FU input #" << i << " has type " << t;
     }
-    for (auto [i, t] : llvm::enumerate(fu.getOutputs().getTypes())) {
+    for (auto [i, t] : llvm::enumerate(fuOuts)) {
       auto w = bitsWidth(t);
       if (!w || *w != W)
         return fu.emitOpError(
@@ -1376,8 +1661,33 @@ LogicalResult PeOp::verify() {
     return emitOpError(
         "body requires at least one fabric.fu or fabric.instantiate");
 
+  // Named-form yield must close the body and match function_type results.
+  if (isNamed) {
+    if (entry.empty() || !isa<YieldOp>(entry.back()))
+      return emitOpError(
+          "named fabric.pe body must terminate with fabric.yield");
+    auto yield = cast<YieldOp>(entry.back());
+    if (yield.getValues().size() != declaredOuts.size())
+      return emitOpError("yield value count (")
+             << yield.getValues().size()
+             << ") must match declared result count (" << declaredOuts.size()
+             << ")";
+    for (auto [i, pair] :
+         llvm::enumerate(llvm::zip(yield.getValues(), declaredOuts))) {
+      Value v;
+      Type t;
+      std::tie(v, t) = pair;
+      if (v.getType() != t)
+        return emitOpError("yield value #")
+               << i << " type " << v.getType()
+               << " must equal declared result type " << t;
+    }
+  }
+
   return success();
 }
+
+bool PeOp::isOptionalSymbol() { return true; }
 
 //===----------------------------------------------------------------------===//
 // fabric.instantiate (parser/printer/verifier defined in
@@ -1765,16 +2075,27 @@ LogicalResult YieldOp::verify() {
   }
 
   if (auto fu = dyn_cast_or_null<FuOp>(parent)) {
-    if (getValues().size() != fu.getOutputs().size())
+    // Resolve expected result types per fu form: named (function_type) or
+    // anonymous (op.results).
+    SmallVector<Type, 4> expectedResults;
+    if (fu.getSymNameAttr()) {
+      if (auto fta = fu.getFunctionTypeAttr())
+        if (auto ft = dyn_cast<FunctionType>(fta.getValue()))
+          for (Type t : ft.getResults())
+            expectedResults.push_back(t);
+    } else {
+      for (Type t : fu.getOutputs().getTypes())
+        expectedResults.push_back(t);
+    }
+    if (getValues().size() != expectedResults.size())
       return emitOpError("yield value count (")
              << getValues().size() << ") must match parent fabric.fu result "
                                       "count ("
-             << fu.getOutputs().size() << ")";
+             << expectedResults.size() << ")";
     for (auto [i, v] : llvm::enumerate(getValues())) {
-      Type expected = fu.getOutputs()[i].getType();
+      Type expected = expectedResults[i];
       // Inside fabric.fu the per-value `to` clause is not allowed: the FU
-      // boundary is strict on its outputs (only the input direction is
-      // truncated, by the fu's own `to <inner-type>` clause on operands).
+      // boundary is strict on its outputs.
       if (declared[i] && declared[i] != v.getType())
         return emitOpError("yield value #")
                << i
@@ -1783,6 +2104,37 @@ LogicalResult YieldOp::verify() {
         return emitOpError("yield value #")
                << i << " type " << v.getType()
                << " must match parent fabric.fu result type " << expected;
+    }
+    return success();
+  }
+  if (auto pe = dyn_cast_or_null<PeOp>(parent)) {
+    // fabric.yield inside a fabric.pe body is only legal when the PE is in
+    // named template form (signature carried in `function_type`).
+    auto fta = pe.getFunctionTypeAttr();
+    if (!pe.getSymNameAttr() || !fta)
+      return emitOpError(
+          "fabric.yield is only legal inside a named fabric.pe template "
+          "(anonymous fabric.pe has no terminator)");
+    auto ft = dyn_cast<FunctionType>(fta.getValue());
+    SmallVector<Type, 4> expectedResults;
+    if (ft)
+      for (Type t : ft.getResults())
+        expectedResults.push_back(t);
+    if (getValues().size() != expectedResults.size())
+      return emitOpError("yield value count (")
+             << getValues().size()
+             << ") must match parent fabric.pe result count ("
+             << expectedResults.size() << ")";
+    for (auto [i, v] : llvm::enumerate(getValues())) {
+      Type expected = expectedResults[i];
+      if (declared[i] && declared[i] != v.getType())
+        return emitOpError("yield value #")
+               << i
+               << ": 'to <type>' clause is not allowed inside fabric.pe";
+      if (v.getType() != expected)
+        return emitOpError("yield value #")
+               << i << " type " << v.getType()
+               << " must match parent fabric.pe result type " << expected;
     }
     return success();
   }
@@ -1822,5 +2174,6 @@ LogicalResult YieldOp::verify() {
     }
     return success();
   }
-  return emitOpError("expects parent op 'fabric.fu' or 'fabric.module'");
+  return emitOpError(
+      "expects parent op 'fabric.fu', 'fabric.pe' (named), or 'fabric.module'");
 }

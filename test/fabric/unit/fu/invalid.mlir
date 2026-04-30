@@ -99,7 +99,7 @@ fabric.module @fu_yield_type_mismatch(%a : !fabric.bits<16>) {
 // -----
 // fabric.yield placed at the top of builtin.module (no enclosing fabric.fu /
 // fabric.module).
-// expected-error @+1 {{expects parent op 'fabric.fu' or 'fabric.module'}}
+// expected-error @+1 {{expects parent op 'fabric.fu', 'fabric.pe' (named), or 'fabric.module'}}
 fabric.yield
 
 // -----

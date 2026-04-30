@@ -56,16 +56,47 @@ target kind and the offending symbol.
 
 ## Named definitions for fabric.pe and fabric.fu
 
-`fabric.pe` and `fabric.fu` carry an optional `sym_name`. The anonymous
-form (no `sym_name`) keeps the existing single-instance behavior. The
-named form uses the same body / signature; structurally it is the same
-op (still produces SSA results in its enclosing scope), but the
-`sym_name` makes the op addressable from subsequent
-`fabric.instantiate @sym` ops as a template for additional independent
-instances.
+`fabric.pe` and `fabric.fu` exist in two disjoint syntactic forms by
+`sym_name` presence; the parser branches on whether `@sym` appears
+right after the op keyword.
 
-* `fabric.pe @ALU [spatial] (%pa = %a : T) -> T { ... }` -- named PE.
-* `fabric.fu @F (%fa = %pa : T) -> T { ... }` -- named FU.
+* **Anonymous form** (definition + use combined): variadic SSA operands
+  bound via `(%pa = %a : T [to T_inner], ...)` plus variadic SSA
+  results via `-> T` / `-> (T0, T1, ...)`. Same shape as before. The
+  op produces SSA values in the enclosing scope.
+* **Named template form** (declaration only): zero SSA operands, zero
+  SSA results in the host scope. The port signature is captured in a
+  `function_type : FunctionType` attribute and the body's entry block
+  carries the input port types as block-arguments. The body
+  terminator is `fabric.yield`, whose value list matches
+  `function_type.getResults()`. Actual usage of a named pe/fu goes
+  through `fabric.instantiate @sym(...)`.
+
+```mlir
+fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
+                         -> (!fabric.bits<32>) {
+^bb0(%pa: !fabric.bits<32>, %pb: !fabric.bits<32>):
+  fabric.fu(%fa = %pa : !fabric.bits<32>) -> !fabric.bits<32> { ... }
+  fabric.yield %pa : !fabric.bits<32>
+}
+
+fabric.fu @F (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32> {
+^bb0(%fa: !fabric.bits<32>, %fb: !fabric.bits<32>):
+  %v = fabric.op [@arith.muli] (%fa, %fb)
+       : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  fabric.yield %v : !fabric.bits<32>
+}
+```
+
+Both `fabric.pe` and `fabric.fu` implement the standard
+`SymbolOpInterface` with `isOptionalSymbol() == true`: when `sym_name`
+is present the op participates in the enclosing `SymbolTable` and the
+0-results requirement of the symbol verifier is enforced; when
+`sym_name` is absent the op is not a symbol. The anonymous form is
+rejected as an `fabric.instantiate` target (the lookup fails because
+there is no symbol to bind), and the named form is forced to use the
+function-type signature (any anonymous-form operand binding is a
+parser error).
 
 `fabric.pe` carries the `SymbolTable` trait so its body can host named
 `fabric.fu` definitions. `fabric.module` already carries `Symbol` and
@@ -145,10 +176,12 @@ rejected on `memref` operands.
 * `fabric.module` body now also accepts `fabric.module` (nested) and
   `fabric.instantiate`. The implicit `fabric.yield` terminator is
   unchanged.
-* `fabric.pe` body now accepts `fabric.instantiate` in addition to
-  `fabric.fu`. The PE body must contain at least one compute resource:
-  either a `fabric.fu` directly, or a `fabric.instantiate` whose
-  resolved callee is a `fabric.fu`.
+* `fabric.pe` body accepts `fabric.fu` and `fabric.instantiate`. The
+  PE body must contain at least one compute resource: either a
+  `fabric.fu` (anonymous or named template) or a `fabric.instantiate`
+  whose resolved callee is a `fabric.fu`. In the named PE template
+  form the PE body is additionally terminated by `fabric.yield` whose
+  value list matches the PE's `function_type` results.
 
 ## Cross-references
 
