@@ -70,7 +70,9 @@ A module may have zero outputs (`-> ()`) or zero inputs
 
 `fabric.module` body may only contain (today):
 
-* `fabric.pe [spatial]`
+* `fabric.pe` (both `[spatial]` and `[temporal]`)
+* `fabric.switch` (both `[spatial]` and `[temporal]`; see
+  `docs/spec-fabric-switch.md`)
 * `fabric.fifo`
 * `fabric.module` (nested or sibling top-level brought in by symbol
   reference -- the body whitelist accepts top-level `fabric.module`
@@ -84,9 +86,8 @@ A module may have zero outputs (`-> ()`) or zero inputs
   `docs/spec-fabric-boundary.md`)
 * `fabric.yield` (terminator)
 
-Future container ops -- `fabric.pe [temporal]`, `fabric.switch`,
-`fabric.mem` -- are listed in the dialect roadmap and will be added
-to the whitelist (or to the schedule predicate) as they land.
+Future container ops -- `fabric.mem` -- are listed in the dialect
+roadmap and will be added to the whitelist as they land.
 
 `builtin.unrealized_conversion_cast` is **not** in the whitelist. All
 fabric module values must come from a real fabric producer (a sub-
@@ -171,11 +172,12 @@ strict per the existing rules.
 
 ## Verifier rules
 
-* The body whitelist accepts only `fabric.pe [spatial]`, `fabric.fifo`,
-  `fabric.module`, `fabric.instantiate`, `fabric.boundary` (covering
-  all three directions `[s2t]` / `[t2t]` / `[t2s]`), and the
-  `fabric.yield` terminator. Any other op is rejected with a
-  diagnostic that lists the allowed names.
+* The body whitelist accepts only `fabric.pe` (both schedules),
+  `fabric.switch` (both schedules), `fabric.fifo`, `fabric.module`,
+  `fabric.instantiate`, `fabric.boundary` (covering all three
+  directions `[s2t]` / `[t2t]` / `[t2s]`), and the `fabric.yield`
+  terminator. Any other op is rejected with a diagnostic that lists
+  the allowed names.
 * Each block-argument type must be one of the allowed module port
   types (`!fabric.bits<W>`, `!fabric.bits_tag<W,T>`, `memref<...>`).
 * Each declared result type must be one of the same allowed types.
@@ -226,6 +228,6 @@ The canonical sources of truth are:
   `lib/Fabric/IR/FabricOps.cpp` for parser, printer, and verifier
   logic.
 
-When adding a new whitelisted body op (e.g., `fabric.switch`,
-`fabric.mem`), update both the verifier's whitelist and the diagnostic
-message that lists the allowed names.
+When adding a new whitelisted body op (e.g., `fabric.mem`), update both
+the verifier's whitelist and the diagnostic message that lists the
+allowed names.

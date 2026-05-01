@@ -447,6 +447,47 @@ def Fabric_BoundaryOp : Fabric_Op<"boundary", [Pure]> {
   let hasVerifier = 1;
 }
 
+def Fabric_SwitchOp : Fabric_Op<"switch", [
+    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>,
+    Pure
+]> {
+  let summary =
+      "fabric switch: configurable routing crossbar with a schedule predicate "
+      "(spatial or temporal)";
+  let description = [{
+    Leaf-level routing op with variadic SSA inputs and variadic SSA results.
+    Carries a mandatory `schedule` predicate (`spatial` | `temporal`) and a
+    `connectivity_table` describing the static physical fabric. The op
+    exists in two disjoint syntactic forms by `sym_name` presence:
+
+    Anonymous form has variadic SSA operands and variadic SSA results.
+    Named template form has zero SSA operands and zero SSA results in the
+    host scope; the port signature is captured in the `function_type`
+    attribute. Hardware parameters are carried in `hw_params` (an
+    ArrayAttr wrapping a single DictionaryAttr) printed in `[ ... ]`
+    after the SSA operand list. Software configuration is carried in
+    `sw_configs` (a DictionaryAttr) printed in `{ ... }` after the
+    hardware parameters.
+
+    See `docs/spec-fabric-switch.md` for the full per-schedule rules
+    (connectivity_table format, MSB-on-left bit-string convention,
+    route_table layout, tag-driven temporal trigger semantics, etc.).
+  }];
+
+  let arguments = (ins
+      Variadic<Fabric_AnyType>:$inputs,
+      OptionalAttr<SymbolNameAttr>:$sym_name,
+      OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
+      Fabric_ScheduleAttr:$schedule,
+      OptionalAttr<ArrayAttr>:$hw_params,
+      OptionalAttr<DictionaryAttr>:$sw_configs
+  );
+  let results = (outs Variadic<Fabric_AnyType>:$outputs);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
     Pure
