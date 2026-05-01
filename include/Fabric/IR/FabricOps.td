@@ -381,6 +381,108 @@ def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
   let hasVerifier = 1;
 }
 
+def Fabric_S2tOp : Fabric_Op<"s2t", [Pure]> {
+  let summary =
+      "fabric boundary op: combine a spatial data stream with a tag into a "
+      "tagged (temporal) channel";
+  let description = [{
+    Combines a spatial `!fabric.bits<BW>` data stream with a `TW`-bit tag
+    into a `!fabric.bits_tag<BW, TW>` channel.
+
+    Two disjoint syntactic forms by operand count:
+
+    General form (2 operands -- data + tag):
+
+      %out = fabric.s2t %data, %tag
+             : (!fabric.bits<BW>, !fabric.bits<TW>) -> !fabric.bits_tag<BW, TW>
+
+    Constant-tag form (1 operand + sw_configs.tag): the tag is supplied as an
+    integer attribute whose width equals the result tag-width.
+
+      %out = fabric.s2t %data {sw_configs = {tag = 0xa : i4}}
+             : !fabric.bits<BW> -> !fabric.bits_tag<BW, TW>
+
+    Allowed only inside a `fabric.module` body. No `hw_params`. Width
+    relaxation is not supported on this op; operand and result widths must
+    match exactly.
+  }];
+
+  let arguments = (ins
+      Variadic<Fabric_BitsType>:$inputs,
+      OptionalAttr<DictionaryAttr>:$sw_configs
+  );
+  let results = (outs Fabric_BitsTagType:$output);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Fabric_T2tOp : Fabric_Op<"t2t", [Pure]> {
+  let summary =
+      "fabric boundary op: remap the tag of a tagged channel via a "
+      "lookup table";
+  let description = [{
+    Remaps the tag of a `!fabric.bits_tag<BW, TW1>` channel into a
+    `!fabric.bits_tag<BW, TW2>` channel via a hardware lookup table. The
+    data width is preserved; only the tag is remapped (and possibly resized).
+
+      %out = fabric.t2t %in
+             { hw_params = [ { lookup_table = [
+                 { input_tag = 0 : i<TW1>, output_tag = 1 : i<TW2> },
+                 { input_tag = 1 : i<TW1>, output_tag = 7 : i<TW2> }
+             ] } ] }
+             : !fabric.bits_tag<BW, TW1> -> !fabric.bits_tag<BW, TW2>
+
+    The `hw_params` attribute is required: a length-1 array wrapping a
+    dictionary with key `lookup_table`. Each LUT entry is a dictionary
+    with keys `input_tag` (`i<TW1>`) and `output_tag` (`i<TW2>`). The LUT
+    must be non-empty and `input_tag` values must be distinct.
+
+    Allowed only inside a `fabric.module` body. `sw_configs` is reserved
+    for future multi-LUT runtime selection. Width relaxation is not
+    supported.
+  }];
+
+  let arguments = (ins
+      Fabric_BitsTagType:$input,
+      ArrayAttr:$hw_params
+  );
+  let results = (outs Fabric_BitsTagType:$output);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Fabric_T2sOp : Fabric_Op<"t2s", [Pure]> {
+  let summary =
+      "fabric boundary op: split a tagged channel into a spatial data "
+      "stream (and optionally its tag)";
+  let description = [{
+    Splits a `!fabric.bits_tag<BW, TW>` tagged channel into spatial
+    `!fabric.bits<>` outputs.
+
+    Split form (2 results -- data + tag):
+
+      %data, %tag = fabric.t2s %in
+                    : !fabric.bits_tag<BW, TW>
+                      -> (!fabric.bits<BW>, !fabric.bits<TW>)
+
+    Drop-tag form (1 result -- data only, the tag is dropped):
+
+      %data = fabric.t2s %in : !fabric.bits_tag<BW, TW> -> !fabric.bits<BW>
+
+    Allowed only inside a `fabric.module` body. No `hw_params`, no
+    `sw_configs`. Width relaxation is not supported; result widths must
+    match the operand exactly.
+  }];
+
+  let arguments = (ins Fabric_BitsTagType:$input);
+  let results = (outs Variadic<Fabric_BitsType>:$outputs);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
 def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
     Pure

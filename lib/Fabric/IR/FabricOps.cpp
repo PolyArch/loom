@@ -1873,17 +1873,19 @@ LogicalResult fabric::ModuleOp::verify() {
   }
 
   // Body whitelist: only fabric.pe, fabric.fifo, fabric.module (nested),
-  // fabric.instantiate, and the implicit fabric.yield terminator may
-  // appear directly in the module body. (Future container ops --
-  // fabric.switch, fabric.mem, fabric.t2s, fabric.s2t, fabric.t2t -- will
-  // be added here as they land.)
+  // fabric.instantiate, the boundary ops fabric.{s2t, t2t, t2s}, and the
+  // implicit fabric.yield terminator may appear directly in the module
+  // body. (Future container ops -- fabric.switch, fabric.mem -- will be
+  // added here as they land.)
   for (Operation &op : entry) {
-    if (isa<PeOp, FifoOp, fabric::ModuleOp, InstantiateOp, YieldOp>(op))
+    if (isa<PeOp, FifoOp, fabric::ModuleOp, InstantiateOp, S2tOp, T2tOp,
+            T2sOp, YieldOp>(op))
       continue;
     return op.emitOpError(
         "is not allowed inside fabric.module; only fabric.pe, "
-        "fabric.fifo, fabric.module, and fabric.instantiate are "
-        "permitted (plus the implicit terminator fabric.yield)");
+        "fabric.fifo, fabric.module, fabric.instantiate, fabric.s2t, "
+        "fabric.t2t, and fabric.t2s are permitted (plus the implicit "
+        "terminator fabric.yield)");
   }
   return success();
 }

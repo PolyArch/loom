@@ -78,12 +78,14 @@ A module may have zero outputs (`-> ()`) or zero inputs
   resolve correctly)
 * `fabric.instantiate` (binds a previously-defined fabric symbol
   into this scope; see `docs/spec-fabric-instantiate.md`)
+* `fabric.s2t`, `fabric.t2t`, `fabric.t2s` (boundary ops between the
+  spatial `bits` domain and the temporal `bits_tag` domain; see
+  `docs/spec-fabric-boundary.md`)
 * `fabric.yield` (terminator)
 
 Future container ops -- `fabric.pe [temporal]`, `fabric.switch`,
-`fabric.mem`, `fabric.t2t`, `fabric.s2t`, `fabric.t2s` -- are listed
-in the dialect roadmap and will be added to the whitelist (or to the
-schedule predicate) as they land.
+`fabric.mem` -- are listed in the dialect roadmap and will be added
+to the whitelist (or to the schedule predicate) as they land.
 
 `builtin.unrealized_conversion_cast` is **not** in the whitelist. All
 fabric module values must come from a real fabric producer (a sub-
@@ -169,9 +171,9 @@ strict per the existing rules.
 ## Verifier rules
 
 * The body whitelist accepts only `fabric.pe [spatial]`, `fabric.fifo`,
-  `fabric.module`, `fabric.instantiate`, and the `fabric.yield`
-  terminator. Any other op is rejected with a diagnostic that lists
-  the allowed names.
+  `fabric.module`, `fabric.instantiate`, the boundary ops `fabric.s2t`,
+  `fabric.t2t`, `fabric.t2s`, and the `fabric.yield` terminator. Any
+  other op is rejected with a diagnostic that lists the allowed names.
 * Each block-argument type must be one of the allowed module port
   types (`!fabric.bits<W>`, `!fabric.bits_tag<W,T>`, `memref<...>`).
 * Each declared result type must be one of the same allowed types.
