@@ -78,8 +78,9 @@ A module may have zero outputs (`-> ()`) or zero inputs
   resolve correctly)
 * `fabric.instantiate` (binds a previously-defined fabric symbol
   into this scope; see `docs/spec-fabric-instantiate.md`)
-* `fabric.s2t`, `fabric.t2t`, `fabric.t2s` (boundary ops between the
-  spatial `bits` domain and the temporal `bits_tag` domain; see
+* `fabric.boundary` (single op covering all three boundary directions
+  -- `[s2t]`, `[t2t]`, `[t2s]` -- between the spatial `bits` domain
+  and the temporal `bits_tag` domain; see
   `docs/spec-fabric-boundary.md`)
 * `fabric.yield` (terminator)
 
@@ -171,9 +172,10 @@ strict per the existing rules.
 ## Verifier rules
 
 * The body whitelist accepts only `fabric.pe [spatial]`, `fabric.fifo`,
-  `fabric.module`, `fabric.instantiate`, the boundary ops `fabric.s2t`,
-  `fabric.t2t`, `fabric.t2s`, and the `fabric.yield` terminator. Any
-  other op is rejected with a diagnostic that lists the allowed names.
+  `fabric.module`, `fabric.instantiate`, `fabric.boundary` (covering
+  all three directions `[s2t]` / `[t2t]` / `[t2s]`), and the
+  `fabric.yield` terminator. Any other op is rejected with a
+  diagnostic that lists the allowed names.
 * Each block-argument type must be one of the allowed module port
   types (`!fabric.bits<W>`, `!fabric.bits_tag<W,T>`, `memref<...>`).
 * Each declared result type must be one of the same allowed types.

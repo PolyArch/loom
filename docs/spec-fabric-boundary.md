@@ -1,13 +1,31 @@
-# Fabric Boundary Ops
+# Fabric Boundary Op
 
-This document specifies the three fabric boundary ops `fabric.s2t`,
-`fabric.t2t`, and `fabric.t2s`. They are the canonical conversion ops
-between the spatial domain (`!fabric.bits<BW>`) and the temporal,
-tagged domain (`!fabric.bits_tag<BW, TW>`).
+This document specifies the unified `fabric.boundary` op, the canonical
+conversion op between the spatial domain (`!fabric.bits<BW>`) and the
+temporal, tagged domain (`!fabric.bits_tag<BW, TW>`). The op exists in
+three direction-predicated variants (`s2t`, `t2t`, `t2s`) that share a
+single op definition and a single verifier.
 
-The canonical IR sources are `Fabric_S2tOp`, `Fabric_T2tOp`, and
-`Fabric_T2sOp` in `include/Fabric/IR/FabricOps.td`. Verifier rules
-live in `lib/Fabric/IR/FabricBoundaryOps.cpp`.
+The canonical IR source is `Fabric_BoundaryOp` in
+`include/Fabric/IR/FabricOps.td`. Verifier rules live in
+`lib/Fabric/IR/FabricBoundaryOps.cpp`. The direction enum is
+`Fabric_BoundaryDirectionAttr`.
+
+## Direction predicate
+
+Every `fabric.boundary` op carries a mandatory `direction` attribute
+printed/parsed as a bracketed predicate, mirroring `fabric.pe`'s
+`[spatial|temporal]` style:
+
+```mlir
+fabric.boundary [s2t] ...
+fabric.boundary [t2t] ...
+fabric.boundary [t2s] ...
+```
+
+The keyword between `[` and `]` is one of `s2t`, `t2t`, `t2s`. The
+parser converts it via `BoundaryDirection::symbolize`. Any other
+keyword is rejected with a parse-time diagnostic.
 
 ## Purpose
 
@@ -21,39 +39,39 @@ The fabric dialect distinguishes two stream domains:
   example, an iteration index in a temporally-shared compute pipeline.
 
 A loom fabric expresses both domains in the same module. The three
-boundary ops describe the transitions between the two domains:
+boundary directions describe the transitions between the two domains:
 
-| Op             | From                            | To                              |
-|----------------|---------------------------------|---------------------------------|
-| `fabric.s2t`   | spatial `bits`                  | temporal `bits_tag`             |
-| `fabric.t2t`   | temporal `bits_tag<BW, TW1>`    | temporal `bits_tag<BW, TW2>`    |
-| `fabric.t2s`   | temporal `bits_tag`             | spatial `bits` (and tag)        |
+| Direction | From                            | To                              |
+|-----------|---------------------------------|---------------------------------|
+| `s2t`     | spatial `bits`                  | temporal `bits_tag`             |
+| `t2t`     | temporal `bits_tag<BW, TW1>`    | temporal `bits_tag<BW, TW2>`    |
+| `t2s`     | temporal `bits_tag`             | spatial `bits` (and tag)        |
 
-All three ops carry the `Pure` trait. None of them performs handshake
-mediation (FIFO, mux, demux, etc.); they only transform the type of
-the stream.
+`fabric.boundary` carries the `Pure` trait. It does not perform any
+handshake mediation (FIFO, mux, demux, etc.); it only transforms the
+type of the stream.
 
 ## Placement
 
-All three ops are allowed only in a `fabric.module` body. The
-verifier rejects them anywhere else (e.g., inside `fabric.fu`,
+`fabric.boundary` is allowed only in a `fabric.module` body. The
+verifier rejects it anywhere else (e.g., inside `fabric.fu`,
 `fabric.pe`, the top-level builtin `module`, or any nested op body
 not listed in `fabric.module`'s whitelist). See
 `spec-fabric-module.md` for the module body whitelist.
 
-The three ops are not container ops. They have no body, no symbol,
+`fabric.boundary` is not a container op. It has no body, no symbol,
 and no nested verifier rules.
 
-## `fabric.s2t` -- spatial to temporal
+## `fabric.boundary [s2t]` -- spatial to temporal
 
-`fabric.s2t` combines a spatial `bits<BW>` data stream with a
-`TW`-bit tag into a `bits_tag<BW, TW>` tagged channel. The op exists
-in two disjoint syntactic forms differentiated by operand count.
+`s2t` combines a spatial `bits<BW>` data stream with a `TW`-bit tag
+into a `bits_tag<BW, TW>` tagged channel. The op exists in two
+disjoint syntactic forms differentiated by operand count.
 
 ### General form (2 operands -- data, tag)
 
 ```mlir
-%out = fabric.s2t %data, %tag
+%out = fabric.boundary [s2t] %data, %tag
        : (!fabric.bits<BW>, !fabric.bits<TW>) -> !fabric.bits_tag<BW, TW>
 ```
 
@@ -71,7 +89,7 @@ elided and the constant is supplied through the `sw_configs`
 dictionary instead:
 
 ```mlir
-%out = fabric.s2t %data {sw_configs = {tag = 10 : i4}}
+%out = fabric.boundary [s2t] %data {sw_configs = {tag = 10 : i4}}
        : !fabric.bits<BW> -> !fabric.bits_tag<BW, TW>
 ```
 
@@ -79,16 +97,14 @@ dictionary instead:
 * Result: `!fabric.bits_tag<BW, TW>`.
 * `sw_configs.tag` is required: an `IntegerAttr` whose bit-width
   equals the result tag-width `TW`. The integer value is interpreted
-  as an unsigned `TW`-bit pattern. (MLIR's printer renders signless
-  integers using a signed numeric literal that shares the same bit
-  pattern; `tag = 10 : i4` and `tag = -6 : i4` denote the same tag.)
+  as an unsigned `TW`-bit pattern.
 
 The two-operand form must not carry `sw_configs.tag`; the tag is
-already supplied by SSA. The verifier rejects mixing the two.
+already supplied by SSA.
 
 ### Verifier rules
 
-* Operand count is 1 or 2.
+* Operand count is 1 or 2; result count is 1.
 * Result type is `!fabric.bits_tag<BW, TW>`.
 * Operand `#0` type is `!fabric.bits<BW>` (data-width must match the
   result data-width exactly).
@@ -97,67 +113,84 @@ already supplied by SSA. The verifier rejects mixing the two.
   absent.
 * One-operand form: `sw_configs.tag` must be an `IntegerAttr` whose
   type's bit-width equals the result tag-width.
+* `sw_configs.tag` must be a non-negative integer literal.
+  Signless `iN` literals are normalized to a bit-pattern at parse
+  time and so cannot be syntactically distinguished from their
+  twos-complement positive twin; the rule is enforced when the
+  literal carries an explicit signed/unsigned type (`siN`/`uiN`).
+* `hw_params` must be absent on `[s2t]`.
 
-There are no `hw_params`. The op describes a pure data adapter; no
-hardware-side parameter has been specified yet.
+## `fabric.boundary [t2t]` -- temporal to temporal (tag remap)
 
-## `fabric.t2t` -- temporal to temporal (tag remap)
-
-`fabric.t2t` remaps the tag of a `bits_tag<BW, TW1>` channel into a
+`t2t` remaps the tag of a `bits_tag<BW, TW1>` channel into a
 `bits_tag<BW, TW2>` channel via a hardware lookup table. The data
 field is preserved; only the tag changes (and may also be resized).
 
 ```mlir
-%out = fabric.t2t %in
-       {hw_params = [{lookup_table =
-           [{input_tag = 0 : i4, output_tag = 1 : i8},
-            {input_tag = 1 : i4, output_tag = 7 : i8}]}]}
+%out = fabric.boundary [t2t] %in
+       {hw_params = [{lut_size = 8 : i32}],
+        sw_configs = {lookup_table =
+            [{src_tag = 0 : i4, dst_tag = 1 : i8},
+             {src_tag = 1 : i4, dst_tag = 7 : i8}]}}
        : !fabric.bits_tag<32, 4> -> !fabric.bits_tag<32, 8>
 ```
 
-The lookup table lives in `hw_params` because the table itself is a
-hardware property of the op (it is fused into the LUT memory at
-generation time). `sw_configs` is reserved for future multi-LUT
-runtime selection and is not used in this iteration.
+The IR uses a sparse representation: only the valid LUT entries are
+materialized in `lookup_table`. The hardware-side LUT capacity is
+declared via `hw_params[0].lut_size` and the runtime selection is
+described by `sw_configs.lookup_table`.
 
 ### Verifier rules
 
+* Operand count is 1; result count is 1.
 * Operand and result are both `!fabric.bits_tag<...>`.
 * `BW` (operand data-width) equals the result data-width. The op only
   remaps the tag; it never changes the data field.
 * `TW1` (operand tag-width) and `TW2` (result tag-width) may differ.
 * `hw_params` is required: a length-1 array wrapping a dictionary
-  with key `lookup_table`.
-* `lookup_table` is a non-empty array of dictionaries. Each entry
-  has keys `input_tag` and `output_tag`, both `IntegerAttr`s.
-* `input_tag` integer width equals `TW1`. `output_tag` integer width
-  equals `TW2`.
-* All `input_tag` values across the LUT entries are distinct (no
-  duplicate keys).
+  with key `lut_size` (`IntegerAttr`, value >= 1).
+* `sw_configs` is required: a dictionary with key `lookup_table`
+  (`ArrayAttr`).
+* `lookup_table.size() <= lut_size` (extra entries are rejected with
+  "more LUT entries than declared lut_size").
+* Each entry is a dictionary with keys `src_tag` (`IntegerAttr`,
+  width == `TW1`, non-negative literal) and `dst_tag` (`IntegerAttr`,
+  width == `TW2`, non-negative literal). The negative-literal rule
+  has the same signless caveat as `[s2t]`.
+* All `src_tag` values across the LUT entries are distinct (rejected
+  with "duplicate src_tag value <V>").
 
-The integer values in each `IntegerAttr` are interpreted as unsigned
-bit patterns of the corresponding tag-width; range checking is
-implicit in the integer-attribute type.
+### Config-mem encoding
 
-### Multi-LUT roadmap
+At the eventual hardware/config-mem level, every LUT slot is encoded
+as a single packed word laid out from MSB to LSB:
 
-`sw_configs` is reserved for a future multi-LUT runtime-selectable
-form. In that form, `hw_params` will hold an array of LUTs and
-`sw_configs.lut_sel` will pick one at fabric-program time. The
-single-LUT form documented above is the only form supported today;
-the verifier rejects any unrecognized `sw_configs` keys for
-`fabric.t2t`.
+```
++-----------+-----------+-------+
+| DST_TAG   | SRC_TAG   | valid |
++-----------+-----------+-------+
+   TW2 bits   TW1 bits   1 bit
+```
 
-## `fabric.t2s` -- temporal to spatial
+Slot width is `TW1 + TW2 + 1` bits. The dense slot array has length
+`lut_size`. The IR's sparse `lookup_table` carries only the valid
+entries; the codegen materializes the dense array, fills in the
+present (`src_tag`, `dst_tag`) pairs with `valid = 1`, and zero-fills
+all remaining slots with `valid = 0`. The slot order within the
+dense array is implementation-defined (codegen's responsibility);
+the IR rule only requires the `src_tag` keys to be unique so that no
+two slots can fire on the same incoming tag.
 
-`fabric.t2s` splits a `bits_tag<BW, TW>` tagged channel back into the
+## `fabric.boundary [t2s]` -- temporal to spatial
+
+`t2s` splits a `bits_tag<BW, TW>` tagged channel back into the
 spatial domain. Two disjoint syntactic forms are differentiated by
 result count.
 
 ### Split form (2 results -- data, tag)
 
 ```mlir
-%data, %tag = fabric.t2s %in
+%data, %tag = fabric.boundary [t2s] %in
               : !fabric.bits_tag<BW, TW>
                 -> (!fabric.bits<BW>, !fabric.bits<TW>)
 ```
@@ -168,7 +201,8 @@ tag field as a `bits<TW>`. Both follow the operand's widths exactly.
 ### Drop-tag form (1 result -- data only)
 
 ```mlir
-%data = fabric.t2s %in : !fabric.bits_tag<BW, TW> -> !fabric.bits<BW>
+%data = fabric.boundary [t2s] %in
+        : !fabric.bits_tag<BW, TW> -> !fabric.bits<BW>
 ```
 
 The tag field is consumed by the op and not surfaced. This is the
@@ -176,34 +210,34 @@ canonical "exit the temporal domain and discard the tag" form.
 
 ### Verifier rules
 
+* Operand count is 1; result count is 1 or 2.
 * Operand is `!fabric.bits_tag<BW, TW>`.
-* Result count is 1 or 2.
 * Result `#0` is `!fabric.bits<BW>` (must equal the operand's
   data-width).
 * Two-result form: result `#1` is `!fabric.bits<TW>` (must equal
   the operand's tag-width).
-
-No `hw_params`, no `sw_configs`.
+* `hw_params` must be absent.
+* `sw_configs` must be absent.
 
 ## Width relaxation
 
-The three boundary ops have strict typing rules: every operand and
-every result type must match exactly under the verifier rules above.
-There is no `to <inner-type>` clause on any of them.
+`fabric.boundary` has strict typing rules: every operand and every
+result type must match exactly under the verifier rules above. There
+is no `to <inner-type>` clause on this op.
 
 If a wider SSA source needs to feed a narrower boundary-op operand
 (or vice-versa) the width adaptation is achieved via an upstream
 `fabric.fifo` or by routing through a `fabric.pe` template that
-performs the width adaptation at its boundary. The boundary ops
-themselves only describe the spatial/temporal type transition.
+performs the width adaptation at its boundary. The boundary op
+itself only describes the spatial/temporal type transition.
 
 ## Cross-references
 
-* `spec-fabric-module.md` -- the canonical container that hosts all
-  three boundary ops (and the body whitelist that admits them).
+* `spec-fabric-module.md` -- the canonical container that hosts
+  `fabric.boundary` (and the body whitelist that admits it).
 * `spec-fabric-fu.md` and `spec-fabric-pe.md` -- describe the
   `fabric.fu` and `fabric.pe` containers that, by their own body
-  whitelists, exclude the boundary ops.
+  whitelists, exclude `fabric.boundary`.
 * `spec-fabric-instantiate.md` -- alternative routing path for
-  width adaptation that is intentionally NOT folded into the
-  boundary ops.
+  width adaptation that is intentionally NOT folded into
+  `fabric.boundary`.

@@ -21,6 +21,16 @@ def Fabric_ScheduleAttr : I32EnumAttr<"Schedule",
   let cppNamespace = "::fabric";
 }
 
+def Fabric_BoundaryDirectionAttr : I32EnumAttr<"BoundaryDirection",
+    "fabric.boundary direction (s2t / t2t / t2s)",
+    [
+      I32EnumAttrCase<"S2t", 0, "s2t">,
+      I32EnumAttrCase<"T2t", 1, "t2t">,
+      I32EnumAttrCase<"T2s", 2, "t2s">
+    ]> {
+  let cppNamespace = "::fabric";
+}
+
 def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric multiplexer with handshake";
   let description = [{
@@ -188,9 +198,9 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
     accepted.
 
     The body whitelist is limited to a fixed set of canonical fabric
-    container ops; today that set is `fabric.pe` and `fabric.fifo`
-    (plus the implicit `fabric.yield` terminator). Future container
-    ops (`fabric.switch`, `fabric.mem`, `fabric.s2t`, ...) will be
+    container ops; today that set is `fabric.pe`, `fabric.fifo`, and
+    `fabric.boundary` (plus the implicit `fabric.yield` terminator).
+    Future container ops (`fabric.switch`, `fabric.mem`, ...) will be
     added to the whitelist when they land. See
     `docs/spec-fabric-module.md` for the full rules.
   }];
@@ -381,103 +391,34 @@ def Fabric_InstantiateOp : Fabric_Op<"instantiate", [
   let hasVerifier = 1;
 }
 
-def Fabric_S2tOp : Fabric_Op<"s2t", [Pure]> {
+def Fabric_BoundaryOp : Fabric_Op<"boundary", [Pure]> {
   let summary =
-      "fabric boundary op: combine a spatial data stream with a tag into a "
-      "tagged (temporal) channel";
+      "fabric boundary op: bridge between the spatial bits domain and the "
+      "temporal bits_tag domain (direction = s2t | t2t | t2s)";
   let description = [{
-    Combines a spatial `!fabric.bits<BW>` data stream with a `TW`-bit tag
-    into a `!fabric.bits_tag<BW, TW>` channel.
+    Single boundary op carrying a mandatory `direction` predicate that
+    selects one of three transition shapes between the spatial
+    `!fabric.bits<BW>` domain and the temporal `!fabric.bits_tag<BW, TW>`
+    domain. The bracketed `[<direction>]` predicate is printed/parsed in
+    the same style as `fabric.pe [spatial|temporal]`.
 
-    Two disjoint syntactic forms by operand count:
+    See `docs/spec-fabric-boundary.md` for the full per-direction
+    surface syntax (s2t general / s2t constant-tag / t2t LUT / t2s split
+    / t2s drop-tag).
 
-    General form (2 operands -- data + tag):
-
-      %out = fabric.s2t %data, %tag
-             : (!fabric.bits<BW>, !fabric.bits<TW>) -> !fabric.bits_tag<BW, TW>
-
-    Constant-tag form (1 operand + sw_configs.tag): the tag is supplied as an
-    integer attribute whose width equals the result tag-width.
-
-      %out = fabric.s2t %data {sw_configs = {tag = 0xa : i4}}
-             : !fabric.bits<BW> -> !fabric.bits_tag<BW, TW>
-
-    Allowed only inside a `fabric.module` body. No `hw_params`. Width
-    relaxation is not supported on this op; operand and result widths must
-    match exactly.
+    Allowed only inside a `fabric.module` body. Width relaxation is not
+    supported; per-direction operand/result widths must match exactly.
+    See `docs/spec-fabric-boundary.md` for the per-direction verifier
+    rules and the t2t LUT config-mem encoding.
   }];
 
   let arguments = (ins
-      Variadic<Fabric_BitsType>:$inputs,
+      Variadic<Fabric_AnyType>:$inputs,
+      Fabric_BoundaryDirectionAttr:$direction,
+      OptionalAttr<ArrayAttr>:$hw_params,
       OptionalAttr<DictionaryAttr>:$sw_configs
   );
-  let results = (outs Fabric_BitsTagType:$output);
-
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-}
-
-def Fabric_T2tOp : Fabric_Op<"t2t", [Pure]> {
-  let summary =
-      "fabric boundary op: remap the tag of a tagged channel via a "
-      "lookup table";
-  let description = [{
-    Remaps the tag of a `!fabric.bits_tag<BW, TW1>` channel into a
-    `!fabric.bits_tag<BW, TW2>` channel via a hardware lookup table. The
-    data width is preserved; only the tag is remapped (and possibly resized).
-
-      %out = fabric.t2t %in
-             { hw_params = [ { lookup_table = [
-                 { input_tag = 0 : i<TW1>, output_tag = 1 : i<TW2> },
-                 { input_tag = 1 : i<TW1>, output_tag = 7 : i<TW2> }
-             ] } ] }
-             : !fabric.bits_tag<BW, TW1> -> !fabric.bits_tag<BW, TW2>
-
-    The `hw_params` attribute is required: a length-1 array wrapping a
-    dictionary with key `lookup_table`. Each LUT entry is a dictionary
-    with keys `input_tag` (`i<TW1>`) and `output_tag` (`i<TW2>`). The LUT
-    must be non-empty and `input_tag` values must be distinct.
-
-    Allowed only inside a `fabric.module` body. `sw_configs` is reserved
-    for future multi-LUT runtime selection. Width relaxation is not
-    supported.
-  }];
-
-  let arguments = (ins
-      Fabric_BitsTagType:$input,
-      ArrayAttr:$hw_params
-  );
-  let results = (outs Fabric_BitsTagType:$output);
-
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-}
-
-def Fabric_T2sOp : Fabric_Op<"t2s", [Pure]> {
-  let summary =
-      "fabric boundary op: split a tagged channel into a spatial data "
-      "stream (and optionally its tag)";
-  let description = [{
-    Splits a `!fabric.bits_tag<BW, TW>` tagged channel into spatial
-    `!fabric.bits<>` outputs.
-
-    Split form (2 results -- data + tag):
-
-      %data, %tag = fabric.t2s %in
-                    : !fabric.bits_tag<BW, TW>
-                      -> (!fabric.bits<BW>, !fabric.bits<TW>)
-
-    Drop-tag form (1 result -- data only, the tag is dropped):
-
-      %data = fabric.t2s %in : !fabric.bits_tag<BW, TW> -> !fabric.bits<BW>
-
-    Allowed only inside a `fabric.module` body. No `hw_params`, no
-    `sw_configs`. Width relaxation is not supported; result widths must
-    match the operand exactly.
-  }];
-
-  let arguments = (ins Fabric_BitsTagType:$input);
-  let results = (outs Variadic<Fabric_BitsType>:$outputs);
+  let results = (outs Variadic<Fabric_AnyType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
