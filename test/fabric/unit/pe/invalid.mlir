@@ -59,10 +59,11 @@ fabric.module @pe_input_output_width_mismatch(%a : !fabric.bits<32>) {
 }
 
 // -----
-// Non-bits PE port type. The PE's operand type constraint is fabric.bits<W>;
-// feeding a !fabric.bits_tag value is rejected by the op's type system.
+// Non-bits PE port type. The spatial PE verifier rejects bits_tag at the
+// boundary (the spatial branch requires uniform bits<W>; bits_tag is a
+// temporal-only boundary type).
 fabric.module @pe_non_bits_port(%a : !fabric.bits_tag<8, 2>) {
-  // expected-error @+1 {{pe' op operand}}
+  // expected-error @+1 {{requires uniform 'bits<W>' on all PE ports}}
   %r = fabric.pe [spatial] (%pa = %a : !fabric.bits_tag<8, 2>) -> (!fabric.bits<32>) {
     fabric.fu(%fa = %pa : !fabric.bits_tag<8, 2>) -> (!fabric.bits<32>) {
       %v = fabric.op [@dataflow.constant] ()
@@ -219,12 +220,15 @@ fabric.module @pe_nested(%a : !fabric.bits<32>) {
 }
 
 // -----
-// Schedule = temporal: parsable but the verifier rejects with a
-// "not yet implemented" diagnostic. The temporal branch will be
-// completed in the next task.
-fabric.module @pe_temporal_not_yet_implemented(%a : !fabric.bits<32>) {
-  // expected-error @+1 {{fabric.pe in 'temporal' schedule is not yet implemented}}
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits<32>) -> (!fabric.bits<32>) {
+// Temporal PE rejects a non-bits_tag boundary type (per the temporal
+// branch's verifier). See test/fabric/unit/pe_temporal/invalid.mlir for
+// the full set of temporal-PE diagnostics.
+fabric.module @pe_temporal_non_tag_port(%a : !fabric.bits<32>) {
+  // expected-error @+1 {{temporal fabric.pe boundary type must be '!fabric.bits_tag<W, T>'}}
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits<32>) -> (!fabric.bits<32>)
+       attributes { tag_width = 4 : i32, num_instruction = 1 : i32,
+                    fu_config_mode = "per_fu_config",
+                    operand_buffer_mode = "per_instruction" } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>

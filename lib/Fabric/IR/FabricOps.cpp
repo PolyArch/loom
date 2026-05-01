@@ -1224,11 +1224,20 @@ LogicalResult FuOp::verify() {
   for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
     Type outerTy = getInputs()[i].getType();
     Type innerTy = arg.getType();
-    auto outerW = bitsWidth(outerTy);
+    // Accept either fabric.bits<W_outer> or fabric.bits_tag<W_outer, T>
+    // on the outer side; the inner block-arg is always fabric.bits<W>.
+    // The bits_tag outer form models a temporal-PE-parented FU where
+    // the tag is stripped at the FU boundary.
+    std::optional<unsigned> outerW;
+    if (auto bo = dyn_cast<BitsType>(outerTy))
+      outerW = bo.getWidth();
+    else if (auto to = dyn_cast<BitsTagType>(outerTy))
+      outerW = to.getWidth();
     auto innerW = bitsWidth(innerTy);
     if (!outerW)
       return emitOpError("operand #")
-             << i << " must be fabric.bits<N>, got " << outerTy;
+             << i << " must be fabric.bits<N> or fabric.bits_tag<N, T>, got "
+             << outerTy;
     if (!innerW)
       return emitOpError("region entry block argument #")
              << i << " must be fabric.bits<N>, got " << innerTy;
@@ -1464,14 +1473,21 @@ RegionKind PeOp::getRegionKind(unsigned /*index*/) {
   return RegionKind::Graph;
 }
 
+// Helpers for the temporal branch live in FabricPeTemporalOps.cpp.
+namespace fabric {
+LogicalResult verifyPeTemporal(PeOp op);
+LogicalResult verifyPeSpatialNoTemporalAttrs(PeOp op);
+} // namespace fabric
+
 LogicalResult PeOp::verify() {
-  // Schedule predicate dispatch. Only the spatial branch is implemented in
-  // this revision; temporal is intentionally rejected with a placeholder
-  // diagnostic.
+  // Schedule predicate dispatch.
   if (getSchedule() == Schedule::Temporal)
-    return emitOpError(
-        "fabric.pe in 'temporal' schedule is not yet implemented");
-  // From here on, schedule is Spatial.
+    return ::fabric::verifyPeTemporal(*this);
+
+  // Spatial branch: reject any temporal-only attribute, then run the
+  // spatial verifier.
+  if (failed(::fabric::verifyPeSpatialNoTemporalAttrs(*this)))
+    return failure();
 
   bool isNamed = static_cast<bool>(getSymNameAttr());
   Block &entry = getBody().front();

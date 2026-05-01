@@ -41,9 +41,9 @@ fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
   configuration"). All current verifier rules in this document apply to
   this branch.
 * `temporal`: time-multiplexes multiple FUs / instructions through the
-  PE. Parsable today, but the verifier rejects it with a "fabric.pe in
-  'temporal' schedule is not yet implemented" diagnostic. The temporal
-  branch's full rules will land in a follow-up task.
+  PE. The temporal-branch IR shape, hardware parameters, and software
+  configuration record are documented in
+  `spec-fabric-pe-temporal.md`.
 
 The `schedule` predicate is orthogonal to the container kind. Once
 `fabric.switch` and `fabric.mem` land they will follow the same

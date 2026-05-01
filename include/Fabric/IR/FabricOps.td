@@ -31,6 +31,14 @@ def Fabric_BoundaryDirectionAttr : I32EnumAttr<"BoundaryDirection",
   let cppNamespace = "::fabric";
 }
 
+// Temporal-PE FU configuration mode and operand buffer mode are stored
+// as string-valued attributes ("per_instruction_fu_config" /
+// "per_fu_config"; "per_instruction" / "per_input_port" /
+// "all_fu_share"). The verifier validates the keyword set; the
+// configuration generator interprets the keyword. We avoid a
+// dedicated dialect attribute parser/printer here to keep the dialect
+// initialization minimal.
+
 def Fabric_MuxOp : Fabric_Op<"mux", [Pure, SameOperandsAndResultType]> {
   let summary = "fabric multiplexer with handshake";
   let description = [{
@@ -286,8 +294,23 @@ def Fabric_PeOp : Fabric_Op<"pe", [
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
       Fabric_ScheduleAttr:$schedule,
-      Variadic<Fabric_BitsType>:$inputs);
-  let results = (outs Variadic<Fabric_BitsType>:$outputs);
+      Variadic<Fabric_AnyType>:$inputs,
+      // Temporal-only hardware parameters. All must be absent on a
+      // spatial PE; presence/absence rules per-attribute are enforced
+      // by the verifier (see docs/spec-fabric-pe-temporal.md).
+      OptionalAttr<I32Attr>:$tag_width,
+      OptionalAttr<I32Attr>:$num_instruction,
+      OptionalAttr<I32Attr>:$num_reg_fifo,
+      OptionalAttr<I32Attr>:$reg_fifo_depth,
+      OptionalAttr<I32Attr>:$reg_fifo_ports,
+      OptionalAttr<StrAttr>:$fu_config_mode,
+      OptionalAttr<StrAttr>:$operand_buffer_mode,
+      OptionalAttr<I32Attr>:$operand_buffer_size,
+      // Temporal-only software configuration trio (all-or-nothing).
+      OptionalAttr<BoolAttr>:$pe_enable,
+      OptionalAttr<ArrayAttr>:$instruction_mem,
+      OptionalAttr<ArrayAttr>:$per_fu_sw_configs);
+  let results = (outs Variadic<Fabric_AnyType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
 
   let hasCustomAssemblyFormat = 1;
@@ -344,7 +367,7 @@ def Fabric_FuOp : Fabric_Op<"fu", [
   let arguments = (ins
       OptionalAttr<SymbolNameAttr>:$sym_name,
       OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
-      Variadic<Fabric_BitsType>:$inputs);
+      Variadic<Fabric_AnyType>:$inputs);
   let results = (outs Variadic<Fabric_BitsType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
 

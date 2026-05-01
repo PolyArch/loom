@@ -4,6 +4,7 @@ add_mlir_dialect_library(MLIRFabric
   FabricDialect.cpp
   FabricInstantiateOp.cpp
   FabricOps.cpp
+  FabricPeTemporalOps.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Fabric
