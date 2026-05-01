@@ -523,8 +523,7 @@ fabric.module @temp_empty_body(%a : !fabric.bits_tag<32, 4>) {
 // Temporal PE: missing required hw param (num_instruction).
 fabric.module @temp_missing_num_instruction(%a : !fabric.bits_tag<32, 4>) {
   // expected-error @+1 {{temporal fabric.pe requires 'num_instruction' attribute}}
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>
-                                       to !fabric.bits<32>)
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>)
                             -> !fabric.bits_tag<32, 4>
        attributes {
          tag_width = 4 : i32,
@@ -535,6 +534,106 @@ fabric.module @temp_missing_num_instruction(%a : !fabric.bits_tag<32, 4>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// Named temporal PE: entry block arg type bits_tag<W, T> is forbidden
+// (boundary auto-strip means body-level args must be bits<W'>).
+fabric.module @temp_named_arg_is_tag() {
+  // expected-error @+1 {{named PE entry block arg #0 type '!fabric.bits_tag<32, 4>' is bits_tag (forbidden)}}
+  fabric.pe @TempBadArg [temporal] (!fabric.bits_tag<32, 4>)
+                                    -> (!fabric.bits_tag<32, 4>)
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+  ^bb0(%pa: !fabric.bits_tag<32, 4>):
+    fabric.fu() -> (!fabric.bits<32>) {
+      %k = fabric.op [@dataflow.constant] ()
+           {sw_configs = {const_hex_value = "0xdeadbeef"}}
+           : () -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
+    fabric.yield %pa : !fabric.bits_tag<32, 4>
+  }
+  fabric.yield
+}
+
+// -----
+// Named temporal PE: entry block arg bits-width exceeds the port
+// bits-data-width (truncation only narrows, never widens).
+fabric.module @temp_named_arg_too_wide() {
+  // expected-error @+1 {{named PE entry block arg #0 bits-width 32 > port bits-data-width 16}}
+  fabric.pe @TempBadWidth [temporal] (!fabric.bits_tag<16, 2>)
+                                      -> (!fabric.bits_tag<16, 2>)
+       attributes {
+         tag_width = 2 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu() -> (!fabric.bits<16>) {
+      %k = fabric.op [@dataflow.constant] ()
+           {sw_configs = {const_hex_value = "0xbeef"}}
+           : () -> !fabric.bits<16>
+      fabric.yield %k : !fabric.bits<16>
+    }
+    fabric.yield %pa : !fabric.bits<32>
+  }
+  fabric.yield
+}
+
+// -----
+// Named temporal PE: yield value bits-width must equal the port
+// bits-data-width (tag is reattached at the boundary, but the data
+// part width must match exactly).
+fabric.module @temp_named_yield_width_mismatch() {
+  // expected-error @+1 {{yield value #0 bits-width 16 must equal port bits-data-width 32}}
+  fabric.pe @TempBadYield [temporal] (!fabric.bits_tag<32, 4>)
+                                      -> (!fabric.bits_tag<32, 4>)
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+  ^bb0(%pa: !fabric.bits<16>):
+    fabric.fu(%fa = %pa : !fabric.bits<16>) -> (!fabric.bits<32>) {
+      %k = fabric.op [@dataflow.constant] (%fa)
+           {sw_configs = {const_hex_value = "0xdeadbeef"}}
+           : (!fabric.bits<16>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
+    fabric.yield %pa : !fabric.bits<16>
+  }
+  fabric.yield
+}
+
+// -----
+// Anonymous temporal PE: inner block arg width exceeds the outer
+// bits-data-width (truncation only narrows).
+fabric.module @temp_anon_inner_too_wide(%a : !fabric.bits_tag<16, 2>) {
+  // expected-error @+1 {{anonymous PE inner block arg #0 width (32) > outer bits part width (16) (truncation only narrows)}}
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<16, 2>
+                                       to !fabric.bits<32>)
+                            -> !fabric.bits_tag<16, 2>
+       attributes {
+         tag_width = 2 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<16>) {
+      %k = fabric.op [@dataflow.constant] (%fa)
+           {sw_configs = {const_hex_value = "0xbeef"}}
+           : (!fabric.bits<32>) -> !fabric.bits<16>
+      fabric.yield %k : !fabric.bits<16>
     }
   }
   fabric.yield

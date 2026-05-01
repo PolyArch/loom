@@ -1224,20 +1224,13 @@ LogicalResult FuOp::verify() {
   for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
     Type outerTy = getInputs()[i].getType();
     Type innerTy = arg.getType();
-    // Accept either fabric.bits<W_outer> or fabric.bits_tag<W_outer, T>
-    // on the outer side; the inner block-arg is always fabric.bits<W>.
-    // The bits_tag outer form models a temporal-PE-parented FU where
-    // the tag is stripped at the FU boundary.
-    std::optional<unsigned> outerW;
-    if (auto bo = dyn_cast<BitsType>(outerTy))
-      outerW = bo.getWidth();
-    else if (auto to = dyn_cast<BitsTagType>(outerTy))
-      outerW = to.getWidth();
+    // FU outer ports are strict !fabric.bits<W>. Inner block-arg width
+    // may be narrower (high-bit truncation), but cannot exceed outer.
+    auto outerW = bitsWidth(outerTy);
     auto innerW = bitsWidth(innerTy);
     if (!outerW)
       return emitOpError("operand #")
-             << i << " must be fabric.bits<N> or fabric.bits_tag<N, T>, got "
-             << outerTy;
+             << i << " must be fabric.bits<N>, got " << outerTy;
     if (!innerW)
       return emitOpError("region entry block argument #")
              << i << " must be fabric.bits<N>, got " << innerTy;
@@ -1332,10 +1325,22 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
       if (parser.parseTypeList(argTypes) || parser.parseRParen())
         return failure();
     }
-    for (Type t : argTypes) {
-      OpAsmParser::Argument arg;
-      arg.type = t;
-      blockArgs.push_back(arg);
+    // Spatial named form: PE ports are !fabric.bits<W>, and the entry
+    // block args are required to match the function_type inputs. Reuse
+    // the function-type inputs as the pre-declared block-arg types.
+    //
+    // Temporal named form: PE ports are !fabric.bits_tag<W, T>, but the
+    // body sees auto-tag-stripped !fabric.bits<W'> (W' <= W). Do not
+    // pre-fill blockArgs here; let parseRegion read the entry block
+    // arg types from the user-written `^bb0(...)` line. The verifier
+    // enforces the (W' = W) match (or rejects bits_tag inner types).
+    bool isTemporal = (*sym == Schedule::Temporal);
+    if (!isTemporal) {
+      for (Type t : argTypes) {
+        OpAsmParser::Argument arg;
+        arg.type = t;
+        blockArgs.push_back(arg);
+      }
     }
     if (parser.parseArrow())
       return failure();
@@ -1356,6 +1361,13 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
     result.addAttribute("function_type", TypeAttr::get(funcType));
   } else {
     if (failed(parser.parseOptionalRParen())) {
+      // Temporal-PE boundary auto-strip: when an outer port is
+      // !fabric.bits_tag<W, T> and the user does not write
+      // 'to <T_inner>', the inner block-arg defaults to !fabric.bits<W>
+      // (the bits-data part). When the user writes 'to bits<F>' with
+      // F < W, the override path narrows further (high-bit truncation).
+      // Spatial PE outer types are bits<W>; the default is unchanged.
+      bool isTemporal = (*sym == Schedule::Temporal);
       auto parseOne = [&]() -> ParseResult {
         OpAsmParser::Argument arg;
         OpAsmParser::UnresolvedOperand op;
@@ -1365,6 +1377,10 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
             parser.parseType(outerTy))
           return failure();
         Type innerTy = outerTy;
+        if (isTemporal) {
+          if (auto tag = dyn_cast<BitsTagType>(outerTy))
+            innerTy = BitsType::get(parser.getContext(), tag.getWidth());
+        }
         if (succeeded(parser.parseOptionalKeyword("to")))
           if (parser.parseType(innerTy))
             return failure();
@@ -1438,6 +1454,7 @@ void PeOp::print(OpAsmPrinter &p) {
   } else {
     p << " (";
     Block &entry = getBody().front();
+    bool isTemporal = (getSchedule() == Schedule::Temporal);
     llvm::interleaveComma(
         llvm::zip(entry.getArguments(), getInputs()), p, [&](auto pair) {
           BlockArgument bb;
@@ -1445,8 +1462,21 @@ void PeOp::print(OpAsmPrinter &p) {
           std::tie(bb, outer) = pair;
           p.printRegionArgument(bb, /*argAttrs=*/{}, /*omitType=*/true);
           p << " = " << outer << " : " << outer.getType();
-          if (outer.getType() != bb.getType())
-            p << " to " << bb.getType();
+          // Temporal-PE auto-strip: when outer is bits_tag<W, T> and the
+          // inner block-arg is exactly bits<W>, the 'to' clause is the
+          // implicit default and need not be printed. Only print 'to'
+          // when inner differs from that implicit default.
+          Type outerTy = outer.getType();
+          Type innerTy = bb.getType();
+          bool isImplicitStrip = false;
+          if (isTemporal) {
+            if (auto tag = dyn_cast<BitsTagType>(outerTy)) {
+              if (auto bits = dyn_cast<BitsType>(innerTy))
+                isImplicitStrip = (tag.getWidth() == bits.getWidth());
+            }
+          }
+          if (outerTy != innerTy && !isImplicitStrip)
+            p << " to " << innerTy;
         });
     p << ") -> ";
     auto rTypes = getResultTypes();
@@ -2142,12 +2172,22 @@ LogicalResult YieldOp::verify() {
              << getValues().size()
              << ") must match parent fabric.pe result count ("
              << expectedResults.size() << ")";
+    bool isTemporal = (pe.getSchedule() == Schedule::Temporal);
     for (auto [i, v] : llvm::enumerate(getValues())) {
       Type expected = expectedResults[i];
       if (declared[i] && declared[i] != v.getType())
         return emitOpError("yield value #")
                << i
                << ": 'to <type>' clause is not allowed inside fabric.pe";
+      // Temporal PE: yield carries !fabric.bits<W> matching the bits-data
+      // part of the declared bits_tag<W, T> port; tag is reattached at
+      // the PE boundary by hardware. The detailed bits<W'>/bits_tag<W,T>
+      // shape check lives in verifyPeTemporal; here we only need to
+      // accept the bits-vs-bits_tag mismatch without rejecting it.
+      if (isTemporal) {
+        if (isa<BitsType>(v.getType()) && isa<BitsTagType>(expected))
+          continue;
+      }
       if (v.getType() != expected)
         return emitOpError("yield value #")
                << i << " type " << v.getType()

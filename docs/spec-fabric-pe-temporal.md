@@ -18,7 +18,7 @@ Both anonymous and named-template forms are accepted:
 
 ```mlir
 %out = fabric.pe [temporal]
-           (%pa = %a : !fabric.bits_tag<32, 4> to !fabric.bits<32>)
+           (%pa = %a : !fabric.bits_tag<32, 4>)
            -> !fabric.bits_tag<32, 4>
        attributes {
          tag_width = 4 : i32,
@@ -30,10 +30,9 @@ Both anonymous and named-template forms are accepted:
 fabric.pe @TempPe [temporal] (!fabric.bits_tag<32, 4>)
                               -> (!fabric.bits_tag<32, 4>)
      attributes { ... } {
-^bb0(%pa: !fabric.bits_tag<32, 4>):
-  fabric.fu(%fa = %pa : !fabric.bits_tag<32, 4> to !fabric.bits<32>)
-            -> (!fabric.bits<32>) { ... }
-  fabric.yield %pa : !fabric.bits_tag<32, 4>
+^bb0(%pa: !fabric.bits<32>):
+  fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) { ... }
+  fabric.yield %pa : !fabric.bits<32>
 }
 ```
 
@@ -45,19 +44,58 @@ The verifier extracts `(W, T)` from PE input #0 and rejects any other
 port with a different shape. The `tag_width` hardware attribute must
 equal `T`.
 
-The anonymous form supports a kind-changing `to` clause on the PE
-operand list: outer `!fabric.bits_tag<W, T>` may be paired with inner
-`!fabric.bits<W>` (the tag is stripped at the PE-to-FU boundary). This
-is the only fabric-kind transition permitted at the PE boundary; spatial
-PEs continue to require uniform `bits<W>`.
+## Implicit boundary tag handling
 
-Inner `fabric.fu` ops follow the same width relaxation rule as in the
-spatial branch: each FU input may use the FU-level `to <inner-type>`
-clause to narrow its inner block-arg width. A temporal-PE-parented FU
-may additionally accept `!fabric.bits_tag<W, T>` on its outer input
-side, which the FU's own boundary then strips down to `!fabric.bits<W>`
-(or narrower) using the FU `to` clause. FU output ports remain strict
-`!fabric.bits<W>`.
+PE ports are `!fabric.bits_tag<W, T>` externally, but the body of a
+temporal PE never sees the tag bits. The boundary handles the tag
+implicitly:
+
+* **Input direction.** Each PE input port is auto-tag-stripped at the
+  boundary. The entry block argument visible inside the body has type
+  `!fabric.bits<W>` (the bits-data part). The PE-level
+  `operand_sel.tag` field of `instruction_mem` decides which incoming
+  token is selected at runtime; the body simply sees the raw data
+  bits.
+* **Output direction.** Each PE result type is `!fabric.bits_tag<W, T>`
+  but `fabric.yield` carries values of type `!fabric.bits<W>`. The tag
+  is reattached by hardware at the PE boundary; the PE-level
+  `result_sel.tag` field of `instruction_mem` supplies the runtime tag
+  value.
+
+This makes inner `fabric.fu` ops uniformly bits-typed regardless of PE
+schedule: FU input and output ports are strict `!fabric.bits<W'>` (with
+the same width relaxation rule as in the spatial branch). No bits_tag
+ever appears inside the body.
+
+### Anonymous form
+
+The PE outer operand carries `!fabric.bits_tag<W, T>`. The default
+inner block-arg type is `!fabric.bits<W>` (the implicit auto-strip).
+The user may write an explicit `to <inner-type>` override of the form
+`to !fabric.bits<F>` with `F <= W`, which both strips the tag and
+truncates to width `F` (low-bit alignment, drop high `W - F` bits).
+The implicit-default case is identical to writing `to !fabric.bits<W>`
+explicitly; the printer omits the redundant `to` clause.
+
+### Named template form
+
+The PE op signature is `(!fabric.bits_tag<W, T>, ...) -> (...)`. The
+entry block of the body is written explicitly:
+
+```
+^bb0(%pa: !fabric.bits<W>, ...):
+```
+
+The verifier requires every entry block argument type to be
+`!fabric.bits<F_i>` with `F_i <= W_i` (the bits-data part of the
+corresponding port type). `bits_tag` is forbidden as an entry block arg
+type. The named form has no inline `to` syntax; the user writes the
+desired narrower width directly in the `^bb0(...)` line.
+
+For the terminator `fabric.yield`, the value types are `!fabric.bits<G_i>`
+with `G_i = W_i` (the bits-data part of the declared result port type).
+`bits_tag` is forbidden as a yield value type; the tag is reattached at
+the boundary by hardware.
 
 ## Hardware parameters
 

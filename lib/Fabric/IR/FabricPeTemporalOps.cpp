@@ -366,22 +366,15 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
     declaredIns.assign(ft.getInputs().begin(), ft.getInputs().end());
     declaredOuts.assign(ft.getResults().begin(), ft.getResults().end());
 
-    // Block-arg types must equal declaredIns (named form).
+    // Named-temporal PE: entry block args must be bits<F> with F <= W,
+    // where W is the bits-data part of the corresponding port type
+    // bits_tag<W, T>. The check is run after the per-port bits_tag check
+    // below.
     if (entry.getNumArguments() != declaredIns.size())
       return op.emitOpError("entry block argument count (")
              << entry.getNumArguments()
              << ") must match declared input count (" << declaredIns.size()
              << ")";
-    for (auto [i, pair] :
-         llvm::enumerate(llvm::zip(entry.getArguments(), declaredIns))) {
-      BlockArgument bb;
-      Type t;
-      std::tie(bb, t) = pair;
-      if (bb.getType() != t)
-        return op.emitOpError("entry block argument #")
-               << i << " type " << bb.getType()
-               << " must equal declared input type " << t;
-    }
   } else {
     if (op.getFunctionTypeAttr())
       return op.emitOpError(
@@ -443,24 +436,37 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
              << ", " << T << ">')";
   }
 
-  // Anonymous-form 'to' clause relaxation: outer type bits_tag<W,T> with
-  // inner block-arg type bits<W> is allowed (tag stripping). Otherwise
-  // outer must equal inner.
-  if (!isNamed) {
-    for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
-      Type outerTy = op.getInputs()[i].getType();
-      Type innerTy = arg.getType();
-      if (outerTy == innerTy)
-        continue;
-      auto outerTag = dyn_cast<BitsTagType>(outerTy);
-      auto innerBits = dyn_cast<BitsType>(innerTy);
-      if (outerTag && innerBits && outerTag.getWidth() == innerBits.getWidth())
-        continue;
-      return op.emitOpError("operand #")
-             << i << " outer type " << outerTy
-             << " and PE block-arg inner type " << innerTy
-             << " are not a valid temporal-PE boundary pair (allowed: equal "
-                "types or 'bits_tag<W, T> to bits<W>')";
+  // Inner block-arg types are auto-tag-stripped to !fabric.bits<W'> with
+  // W' <= W (the bits-data part of the corresponding port type). Both
+  // anonymous and named forms apply the same rule; the anonymous form
+  // additionally exposes an explicit 'to bits<F>' override (F <= W) for
+  // narrower inner widths. The implicit default is W' = W.
+  for (auto [i, arg] : llvm::enumerate(entry.getArguments())) {
+    Type innerTy = arg.getType();
+    auto innerBits = dyn_cast<BitsType>(innerTy);
+    if (!innerBits) {
+      if (isNamed)
+        return op.emitOpError("named PE entry block arg #")
+               << i << " type " << innerTy
+               << " is bits_tag (forbidden); entry block args must be "
+                  "!fabric.bits<W'> with W' <= port bits-data-width "
+                  "(implicit tag-strip at the temporal-PE boundary)";
+      return op.emitOpError("anonymous PE block-arg #")
+             << i << " inner type " << innerTy
+             << " must be !fabric.bits<W'> (the temporal-PE boundary "
+                "auto-strips the tag; bits_tag inner types are forbidden)";
+    }
+    auto portTag = cast<BitsTagType>(declaredIns[i]);
+    if (innerBits.getWidth() > portTag.getWidth()) {
+      if (isNamed)
+        return op.emitOpError("named PE entry block arg #")
+               << i << " bits-width " << innerBits.getWidth()
+               << " > port bits-data-width " << portTag.getWidth()
+               << " (truncation only narrows)";
+      return op.emitOpError("anonymous PE inner block arg #")
+             << i << " width (" << innerBits.getWidth()
+             << ") > outer bits part width (" << portTag.getWidth()
+             << ") (truncation only narrows)";
     }
   }
 
@@ -517,33 +523,28 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
              << fuNumOuts
              << " outputs which exceeds fabric.pe output count L="
              << declaredOuts.size();
-    // FU outer input ports may be bits<W> (un-tagged) or bits_tag<W, T>
-    // (un-stripped, when wired directly from the named-form PE block-arg
-    // and stripped at the FU's own 'to' clause). Outputs are strict
-    // bits<W>: the FU's hardware emits un-tagged data and the temporal
-    // PE re-tags at its boundary.
+    // FU outer input ports are strict !fabric.bits<F> with F <= W (the
+    // tag is stripped at the PE-to-FU boundary). FU output ports are
+    // strict !fabric.bits<W>: the temporal-PE result_sel.tag reattaches
+    // the tag at the PE boundary.
     for (auto [i, t] : llvm::enumerate(fuIns)) {
-      unsigned w = 0;
-      bool ok = false;
-      if (auto bw = dyn_cast<BitsType>(t)) {
-        w = bw.getWidth();
-        ok = true;
-      } else if (auto tg = dyn_cast<BitsTagType>(t)) {
-        w = tg.getWidth();
-        ok = (tg.getTagWidth() == T);
-      }
-      if (!ok || w != W)
+      auto bw = dyn_cast<BitsType>(t);
+      if (!bw)
         return fu.emitOpError(
-                   "inner fabric.fu boundary width must equal fabric.pe "
-                   "data width W=")
-               << W << "; FU input #" << i << " has type " << t;
+                   "inner fabric.fu input port must be !fabric.bits<F>; "
+                   "FU input #")
+               << i << " has type " << t;
+      if (bw.getWidth() > W)
+        return fu.emitOpError("inner fabric.fu input #")
+               << i << " width " << bw.getWidth()
+               << " exceeds fabric.pe data width W=" << W;
     }
     for (auto [i, t] : llvm::enumerate(fuOuts)) {
       auto bw = dyn_cast<BitsType>(t);
       if (!bw || bw.getWidth() != W)
         return fu.emitOpError(
-                   "inner fabric.fu boundary width must equal fabric.pe "
-                   "data width W=")
+                   "inner fabric.fu output port width must equal "
+                   "fabric.pe data width W=")
                << W << "; FU output #" << i << " has type " << t;
     }
   }
@@ -551,7 +552,9 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
     return op.emitOpError(
         "body requires at least one fabric.fu or fabric.instantiate");
 
-  // Named form: body must end with fabric.yield matching declared results.
+  // Named form: body must end with fabric.yield. Tag is reattached at the
+  // PE boundary by hardware; the yield value types are bits<W> matching
+  // the bits-data part of the declared result types (not bits_tag).
   if (isNamed) {
     if (entry.empty() || !isa<YieldOp>(entry.back()))
       return op.emitOpError(
@@ -567,10 +570,20 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
       Value v;
       Type t;
       std::tie(v, t) = pair;
-      if (v.getType() != t)
+      auto vBits = dyn_cast<BitsType>(v.getType());
+      if (!vBits)
         return op.emitOpError("yield value #")
                << i << " type " << v.getType()
-               << " must equal declared result type " << t;
+               << " is bits_tag (forbidden); yield values must be "
+                  "!fabric.bits<W> matching the bits-data part of the "
+                  "declared result type (tag is reattached at the "
+                  "temporal-PE boundary)";
+      auto tTag = cast<BitsTagType>(t);
+      if (vBits.getWidth() != tTag.getWidth())
+        return op.emitOpError("yield value #")
+               << i << " bits-width " << vBits.getWidth()
+               << " must equal port bits-data-width " << tTag.getWidth()
+               << " (declared result type " << t << ")";
     }
   }
   return success();

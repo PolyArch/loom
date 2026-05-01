@@ -10,8 +10,7 @@ fabric.module @temp_min(%a : !fabric.bits_tag<32, 4>)
                        -> (!fabric.bits_tag<32, 4>) {
   // CHECK: fabric.pe [temporal]
   // CHECK-SAME: !fabric.bits_tag<32, 4>
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>
-                                       to !fabric.bits<32>)
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>)
                             -> !fabric.bits_tag<32, 4>
        attributes {
          tag_width = 4 : i32,
@@ -37,10 +36,8 @@ fabric.module @temp_with_regs(%a : !fabric.bits_tag<16, 3>,
                               %b : !fabric.bits_tag<16, 3>)
                              -> (!fabric.bits_tag<16, 3>) {
   // CHECK: fabric.pe [temporal]
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<16, 3>
-                                       to !fabric.bits<16>,
-                             %pb = %b : !fabric.bits_tag<16, 3>
-                                       to !fabric.bits<16>)
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<16, 3>,
+                             %pb = %b : !fabric.bits_tag<16, 3>)
                             -> !fabric.bits_tag<16, 3>
        attributes {
          tag_width = 3 : i32,
@@ -70,8 +67,7 @@ fabric.module @temp_with_regs(%a : !fabric.bits_tag<16, 3>,
 fabric.module @temp_share_buffer(%a : !fabric.bits_tag<8, 2>)
                                 -> (!fabric.bits_tag<8, 2>) {
   // CHECK: fabric.pe [temporal]
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<8, 2>
-                                       to !fabric.bits<8>)
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<8, 2>)
                             -> !fabric.bits_tag<8, 2>
        attributes {
          tag_width = 2 : i32,
@@ -100,10 +96,8 @@ fabric.module @temp_programmed(%a : !fabric.bits_tag<32, 4>,
                                %b : !fabric.bits_tag<32, 4>)
                               -> (!fabric.bits_tag<32, 4>) {
   // CHECK: fabric.pe [temporal]
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>
-                                       to !fabric.bits<32>,
-                             %pb = %b : !fabric.bits_tag<32, 4>
-                                       to !fabric.bits<32>)
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>,
+                             %pb = %b : !fabric.bits_tag<32, 4>)
                             -> !fabric.bits_tag<32, 4>
        attributes {
          tag_width = 4 : i32,
@@ -165,10 +159,8 @@ fabric.module @temp_per_fu(%a : !fabric.bits_tag<16, 2>,
                            %b : !fabric.bits_tag<16, 2>)
                           -> (!fabric.bits_tag<16, 2>) {
   // CHECK: fabric.pe [temporal]
-  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<16, 2>
-                                       to !fabric.bits<16>,
-                             %pb = %b : !fabric.bits_tag<16, 2>
-                                       to !fabric.bits<16>)
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<16, 2>,
+                             %pb = %b : !fabric.bits_tag<16, 2>)
                             -> !fabric.bits_tag<16, 2>
        attributes {
          tag_width = 2 : i32,
@@ -230,14 +222,104 @@ fabric.module @temp_named_host() {
          fu_config_mode = "per_fu_config",
          operand_buffer_mode = "per_instruction"
        } {
-  ^bb0(%pa: !fabric.bits_tag<32, 4>):
-    fabric.fu(%fa = %pa : !fabric.bits_tag<32, 4> to !fabric.bits<32>)
-              -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %v : !fabric.bits<32>
     }
-    fabric.yield %pa : !fabric.bits_tag<32, 4>
+    fabric.yield %pa : !fabric.bits<32>
+  }
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
+// Anonymous temporal PE without an explicit `to <inner-type>` clause:
+// the implicit boundary tag-strip exposes !fabric.bits<W> to the body.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @temp_implicit_strip
+fabric.module @temp_implicit_strip(%a : !fabric.bits_tag<32, 4>)
+                                  -> (!fabric.bits_tag<32, 4>) {
+  // CHECK: fabric.pe [temporal]
+  // The printer must omit the implicit `to bits<32>` default.
+  // CHECK-NOT: to !fabric.bits<32>
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>)
+                            -> !fabric.bits_tag<32, 4>
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+  }
+  fabric.yield %r : !fabric.bits_tag<32, 4>
+}
+
+// -----------------------------------------------------------------------------
+// Anonymous temporal PE with an explicit `to bits<F>` override (F < W):
+// truncate W=32 down to F=16 at the PE-to-FU boundary.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @temp_truncate_inner
+fabric.module @temp_truncate_inner(%a : !fabric.bits_tag<32, 4>)
+                                  -> (!fabric.bits_tag<32, 4>) {
+  // CHECK: fabric.pe [temporal]
+  // CHECK-SAME: to !fabric.bits<16>
+  %r = fabric.pe [temporal] (%pa = %a : !fabric.bits_tag<32, 4>
+                                       to !fabric.bits<16>)
+                            -> !fabric.bits_tag<32, 4>
+       attributes {
+         tag_width = 4 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+    // FU outer operand inherits the PE block-arg's bits<16> width
+    // (auto-stripped tag, then user-narrowed to F=16). The FU's own
+    // boundary further trims to bits<0> for the dataflow.constant body
+    // op; FU output is strict bits<W=32> to match the PE data width.
+    fabric.fu(%fa = %pa : !fabric.bits<16> to !fabric.bits<0>)
+              -> (!fabric.bits<32>) {
+      %k = fabric.op [@dataflow.constant] (%fa)
+           {sw_configs = {const_hex_value = "0xdeadbeef"}}
+           : (!fabric.bits<0>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
+  }
+  fabric.yield %r : !fabric.bits_tag<32, 4>
+}
+
+// -----------------------------------------------------------------------------
+// Named temporal PE with entry block args at full bits<W> width (no `to`
+// syntax in named form; user writes the bits<W> type directly in ^bb0).
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @temp_named_full_width
+// CHECK: fabric.pe @TempFull [temporal]
+fabric.module @temp_named_full_width() {
+  fabric.pe @TempFull [temporal] (!fabric.bits_tag<16, 2>,
+                                  !fabric.bits_tag<16, 2>)
+                                  -> (!fabric.bits_tag<16, 2>)
+       attributes {
+         tag_width = 2 : i32,
+         num_instruction = 1 : i32,
+         fu_config_mode = "per_fu_config",
+         operand_buffer_mode = "per_instruction"
+       } {
+  ^bb0(%pa: !fabric.bits<16>, %pb: !fabric.bits<16>):
+    fabric.fu(%fa = %pa : !fabric.bits<16>,
+              %fb = %pb : !fabric.bits<16>) -> (!fabric.bits<16>) {
+      %v = fabric.op [@arith.addi] (%fa, %fb)
+           : (!fabric.bits<16>, !fabric.bits<16>) -> !fabric.bits<16>
+      fabric.yield %v : !fabric.bits<16>
+    }
+    fabric.yield %pa : !fabric.bits<16>
   }
   fabric.yield
 }
