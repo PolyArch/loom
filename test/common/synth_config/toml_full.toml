@@ -1,0 +1,35 @@
+# Full SynthConfig in TOML form. Section names mirror the YAML nesting.
+[synth]
+strategy = "anchor"
+fallback_chain = ["mcs", "incremental"]
+scc_full_unroll = true
+subgraph_share_recurse = true
+
+[synth.parallelism]
+cross_group = false
+workers = "auto"
+
+[synth.coverage_verifier]
+parallel_match = false
+
+[synth.cost]
+mux_penalty = 2.0
+demux_penalty = 2.5
+carry_penalty = 3.0
+
+[synth.anchor]
+allow_intra_position_mux = true
+
+[synth.incremental]
+input_order_heuristic = "smallest_first"
+coverage_verify_each_attempt = false
+
+[synth.incremental_random]
+restarts = 32
+seed = 123
+input_order_heuristic = "largest_first"
+
+[synth.mcs]
+timeout_sec = 120
+branch_workers = 4
+candidate_cap = 500000

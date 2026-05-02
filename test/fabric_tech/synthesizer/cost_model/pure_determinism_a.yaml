@@ -1,0 +1,8 @@
+synth:
+  strategy: anchor
+  parallelism:
+    workers: 1
+  cost:
+    mux_penalty: 1.5
+    demux_penalty: 1.5
+    carry_penalty: 2.0

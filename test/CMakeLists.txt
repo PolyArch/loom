@@ -10,8 +10,16 @@ configure_lit_site_cfg(
 set(LOOM_TEST_DEPENDS
   FileCheck count not
   loom
+  loom-alignment-test
   loom-candidate-dump
   loom-config-test
+  loom-cost-test
+  loom-hwsg-test
+  loom-parallel-test
+  loom-synth-base-test
+  loom-synth-config-test
+  loom-synth-fu-dump
+  loom-synth-verifier-test
   loom-template-dump
 )
 

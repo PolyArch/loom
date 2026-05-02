@@ -7,6 +7,7 @@ llvm_update_compile_flags(loom)
 target_link_libraries(loom PRIVATE
   MLIRFabric
   MLIRFabricTech
+  MLIRFabricTechSynthesizer
   MLIRDataflow
   MLIRIR
   MLIROptLib

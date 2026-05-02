@@ -1,0 +1,37 @@
+// RUN: loom-coverage-test %s | FileCheck %s
+
+// One fabric.fu with addi only; two inputs (addi + subi). The addi
+// matches; the subi misses. all_covered must be false.
+
+func.func @fu_addi_only(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
+    -> !fabric.bits<32> {
+  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
+                -> !fabric.bits<32> {
+    %s = fabric.op [@arith.addi] (%x, %y)
+         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+    fabric.yield %s : !fabric.bits<32>
+  }
+  return %r : !fabric.bits<32>
+}
+
+func.func @input_addi(%a: i32, %b: i32) -> i32
+    attributes {loom.coverage_input = true} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.addi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+func.func @input_subi(%a: i32, %b: i32) -> i32
+    attributes {loom.coverage_input = true} {
+  %r = dataflow.subgraph(%x = %a : i32, %y = %b : i32) -> i32 {
+    %s = arith.subi %x, %y : i32
+    dataflow.yield %s : i32
+  }
+  return %r : i32
+}
+
+// CHECK: coverage[0] funcname=input_addi matched=true index=0
+// CHECK-NEXT: coverage[1] funcname=input_subi matched=false index=none
+// CHECK-NEXT: all_covered=false

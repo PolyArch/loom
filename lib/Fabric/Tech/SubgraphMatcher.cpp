@@ -1,6 +1,7 @@
 #include "Fabric/Tech/SubgraphMatcher.h"
 
 #include "Fabric/Tech/SubgraphEnumerator.h"
+#include "Fabric/Tech/SubgraphGraphView.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Operation.h"
@@ -20,30 +21,6 @@ namespace fabric {
 namespace {
 
 //===----------------------------------------------------------------------===//
-// Attribute canonicalization helpers (shared with the partitioner).
-//===----------------------------------------------------------------------===//
-
-static std::string canonAttr(::mlir::Attribute a) {
-  std::string s;
-  ::llvm::raw_string_ostream os(s);
-  a.print(os);
-  return s;
-}
-
-static llvm::SmallVector<std::pair<std::string, std::string>, 4>
-stripLoomAttrs(::mlir::ArrayRef<::mlir::NamedAttribute> attrs) {
-  llvm::SmallVector<std::pair<std::string, std::string>, 4> out;
-  for (::mlir::NamedAttribute na : attrs) {
-    auto key = na.getName().getValue();
-    if (key.starts_with("loom."))
-      continue;
-    out.emplace_back(key.str(), canonAttr(na.getValue()));
-  }
-  llvm::sort(out);
-  return out;
-}
-
-//===----------------------------------------------------------------------===//
 // VF2-style isomorphism on dataflow.subgraph bodies.
 //
 // The user pattern and the template are both `dataflow.subgraph` ops with
@@ -59,120 +36,17 @@ stripLoomAttrs(::mlir::ArrayRef<::mlir::NamedAttribute> attrs) {
 //   * BlockArg(idx): operand is the i-th block argument of the subgraph.
 // A bijection on body ops together with a bijection on block args defines
 // an isomorphism iff every operand source is consistently mapped.
+//
+// The Source / GraphView / NodeInfo data model and its `buildGraphView`
+// constructor are shared with the synthesizer's Alignment facade via
+// `Fabric/Tech/SubgraphGraphView.h` so the two stay in lock-step on
+// commutative-operand canonicalization, multi-result handling, and the
+// SCC pre-pass that classifies graph-region back-edges.
 //===----------------------------------------------------------------------===//
 
-struct Source {
-  enum Kind : uint8_t { BodyOp, BlockArg } kind;
-  unsigned idx;        // body-op position OR block-arg position
-  unsigned resultNum;  // only meaningful for BodyOp
-  bool operator==(const Source &o) const {
-    return kind == o.kind && idx == o.idx &&
-           (kind == BlockArg || resultNum == o.resultNum);
-  }
-  bool operator!=(const Source &o) const { return !(*this == o); }
-};
-
-struct NodeInfo {
-  ::mlir::Operation *op = nullptr;
-  ::llvm::StringRef opName;
-  unsigned numOperands = 0;
-  unsigned numResults = 0;
-  // Source for each operand.
-  llvm::SmallVector<Source, 4> operands;
-  // Result types as canonical strings (used as a coarse pre-filter).
-  llvm::SmallVector<std::string, 2> resultTypeKeys;
-  // Sorted operand-type key multiset (coarse pre-filter).
-  llvm::SmallVector<std::string, 4> sortedOperandTypeKeys;
-  // Canonical attribute key/value pairs (already sorted).
-  llvm::SmallVector<std::pair<std::string, std::string>, 4> attrKeys;
-};
-
-struct GraphView {
-  ::dataflow::SubgraphOp sg;
-  ::mlir::Block *body = nullptr;
-  unsigned numBlockArgs = 0;
-  // Body ops in program order.
-  llvm::SmallVector<NodeInfo, 8> nodes;
-  // Per-value descriptor (source) keyed by SSA Value.
-  llvm::DenseMap<::mlir::Value, Source> valueSource;
-  // Yield operand sources (in yield-operand order).
-  llvm::SmallVector<Source, 4> yieldSources;
-  // Block-arg types (canonical strings).
-  llvm::SmallVector<std::string, 4> blockArgTypeKeys;
-};
-
-static std::string typeKey(::mlir::Type t) {
-  std::string s;
-  ::llvm::raw_string_ostream os(s);
-  t.print(os);
-  return s;
-}
-
-// Build a GraphView from a SubgraphOp. Returns false on malformed bodies
-// (e.g., body op operand referring to a Value not produced inside the
-// subgraph and not a block arg).
-static bool buildGraphView(::dataflow::SubgraphOp sg, GraphView &gv) {
-  gv.sg = sg;
-  gv.body = &sg.getBody().front();
-  gv.numBlockArgs = gv.body->getNumArguments();
-  gv.blockArgTypeKeys.reserve(gv.numBlockArgs);
-  for (unsigned i = 0; i < gv.numBlockArgs; ++i) {
-    auto a = gv.body->getArgument(i);
-    Source s{Source::BlockArg, i, 0};
-    gv.valueSource[a] = s;
-    gv.blockArgTypeKeys.push_back(typeKey(a.getType()));
-  }
-
-  // Index body ops first so we can resolve same-block back/forward edges.
-  llvm::DenseMap<::mlir::Operation *, unsigned> opIdx;
-  unsigned i = 0;
-  for (::mlir::Operation &op : gv.body->without_terminator()) {
-    opIdx[&op] = i;
-    for (auto [r, res] : llvm::enumerate(op.getResults())) {
-      Source s{Source::BodyOp, i, static_cast<unsigned>(r)};
-      gv.valueSource[res] = s;
-    }
-    ++i;
-  }
-  gv.nodes.resize(i);
-
-  i = 0;
-  for (::mlir::Operation &op : gv.body->without_terminator()) {
-    NodeInfo &ni = gv.nodes[i];
-    ni.op = &op;
-    ni.opName = op.getName().getStringRef();
-    ni.numOperands = op.getNumOperands();
-    ni.numResults = op.getNumResults();
-    ni.operands.reserve(ni.numOperands);
-    for (::mlir::Value v : op.getOperands()) {
-      auto it = gv.valueSource.find(v);
-      if (it == gv.valueSource.end())
-        return false;
-      ni.operands.push_back(it->second);
-    }
-    ni.resultTypeKeys.reserve(ni.numResults);
-    for (::mlir::Type t : op.getResultTypes())
-      ni.resultTypeKeys.push_back(typeKey(t));
-    ni.sortedOperandTypeKeys.reserve(ni.numOperands);
-    for (::mlir::Type t : op.getOperandTypes())
-      ni.sortedOperandTypeKeys.push_back(typeKey(t));
-    llvm::sort(ni.sortedOperandTypeKeys);
-    ni.attrKeys = stripLoomAttrs(op.getAttrs());
-    ++i;
-  }
-
-  // Yield operands (terminator).
-  ::mlir::Operation *term = gv.body->getTerminator();
-  if (term) {
-    for (::mlir::Value v : term->getOperands()) {
-      auto it = gv.valueSource.find(v);
-      if (it == gv.valueSource.end())
-        return false;
-      gv.yieldSources.push_back(it->second);
-    }
-  }
-  return true;
-}
+using ::loom::fabric::tech::detail::GraphView;
+using ::loom::fabric::tech::detail::NodeInfo;
+using ::loom::fabric::tech::detail::Source;
 
 // VF2 search state.
 struct VF2State {
@@ -244,20 +118,14 @@ static void unbindBlockArg(VF2State &S, int ub) {
 // be permuted without changing semantics. We allow their VF2 operand
 // matching to permute user operand positions to template operand positions.
 // Non-commutative ops are matched position-by-position.
-static bool isCommutativeOp(::llvm::StringRef name) {
-  // Listed once in canonical order so the runtime has a tight static set.
-  // arith: addi, muli, andi, ori, xori, addf, mulf, mins/maxs/u-i,
-  // minimumf/maximumf, cmpi/cmpf for symmetric predicates only -- but
-  // since cmpi predicate is part of the attr key, swapping operands of a
-  // non-symmetric predicate would change it; we leave cmp out of this list
-  // to be safe.
-  return name == "arith.addi" || name == "arith.muli" ||
-         name == "arith.andi" || name == "arith.ori" || name == "arith.xori" ||
-         name == "arith.addf" || name == "arith.mulf" ||
-         name == "arith.minsi" || name == "arith.maxsi" ||
-         name == "arith.minui" || name == "arith.maxui" ||
-         name == "arith.minimumf" || name == "arith.maximumf";
-}
+//
+// The canonical commutative-op set is shared with the synthesizer via
+// `loom::fabric::tech::detail::isCommutativeOp` so that synthesis and
+// matching agree on what "commutativity-preserving permutation" means.
+// Note on cmp ops: cmpi / cmpf are deliberately NOT in this set: their
+// predicate is part of the attribute key, and swapping operands of a
+// non-symmetric predicate would change the attribute meaning. That keeps
+// the runtime check simple: just consult the static predicate above.
 
 // Try to bind operands of user node `u` to operands of template node `t`
 // under permutation `perm` (perm[user_pos] = template_pos). Verifies SSA
@@ -326,7 +194,7 @@ static bool checkAndBindOperandSources(VF2State &S, unsigned u, unsigned t) {
   for (unsigned i = 0; i < uN.numOperands; ++i)
     perm[i] = i;
 
-  if (!isCommutativeOp(uN.opName)) {
+  if (!::loom::fabric::tech::detail::isCommutativeOp(uN.opName)) {
     return tryOperandPermutation(S, u, t, perm);
   }
 
@@ -378,7 +246,7 @@ static bool sourcesConsistent(const VF2State &S, unsigned u) {
   llvm::SmallVector<unsigned, 4> perm(uN.numOperands);
   for (unsigned i = 0; i < uN.numOperands; ++i)
     perm[i] = i;
-  if (!isCommutativeOp(uN.opName))
+  if (!::loom::fabric::tech::detail::isCommutativeOp(uN.opName))
     return checkPosition(perm);
   do {
     if (checkPosition(perm))
@@ -492,14 +360,16 @@ bool subgraphsIsomorphic(::dataflow::SubgraphOp user,
   if (user.getResultTypes().size() != tpl.getResultTypes().size())
     return false;
   GraphView U, T;
-  if (!buildGraphView(user, U))
+  if (!::loom::fabric::tech::detail::buildGraphView(user, U))
     return false;
-  if (!buildGraphView(tpl, T))
+  if (!::loom::fabric::tech::detail::buildGraphView(tpl, T))
     return false;
   // Result-type multiset must match.
   llvm::SmallVector<std::string, 4> ur, tr;
-  for (::mlir::Type t : user.getResultTypes()) ur.push_back(typeKey(t));
-  for (::mlir::Type t : tpl.getResultTypes()) tr.push_back(typeKey(t));
+  for (::mlir::Type t : user.getResultTypes())
+    ur.push_back(::loom::fabric::tech::detail::typeKey(t));
+  for (::mlir::Type t : tpl.getResultTypes())
+    tr.push_back(::loom::fabric::tech::detail::typeKey(t));
   llvm::sort(ur);
   llvm::sort(tr);
   if (ur != tr)

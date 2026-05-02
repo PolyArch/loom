@@ -1,0 +1,5 @@
+synth:
+  strategy: incremental
+  incremental:
+    input_order_heuristic: smallest_first
+  subgraph_share_recurse: true
