@@ -1,14 +1,14 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/mcs_cap.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// A workload that has no single local MCES candidate needs compatibility
-// search. With candidate_cap=1, launching that search would exceed the
-// remaining candidate budget, so mcs reports resource exhaustion.
+// A workload with no graph-native MCES candidate now fails directly in MCS.
+// Fallback policy belongs to the outer fallback_chain, not to a hidden
+// compatibility branch inside the strategy.
 
 // CHECK: warning:
-// CHECK-SAME: group "alu_int_32": synthesis failed: resource_exhausted
-// CHECK: remark: {{.*}}synth-stat group=alu_int_32 strategy=mcs reason=resource_exhausted
-// CHECK: loom.synth_failed = "resource_exhausted"
-// CHECK: loom.synth_failed = "resource_exhausted"
+// CHECK-SAME: group "alu_int_32": synthesis failed: topology_mismatch
+// CHECK: remark: {{.*}}synth-stat group=alu_int_32 strategy=mcs reason=topology_mismatch
+// CHECK: loom.synth_failed = "topology_mismatch"
+// CHECK: loom.synth_failed = "topology_mismatch"
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32
     attributes {loom.synth_group = "alu_int_32"} {

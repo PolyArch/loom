@@ -2,10 +2,9 @@
 // group.
 //
 // The primary path generates local MCES candidates first: a lock-step
-// candidate for isomorphic inputs, then bounded graph-region MCES candidates
-// that may share nodes across private islands, cycles, commutative operand
-// order, and block-argument permutations. The compatibility branch remains as
-// a fallback for cases that are better handled by the incremental machinery.
+// candidate for isomorphic inputs, then exact and bounded graph-region MCES
+// candidates that may share nodes across private islands, cycles, commutative
+// operand order, and block-argument permutations.
 //
 // Candidate FUs are accepted only after MLIR verification and CoverageVerifier
 // prove that enumerating the FU covers every input. Search paths poll the
@@ -28,12 +27,11 @@
 #include "Fabric/Tech/Synthesizer/Anchor.h"
 #include "Fabric/Tech/Synthesizer/CostModel.h"
 #include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
+#include "Fabric/Tech/Synthesizer/ExactMcesSolver.h"
 #include "Fabric/Tech/Synthesizer/HwParams.h"
-#include "Fabric/Tech/Synthesizer/Incremental.h"
 #include "Fabric/Tech/Synthesizer/McesMaterializer.h"
 #include "Fabric/Tech/Synthesizer/McesSolver.h"
 #include "Fabric/Tech/Synthesizer/McsGraph.h"
-#include "Fabric/Tech/Synthesizer/Parallel.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -44,13 +42,11 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Verifier.h"
-#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -66,7 +62,6 @@
 #include <cstdint>
 #include <map>
 #include <optional>
-#include <random>
 #include <set>
 #include <string>
 #include <utility>
@@ -86,37 +81,10 @@ bool noteDeadline(std::atomic<bool> &deadlineExpired,
   return true;
 }
 
-//===----------------------------------------------------------------------===//
-// Per-branch record carried back from the parallel worker. Mirrors the
-// IncrementalRandom handoff layout: wrapper text + cost + failure
-// metadata so the caller can reparse / rank without reaching back into
-// the worker's defunct sub-context.
-//===----------------------------------------------------------------------===//
-
-struct BranchHandoff {
-  std::size_t branchIndex = 0;
-  bool succeeded = false;
-  // Empty unless `succeeded` is true.
-  std::string wrapperIR;
-  // Cost computed in the sub-context (cost is a pure function over a
-  // wrapper FU, so the value is independent of context identity).
-  double cost = 0.0;
-  // Failure metadata for branches that did not succeed.
-  SynthFailureReason failureReason = SynthFailureReason::None;
-  ::llvm::SmallVector<::std::string, 4> notes;
-  CoverageReport coverage;
-  // True iff this branch was skipped because the global deadline had
-  // already elapsed. Used to distinguish `timeout` from inner
-  // strategy failures when classifying a no-success outcome.
-  bool deadlineSkipped = false;
-};
-
 struct CandidateRecord {
   std::size_t candidateIndex = 0;
   double cost = 0.0;
-  bool localWrapper = true;
   ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper;
-  std::string wrapperIR;
   ::llvm::SmallVector<::std::string, 4> notes;
   CoverageReport coverage;
 };
@@ -178,26 +146,10 @@ std::optional<CandidateRecord> scoreLocalCandidate(
   CandidateRecord record;
   record.candidateIndex = candidateIndex;
   record.cost = cm.evaluate(fu);
-  record.localWrapper = true;
   record.wrapper = std::move(wrapper);
   record.notes.assign(notes.begin(), notes.end());
   record.coverage = std::move(coverage);
   return record;
-}
-
-//===----------------------------------------------------------------------===//
-// Set up a self-contained sub-MLIRContext. Sub-contexts inherit no
-// dialects from their parent so we explicitly load the ones the
-// Incremental strategy and the lit-test inputs require.
-//===----------------------------------------------------------------------===//
-
-void loadStandardDialects(::mlir::MLIRContext &ctx) {
-  ::mlir::DialectRegistry registry;
-  registry.insert<::mlir::func::FuncDialect, ::dataflow::DataflowDialect,
-                  ::fabric::FabricDialect, ::mlir::arith::ArithDialect,
-                  ::mlir::math::MathDialect>();
-  ctx.appendDialectRegistry(registry);
-  ctx.loadAllAvailableDialects();
 }
 
 //===----------------------------------------------------------------------===//
@@ -842,166 +794,6 @@ void collectSkeletonRefs(const DagOperand &operand,
   return result;
 }
 
-//===----------------------------------------------------------------------===//
-// Compatibility branch-ordering generation. The branch space is the union of:
-//   * one anchor-rooted ordering per input subgraph (input_i first,
-//     remaining inputs in stable index order).
-//   * `mcs.branch_workers` seeded random permutations (mt19937_64 over
-//     `incrementalRandomSeed`).
-//===----------------------------------------------------------------------===//
-
-using BranchVec = ::llvm::SmallVector<unsigned, 8>;
-
-::llvm::SmallVector<BranchVec, 8>
-buildBranches(std::size_t n, unsigned plannedBranches, uint64_t seed) {
-  ::llvm::SmallVector<BranchVec, 8> branches;
-  branches.reserve(plannedBranches);
-  BranchVec base;
-  base.reserve(n);
-  for (unsigned i = 0; i < n; ++i)
-    base.push_back(i);
-
-  // Anchor branches: input_i first, remaining inputs in stable order.
-  for (unsigned anchor = 0; anchor < n && branches.size() < plannedBranches;
-       ++anchor) {
-    BranchVec perm;
-    perm.reserve(n);
-    perm.push_back(anchor);
-    for (unsigned i = 0; i < n; ++i)
-      if (i != anchor)
-        perm.push_back(i);
-    branches.push_back(std::move(perm));
-  }
-
-  // Random branches: seeded permutations using a single PRNG so the
-  // branch sequence is stable across runs on the same seed and input
-  // size.
-  std::mt19937_64 rng(seed);
-  while (branches.size() < plannedBranches) {
-    BranchVec perm = base;
-    std::shuffle(perm.begin(), perm.end(), rng);
-    branches.push_back(std::move(perm));
-  }
-  return branches;
-}
-
-//===----------------------------------------------------------------------===//
-// Execute one branch in a fresh sub-context. Honours the shared
-// deadline through the `deadlineExpired` flag; when set, the branch
-// short-circuits with `deadlineSkipped=true` so the caller can
-// classify the no-success outcome as `timeout`.
-//===----------------------------------------------------------------------===//
-
-BranchHandoff runOneBranch(const ::loom::SynthConfig &cfg,
-                           ::llvm::StringRef groupName,
-                           ::llvm::ArrayRef<::dataflow::SubgraphOp> base,
-                           const BranchVec &perm, std::size_t branchIndex,
-                           const std::atomic<bool> &deadlineExpired) {
-  BranchHandoff out;
-  out.branchIndex = branchIndex;
-
-  if (deadlineExpired.load(std::memory_order_relaxed)) {
-    out.deadlineSkipped = true;
-    out.failureReason = SynthFailureReason::Timeout;
-    out.notes.push_back("mcs: branch skipped (deadline exceeded)");
-    return out;
-  }
-
-  ::llvm::SmallVector<::dataflow::SubgraphOp, 8> permuted;
-  permuted.reserve(perm.size());
-  for (unsigned idx : perm) {
-    if (idx >= base.size()) {
-      out.failureReason = SynthFailureReason::InvalidInput;
-      out.notes.push_back("mcs: branch ordering index out of range");
-      return out;
-    }
-    permuted.push_back(base[idx]);
-  }
-
-  ::mlir::MLIRContext subContext;
-  loadStandardDialects(subContext);
-
-  // Each branch needs an independent inner cfg copy; SynthConfig is
-  // plain data so a value copy is enough.
-  ::loom::SynthConfig subCfg = cfg;
-
-  IncrementalSynthesizer inner(subCfg);
-  SynthInputs subInputs{groupName,
-                        ::llvm::ArrayRef<::dataflow::SubgraphOp>(permuted),
-                        subCfg, &subContext};
-  SynthResult res = inner.run(subInputs);
-
-  out.failureReason = res.failureReason;
-  out.notes = std::move(res.notes);
-  out.coverage = std::move(res.coverage);
-
-  if (res.success() && res.wrapper) {
-    CostModel cm(subCfg);
-    if (auto fu = innerFuOf(res.wrapper.get()))
-      out.cost = cm.evaluate(fu);
-
-    // Serialize the winning wrapper to text so the outer caller can
-    // reparse it under its own context.
-    ::llvm::raw_string_ostream os(out.wrapperIR);
-    ::mlir::OpPrintingFlags flags;
-    flags.useLocalScope().assumeVerified();
-    res.wrapper->print(os, flags);
-    os.flush();
-    out.succeeded = true;
-  }
-  return out;
-}
-
-//===----------------------------------------------------------------------===//
-// Failure classification when no branch succeeded. Priority order:
-//   1. If any branch was deadline-skipped (or every branch reported
-//      `timeout`), report `timeout` -- the user's deadline killed us.
-//   2. Otherwise pick the most common inner failure reason; ties
-//      broken by the lowest branch index that produced that reason.
-// `resource_exhausted` is reported at the call site when the remaining
-// candidate budget cannot admit the compatibility branch set.
-//===----------------------------------------------------------------------===//
-
-SynthFailureReason classifyFailure(::llvm::ArrayRef<BranchHandoff> handoffs) {
-  if (handoffs.empty())
-    return SynthFailureReason::Timeout;
-  bool anyDeadline = false;
-  unsigned counts[256] = {0};
-  std::size_t firstIdx[256];
-  for (auto &slot : firstIdx)
-    slot = static_cast<std::size_t>(-1);
-  unsigned totalFailures = 0;
-  for (const BranchHandoff &h : handoffs) {
-    if (h.succeeded)
-      continue;
-    if (h.deadlineSkipped)
-      anyDeadline = true;
-    auto code = static_cast<uint8_t>(h.failureReason);
-    if (counts[code] == 0)
-      firstIdx[code] = h.branchIndex;
-    ++counts[code];
-    ++totalFailures;
-  }
-  if (anyDeadline)
-    return SynthFailureReason::Timeout;
-  if (totalFailures == 0)
-    return SynthFailureReason::Timeout;
-  unsigned bestCount = 0;
-  std::size_t bestIdx = static_cast<std::size_t>(-1);
-  uint8_t bestCode = static_cast<uint8_t>(SynthFailureReason::TopologyMismatch);
-  for (unsigned code = 0; code < 256; ++code) {
-    if (counts[code] == 0)
-      continue;
-    if (counts[code] > bestCount ||
-        (counts[code] == bestCount && firstIdx[code] < bestIdx)) {
-      bestCount = counts[code];
-      bestIdx = firstIdx[code];
-      bestCode = static_cast<uint8_t>(code);
-    }
-  }
-  return static_cast<SynthFailureReason>(bestCode);
-}
-
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1051,11 +843,66 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
       capExceeded = true;
       return;
     }
-    std::size_t idx = generatedCandidates++;
+    std::size_t idx = generatedCandidates;
     auto scored = scoreLocalCandidate(std::move(wrapper), inputs, cfg, idx,
                                       notes, deadlineExpired, deadline);
-    if (scored)
+    if (scored) {
+      ++generatedCandidates;
       candidates.push_back(std::move(*scored));
+    }
+  };
+
+  auto admitMaterialized =
+      [&](std::size_t graphBase,
+          ::llvm::SmallVectorImpl<McesMaterializedCandidate> &materialized) {
+        std::stable_sort(materialized.begin(), materialized.end(),
+                         [](const McesMaterializedCandidate &a,
+                            const McesMaterializedCandidate &b) {
+                           if (a.cost != b.cost)
+                             return a.cost < b.cost;
+                           return a.candidateIndex < b.candidateIndex;
+                         });
+        for (auto &candidate : materialized) {
+          if (generatedCandidates >= cfg.mcsCandidateCap) {
+            capExceeded = true;
+            break;
+          }
+          CandidateRecord record;
+          record.candidateIndex = graphBase + candidate.candidateIndex;
+          record.cost = candidate.cost;
+          record.wrapper = std::move(candidate.wrapper);
+          record.notes = std::move(candidate.notes);
+          record.coverage = std::move(candidate.coverage);
+          candidates.push_back(std::move(record));
+          ++generatedCandidates;
+        }
+      };
+
+  auto materializeUpToAccepted =
+      [&](::llvm::ArrayRef<McsGraph> graphs,
+          ::llvm::ArrayRef<McesCandidate> graphCandidates,
+          std::size_t maxAccepted)
+      -> ::llvm::SmallVector<McesMaterializedCandidate, 4> {
+    ::llvm::SmallVector<McesMaterializedCandidate, 4> materialized;
+    McesMaterializer materializer;
+    for (auto indexed : ::llvm::enumerate(graphCandidates)) {
+      if (materialized.size() >= maxAccepted ||
+          deadlineExpired.load(std::memory_order_relaxed) ||
+          noteDeadline(deadlineExpired, deadline))
+        break;
+      ::llvm::ArrayRef<McesCandidate> one(&indexed.value(), 1);
+      auto current = materializer.materializeExactCoverCandidates(
+          inputs, graphs, one, deadline);
+      if (noteDeadline(deadlineExpired, deadline))
+        break;
+      for (auto &candidate : current) {
+        candidate.candidateIndex = indexed.index();
+        materialized.push_back(std::move(candidate));
+        if (materialized.size() >= maxAccepted)
+          break;
+      }
+    }
+    return materialized;
   };
 
   if (!noteDeadline(deadlineExpired, deadline)) {
@@ -1074,46 +921,73 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
       generatedCandidates < cfg.mcsCandidateCap) {
     McsGraphBuildResult graphResult = buildMcsGraphs(inputs.subgraphs);
     if (graphResult.success()) {
-      McesSolver solver;
       std::size_t remaining = cfg.mcsCandidateCap - generatedCandidates;
-      McesSearchOptions searchOptions;
-      searchOptions.candidateCap = remaining;
-      searchOptions.deadline = deadline;
-      auto graphSearch = solver.enumerate(graphResult.graphs, searchOptions);
-      auto &graphCandidates = graphSearch.candidates;
-      if (graphSearch.hitTimeout) {
+      ExactMcesSolver exactSolver;
+      ExactMcesSearchOptions exactOptions;
+      exactOptions.candidateCap = std::max<std::size_t>(remaining, 8);
+      exactOptions.deadline = deadline;
+      exactOptions.workers = cfg.mcsBranchWorkers;
+      exactOptions.costWeights.muxPenalty = cfg.costMuxPenalty;
+      exactOptions.costWeights.demuxPenalty = cfg.costDemuxPenalty;
+      exactOptions.costWeights.carryPenalty = cfg.costCarryPenalty;
+      auto exactSearch =
+          exactSolver.enumerate(graphResult.graphs, exactOptions);
+      auto &exactCandidates = exactSearch.candidates;
+      if (exactSearch.hitTimeout) {
         deadlineExpired.store(true, std::memory_order_relaxed);
         searchHitTimeout = true;
       }
-      if (graphSearch.hitCap)
-        capExceeded = true;
       ::llvm::SmallVector<McesMaterializedCandidate, 4> materialized;
       if (!deadlineExpired.load(std::memory_order_relaxed) &&
           !noteDeadline(deadlineExpired, deadline)) {
-        McesMaterializer materializer;
-        materialized = materializer.materializeExactCoverCandidates(
-            inputs, graphResult.graphs, graphCandidates, deadline);
+        materialized = materializeUpToAccepted(graphResult.graphs,
+                                               exactCandidates, remaining);
         if (noteDeadline(deadlineExpired, deadline))
           searchHitTimeout = true;
       }
       {
         ::std::string note;
         ::llvm::raw_string_ostream os(note);
-        os << "mcs: graph-MCS generated " << graphSearch.generatedCandidates
-           << " candidate(s), verified " << materialized.size();
+        os << "mcs: exact graph-MCES visited "
+           << exactSearch.generatedCandidates << " candidate(s), returned "
+           << exactCandidates.size() << ", verified " << materialized.size();
         graphMcesNotes.push_back(std::move(note));
       }
       std::size_t graphBase = generatedCandidates;
-      generatedCandidates += graphSearch.generatedCandidates;
-      for (auto &candidate : materialized) {
-        CandidateRecord record;
-        record.candidateIndex = graphBase + candidate.candidateIndex;
-        record.cost = candidate.cost;
-        record.localWrapper = true;
-        record.wrapper = std::move(candidate.wrapper);
-        record.notes = std::move(candidate.notes);
-        record.coverage = std::move(candidate.coverage);
-        candidates.push_back(std::move(record));
+      admitMaterialized(graphBase, materialized);
+      if (!capExceeded && !deadlineExpired.load(std::memory_order_relaxed) &&
+          generatedCandidates < cfg.mcsCandidateCap) {
+        remaining = cfg.mcsCandidateCap - generatedCandidates;
+        McesSolver solver;
+        McesSearchOptions searchOptions;
+        searchOptions.candidateCap = remaining;
+        searchOptions.deadline = deadline;
+        auto graphSearch = solver.enumerate(graphResult.graphs, searchOptions);
+        auto &graphCandidates = graphSearch.candidates;
+        if (graphSearch.hitTimeout) {
+          deadlineExpired.store(true, std::memory_order_relaxed);
+          searchHitTimeout = true;
+        }
+        if (graphSearch.hitCap)
+          capExceeded = true;
+        materialized.clear();
+        if (!deadlineExpired.load(std::memory_order_relaxed) &&
+            !noteDeadline(deadlineExpired, deadline)) {
+          materialized = materializeUpToAccepted(graphResult.graphs,
+                                                 graphCandidates, remaining);
+          if (noteDeadline(deadlineExpired, deadline))
+            searchHitTimeout = true;
+        }
+        {
+          ::std::string note;
+          ::llvm::raw_string_ostream os(note);
+          os << "mcs: bounded graph-MCS generated "
+             << graphSearch.generatedCandidates << " candidate(s), verified "
+             << materialized.size();
+          graphMcesNotes.push_back(std::move(note));
+        }
+        graphBase = generatedCandidates;
+        admitMaterialized(graphBase, materialized);
       }
     } else {
       for (const ::std::string &note : graphResult.notes)
@@ -1138,104 +1012,18 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
     return result;
   }
 
-  // Plan compatibility branch count. The branch space is bounded by:
-  //   * remaining `mcs.candidate_cap` budget when no local MCES candidate
-  //     can be selected yet.
-  //   * `mcs.branch_workers` (random restarts -- a tunable widening of
-  //     the anchor branch space).
-  //   * 16 * num_inputs (an internal upper bound that keeps wall time
-  //     finite on small inputs even when the user passes a very large cap).
-  std::size_t numInputs = inputs.subgraphs.size();
-  std::size_t anchorBranches = numInputs;
-  std::size_t randomBranches =
-      cfg.mcsBranchWorkers > 0 ? cfg.mcsBranchWorkers : 1u;
-  std::size_t internalCap = 16 * numInputs > 0 ? 16 * numInputs : 16;
-  std::size_t plannedBranches = anchorBranches + randomBranches;
-  if (plannedBranches > internalCap)
-    plannedBranches = internalCap;
-
-  std::size_t remainingBudget = generatedCandidates < cfg.mcsCandidateCap
-                                    ? cfg.mcsCandidateCap - generatedCandidates
-                                    : 0;
-  if (plannedBranches > remainingBudget)
-    plannedBranches = remainingBudget;
-  bool runCompatibility =
-      plannedBranches > 0 && !deadlineExpired.load(std::memory_order_relaxed);
-
-  // Build the branch orderings up front from a single seeded PRNG so
-  // the sequence is stable across runs on the same seed/input size.
-  auto branches = runCompatibility ? buildBranches(numInputs, plannedBranches,
-                                                   cfg.incrementalRandomSeed)
-                                   : ::llvm::SmallVector<BranchVec, 8>();
-
-  // Dispatch compatibility branches in parallel. `mcs.branch_workers`
-  // is validated as at least one by SynthConfig parsing.
-  unsigned workers = cfg.mcsBranchWorkers;
-  WorkerPool pool(workers);
-
-  struct WorkerJob {
-    std::size_t branchIndex = 0;
-    const BranchVec *perm = nullptr;
-  };
-  ::llvm::SmallVector<WorkerJob, 8> jobs;
-  jobs.reserve(branches.size());
-  for (std::size_t i = 0; i < branches.size(); ++i)
-    jobs.push_back(WorkerJob{i, &branches[i]});
-
-  ::llvm::StringRef groupName = inputs.groupName;
-  ::llvm::ArrayRef<::dataflow::SubgraphOp> base = inputs.subgraphs;
-  const ::loom::SynthConfig &cfgRef = cfg;
-
-  // The pass already runs each group on a worker thread, so a wall-clock
-  // deadline check inside the closure is enough for compatibility
-  // branches. The worst-case overshoot is one inner Incremental run.
-  ::llvm::SmallVector<BranchHandoff, 8> handoffs;
-  if (runCompatibility) {
-    handoffs = pool.parallelMap<WorkerJob, BranchHandoff>(
-        ::llvm::ArrayRef<WorkerJob>(jobs),
-        [&cfgRef, groupName, base, &deadlineExpired,
-         deadline](const WorkerJob &job) {
-          // Refresh the deadline flag before launching this branch's
-          // inner synthesis so late-starting branches that pile up after
-          // the wall-clock has already passed are skipped cleanly.
-          if (Clock::now() >= deadline)
-            deadlineExpired.store(true, std::memory_order_relaxed);
-          return runOneBranch(cfgRef, groupName, base, *job.perm,
-                              job.branchIndex, deadlineExpired);
-        });
-
-    for (const BranchHandoff &h : handoffs) {
-      if (!h.succeeded)
-        continue;
-      CandidateRecord record;
-      record.candidateIndex = generatedCandidates + h.branchIndex;
-      record.cost = h.cost;
-      record.localWrapper = false;
-      record.wrapperIR = h.wrapperIR;
-      record.notes = h.notes;
-      record.coverage = h.coverage;
-      candidates.push_back(std::move(record));
-    }
-    generatedCandidates += branches.size();
-  }
-
   if (candidates.empty()) {
     if (deadlineExpired.load(std::memory_order_relaxed)) {
       result.failureReason = SynthFailureReason::Timeout;
     } else if (generatedCandidates >= cfg.mcsCandidateCap) {
       result.failureReason = SynthFailureReason::ResourceExhausted;
     } else {
-      result.failureReason = classifyFailure(handoffs);
+      result.failureReason = SynthFailureReason::TopologyMismatch;
     }
-    result.notes.push_back("mcs: no candidate branch produced a legal FU");
+    result.notes.push_back(
+        "mcs: no graph-native candidate produced a legal FU");
     for (const ::std::string &n : graphMcesNotes)
       result.notes.push_back(n);
-    for (const BranchHandoff &h : handoffs) {
-      if (h.succeeded)
-        continue;
-      for (const ::std::string &n : h.notes)
-        result.notes.push_back(n);
-    }
     return result;
   }
 
@@ -1247,33 +1035,7 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
                    });
   CandidateRecord &best = candidates.front();
 
-  if (best.localWrapper) {
-    result.wrapper = std::move(best.wrapper);
-  } else {
-    // Reparse the winning wrapper into the outer scratch context.
-    ::mlir::OwningOpRef<::mlir::ModuleOp> parsed =
-        ::mlir::parseSourceString<::mlir::ModuleOp>(best.wrapperIR,
-                                                    inputs.context);
-    if (!parsed) {
-      result.failureReason = SynthFailureReason::VerifierFailed;
-      result.notes.push_back(
-          "mcs: failed to reparse winning wrapper into outer scratch "
-          "MLIRContext");
-      return result;
-    }
-    ::fabric::ModuleOp reHomed;
-    for (auto fn : parsed->getOps<::fabric::ModuleOp>()) {
-      reHomed = fn;
-      break;
-    }
-    if (!reHomed) {
-      result.failureReason = SynthFailureReason::VerifierFailed;
-      result.notes.push_back("mcs: reparsed module contained no fabric.module");
-      return result;
-    }
-    reHomed->remove();
-    result.wrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(reHomed);
-  }
+  result.wrapper = std::move(best.wrapper);
   result.coverage = best.coverage;
   for (const ::std::string &n : best.notes)
     result.notes.push_back(n);

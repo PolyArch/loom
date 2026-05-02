@@ -2,17 +2,17 @@
 #define LOOM_FABRIC_TECH_SYNTHESIZER_MCS_H
 
 // MCS strategy: cost-prioritized configurable FU synthesis across the input
-// group. The implementation generates lock-step candidates, bounded
-// graph-region MCES candidates, and compatibility fallback candidates. Legal
-// candidates are accepted by the enumerator/matcher coverage roundtrip and
-// ranked by `CostModel::evaluate`.
+// group. The implementation generates lock-step candidates, exact graph-region
+// MCES candidates, and bounded graph-region candidates. Legal candidates are
+// accepted by the enumerator/matcher coverage roundtrip and ranked by
+// `CostModel::evaluate`.
 //
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, sections
 // "Strategy: mcs" and "Acceptance criteria (mcs)".
 //
-// Threading: candidate construction uses the worker-local
-// `SynthInputs.context`. Compatibility branches use sub-`MLIRContext`
-// handoff and reparse the winning wrapper into `SynthInputs.context`.
+// Threading: candidate construction uses the caller-provided
+// `SynthInputs.context`; exact graph-region search can shard independent
+// choices through the synthesizer worker setting.
 
 #include "Common/SynthConfig.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"

@@ -10,6 +10,7 @@ add_mlir_library(MLIRFabricTechSynthesizer
   IncrementalExtensions.cpp
   IncrementalExtensionsTierC.cpp
   IncrementalRandom.cpp
+  ExactMcesSolver.cpp
   MCS.cpp
   McsGraph.cpp
   McesMaterializer.cpp
