@@ -25,11 +25,33 @@ llvm_config.use_default_substitutions()
 
 config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
 
-# Perf tests are wall-clock-sensitive and pin a single core via taskset.
-# Run them one at a time across the suite so concurrent lit workers
-# don't load core 0 during the timed window. The "perf" group is
-# attached per-directory via lit.local.cfg.py under test/techmap/perf.
-lit_config.parallelism_groups["perf"] = 1
+# Perf tests are wall-clock-sensitive and each one claims an exclusive
+# core via flock + taskset (see perf_runner.py:claim_exclusive_core).
+# Cap the concurrent perf-test count at the number of claimable cores
+# so each run lands on a distinct, contention-free core. Honors
+# $LOOM_PERF_CORES (same env var perf_runner.py reads). The "perf"
+# group is attached per-directory via lit.local.cfg.py under
+# test/techmap/perf.
+def _perf_parallelism_limit():
+    env = os.environ.get("LOOM_PERF_CORES")
+    if env:
+        cores = [tok.strip() for tok in env.split(",") if tok.strip()]
+        if cores:
+            return max(1, len(cores))
+    try:
+        affinity = os.sched_getaffinity(0)
+    except AttributeError:
+        affinity = set()
+    if not affinity:
+        return 1
+    # Reserve core 0 from the perf pool when there are spare cores
+    # (interrupts often pin to it on Linux). Mirrors candidate_perf_cores.
+    if len(affinity) > 1 and 0 in affinity:
+        affinity = affinity - {0}
+    return max(1, len(affinity))
+
+
+lit_config.parallelism_groups["perf"] = _perf_parallelism_limit()
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),

@@ -24,6 +24,7 @@ Honors LOOM_PERF_TIMEOUT_S env var (default 300s) per loom invocation.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -33,6 +34,11 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX-only; perf tests are gated to platforms with taskset.
+except ImportError:
+    fcntl = None
 
 
 HERE = Path(__file__).resolve().parent
@@ -110,8 +116,104 @@ def is_root() -> bool:
         return False
 
 
-def build_pinned_cmd(loom: str, src: Path, cfg: Path) -> list:
-    """Wrap the loom invocation in taskset/nice for core pinning.
+def perf_lock_dir() -> Path:
+    """Per-machine directory holding one lockfile per claimable core."""
+    base = os.environ.get("LOOM_PERF_LOCK_DIR")
+    d = Path(base) if base else Path(tempfile.gettempdir()) / "loom_perf_locks"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def candidate_perf_cores() -> list:
+    """Return the cores eligible for perf pinning.
+
+    Honors $LOOM_PERF_CORES (comma-separated list) when set. Otherwise
+    uses every core in the process's CPU affinity mask, dropping core 0
+    when the mask offers more than one option (core 0 commonly handles
+    interrupts on Linux). Falls back to [0] if nothing else is
+    available.
+    """
+    env = os.environ.get("LOOM_PERF_CORES")
+    if env:
+        cores = []
+        for tok in env.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                cores.append(int(tok))
+            except ValueError:
+                pass
+        if cores:
+            return cores
+
+    try:
+        affinity = sorted(os.sched_getaffinity(0))
+    except AttributeError:
+        affinity = []
+    if not affinity:
+        return [0]
+    if len(affinity) > 1 and 0 in affinity:
+        affinity = [c for c in affinity if c != 0]
+    return affinity
+
+
+@contextlib.contextmanager
+def claim_exclusive_core():
+    """Acquire an exclusive lock on one of the candidate cores.
+
+    Yields the core index that was claimed. The lock is held for the
+    duration of the with-block via flock, so concurrent perf runners
+    each end up on a distinct core. If no flock support is available
+    (or no core could be claimed without blocking) falls back to the
+    first candidate core without locking.
+    """
+    cores = candidate_perf_cores()
+    if not cores or fcntl is None:
+        yield cores[0] if cores else 0
+        return
+
+    lock_dir = perf_lock_dir()
+    fhs = []
+    try:
+        for core in cores:
+            path = lock_dir / f"core{core}.lock"
+            fh = open(path, "w")
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                fh.close()
+                continue
+            fhs.append((core, fh))
+            try:
+                yield core
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+            return
+
+        # All candidate cores busy: block on the first one rather than
+        # racing without isolation.
+        path = lock_dir / f"core{cores[0]}.lock"
+        fh = open(path, "w")
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            fhs.append((cores[0], fh))
+            try:
+                yield cores[0]
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            if fh and not fh.closed:
+                fh.close()
+    finally:
+        for _, fh in fhs:
+            if not fh.closed:
+                fh.close()
+
+
+def build_pinned_cmd(loom: str, src: Path, cfg: Path, core: int) -> list:
+    """Wrap the loom invocation in taskset/nice pinned to `core`.
 
     `nice -n -5` requires elevated privileges; skip it otherwise.
     """
@@ -119,7 +221,7 @@ def build_pinned_cmd(loom: str, src: Path, cfg: Path) -> list:
              f"-loom-partition-graph-into-subgraphs=config={cfg}"]
     pre = []
     if shutil.which("taskset"):
-        pre = ["taskset", "-c", "0"]
+        pre = ["taskset", "-c", str(core)]
         if is_root() and shutil.which("nice"):
             pre += ["nice", "-n", "-5"]
     return pre + inner
@@ -185,10 +287,10 @@ def main(argv=None) -> int:
     loom = find_loom()
     src = ensure_synth(args.n, args.seed)
 
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory() as td, claim_exclusive_core() as core:
         cfg = Path(td) / "perf.yaml"
         write_config(args.algo, args.threads, cfg)
-        cmd = build_pinned_cmd(loom, src, cfg)
+        cmd = build_pinned_cmd(loom, src, cfg, core)
 
         # Warmup: untimed; primes filesystem and CPU caches.
         for _ in range(max(0, args.warmup)):
