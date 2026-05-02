@@ -310,6 +310,7 @@ include/Fabric/Tech/Synthesizer/
   Alignment.h           -- DAG correspondence utilities
   Anchor.h              -- strategy: anchor-driven BFS
   MCS.h                 -- strategy: maximum common subgraph
+  ExactMcesSolver.h     -- exact graph-region MCES candidate search
   Incremental.h         -- strategy: seed + incremental merge
   IncrementalRandom.h   -- strategy: incremental + random restarts
   Parallel.h            -- shared thread-pool primitives
@@ -322,6 +323,7 @@ lib/Fabric/Tech/Synthesizer/
   Alignment.cpp
   Anchor.cpp
   MCS.cpp
+  ExactMcesSolver.cpp
   Incremental.cpp
   IncrementalRandom.cpp
   Parallel.cpp
@@ -470,7 +472,7 @@ makeSynthesizer(llvm::StringRef strategyName, const SynthConfig &);
 | Strategy            | Tier A | Tier B | Tier C | Strength                              | Cost                                     |
 |---------------------|:------:|:------:|:------:|---------------------------------------|------------------------------------------|
 | anchor              |  yes   | partial|  no    | fast, deterministic                   | cannot align disjoint topologies         |
-| mcs                 |  yes   |  yes   |  yes   | provably-best alignment               | exponential worst case                   |
+| mcs                 |  yes   |  yes   |  yes   | exact graph-native candidates under caps | exponential worst case                |
 | incremental         |  yes   |  yes   |  yes   | wall-time linear in N inputs (verify amortized via cache)  | order-sensitive                          |
 | incremental_random  |  yes   |  yes   |  yes   | best cost via random restarts         | wall-time scales with restart count      |
 
@@ -607,22 +609,29 @@ This problem is NP-hard. Mitigations:
 * prune by share-group compatibility on candidate node mappings;
 * prune by bit-width compatibility;
 * enumerate disjoint shared-node tuple subsets in deterministic order;
+* use branch-and-bound lower bounds from the private-op baseline minus
+  already selected sharing and maximum remaining sharing;
+* shard independent first-node mapping choices with `branch_workers`;
+* classify graph-region SCC edges with Tarjan metadata during graph
+  extraction;
 * use `timeout_sec` and `candidate_cap` as hard caps;
-* accept only candidates proven by the enumerator/matcher roundtrip;
-* keep the compatibility search as a fallback for inputs that are better
-  handled by incremental alignment.
+* accept only candidates proven by the enumerator/matcher roundtrip.
 
 The implementation generates concrete local candidate families before
-entering the compatibility search: a lock-step candidate for isomorphic
-inputs, bounded graph-region MCES candidates, and the older shared-prefix
-candidate. The graph-region path supports cycles through temporary
-placeholder values, commutative operand normalization, non-positional
-block-argument mappings, multi-yield outputs, and strict-superset
-enumeration. Every generated candidate counts toward `candidate_cap`;
-the implementation polls `timeout_sec` around local MCES detection,
-construction, coverage verification, and compatibility branch launch. A
-candidate is accepted only if `CoverageVerifier` can enumerate software
-subgraphs covering every input.
+falling back to an explicit outer strategy chain: a lock-step candidate
+for isomorphic inputs, exact graph-region MCES candidates, bounded
+graph-region MCES candidates, and the older shared-prefix candidate. The
+graph-region path supports cycles through temporary placeholder values,
+commutative operand normalization, non-positional block-argument
+mappings, multi-yield outputs, and strict-superset enumeration.
+`candidate_cap` limits admitted materialized candidates; exact search
+may inspect additional estimated-cost MCES candidates so unverified raw
+mappings do not consume the budget. The implementation polls
+`timeout_sec` around graph search, construction, and coverage
+verification. A candidate is accepted only if `CoverageVerifier` can
+enumerate software subgraphs covering every input. MCS must not call
+`IncrementalSynthesizer` internally; if a group needs incremental
+behavior, it is requested through `fallback_chain`.
 
 #### Pseudocode (high-level)
 
@@ -632,15 +641,20 @@ function synthesize_mcs(inputs):
     best = []
     maybe_add(lockstep_candidate(sgs))
     graphs = build_graph_region_views(sgs)
-    tuples = compatible_shared_node_tuples(graphs)
-    for cand in bounded_disjoint_tuple_subsets(tuples,
-                                               cap=config.mcs.candidate_cap,
+    for cand in exact_branch_and_bound_mces(graphs,
+                                            cap=config.mcs.candidate_cap,
+                                            deadline=config.mcs.timeout_sec,
+                                            workers=config.mcs.branch_workers):
+        fu = build_fu_with_mux_demux_adapters(cand, graphs)
+        if coverage_roundtrip_accepts(fu, sgs):
+            best.append(fu)
+    for cand in bounded_disjoint_tuple_subsets(graphs,
+                                               cap=remaining_candidate_budget(best),
                                                deadline=config.mcs.timeout_sec):
         fu = build_fu_with_mux_demux_adapters(cand, graphs)
         if coverage_roundtrip_accepts(fu, sgs):
             best.append(fu)
     maybe_add(shared_prefix_candidate(sgs))
-    best += compatibility_candidates(sgs)
     if best.empty():
         return failure("timeout" or "topology_mismatch")
     return success(lowest_cost(best))
@@ -654,13 +668,18 @@ function synthesize_mcs(inputs):
 2. On `(a+b)*c` and `(a+b)` mixed inputs, mcs identifies the shared
    `arith.addi` skeleton and bypasses the multiplication via a single
    `fabric.mux`.
-3. On a 2-input workload reaching `candidate_cap`, mcs returns
-   `resource_exhausted`.
+3. With `candidate_cap=1`, mcs still admits one verified graph-native
+   candidate instead of spending the budget on unverified raw mappings.
 4. Per `parallel_match=true`, coverage verification of the best
    candidate runs in parallel across input subgraphs.
 5. Graph-region MCES candidates cover acyclic common-private-common
    inputs, cyclic carry inputs, block-argument permutations, multi-yield
    outputs, exact-cover enumeration, and strict-superset enumeration.
+6. MCS has no hidden incremental fallback. If graph-native candidates
+   cannot produce a legal FU, MCS reports its own failure and the outer
+   `fallback_chain` decides whether to try another strategy.
+7. `branch_workers` applies to exact graph-region MCES search and does
+   not change the chosen deterministic result.
 
 ### Strategy: incremental (all tiers)
 
@@ -1011,7 +1030,7 @@ config per Q15):
 | singleton (any op not in the table)                 | 1.0      |
 
 `evaluate` is the only function that ranks FUs across strategy
-restarts, across MCS branch candidates, and as the regression metric
+restarts, across MCS graph candidates, and as the regression metric
 for perf tests.
 
 ### Acceptance criteria (CostModel)
@@ -1031,7 +1050,7 @@ for perf tests.
 |------------------------|-----------------------------------|-------------------------------------------|
 | Cross-group            | pass top level                    | on (`workers=auto`)                       |
 | Coverage verification  | `CoverageVerifier::verify`        | on (`parallel_match=true`)                |
-| MCS branch search      | `MCS::run` branch-and-bound       | on (`branch_workers=8`)                   |
+| MCS branch search      | `ExactMcesSolver::enumerate`      | on (`branch_workers=8`)                   |
 | Random restarts        | `IncrementalRandom::run`          | on (`restarts=16`, `workers=auto`)        |
 | Cost evaluation        | candidate ranking                 | inline; cheap, not parallelized           |
 
@@ -1381,7 +1400,8 @@ test/techmap/synth/
                                     # cost(mcs) <= cost(anchor)
       tier_b_add_then_mul.mlir
       tier_c_accumulator.mlir
-      cap_resource_exhausted.mlir
+      mcs_cap_one_real_candidate.mlir
+      topology_mismatch_no_hidden_fallback.mlir
       timeout.mlir
     incremental/
       tier_a_oplist_widen.mlir

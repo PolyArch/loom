@@ -1,0 +1,11 @@
+synth:
+  strategy: mcs
+  parallelism:
+    workers: 1
+  cost:
+    mux_penalty: 0.001
+    demux_penalty: 0.001
+  mcs:
+    timeout_sec: 60
+    branch_workers: 4
+    candidate_cap: 8

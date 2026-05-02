@@ -9,7 +9,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <tuple>
+#include <vector>
 
 namespace loom::fabric::tech {
 
@@ -75,8 +77,86 @@ McsValueRef convertSource(gv::Source source) {
   return McsValueRef::nodeResult(source.idx, source.resultNum);
 }
 
-bool isBackEdgeOperand(gv::Source source, unsigned consumerIndex) {
-  return source.kind == gv::Source::BodyOp && source.idx >= consumerIndex;
+struct TarjanState {
+  ::llvm::SmallVector<::llvm::SmallVector<unsigned, 4>, 8> successors;
+  ::std::vector<int> index;
+  ::std::vector<int> lowlink;
+  ::std::vector<int> sccId;
+  ::std::vector<unsigned> stack;
+  ::std::vector<bool> onStack;
+  int nextIndex = 0;
+  int nextScc = 0;
+};
+
+void strongConnect(TarjanState &state, unsigned node) {
+  state.index[node] = state.nextIndex;
+  state.lowlink[node] = state.nextIndex;
+  ++state.nextIndex;
+  state.stack.push_back(node);
+  state.onStack[node] = true;
+
+  for (unsigned succ : state.successors[node]) {
+    if (state.index[succ] < 0) {
+      strongConnect(state, succ);
+      state.lowlink[node] = std::min(state.lowlink[node], state.lowlink[succ]);
+    } else if (state.onStack[succ]) {
+      state.lowlink[node] = std::min(state.lowlink[node], state.index[succ]);
+    }
+  }
+
+  if (state.lowlink[node] != state.index[node])
+    return;
+
+  while (!state.stack.empty()) {
+    unsigned member = state.stack.back();
+    state.stack.pop_back();
+    state.onStack[member] = false;
+    state.sccId[member] = state.nextScc;
+    if (member == node)
+      break;
+  }
+  ++state.nextScc;
+}
+
+::std::vector<int> computeSccIds(const McsGraph &graph) {
+  TarjanState state;
+  std::size_t nodeCount = graph.nodes.size();
+  state.successors.resize(nodeCount);
+  state.index.assign(nodeCount, -1);
+  state.lowlink.assign(nodeCount, -1);
+  state.sccId.assign(nodeCount, -1);
+  state.onStack.assign(nodeCount, false);
+
+  for (const McsNode &node : graph.nodes) {
+    if (node.index >= state.successors.size())
+      continue;
+    for (const McsOperand &operand : node.operands) {
+      if (operand.source.kind != McsValueKind::NodeResult ||
+          operand.source.nodeIndex >= state.successors.size())
+        continue;
+      state.successors[operand.source.nodeIndex].push_back(node.index);
+    }
+  }
+
+  for (unsigned node = 0, count = static_cast<unsigned>(nodeCount);
+       node < count; ++node)
+    if (state.index[node] < 0)
+      strongConnect(state, node);
+  return state.sccId;
+}
+
+void assignSccBackEdges(McsGraph &graph) {
+  std::vector<int> sccId = computeSccIds(graph);
+  for (McsNode &node : graph.nodes) {
+    for (McsOperand &operand : node.operands) {
+      operand.isBackEdge = false;
+      if (operand.source.kind != McsValueKind::NodeResult ||
+          node.index >= sccId.size() ||
+          operand.source.nodeIndex >= sccId.size())
+        continue;
+      operand.isBackEdge = sccId[node.index] == sccId[operand.source.nodeIndex];
+    }
+  }
 }
 
 } // namespace
@@ -131,7 +211,7 @@ buildMcsGraphs(::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs) {
         McsOperand operand;
         operand.source = convertSource(source);
         operand.sourceLabel = labelForMcsValue(operand.source);
-        operand.isBackEdge = isBackEdgeOperand(source, node.index);
+        operand.isBackEdge = false;
         operand.type = info.op->getOperand(operandIndex).getType();
         operand.typeKey = gv::typeKey(operand.type);
         operand.width = bitWidthOfMcsType(operand.type);
@@ -149,6 +229,8 @@ buildMcsGraphs(::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs) {
     graph.yieldSources.reserve(view.yieldSources.size());
     for (gv::Source source : view.yieldSources)
       graph.yieldSources.push_back(convertSource(source));
+
+    assignSccBackEdges(graph);
 
     result.graphs.push_back(std::move(graph));
   }

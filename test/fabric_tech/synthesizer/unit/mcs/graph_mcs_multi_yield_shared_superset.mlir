@@ -22,7 +22,7 @@
 // SYNTH: fabric.op [@arith.subi]
 // SYNTH: fabric.yield
 
-// COUNT: 8
+// COUNT: 6
 
 // ENUM: func.func private @fu0_subgraph_0
 // ENUM: arith.addi
@@ -33,7 +33,7 @@
 // ENUM: arith.xori
 // ENUM: arith.muli
 // ENUM: arith.subi
-// ENUM-NOT: func.func private @fu0_subgraph_8
+// ENUM-NOT: func.func private @fu0_subgraph_6
 
 func.func @pat_two_yields_direct(%a: i32, %b: i32, %c: i32) -> (i32, i32)
     attributes {loom.synth_group = "multi_yield_shared_superset"} {

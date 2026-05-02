@@ -302,9 +302,15 @@ struct EmissionState {
   return ::fabric::BitsType::get(state.ctx, node.resultWidths[resultIndex]);
 }
 
-::std::optional<::mlir::Value>
-sharedOutputOrPlaceholder(EmissionState &state, unsigned sharedId,
-                          unsigned resultIndex) {
+unsigned bitWidthOfFabricOrMcsType(::mlir::Type type) {
+  if (auto bits = ::llvm::dyn_cast<::fabric::BitsType>(type))
+    return bits.getWidth();
+  return bitWidthOfMcsType(type);
+}
+
+::std::optional<::mlir::Value> sharedOutputOrPlaceholder(EmissionState &state,
+                                                         unsigned sharedId,
+                                                         unsigned resultIndex) {
   if (auto value = valueFromSharedOutput(state, sharedId, resultIndex))
     return value;
 
@@ -331,8 +337,8 @@ sharedOutputOrPlaceholder(EmissionState &state, unsigned sharedId,
 
 bool resolveSharedPlaceholders(EmissionState &state) {
   for (auto &entry : state.sharedPlaceholders) {
-    auto real = valueFromSharedOutput(state, entry.first.first,
-                                      entry.first.second);
+    auto real =
+        valueFromSharedOutput(state, entry.first.first, entry.first.second);
     if (!real.has_value() || *real == entry.second)
       return false;
     entry.second.replaceAllUsesWith(*real);
@@ -362,8 +368,7 @@ bool resolveSharedPlaceholders(EmissionState &state) {
   auto mapped = mappedBlockArgumentIndex(state, graphIndex, argIndex);
   if (!mapped.has_value())
     return std::nullopt;
-  if (!state.shell.fuEntry ||
-      *mapped >= state.shell.fuEntry->getNumArguments())
+  if (!state.shell.fuEntry || *mapped >= state.shell.fuEntry->getNumArguments())
     return std::nullopt;
   return state.shell.fuEntry->getArgument(*mapped);
 }
@@ -533,11 +538,11 @@ operandPermutationForSharedNode(const EmissionState &state,
                                 const McesSharedNode &shared,
                                 unsigned graphIndex) {
   ::llvm::SmallVector<unsigned, 4> identity;
-  if (graphIndex >= state.graphs.size() ||
-      shared.nodeIndexByGraph.empty() ||
+  if (graphIndex >= state.graphs.size() || shared.nodeIndexByGraph.empty() ||
       shared.nodeIndexByGraph.front() >= state.graphs.front().nodes.size() ||
       graphIndex >= shared.nodeIndexByGraph.size() ||
-      shared.nodeIndexByGraph[graphIndex] >= state.graphs[graphIndex].nodes.size())
+      shared.nodeIndexByGraph[graphIndex] >=
+          state.graphs[graphIndex].nodes.size())
     return identity;
 
   const McsNode &base =
@@ -674,14 +679,15 @@ bool addBlockArgConstraint(EmissionState &state, unsigned graphIndex,
   if (graphIndex >= state.graphs.size() ||
       graphIndex >= state.blockArgToBaseArg.size() ||
       graphArg >= state.blockArgToBaseArg[graphIndex].size() ||
-      baseArg >= state.graphs.front().blockArgTypes.size())
+      !state.shell.fuEntry || baseArg >= state.shell.fuEntry->getNumArguments())
     return false;
 
   const McsGraph &graph = state.graphs[graphIndex];
   if (graphArg >= graph.blockArgTypes.size())
     return false;
   if (bitWidthOfMcsType(graph.blockArgTypes[graphArg]) !=
-      bitWidthOfMcsType(state.graphs.front().blockArgTypes[baseArg]))
+      bitWidthOfFabricOrMcsType(
+          state.shell.fuEntry->getArgument(baseArg).getType()))
     return false;
 
   int &slot = state.blockArgToBaseArg[graphIndex][graphArg];
@@ -727,8 +733,8 @@ bool addSharedNodeBlockArgConstraints(EmissionState &state,
        ++i)
     identity.push_back(i);
 
-  auto scorePermutation = [&](::llvm::ArrayRef<unsigned> permutation)
-      -> ::std::optional<unsigned> {
+  auto scorePermutation =
+      [&](::llvm::ArrayRef<unsigned> permutation) -> ::std::optional<unsigned> {
     auto saved = state.blockArgToBaseArg[graphIndex];
     unsigned score = 0;
     for (unsigned operandIndex = 0,
@@ -772,16 +778,17 @@ bool addSharedNodeBlockArgConstraints(EmissionState &state,
       return false;
   }
 
-  for (unsigned operandIndex = 0, e = static_cast<unsigned>(base.operands.size());
+  for (unsigned operandIndex = 0,
+                e = static_cast<unsigned>(base.operands.size());
        operandIndex < e; ++operandIndex) {
     unsigned graphOperandIndex = operandIndex;
     if (operandIndex < permutation.size())
       graphOperandIndex = permutation[operandIndex];
     if (graphOperandIndex >= node.operands.size())
       return false;
-    if (!addSourceBlockArgConstraint(
-            state, graphIndex, base.operands[operandIndex].source,
-            node.operands[graphOperandIndex].source))
+    if (!addSourceBlockArgConstraint(state, graphIndex,
+                                     base.operands[operandIndex].source,
+                                     node.operands[graphOperandIndex].source))
       return false;
   }
   return true;
@@ -791,21 +798,22 @@ bool completeBlockArgMap(EmissionState &state, unsigned graphIndex) {
   if (state.graphs.empty() || graphIndex >= state.graphs.size() ||
       graphIndex >= state.blockArgToBaseArg.size())
     return false;
-  const McsGraph &base = state.graphs.front();
   const McsGraph &graph = state.graphs[graphIndex];
-  if (graph.blockArgTypes.size() != base.blockArgTypes.size())
+  if (!state.shell.fuEntry)
     return false;
+  unsigned wrapperArgCount = state.shell.fuEntry->getNumArguments();
 
   ::std::set<unsigned> used;
   for (int mapped : state.blockArgToBaseArg[graphIndex]) {
     if (mapped < 0)
       continue;
     unsigned baseArg = static_cast<unsigned>(mapped);
-    if (baseArg >= base.blockArgTypes.size() || !used.insert(baseArg).second)
+    if (baseArg >= wrapperArgCount || !used.insert(baseArg).second)
       return false;
   }
 
-  for (unsigned graphArg = 0, e = static_cast<unsigned>(graph.blockArgTypes.size());
+  for (unsigned graphArg = 0,
+                e = static_cast<unsigned>(graph.blockArgTypes.size());
        graphArg < e; ++graphArg) {
     if (state.blockArgToBaseArg[graphIndex][graphArg] >= 0)
       continue;
@@ -813,15 +821,15 @@ bool completeBlockArgMap(EmissionState &state, unsigned graphIndex) {
     auto canMapTo = [&](unsigned baseArg) {
       return !used.count(baseArg) &&
              bitWidthOfMcsType(graph.blockArgTypes[graphArg]) ==
-                 bitWidthOfMcsType(base.blockArgTypes[baseArg]);
+                 bitWidthOfFabricOrMcsType(
+                     state.shell.fuEntry->getArgument(baseArg).getType());
     };
 
-    unsigned chosen = base.blockArgTypes.size();
-    if (graphArg < base.blockArgTypes.size() && canMapTo(graphArg))
+    unsigned chosen = wrapperArgCount;
+    if (graphArg < wrapperArgCount && canMapTo(graphArg))
       chosen = graphArg;
     else {
-      for (unsigned baseArg = 0,
-                    baseCount = static_cast<unsigned>(base.blockArgTypes.size());
+      for (unsigned baseArg = 0, baseCount = wrapperArgCount;
            baseArg < baseCount; ++baseArg) {
         if (canMapTo(baseArg)) {
           chosen = baseArg;
@@ -829,10 +837,9 @@ bool completeBlockArgMap(EmissionState &state, unsigned graphIndex) {
         }
       }
     }
-    if (chosen >= base.blockArgTypes.size())
+    if (chosen >= wrapperArgCount)
       return false;
-    state.blockArgToBaseArg[graphIndex][graphArg] =
-        static_cast<int>(chosen);
+    state.blockArgToBaseArg[graphIndex][graphArg] = static_cast<int>(chosen);
     used.insert(chosen);
   }
   return true;
@@ -847,15 +854,15 @@ bool buildBlockArgMaps(EmissionState &state) {
     state.blockArgToBaseArg.push_back(
         ::std::vector<int>(graph.blockArgTypes.size(), -1));
 
-  for (unsigned argIndex = 0,
-                argCount =
-                    static_cast<unsigned>(state.graphs.front().blockArgTypes.size());
+  for (unsigned argIndex = 0, argCount = static_cast<unsigned>(
+                                  state.graphs.front().blockArgTypes.size());
        argIndex < argCount; ++argIndex)
     if (!addBlockArgConstraint(state, 0, argIndex, argIndex))
       return false;
 
   for (const McesSharedNode &shared : state.candidate.sharedNodes)
-    for (unsigned graphIndex = 1, graphCount = static_cast<unsigned>(state.graphs.size());
+    for (unsigned graphIndex = 1,
+                  graphCount = static_cast<unsigned>(state.graphs.size());
          graphIndex < graphCount; ++graphIndex)
       if (!addSharedNodeBlockArgConstraints(state, shared, graphIndex))
         return false;
@@ -867,8 +874,7 @@ bool buildBlockArgMaps(EmissionState &state) {
     if (graph.yieldSources.size() != state.graphs.front().yieldSources.size())
       return false;
     for (unsigned yieldIndex = 0,
-                  yieldCount =
-                      static_cast<unsigned>(graph.yieldSources.size());
+                  yieldCount = static_cast<unsigned>(graph.yieldSources.size());
          yieldIndex < yieldCount; ++yieldIndex)
       if (!addSourceBlockArgConstraint(
               state, graphIndex, state.graphs.front().yieldSources[yieldIndex],
@@ -876,7 +882,8 @@ bool buildBlockArgMaps(EmissionState &state) {
         return false;
   }
 
-  for (unsigned graphIndex = 0, graphCount = static_cast<unsigned>(state.graphs.size());
+  for (unsigned graphIndex = 0,
+                graphCount = static_cast<unsigned>(state.graphs.size());
        graphIndex < graphCount; ++graphIndex)
     if (!completeBlockArgMap(state, graphIndex))
       return false;
@@ -890,8 +897,17 @@ collectGraphWrapperPorts(::mlir::MLIRContext *ctx,
     return std::nullopt;
   const McsGraph &base = graphs.front();
   WrapperPorts ports;
-  ports.inputs.reserve(base.blockArgTypes.size());
-  for (::mlir::Type type : base.blockArgTypes) {
+  ::llvm::SmallVector<::mlir::Type, 4> inputTypes(base.blockArgTypes.begin(),
+                                                  base.blockArgTypes.end());
+  for (const McsGraph &graph : graphs) {
+    for (auto indexed : ::llvm::enumerate(graph.blockArgTypes)) {
+      if (indexed.index() >= inputTypes.size())
+        inputTypes.push_back(indexed.value());
+    }
+  }
+
+  ports.inputs.reserve(inputTypes.size());
+  for (::mlir::Type type : inputTypes) {
     unsigned width = bitWidthOfMcsType(type);
     ports.inputs.push_back(::fabric::BitsType::get(ctx, width));
   }
@@ -905,7 +921,8 @@ collectGraphWrapperPorts(::mlir::MLIRContext *ctx,
       width = bitWidthOfMcsType(base.blockArgTypes[source.argIndex]);
     } else {
       if (source.nodeIndex >= base.nodes.size() ||
-          source.resultIndex >= base.nodes[source.nodeIndex].resultWidths.size())
+          source.resultIndex >=
+              base.nodes[source.nodeIndex].resultWidths.size())
         return std::nullopt;
       width = base.nodes[source.nodeIndex].resultWidths[source.resultIndex];
     }
@@ -974,9 +991,8 @@ materializeOne(const SynthInputs &inputs, ::llvm::ArrayRef<McsGraph> graphs,
         if (graphIndex < operandPerms.size() &&
             operandIndex < operandPerms[graphIndex].size())
           sourceOperandIndex = operandPerms[graphIndex][operandIndex];
-        sources.push_back(nodes[graphIndex]
-                              ->operands[sourceOperandIndex]
-                              .source);
+        sources.push_back(
+            nodes[graphIndex]->operands[sourceOperandIndex].source);
       }
       auto value = buildAdapterValue(state, sources);
       if (!value.has_value())
