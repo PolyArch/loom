@@ -60,7 +60,9 @@ $(LOOM_BUILD)/build.ninja:
 	  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 test: loom
-	cmake --build $(LOOM_BUILD) -j$(JOBS) --target check-fabric
+	@LIT_OPTS="-sv --time-tests $(LIT_OPTS)" \
+	  cmake --build $(LOOM_BUILD) -j$(JOBS) --target check-fabric 2>&1 \
+	  | awk -f $(ROOT)/test/lit_top_slowest.awk
 
 clean:
 	rm -rf $(LOOM_BUILD)
