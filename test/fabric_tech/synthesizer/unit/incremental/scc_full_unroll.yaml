@@ -1,0 +1,3 @@
+synth:
+  strategy: incremental
+  scc_full_unroll: true

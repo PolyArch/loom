@@ -73,9 +73,11 @@ structuralExtendCandidates(::fabric::ModuleOp curWrapper,
                            ::dataflow::SubgraphOp sg,
                            const ::loom::SynthConfig &cfg);
 
-// True iff `sg`'s body contains a graph-region back-edge (and the
-// incremental main loop should therefore consider invoking the
-// structural extension hook).
+// True iff the fold involves graph-region back-edges or explicit state
+// heads, so the incremental main loop should consider invoking the
+// structural extension hook. The current FU is included because the
+// order heuristic may place a stateful input before a compatible
+// acyclic peer.
 bool hasBackEdgeInDiff(::fabric::ModuleOp curWrapper,
                        ::dataflow::SubgraphOp sg);
 

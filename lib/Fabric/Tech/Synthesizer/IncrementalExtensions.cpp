@@ -13,7 +13,7 @@
 //     `fabric.demux` + `fabric.mux` pair so both shapes can be
 //     materialized from the same FU.
 //   * `hasBackEdgeInDiff` -- predicate gating the tier-C structural
-//     extension hook (defined in `IncrementalExtensionsTierC.cpp`).
+//     extension hook for feedback/state-aware folds.
 //
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, section
 // "Strategy: incremental > extend_to_cover".
@@ -57,10 +57,7 @@ namespace {
 
 //===----------------------------------------------------------------------===//
 // Common helpers (mirrored from Incremental.cpp's anonymous namespace).
-// Keeping them duplicated keeps the public Incremental.h surface small;
-// the alternative would be to lift them into Alignment.h, which the
-// follow-up tier-C task will do once the SCC alignment APIs need the
-// same primitives.
+// Keeping them duplicated keeps the public Incremental.h surface small.
 //===----------------------------------------------------------------------===//
 
 unsigned bitWidthOf(::mlir::Type t) {
@@ -871,11 +868,43 @@ insertMuxDemuxCandidates(::fabric::ModuleOp curWrapper,
   return out;
 }
 
-bool hasBackEdgeInDiff(::fabric::ModuleOp /*curWrapper*/,
+bool isStateHeadName(::llvm::StringRef name) {
+  return name == "dataflow.carry" || name == "dataflow.gate" ||
+         name == "dataflow.invariant";
+}
+
+bool hasStateHead(::dataflow::SubgraphOp sg) {
+  if (!sg)
+    return false;
+  for (::mlir::Operation &op : sg.getBody().front().without_terminator())
+    if (isStateHeadName(op.getName().getStringRef()))
+      return true;
+  return false;
+}
+
+bool hasStateHead(::fabric::ModuleOp wrapper) {
+  ::fabric::FuOp fu = innerFuOf(wrapper);
+  if (!fu)
+    return false;
+  for (::mlir::Operation &raw : fu.getBody().front().without_terminator()) {
+    auto op = ::mlir::dyn_cast<::fabric::OpOp>(raw);
+    if (!op)
+      continue;
+    ::mlir::ArrayAttr opList = op.getOpList();
+    if (opList.empty())
+      continue;
+    auto sym = ::llvm::dyn_cast<::mlir::FlatSymbolRefAttr>(opList[0]);
+    if (sym && isStateHeadName(sym.getValue()))
+      return true;
+  }
+  return false;
+}
+
+bool hasBackEdgeInDiff(::fabric::ModuleOp curWrapper,
                        ::dataflow::SubgraphOp sg) {
   if (!sg)
     return false;
-  return !backEdges(sg).empty();
+  return !backEdges(sg).empty() || hasStateHead(sg) || hasStateHead(curWrapper);
 }
 
 } // namespace loom::fabric::tech::detail

@@ -612,6 +612,18 @@ This problem is NP-hard. Mitigations:
 * `timeout_sec` and `candidate_cap` are hard caps;
 * stop early when a candidate matches CostModel lower bound.
 
+The implementation generates concrete MCES candidate families before
+entering the compatibility search: a lock-step candidate for isomorphic
+DAGs and a positional pure-DAG shared-prefix candidate whose immediate
+per-input tails are routed through demux/mux shells. Every generated
+candidate counts toward `candidate_cap`; the implementation polls
+`timeout_sec` around local MCES detection, construction, coverage
+verification, and compatibility branch launch. A candidate is accepted
+only if `CoverageVerifier` can enumerate software subgraphs covering
+every input. Stateful graph-region inputs continue through the
+Tier-C-aware compatibility path so feedback alignment remains governed
+by the SCC rules above.
+
 #### Pseudocode (high-level)
 
 ```
@@ -869,27 +881,29 @@ and short-circuit per input on first match.
 
 ### SCC handling for tier C
 
-`dataflow.carry` itself carries no `step_op` / `cont_cond` attributes;
-its signature is just the carried-value type. Reduction-shaped
-patterns therefore expose their stepping/continuation parameters via
-the **`dataflow.stream`** op driving the carry's `cond` operand
-(`step_op` and `cont_cond` are `dataflow.stream` attributes per
-`include/Dataflow/IR/DataflowOps.td`).
+`dataflow.carry`, `dataflow.gate`, and `dataflow.invariant` carry no
+`step_op` / `cont_cond` attributes themselves. Their signatures include
+the state-head op name, carried/latch value type, and the cond source.
+Reduction-shaped patterns therefore expose their stepping/continuation
+parameters via the **`dataflow.stream`** op driving the state head's
+`cond` operand (`step_op` and `cont_cond` are `dataflow.stream`
+attributes per `include/Dataflow/IR/DataflowOps.td`).
 
 The flow signature of a tier-C SCC head is the tuple
 
 ```
-flow_signature(carry) = (
-    carry_type,       // MLIR Type of the carried value
+flow_signature(state_head) = (
+    op_name,          // dataflow.carry / dataflow.gate / dataflow.invariant
+    data_type,        // MLIR Type of the carried/latch value
     upstream_stream_signature_or_none
-        // present iff carry.cond is produced by a dataflow.stream:
+        // present iff cond is produced by a dataflow.stream:
         //   (index_type, step_op, cont_cond)
         // otherwise (e.g. cond comes from arith.cmpi or block-arg):
         //   (cond_source_kind, cond_source_op_name)
 )
 ```
 
-Two carry heads "match" iff their signatures are equal under structural
+Two state heads "match" iff their signatures are equal under structural
 type equality plus string equality on the attributes / op names. For
 N > 2 inputs, the heuristic builds an equivalence relation by
 transitive closure of pairwise matches; if the closure produces a
@@ -900,32 +914,38 @@ fails `feedback_align_conflict`.
 function pre_align_sccs(sccsets):
     if not config.scc_full_unroll:
         // signature heuristic per Q13
-        all_carries = collect_carry_heads_across(sccsets)
-        classes = partition(all_carries,
+        all_heads = collect_state_heads_across(sccsets)
+        classes = partition(all_heads,
                             equiv = signature_equality)
         for each input sg:
-            heads_in_sg = carry_heads_of(sg)
+            heads_in_sg = state_heads_of(sg)
             if any class C has more than one head from sg:
                 return failure("feedback_align_conflict")
-        return classes  // one class per merged "carry slot" in the FU
+        return classes  // one class per merged state slot in the FU
     else:
-        // unroll once per SCC: treat each cycle as a path of length
-        // equal to the longest cycle across inputs, materializing
-        // unrealized_conversion_cast placeholders for back-edges, then
-        // run alignment on the unrolled DAG. Re-fold post-alignment.
-        return unroll_then_align(sccsets)
+        // conservative full-unroll fallback: do not force incompatible
+        // state signatures to merge. Instead, keep each incompatible
+        // state path as a separate fabric.op slot, add muxes at feedback
+        // and yield join points, and rely on coverage verification to
+        // accept only candidates that enumerate back to every input.
+        return mirror_with_fresh_state_slots(sccsets)
 ```
 
 The unroll path mirrors the four-pass materialization scheme used by
-`SubgraphEnumerator` for forward-direction graph-region bodies (see
-recent commit history under `enumerator: graph-region body`).
-Carry-heads are realized inside the synthesized FU as
-`fabric.op [@dataflow.carry]`, never as bare `dataflow.carry`
-(`FuOp::verify` rejects the latter).
+`SubgraphEnumerator` for forward-direction graph-region bodies. State
+heads are realized inside the synthesized FU as `fabric.op` operations
+whose `op_list` names `dataflow.carry`, `dataflow.gate`, or
+`dataflow.invariant`, never as bare dataflow ops (`FuOp::verify` rejects
+the latter).
 
-**Implementation note**: the `scc_full_unroll` knob is currently a
-no-op; the signature-equivalence heuristic is always taken. The
-alternate full-unroll path described above is a planned follow-up.
+When `scc_full_unroll = true`, the implementation takes the conservative
+fresh-state fallback shown above rather than a cycle-length Tarjan
+unroll. The knob therefore has observable semantics: incompatible state
+signatures that the default heuristic reports as
+`feedback_align_conflict` may still synthesize if keeping the state paths
+separate produces a candidate that `CoverageVerifier` proves covers every
+input. This is intentionally stricter than accepting arbitrary topology:
+the enumerator and matcher remain the legality oracle.
 
 ### CostModel
 

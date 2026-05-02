@@ -3,26 +3,27 @@
 // This translation unit implements two responsibilities:
 //
 //   1. `buildTrivialFuTierC`: trivial-FU construction for a single
-//      tier-C input (one whose body contains a graph-region back-edge,
-//      typically driven by `dataflow.carry`). The Anchor strategy
-//      refuses to walk back-edges (lock-step BFS is tier-A only), so
-//      Incremental needs its own one-shot mirror builder.
+//      tier-C input whose body contains a graph-region back-edge or an
+//      explicit state head (`dataflow.carry`, `dataflow.gate`, or
+//      `dataflow.invariant`). The Anchor strategy refuses to walk
+//      back-edges (lock-step BFS is tier-A only), so Incremental needs
+//      its own one-shot mirror builder.
 //
 //   2. `structuralExtendCandidates`: the tier-C extension hook the main
-//      Incremental loop invokes when the new input subgraph has a
-//      back-edge in the diff against the current FU. Per spec section
-//      "SCC handling for tier C", the extension:
-//        a. Computes flow signatures for every carry head in the FU and
+//      Incremental loop invokes when the fold involves a back-edge or
+//      state head in the new input or in the current FU. Per spec
+//      section "SCC handling for tier C", the extension:
+//        a. Computes flow signatures for every state head in the FU and
 //           in `sg`.
 //        b. Builds equivalence classes by signature (with transitive
 //           closure for N > 2 inputs); fails with
 //           `feedback_align_conflict` if any single input contributes
 //           more than one head to a class.
 //        c. Generates one candidate FU that grafts the new sg's SCC
-//           body onto the FU, reusing carry heads whose signatures
-//           match an existing FU carry and inserting a `fabric.mux`
-//           where the post-carry op differs (tier-B baseline behind a
-//           shared carry).
+//           body onto the FU, reusing state heads whose signatures
+//           match an existing FU state head, merging carry feedback
+//           inputs for matched carries, and inserting a `fabric.mux`
+//           where the post-state value differs.
 //
 // Back-edge realization. Both builders use the same
 // "build-then-resolve" placeholder scheme that mirrors
@@ -50,14 +51,12 @@
 #include "Fabric/Tech/Synthesizer/Alignment.h"
 #include "Fabric/Tech/Synthesizer/HwParams.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
@@ -68,14 +67,12 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <algorithm>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -128,40 +125,17 @@ unsigned bitWidthOfType(::mlir::Type t) {
   return found;
 }
 
-// Returns the textual list of body fabric.op's whose op_list[0] is the
-// requested symbol (e.g. "@dataflow.carry"). Used both to identify the
-// existing FU's carry heads and to drive merge decisions.
-::llvm::SmallVector<::fabric::OpOp, 4>
-collectFabricOpsByFirstSymbol(::fabric::FuOp fu, ::llvm::StringRef symName) {
-  ::llvm::SmallVector<::fabric::OpOp, 4> out;
-  if (!fu)
-    return out;
-  for (::mlir::Operation &raw : fu.getBody().front().getOperations()) {
-    auto op = ::mlir::dyn_cast<::fabric::OpOp>(raw);
-    if (!op)
-      continue;
-    ::mlir::ArrayAttr opList = op.getOpList();
-    if (opList.empty())
-      continue;
-    auto sym = ::llvm::dyn_cast<::mlir::FlatSymbolRefAttr>(opList[0]);
-    if (!sym)
-      continue;
-    if (sym.getValue() == symName)
-      out.push_back(op);
-  }
-  return out;
-}
-
 //===----------------------------------------------------------------------===//
-// Carry flow signature.
+// State-head flow signature.
 //===----------------------------------------------------------------------===//
 //
 // Per spec "SCC handling for tier C":
 //
-//   flow_signature(carry) = (
-//       carry_type,
+//   flow_signature(state_head) = (
+//       op_name,
+//       data_type,
 //       upstream_stream_signature_or_none
-//           // present iff carry.cond is produced by a dataflow.stream:
+//           // present iff cond is produced by a dataflow.stream:
 //           //   (index_type, step_op, cont_cond)
 //           // otherwise (e.g. cond from arith.cmpi or a block-arg):
 //           //   (cond_source_kind, cond_source_op_name)
@@ -198,30 +172,21 @@ struct FlowSignature {
   return s;
 }
 
-// Compute the flow signature of one carry node (either a dataflow.carry
-// op in a sg body or a fabric.op[@dataflow.carry] in an FU body). The
-// carry's cond operand is the only operand we look at; the stream
-// upstream classification mirrors the spec.
+// Compute the cond-source part of a state-head flow signature. The stream
+// upstream classification mirrors the carry rule from the spec and is also
+// used for gate and invariant heads.
 //
-// `condValue` is the carry's cond operand (a Value);
-// `carriedTypeText` is the textual encoding of the carry's data type
-// (the operand 1/result 0 type for dataflow.carry; the operand 1 type
-// for fabric.op[@dataflow.carry]).
-FlowSignature buildFlowSignatureFromCondValue(::mlir::Value condValue,
-                                              ::llvm::StringRef carriedTypeText) {
-  FlowSignature sig;
-  sig.text.reserve(64);
-  sig.text += "carry_type=";
-  sig.text += carriedTypeText.str();
-  sig.text += "|";
+// `condValue` is the state head's cond operand.
+::std::string condSignatureFromValue(::mlir::Value condValue) {
+  ::std::string text;
   if (auto barg = ::llvm::dyn_cast<::mlir::BlockArgument>(condValue)) {
-    sig.text += "cond=blockarg";
-    return sig;
+    text += "cond=blockarg";
+    text += std::to_string(barg.getArgNumber());
+    return text;
   }
   auto opRes = ::llvm::dyn_cast<::mlir::OpResult>(condValue);
   if (!opRes) {
-    sig.text += "cond=unknown";
-    return sig;
+    return "cond=unknown";
   }
   ::mlir::Operation *producer = opRes.getOwner();
   ::llvm::StringRef pname = producer->getName().getStringRef();
@@ -267,52 +232,128 @@ FlowSignature buildFlowSignatureFromCondValue(::mlir::Value condValue,
     }
   }
   if (isStream) {
-    sig.text += "cond=stream(";
-    sig.text += "index=" + indexType;
-    sig.text += ",step_op=" + stepOp;
-    sig.text += ",cont_cond=" + contCond;
-    sig.text += ")";
+    text += "cond=stream(";
+    text += "index=" + indexType;
+    text += ",step_op=" + stepOp;
+    text += ",cont_cond=" + contCond;
+    text += ")";
   } else {
-    sig.text += "cond=op(";
-    sig.text += pname.str();
-    sig.text += ")";
+    text += "cond=op(";
+    text += pname.str();
+    text += ")";
   }
+  return text;
+}
+
+enum class StateHeadKind : uint8_t { Carry, Gate, Invariant };
+
+::std::optional<StateHeadKind> stateHeadKind(::llvm::StringRef name) {
+  if (name == "dataflow.carry")
+    return StateHeadKind::Carry;
+  if (name == "dataflow.gate")
+    return StateHeadKind::Gate;
+  if (name == "dataflow.invariant")
+    return StateHeadKind::Invariant;
+  return std::nullopt;
+}
+
+::std::string stateHeadKindText(StateHeadKind kind) {
+  switch (kind) {
+  case StateHeadKind::Carry:
+    return "dataflow.carry";
+  case StateHeadKind::Gate:
+    return "dataflow.gate";
+  case StateHeadKind::Invariant:
+    return "dataflow.invariant";
+  }
+  return "";
+}
+
+struct SgStateHead {
+  ::mlir::Operation *op = nullptr;
+  StateHeadKind kind = StateHeadKind::Carry;
+  FlowSignature sig;
+};
+
+struct FuStateHead {
+  ::fabric::OpOp op;
+  StateHeadKind kind = StateHeadKind::Carry;
+  FlowSignature sig;
+};
+
+FlowSignature buildStateHeadSignature(StateHeadKind kind,
+                                      ::mlir::Value condValue,
+                                      ::mlir::Type dataType) {
+  FlowSignature sig;
+  sig.text.reserve(96);
+  sig.text += "op=";
+  sig.text += stateHeadKindText(kind);
+  sig.text += "|type=";
+  sig.text += typeString(dataType);
+  sig.text += "|";
+  sig.text += condSignatureFromValue(condValue);
   return sig;
 }
 
-// dataflow.carry side signature. The carried-value type is the carry's
-// init operand type (operand index 1).
-FlowSignature signatureOfDataflowCarry(::mlir::Operation *carry) {
-  ::std::string carried = typeString(carry->getOperand(1).getType());
-  return buildFlowSignatureFromCondValue(carry->getOperand(0), carried);
+::std::optional<SgStateHead> describeSgStateHead(::mlir::Operation *op) {
+  if (!op)
+    return std::nullopt;
+  auto kind = stateHeadKind(op->getName().getStringRef());
+  if (!kind.has_value() || op->getNumOperands() < 2)
+    return std::nullopt;
+  SgStateHead head;
+  head.op = op;
+  head.kind = *kind;
+  head.sig = buildStateHeadSignature(*kind, op->getOperand(0),
+                                     op->getOperand(1).getType());
+  return head;
 }
 
-// fabric.op[@dataflow.carry] side signature. fabric.op exposes inputs
-// as `getInputs()`; per spec carry signature is operand 0 (cond) /
-// operand 1 (init). The carried value's bit-width drives the type.
-FlowSignature signatureOfFabricCarry(::fabric::OpOp carry) {
-  ::std::string carried;
-  if (carry.getInputs().size() >= 2)
-    carried = typeString(carry.getInputs()[1].getType());
-  ::mlir::Value cond;
-  if (!carry.getInputs().empty())
-    cond = carry.getInputs()[0];
-  return buildFlowSignatureFromCondValue(cond, carried);
+::std::optional<FuStateHead> describeFuStateHead(::fabric::OpOp op) {
+  if (!op)
+    return std::nullopt;
+  ::mlir::ArrayAttr opList = op.getOpList();
+  if (opList.empty())
+    return std::nullopt;
+  auto sym = ::llvm::dyn_cast<::mlir::FlatSymbolRefAttr>(opList[0]);
+  if (!sym)
+    return std::nullopt;
+  auto kind = stateHeadKind(sym.getValue());
+  if (!kind.has_value() || op.getInputs().size() < 2)
+    return std::nullopt;
+  FuStateHead head;
+  head.op = op;
+  head.kind = *kind;
+  head.sig = buildStateHeadSignature(*kind, op.getInputs()[0],
+                                     op.getInputs()[1].getType());
+  return head;
 }
 
-//===----------------------------------------------------------------------===//
-// Carry-head collection on both sides.
-//===----------------------------------------------------------------------===//
-
-// Walk a dataflow.subgraph body and return every `dataflow.carry` op.
-::llvm::SmallVector<::mlir::Operation *, 4>
-collectSgCarries(::dataflow::SubgraphOp sg) {
-  ::llvm::SmallVector<::mlir::Operation *, 4> out;
+::llvm::SmallVector<SgStateHead, 4>
+collectSgStateHeads(::dataflow::SubgraphOp sg) {
+  ::llvm::SmallVector<SgStateHead, 4> out;
   if (!sg)
     return out;
-  for (::mlir::Operation &raw : sg.getBody().front().getOperations()) {
-    if (raw.getName().getStringRef() == "dataflow.carry")
-      out.push_back(&raw);
+  for (::mlir::Operation &raw : sg.getBody().front().without_terminator()) {
+    auto head = describeSgStateHead(&raw);
+    if (head.has_value())
+      out.push_back(*head);
+  }
+  return out;
+}
+
+::llvm::SmallVector<FuStateHead, 4>
+collectFuStateHeads(::fabric::FuOp fu) {
+  ::llvm::SmallVector<FuStateHead, 4> out;
+  if (!fu)
+    return out;
+  for (::mlir::Operation &raw : fu.getBody().front().without_terminator()) {
+    auto op = ::mlir::dyn_cast<::fabric::OpOp>(raw);
+    if (!op)
+      continue;
+    auto head = describeFuStateHead(op);
+    if (head.has_value())
+      out.push_back(*head);
   }
   return out;
 }
@@ -321,43 +362,40 @@ collectSgCarries(::dataflow::SubgraphOp sg) {
 // Pre-align SCCs (signature heuristic).
 //===----------------------------------------------------------------------===//
 
-// PreAlignment is the externally visible result: per FU carry head and
-// per sg carry head, the "class id" identifies which carries are equivalent
+// PreAlignment is the externally visible result: per FU state head and
+// per sg state head, the "class id" identifies which heads are equivalent
 // (and therefore must merge in the synthesized FU). Class ids are dense
 // integers assigned in lexical signature order so they are stable across
 // runs.
 struct PreAlignment {
-  // For each fabric.op[@dataflow.carry] in the FU body (in body order),
+  // For each state-bearing fabric.op in the FU body (in body order),
   // the class id.
-  ::llvm::SmallVector<unsigned, 4> fuClass;
-  // For each dataflow.carry in `sg`'s body (in body order), the class id.
-  ::llvm::SmallVector<unsigned, 4> sgClass;
-  // Class id -> the FU carry index that "anchors" this class (i.e. an
-  // existing carry the new sg carry should merge into). std::nullopt
-  // means the class has no existing FU member -- the candidate must
-  // graft a fresh fabric.op[@dataflow.carry].
+  ::llvm::SmallVector<unsigned, 4> fuHeadClass;
+  // For each state-bearing op in `sg`'s body (in body order), the class id.
+  ::llvm::SmallVector<unsigned, 4> sgHeadClass;
+  // Class id -> the FU state-head index that anchors this class.
   ::llvm::SmallVector<::std::optional<unsigned>, 4> classFuAnchor;
   // Class id -> textual signature (only useful for diagnostics).
   ::llvm::SmallVector<FlowSignature, 4> classSignatures;
+  bool conflict = false;
+  bool hasSharedClass = false;
 };
 
 // Returns std::nullopt on `feedback_align_conflict` (at least one input
 // has more than one head in the same class).
 //
-// The cfg.sccFullUnroll alternate path (longest-cycle unroll, alignment
-// over the unrolled DAG, re-fold post-alignment) is intentionally
-// deferred to the broader tier-C follow-up. The flag is currently a
-// no-op: the signature-equivalence heuristic always runs. See spec
-// section "SCC handling for tier C" for the intended semantics.
+// The default path requires at least one shared state-head class when both
+// sides contain state. With cfg.sccFullUnroll enabled, incompatible
+// signatures are allowed to proceed to the conservative mirror builder; it
+// keeps the new state's slots separate and relies on coverage verification to
+// prove the resulting FU still covers all folded inputs.
 ::std::optional<PreAlignment>
 preAlignSccs(::fabric::FuOp fu, ::dataflow::SubgraphOp sg,
              const ::loom::SynthConfig &cfg) {
   PreAlignment pa;
-  (void)cfg;
 
-  ::llvm::SmallVector<::fabric::OpOp, 4> fuCarries =
-      collectFabricOpsByFirstSymbol(fu, "dataflow.carry");
-  ::llvm::SmallVector<::mlir::Operation *, 4> sgCarries = collectSgCarries(sg);
+  ::llvm::SmallVector<FuStateHead, 4> fuHeads = collectFuStateHeads(fu);
+  ::llvm::SmallVector<SgStateHead, 4> sgHeads = collectSgStateHeads(sg);
 
   // Class assignment by lexical signature order. std::map keeps
   // iteration deterministic.
@@ -378,18 +416,16 @@ preAlignSccs(::fabric::FuOp fu, ::dataflow::SubgraphOp sg,
   ::std::map<unsigned, unsigned> fuHeadsInClass;
   ::std::map<unsigned, unsigned> sgHeadsInClass;
 
-  pa.fuClass.reserve(fuCarries.size());
-  for (auto fc : fuCarries) {
-    FlowSignature s = signatureOfFabricCarry(fc);
-    unsigned cid = getOrAssignClass(s);
-    pa.fuClass.push_back(cid);
+  pa.fuHeadClass.reserve(fuHeads.size());
+  for (const FuStateHead &head : fuHeads) {
+    unsigned cid = getOrAssignClass(head.sig);
+    pa.fuHeadClass.push_back(cid);
     ++fuHeadsInClass[cid];
   }
-  pa.sgClass.reserve(sgCarries.size());
-  for (auto *sc : sgCarries) {
-    FlowSignature s = signatureOfDataflowCarry(sc);
-    unsigned cid = getOrAssignClass(s);
-    pa.sgClass.push_back(cid);
+  pa.sgHeadClass.reserve(sgHeads.size());
+  for (const SgStateHead &head : sgHeads) {
+    unsigned cid = getOrAssignClass(head.sig);
+    pa.sgHeadClass.push_back(cid);
     ++sgHeadsInClass[cid];
   }
 
@@ -407,8 +443,18 @@ preAlignSccs(::fabric::FuOp fu, ::dataflow::SubgraphOp sg,
   pa.classSignatures = ::llvm::SmallVector<FlowSignature, 4>(
       orderedSignatures.begin(), orderedSignatures.end());
   pa.classFuAnchor.assign(pa.classSignatures.size(), std::nullopt);
-  for (auto [i, cid] : ::llvm::enumerate(pa.fuClass))
+  for (auto [i, cid] : ::llvm::enumerate(pa.fuHeadClass))
     pa.classFuAnchor[cid] = static_cast<unsigned>(i);
+  ::llvm::DenseSet<unsigned> sgClasses(pa.sgHeadClass.begin(),
+                                       pa.sgHeadClass.end());
+  for (unsigned cid : pa.fuHeadClass)
+    if (sgClasses.count(cid)) {
+      pa.hasSharedClass = true;
+      break;
+    }
+  if (!cfg.sccFullUnroll && !fuHeads.empty() && !sgHeads.empty() &&
+      !pa.hasSharedClass)
+    pa.conflict = true;
   return pa;
 }
 
@@ -769,122 +815,7 @@ buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
   return std::move(ws.wrapper);
 }
 
-//===----------------------------------------------------------------------===//
-// Tier-C structural extension. Generates ONE candidate that grafts sg's
-// post-carry compute path (+ shared carry head) onto the FU.
-//===----------------------------------------------------------------------===//
-//
-// Strategy for the spec's accumulator example:
-//
-//   FU side (built from input_0, addi case):
-//     %idx, %rwc = fabric.op[@dataflow.stream] (...)
-//     %c        = fabric.op[@dataflow.carry] (%rwc, %init, %nxt)
-//     %nxt      = fabric.op[@arith.addi] (%c, %idx)
-//     yield %c
-//
-//   sg side (input_1, xori case):
-//     %idx', %rwc' = dataflow.stream (...)
-//     %c'         = dataflow.carry %rwc', %init', %nxt'
-//     %nxt'       = arith.xori %c', %idx'
-//     yield %c'
-//
-// pre_align_sccs returns one class with the FU's existing carry as its
-// anchor. The candidate keeps the FU's stream and carry ops verbatim,
-// adds an `arith.xori` fed from (%c, %idx), and replaces the carry's
-// %nxt operand with a fresh `fabric.mux` whose two arms are the
-// existing addi and the new xori. The result is precisely the spec's
-// "Tier C example (feedback alignment)" sketch.
-
 namespace {
-
-// Walk the sg body and find, per existing FU carry head, the
-// "post-carry" sg op that consumes the sg's matched carry result and
-// also feeds back into the carry's `carry` operand. Returns std::nullopt
-// when the sg body shape is not the spec's accumulator form (i.e.
-// there is no single op feeding the carry's back-edge). The current
-// implementation only handles single-result post-carry ops with two
-// operands of the form `(%c, %x)` where `%x` is either a block arg or
-// another body-op result already covered by the FU; this matches the
-// spec example.
-struct PostCarryDiff {
-  // Op name of the sg's post-carry op (e.g. "arith.xori").
-  ::llvm::StringRef opName;
-  // Source-side carry result (so we can map operand 0 back).
-  ::mlir::Value sgCarryResult;
-  // Source-side second operand (so we can map operand 1 back).
-  ::mlir::Value sgSecondOperand;
-  // Result bit-width of the post-carry op.
-  unsigned resultBw = 0;
-};
-
-::std::optional<PostCarryDiff>
-detectPostCarryDiff(::mlir::Operation *sgCarry) {
-  if (!sgCarry || sgCarry->getNumResults() == 0)
-    return std::nullopt;
-  ::mlir::Value c = sgCarry->getResult(0);
-  // The carry's "carry" operand (operand index 2) names the back-edge
-  // producer.
-  if (sgCarry->getNumOperands() < 3)
-    return std::nullopt;
-  ::mlir::Value backEdgeSrc = sgCarry->getOperand(2);
-  auto opRes = ::llvm::dyn_cast<::mlir::OpResult>(backEdgeSrc);
-  if (!opRes)
-    return std::nullopt;
-  ::mlir::Operation *post = opRes.getOwner();
-  if (post->getNumResults() != 1 || post->getNumOperands() != 2)
-    return std::nullopt;
-  // First operand must be the carry's result.
-  if (post->getOperand(0) != c)
-    return std::nullopt;
-  PostCarryDiff d;
-  d.opName = post->getName().getStringRef();
-  d.sgCarryResult = c;
-  d.sgSecondOperand = post->getOperand(1);
-  d.resultBw = bitWidthOfType(post->getResult(0).getType());
-  if (d.resultBw == 0)
-    return std::nullopt;
-  return d;
-}
-
-// Locate the FU's `arith.addi`-style post-carry op (the op whose result
-// feeds the FU carry's `carry` operand, i.e. operand index 2). Returns
-// nullptr when the FU's carry has no single back-edge producer.
-::fabric::OpOp findFuPostCarry(::fabric::OpOp fuCarry) {
-  if (!fuCarry || fuCarry.getInputs().size() < 3)
-    return {};
-  ::mlir::Value bk = fuCarry.getInputs()[2];
-  auto opRes = ::llvm::dyn_cast<::mlir::OpResult>(bk);
-  if (!opRes)
-    return {};
-  return ::mlir::dyn_cast<::fabric::OpOp>(opRes.getOwner());
-}
-
-// Find a fabric.op in the FU body whose first op_list symbol equals
-// `name` and whose inputs are exactly `(carry-result, idx)` (in that
-// order). Used to dedup if the sg's post-carry op already has an
-// equivalent in the FU (so we don't double-emit when the same input is
-// folded twice in different orders).
-::fabric::OpOp findEquivalentPostCarry(::fabric::FuOp fu,
-                                       ::llvm::StringRef name,
-                                       ::mlir::Value fuCarryRes,
-                                       ::mlir::Value fuIdx) {
-  for (::mlir::Operation &raw : fu.getBody().front().getOperations()) {
-    auto op = ::mlir::dyn_cast<::fabric::OpOp>(raw);
-    if (!op)
-      continue;
-    ::mlir::ArrayAttr opList = op.getOpList();
-    if (opList.size() != 1)
-      continue;
-    auto sym = ::llvm::dyn_cast<::mlir::FlatSymbolRefAttr>(opList[0]);
-    if (!sym || sym.getValue() != name)
-      continue;
-    if (op.getInputs().size() != 2)
-      continue;
-    if (op.getInputs()[0] == fuCarryRes && op.getInputs()[1] == fuIdx)
-      return op;
-  }
-  return {};
-}
 
 ::fabric::MuxOp emitMuxN(::mlir::OpBuilder &b, ::mlir::Location loc,
                          ::mlir::ValueRange arms, ::mlir::Type bits) {
@@ -893,6 +824,205 @@ detectPostCarryDiff(::mlir::Operation *sgCarry) {
   st.addTypes({bits});
   ::mlir::Operation *raw = b.create(st);
   return ::mlir::cast<::fabric::MuxOp>(raw);
+}
+
+bool containsValue(::llvm::ArrayRef<::mlir::Value> values, ::mlir::Value v) {
+  return llvm::any_of(values, [&](::mlir::Value cur) { return cur == v; });
+}
+
+::llvm::SmallVector<::mlir::Value, 4> muxArms(::mlir::Value oldValue) {
+  ::llvm::SmallVector<::mlir::Value, 4> arms;
+  if (auto mux =
+          ::mlir::dyn_cast_or_null<::fabric::MuxOp>(oldValue.getDefiningOp())) {
+    for (::mlir::Value in : mux.getInputs())
+      arms.push_back(in);
+    return arms;
+  }
+  arms.push_back(oldValue);
+  return arms;
+}
+
+::mlir::Value mergeWithMux(::mlir::OpBuilder &builder, ::mlir::Location loc,
+                           ::mlir::Value oldValue, ::mlir::Value newValue) {
+  if (!oldValue || !newValue)
+    return {};
+  if (oldValue == newValue)
+    return oldValue;
+  ::llvm::SmallVector<::mlir::Value, 4> arms = muxArms(oldValue);
+  if (containsValue(arms, newValue))
+    return oldValue;
+  arms.push_back(newValue);
+  auto bits = ::llvm::dyn_cast<::fabric::BitsType>(oldValue.getType());
+  if (!bits || oldValue.getType() != newValue.getType())
+    return {};
+  return emitMuxN(builder, loc, arms, oldValue.getType()).getOutput();
+}
+
+void eraseUnusedMuxProducer(::mlir::Value v) {
+  auto mux = ::mlir::dyn_cast_or_null<::fabric::MuxOp>(v.getDefiningOp());
+  if (!mux || !mux->use_empty())
+    return;
+  mux->erase();
+}
+
+::mlir::Operation *fuYield(::fabric::FuOp fu) {
+  if (!fu)
+    return nullptr;
+  return fu.getBody().front().getTerminator();
+}
+
+::llvm::StringRef firstFabricSymbol(::fabric::OpOp op) {
+  if (!op)
+    return {};
+  ::mlir::ArrayAttr opList = op.getOpList();
+  if (opList.empty())
+    return {};
+  auto sym = ::llvm::dyn_cast<::mlir::FlatSymbolRefAttr>(opList[0]);
+  if (!sym)
+    return {};
+  return sym.getValue();
+}
+
+bool mapOpResults(BodyBuildCtx &bc, ::mlir::Operation *sgOp,
+                  ::fabric::OpOp fuOp) {
+  if (!sgOp || !fuOp)
+    return false;
+  if (sgOp->getNumResults() != fuOp.getOutputs().size())
+    return false;
+  for (auto [i, r] : ::llvm::enumerate(sgOp->getResults()))
+    bc.valueMap[r] = fuOp.getOutputs()[i];
+  return true;
+}
+
+void addMatchedCondProducer(
+    ::mlir::Operation *sgHead, ::fabric::OpOp fuHead,
+    ::llvm::DenseMap<::mlir::Operation *, ::fabric::OpOp> &anchoredOps) {
+  if (!sgHead || !fuHead || sgHead->getNumOperands() < 1 ||
+      fuHead.getInputs().empty())
+    return;
+  auto sgCond = ::llvm::dyn_cast<::mlir::OpResult>(sgHead->getOperand(0));
+  auto fuCond = ::llvm::dyn_cast<::mlir::OpResult>(fuHead.getInputs()[0]);
+  if (!sgCond || !fuCond)
+    return;
+  ::mlir::Operation *sgProducer = sgCond.getOwner();
+  auto fuProducer = ::mlir::dyn_cast<::fabric::OpOp>(fuCond.getOwner());
+  if (!fuProducer)
+    return;
+  if (sgProducer->getName().getStringRef() != firstFabricSymbol(fuProducer))
+    return;
+  anchoredOps[sgProducer] = fuProducer;
+}
+
+bool isAnchoredOp(::mlir::Operation *op,
+                  const ::llvm::DenseMap<::mlir::Operation *, ::fabric::OpOp>
+                      &anchoredOps) {
+  return anchoredOps.find(op) != anchoredOps.end();
+}
+
+::mlir::OwningOpRef<::fabric::ModuleOp>
+buildMirroredTierCCandidate(::fabric::ModuleOp curWrapper,
+                            ::dataflow::SubgraphOp sg,
+                            const PreAlignment &pa) {
+  ::mlir::Operation *clonedRaw = curWrapper->clone();
+  auto newWrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(
+      ::mlir::cast<::fabric::ModuleOp>(clonedRaw));
+  ::fabric::FuOp newFu = innerFu(newWrapper.get());
+  if (!newFu)
+    return {};
+
+  ::llvm::SmallVector<FuStateHead, 4> newFuHeads =
+      collectFuStateHeads(newFu);
+  ::llvm::SmallVector<SgStateHead, 4> sgHeads = collectSgStateHeads(sg);
+  ::llvm::DenseMap<::mlir::Operation *, ::fabric::OpOp> matchedHeads;
+  ::llvm::DenseMap<::mlir::Operation *, ::fabric::OpOp> anchoredOps;
+  for (auto [i, head] : ::llvm::enumerate(sgHeads)) {
+    if (i >= pa.sgHeadClass.size())
+      return {};
+    unsigned cid = pa.sgHeadClass[i];
+    if (cid >= pa.classFuAnchor.size())
+      return {};
+    if (!pa.classFuAnchor[cid].has_value())
+      continue;
+    unsigned fuIdx = *pa.classFuAnchor[cid];
+    if (fuIdx >= newFuHeads.size())
+      return {};
+    ::fabric::OpOp fuHead = newFuHeads[fuIdx].op;
+    matchedHeads[head.op] = fuHead;
+    anchoredOps[head.op] = fuHead;
+    addMatchedCondProducer(head.op, fuHead, anchoredOps);
+  }
+
+  ::mlir::Operation *yield = fuYield(newFu);
+  if (!yield)
+    return {};
+  ::mlir::Location loc = ::mlir::UnknownLoc::get(curWrapper.getContext());
+  ::mlir::OpBuilder builder(newFu->getContext());
+  builder.setInsertionPoint(yield);
+  BodyBuildCtx bc(curWrapper.getContext(), loc, &builder);
+
+  ::mlir::Block &sgBody = sg.getBody().front();
+  if (sgBody.getNumArguments() != newFu.getBody().front().getNumArguments())
+    return {};
+  for (auto [i, a] : ::llvm::enumerate(sgBody.getArguments()))
+    bc.valueMap[a] = newFu.getBody().front().getArgument(i);
+
+  for (auto &kv : anchoredOps) {
+    if (!mapOpResults(bc, kv.first, kv.second))
+      return {};
+  }
+
+  for (::mlir::Operation &raw : sgBody.without_terminator()) {
+    if (isAnchoredOp(&raw, anchoredOps))
+      continue;
+    if (!mirrorBodyOp(bc, &raw))
+      return {};
+  }
+
+  if (!resolvePlaceholders(bc))
+    return {};
+
+  builder.setInsertionPoint(yield);
+  for (const SgStateHead &head : sgHeads) {
+    if (head.kind != StateHeadKind::Carry)
+      continue;
+    auto it = matchedHeads.find(head.op);
+    if (it == matchedHeads.end())
+      continue;
+    ::fabric::OpOp fuCarry = it->second;
+    if (head.op->getNumOperands() < 3 || fuCarry.getInputs().size() < 3)
+      return {};
+    auto mappedBackedge = bc.valueMap.find(head.op->getOperand(2));
+    if (mappedBackedge == bc.valueMap.end())
+      return {};
+    ::mlir::Value oldFeedback = fuCarry.getInputs()[2];
+    ::mlir::Value merged =
+        mergeWithMux(builder, loc, oldFeedback, mappedBackedge->second);
+    if (!merged)
+      return {};
+    fuCarry->setOperand(2, merged);
+    eraseUnusedMuxProducer(oldFeedback);
+  }
+
+  ::mlir::Operation *sgYield = sgBody.getTerminator();
+  if (!sgYield || sgYield->getNumOperands() != yield->getNumOperands())
+    return {};
+  builder.setInsertionPoint(yield);
+  for (unsigned i = 0, e = sgYield->getNumOperands(); i < e; ++i) {
+    auto mapped = bc.valueMap.find(sgYield->getOperand(i));
+    if (mapped == bc.valueMap.end())
+      return {};
+    ::mlir::Value oldValue = yield->getOperand(i);
+    ::mlir::Value newValue = mapped->second;
+    if (oldValue == newValue)
+      continue;
+    ::mlir::Value merged = mergeWithMux(builder, loc, oldValue, newValue);
+    if (!merged)
+      return {};
+    yield->setOperand(i, merged);
+    eraseUnusedMuxProducer(oldValue);
+  }
+
+  return newWrapper;
 }
 
 } // namespace
@@ -909,119 +1039,15 @@ structuralExtendCandidates(::fabric::ModuleOp curWrapper,
     return out;
 
   ::std::optional<PreAlignment> paOpt = preAlignSccs(fu, sg, cfg);
-  if (!paOpt.has_value()) {
-    // feedback_align_conflict: the caller's filter loop will reject the
-    // empty candidate set, but the failure reason itself is observed by
-    // the Incremental main loop separately via `reasonForExtensionFailure`
-    // (if it ever needs to surface it). For now the contract is "tier-C
-    // unable to extend == empty candidate vector", and the main loop
-    // converts that into a TopologyMismatch unless the test file checks
-    // for the specific reason via the failure-reason hook below.
+  if (!paOpt.has_value())
     return out;
-  }
   PreAlignment &pa = *paOpt;
-
-  // Today's slice handles the spec's single-carry-class case:
-  //   * Exactly one class.
-  //   * Class has an existing FU anchor (so we merge into it instead of
-  //     grafting a new fabric.op[@dataflow.carry]).
-  //   * sg has exactly one carry head whose post-carry shape matches
-  //     the spec example (binary op consuming `(%c, %idx)`).
-  //
-  // Other tier-C shapes (multiple disjoint SCCs, fresh carry head with
-  // no FU anchor, or non-spec post-carry shapes) are out of scope for
-  // this slice and yield an empty candidate set so the main loop
-  // fails over to the topology-mismatch path.
-  if (pa.classSignatures.size() != 1)
-    return out;
-  if (!pa.classFuAnchor[0].has_value())
-    return out;
-  unsigned anchorIdx = *pa.classFuAnchor[0];
-
-  ::llvm::SmallVector<::fabric::OpOp, 4> fuCarries =
-      collectFabricOpsByFirstSymbol(fu, "dataflow.carry");
-  if (anchorIdx >= fuCarries.size())
-    return out;
-  ::fabric::OpOp fuCarry = fuCarries[anchorIdx];
-
-  ::llvm::SmallVector<::mlir::Operation *, 4> sgCarries = collectSgCarries(sg);
-  if (sgCarries.size() != 1)
-    return out;
-  ::mlir::Operation *sgCarry = sgCarries[0];
-
-  ::std::optional<PostCarryDiff> diffOpt = detectPostCarryDiff(sgCarry);
-  if (!diffOpt.has_value())
-    return out;
-  PostCarryDiff diff = *diffOpt;
-
-  ::fabric::OpOp fuPostCarry = findFuPostCarry(fuCarry);
-  if (!fuPostCarry)
-    return out;
-  if (fuPostCarry.getInputs().size() != 2)
-    return out;
-  ::mlir::Value fuCarryRes = fuCarry.getOutputs()[0];
-  ::mlir::Value fuIdx = fuPostCarry.getInputs()[1];
-
-  // Dedup: if the FU body already has an equivalent post-carry op for
-  // sg's diff (e.g. because the same input was folded earlier under a
-  // different ordering), we have nothing to add -- the existing FU
-  // already covers `sg`. The main loop's coverage check would normally
-  // catch this, but emitting an empty candidate set here is a no-op.
-  if (findEquivalentPostCarry(fu, diff.opName, fuCarryRes, fuIdx))
+  if (pa.conflict)
     return out;
 
-  // Build the candidate by cloning the wrapper. The clone preserves the
-  // existing FU body verbatim; we then (1) graft the new post-carry
-  // fabric.op next to the existing one, (2) insert a fabric.mux merging
-  // the two post-carry ops, and (3) rewire the cloned FU carry's
-  // operand 2 to the mux output.
-  ::mlir::Operation *clonedRaw = curWrapper->clone();
-  auto newWrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(
-      ::mlir::cast<::fabric::ModuleOp>(clonedRaw));
-  ::fabric::FuOp newFu = innerFu(newWrapper.get());
-  if (!newFu)
-    return out;
-
-  ::llvm::SmallVector<::fabric::OpOp, 4> newFuCarries =
-      collectFabricOpsByFirstSymbol(newFu, "dataflow.carry");
-  if (anchorIdx >= newFuCarries.size())
-    return out;
-  ::fabric::OpOp newCarry = newFuCarries[anchorIdx];
-  ::fabric::OpOp newPost = findFuPostCarry(newCarry);
-  if (!newPost)
-    return out;
-  ::mlir::Value newCarryRes = newCarry.getOutputs()[0];
-  ::mlir::Value newIdx = newPost.getInputs()[1];
-
-  ::mlir::Type bits = bitsOf(curWrapper.getContext(), diff.resultBw);
-  ::mlir::Location loc = ::mlir::UnknownLoc::get(curWrapper.getContext());
-
-  // Insert the new post-carry op directly after the existing one so the
-  // fabric.fu body retains a deterministic order (existing post-carry
-  // first, new post-carry second, mux third). The carry itself stays
-  // in its original textual position.
-  ::mlir::OpBuilder builder(newPost->getContext());
-  builder.setInsertionPointAfter(newPost);
-  BodyBuildCtx bc(curWrapper.getContext(), loc, &builder);
-  ::mlir::ArrayAttr hwParams = hwParamsFor(bc.ctx, diff.opName, sgCarry);
-  // The post-carry op consumes (newCarryRes, newIdx) -- exactly the
-  // operand pair the existing post-carry op consumes -- per the spec
-  // example's symmetry.
-  ::llvm::SmallVector<::mlir::Value, 2> postInputs{newCarryRes, newIdx};
-  ::fabric::OpOp newPostNew = emitFabricOpInBody(
-      bc, diff.opName, postInputs, ::mlir::TypeRange{bits}, hwParams);
-
-  builder.setInsertionPointAfter(newPostNew);
-  ::llvm::SmallVector<::mlir::Value, 2> arms{newPost.getOutputs()[0],
-                                             newPostNew.getOutputs()[0]};
-  ::fabric::MuxOp mux = emitMuxN(builder, loc, arms, bits);
-
-  // Rewire the carry's back-edge operand (operand index 2) to the mux
-  // output. setOperand is safe on the live IR -- the carry's own
-  // fabric.op result is not affected.
-  newCarry->setOperand(2, mux.getOutput());
-
-  out.push_back(std::move(newWrapper));
+  auto cand = buildMirroredTierCCandidate(curWrapper, sg, pa);
+  if (cand)
+    out.push_back(std::move(cand));
   return out;
 }
 
@@ -1050,26 +1076,9 @@ classifyTierCConflict(::fabric::ModuleOp curWrapper,
   // the strict reading of the spec's pseudocode.
   if (!paOpt.has_value())
     return SynthFailureReason::FeedbackAlignConflict;
-  // Cross-side incompatibility: both sides have at least one carry
-  // head, but no equivalence class contains members from both. This is
-  // the spec's "incompatible flow signatures on cyclic SCCs" wording
-  // applied to the N==2 case (the N>2 case generalizes the same way
-  // since string equality is already transitive).
   PreAlignment &pa = *paOpt;
-  bool fuHasCarry = !pa.fuClass.empty();
-  bool sgHasCarry = !pa.sgClass.empty();
-  if (fuHasCarry && sgHasCarry) {
-    bool sharesClass = false;
-    ::llvm::DenseSet<unsigned> sgClasses(pa.sgClass.begin(),
-                                         pa.sgClass.end());
-    for (unsigned cid : pa.fuClass)
-      if (sgClasses.count(cid)) {
-        sharesClass = true;
-        break;
-      }
-    if (!sharesClass)
-      return SynthFailureReason::FeedbackAlignConflict;
-  }
+  if (pa.conflict)
+    return SynthFailureReason::FeedbackAlignConflict;
   return std::nullopt;
 }
 
