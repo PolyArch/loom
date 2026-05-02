@@ -1,18 +1,16 @@
-// MCS strategy: cost-prioritized MCES skeleton synthesis across an input
+// MCS strategy: cost-prioritized configurable FU synthesis across an input
 // group.
 //
 // The primary path generates local MCES candidates first: a lock-step
-// candidate for isomorphic DAGs and a positional pure-DAG shared-prefix
-// candidate with at most one per-input tail behind fabric.demux/fabric.mux
-// hardware. Candidate FUs are accepted only after MLIR verification and
-// CoverageVerifier prove that enumerating the FU covers every input.
+// candidate for isomorphic inputs, then bounded graph-region MCES candidates
+// that may share nodes across private islands, cycles, commutative operand
+// order, and block-argument permutations. The compatibility branch remains as
+// a fallback for cases that are better handled by the incremental machinery.
 //
-// Stateful graph-region inputs are handed to the existing Tier-C-aware
-// compatibility path so accumulator coverage remains stable while the
-// pure-DAG MCES path handles divergent tails that Incremental cannot
-// express. Both paths poll the timeout budget, count generated
-// candidates against candidate_cap, and rank successful candidates by
-// CostModel.
+// Candidate FUs are accepted only after MLIR verification and CoverageVerifier
+// prove that enumerating the FU covers every input. Search paths poll the
+// timeout budget, count generated candidates against candidate_cap, and rank
+// successful candidates by CostModel.
 //
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, sections
 // "Strategy: mcs" and "Acceptance criteria (mcs)".
@@ -32,6 +30,9 @@
 #include "Fabric/Tech/Synthesizer/CoverageVerifier.h"
 #include "Fabric/Tech/Synthesizer/HwParams.h"
 #include "Fabric/Tech/Synthesizer/Incremental.h"
+#include "Fabric/Tech/Synthesizer/McesMaterializer.h"
+#include "Fabric/Tech/Synthesizer/McesSolver.h"
+#include "Fabric/Tech/Synthesizer/McsGraph.h"
 #include "Fabric/Tech/Synthesizer/Parallel.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
@@ -43,8 +44,8 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Location.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
@@ -68,8 +69,8 @@
 #include <random>
 #include <set>
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace loom::fabric::tech {
 
@@ -137,31 +138,26 @@ struct CandidateRecord {
 }
 
 CoverageReport verifyDetachedWrapper(::fabric::ModuleOp wrapper,
-                                      const SynthInputs &inputs,
-                                      const ::loom::SynthConfig &cfg) {
+                                     const SynthInputs &inputs,
+                                     const ::loom::SynthConfig &cfg) {
   CoverageReport report;
   if (!wrapper)
     return report;
   ::mlir::Location loc = ::mlir::UnknownLoc::get(wrapper.getContext());
-  ::mlir::OwningOpRef<::mlir::ModuleOp> host(
-      ::mlir::ModuleOp::create(loc));
+  ::mlir::OwningOpRef<::mlir::ModuleOp> host(::mlir::ModuleOp::create(loc));
   ::mlir::OpBuilder hostBuilder(host->getBodyRegion());
-  ::mlir::Operation *clonedWrapper =
-      hostBuilder.clone(*wrapper.getOperation());
+  ::mlir::Operation *clonedWrapper = hostBuilder.clone(*wrapper.getOperation());
   CoverageVerifier verifier(cfg);
   return verifier.verify(
       innerFuOf(::mlir::cast<::fabric::ModuleOp>(clonedWrapper)),
       inputs.subgraphs);
 }
 
-std::optional<CandidateRecord>
-scoreLocalCandidate(::mlir::OwningOpRef<::fabric::ModuleOp> wrapper,
-                    const SynthInputs &inputs,
-                    const ::loom::SynthConfig &cfg,
-                    std::size_t candidateIndex,
-                    ::llvm::ArrayRef<::std::string> notes,
-                    std::atomic<bool> &deadlineExpired,
-                    Clock::time_point deadline) {
+std::optional<CandidateRecord> scoreLocalCandidate(
+    ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper, const SynthInputs &inputs,
+    const ::loom::SynthConfig &cfg, std::size_t candidateIndex,
+    ::llvm::ArrayRef<::std::string> notes, std::atomic<bool> &deadlineExpired,
+    Clock::time_point deadline) {
   if (!wrapper)
     return std::nullopt;
   if (noteDeadline(deadlineExpired, deadline))
@@ -235,8 +231,7 @@ bool opNamesCompatible(::llvm::StringRef a, ::llvm::StringRef b) {
   return ::loom::common::sameShareGroup(a, b);
 }
 
-::fabric::OpOp emitFabricOp(::mlir::OpBuilder &builder,
-                            ::mlir::Location loc,
+::fabric::OpOp emitFabricOp(::mlir::OpBuilder &builder, ::mlir::Location loc,
                             ::mlir::ArrayAttr opList,
                             ::mlir::ArrayAttr hwParams,
                             ::mlir::ValueRange operands,
@@ -284,8 +279,7 @@ struct WrapperShell {
   ::llvm::SmallVector<::mlir::Type, 4> outerResultTypes;
   ::mlir::OpBuilder bodyBuilder;
 
-  WrapperShell(::mlir::MLIRContext *ctx)
-      : bodyBuilder(ctx) {}
+  WrapperShell(::mlir::MLIRContext *ctx) : bodyBuilder(ctx) {}
 };
 
 ::std::optional<WrapperShell>
@@ -310,22 +304,22 @@ buildWrapperShell(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
 
   WrapperShell shell(ctx);
 
-  auto moduleType = ::mlir::FunctionType::get(ctx, outerInputs,
-                                              ::mlir::TypeRange());
+  auto moduleType =
+      ::mlir::FunctionType::get(ctx, outerInputs, ::mlir::TypeRange());
   ::mlir::OperationState moduleState(loc,
                                      ::fabric::ModuleOp::getOperationName());
-  moduleState.addAttribute("sym_name",
-                           ::mlir::StringAttr::get(ctx, wrapperName(groupName)));
-  moduleState.addAttribute("function_type",
-                           ::mlir::TypeAttr::get(moduleType));
+  moduleState.addAttribute(
+      "sym_name", ::mlir::StringAttr::get(ctx, wrapperName(groupName)));
+  moduleState.addAttribute("function_type", ::mlir::TypeAttr::get(moduleType));
   ::mlir::Region *moduleRegion = moduleState.addRegion();
   auto *moduleEntry = new ::mlir::Block();
   moduleRegion->push_back(moduleEntry);
   moduleEntry->addArguments(
-      outerInputs, ::llvm::SmallVector<::mlir::Location, 4>(outerInputs.size(),
-                                                            loc));
+      outerInputs,
+      ::llvm::SmallVector<::mlir::Location, 4>(outerInputs.size(), loc));
   ::mlir::OpBuilder topBuilder(ctx);
-  auto module = ::mlir::cast<::fabric::ModuleOp>(topBuilder.create(moduleState));
+  auto module =
+      ::mlir::cast<::fabric::ModuleOp>(topBuilder.create(moduleState));
 
   ::mlir::OpBuilder moduleBuilder(moduleEntry, moduleEntry->end());
   ::llvm::SmallVector<::mlir::Type, 4> peResults(outerOutputs.begin(),
@@ -335,15 +329,13 @@ buildWrapperShell(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
   ::mlir::OperationState peState(loc, ::fabric::PeOp::getOperationName());
   peState.addOperands(::mlir::ValueRange(moduleEntry->getArguments()));
   peState.addTypes(peResults);
-  peState.addAttribute(
-      "schedule",
-      ::fabric::ScheduleAttr::get(ctx, ::fabric::Schedule::Spatial));
+  peState.addAttribute("schedule", ::fabric::ScheduleAttr::get(
+                                       ctx, ::fabric::Schedule::Spatial));
   ::mlir::Region *peRegion = peState.addRegion();
   auto *peEntry = new ::mlir::Block();
   peRegion->push_back(peEntry);
-  peEntry->addArguments(
-      outerInputs, ::llvm::SmallVector<::mlir::Location, 4>(outerInputs.size(),
-                                                            loc));
+  peEntry->addArguments(outerInputs, ::llvm::SmallVector<::mlir::Location, 4>(
+                                         outerInputs.size(), loc));
   auto pe = ::mlir::cast<::fabric::PeOp>(moduleBuilder.create(peState));
   (void)pe;
 
@@ -354,9 +346,8 @@ buildWrapperShell(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
   ::mlir::Region *fuRegion = fuState.addRegion();
   auto *fuEntry = new ::mlir::Block();
   fuRegion->push_back(fuEntry);
-  fuEntry->addArguments(
-      innerInputs, ::llvm::SmallVector<::mlir::Location, 4>(innerInputs.size(),
-                                                            loc));
+  fuEntry->addArguments(innerInputs, ::llvm::SmallVector<::mlir::Location, 4>(
+                                         innerInputs.size(), loc));
   auto fu = ::mlir::cast<::fabric::FuOp>(peBuilder.create(fuState));
 
   ::mlir::OperationState moduleYieldState(
@@ -385,8 +376,7 @@ bool hasStateOrBackEdge(::dataflow::SubgraphOp sg) {
   return false;
 }
 
-::llvm::SmallVector<::mlir::Operation *, 4>
-bodyOps(::dataflow::SubgraphOp sg) {
+::llvm::SmallVector<::mlir::Operation *, 4> bodyOps(::dataflow::SubgraphOp sg) {
   ::llvm::SmallVector<::mlir::Operation *, 4> ops;
   if (!sg)
     return ops;
@@ -452,11 +442,10 @@ liftedResultTypes(::mlir::MLIRContext *ctx,
   return out;
 }
 
-::std::optional<DagOperand>
-describeCommonOperand(::llvm::ArrayRef<::mlir::Operation *> peers,
-                      unsigned operandIdx,
-                      ::llvm::ArrayRef<::std::map<::mlir::Operation *,
-                                                  unsigned>> skeletonByInput) {
+::std::optional<DagOperand> describeCommonOperand(
+    ::llvm::ArrayRef<::mlir::Operation *> peers, unsigned operandIdx,
+    ::llvm::ArrayRef<::std::map<::mlir::Operation *, unsigned>>
+        skeletonByInput) {
   if (peers.empty() || peers.size() != skeletonByInput.size())
     return std::nullopt;
 
@@ -493,8 +482,7 @@ describeCommonOperand(::llvm::ArrayRef<::mlir::Operation *> peers,
   return out;
 }
 
-::std::optional<DagOperand>
-describeInputOperand(
+::std::optional<DagOperand> describeInputOperand(
     ::mlir::Value operand,
     const ::std::map<::mlir::Operation *, unsigned> &skeletonByInput) {
   DagOperand out;
@@ -554,9 +542,8 @@ detectSharedPrefixTail(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs,
   for (unsigned pos = 0;; ++pos) {
     if (noteDeadline(deadlineExpired, deadline))
       return std::nullopt;
-    if (::llvm::any_of(opsByInput, [pos](const auto &ops) {
-          return pos >= ops.size();
-        }))
+    if (::llvm::any_of(opsByInput,
+                       [pos](const auto &ops) { return pos >= ops.size(); }))
       break;
 
     ::llvm::SmallVector<::mlir::Operation *, 4> peers;
@@ -609,8 +596,7 @@ detectSharedPrefixTail(::llvm::ArrayRef<::dataflow::SubgraphOp> sgs,
     unsigned inputIdx = static_cast<unsigned>(indexed.index());
     ::dataflow::SubgraphOp sg = indexed.value();
     ::mlir::Operation *yield = sg.getBody().front().getTerminator();
-    auto yieldResult =
-        ::llvm::dyn_cast<::mlir::OpResult>(yield->getOperand(0));
+    auto yieldResult = ::llvm::dyn_cast<::mlir::OpResult>(yield->getOperand(0));
     if (!yieldResult)
       return std::nullopt;
 
@@ -660,9 +646,8 @@ resolveDagValue(const DagOperand &operand, ::mlir::Block *fuEntry,
   return skeletonOutputs[operand.nodeIndex][operand.resultIndex];
 }
 
-using DemuxedSkeletonValues =
-    ::std::map<::std::pair<unsigned, unsigned>,
-               ::llvm::SmallVector<::mlir::Value, 4>>;
+using DemuxedSkeletonValues = ::std::map<::std::pair<unsigned, unsigned>,
+                                         ::llvm::SmallVector<::mlir::Value, 4>>;
 
 ::std::optional<::mlir::Value>
 resolveArmValue(const DagOperand &operand, unsigned armIndex,
@@ -686,11 +671,11 @@ void collectSkeletonRefs(const DagOperand &operand,
     refs.insert({operand.nodeIndex, operand.resultIndex});
 }
 
-::std::optional<SynthResult>
-tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
-               Clock::time_point deadline) {
-  auto plan = detectSharedPrefixTail(inputs.subgraphs, deadlineExpired,
-                                     deadline);
+::std::optional<SynthResult> tryRealDagMces(const SynthInputs &inputs,
+                                            std::atomic<bool> &deadlineExpired,
+                                            Clock::time_point deadline) {
+  auto plan =
+      detectSharedPrefixTail(inputs.subgraphs, deadlineExpired, deadline);
   if (!plan.has_value())
     return std::nullopt;
   ::mlir::MLIRContext *ctx = inputs.context;
@@ -701,8 +686,8 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
     return std::nullopt;
   if (ports->outputs.size() != 1)
     return std::nullopt;
-  auto shell = buildWrapperShell(ctx, inputs.groupName, ports->inputs,
-                                ports->outputs);
+  auto shell =
+      buildWrapperShell(ctx, inputs.groupName, ports->inputs, ports->outputs);
   if (!shell.has_value())
     return std::nullopt;
 
@@ -731,8 +716,7 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
         return std::nullopt;
       operands.push_back(*value);
     }
-    ::mlir::ArrayAttr hw =
-        buildHwParamsUnion(ctx, *names.begin(), node.peers);
+    ::mlir::ArrayAttr hw = buildHwParamsUnion(ctx, *names.begin(), node.peers);
     auto emitted = emitFabricOp(builder, loc, sortedOpList(ctx, names), hw,
                                 operands, *resultTypes);
     ::llvm::SmallVector<::mlir::Value, 2> outputs;
@@ -792,8 +776,8 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
     ::llvm::SmallVector<::mlir::Value, 4> tailOperands;
     tailOperands.reserve(arm.operands.size());
     for (const DagOperand &operand : arm.operands) {
-      auto value = resolveArmValue(operand, i, shell->fuEntry,
-                                   skeletonOutputs, demuxed);
+      auto value =
+          resolveArmValue(operand, i, shell->fuEntry, skeletonOutputs, demuxed);
       if (!value.has_value())
         return std::nullopt;
       tailOperands.push_back(*value);
@@ -801,9 +785,9 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
     ::std::set<::std::string> tailNames{
         arm.tailOp->getName().getStringRef().str()};
     ::mlir::Operation *tailPeer = arm.tailOp;
-    auto tailHw = buildHwParamsUnion(
-        ctx, arm.tailOp->getName().getStringRef(),
-        ::llvm::ArrayRef<::mlir::Operation *>(&tailPeer, 1));
+    auto tailHw =
+        buildHwParamsUnion(ctx, arm.tailOp->getName().getStringRef(),
+                           ::llvm::ArrayRef<::mlir::Operation *>(&tailPeer, 1));
     auto tailTypes = liftedResultTypes(
         ctx, ::llvm::ArrayRef<::mlir::Operation *>(&tailPeer, 1));
     if (!tailTypes.has_value() || arm.yieldResultIndex >= tailTypes->size())
@@ -815,9 +799,8 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
 
   if (!anyTail && !yieldArms.empty()) {
     ::mlir::Value first = yieldArms.front();
-    bool allSame = ::llvm::all_of(yieldArms, [first](::mlir::Value value) {
-      return value == first;
-    });
+    bool allSame = ::llvm::all_of(
+        yieldArms, [first](::mlir::Value value) { return value == first; });
     if (allSame)
       yieldArms.resize(1);
   }
@@ -825,7 +808,8 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
   if (yieldArms.empty())
     return std::nullopt;
   if (yieldArms.size() > 1) {
-    auto bits = ::llvm::dyn_cast<::fabric::BitsType>(yieldArms.front().getType());
+    auto bits =
+        ::llvm::dyn_cast<::fabric::BitsType>(yieldArms.front().getType());
     if (!bits)
       return std::nullopt;
     for (::mlir::Value arm : yieldArms)
@@ -835,10 +819,10 @@ tryRealDagMces(const SynthInputs &inputs, std::atomic<bool> &deadlineExpired,
 
   ::mlir::Value yieldValue = yieldArms.front();
   if (yieldArms.size() > 1)
-    yieldValue = emitMux(builder, loc, yieldArms, ports->outputs[0]).getOutput();
+    yieldValue =
+        emitMux(builder, loc, yieldArms, ports->outputs[0]).getOutput();
 
-  ::mlir::OperationState yieldState(loc,
-                                    ::fabric::YieldOp::getOperationName());
+  ::mlir::OperationState yieldState(loc, ::fabric::YieldOp::getOperationName());
   yieldState.addOperands({yieldValue});
   if (!shell->outerResultTypes.empty() &&
       yieldValue.getType() != shell->outerResultTypes[0]) {
@@ -908,11 +892,11 @@ buildBranches(std::size_t n, unsigned plannedBranches, uint64_t seed) {
 // classify the no-success outcome as `timeout`.
 //===----------------------------------------------------------------------===//
 
-BranchHandoff
-runOneBranch(const ::loom::SynthConfig &cfg, ::llvm::StringRef groupName,
-             ::llvm::ArrayRef<::dataflow::SubgraphOp> base,
-             const BranchVec &perm, std::size_t branchIndex,
-             const std::atomic<bool> &deadlineExpired) {
+BranchHandoff runOneBranch(const ::loom::SynthConfig &cfg,
+                           ::llvm::StringRef groupName,
+                           ::llvm::ArrayRef<::dataflow::SubgraphOp> base,
+                           const BranchVec &perm, std::size_t branchIndex,
+                           const std::atomic<bool> &deadlineExpired) {
   BranchHandoff out;
   out.branchIndex = branchIndex;
 
@@ -978,8 +962,7 @@ runOneBranch(const ::loom::SynthConfig &cfg, ::llvm::StringRef groupName,
 // candidate budget cannot admit the compatibility branch set.
 //===----------------------------------------------------------------------===//
 
-SynthFailureReason
-classifyFailure(::llvm::ArrayRef<BranchHandoff> handoffs) {
+SynthFailureReason classifyFailure(::llvm::ArrayRef<BranchHandoff> handoffs) {
   if (handoffs.empty())
     return SynthFailureReason::Timeout;
   bool anyDeadline = false;
@@ -1057,22 +1040,23 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
   ::std::vector<CandidateRecord> candidates;
   std::size_t generatedCandidates = 0;
   bool capExceeded = false;
+  bool searchHitTimeout = false;
+  ::llvm::SmallVector<::std::string, 4> graphMcesNotes;
 
-  auto addLocalCandidate =
-      [&](::mlir::OwningOpRef<::fabric::ModuleOp> wrapper,
-          ::llvm::ArrayRef<::std::string> notes) {
-        if (!wrapper)
-          return;
-        if (generatedCandidates >= cfg.mcsCandidateCap) {
-          capExceeded = true;
-          return;
-        }
-        std::size_t idx = generatedCandidates++;
-        auto scored = scoreLocalCandidate(std::move(wrapper), inputs, cfg, idx,
-                                          notes, deadlineExpired, deadline);
-        if (scored)
-          candidates.push_back(std::move(*scored));
-      };
+  auto addLocalCandidate = [&](::mlir::OwningOpRef<::fabric::ModuleOp> wrapper,
+                               ::llvm::ArrayRef<::std::string> notes) {
+    if (!wrapper)
+      return;
+    if (generatedCandidates >= cfg.mcsCandidateCap) {
+      capExceeded = true;
+      return;
+    }
+    std::size_t idx = generatedCandidates++;
+    auto scored = scoreLocalCandidate(std::move(wrapper), inputs, cfg, idx,
+                                      notes, deadlineExpired, deadline);
+    if (scored)
+      candidates.push_back(std::move(*scored));
+  };
 
   if (!noteDeadline(deadlineExpired, deadline)) {
     AnchorSynthesizer anchor(cfg);
@@ -1088,11 +1072,62 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
 
   if (!capExceeded && !noteDeadline(deadlineExpired, deadline) &&
       generatedCandidates < cfg.mcsCandidateCap) {
+    McsGraphBuildResult graphResult = buildMcsGraphs(inputs.subgraphs);
+    if (graphResult.success()) {
+      McesSolver solver;
+      std::size_t remaining = cfg.mcsCandidateCap - generatedCandidates;
+      McesSearchOptions searchOptions;
+      searchOptions.candidateCap = remaining;
+      searchOptions.deadline = deadline;
+      auto graphSearch = solver.enumerate(graphResult.graphs, searchOptions);
+      auto &graphCandidates = graphSearch.candidates;
+      if (graphSearch.hitTimeout) {
+        deadlineExpired.store(true, std::memory_order_relaxed);
+        searchHitTimeout = true;
+      }
+      if (graphSearch.hitCap)
+        capExceeded = true;
+      ::llvm::SmallVector<McesMaterializedCandidate, 4> materialized;
+      if (!deadlineExpired.load(std::memory_order_relaxed) &&
+          !noteDeadline(deadlineExpired, deadline)) {
+        McesMaterializer materializer;
+        materialized = materializer.materializeExactCoverCandidates(
+            inputs, graphResult.graphs, graphCandidates, deadline);
+        if (noteDeadline(deadlineExpired, deadline))
+          searchHitTimeout = true;
+      }
+      {
+        ::std::string note;
+        ::llvm::raw_string_ostream os(note);
+        os << "mcs: graph-MCS generated " << graphSearch.generatedCandidates
+           << " candidate(s), verified " << materialized.size();
+        graphMcesNotes.push_back(std::move(note));
+      }
+      std::size_t graphBase = generatedCandidates;
+      generatedCandidates += graphSearch.generatedCandidates;
+      for (auto &candidate : materialized) {
+        CandidateRecord record;
+        record.candidateIndex = graphBase + candidate.candidateIndex;
+        record.cost = candidate.cost;
+        record.localWrapper = true;
+        record.wrapper = std::move(candidate.wrapper);
+        record.notes = std::move(candidate.notes);
+        record.coverage = std::move(candidate.coverage);
+        candidates.push_back(std::move(record));
+      }
+    } else {
+      for (const ::std::string &note : graphResult.notes)
+        graphMcesNotes.push_back(note);
+    }
+  }
+
+  if (!capExceeded && !noteDeadline(deadlineExpired, deadline) &&
+      generatedCandidates < cfg.mcsCandidateCap) {
     if (auto real = tryRealDagMces(inputs, deadlineExpired, deadline))
       addLocalCandidate(std::move(real->wrapper), real->notes);
   }
 
-  if (capExceeded) {
+  if (capExceeded && candidates.empty()) {
     result.failureReason = SynthFailureReason::ResourceExhausted;
     result.notes.push_back("mcs: candidate_cap reached during MCES search");
     return result;
@@ -1119,21 +1154,19 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
   if (plannedBranches > internalCap)
     plannedBranches = internalCap;
 
-  std::size_t remainingBudget =
-      generatedCandidates < cfg.mcsCandidateCap
-          ? cfg.mcsCandidateCap - generatedCandidates
-          : 0;
+  std::size_t remainingBudget = generatedCandidates < cfg.mcsCandidateCap
+                                    ? cfg.mcsCandidateCap - generatedCandidates
+                                    : 0;
   if (plannedBranches > remainingBudget)
     plannedBranches = remainingBudget;
-  bool runCompatibility = plannedBranches > 0 &&
-                          !deadlineExpired.load(std::memory_order_relaxed);
+  bool runCompatibility =
+      plannedBranches > 0 && !deadlineExpired.load(std::memory_order_relaxed);
 
   // Build the branch orderings up front from a single seeded PRNG so
   // the sequence is stable across runs on the same seed/input size.
-  auto branches = runCompatibility
-                      ? buildBranches(numInputs, plannedBranches,
-                                      cfg.incrementalRandomSeed)
-                      : ::llvm::SmallVector<BranchVec, 8>();
+  auto branches = runCompatibility ? buildBranches(numInputs, plannedBranches,
+                                                   cfg.incrementalRandomSeed)
+                                   : ::llvm::SmallVector<BranchVec, 8>();
 
   // Dispatch compatibility branches in parallel. `mcs.branch_workers`
   // is validated as at least one by SynthConfig parsing.
@@ -1195,6 +1228,8 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
       result.failureReason = classifyFailure(handoffs);
     }
     result.notes.push_back("mcs: no candidate branch produced a legal FU");
+    for (const ::std::string &n : graphMcesNotes)
+      result.notes.push_back(n);
     for (const BranchHandoff &h : handoffs) {
       if (h.succeeded)
         continue;
@@ -1233,8 +1268,7 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
     }
     if (!reHomed) {
       result.failureReason = SynthFailureReason::VerifierFailed;
-      result.notes.push_back(
-          "mcs: reparsed module contained no fabric.module");
+      result.notes.push_back("mcs: reparsed module contained no fabric.module");
       return result;
     }
     reHomed->remove();
@@ -1243,6 +1277,10 @@ SynthResult MCSSynthesizer::run(const SynthInputs &inputs) {
   result.coverage = best.coverage;
   for (const ::std::string &n : best.notes)
     result.notes.push_back(n);
+  if (capExceeded)
+    result.notes.push_back("mcs: candidate_cap reached during MCES search");
+  if (searchHitTimeout)
+    result.notes.push_back("mcs: deadline exceeded during MCES search");
   ::std::string winnerNote;
   {
     ::llvm::raw_string_ostream os(winnerNote);

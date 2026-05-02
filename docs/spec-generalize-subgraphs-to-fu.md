@@ -606,46 +606,44 @@ This problem is NP-hard. Mitigations:
 
 * prune by share-group compatibility on candidate node mappings;
 * prune by bit-width compatibility;
-* split SCC heads first (Q13: flow-signature equivalence) so feedback
-  alignment is decided before pure-DAG MCS work begins;
-* parallel branch-and-bound across `branch_workers`;
-* `timeout_sec` and `candidate_cap` are hard caps;
-* stop early when a candidate matches CostModel lower bound.
+* enumerate disjoint shared-node tuple subsets in deterministic order;
+* use `timeout_sec` and `candidate_cap` as hard caps;
+* accept only candidates proven by the enumerator/matcher roundtrip;
+* keep the compatibility search as a fallback for inputs that are better
+  handled by incremental alignment.
 
-The implementation generates concrete MCES candidate families before
+The implementation generates concrete local candidate families before
 entering the compatibility search: a lock-step candidate for isomorphic
-DAGs and a positional pure-DAG shared-prefix candidate whose immediate
-per-input tails are routed through demux/mux shells. Every generated
-candidate counts toward `candidate_cap`; the implementation polls
-`timeout_sec` around local MCES detection, construction, coverage
-verification, and compatibility branch launch. A candidate is accepted
-only if `CoverageVerifier` can enumerate software subgraphs covering
-every input. Stateful graph-region inputs continue through the
-Tier-C-aware compatibility path so feedback alignment remains governed
-by the SCC rules above.
+inputs, bounded graph-region MCES candidates, and the older shared-prefix
+candidate. The graph-region path supports cycles through temporary
+placeholder values, commutative operand normalization, non-positional
+block-argument mappings, multi-yield outputs, and strict-superset
+enumeration. Every generated candidate counts toward `candidate_cap`;
+the implementation polls `timeout_sec` around local MCES detection,
+construction, coverage verification, and compatibility branch launch. A
+candidate is accepted only if `CoverageVerifier` can enumerate software
+subgraphs covering every input.
 
 #### Pseudocode (high-level)
 
 ```
 function synthesize_mcs(inputs):
     sgs = inputs.subgraphs
-    sccsets = [scc_decompose(sg) for sg in sgs]
-    pre_align_sccs(sccsets)             // Q13: signature heuristic
-                                        // or full unroll if scc_full_unroll
-    seed_pairs = candidate_node_seeds(sgs)  // share-group + width compatible
-    best = None
-    parallel_for seed in seed_pairs:
-        cand = branch_and_bound_extend(seed,
-                                       prune=share_group_and_width,
-                                       cap=config.mcs.candidate_cap,
-                                       deadline=config.mcs.timeout_sec)
-        if cand is timeout: continue
-        fu = build_fu_from_mces(cand, sgs)
-        if best is None or cost(fu) < cost(best):
-            best = fu
-    if best is None:
+    best = []
+    maybe_add(lockstep_candidate(sgs))
+    graphs = build_graph_region_views(sgs)
+    tuples = compatible_shared_node_tuples(graphs)
+    for cand in bounded_disjoint_tuple_subsets(tuples,
+                                               cap=config.mcs.candidate_cap,
+                                               deadline=config.mcs.timeout_sec):
+        fu = build_fu_with_mux_demux_adapters(cand, graphs)
+        if coverage_roundtrip_accepts(fu, sgs):
+            best.append(fu)
+    maybe_add(shared_prefix_candidate(sgs))
+    best += compatibility_candidates(sgs)
+    if best.empty():
         return failure("timeout" or "topology_mismatch")
-    return success(best)
+    return success(lowest_cost(best))
 ```
 
 #### Acceptance criteria (mcs)
@@ -660,6 +658,9 @@ function synthesize_mcs(inputs):
    `resource_exhausted`.
 4. Per `parallel_match=true`, coverage verification of the best
    candidate runs in parallel across input subgraphs.
+5. Graph-region MCES candidates cover acyclic common-private-common
+   inputs, cyclic carry inputs, block-argument permutations, multi-yield
+   outputs, exact-cover enumeration, and strict-superset enumeration.
 
 ### Strategy: incremental (all tiers)
 

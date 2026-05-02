@@ -9,8 +9,10 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -48,37 +50,36 @@ using ::mlir::Value;
 //===----------------------------------------------------------------------===//
 
 enum class Flavor : uint8_t {
-  IntArith,    // 2-int-in 1-int-out, no extra attrs
-  IntCmp,      // 2-int-in 1-i1-out, requires "predicate" sw_config
-  FloatArith,  // 2-float-in 1-float-out, no extra attrs
-  FloatCmp,    // 2-float-in 1-i1-out, requires "predicate" sw_config
-  IntToFloat,  // 1-int-in 1-float-out
-  FloatToInt,  // 1-float-in 1-int-out
-  FloatUnary,  // 1-float-in 1-float-out (math.*)
-  DataflowStreamFlavor,    // 3-int-in (T) 2-out (T,i1)
-  DataflowCarryGateInv,    // dataflow.carry/invariant/gate, polymorphic
-                           // shared port treated as integer
-  DataflowConstantFlavor,  // dataflow.constant: 1 none-in, 1 typed-out,
-                           // const_hex_value sw_config materialized into
-                           // an IntegerAttr (or FloatAttr when the result
-                           // port is float-flavored).
-  ArithSelect,             // arith.select: i1 sel + 2 data of type T -> T.
-                           // Strict-SSA eager-evaluation semantics; not
-                           // interchangeable with dataflow.mux.
-  VariadicSyncFlavor,      // dataflow.sync: M-port hardware unit
-                           // configured by a length-M bitmask whose
-                           // popcount N picks the live ports.
-  VariadicMuxFlavor,       // dataflow.mux: 1 sel + M data-port hardware
-                           // unit; bitmask of length M with N ones
-                           // picks the live data inputs.
-  VariadicDemuxFlavor,     // dataflow.demux: 1 sel + 1 data-in + M
-                           // data-out hardware unit; bitmask of length
-                           // M with N ones picks the live outputs.
+  IntArith,               // 2-int-in 1-int-out, no extra attrs
+  IntCmp,                 // 2-int-in 1-i1-out, requires "predicate" sw_config
+  FloatArith,             // 2-float-in 1-float-out, no extra attrs
+  FloatCmp,               // 2-float-in 1-i1-out, requires "predicate" sw_config
+  IntToFloat,             // 1-int-in 1-float-out
+  FloatToInt,             // 1-float-in 1-int-out
+  FloatUnary,             // 1-float-in 1-float-out (math.*)
+  DataflowStreamFlavor,   // 3-int-in (T) 2-out (T,i1)
+  DataflowCarryGateInv,   // dataflow.carry/invariant/gate, polymorphic
+                          // shared port treated as integer
+  DataflowConstantFlavor, // dataflow.constant: 1 none-in, 1 typed-out,
+                          // const_hex_value sw_config materialized into
+                          // an IntegerAttr (or FloatAttr when the result
+                          // port is float-flavored).
+  ArithSelect,            // arith.select: i1 sel + 2 data of type T -> T.
+                          // Strict-SSA eager-evaluation semantics; not
+                          // interchangeable with dataflow.mux.
+  VariadicSyncFlavor,     // dataflow.sync: M-port hardware unit
+                          // configured by a length-M bitmask whose
+                          // popcount N picks the live ports.
+  VariadicMuxFlavor,      // dataflow.mux: 1 sel + M data-port hardware
+                          // unit; bitmask of length M with N ones
+                          // picks the live data inputs.
+  VariadicDemuxFlavor,    // dataflow.demux: 1 sel + 1 data-in + M
+                          // data-out hardware unit; bitmask of length
+                          // M with N ones picks the live outputs.
 };
 
 static bool isVariadicFlavor(Flavor f) {
-  return f == Flavor::VariadicSyncFlavor ||
-         f == Flavor::VariadicMuxFlavor ||
+  return f == Flavor::VariadicSyncFlavor || f == Flavor::VariadicMuxFlavor ||
          f == Flavor::VariadicDemuxFlavor;
 }
 
@@ -88,19 +89,17 @@ static const llvm::StringMap<Flavor> &opFlavors() {
     auto put = [&](StringRef n, Flavor f) { r.insert({n, f}); };
 
     // Integer arith
-    for (StringRef n : {"arith.addi", "arith.subi", "arith.muli",
-                        "arith.divsi", "arith.divui", "arith.remsi",
-                        "arith.remui", "arith.shli", "arith.shrsi",
-                        "arith.shrui", "arith.andi", "arith.ori",
-                        "arith.xori", "arith.minsi", "arith.maxsi",
-                        "arith.minui", "arith.maxui"})
+    for (StringRef n :
+         {"arith.addi", "arith.subi", "arith.muli", "arith.divsi",
+          "arith.divui", "arith.remsi", "arith.remui", "arith.shli",
+          "arith.shrsi", "arith.shrui", "arith.andi", "arith.ori", "arith.xori",
+          "arith.minsi", "arith.maxsi", "arith.minui", "arith.maxui"})
       put(n, Flavor::IntArith);
     put("arith.cmpi", Flavor::IntCmp);
 
     // Float arith
-    for (StringRef n : {"arith.addf", "arith.subf", "arith.mulf",
-                        "arith.divf", "arith.remf",
-                        "arith.minimumf", "arith.maximumf"})
+    for (StringRef n : {"arith.addf", "arith.subf", "arith.mulf", "arith.divf",
+                        "arith.remf", "arith.minimumf", "arith.maximumf"})
       put(n, Flavor::FloatArith);
     put("arith.cmpf", Flavor::FloatCmp);
 
@@ -111,12 +110,13 @@ static const llvm::StringMap<Flavor> &opFlavors() {
     put("arith.fptoui", Flavor::FloatToInt);
 
     // Math unary
-    for (StringRef n : {"math.sin", "math.cos", "math.tan", "math.sinh",
-                        "math.cosh", "math.tanh", "math.exp", "math.exp2",
-                        "math.expm1", "math.log", "math.log2", "math.log10",
-                        "math.log1p", "math.floor", "math.ceil", "math.round",
-                        "math.trunc", "math.roundeven", "math.sqrt",
-                        "math.rsqrt", "math.absf", "math.erf"})
+    for (StringRef n :
+         {"math.sin",   "math.cos",       "math.tan",  "math.sinh",
+          "math.cosh",  "math.tanh",      "math.exp",  "math.exp2",
+          "math.expm1", "math.log",       "math.log2", "math.log10",
+          "math.log1p", "math.floor",     "math.ceil", "math.round",
+          "math.trunc", "math.roundeven", "math.sqrt", "math.rsqrt",
+          "math.absf",  "math.erf"})
       put(n, Flavor::FloatUnary);
     put("math.absi", Flavor::IntArith);
 
@@ -401,7 +401,10 @@ static llvm::DenseMap<Value, PortLift> computePortLiftMap(FuOp fu) {
         if (k == PortLift::Unknown)
           for (Value v : mux.getInputs()) {
             auto kk = m.lookup(v);
-            if (kk != PortLift::Unknown) { k = kk; break; }
+            if (kk != PortLift::Unknown) {
+              k = kk;
+              break;
+            }
           }
         if (k == PortLift::Unknown)
           continue;
@@ -413,7 +416,10 @@ static llvm::DenseMap<Value, PortLift> computePortLiftMap(FuOp fu) {
         if (k == PortLift::Unknown)
           for (Value v : dem.getOutputs()) {
             auto kk = m.lookup(v);
-            if (kk != PortLift::Unknown) { k = kk; break; }
+            if (kk != PortLift::Unknown) {
+              k = kk;
+              break;
+            }
           }
         if (k == PortLift::Unknown)
           continue;
@@ -449,8 +455,7 @@ struct ChoiceAxis {
 // Parse a hex literal (with or without "0x" prefix) into an attribute
 // matching `resultTy`. Returns nullptr on invalid input or unsupported
 // result type.
-static Attribute parseConstHex(StringRef hex, Type resultTy,
-                               MLIRContext *ctx) {
+static Attribute parseConstHex(StringRef hex, Type resultTy, MLIRContext *ctx) {
   StringRef body = hex;
   if (body.starts_with("0x") || body.starts_with("0X"))
     body = body.substr(2);
@@ -460,8 +465,7 @@ static Attribute parseConstHex(StringRef hex, Type resultTy,
   if (body.getAsInteger(16, v))
     return nullptr;
   if (auto intTy = ::mlir::dyn_cast<IntegerType>(resultTy)) {
-    return ::mlir::IntegerAttr::get(intTy,
-                                     ::llvm::APInt(intTy.getWidth(), v));
+    return ::mlir::IntegerAttr::get(intTy, ::llvm::APInt(intTy.getWidth(), v));
   }
   if (auto floatTy = ::mlir::dyn_cast<::mlir::FloatType>(resultTy)) {
     ::llvm::APInt bits(floatTy.getWidth(), v);
@@ -562,11 +566,9 @@ decodeMuxLikeMode(const llvm::StringMap<Attribute> &chosen) {
 // Returns the bitmask string of a variadic fabric.op from the chosen
 // sw_configs. Returns empty StringRef when no bitmask was chosen (the
 // caller treats this as "not configured / cannot fire").
-static StringRef getChosenBitmask(Operation *fop,
-                                  const llvm::DenseMap<Operation *,
-                                                       llvm::StringMap<
-                                                           Attribute>> &
-                                      chosenByOp) {
+static StringRef getChosenBitmask(
+    Operation *fop,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp) {
   auto it = chosenByOp.find(fop);
   if (it == chosenByOp.end())
     return {};
@@ -684,11 +686,9 @@ static Flavor flavorOfFabricOp(::fabric::OpOp fop) {
 // the value cannot stay alive. Treating drained-but-not-consuming uses
 // (firing mux at non-selected port, non-firing fabric.op) as active is
 // the central fix for the fanout-broadcast deadlock false positive.
-static bool useIsActive(Operation *user, unsigned idx,
-                         const llvm::DenseSet<Operation *> &fires,
-                         const llvm::DenseMap<Operation *,
-                                               llvm::StringMap<Attribute>>
-                             &chosenByOp) {
+static bool useIsActive(
+    Operation *user, unsigned idx, const llvm::DenseSet<Operation *> &fires,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp) {
   if (::mlir::isa<::fabric::YieldOp>(user))
     return true;
   if (::mlir::isa<::fabric::MuxOp>(user)) {
@@ -719,24 +719,19 @@ static bool useIsActive(Operation *user, unsigned idx,
   return true;
 }
 
-static bool allUsesActive(Value v,
-                           const llvm::DenseSet<Operation *> &fires,
-                           const llvm::DenseMap<Operation *,
-                                                 llvm::StringMap<Attribute>>
-                               &chosenByOp) {
+static bool allUsesActive(
+    Value v, const llvm::DenseSet<Operation *> &fires,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp) {
   for (::mlir::OpOperand &use : v.getUses())
-    if (!useIsActive(use.getOwner(), use.getOperandNumber(), fires,
-                      chosenByOp))
+    if (!useIsActive(use.getOwner(), use.getOperandNumber(), fires, chosenByOp))
       return false;
   return true;
 }
 
-static bool opCanFire(Operation *op,
-                       const llvm::DenseSet<Value> &alive,
-                       const llvm::DenseSet<Value> &demanded,
-                       const llvm::DenseMap<Operation *,
-                                             llvm::StringMap<Attribute>>
-                           &chosenByOp) {
+static bool opCanFire(
+    Operation *op, const llvm::DenseSet<Value> &alive,
+    const llvm::DenseSet<Value> &demanded,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp) {
   if (auto fop = ::mlir::dyn_cast<::fabric::OpOp>(op)) {
     Flavor f = flavorOfFabricOp(fop);
     if (isVariadicFlavor(f)) {
@@ -769,12 +764,14 @@ static bool opCanFire(Operation *op,
         return false;
     bool any = false;
     for (Value out : fop.getOutputs())
-      if (demanded.count(out)) { any = true; break; }
+      if (demanded.count(out)) {
+        any = true;
+        break;
+      }
     return any;
   }
   if (auto m = ::mlir::dyn_cast<::fabric::MuxOp>(op)) {
-    auto [sel, discard, disconnect] =
-        decodeMuxLikeMode(chosenByOp.lookup(op));
+    auto [sel, discard, disconnect] = decodeMuxLikeMode(chosenByOp.lookup(op));
     if (disconnect)
       return false;
     if (!alive.count(m.getInputs()[sel]))
@@ -784,8 +781,7 @@ static bool opCanFire(Operation *op,
     return demanded.count(m.getOutput());
   }
   if (auto d = ::mlir::dyn_cast<::fabric::DemuxOp>(op)) {
-    auto [sel, discard, disconnect] =
-        decodeMuxLikeMode(chosenByOp.lookup(op));
+    auto [sel, discard, disconnect] = decodeMuxLikeMode(chosenByOp.lookup(op));
     if (disconnect)
       return false;
     if (!alive.count(d.getInput()))
@@ -816,8 +812,7 @@ struct ConfigAnalysis {
 // accordingly), but never cause failure on their own.
 static std::optional<ConfigAnalysis> analyzeConfig(
     FuOp fu,
-    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>>
-        &chosenByOp) {
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp) {
   Block &fuBody = fu.getBody().front();
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
 
@@ -872,7 +867,10 @@ static std::optional<ConfigAnalysis> analyzeConfig(
         }
         bool anyOut = false;
         for (Value out : fop.getOutputs())
-          if (demanded.count(out)) { anyOut = true; break; }
+          if (demanded.count(out)) {
+            anyOut = true;
+            break;
+          }
         if (!anyOut)
           continue;
         for (Value in : fop.getInputs())
@@ -1056,8 +1054,7 @@ static std::optional<ConfigAnalysis> analyzeConfig(
 // path) does not propagate into the materialized subgraph signature.
 static llvm::DenseSet<Value> computeSoftwareLiveValues(
     FuOp fu,
-    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>>
-        &chosenByOp,
+    const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp,
     const ConfigAnalysis &analysis) {
   Block &fuBody = fu.getBody().front();
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
@@ -1190,8 +1187,7 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
     FuOp fu, ::llvm::ArrayRef<unsigned> liveInputIndices,
     ::mlir::ValueRange subBlockArgs, OpBuilder &builder,
     const llvm::DenseMap<Operation *, llvm::StringMap<Attribute>> &chosenByOp,
-    const ConfigAnalysis &analysis,
-    const llvm::DenseSet<Value> &swLive) {
+    const ConfigAnalysis &analysis, const llvm::DenseSet<Value> &swLive) {
   Block &fuBody = fu.getBody().front();
   MLIRContext *ctx = fu.getContext();
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
@@ -1255,10 +1251,10 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
       // sel port (mux/demux) gets a logical width derived from N rather
       // than the hardware-wide port width.
       if (isVariadicFlavor(flavor)) {
-        StringRef bm = chosen.lookup("bitmask")
-                           ? ::mlir::cast<StringAttr>(chosen.lookup("bitmask"))
-                                 .getValue()
-                           : StringRef{};
+        StringRef bm =
+            chosen.lookup("bitmask")
+                ? ::mlir::cast<StringAttr>(chosen.lookup("bitmask")).getValue()
+                : StringRef{};
         if (bm.empty())
           return std::nullopt;
         unsigned N = popcountBitmask(bm);
@@ -1343,9 +1339,8 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
             swInputs.push_back(getOrPlaceholder(in, inTy));
           }
           // Output: single port whose type comes from the fabric output.
-          unsigned outW = ::mlir::cast<BitsType>(
-                              fop.getResultTypes()[0])
-                              .getWidth();
+          unsigned outW =
+              ::mlir::cast<BitsType>(fop.getResultTypes()[0]).getWidth();
           Type outTy = liftFor(flavor, outW, /*isOutput=*/true, 0, ctx);
           if (!outTy)
             return std::nullopt;
@@ -1558,16 +1553,17 @@ static std::optional<SmallVector<Value, 4>> materializeBodyForConfig(
   return liveYields;
 }
 
-static std::string describeChoice(::llvm::ArrayRef<ChoiceAxis> axes,
-                                  ::llvm::ArrayRef<unsigned> choices,
-                                  llvm::DenseMap<Operation *, unsigned> &nthOp,
-                                  llvm::DenseMap<Operation *, unsigned> &nthMux,
-                                  llvm::DenseMap<Operation *, unsigned> &nthDemux) {
+static std::string
+describeChoice(::llvm::ArrayRef<ChoiceAxis> axes,
+               ::llvm::ArrayRef<unsigned> choices,
+               llvm::DenseMap<Operation *, unsigned> &nthOp,
+               llvm::DenseMap<Operation *, unsigned> &nthMux,
+               llvm::DenseMap<Operation *, unsigned> &nthDemux) {
   // Group choices by fabric op for readability. Mode axes (key == "_mode")
   // hold a full DictionaryAttr; we unpack into individual key=val entries.
   llvm::DenseMap<Operation *, std::string> perOp;
   auto appendAttrEntry = [](std::string &slot, ::llvm::StringRef key,
-                             Attribute v) {
+                            Attribute v) {
     if (!slot.empty())
       slot += ",";
     // Check BoolAttr before IntegerAttr because in MLIR BoolAttr is a
@@ -1667,9 +1663,8 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
         }
         axes.push_back(std::move(axis));
       }
-      Flavor primaryFlavor =
-          opFlavors().lookup(::mlir::cast<FlatSymbolRefAttr>(opList[0])
-                                 .getValue());
+      Flavor primaryFlavor = opFlavors().lookup(
+          ::mlir::cast<FlatSymbolRefAttr>(opList[0]).getValue());
       bool variadic = isVariadicFlavor(primaryFlavor);
 
       // Collect the hw_params allowed-set for "bitmask" if any. When
@@ -1707,8 +1702,8 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
         unsigned M = variadicM(primaryFlavor, fop);
         if (M == 0) {
           if (unsupported)
-            *unsupported = ::mlir::cast<FlatSymbolRefAttr>(opList[0])
-                               .getValue();
+            *unsupported =
+                ::mlir::cast<FlatSymbolRefAttr>(opList[0]).getValue();
           return results;
         }
         if (M > kVariadicMaxM) {
@@ -1716,8 +1711,8 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
               << M << " exceeds the enumerator's hard cap (" << kVariadicMaxM
               << "); skipping this FU";
           if (unsupported)
-            *unsupported = ::mlir::cast<FlatSymbolRefAttr>(opList[0])
-                               .getValue();
+            *unsupported =
+                ::mlir::cast<FlatSymbolRefAttr>(opList[0]).getValue();
           return results;
         }
         ChoiceAxis axis;
@@ -1729,7 +1724,10 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
               continue;
             bool ok = true;
             for (char c : bm)
-              if (c != '0' && c != '1') { ok = false; break; }
+              if (c != '0' && c != '1') {
+                ok = false;
+                break;
+              }
             if (!ok)
               continue;
             if (popcountBitmask(bm) == 0)
@@ -1763,11 +1761,11 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       auto buildModeDict = [&](unsigned sel, bool discard, bool disconnect) {
         ::llvm::SmallVector<NamedAttribute, 3> e = {
             NamedAttribute(StringAttr::get(ctx, "sel"),
-                            ::mlir::IntegerAttr::get(i32, (int64_t)sel)),
+                           ::mlir::IntegerAttr::get(i32, (int64_t)sel)),
             NamedAttribute(StringAttr::get(ctx, "discard"),
-                            discard ? trueA : falseA),
+                           discard ? trueA : falseA),
             NamedAttribute(StringAttr::get(ctx, "disconnect"),
-                            disconnect ? trueA : falseA)};
+                           disconnect ? trueA : falseA)};
         return DictionaryAttr::get(ctx, e);
       };
       unsigned N = m.getInputs().size();
@@ -1788,11 +1786,11 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       auto buildModeDict = [&](unsigned sel, bool discard, bool disconnect) {
         ::llvm::SmallVector<NamedAttribute, 3> e = {
             NamedAttribute(StringAttr::get(ctx, "sel"),
-                            ::mlir::IntegerAttr::get(i32, (int64_t)sel)),
+                           ::mlir::IntegerAttr::get(i32, (int64_t)sel)),
             NamedAttribute(StringAttr::get(ctx, "discard"),
-                            discard ? trueA : falseA),
+                           discard ? trueA : falseA),
             NamedAttribute(StringAttr::get(ctx, "disconnect"),
-                            disconnect ? trueA : falseA)};
+                           disconnect ? trueA : falseA)};
         return DictionaryAttr::get(ctx, e);
       };
       unsigned N = d.getOutputs().size();
@@ -1816,7 +1814,10 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
   // each per-config materialization narrows them down to the live ports.
   // For inputs, lift the inner block-arg width (which is what the body op
   // actually consumes after FU-boundary high-bit truncation), not the
-  // outer operand width. Outputs stay strict (outer == inner).
+  // outer operand width. For outputs, lift the yielded source value width:
+  // FU/PE boundary widening is a hardware wrapper detail, while the
+  // enumerated software subgraph must expose the value type produced by
+  // the selected software ops.
   auto liftMap = computePortLiftMap(fu);
   SmallVector<Type, 4> fullSwInputTypes;
   for (auto [i, arg] : llvm::enumerate(fuBody.getArguments())) {
@@ -1826,10 +1827,10 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
   }
   SmallVector<Type, 4> fullSwOutputTypes;
   auto yieldOp = ::mlir::cast<::fabric::YieldOp>(fuBody.getTerminator());
-  for (auto [i, t] : llvm::enumerate(fu.getResultTypes())) {
-    PortLift k = liftMap.lookup(yieldOp.getValues()[i]);
+  for (Value yielded : yieldOp.getValues()) {
+    PortLift k = liftMap.lookup(yielded);
     fullSwOutputTypes.push_back(
-        liftWith(::mlir::cast<BitsType>(t).getWidth(), k, ctx));
+        liftWith(::mlir::cast<BitsType>(yielded.getType()).getWidth(), k, ctx));
   }
 
   Location loc = fu.getLoc();
@@ -1910,8 +1911,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
       auto ba = ::mlir::dyn_cast<::mlir::BlockArgument>(selInput);
       if (!ba)
         continue; // sel comes from another fabric op; pass-through
-      selOverrideByFuArg[ba.getArgNumber()] =
-          variadicMuxLogicalSelType(N, ctx);
+      selOverrideByFuArg[ba.getArgNumber()] = variadicMuxLogicalSelType(N, ctx);
     }
 
     SmallVector<Type, 4> liveInputTypes;
@@ -1939,7 +1939,7 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     OpBuilder funcBuilder(funcBody, funcBody->end());
 
     SmallVector<Value, 4> outerOperands(funcBody->args_begin(),
-                                         funcBody->args_end());
+                                        funcBody->args_end());
     OperationState state(loc, ::dataflow::SubgraphOp::getOperationName());
     state.addOperands(outerOperands);
     state.addTypes(liveOutputTypes);
@@ -1953,16 +1953,24 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
         ::mlir::cast<::dataflow::SubgraphOp>(funcBuilder.create(state));
 
     OpBuilder bodyBuilder(bodyBlock, bodyBlock->end());
-    auto yields = materializeBodyForConfig(fu, liveInputIndices,
-                                           bodyBlock->getArguments(),
-                                           bodyBuilder, chosenByOp,
-                                           *analysis, swLive);
+    auto yields = materializeBodyForConfig(
+        fu, liveInputIndices, bodyBlock->getArguments(), bodyBuilder,
+        chosenByOp, *analysis, swLive);
     if (!yields) {
       func.erase();
       continue;
     }
     ::dataflow::YieldOp::create(bodyBuilder, loc, *yields);
     ::mlir::func::ReturnOp::create(funcBuilder, loc, subgraph.getResults());
+
+    {
+      ::mlir::ScopedDiagnosticHandler capture(
+          ctx, [](::mlir::Diagnostic &) { return ::mlir::success(); });
+      if (::mlir::failed(::mlir::verify(func))) {
+        func.erase();
+        continue;
+      }
+    }
 
     FuSubgraphCandidate cand;
     cand.wrapper = func;
@@ -1974,10 +1982,9 @@ enumerateFuSubgraphs(FuOp fu, ::mlir::ModuleOp module,
     for (auto &kv : chosenByOp) {
       ::llvm::SmallVector<NamedAttribute, 3> entries;
       for (auto &kv2 : kv.second)
-        entries.push_back(NamedAttribute(StringAttr::get(ctx, kv2.getKey()),
-                                          kv2.getValue()));
-      cand.swConfigsByOp[kv.first] =
-          DictionaryAttr::get(ctx, entries);
+        entries.push_back(
+            NamedAttribute(StringAttr::get(ctx, kv2.getKey()), kv2.getValue()));
+      cand.swConfigsByOp[kv.first] = DictionaryAttr::get(ctx, entries);
     }
     results.push_back(std::move(cand));
   }
