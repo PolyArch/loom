@@ -101,6 +101,40 @@ void addBlockToReach(unsigned newId,
                      const ::llvm::DenseSet<unsigned> &inBlocks,
                      ReachMatrix &reach);
 
+// Cheap fast path: install a self-only row for `newId` without propagating
+// to / from neighbour blocks. Safe ONLY when the new block is guaranteed to
+// not participate in any new transitive reachability that other partition
+// queries depend on (see GreedyPartitioner, where singleton bound blocks
+// satisfy this property because the underlying SSA graph is a forward-only
+// DAG and the direct cycle test inside `wouldFormMultiBlockCycle` already
+// covers the immediate neighbour case).
+void addSingletonBlockToReach(unsigned newId, ReachMatrix &reach);
+
+// Per-accept tally update for the running partition cost. Returned by
+// `computeAcceptDelta`; mirrors the four scalar terms produced by
+// `computeCost`.
+struct AcceptDelta {
+  // +1 if the new block has a bound template; 0 otherwise.
+  int blocksWithTemplate = 0;
+  // Signed change in cross-block SSA edge count vs. the current state.
+  int crossEdges = 0;
+  // Density numerator contribution from the new block (ops.size() / cap)
+  // when bound; 0 otherwise.
+  double densityNumerator = 0.0;
+  // 1 if the new block has a bound template; 0 otherwise.
+  unsigned densityCount = 0;
+};
+
+// Compute the four-term cost delta from accepting `ops` under template `tpl`
+// against the current `opToBlock` state. `opToBlock` MUST mirror the CostModel
+// definition: it includes every op already in some block (bound and unbound
+// alike). See `computeCost` in CostModel.cpp for the reference semantics.
+AcceptDelta
+computeAcceptDelta(::llvm::ArrayRef<::mlir::Operation *> ops,
+                   const FuTemplate *tpl, const TemplateLibrary &lib,
+                   const ::llvm::DenseMap<::mlir::Operation *, unsigned>
+                       &opToBlock);
+
 // Compute the marginal cost of the current pending partition by mirroring
 // it into a public PartitionResult and calling the standard CostModel.
 double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,

@@ -5,6 +5,7 @@
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -599,6 +600,77 @@ void addBlockToReach(unsigned newId,
     if (reachesIn)
       r |= row;
   }
+}
+
+void addSingletonBlockToReach(unsigned newId, ReachMatrix &reach) {
+  unsigned newSize = newId + 1;
+  reach.ensureSize(newSize);
+  ::llvm::BitVector &row = reach.rows[newId];
+  if (row.size() < newSize)
+    row.resize(newSize);
+  row.set(newId);
+}
+
+AcceptDelta
+computeAcceptDelta(::llvm::ArrayRef<::mlir::Operation *> ops,
+                   const FuTemplate *tpl, const TemplateLibrary &lib,
+                   const ::llvm::DenseMap<::mlir::Operation *, unsigned>
+                       &opToBlock) {
+  AcceptDelta d;
+
+  ::llvm::DenseSet<::mlir::Operation *> inCand;
+  for (::mlir::Operation *op : ops)
+    inCand.insert(op);
+
+  // Producer-side: each operand of a candidate op whose def is already in
+  // some block (and not in the candidate itself) becomes a cross-block edge
+  // once the candidate is accepted. Each operand position is counted, in
+  // line with `computeCost`'s per-operand-position semantics.
+  int delta = 0;
+  for (::mlir::Operation *op : ops) {
+    for (::mlir::Value v : op->getOperands()) {
+      ::mlir::Operation *def = v.getDefiningOp();
+      if (!def)
+        continue;
+      if (inCand.contains(def))
+        continue;
+      if (opToBlock.find(def) != opToBlock.end())
+        ++delta;
+    }
+  }
+
+  // Consumer-side: each user of a candidate op's result, if that user is
+  // already in some block (and not in the candidate), gains a cross-block
+  // edge. `Value::getUsers()` iterates per-Use, so a user that consumes the
+  // same result through multiple operand positions is correctly counted
+  // multiple times — matching the cost model.
+  for (::mlir::Operation *op : ops) {
+    for (::mlir::Value res : op->getResults()) {
+      for (::mlir::Operation *user : res.getUsers()) {
+        if (inCand.contains(user))
+          continue;
+        if (opToBlock.find(user) != opToBlock.end())
+          ++delta;
+      }
+    }
+  }
+  d.crossEdges = delta;
+
+  if (tpl != nullptr) {
+    d.blocksWithTemplate = 1;
+    d.densityCount = 1;
+    // Cap = max bodyOpCount across templates sharing this rootOpName.
+    // Equivalent to `maxTemplateSizeByRoot(lib).lookup(tpl->rootOpName)`,
+    // inlined to avoid building the full StringMap for one query.
+    unsigned cap = 1;
+    for (const FuTemplate &t : lib.templates()) {
+      if (t.rootOpName == tpl->rootOpName && t.bodyOpCount > cap)
+        cap = t.bodyOpCount;
+    }
+    d.densityNumerator =
+        static_cast<double>(ops.size()) / static_cast<double>(cap);
+  }
+  return d;
 }
 
 double computePendingCost(const ::llvm::SmallVector<PendingBlock> &blocks,
