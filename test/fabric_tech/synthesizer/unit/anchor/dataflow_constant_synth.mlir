@@ -11,7 +11,8 @@
 
 // CHECK: remark: {{.*}}synth-stat group=const_pair strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_const_pair
+// CHECK: fabric.module @fu_const_pair
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@dataflow.constant]
 // CHECK-SAME: hw_params = [{const_hex_value = ["0xcafebabe", "0xdeadbeef"]}]

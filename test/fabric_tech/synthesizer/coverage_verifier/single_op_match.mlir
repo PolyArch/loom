@@ -5,14 +5,17 @@
 // enumerates the FU into a single candidate (the fixed addi) and
 // reports a match for the lone input.
 
-func.func @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<32> {
-    %s = fabric.op [@arith.addi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %s : !fabric.bits<32>
+fabric.module @fu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+      %s = fabric.op [@arith.addi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %s : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
 func.func @input_addi(%a: i32, %b: i32) -> i32

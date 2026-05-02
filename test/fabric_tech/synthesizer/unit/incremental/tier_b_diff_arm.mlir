@@ -8,7 +8,8 @@
 // to collapse both branches back into the single output port.
 
 // CHECK: remark: {{.*}}synth-stat group=tierB_demo strategy=incremental reason=success
-// CHECK: func.func @fu_tierB_demo
+// CHECK: fabric.module @fu_tierB_demo
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK-DAG: fabric.op [@arith.addi]
 // CHECK-DAG: fabric.demux

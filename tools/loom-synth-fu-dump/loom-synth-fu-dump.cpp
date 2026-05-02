@@ -25,6 +25,7 @@
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -213,22 +214,25 @@ int main(int argc, char **argv) {
     }
   }
 
-  // Print the synthesized FU IR for each wrapper func.func. Using the
+  // Print the synthesized FU IR for each wrapper. Using the
   // `loom.synthesized_for` attribute means we pick up exactly the
   // outputs the pass appended (and ignore pre-existing helper
-  // functions). Functions are printed in their final module order,
-  // which is lexically sorted by group name per the pass's splice
-  // rule.
+  // ops). Wrappers are printed in their final module order, which is
+  // lexically sorted by group name per the pass's splice rule. Both
+  // the canonical fabric.module wrapper and any legacy func.func
+  // wrapper carrying the marker attribute are printed.
   if (printIr.getValue() && !quiet.getValue()) {
     bool any = false;
-    for (auto func : mod->getOps<::mlir::func::FuncOp>()) {
-      if (!func->hasAttr("loom.synthesized_for"))
+    for (::mlir::Operation &op : mod->getBody()->getOperations()) {
+      if (!op.hasAttr("loom.synthesized_for"))
+        continue;
+      if (!::mlir::isa<::fabric::ModuleOp, ::mlir::func::FuncOp>(op))
         continue;
       if (!any) {
         ::llvm::outs() << "// --- synthesized FUs ---\n";
         any = true;
       }
-      func.print(::llvm::outs());
+      op.print(::llvm::outs());
       ::llvm::outs() << "\n";
     }
     if (!any)

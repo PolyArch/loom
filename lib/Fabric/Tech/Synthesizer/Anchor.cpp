@@ -917,23 +917,30 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   }
   auto &ports = *portsOpt;
 
-  // Build the wrapper func.func and inner fabric.fu skeleton.
-  ::llvm::SmallVector<::mlir::Type, 4> wrapperInputTypes;
-  wrapperInputTypes.reserve(ports.size());
-  for (const WrapperInputSlot &p : ports)
-    wrapperInputTypes.push_back(::fabric::BitsType::get(ctx, p.bitwidth));
-  // Output types: bit-widths drawn from the first input's yield (all
-  // inputs already agreed on yield arity; per-position uniformity
-  // checked when each anchor is materialized). The wrapper's result
-  // shape is set to match the inner fu's results, which we'll assign
-  // after the body is built.
+  // Build the wrapper fabric.module + inner fabric.pe + fabric.fu skeleton.
+  // Two type lanes:
+  //   * "inner" types: the actual lifted bit-widths per input slot and per
+  //     yield slot. Used for FU body block-arg types (input lane) and FU
+  //     body yield value types (output lane).
+  //   * "outer" types: the uniform PE port width W = max(all lifted widths)
+  //     applied to every PE input port, every PE result port, and every
+  //     FU outer input/result type. Bridging to inner widths happens at
+  //     the FU boundary via the input-side `to <inner-type>` truncation
+  //     and the output-side `to <outer-type>` widening on fabric.yield.
 
-  // 1. Build the outer func.func with placeholder result types; we'll
-  // patch the function type after we discover yield bit-widths.
-  // Output types come from first subgraph's yield operand widths.
+  // Per-slot lifted (inner) input types.
+  ::llvm::SmallVector<::mlir::Type, 4> innerInputTypes;
+  innerInputTypes.reserve(ports.size());
+  for (const WrapperInputSlot &p : ports)
+    innerInputTypes.push_back(::fabric::BitsType::get(ctx, p.bitwidth));
+
+  // Per-slot lifted (inner) output types come from first subgraph's
+  // yield operand widths. Cross-input yield-width uniformity is
+  // enforced lazily by peersUniformWidth() during BFS, so we trust the
+  // first input's width as the wrapper signature here.
   ::dataflow::SubgraphOp first = inputs.subgraphs.front();
-  ::llvm::SmallVector<::mlir::Type, 4> wrapperResultTypes;
-  wrapperResultTypes.reserve(arity);
+  ::llvm::SmallVector<::mlir::Type, 4> innerResultTypes;
+  innerResultTypes.reserve(arity);
   ::mlir::Block &fb0 = first.getBody().front();
   ::mlir::Operation *yield0 = fb0.getTerminator();
   if (!yield0 || yield0->getNumOperands() != arity) {
@@ -948,35 +955,105 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
       result.notes.push_back("anchor: yield operand has unsupported type");
       return result;
     }
-    // Cross-input yield-width uniformity is enforced lazily by
-    // peersUniformWidth() during BFS, so we trust the first input's
-    // width as the wrapper signature here.
-    wrapperResultTypes.push_back(::fabric::BitsType::get(ctx, *bw));
+    innerResultTypes.push_back(::fabric::BitsType::get(ctx, *bw));
   }
 
+  // Pick uniform W = max over all lifted input AND output widths. The
+  // PE-uniform-width invariant constrains the PE port-list types and
+  // the FU outer port types to a single bits<W>. When all widths are
+  // 0, W = 0 (legitimate for none-only signatures).
+  unsigned uniformW = 0;
+  for (const WrapperInputSlot &p : ports)
+    uniformW = std::max(uniformW, p.bitwidth);
+  for (::mlir::Type t : innerResultTypes) {
+    if (auto bt = ::llvm::dyn_cast<::fabric::BitsType>(t))
+      uniformW = std::max(uniformW, bt.getWidth());
+  }
+  ::mlir::Type uniformBits = ::fabric::BitsType::get(ctx, uniformW);
+
+  // PE/FU outer (port-uniform) types.
+  ::llvm::SmallVector<::mlir::Type, 4> wrapperInputTypes(ports.size(),
+                                                          uniformBits);
+  ::llvm::SmallVector<::mlir::Type, 4> wrapperResultTypes(arity, uniformBits);
+
   ::std::string symName = wrapperName(inputs.groupName);
-  auto funcType =
-      ::mlir::FunctionType::get(ctx, wrapperInputTypes, wrapperResultTypes);
-  auto wrapper = ::mlir::func::FuncOp::create(loc, symName, funcType);
-  // Build the entry block and FU.
-  ::mlir::Block *entry = wrapper.addEntryBlock();
-  ::mlir::OpBuilder funcBuilder(entry, entry->end());
-  // 2. Build the inner fabric.fu. Operands are the wrapper's entry
-  // block args, types are the wrapper's input types, results are the
-  // wrapper's result types.
+
+  // 1. Build the outer fabric.module. The module declares the inputs as
+  // entry-block arguments and carries no SSA results (the inner
+  // fabric.pe owns the visible results). The module's body terminator
+  // is a zero-operand fabric.yield.
+  ::llvm::SmallVector<::mlir::Type, 0> moduleResultTypes;
+  auto moduleFuncType = ::mlir::FunctionType::get(
+      ctx, wrapperInputTypes, ::mlir::TypeRange(moduleResultTypes));
+  ::mlir::OperationState moduleState(
+      loc, ::fabric::ModuleOp::getOperationName());
+  moduleState.addAttribute(
+      "sym_name", ::mlir::StringAttr::get(ctx, symName));
+  moduleState.addAttribute("function_type",
+                           ::mlir::TypeAttr::get(moduleFuncType));
+  ::mlir::Region *moduleRegion = moduleState.addRegion();
+  ::mlir::Block *moduleEntry = new ::mlir::Block();
+  moduleRegion->push_back(moduleEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> moduleArgLocs(
+      wrapperInputTypes.size(), loc);
+  moduleEntry->addArguments(wrapperInputTypes, moduleArgLocs);
+  ::mlir::OpBuilder topBuilder(ctx);
+  ::mlir::Operation *rawModule = topBuilder.create(moduleState);
+  auto wrapper = ::mlir::cast<::fabric::ModuleOp>(rawModule);
+
+  // 2. Build the inner fabric.pe. Spatial schedule, anonymous form: PE
+  // operands are the module's entry-block arguments, PE results match
+  // the FU's results (or, when the FU has no results, a single bits<W>
+  // placeholder so PE's L>=1 invariant is satisfied).
+  ::mlir::OpBuilder moduleBuilder(moduleEntry, moduleEntry->end());
+  ::llvm::SmallVector<::mlir::Type, 4> peResultTypes(wrapperResultTypes);
+  if (peResultTypes.empty()) {
+    // FU has zero results. PE still needs L>=1; declare one bits<W>
+    // output port that the FU does not drive. Width derived from the
+    // module's input width (uniform W) when present, else 0 (which is
+    // a verifier error for empty-input wrappers, but anchor already
+    // requires K>=1 above).
+    unsigned w = wrapperInputTypes.empty()
+                     ? 0u
+                     : ::llvm::cast<::fabric::BitsType>(wrapperInputTypes[0])
+                           .getWidth();
+    peResultTypes.push_back(::fabric::BitsType::get(ctx, w));
+  }
+  ::mlir::OperationState peState(loc, ::fabric::PeOp::getOperationName());
+  peState.addOperands(::mlir::ValueRange(moduleEntry->getArguments()));
+  peState.addTypes(peResultTypes);
+  peState.addAttribute(
+      "schedule",
+      ::fabric::ScheduleAttr::get(ctx, ::fabric::Schedule::Spatial));
+  ::mlir::Region *peRegion = peState.addRegion();
+  ::mlir::Block *peEntry = new ::mlir::Block();
+  peRegion->push_back(peEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> peArgLocs(wrapperInputTypes.size(),
+                                                     loc);
+  peEntry->addArguments(wrapperInputTypes, peArgLocs);
+  ::mlir::Operation *rawPe = moduleBuilder.create(peState);
+  auto pe = ::mlir::cast<::fabric::PeOp>(rawPe);
+  (void)pe;
+
+  // 3. Build the inner fabric.fu inside the PE body. FU operands are
+  // the PE's block arguments (outer bits<W>); FU outer result types are
+  // also bits<W>. FU body block-arg types are the per-slot inner widths
+  // (input-side truncation when inner < outer is handled by the FU
+  // boundary `to <inner-type>` clause).
+  ::mlir::OpBuilder peBodyBuilder(peEntry, peEntry->end());
   ::mlir::OperationState fuState(loc, ::fabric::FuOp::getOperationName());
-  fuState.addOperands(::mlir::ValueRange(entry->getArguments()));
+  fuState.addOperands(::mlir::ValueRange(peEntry->getArguments()));
   fuState.addTypes(wrapperResultTypes);
   ::mlir::Region *fuRegion = fuState.addRegion();
   ::mlir::Block *fuEntry = new ::mlir::Block();
   fuRegion->push_back(fuEntry);
-  ::llvm::SmallVector<::mlir::Location, 4> fuArgLocs(wrapperInputTypes.size(),
+  ::llvm::SmallVector<::mlir::Location, 4> fuArgLocs(innerInputTypes.size(),
                                                      loc);
-  fuEntry->addArguments(wrapperInputTypes, fuArgLocs);
-  ::mlir::Operation *rawFu = funcBuilder.create(fuState);
+  fuEntry->addArguments(innerInputTypes, fuArgLocs);
+  ::mlir::Operation *rawFu = peBodyBuilder.create(fuState);
   auto fu = ::mlir::cast<::fabric::FuOp>(rawFu);
 
-  // 3. Build the FU body using the BFS algorithm. Anchor strategy is
+  // 4. Build the FU body using the BFS algorithm. Anchor strategy is
   // self-contained: every node it emits inside the body lives at the
   // top level (no nested control flow), so a single OpBuilder anchored
   // at the FU entry block suffices.
@@ -990,7 +1067,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
   for (auto a : fuEntry->getArguments())
     st.portValues.push_back(a);
 
-  // 4. Walk yield anchors in order, materializing each peer set. The
+  // 5. Walk yield anchors in order, materializing each peer set. The
   // BFS dedups DAG fanout via `visited`, so emitting in anchor order
   // does not duplicate inner ops shared across multiple yield outputs.
   ::llvm::SmallVector<::mlir::Value, 4> yieldValues;
@@ -1002,8 +1079,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
       peers.push_back(perInput[k]);
     EmitOutcome out = materializePeers(st, peers, cfg);
     if (!out.ok) {
-      // Drop the partially built wrapper deterministically by clearing
-      // the OwningOpRef (which we never constructed yet). The
+      // Drop the partially built wrapper deterministically. The
       // worker-local context goes out of scope in the caller.
       wrapper.erase();
       result.failureReason = out.reason != SynthFailureReason::None
@@ -1016,19 +1092,47 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
     yieldValues.push_back(out.value);
   }
 
-  // 5. Emit fabric.yield and append a return from the wrapper to
-  // satisfy the func dialect's signature.
-  ::mlir::OperationState yieldState(loc, ::fabric::YieldOp::getOperationName());
-  yieldState.addOperands(yieldValues);
-  bodyBuilder.create(yieldState);
+  // 6. Emit the FU's terminator fabric.yield (matches the FU result
+  // arity, which may be zero) and the module-level fabric.yield (zero
+  // operands; fabric.module declares no SSA results).
+  //
+  // For each yield value `k`, when the inner bit-width is narrower than
+  // the FU outer width W, attach the per-value `to <outer>` clause via
+  // the `declared_types` array attribute. This drives the FU output
+  // boundary widening (low-bit-aligned, high bits zero-filled).
+  ::mlir::OperationState fuYieldState(loc,
+                                      ::fabric::YieldOp::getOperationName());
+  fuYieldState.addOperands(yieldValues);
+  if (!yieldValues.empty()) {
+    ::llvm::SmallVector<::mlir::Attribute, 4> declaredAttrs;
+    declaredAttrs.reserve(yieldValues.size());
+    for (auto [k, v] : ::llvm::enumerate(yieldValues)) {
+      // The declared destination is always the FU's outer result type
+      // (uniform bits<W>). When inner == outer the verifier still
+      // accepts the redundant annotation, but to keep the printed IR
+      // clean we record the declared type only when it actually
+      // differs from the inner SSA type.
+      ::mlir::Type declared = wrapperResultTypes[k];
+      declaredAttrs.push_back(::mlir::TypeAttr::get(declared));
+    }
+    bool anyWidens = false;
+    for (auto [k, v] : ::llvm::enumerate(yieldValues)) {
+      if (v.getType() != wrapperResultTypes[k]) {
+        anyWidens = true;
+        break;
+      }
+    }
+    if (anyWidens)
+      fuYieldState.addAttribute(
+          "declared_types", ::mlir::ArrayAttr::get(ctx, declaredAttrs));
+  }
+  bodyBuilder.create(fuYieldState);
 
-  // The wrapper returns the FU's results.
-  ::mlir::OperationState retState(loc,
-                                  ::mlir::func::ReturnOp::getOperationName());
-  retState.addOperands(::mlir::ValueRange(fu.getResults()));
-  funcBuilder.create(retState);
+  ::mlir::OperationState moduleYieldState(
+      loc, ::fabric::YieldOp::getOperationName());
+  moduleBuilder.create(moduleYieldState);
 
-  // 6. Run the MLIR verifier on the wrapper. Any verifier failure
+  // 7. Run the MLIR verifier on the wrapper. Any verifier failure
   // demotes the result to verifier_failed (no IR is appended).
   if (::mlir::failed(::mlir::verify(wrapper))) {
     wrapper.erase();
@@ -1039,7 +1143,7 @@ SynthResult AnchorSynthesizer::run(const SynthInputs &inputs) {
 
   // Wrap into an OwningOpRef so the worker-side thread retains
   // ownership until the main thread re-homes it.
-  ::mlir::OwningOpRef<::mlir::func::FuncOp> owned(wrapper);
+  ::mlir::OwningOpRef<::fabric::ModuleOp> owned(wrapper);
 
   result.wrapper = std::move(owned);
   for (auto &n : st.notes)

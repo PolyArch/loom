@@ -75,13 +75,15 @@ namespace {
 // the incremental loop is self-contained on these read-only utilities).
 //===----------------------------------------------------------------------===//
 
-::fabric::FuOp innerFuOf(::mlir::func::FuncOp wrapper) {
-  if (!wrapper || wrapper.getBody().empty())
+::fabric::FuOp innerFuOf(::fabric::ModuleOp wrapper) {
+  if (!wrapper)
     return {};
-  for (::mlir::Operation &op : wrapper.getBody().front().getOperations())
-    if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op))
-      return fu;
-  return {};
+  ::fabric::FuOp found;
+  wrapper.walk([&](::fabric::FuOp fu) {
+    if (!found)
+      found = fu;
+  });
+  return found;
 }
 
 ::std::string sanitizeGroup(::llvm::StringRef name) {
@@ -99,7 +101,7 @@ namespace {
 // deterministically.
 //===----------------------------------------------------------------------===//
 
-uint64_t structuralIdOf(::mlir::func::FuncOp wrapper) {
+uint64_t structuralIdOf(::fabric::ModuleOp wrapper) {
   if (!wrapper)
     return 0;
   ::std::string text;
@@ -142,7 +144,7 @@ unsigned subgraphNodeCount(::dataflow::SubgraphOp sg) {
 // trivial-FU definition.
 //===----------------------------------------------------------------------===//
 
-::mlir::OwningOpRef<::mlir::func::FuncOp>
+::mlir::OwningOpRef<::fabric::ModuleOp>
 buildTrivialFu(const ::loom::SynthConfig &cfg, ::mlir::MLIRContext *ctx,
                ::llvm::StringRef groupName, ::dataflow::SubgraphOp first,
                SynthFailureReason &reason,
@@ -183,18 +185,57 @@ buildTrivialFu(const ::loom::SynthConfig &cfg, ::mlir::MLIRContext *ctx,
 // Verifier + back-coverage filter.
 //===----------------------------------------------------------------------===//
 
-bool runMlirVerify(::mlir::func::FuncOp wrapper) {
+bool runMlirVerify(::fabric::ModuleOp wrapper) {
   if (!wrapper)
     return false;
   return ::mlir::succeeded(::mlir::verify(wrapper));
 }
 
-bool backCovers(::mlir::func::FuncOp wrapper,
+// CoverageVerifier::verify walks up from the FU expecting an ancestor
+// `mlir::ModuleOp` (it clones the surrounding wrapper into a scratch
+// builtin-module before invoking the enumerator). Synthesis-built
+// candidates live as floating `OwningOpRef<fabric::ModuleOp>` values
+// without any builtin-module parent, so the verifier's ancestor walk
+// would otherwise return a vacuous "uncovered" report. Wrap the
+// floating wrapper in a transient `mlir::ModuleOp` for the duration of
+// the verifier call, then detach it again so the caller's `OwningOpRef`
+// retains ownership.
+struct ScopedTransientHost {
+  ::mlir::OwningOpRef<::mlir::ModuleOp> host;
+  ::fabric::ModuleOp parented;
+  bool inserted = false;
+  explicit ScopedTransientHost(::fabric::ModuleOp wrapper) {
+    if (!wrapper)
+      return;
+    if (wrapper->getParentOp() &&
+        ::mlir::isa<::mlir::ModuleOp>(wrapper->getParentOp())) {
+      parented = wrapper;
+      return;
+    }
+    if (wrapper->getParentOp())
+      return; // unexpected non-module parent; leave alone
+    ::mlir::MLIRContext *ctx = wrapper.getContext();
+    host = ::mlir::OwningOpRef<::mlir::ModuleOp>(
+        ::mlir::ModuleOp::create(::mlir::UnknownLoc::get(ctx)));
+    host->getBody()->push_back(wrapper.getOperation());
+    inserted = true;
+    parented = wrapper;
+  }
+  ~ScopedTransientHost() {
+    if (inserted && parented)
+      parented->remove();
+  }
+  ScopedTransientHost(const ScopedTransientHost &) = delete;
+  ScopedTransientHost &operator=(const ScopedTransientHost &) = delete;
+};
+
+bool backCovers(::fabric::ModuleOp wrapper,
                 ::llvm::ArrayRef<::dataflow::SubgraphOp> covered,
                 const ::loom::SynthConfig &cfg) {
   ::fabric::FuOp fu = innerFuOf(wrapper);
   if (!fu)
     return false;
+  ScopedTransientHost host(wrapper);
   CoverageVerifier verifier(cfg);
   CoverageReport report = verifier.verify(fu, covered);
   return report.allCovered();
@@ -205,13 +246,19 @@ bool backCovers(::mlir::func::FuncOp wrapper,
 //===----------------------------------------------------------------------===//
 
 struct ScoredCandidate {
-  ::mlir::OwningOpRef<::mlir::func::FuncOp> wrapper;
+  ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper;
   double cost = 0.0;
   uint64_t structuralId = 0;
+  // Stable insertion-order index. Used as the *first* tiebreaker after
+  // cost, so generators that want a particular candidate to win on
+  // equal cost (e.g. the share-recurse variant pushed before the
+  // baseline mux/demux candidate) can rely on the documented
+  // generator-emit order rather than on the structural-text hash.
+  unsigned insertionIndex = 0;
 };
 
 ::std::optional<ScoredCandidate>
-pickBest(::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8>
+pickBest(::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 8>
              &legal,
          const ::loom::SynthConfig &cfg) {
   if (legal.empty())
@@ -219,7 +266,9 @@ pickBest(::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8>
   ::std::vector<ScoredCandidate> scored;
   scored.reserve(legal.size());
   CostModel cost(cfg);
+  unsigned idx = 0;
   for (auto &w : legal) {
+    unsigned thisIdx = idx++;
     if (!w)
       continue;
     ::fabric::FuOp fu = innerFuOf(w.get());
@@ -228,6 +277,7 @@ pickBest(::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8>
     ScoredCandidate sc;
     sc.cost = cost.evaluate(fu);
     sc.structuralId = structuralIdOf(w.get());
+    sc.insertionIndex = thisIdx;
     sc.wrapper = std::move(w);
     scored.push_back(std::move(sc));
   }
@@ -238,6 +288,8 @@ pickBest(::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8>
                      [](const ScoredCandidate &a, const ScoredCandidate &b) {
                        if (a.cost != b.cost)
                          return a.cost < b.cost;
+                       if (a.insertionIndex != b.insertionIndex)
+                         return a.insertionIndex < b.insertionIndex;
                        return a.structuralId < b.structuralId;
                      });
   return std::move(scored.front());
@@ -247,11 +299,12 @@ pickBest(::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8>
 // is_covered: shorthand around CoverageVerifier for one sg.
 //===----------------------------------------------------------------------===//
 
-bool isCovered(::mlir::func::FuncOp wrapper, ::dataflow::SubgraphOp sg,
+bool isCovered(::fabric::ModuleOp wrapper, ::dataflow::SubgraphOp sg,
                const ::loom::SynthConfig &cfg) {
   ::fabric::FuOp fu = innerFuOf(wrapper);
   if (!fu)
     return false;
+  ScopedTransientHost host(wrapper);
   CoverageVerifier verifier(cfg);
   ::dataflow::SubgraphOp arr[1] = {sg};
   CoverageReport report =
@@ -341,7 +394,7 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
   // 2. Build trivial FU from the first input.
   SynthFailureReason trivialReason = SynthFailureReason::None;
   ::llvm::SmallVector<::std::string, 4> trivialNotes;
-  ::mlir::OwningOpRef<::mlir::func::FuncOp> wrapper =
+  ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper =
       buildTrivialFu(cfg, inputs.context, inputs.groupName, ordered.front(),
                      trivialReason, trivialNotes);
   for (auto &n : trivialNotes)
@@ -364,7 +417,7 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
     }
 
     // Generate candidates via the extension hooks.
-    ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8>
+    ::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 8>
         candidates;
     {
       auto wide = detail::widenOplistCandidates(wrapper.get(), sg);
@@ -383,7 +436,7 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
     }
 
     // Filter.
-    ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 8> legal;
+    ::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 8> legal;
     for (auto &c : candidates) {
       if (!c)
         continue;
@@ -434,8 +487,8 @@ SynthResult IncrementalSynthesizer::run(const SynthInputs &inputs) {
   // buildTrivialFu (via the anchor path) already does so.
   if (result.wrapper) {
     ::std::string sym = sanitizeGroup(inputs.groupName);
-    if (result.wrapper->getName() != sym)
-      result.wrapper->setName(sym);
+    if (result.wrapper->getSymName() != sym)
+      result.wrapper->setSymName(sym);
   }
   return result;
 }

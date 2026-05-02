@@ -1,7 +1,9 @@
 // CLI helper for lit tests: parse an MLIR module containing one or more
-// `func.func` wrappers around a single `fabric.fu`, then run
-// `loom::fabric::tech::CostModel::evaluate(fu)` on each and print the
-// score one per line in `cost <funcname>=<double>` form.
+// wrappers (each `fabric.module` or `func.func` containing a single
+// `fabric.fu`), then run `loom::fabric::tech::CostModel::evaluate(fu)`
+// on each and print the score one per line in `cost <name>=<double>`
+// form. The reported `<name>` is the wrapper symbol name (with no
+// leading `@`).
 //
 // Usage:
 //   loom-cost-test <input.mlir> [--config <cfg.yaml|toml>]
@@ -24,6 +26,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/InitAllDialects.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/SmallVector.h"
@@ -83,21 +86,27 @@ int main(int argc, char **argv) {
 
   ::loom::fabric::tech::CostModel cost(config);
 
-  // Walk each func.func in module order. For each func, find FUs in body
-  // walk order; the spec helper-spec wants exactly one FU per func, so
-  // any deviation prints a diagnostic and skips that func (test infra
-  // never depends on the malformed case).
-  for (::mlir::func::FuncOp f : mod->getOps<::mlir::func::FuncOp>()) {
-    ::llvm::SmallVector<::fabric::FuOp, 1> fus;
-    f.walk([&](::fabric::FuOp fu) { fus.push_back(fu); });
-    if (fus.size() != 1) {
-      ::llvm::errs() << "error: func @" << f.getSymName()
-                     << " contains " << fus.size()
-                     << " fabric.fu ops; expected exactly 1\n";
-      return 1;
-    }
-    const double score = cost.evaluate(fus.front());
-    ::llvm::outs() << "cost " << f.getSymName() << "=" << score << "\n";
+  // Walk each fabric.fu in the module (module-walk order, which is
+  // deterministic). The spec helper-spec contract is exactly-one-FU
+  // per wrapper, so we report the cost keyed by the immediate
+  // top-level wrapper symbol name. Both fabric.module and func.func
+  // wrappers are accepted so the helper works during the migration
+  // window in either direction.
+  for (auto fu : ([&] {
+         ::llvm::SmallVector<::fabric::FuOp, 4> fus;
+         mod->walk([&](::fabric::FuOp f) { fus.push_back(f); });
+         return fus;
+       }())) {
+    ::mlir::Operation *wrapper = fu.getOperation();
+    while (wrapper && wrapper->getParentOp() &&
+           !::mlir::isa<::mlir::ModuleOp>(wrapper->getParentOp()))
+      wrapper = wrapper->getParentOp();
+    ::llvm::StringRef wrapperName;
+    if (auto sym = ::mlir::dyn_cast_or_null<::mlir::SymbolOpInterface>(
+            wrapper))
+      wrapperName = sym.getName();
+    const double score = cost.evaluate(fu);
+    ::llvm::outs() << "cost " << wrapperName << "=" << score << "\n";
   }
   return 0;
 }

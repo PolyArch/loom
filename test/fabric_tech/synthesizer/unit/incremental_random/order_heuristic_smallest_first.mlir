@@ -9,7 +9,8 @@
 // must succeed and produce the share-aware widened op_list.
 
 // CHECK: remark: {{.*}}synth-stat group=sf_demo strategy=incremental_random reason=success
-// CHECK: func.func @fu_sf_demo
+// CHECK: fabric.module @fu_sf_demo
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 // CHECK: fabric.yield

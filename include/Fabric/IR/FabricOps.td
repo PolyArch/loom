@@ -369,6 +369,13 @@ def Fabric_FuOp : Fabric_Op<"fu", [
       * For each input port `i` (anonymous form only), the outer operand
         width must be greater than or equal to the inner block-arg width
         (`outer >= inner`). The named form has no outer operands.
+      * Symmetric output-side boundary widening at the `fabric.yield`
+        terminator (anonymous form): `fabric.yield %v : !fabric.bits<inner>
+        to !fabric.bits<outer>` declares low-bit-aligned widening when
+        `inner <= outer`. The high `(outer - inner)` bits are zero-filled
+        at the FU boundary on each token; the outer type matches the
+        FU's declared outer result type. Without the `to` clause, inner
+        equals outer (strict).
   }];
 
   let arguments = (ins

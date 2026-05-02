@@ -72,7 +72,7 @@ namespace {
 struct BuiltModule {
   ::mlir::OwningOpRef<::mlir::ModuleOp> module;
   ::mlir::func::FuncOp inputFunc;
-  ::mlir::func::FuncOp brokenWrapper;
+  ::fabric::ModuleOp brokenWrapper;
 };
 
 BuiltModule buildModule(::mlir::MLIRContext &ctx,
@@ -104,28 +104,61 @@ BuiltModule buildModule(::mlir::MLIRContext &ctx,
   inputBodyBuilder.create(retState);
   module.push_back(inputFunc);
 
-  // Broken wrapper: `func.func @fu_<group>(bits<32>, bits<32>) -> bits<32>`
-  // whose body is `[fabric.fu, func.return]`, but whose inner FU body
-  // contains an `arith.addi` -- an op NOT in the allow-set enforced by
-  // `FuOp::verify`. The verifier therefore rejects the wrapper, which
-  // is exactly the "compiler-bug" path the `verifier_failed` enum
-  // value guards.
+  // Broken wrapper: a `fabric.module @fu_<group>(bits<32>, bits<32>)`
+  // wrapping a single anonymous `fabric.pe` whose body holds one
+  // `fabric.fu` whose body contains an `arith.addi` -- an op NOT in
+  // the allow-set enforced by `FuOp::verify`. The verifier therefore
+  // rejects the wrapper, which is exactly the "compiler-bug" path the
+  // `verifier_failed` enum value guards.
   auto bits32 = ::fabric::BitsType::get(&ctx, 32u);
-  auto wrapperType =
-      ::mlir::FunctionType::get(&ctx, {bits32, bits32}, {bits32});
   std::string wrapperName = "fu_";
   wrapperName += groupName.str();
-  auto wrapper =
-      ::mlir::func::FuncOp::create(loc, wrapperName, wrapperType);
-  ::mlir::Block *wrapperEntry = wrapper.addEntryBlock();
-  ::mlir::OpBuilder wrapperBodyBuilder(wrapperEntry, wrapperEntry->end());
 
-  // Inner fabric.fu: operands are the wrapper's args, results are the
-  // wrapper's result types. The FU's region entry block carries the
-  // same arg types as the operands (per FuOp::verify).
+  ::llvm::SmallVector<::mlir::Type, 2> moduleInTypes{bits32, bits32};
+  ::llvm::SmallVector<::mlir::Type, 0> moduleResultTypes;
+  auto moduleFuncType = ::mlir::FunctionType::get(
+      &ctx, moduleInTypes, ::mlir::TypeRange(moduleResultTypes));
+  ::mlir::OperationState modState(
+      loc, ::fabric::ModuleOp::getOperationName());
+  modState.addAttribute("sym_name",
+                        ::mlir::StringAttr::get(&ctx, wrapperName));
+  modState.addAttribute("function_type",
+                        ::mlir::TypeAttr::get(moduleFuncType));
+  ::mlir::Region *modRegion = modState.addRegion();
+  ::mlir::Block *modEntry = new ::mlir::Block();
+  modRegion->push_back(modEntry);
+  ::llvm::SmallVector<::mlir::Location, 2> modArgLocs(2, loc);
+  modEntry->addArguments(moduleInTypes, modArgLocs);
+  ::mlir::OpBuilder modTopBuilder(&ctx);
+  ::mlir::Operation *rawModule = modTopBuilder.create(modState);
+  auto wrapper = ::mlir::cast<::fabric::ModuleOp>(rawModule);
+
+  ::mlir::OpBuilder wrapperBodyBuilder(modEntry, modEntry->end());
+
+  // Inner fabric.pe: anonymous, spatial. PE result count must be >= 1;
+  // we declare a single bits<32> output port matching the FU's single
+  // result.
+  ::llvm::SmallVector<::mlir::Type, 1> peResultTypes{bits32};
+  ::mlir::OperationState peState(loc, ::fabric::PeOp::getOperationName());
+  peState.addOperands(::mlir::ValueRange(modEntry->getArguments()));
+  peState.addTypes(peResultTypes);
+  peState.addAttribute(
+      "schedule",
+      ::fabric::ScheduleAttr::get(&ctx, ::fabric::Schedule::Spatial));
+  ::mlir::Region *peRegion = peState.addRegion();
+  ::mlir::Block *peEntry = new ::mlir::Block();
+  peRegion->push_back(peEntry);
+  ::llvm::SmallVector<::mlir::Location, 2> peArgLocs(2, loc);
+  peEntry->addArguments(moduleInTypes, peArgLocs);
+  wrapperBodyBuilder.create(peState);
+
+  ::mlir::OpBuilder peBodyBuilder(peEntry, peEntry->end());
+
+  // Inner fabric.fu: operands are the PE's block args, results are
+  // bits<32> (matching the PE's single output port).
   ::mlir::OperationState fuState(
       loc, ::fabric::FuOp::getOperationName());
-  fuState.addOperands(::mlir::ValueRange(wrapperEntry->getArguments()));
+  fuState.addOperands(::mlir::ValueRange(peEntry->getArguments()));
   fuState.addTypes({bits32});
   ::mlir::Region *fuRegion = fuState.addRegion();
   ::mlir::Block *fuEntry = new ::mlir::Block();
@@ -133,8 +166,8 @@ BuiltModule buildModule(::mlir::MLIRContext &ctx,
   ::llvm::SmallVector<::mlir::Type, 2> fuArgTypes{bits32, bits32};
   ::llvm::SmallVector<::mlir::Location, 2> fuArgLocs(2, loc);
   fuEntry->addArguments(fuArgTypes, fuArgLocs);
-  ::mlir::Operation *rawFu = wrapperBodyBuilder.create(fuState);
-  auto fu = ::mlir::cast<::fabric::FuOp>(rawFu);
+  ::mlir::Operation *rawFu = peBodyBuilder.create(fuState);
+  (void)rawFu;
 
   // Inject a deliberately-illegal op inside the FU body. `FuOp::verify`
   // rejects every op whose identity is outside the allow-set
@@ -155,17 +188,15 @@ BuiltModule buildModule(::mlir::MLIRContext &ctx,
   // FU yield. The yield value is the FU's first arg-aliased SSA value
   // (bits<32>), which keeps the FU result-type contract consistent
   // even though the FU is malformed in the allow-set sense.
-  ::mlir::OperationState yieldState(
+  ::mlir::OperationState fuYieldState(
       loc, ::fabric::YieldOp::getOperationName());
-  yieldState.addOperands(
-      ::mlir::ValueRange(fuEntry->getArgument(0)));
-  fuBodyBuilder.create(yieldState);
+  fuYieldState.addOperands(::mlir::ValueRange(fuEntry->getArgument(0)));
+  fuBodyBuilder.create(fuYieldState);
 
-  // Wrapper-level return.
-  ::mlir::OperationState wrapperRet(
-      loc, ::mlir::func::ReturnOp::getOperationName());
-  wrapperRet.addOperands(::mlir::ValueRange(fu.getResult(0)));
-  wrapperBodyBuilder.create(wrapperRet);
+  // Module-level fabric.yield (zero operands).
+  ::mlir::OperationState modYieldState(
+      loc, ::fabric::YieldOp::getOperationName());
+  wrapperBodyBuilder.create(modYieldState);
 
   module.push_back(wrapper);
 

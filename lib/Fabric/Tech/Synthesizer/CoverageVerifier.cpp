@@ -31,12 +31,18 @@ CoverageVerifier::verify(::fabric::FuOp fu,
   if (!fu)
     return report;
 
-  // Locate the wrapper func.func that lexically contains `fu`. The
-  // enumerator emits its candidates as siblings of this wrapper in the
-  // FU's enclosing module, which is precisely why the verifier must
-  // route them into a scratch module instead.
-  auto userWrapper = fu->getParentOfType<::mlir::func::FuncOp>();
-  if (!userWrapper)
+  // Locate the top-level wrapper that lexically contains `fu` (the
+  // immediate child of the enclosing ModuleOp). With the fabric.pe
+  // hierarchy this is typically a fabric.module, but the verifier is
+  // agnostic to wrapper kind: any op directly under the ModuleOp will
+  // do, since fabric.fu is IsolatedFromAbove and so the cloned wrapper
+  // carries everything the enumerator needs.
+  ::mlir::Operation *userWrapper = fu.getOperation();
+  while (userWrapper && userWrapper->getParentOp() &&
+         !::mlir::isa<::mlir::ModuleOp>(userWrapper->getParentOp()))
+    userWrapper = userWrapper->getParentOp();
+  if (!userWrapper || !userWrapper->getParentOp() ||
+      !::mlir::isa<::mlir::ModuleOp>(userWrapper->getParentOp()))
     return report;
 
   ::mlir::MLIRContext *ctx = fu.getContext();
@@ -47,11 +53,10 @@ CoverageVerifier::verify(::fabric::FuOp fu,
   ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
       ::mlir::ModuleOp::create(::mlir::UnknownLoc::get(ctx)));
 
-  // Clone the user's wrapper func.func (with its FU body, since
-  // fabric.fu is IsolatedFromAbove and so the wrapper carries
-  // everything the enumerator needs) into the scratch module. We use
-  // an OpBuilder anchored at the scratch module's body so the cloned
-  // op is appended in-order.
+  // Clone the user's wrapper (whose FU body is self-contained, since
+  // fabric.fu is IsolatedFromAbove) into the scratch module. We use an
+  // OpBuilder anchored at the scratch module's body so the cloned op
+  // is appended in-order.
   ::mlir::OpBuilder builder(scratch->getBodyRegion());
   ::mlir::Operation *clonedWrapperOp = builder.clone(*userWrapper);
 

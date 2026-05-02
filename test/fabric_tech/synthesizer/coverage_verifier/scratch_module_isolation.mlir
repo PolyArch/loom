@@ -4,18 +4,21 @@
 // ModuleOp; the user's module must not gain extra func.funcs (and
 // in particular must not gain any "candidate*" prefixed symbols).
 // This test asserts both the count of user funcs after verify ==
-// the count before (1 fabric.fu wrapper + 2 inputs = 3 funcs) and
-// that no `candidate_*` func leaks into the user module.
+// the count before (only the 2 input func.funcs; the FU host is now
+// a fabric.module, not a func.func) and that no `candidate_*` func
+// leaks into the user module.
 
-func.func @fu_addi_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
-    -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<32> {
-    %s = fabric.op [@arith.addi, @arith.subi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %s : !fabric.bits<32>
+fabric.module @fu_addi_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+      %s = fabric.op [@arith.addi, @arith.subi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %s : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
 func.func @input_addi(%a: i32, %b: i32) -> i32
@@ -37,5 +40,5 @@ func.func @input_subi(%a: i32, %b: i32) -> i32
 }
 
 // CHECK: all_covered=true
-// CHECK-NEXT: user_funcs_after=3
+// CHECK-NEXT: user_funcs_after=2
 // CHECK-NEXT: candidate_in_user=false

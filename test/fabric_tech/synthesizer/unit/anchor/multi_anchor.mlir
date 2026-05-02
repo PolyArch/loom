@@ -8,7 +8,8 @@
 
 // CHECK: remark: {{.*}}synth-stat group=multi_yield strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=2/0/0
-// CHECK: func.func @fu_multi_yield
+// CHECK: fabric.module @fu_multi_yield
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK-DAG: fabric.op [@arith.addi, @arith.subi]
 // CHECK-DAG: fabric.op [@arith.andi, @arith.ori]

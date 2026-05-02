@@ -194,18 +194,19 @@ static NodeCounts countFuBodyNodes(::fabric::FuOp fu) {
   return c;
 }
 
-// Locate the inner fabric.fu inside a wrapper func.func. The wrapper
-// is required to contain exactly one fabric.fu in its body; returns
-// null if the wrapper is missing or malformed.
-static ::fabric::FuOp findInnerFu(::mlir::func::FuncOp wrapper) {
+// Locate the inner fabric.fu inside a wrapper fabric.module. The
+// wrapper is required to contain exactly one fabric.fu (transitively,
+// nested inside a fabric.pe); returns null if the wrapper is missing
+// or malformed.
+static ::fabric::FuOp findInnerFu(::fabric::ModuleOp wrapper) {
   if (!wrapper)
     return nullptr;
-  if (wrapper.getBody().empty())
-    return nullptr;
-  for (::mlir::Operation &op : wrapper.getBody().front().getOperations())
-    if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op))
-      return fu;
-  return nullptr;
+  ::fabric::FuOp found;
+  wrapper.walk([&](::fabric::FuOp fu) {
+    if (!found)
+      found = fu;
+  });
+  return found;
 }
 
 class GeneralizeSubgraphsToFuPass
@@ -366,64 +367,87 @@ void GeneralizeSubgraphsToFuPass::validateFunctions(
   return groups;
 }
 
-// Validate that a marker-tagged wrapper function is a real synthesized
+// Validate that a marker-tagged wrapper module is a real synthesized
 // wrapper. Performs three checks in order:
-//   Body shape: body is exactly `[fabric.fu, func.return]` (one
-//       fabric.fu plus a func.return terminator; no extra ops).
+//   Body shape: fabric.module body is exactly `[fabric.pe,
+//       fabric.yield]` (one fabric.pe plus the module's terminating
+//       fabric.yield; no extra ops); the fabric.pe body is exactly
+//       `[fabric.fu]` (one inner FU; no other compute member).
 //   Inner verifier: the inner fabric.fu passes its own verifier
 //       (FuOp::verify and any nested op verifiers reachable from
 //       `mlir::verify`).
-//   Signature match: the wrapper's signature (operand types + result
-//       types) matches the expected signature derived from the input
-//       subgraphs via `collectWrapperPorts`.
+//   Signature match: the wrapper's signature (operand types + FU
+//       result types) matches the expected signature derived from
+//       the input subgraphs via `collectWrapperPorts`.
 //
 // Returns an empty string on success. Returns a deterministic failure
 // reason note (suitable for an attached note on the diag) when any
 // check fails. The caller treats any non-empty return as a
 // `symbol_conflict` failure.
 static std::string validateMarkerWrapper(
-    ::mlir::func::FuncOp existingFunc, ::llvm::StringRef symbolName,
+    ::fabric::ModuleOp existingModule, ::llvm::StringRef symbolName,
     ::llvm::StringRef groupName,
     ::llvm::ArrayRef<::dataflow::SubgraphOp> subgraphs,
     ::mlir::MLIRContext *ctx) {
   std::string note;
   ::llvm::raw_string_ostream os(note);
 
-  // Body shape: body must contain exactly one fabric.fu plus a
-  // func.return terminator. Empty body / no terminator / extra ops /
-  // no fabric.fu are all malformed.
-  if (existingFunc.getBody().empty()) {
+  // Body shape: fabric.module body must contain exactly one fabric.pe
+  // plus the module's fabric.yield terminator; the fabric.pe body must
+  // contain exactly one fabric.fu.
+  if (existingModule.getBody().empty()) {
     os << "symbol_conflict (existing @" << symbolName
        << " tagged loom.synthesized_for=\"" << groupName
-       << "\" but body shape is malformed: expected exactly one fabric.fu, "
-          "found 0 [wrapper-body-shape])";
+       << "\" but body shape is malformed: expected fabric.module body "
+          "[fabric.pe, fabric.yield], found empty body "
+          "[wrapper-body-shape])";
     return os.str();
   }
-  ::mlir::Block &entry = existingFunc.getBody().front();
+  ::mlir::Block &moduleEntry = existingModule.getBody().front();
+  unsigned peCount = 0;
+  ::fabric::PeOp innerPe;
+  for (::mlir::Operation &op : moduleEntry.getOperations()) {
+    if (auto pe = ::mlir::dyn_cast<::fabric::PeOp>(op)) {
+      ++peCount;
+      if (!innerPe)
+        innerPe = pe;
+    }
+  }
+  ::mlir::Operation *moduleTerminator = moduleEntry.getTerminator();
+  bool moduleTerminatorIsYield =
+      moduleTerminator &&
+      ::mlir::isa<::fabric::YieldOp>(moduleTerminator);
+  unsigned moduleNumOps = 0;
+  for (::mlir::Operation &op : moduleEntry.getOperations()) {
+    (void)op;
+    ++moduleNumOps;
+  }
+  if (peCount != 1 || !moduleTerminatorIsYield || moduleNumOps != 2) {
+    os << "symbol_conflict (existing @" << symbolName
+       << " tagged loom.synthesized_for=\"" << groupName
+       << "\" but body shape is malformed: expected fabric.module body "
+          "[fabric.pe, fabric.yield], found "
+       << peCount << " fabric.pe op(s) [wrapper-body-shape])";
+    return os.str();
+  }
+  ::mlir::Block &peEntry = innerPe.getBody().front();
   unsigned fuCount = 0;
   ::fabric::FuOp innerFu;
-  for (::mlir::Operation &op : entry.getOperations()) {
+  unsigned peNumOps = 0;
+  for (::mlir::Operation &op : peEntry.getOperations()) {
+    ++peNumOps;
     if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op)) {
       ++fuCount;
       if (!innerFu)
         innerFu = fu;
     }
   }
-  ::mlir::Operation *terminator = entry.getTerminator();
-  bool terminatorIsReturn =
-      terminator && ::mlir::isa<::mlir::func::ReturnOp>(terminator);
-  // Body must be exactly two ops: the fabric.fu and the func.return.
-  unsigned numOps = 0;
-  for (::mlir::Operation &op : entry.getOperations()) {
-    (void)op;
-    ++numOps;
-  }
-  if (fuCount != 1 || !terminatorIsReturn || numOps != 2) {
+  if (fuCount != 1 || peNumOps != 1) {
     os << "symbol_conflict (existing @" << symbolName
        << " tagged loom.synthesized_for=\"" << groupName
-       << "\" but body shape is malformed: expected exactly one fabric.fu, "
-          "found "
-       << fuCount << " [wrapper-body-shape])";
+       << "\" but body shape is malformed: expected fabric.pe body "
+          "[fabric.fu], found "
+       << fuCount << " fabric.fu op(s) [wrapper-body-shape])";
     return os.str();
   }
 
@@ -457,7 +481,11 @@ static std::string validateMarkerWrapper(
 
   // Signature match: the expected signature is the lift of the input
   // subgraphs' block-arg types (-> wrapper inputs) and yield operand
-  // types (-> wrapper outputs) to fabric.bits<N>.
+  // types (-> FU result types) to fabric.bits<N>. The wrapper's input
+  // surface lives on the fabric.module's entry-block argument types;
+  // the wrapper's "result" surface (per the synthesizer contract) is
+  // the inner fabric.fu's result type list, since fabric.module itself
+  // declares no SSA results.
   auto portsOpt =
       ::loom::fabric::tech::collectWrapperPorts(subgraphs, ctx);
   if (!portsOpt.has_value()) {
@@ -468,9 +496,11 @@ static std::string validateMarkerWrapper(
           "[signature-mismatch])";
     return os.str();
   }
-  ::mlir::FunctionType actual = existingFunc.getFunctionType();
+  ::mlir::FunctionType actual = existingModule.getFunctionType();
   ::llvm::ArrayRef<::mlir::Type> actualInputs = actual.getInputs();
-  ::llvm::ArrayRef<::mlir::Type> actualResults = actual.getResults();
+  ::llvm::SmallVector<::mlir::Type, 4> actualResults(
+      innerFu.getOutputs().getTypes().begin(),
+      innerFu.getOutputs().getTypes().end());
   ::llvm::ArrayRef<::mlir::Type> expectedInputs(portsOpt->inputs);
   ::llvm::ArrayRef<::mlir::Type> expectedResults(portsOpt->outputs);
   bool inputsMatch =
@@ -524,9 +554,9 @@ bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(
   if (!existing)
     return true;
 
-  auto existingFunc = ::mlir::dyn_cast<::mlir::func::FuncOp>(existing);
-  if (existingFunc) {
-    if (auto tag = existingFunc->getAttrOfType<::mlir::StringAttr>(
+  auto existingModule = ::mlir::dyn_cast<::fabric::ModuleOp>(existing);
+  if (existingModule) {
+    if (auto tag = existingModule->getAttrOfType<::mlir::StringAttr>(
             "loom.synthesized_for")) {
       if (tag.getValue() == group.name) {
         // Marker-tagged wrapper. Validate that it is a real synthesized
@@ -536,7 +566,7 @@ bool GeneralizeSubgraphsToFuPass::prepareSymbolSlot(
         // malformed wrapper rather than silently accepting it as a
         // no-op.
         std::string failureNote = validateMarkerWrapper(
-            existingFunc, symbolName, group.name,
+            existingModule, symbolName, group.name,
             ::llvm::ArrayRef<::dataflow::SubgraphOp>(group.subgraphs),
             &getContext());
         if (failureNote.empty()) {
@@ -760,16 +790,16 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
         && !handoff.wrapperIR.empty()) {
       ::mlir::OwningOpRef<::mlir::ModuleOp> parsed =
           ::mlir::parseSourceString<::mlir::ModuleOp>(handoff.wrapperIR, ctx);
-      ::mlir::func::FuncOp reHomed;
+      ::fabric::ModuleOp reHomed;
       if (parsed) {
-        for (auto fn : parsed->getOps<::mlir::func::FuncOp>()) {
+        for (auto fn : parsed->getOps<::fabric::ModuleOp>()) {
           reHomed = fn;
           break;
         }
       }
       if (reHomed) {
         reHomed->remove();
-        result.wrapper = ::mlir::OwningOpRef<::mlir::func::FuncOp>(reHomed);
+        result.wrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(reHomed);
       } else {
         result.failureReason =
             ::loom::fabric::tech::SynthFailureReason::VerifierFailed;
@@ -800,7 +830,7 @@ void GeneralizeSubgraphsToFuPass::runOnOperation() {
     if (result.success()) {
       // Tag the wrapper with `loom.synthesized_for = "<group>"` so
       // future re-runs detect this as an idempotent slot.
-      ::mlir::func::FuncOp wrapper = result.wrapper.get();
+      ::fabric::ModuleOp wrapper = result.wrapper.get();
       wrapper->setAttr("loom.synthesized_for",
                        ::mlir::StringAttr::get(ctx, group.name));
       // Splice into the module body. `release` transfers ownership

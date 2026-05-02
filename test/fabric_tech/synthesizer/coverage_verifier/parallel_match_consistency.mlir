@@ -7,15 +7,17 @@
 // candidate-enumerator order does not change under parallel matching;
 // the per-input slot writes are still index-stable.
 
-func.func @fu_addi_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
-    -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>)
-                -> !fabric.bits<32> {
-    %s = fabric.op [@arith.addi, @arith.subi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %s : !fabric.bits<32>
+fabric.module @fu_addi_subi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+      %s = fabric.op [@arith.addi, @arith.subi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %s : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
 func.func @input_addi(%a: i32, %b: i32) -> i32

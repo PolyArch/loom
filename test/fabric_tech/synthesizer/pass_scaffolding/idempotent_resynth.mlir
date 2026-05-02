@@ -14,17 +14,20 @@
 
 // CHECK: remark: {{.*}}group "y": skipping idempotent re-synth
 // CHECK-NOT: loom.synth_failed
-// CHECK-DAG: func.func @fu_y
+// CHECK-DAG: fabric.module @fu_y
 // CHECK-DAG: loom.synthesized_for = "y"
 
-func.func @fu_y(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32>
+fabric.module @fu_y(%a: !fabric.bits<32>, %b: !fabric.bits<32>)
     attributes {loom.synthesized_for = "y"} {
-  %r = fabric.fu(%aa = %a : !fabric.bits<32>, %bb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %x = fabric.op [@arith.addi] (%aa, %bb) {hw_params = [{}]}
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %x : !fabric.bits<32>
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%aa = %pa : !fabric.bits<32>, %bb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %x = fabric.op [@arith.addi] (%aa, %bb) {hw_params = [{}]}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %x : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "y"} {

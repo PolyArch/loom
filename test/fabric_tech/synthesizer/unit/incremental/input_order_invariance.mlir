@@ -11,9 +11,13 @@
 // CHECK-SAME: covered=2/2 nodes=1/0/0
 // CHECK: remark: {{.*}}synth-stat group=g2 strategy=incremental reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_g1
+// CHECK: fabric.module @fu_g1
+// CHECK: fabric.pe [spatial]
+// CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
-// CHECK: func.func @fu_g2
+// CHECK: fabric.module @fu_g2
+// CHECK: fabric.pe [spatial]
+// CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 
 func.func @g1_addi(%a: i32, %b: i32) -> i32

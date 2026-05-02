@@ -10,7 +10,9 @@
 // including the fabric.mux output's float-flavor lift inference.
 
 // CHECK: remark: {{.*}}synth-stat group=fpu_unary_32_x strategy=anchor reason=success
-// CHECK: func.func @fu_fpu_unary_32_x
+// CHECK: fabric.module @fu_fpu_unary_32_x
+// CHECK-SAME: loom.synthesized_for = "fpu_unary_32_x"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK-DAG: fabric.op [@math.absf]
 // CHECK-DAG: fabric.op [@math.tan]

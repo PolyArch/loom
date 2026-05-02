@@ -19,14 +19,16 @@
 // CHECK: func.func @pat_addi
 // CHECK-SAME: loom.synth_failed = "symbol_conflict"
 
-func.func @fu_y(%a: !fabric.bits<64>) -> !fabric.bits<64>
+fabric.module @fu_y(%a: !fabric.bits<64>)
     attributes {loom.synthesized_for = "y"} {
-  %r = fabric.fu(%aa = %a : !fabric.bits<64>) -> !fabric.bits<64> {
-    %x = fabric.op [@arith.addi] (%aa, %aa) {hw_params = [{}]}
-         : (!fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-    fabric.yield %x : !fabric.bits<64>
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<64>) -> !fabric.bits<64> {
+    fabric.fu(%aa = %pa : !fabric.bits<64>) -> !fabric.bits<64> {
+      %x = fabric.op [@arith.addi] (%aa, %aa) {hw_params = [{}]}
+           : (!fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+      fabric.yield %x : !fabric.bits<64>
+    }
   }
-  return %r : !fabric.bits<64>
+  fabric.yield
 }
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32 attributes {loom.synth_group = "y"} {

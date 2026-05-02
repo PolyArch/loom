@@ -80,6 +80,27 @@ fabric.module @fu_boundary_trunc(%ctrl : !fabric.bits<32>) {
   fabric.yield
 }
 
+// FU output boundary widening: inner yield value bits<1> with outer
+// FU result bits<32>. Hardware zero-fills the high 31 bits at the FU
+// boundary so the value reaching the PE port is bits<32>, satisfying
+// the PE-uniform-width invariant.
+// CHECK-LABEL: fabric.module @fu_yield_widen
+fabric.module @fu_yield_widen(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.fu(%{{.*}} = %{{.*}} : !fabric.bits<32>, %{{.*}} = %{{.*}} : !fabric.bits<32>) -> !fabric.bits<32>
+    %r = fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+                  -> !fabric.bits<32> {
+      %p = fabric.op [@arith.cmpi] (%x, %y)
+           {hw_params = [{predicate = ["eq", "ne"]}]}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+      // CHECK: fabric.yield %{{.*}} : !fabric.bits<1> to !fabric.bits<32>
+      fabric.yield %p : !fabric.bits<1> to !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
 // FU with multiple fabric.op nodes whose connectivity could be reconfigured by
 // inner mux/demux selectors.
 // CHECK-LABEL: fabric.module @fu_multi_op

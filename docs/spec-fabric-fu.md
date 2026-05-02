@@ -76,7 +76,7 @@ in the body lets configurable compute ops (e.g.
 `dataflow.subgraph`s map onto a single FU. The FU body region is a
 graph region (`RegionKindInterface::Graph`).
 
-## FU-boundary truncation
+## FU-boundary truncation (input side)
 
 Anonymous form only: each operand may declare an inner block-argument
 width narrower than its outer SSA operand width via the
@@ -84,10 +84,29 @@ width narrower than its outer SSA operand width via the
 the FU boundary on each token; the inner block argument carries the
 low `F` bits. Without the `to` clause, inner == outer.
 
-Output ports stay strict: `fabric.yield` value types must equal the
-FU's outer result types (anonymous form) or `function_type.getResults()`
-(named template form). Width relaxation on the output direction is not
-supported in this iteration.
+## FU-boundary widening (output side)
+
+Anonymous form only: each `fabric.yield` value may declare an outer
+result width wider than the inner SSA value's width via the
+`to <outer-type>` clause:
+
+```mlir
+fabric.yield %v : !fabric.bits<inner> to !fabric.bits<outer>
+```
+
+The clause is only valid when both types are `!fabric.bits<N>` and
+`inner <= outer`. Hardware zero-fills the high `(outer - inner)` bits
+at the FU boundary on each token; the low `inner` bits carry the
+inner value. The declared outer type must equal the FU's declared
+outer result type. Without the `to` clause, inner == outer (strict).
+
+This output-side widening is the dual of the input-side
+`to <inner-type>` truncation: input drops high bits at the boundary,
+output zero-fills high bits at the boundary. Both keep the FU's outer
+port types strict `!fabric.bits<W>`, so the enclosing PE's uniform-W
+invariant is preserved. The named template form does not support
+either relaxation: `fabric.yield` types must equal
+`function_type.getResults()` exactly.
 
 ## Verifier checklist
 
@@ -105,6 +124,11 @@ Anonymous form:
 * Block-argument count equals operand count, and per-position the
   outer operand width is greater than or equal to the inner
   block-arg width.
+* For each `fabric.yield` value `i`, when the per-value `to <type>`
+  clause is present it must equal the FU's declared outer result
+  type `i`, both inner and outer types must be `!fabric.bits<N>`,
+  and inner-bits-width must be less than or equal to
+  outer-bits-width (low-bit-aligned widening).
 * Parent must be a `fabric.pe`.
 
 Named template form:

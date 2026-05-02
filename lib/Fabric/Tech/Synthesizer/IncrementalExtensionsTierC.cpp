@@ -117,13 +117,15 @@ unsigned bitWidthOfType(::mlir::Type t) {
 // FU lookup helpers.
 //===----------------------------------------------------------------------===//
 
-::fabric::FuOp innerFu(::mlir::func::FuncOp wrapper) {
-  if (!wrapper || wrapper.getBody().empty())
+::fabric::FuOp innerFu(::fabric::ModuleOp wrapper) {
+  if (!wrapper)
     return {};
-  for (::mlir::Operation &op : wrapper.getBody().front().getOperations())
-    if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op))
-      return fu;
-  return {};
+  ::fabric::FuOp found;
+  wrapper.walk([&](::fabric::FuOp fu) {
+    if (!found)
+      found = fu;
+  });
+  return found;
 }
 
 // Returns the textual list of body fabric.op's whose op_list[0] is the
@@ -589,14 +591,23 @@ bool mirrorBodyOp(BodyBuildCtx &c, ::mlir::Operation *srcOp) {
 //===----------------------------------------------------------------------===//
 
 struct WrapperShell {
-  ::mlir::OwningOpRef<::mlir::func::FuncOp> wrapper;
+  ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper;
   ::fabric::FuOp fu;
   ::mlir::Block *fuEntry = nullptr;
 };
 
-// Build an empty wrapper func.func + empty fabric.fu skeleton sized
-// for `inputBitWidths` and `resultBitWidths`. The caller fills in the
-// FU body.
+// Build a wrapper `fabric.module` containing one anonymous `fabric.pe`
+// containing one empty `fabric.fu` skeleton sized for `inputBitWidths`
+// and `resultBitWidths`. The caller fills in the FU body.
+//
+// Layout invariants (see test/fabric/unit/fu/valid.mlir for shape):
+//   * fabric.module declares zero SSA results; its body terminator is
+//     a zero-operand fabric.yield.
+//   * fabric.pe is anonymous-form, spatial-scheduled; its result count
+//     mirrors the FU result count when non-empty, otherwise a single
+//     bits<W> placeholder is added so PE's L>=1 invariant is satisfied.
+//   * The FU's outer operand types match the PE block-arg types; they
+//     all share the same bits<W> with the module's input types.
 WrapperShell buildShell(::mlir::MLIRContext *ctx, ::llvm::StringRef symName,
                         ::llvm::ArrayRef<unsigned> inputBitWidths,
                         ::llvm::ArrayRef<unsigned> resultBitWidths) {
@@ -606,35 +617,74 @@ WrapperShell buildShell(::mlir::MLIRContext *ctx, ::llvm::StringRef symName,
   inTypes.reserve(inputBitWidths.size());
   for (unsigned bw : inputBitWidths)
     inTypes.push_back(bitsOf(ctx, bw));
-  ::llvm::SmallVector<::mlir::Type, 4> outTypes;
-  outTypes.reserve(resultBitWidths.size());
+  ::llvm::SmallVector<::mlir::Type, 4> fuOutTypes;
+  fuOutTypes.reserve(resultBitWidths.size());
   for (unsigned bw : resultBitWidths)
-    outTypes.push_back(bitsOf(ctx, bw));
-  auto funcType = ::mlir::FunctionType::get(ctx, inTypes, outTypes);
-  auto wrapper =
-      ::mlir::func::FuncOp::create(loc, symName.str(), funcType);
-  ::mlir::Block *entry = wrapper.addEntryBlock();
-  ::mlir::OpBuilder funcBuilder(entry, entry->end());
+    fuOutTypes.push_back(bitsOf(ctx, bw));
+
+  // 1. Build the fabric.module top-level op (zero SSA results).
+  ::llvm::SmallVector<::mlir::Type, 0> moduleResultTypes;
+  auto moduleFuncType = ::mlir::FunctionType::get(
+      ctx, inTypes, ::mlir::TypeRange(moduleResultTypes));
+  ::mlir::OperationState moduleState(
+      loc, ::fabric::ModuleOp::getOperationName());
+  moduleState.addAttribute(
+      "sym_name", ::mlir::StringAttr::get(ctx, symName));
+  moduleState.addAttribute("function_type",
+                           ::mlir::TypeAttr::get(moduleFuncType));
+  ::mlir::Region *moduleRegion = moduleState.addRegion();
+  ::mlir::Block *moduleEntry = new ::mlir::Block();
+  moduleRegion->push_back(moduleEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> moduleArgLocs(inTypes.size(), loc);
+  moduleEntry->addArguments(inTypes, moduleArgLocs);
+  ::mlir::OpBuilder topBuilder(ctx);
+  ::mlir::Operation *rawModule = topBuilder.create(moduleState);
+  auto wrapper = ::mlir::cast<::fabric::ModuleOp>(rawModule);
+
+  ::mlir::OpBuilder moduleBuilder(moduleEntry, moduleEntry->end());
+
+  // 2. Build the inner fabric.pe (spatial, anonymous form).
+  ::llvm::SmallVector<::mlir::Type, 4> peResultTypes(fuOutTypes);
+  if (peResultTypes.empty()) {
+    unsigned w = inTypes.empty()
+                     ? 0u
+                     : ::llvm::cast<::fabric::BitsType>(inTypes[0]).getWidth();
+    peResultTypes.push_back(bitsOf(ctx, w));
+  }
+  ::mlir::OperationState peState(loc, ::fabric::PeOp::getOperationName());
+  peState.addOperands(::mlir::ValueRange(moduleEntry->getArguments()));
+  peState.addTypes(peResultTypes);
+  peState.addAttribute(
+      "schedule",
+      ::fabric::ScheduleAttr::get(ctx, ::fabric::Schedule::Spatial));
+  ::mlir::Region *peRegion = peState.addRegion();
+  ::mlir::Block *peEntry = new ::mlir::Block();
+  peRegion->push_back(peEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> peArgLocs(inTypes.size(), loc);
+  peEntry->addArguments(inTypes, peArgLocs);
+  moduleBuilder.create(peState);
+
+  // 3. Build the inner fabric.fu inside the PE body.
+  ::mlir::OpBuilder peBodyBuilder(peEntry, peEntry->end());
   ::mlir::OperationState fuState(loc, ::fabric::FuOp::getOperationName());
-  fuState.addOperands(::mlir::ValueRange(entry->getArguments()));
-  fuState.addTypes(outTypes);
+  fuState.addOperands(::mlir::ValueRange(peEntry->getArguments()));
+  fuState.addTypes(fuOutTypes);
   ::mlir::Region *fuRegion = fuState.addRegion();
   ::mlir::Block *fuEntry = new ::mlir::Block();
   fuRegion->push_back(fuEntry);
   ::llvm::SmallVector<::mlir::Location, 4> fuArgLocs(inTypes.size(), loc);
   fuEntry->addArguments(inTypes, fuArgLocs);
-  ::mlir::Operation *rawFu = funcBuilder.create(fuState);
+  ::mlir::Operation *rawFu = peBodyBuilder.create(fuState);
   auto fu = ::mlir::cast<::fabric::FuOp>(rawFu);
-  ws.wrapper = ::mlir::OwningOpRef<::mlir::func::FuncOp>(wrapper);
+
+  // 4. Module-level fabric.yield (zero operands).
+  ::mlir::OperationState modYield(loc,
+                                  ::fabric::YieldOp::getOperationName());
+  moduleBuilder.create(modYield);
+
+  ws.wrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(wrapper);
   ws.fu = fu;
   ws.fuEntry = fuEntry;
-  // Append the wrapper-level return now; the caller fills the FU body
-  // and we leave the fabric.fu's results wired through.
-  ::mlir::OpBuilder afterFu(entry, entry->end());
-  ::mlir::OperationState retState(
-      loc, ::mlir::func::ReturnOp::getOperationName());
-  retState.addOperands(::mlir::ValueRange(fu.getResults()));
-  afterFu.create(retState);
   return ws;
 }
 
@@ -656,7 +706,7 @@ WrapperShell buildShell(::mlir::MLIRContext *ctx, ::llvm::StringRef symName,
 // Public tier-C entry points.
 //===----------------------------------------------------------------------===//
 
-::mlir::OwningOpRef<::mlir::func::FuncOp>
+::mlir::OwningOpRef<::fabric::ModuleOp>
 buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
                     ::dataflow::SubgraphOp first) {
   if (!ctx || !first)
@@ -847,11 +897,11 @@ detectPostCarryDiff(::mlir::Operation *sgCarry) {
 
 } // namespace
 
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-structuralExtendCandidates(::mlir::func::FuncOp curWrapper,
+::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4>
+structuralExtendCandidates(::fabric::ModuleOp curWrapper,
                            ::dataflow::SubgraphOp sg,
                            const ::loom::SynthConfig &cfg) {
-  ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4> out;
+  ::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4> out;
   if (!curWrapper || !sg)
     return out;
   ::fabric::FuOp fu = innerFu(curWrapper);
@@ -926,8 +976,8 @@ structuralExtendCandidates(::mlir::func::FuncOp curWrapper,
   // the two post-carry ops, and (3) rewire the cloned FU carry's
   // operand 2 to the mux output.
   ::mlir::Operation *clonedRaw = curWrapper->clone();
-  auto newWrapper = ::mlir::OwningOpRef<::mlir::func::FuncOp>(
-      ::mlir::cast<::mlir::func::FuncOp>(clonedRaw));
+  auto newWrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(
+      ::mlir::cast<::fabric::ModuleOp>(clonedRaw));
   ::fabric::FuOp newFu = innerFu(newWrapper.get());
   if (!newFu)
     return out;
@@ -987,7 +1037,7 @@ structuralExtendCandidates(::mlir::func::FuncOp curWrapper,
 // internal PreAlignment data.
 
 ::std::optional<SynthFailureReason>
-classifyTierCConflict(::mlir::func::FuncOp curWrapper,
+classifyTierCConflict(::fabric::ModuleOp curWrapper,
                       ::dataflow::SubgraphOp sg,
                       const ::loom::SynthConfig &cfg) {
   if (!curWrapper || !sg)

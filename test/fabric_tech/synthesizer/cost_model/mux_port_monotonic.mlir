@@ -11,33 +11,43 @@
 //   cost_2port = 96 + 1 =  97.0
 //   cost_4port = 192 + 1 = 193.0
 
-func.func @cost_2port(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                      %c: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>,
-                 %y = %b : !fabric.bits<32>,
-                 %z = %c : !fabric.bits<32>) -> !fabric.bits<32> {
-    %m = fabric.mux %x, %y : !fabric.bits<32>
-    %k = fabric.op [@arith.addi] (%m, %z)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @cost_2port(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
+                          %c: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>,
+                       %pc = %c : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>,
+              %z = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %m = fabric.mux %x, %y : !fabric.bits<32>
+      %k = fabric.op [@arith.addi] (%m, %z)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @cost_4port(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
-                      %c: !fabric.bits<32>, %d: !fabric.bits<32>,
-                      %e: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>,
-                 %y = %b : !fabric.bits<32>,
-                 %z = %c : !fabric.bits<32>,
-                 %w = %d : !fabric.bits<32>,
-                 %v = %e : !fabric.bits<32>) -> !fabric.bits<32> {
-    %m = fabric.mux %x, %y, %z, %w : !fabric.bits<32>
-    %k = fabric.op [@arith.addi] (%m, %v)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @cost_4port(%a: !fabric.bits<32>, %b: !fabric.bits<32>,
+                          %c: !fabric.bits<32>, %d: !fabric.bits<32>,
+                          %e: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>,
+                       %pc = %c : !fabric.bits<32>,
+                       %pd = %d : !fabric.bits<32>,
+                       %pe = %e : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>,
+              %z = %pc : !fabric.bits<32>,
+              %w = %pd : !fabric.bits<32>,
+              %v = %pe : !fabric.bits<32>) -> !fabric.bits<32> {
+      %m = fabric.mux %x, %y, %z, %w : !fabric.bits<32>
+      %k = fabric.op [@arith.addi] (%m, %v)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
 // CHECK: cost cost_2port=9.700000e+01

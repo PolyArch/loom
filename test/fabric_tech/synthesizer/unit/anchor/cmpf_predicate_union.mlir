@@ -8,7 +8,9 @@
 
 // CHECK: remark: {{.*}}synth-stat group=cmpf_pred strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_cmpf_pred
+// CHECK: fabric.module @fu_cmpf_pred
+// CHECK-SAME: loom.synthesized_for = "cmpf_pred"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.cmpf]
 // CHECK-SAME: hw_params = [{predicate = ["oeq", "one"]}]

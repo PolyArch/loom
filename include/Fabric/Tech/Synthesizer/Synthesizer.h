@@ -8,8 +8,9 @@
 // Strategies (`anchor`, `mcs`, `incremental`, `incremental_random`) all
 // implement `Synthesizer::run` over a `SynthInputs` value bundle and
 // return a `SynthResult` carrying either the freshly built wrapper
-// `func.func` (containing one detached `fabric.fu`) or one of the closed
-// `SynthFailureReason` enum values.
+// `fabric.module` (containing one detached `fabric.pe` whose body holds
+// the inner `fabric.fu`) or one of the closed `SynthFailureReason` enum
+// values.
 //
 // Spec source: `docs/spec-generalize-subgraphs-to-fu.md`, sections
 // "Strategies" (the C++ interface block) and
@@ -112,13 +113,14 @@ struct SynthInputs {
 
 // Outputs from one Synthesizer run.
 struct SynthResult {
-  // On success: ownership of a freshly built wrapper `func.func` that
-  // contains exactly one `fabric.fu` (detached, caller inserts into
-  // the module). The wrapper is allocated in `SynthInputs.context`
-  // (the worker's scratch context). The pass's main-thread splice
-  // loop is responsible for cloning it into the user's module
-  // context before insertion. Null on failure.
-  ::mlir::OwningOpRef<::mlir::func::FuncOp> wrapper;
+  // On success: ownership of a freshly built wrapper `fabric.module`
+  // that contains exactly one `fabric.pe` whose body holds the inner
+  // `fabric.fu` (detached, caller inserts into the module). The
+  // wrapper is allocated in `SynthInputs.context` (the worker's
+  // scratch context). The pass's main-thread splice loop is
+  // responsible for cloning it into the user's module context before
+  // insertion. Null on failure.
+  ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper;
   // `None` on success; one of the closed enum values on failure.
   SynthFailureReason failureReason = SynthFailureReason::None;
   // CoverageVerifier output. Default-constructed when the verifier is

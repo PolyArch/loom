@@ -10,7 +10,8 @@
 
 // CHECK: remark: {{.*}}synth-stat group=fpu_abs_32 strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_fpu_abs_32
+// CHECK: fabric.module @fu_fpu_abs_32
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@math.absf]
 // CHECK-SAME: hw_params = [{}]

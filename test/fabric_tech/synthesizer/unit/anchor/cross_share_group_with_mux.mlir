@@ -7,7 +7,9 @@
 
 // CHECK: remark: {{.*}}synth-stat group=alu_int_32_x strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=2/1/0
-// CHECK: func.func @fu_alu_int_32_x
+// CHECK: fabric.module @fu_alu_int_32_x
+// CHECK-SAME: loom.synthesized_for = "alu_int_32_x"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK-DAG: fabric.op [@arith.addi]
 // CHECK-DAG: fabric.op [@arith.muli]

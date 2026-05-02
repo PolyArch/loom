@@ -9,7 +9,9 @@
 
 // CHECK: remark: {{.*}}synth-stat group=sync_pair strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_sync_pair
+// CHECK: fabric.module @fu_sync_pair
+// CHECK-SAME: loom.synthesized_for = "sync_pair"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@dataflow.sync]
 // CHECK-SAME: hw_params = [{bitmask = ["11"]}]

@@ -19,7 +19,8 @@
 
 // MCS: synth-stat group=alu_int_32 strategy=mcs reason=success
 // MCS-SAME: cost=1.000000e+00
-// MCS: func.func @fu_alu_int_32
+// MCS: fabric.module @fu_alu_int_32
+// MCS: fabric.pe [spatial]
 // MCS: fabric.fu
 // MCS: fabric.op [@arith.addi, @arith.subi]
 

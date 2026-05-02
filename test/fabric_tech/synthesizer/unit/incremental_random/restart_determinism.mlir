@@ -12,8 +12,9 @@
 // Acceptance criterion 1 (incremental_random): same `seed` produces
 // the same set of permutations and thus the same chosen FU.
 
-// CHECK-LABEL: func.func @fu_det_demo
+// CHECK-LABEL: fabric.module @fu_det_demo
 // CHECK-SAME: loom.synthesized_for = "det_demo"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 

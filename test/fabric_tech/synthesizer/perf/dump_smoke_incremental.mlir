@@ -10,8 +10,9 @@
 // RUN: loom-synth-fu-dump --config=%p/incremental.yaml %s | FileCheck %s
 
 // CHECK: // --- synthesized FUs ---
-// CHECK: func.func @fu_tierB_demo
+// CHECK: fabric.module @fu_tierB_demo
 // CHECK-SAME: loom.synthesized_for = "tierB_demo"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK-DAG: fabric.op [@arith.addi]
 // CHECK-DAG: fabric.demux

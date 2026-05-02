@@ -119,3 +119,41 @@ fabric.module @fu_outer_lt_inner(%a : !fabric.bits<8>) {
   }
   fabric.yield
 }
+
+// -----
+// FU output boundary widening: inner yield value width must be <= outer
+// FU result width. Wider inner is illegal because hardware only supports
+// low-bit-aligned widening (high bits zero-filled), not truncation on
+// the output side. Here the inner body op produces a bits<32> result
+// that the yield illegally tries to widen-down to a narrower outer
+// bits<8> destination.
+fabric.module @fu_yield_inner_gt_outer(%a : !fabric.bits<16>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<16>) -> !fabric.bits<16> {
+    %r = fabric.fu(%x = %pa : !fabric.bits<16>) -> !fabric.bits<16> {
+      %k = fabric.op [@arith.sitofp] (%x)
+           : (!fabric.bits<16>) -> !fabric.bits<32>
+      // expected-error @+1 {{yield value #0 inner bits-width 32 is greater than outer bits-width 16; the FU output boundary only supports low-bit-aligned widening (inner <= outer, high bits zero-filled)}}
+      fabric.yield %k : !fabric.bits<32> to !fabric.bits<16>
+    }
+  }
+  fabric.yield
+}
+
+// -----
+// FU output boundary widening: per-value `to <type>` clause must equal
+// the FU's declared outer result type. Mismatched destination type is
+// rejected.
+fabric.module @fu_yield_decl_mismatch(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    %r = fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>)
+                  -> !fabric.bits<32> {
+      %p = fabric.op [@arith.cmpi] (%x, %y)
+           {hw_params = [{predicate = ["eq", "ne"]}]}
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+      // expected-error @+1 {{yield value #0: declared destination type '!fabric.bits<16>' does not match parent fabric.fu result type '!fabric.bits<32>'}}
+      fabric.yield %p : !fabric.bits<1> to !fabric.bits<16>
+    }
+  }
+  fabric.yield
+}

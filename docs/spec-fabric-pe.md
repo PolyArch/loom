@@ -259,9 +259,15 @@ external port widths.
   types (the FU body's block argument types) may be any
   `!fabric.bits<F>` with `F <= W`. When `F < W`, the high `W - F`
   bits of the incoming PE data are dropped at the FU boundary
-  (high-bit truncation, hardware-implemented). Output ports remain
-  strict for now: `fabric.yield` value types must match the FU's
-  outer result types and the PE's `bits<W>`.
+  (high-bit truncation, hardware-implemented). Symmetrically, an
+  inner FU body value yielded via
+  `fabric.yield %v : !fabric.bits<G> to !fabric.bits<W>` may carry an
+  inner width `G <= W`; hardware zero-fills the high `W - G` bits at
+  the FU boundary so the value reaching the PE port is strict
+  `!fabric.bits<W>`. The PE's uniform-W invariant constrains the
+  PE's port-list types and the FU's outer (op-level) input/result
+  types only -- inner FU-body block-arg types and inner yield value
+  types are not constrained by the PE's `W`.
 * The body contains only `fabric.fu` ops. There is no terminator: the
   region uses MLIR's no-terminator form. Placing `fabric.op` / mux /
   demux / fifo / yield directly in the PE body, or nesting another

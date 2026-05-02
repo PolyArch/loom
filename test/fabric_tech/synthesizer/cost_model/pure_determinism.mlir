@@ -21,22 +21,26 @@
 //          + dataflow.carry i32 (2.0 * 32)         -> 64.0
 //          total = 1 + 96 + 96 + 64               = 257.0
 
-func.func @det_full(%cond: !fabric.bits<1>,
-                    %a: !fabric.bits<32>, %b: !fabric.bits<32>)
-    -> (!fabric.bits<32>, !fabric.bits<32>) {
-  %r:2 = fabric.fu(%cc = %cond : !fabric.bits<1>,
-                   %x = %a : !fabric.bits<32>,
-                   %y = %b : !fabric.bits<32>)
-                  -> (!fabric.bits<32>, !fabric.bits<32>) {
-    %m = fabric.mux %x, %y : !fabric.bits<32>
-    %k = fabric.op [@arith.addi] (%m, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %c = fabric.op [@dataflow.carry] (%cc, %k, %k)
-         : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    %d0, %d1 = fabric.demux %c : !fabric.bits<32> -> 2
-    fabric.yield %d0, %d1 : !fabric.bits<32>, !fabric.bits<32>
+fabric.module @det_full(%cond: !fabric.bits<32>,
+                        %a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pcond = %cond : !fabric.bits<32>,
+                       %pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>)
+                      -> (!fabric.bits<32>, !fabric.bits<32>) {
+    fabric.fu(%cc = %pcond : !fabric.bits<32> to !fabric.bits<1>,
+              %x = %pa : !fabric.bits<32>,
+              %y = %pb : !fabric.bits<32>)
+              -> (!fabric.bits<32>, !fabric.bits<32>) {
+      %m = fabric.mux %x, %y : !fabric.bits<32>
+      %k = fabric.op [@arith.addi] (%m, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %c = fabric.op [@dataflow.carry] (%cc, %k, %k)
+           : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      %d0, %d1 = fabric.demux %c : !fabric.bits<32> -> 2
+      fabric.yield %d0, %d1 : !fabric.bits<32>, !fabric.bits<32>
+    }
   }
-  return %r#0, %r#1 : !fabric.bits<32>, !fabric.bits<32>
+  fabric.yield
 }
 
 // CHECK: cost det_full=2.570000e+02

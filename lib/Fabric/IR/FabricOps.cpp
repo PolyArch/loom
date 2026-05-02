@@ -2102,15 +2102,38 @@ LogicalResult YieldOp::verify() {
              << expectedResults.size() << ")";
     for (auto [i, v] : llvm::enumerate(getValues())) {
       Type expected = expectedResults[i];
-      // Inside fabric.fu the per-value `to` clause is not allowed: the FU
-      // boundary is strict on its outputs.
-      if (declared[i] && declared[i] != v.getType())
+      Type innerTy = v.getType();
+      // Output-side boundary widening (symmetric to the FU input-side
+      // `to <inner-type>` truncation): when the per-value `to <type>`
+      // clause is present, it names the FU's OUTER result type. Inner
+      // value width must be <= outer width; the high (outer - inner)
+      // bits are zero-filled at the FU boundary on each token.
+      if (declared[i] && declared[i] != innerTy) {
+        if (declared[i] != expected)
+          return emitOpError("yield value #")
+                 << i << ": declared destination type " << declared[i]
+                 << " does not match parent fabric.fu result type " << expected;
+        auto innerW = bitsWidth(innerTy);
+        auto outerW = bitsWidth(expected);
+        if (!innerW)
+          return emitOpError("yield value #")
+                 << i << " inner type " << innerTy
+                 << " must be fabric.bits<N> for FU output boundary widening";
+        if (!outerW)
+          return emitOpError("yield value #")
+                 << i << " outer type " << expected
+                 << " must be fabric.bits<N> for FU output boundary widening";
+        if (*innerW > *outerW)
+          return emitOpError("yield value #")
+                 << i << " inner bits-width " << *innerW
+                 << " is greater than outer bits-width " << *outerW
+                 << "; the FU output boundary only supports low-bit-aligned "
+                    "widening (inner <= outer, high bits zero-filled)";
+        continue;
+      }
+      if (innerTy != expected)
         return emitOpError("yield value #")
-               << i
-               << ": 'to <type>' clause is not allowed inside fabric.fu";
-      if (v.getType() != expected)
-        return emitOpError("yield value #")
-               << i << " type " << v.getType()
+               << i << " type " << innerTy
                << " must match parent fabric.fu result type " << expected;
     }
     return success();

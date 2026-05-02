@@ -20,7 +20,7 @@
 // ANY: synth-stat group=alu_int_32
 // ANY-SAME: reason=success
 // ANY-SAME: covered=2/2
-// ANY: func.func @fu_alu_int_32
+// ANY: fabric.module @fu_alu_int_32
 // ANY-SAME: loom.synthesized_for = "alu_int_32"
 
 func.func @pat_addi(%a: i32, %b: i32) -> i32

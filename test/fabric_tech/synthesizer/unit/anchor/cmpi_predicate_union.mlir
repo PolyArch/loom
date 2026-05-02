@@ -9,7 +9,9 @@
 
 // CHECK: remark: {{.*}}synth-stat group=cmpi_pred strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_cmpi_pred
+// CHECK: fabric.module @fu_cmpi_pred
+// CHECK-SAME: loom.synthesized_for = "cmpi_pred"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.cmpi]
 // CHECK-SAME: hw_params = [{predicate = ["eq", "ne"]}]

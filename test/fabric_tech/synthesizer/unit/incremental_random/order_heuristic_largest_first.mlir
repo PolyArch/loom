@@ -16,7 +16,8 @@
 // the path the wire test exercises.
 
 // CHECK: remark: {{.*}}synth-stat group=lf_demo strategy=incremental_random reason=success
-// CHECK: func.func @fu_lf_demo
+// CHECK: fabric.module @fu_lf_demo
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 // CHECK: fabric.yield

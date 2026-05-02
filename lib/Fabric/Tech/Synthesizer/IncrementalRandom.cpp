@@ -97,13 +97,15 @@ struct RestartHandoff {
 // FU lookup helper (mirrored from the pass / Incremental).
 //===----------------------------------------------------------------------===//
 
-::fabric::FuOp innerFuOf(::mlir::func::FuncOp wrapper) {
-  if (!wrapper || wrapper.getBody().empty())
+::fabric::FuOp innerFuOf(::fabric::ModuleOp wrapper) {
+  if (!wrapper)
     return {};
-  for (::mlir::Operation &op : wrapper.getBody().front().getOperations())
-    if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op))
-      return fu;
-  return {};
+  ::fabric::FuOp found;
+  wrapper.walk([&](::fabric::FuOp fu) {
+    if (!found)
+      found = fu;
+  });
+  return found;
 }
 
 //===----------------------------------------------------------------------===//
@@ -406,19 +408,19 @@ SynthResult IncrementalRandomSynthesizer::run(const SynthInputs &inputs) {
         "outer scratch MLIRContext");
     return result;
   }
-  ::mlir::func::FuncOp reHomed;
-  for (auto fn : parsed->getOps<::mlir::func::FuncOp>()) {
+  ::fabric::ModuleOp reHomed;
+  for (auto fn : parsed->getOps<::fabric::ModuleOp>()) {
     reHomed = fn;
     break;
   }
   if (!reHomed) {
     result.failureReason = SynthFailureReason::VerifierFailed;
     result.notes.push_back(
-        "incremental_random: reparsed module contained no func.func");
+        "incremental_random: reparsed module contained no fabric.module");
     return result;
   }
   reHomed->remove();
-  result.wrapper = ::mlir::OwningOpRef<::mlir::func::FuncOp>(reHomed);
+  result.wrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(reHomed);
   result.coverage = best->coverage;
   // Preserve the winning restart's notes so callers can trace which
   // permutation index was chosen on success.

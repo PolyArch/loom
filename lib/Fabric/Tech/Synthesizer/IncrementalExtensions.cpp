@@ -73,13 +73,103 @@ unsigned bitWidthOf(::mlir::Type t) {
   return 0;
 }
 
-::fabric::FuOp innerFuOf(::mlir::func::FuncOp wrapper) {
-  if (!wrapper || wrapper.getBody().empty())
+::fabric::FuOp innerFuOf(::fabric::ModuleOp wrapper) {
+  if (!wrapper)
     return {};
-  for (::mlir::Operation &op : wrapper.getBody().front().getOperations())
-    if (auto fu = ::mlir::dyn_cast<::fabric::FuOp>(op))
-      return fu;
-  return {};
+  ::fabric::FuOp found;
+  wrapper.walk([&](::fabric::FuOp fu) {
+    if (!found)
+      found = fu;
+  });
+  return found;
+}
+
+// Build a fresh wrapper fabric.module + fabric.pe + fabric.fu skeleton
+// sized for the given input/result types. Mirrors the layout produced
+// by `Anchor.cpp`'s strategy: top-level fabric.module declaring the
+// inputs as block args, anonymous fabric.pe with at least one output
+// port, and an inner fabric.fu sized to `fuResultTypes`. Returns the
+// wrapper (with fabric.module as top), the contained FU, and the FU
+// entry block so the caller can populate the body.
+struct WrapperShellExt {
+  ::mlir::OwningOpRef<::fabric::ModuleOp> wrapper;
+  ::fabric::FuOp fu;
+  ::mlir::Block *fuEntry = nullptr;
+};
+
+WrapperShellExt
+buildModuleShellForFu(::mlir::MLIRContext *ctx, ::llvm::StringRef symName,
+                      ::llvm::ArrayRef<::mlir::Type> inputTypes,
+                      ::llvm::ArrayRef<::mlir::Type> fuResultTypes) {
+  WrapperShellExt ws;
+  ::mlir::Location loc = ::mlir::UnknownLoc::get(ctx);
+  ::llvm::SmallVector<::mlir::Type, 4> moduleResultTypes;
+  auto moduleFuncType = ::mlir::FunctionType::get(
+      ctx, inputTypes, ::mlir::TypeRange(moduleResultTypes));
+
+  ::mlir::OperationState moduleState(
+      loc, ::fabric::ModuleOp::getOperationName());
+  moduleState.addAttribute(
+      "sym_name", ::mlir::StringAttr::get(ctx, symName));
+  moduleState.addAttribute("function_type",
+                           ::mlir::TypeAttr::get(moduleFuncType));
+  ::mlir::Region *moduleRegion = moduleState.addRegion();
+  ::mlir::Block *moduleEntry = new ::mlir::Block();
+  moduleRegion->push_back(moduleEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> moduleArgLocs(inputTypes.size(),
+                                                          loc);
+  moduleEntry->addArguments(inputTypes, moduleArgLocs);
+  ::mlir::OpBuilder topBuilder(ctx);
+  ::mlir::Operation *rawModule = topBuilder.create(moduleState);
+  auto wrapper = ::mlir::cast<::fabric::ModuleOp>(rawModule);
+
+  ::mlir::OpBuilder moduleBuilder(moduleEntry, moduleEntry->end());
+
+  // PE result types: must be at least L>=1. When the FU has 0 results,
+  // declare one bits<W> output port from the module's input width.
+  ::llvm::SmallVector<::mlir::Type, 4> peResultTypes(fuResultTypes.begin(),
+                                                     fuResultTypes.end());
+  if (peResultTypes.empty()) {
+    unsigned w = inputTypes.empty()
+                     ? 0u
+                     : ::llvm::cast<::fabric::BitsType>(inputTypes[0])
+                           .getWidth();
+    peResultTypes.push_back(::fabric::BitsType::get(ctx, w));
+  }
+  ::mlir::OperationState peState(loc, ::fabric::PeOp::getOperationName());
+  peState.addOperands(::mlir::ValueRange(moduleEntry->getArguments()));
+  peState.addTypes(peResultTypes);
+  peState.addAttribute(
+      "schedule",
+      ::fabric::ScheduleAttr::get(ctx, ::fabric::Schedule::Spatial));
+  ::mlir::Region *peRegion = peState.addRegion();
+  ::mlir::Block *peEntry = new ::mlir::Block();
+  peRegion->push_back(peEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> peArgLocs(inputTypes.size(), loc);
+  peEntry->addArguments(inputTypes, peArgLocs);
+  moduleBuilder.create(peState);
+
+  ::mlir::OpBuilder peBodyBuilder(peEntry, peEntry->end());
+  ::mlir::OperationState fuState(loc, ::fabric::FuOp::getOperationName());
+  fuState.addOperands(::mlir::ValueRange(peEntry->getArguments()));
+  fuState.addTypes(fuResultTypes);
+  ::mlir::Region *fuRegion = fuState.addRegion();
+  ::mlir::Block *fuEntry = new ::mlir::Block();
+  fuRegion->push_back(fuEntry);
+  ::llvm::SmallVector<::mlir::Location, 4> fuArgLocs(inputTypes.size(), loc);
+  fuEntry->addArguments(inputTypes, fuArgLocs);
+  ::mlir::Operation *rawFu = peBodyBuilder.create(fuState);
+  auto fu = ::mlir::cast<::fabric::FuOp>(rawFu);
+
+  // Module-level fabric.yield (zero operands).
+  ::mlir::OperationState modYield(loc,
+                                  ::fabric::YieldOp::getOperationName());
+  moduleBuilder.create(modYield);
+
+  ws.wrapper = ::mlir::OwningOpRef<::fabric::ModuleOp>(wrapper);
+  ws.fu = fu;
+  ws.fuEntry = fuEntry;
+  return ws;
 }
 
 ::llvm::StringRef firstOpListSymbol(::fabric::OpOp op) {
@@ -176,16 +266,16 @@ SgYieldChain collectSgYieldChain(::dataflow::SubgraphOp sg, unsigned yieldIdx) {
 // Cloning + position-based fabric.op lookup helpers.
 //===----------------------------------------------------------------------===//
 
-::mlir::OwningOpRef<::mlir::func::FuncOp>
-cloneWrapper(::mlir::func::FuncOp wrapper) {
+::mlir::OwningOpRef<::fabric::ModuleOp>
+cloneWrapper(::fabric::ModuleOp wrapper) {
   if (!wrapper)
     return {};
   ::mlir::Operation *clonedRaw = wrapper->clone();
-  return ::mlir::OwningOpRef<::mlir::func::FuncOp>(
-      ::mlir::cast<::mlir::func::FuncOp>(clonedRaw));
+  return ::mlir::OwningOpRef<::fabric::ModuleOp>(
+      ::mlir::cast<::fabric::ModuleOp>(clonedRaw));
 }
 
-::fabric::OpOp findFabricOpByIndex(::mlir::func::FuncOp wrapper,
+::fabric::OpOp findFabricOpByIndex(::fabric::ModuleOp wrapper,
                                    unsigned targetIdx) {
   ::fabric::FuOp fu = innerFuOf(wrapper);
   if (!fu)
@@ -335,8 +425,8 @@ detectFuExtraHead(::fabric::FuOp fu, unsigned yieldIdx,
 // Build a candidate that grafts the tail extension onto the FU.
 //===----------------------------------------------------------------------===//
 
-::mlir::OwningOpRef<::mlir::func::FuncOp>
-buildMuxDemuxCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
+::mlir::OwningOpRef<::fabric::ModuleOp>
+buildMuxDemuxCandidate(::fabric::ModuleOp curWrapper, unsigned yieldIdx,
                        const TailExtension &tail,
                        ::dataflow::SubgraphOp sg) {
   if (!curWrapper)
@@ -371,26 +461,18 @@ buildMuxDemuxCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
     newInputTypes.push_back(bits);
     newPortBitsTypes.push_back(bits);
   }
-  ::llvm::SmallVector<::mlir::Type, 4> newResultTypes(oldType.getResults().begin(),
-                                                      oldType.getResults().end());
+  // FU result types come from the existing inner FU (preserved
+  // verbatim; this generator does not change FU result arity, only
+  // adds an inner mux/demux + tail op).
+  ::llvm::SmallVector<::mlir::Type, 4> newResultTypes(
+      curFu.getOutputs().getTypes().begin(),
+      curFu.getOutputs().getTypes().end());
 
-  auto newFuncType =
-      ::mlir::FunctionType::get(ctx, newInputTypes, newResultTypes);
-  ::std::string symName = curWrapper.getName().str();
-  auto newWrapper = ::mlir::func::FuncOp::create(loc, symName, newFuncType);
-  ::mlir::Block *newEntry = newWrapper.addEntryBlock();
-
-  ::mlir::OperationState fuState(loc, ::fabric::FuOp::getOperationName());
-  fuState.addOperands(::mlir::ValueRange(newEntry->getArguments()));
-  fuState.addTypes(newResultTypes);
-  ::mlir::Region *fuRegion = fuState.addRegion();
-  ::mlir::Block *fuEntry = new ::mlir::Block();
-  fuRegion->push_back(fuEntry);
-  ::llvm::SmallVector<::mlir::Location, 4> fuArgLocs(newInputTypes.size(), loc);
-  fuEntry->addArguments(newInputTypes, fuArgLocs);
-  ::mlir::OpBuilder funcBuilder(newEntry, newEntry->end());
-  ::mlir::Operation *rawNewFu = funcBuilder.create(fuState);
-  auto newFu = ::mlir::cast<::fabric::FuOp>(rawNewFu);
+  ::std::string symName = curWrapper.getSymName().str();
+  WrapperShellExt shell =
+      buildModuleShellForFu(ctx, symName, newInputTypes, newResultTypes);
+  ::fabric::FuOp newFu = shell.fu;
+  ::mlir::Block *fuEntry = shell.fuEntry;
 
   ::mlir::OpBuilder bodyBuilder(fuEntry, fuEntry->end());
 
@@ -462,12 +544,8 @@ buildMuxDemuxCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
   yieldState.addOperands(newYieldOperands);
   bodyBuilder.create(yieldState);
 
-  ::mlir::OperationState retState(
-      loc, ::mlir::func::ReturnOp::getOperationName());
-  retState.addOperands(::mlir::ValueRange(newFu.getResults()));
-  funcBuilder.create(retState);
-
-  return ::mlir::OwningOpRef<::mlir::func::FuncOp>(newWrapper);
+  (void)newFu;
+  return std::move(shell.wrapper);
 }
 
 //===----------------------------------------------------------------------===//
@@ -475,8 +553,8 @@ buildMuxDemuxCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
 // op so the FU can also realize the shorter sg shape.
 //===----------------------------------------------------------------------===//
 
-::mlir::OwningOpRef<::mlir::func::FuncOp>
-buildSkipHeadCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx) {
+::mlir::OwningOpRef<::fabric::ModuleOp>
+buildSkipHeadCandidate(::fabric::ModuleOp curWrapper, unsigned yieldIdx) {
   if (!curWrapper)
     return {};
   ::mlir::MLIRContext *ctx = curWrapper.getContext();
@@ -496,23 +574,17 @@ buildSkipHeadCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx) {
     return {};
 
   auto oldType = curWrapper.getFunctionType();
-  ::std::string symName = curWrapper.getName().str();
-  auto newWrapper = ::mlir::func::FuncOp::create(loc, symName, oldType);
-  ::mlir::Block *newEntry = newWrapper.addEntryBlock();
-
-  ::mlir::OperationState fuState(loc, ::fabric::FuOp::getOperationName());
-  fuState.addOperands(::mlir::ValueRange(newEntry->getArguments()));
-  fuState.addTypes(oldType.getResults());
-  ::mlir::Region *fuRegion = fuState.addRegion();
-  ::mlir::Block *fuEntry = new ::mlir::Block();
-  fuRegion->push_back(fuEntry);
+  ::std::string symName = curWrapper.getSymName().str();
   ::llvm::SmallVector<::mlir::Type, 4> inTypes(oldType.getInputs().begin(),
                                                oldType.getInputs().end());
-  ::llvm::SmallVector<::mlir::Location, 4> argLocs(inTypes.size(), loc);
-  fuEntry->addArguments(inTypes, argLocs);
-  ::mlir::OpBuilder funcBuilder(newEntry, newEntry->end());
-  ::mlir::Operation *rawNewFu = funcBuilder.create(fuState);
-  auto newFu = ::mlir::cast<::fabric::FuOp>(rawNewFu);
+  ::llvm::SmallVector<::mlir::Type, 4> fuResultTypes(
+      curFu.getOutputs().getTypes().begin(),
+      curFu.getOutputs().getTypes().end());
+  WrapperShellExt shell =
+      buildModuleShellForFu(ctx, symName, inTypes, fuResultTypes);
+  ::fabric::FuOp newFu = shell.fu;
+  (void)newFu;
+  ::mlir::Block *fuEntry = shell.fuEntry;
 
   ::mlir::OpBuilder bodyBuilder(fuEntry, fuEntry->end());
   ::mlir::IRMapping mapping;
@@ -562,12 +634,7 @@ buildSkipHeadCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx) {
   yieldState.addOperands(newYieldOperands);
   bodyBuilder.create(yieldState);
 
-  ::mlir::OperationState retState(
-      loc, ::mlir::func::ReturnOp::getOperationName());
-  retState.addOperands(::mlir::ValueRange(newFu.getResults()));
-  funcBuilder.create(retState);
-
-  return ::mlir::OwningOpRef<::mlir::func::FuncOp>(newWrapper);
+  return std::move(shell.wrapper);
 }
 
 //===----------------------------------------------------------------------===//
@@ -586,8 +653,8 @@ buildSkipHeadCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx) {
 // op_list keeps the IR strictly verifier-clean (no new operand
 // rewiring beyond the baseline) while emitting a behavior-changing
 // extra candidate that the cost model can rank against the baseline.
-::mlir::OwningOpRef<::mlir::func::FuncOp>
-buildShareRecurseCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
+::mlir::OwningOpRef<::fabric::ModuleOp>
+buildShareRecurseCandidate(::fabric::ModuleOp curWrapper, unsigned yieldIdx,
                            const TailExtension &tail,
                            ::dataflow::SubgraphOp sg) {
   if (!curWrapper)
@@ -675,10 +742,10 @@ buildShareRecurseCandidate(::mlir::func::FuncOp curWrapper, unsigned yieldIdx,
 // Public extension entry points.
 //===----------------------------------------------------------------------===//
 
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-widenOplistCandidates(::mlir::func::FuncOp curWrapper,
+::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4>
+widenOplistCandidates(::fabric::ModuleOp curWrapper,
                       ::dataflow::SubgraphOp sg) {
-  ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4> out;
+  ::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4> out;
   if (!curWrapper || !sg)
     return out;
   ::fabric::FuOp fu = innerFuOf(curWrapper);
@@ -752,11 +819,11 @@ widenOplistCandidates(::mlir::func::FuncOp curWrapper,
   return out;
 }
 
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
+::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4>
+insertMuxDemuxCandidates(::fabric::ModuleOp curWrapper,
                          ::dataflow::SubgraphOp sg,
                          const ::loom::SynthConfig &cfg) {
-  ::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4> out;
+  ::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4> out;
   if (!curWrapper || !sg)
     return out;
   ::fabric::FuOp fu = innerFuOf(curWrapper);
@@ -773,9 +840,6 @@ insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
   for (unsigned k = 0; k < yieldArity; ++k) {
     auto tail = detectSingleTailExtension(fu, k, sg);
     if (tail.has_value()) {
-      auto cand = buildMuxDemuxCandidate(curWrapper, k, *tail, sg);
-      if (cand)
-        out.push_back(std::move(cand));
       // Recursive-compression candidate (spec Q12): when enabled, emit
       // one extra candidate that widens an existing FU body fabric.op's
       // op_list to absorb the new tail op when both share a hardware
@@ -783,11 +847,17 @@ insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
       // same fabric.op count and structure as the baseline but with the
       // new tail position's op_list pre-widened so cost-rank can favor
       // share-aware merging when the workload exposes the opportunity.
+      // Pushed *before* the baseline so `pickBest`'s `stable_sort` keeps
+      // the share-aware variant first on equal cost (the spec requires
+      // cost-equal recursive variants to win the tie).
       if (cfg.subgraphShareRecurse) {
         auto rec = buildShareRecurseCandidate(curWrapper, k, *tail, sg);
         if (rec)
           out.push_back(std::move(rec));
       }
+      auto cand = buildMuxDemuxCandidate(curWrapper, k, *tail, sg);
+      if (cand)
+        out.push_back(std::move(cand));
       continue;
     }
     auto extra = detectFuExtraHead(fu, k, sg);
@@ -801,7 +871,7 @@ insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
   return out;
 }
 
-bool hasBackEdgeInDiff(::mlir::func::FuncOp /*curWrapper*/,
+bool hasBackEdgeInDiff(::fabric::ModuleOp /*curWrapper*/,
                        ::dataflow::SubgraphOp sg) {
   if (!sg)
     return false;

@@ -9,7 +9,8 @@
 
 // CHECK: remark: {{.*}}synth-stat group=stream_axes strategy=anchor reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_stream_axes
+// CHECK: fabric.module @fu_stream_axes
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@dataflow.stream]
 // CHECK-SAME: hw_params = [{cont_cond = ["<", ">"], step_op = ["+=", "-="]}]

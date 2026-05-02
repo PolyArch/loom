@@ -10,65 +10,84 @@
 //   sqrt    -> baseUnit 8.0  -> 8.0
 //   muli    -> singleton fallback baseUnit 1.0 -> 1.0
 
-func.func @bu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@arith.addi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_addi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@arith.addi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @bu_andi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@arith.andi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_andi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@arith.andi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @bu_divsi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@arith.divsi] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_divsi(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@arith.divsi] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @bu_addf(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@arith.addf] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_addf(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@arith.addf] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @bu_exp(%a: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@math.exp] (%x) : (!fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_exp(%a: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@math.exp] (%x) : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @bu_sqrt(%a: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@math.sqrt] (%x) : (!fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_sqrt(%a: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@math.sqrt] (%x) : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
-func.func @bu_muli_singleton(%a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
-  %r = fabric.fu(%x = %a : !fabric.bits<32>, %y = %b : !fabric.bits<32>) -> !fabric.bits<32> {
-    %k = fabric.op [@arith.muli] (%x, %y)
-         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-    fabric.yield %k : !fabric.bits<32>
+fabric.module @bu_muli_singleton(%a: !fabric.bits<32>, %b: !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                       %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%x = %pa : !fabric.bits<32>, %y = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %k = fabric.op [@arith.muli] (%x, %y)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %k : !fabric.bits<32>
+    }
   }
-  return %r : !fabric.bits<32>
+  fabric.yield
 }
 
 // CHECK: cost bu_addi=1.000000e+00

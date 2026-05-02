@@ -28,8 +28,9 @@
 // CHECK-SAME: strategy=anchor
 // CHECK-SAME: reason=success
 // CHECK-SAME: covered=2/2
-// CHECK: func.func @fu_alu_int_32
+// CHECK: fabric.module @fu_alu_int_32
 // CHECK-SAME: loom.synthesized_for = "alu_int_32"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 // CHECK: fabric.yield

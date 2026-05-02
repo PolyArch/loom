@@ -21,6 +21,7 @@
 
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -37,8 +38,8 @@ namespace loom::fabric::tech::detail {
 // where the FU's fabric.op and sg's op share a hardware share-group +
 // width, return a candidate wrapper whose op_list at that position is
 // the sorted union (current ∪ {new op name}).
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-widenOplistCandidates(::mlir::func::FuncOp curWrapper,
+::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4>
+widenOplistCandidates(::fabric::ModuleOp curWrapper,
                       ::dataflow::SubgraphOp sg);
 
 // Mux/demux insert: tier B baseline generator. Targets the spec's
@@ -54,8 +55,8 @@ widenOplistCandidates(::mlir::func::FuncOp curWrapper,
 // body fabric.op's op_list to absorb the new tail op when the two
 // share a hardware share-group + width (spec Q12). When the flag is
 // false, only the baseline candidates are emitted.
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
+::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4>
+insertMuxDemuxCandidates(::fabric::ModuleOp curWrapper,
                          ::dataflow::SubgraphOp sg,
                          const ::loom::SynthConfig &cfg);
 
@@ -67,15 +68,15 @@ insertMuxDemuxCandidates(::mlir::func::FuncOp curWrapper,
 // Returns an empty vector when the heuristic cannot align the SCCs
 // (caller should consult `classifyTierCConflict` to distinguish a
 // `feedback_align_conflict` from a generic structural mismatch).
-::llvm::SmallVector<::mlir::OwningOpRef<::mlir::func::FuncOp>, 4>
-structuralExtendCandidates(::mlir::func::FuncOp curWrapper,
+::llvm::SmallVector<::mlir::OwningOpRef<::fabric::ModuleOp>, 4>
+structuralExtendCandidates(::fabric::ModuleOp curWrapper,
                            ::dataflow::SubgraphOp sg,
                            const ::loom::SynthConfig &cfg);
 
 // True iff `sg`'s body contains a graph-region back-edge (and the
 // incremental main loop should therefore consider invoking the
 // structural extension hook).
-bool hasBackEdgeInDiff(::mlir::func::FuncOp curWrapper,
+bool hasBackEdgeInDiff(::fabric::ModuleOp curWrapper,
                        ::dataflow::SubgraphOp sg);
 
 // Build the trivial FU for a single tier-C input subgraph: a 1:1 mirror
@@ -83,7 +84,7 @@ bool hasBackEdgeInDiff(::mlir::func::FuncOp curWrapper,
 // resolved through a build-then-rewire placeholder scheme. Used by the
 // Incremental main loop when the input subgraph contains a back-edge
 // (the Anchor strategy refuses such inputs as `topology_mismatch`).
-::mlir::OwningOpRef<::mlir::func::FuncOp>
+::mlir::OwningOpRef<::fabric::ModuleOp>
 buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
                     ::dataflow::SubgraphOp first);
 
@@ -94,7 +95,7 @@ buildTrivialFuTierC(::mlir::MLIRContext *ctx, ::llvm::StringRef groupName,
 // signature), and `std::nullopt` otherwise (which the main loop
 // surfaces as `topology_mismatch`).
 ::std::optional<SynthFailureReason>
-classifyTierCConflict(::mlir::func::FuncOp curWrapper,
+classifyTierCConflict(::fabric::ModuleOp curWrapper,
                       ::dataflow::SubgraphOp sg,
                       const ::loom::SynthConfig &cfg);
 

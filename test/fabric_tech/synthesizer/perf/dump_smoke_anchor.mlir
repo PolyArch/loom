@@ -9,8 +9,9 @@
 // RUN: loom-synth-fu-dump --config=%p/anchor.yaml %s | FileCheck %s
 
 // CHECK: // --- synthesized FUs ---
-// CHECK: func.func @fu_alu
+// CHECK: fabric.module @fu_alu
 // CHECK-SAME: loom.synthesized_for = "alu"
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 // CHECK: fabric.yield

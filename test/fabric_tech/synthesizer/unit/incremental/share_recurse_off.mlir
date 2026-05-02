@@ -9,7 +9,8 @@
 
 // CHECK: remark: {{.*}}synth-stat group=sr_demo strategy=incremental reason=success
 // CHECK-SAME: cost=1.940000e+02
-// CHECK: func.func @fu_sr_demo
+// CHECK: fabric.module @fu_sr_demo
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi]
 // CHECK: fabric.demux

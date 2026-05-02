@@ -11,7 +11,8 @@
 
 // CHECK: remark: {{.*}}synth-stat group=accum strategy=incremental reason=success
 // CHECK-SAME: covered=2/2
-// CHECK: func.func @fu_accum
+// CHECK: fabric.module @fu_accum
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK-DAG: fabric.op [@dataflow.stream]
 // CHECK-DAG: fabric.op [@dataflow.carry]

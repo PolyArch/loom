@@ -8,7 +8,8 @@
 // CHECK: remark:
 // CHECK-SAME: synth-stat group=default strategy=incremental_random reason=success
 // CHECK-SAME: covered=2/2 nodes=1/0/0
-// CHECK: func.func @fu_default
+// CHECK: fabric.module @fu_default
+// CHECK: fabric.pe [spatial]
 // CHECK: fabric.fu
 // CHECK: fabric.op [@arith.addi, @arith.subi]
 
