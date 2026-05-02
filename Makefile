@@ -42,6 +42,7 @@ LLVM_LIT      := $(LLVM_BUILD)/bin/llvm-lit
 
 JOBS          ?= $(shell nproc)
 FLOCK         ?= flock
+PYTHON        ?= python3
 
 # Whether the current invocation is running in the main worktree.
 IS_MAIN       := $(if $(filter $(MAIN_WORKTREE),$(ROOT)),1,)
@@ -107,9 +108,9 @@ $(LOOM_BUILD)/build.ninja:
 	  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
 test: loom
-	@LIT_OPTS="-sv --time-tests $(LIT_OPTS)" \
-	  cmake --build $(LOOM_BUILD) -j$(JOBS) --target check-fabric 2>&1 \
-	  | awk -f $(ROOT)/test/lit_top_slowest.awk
+	@bash -o pipefail -c 'LIT_OPTS="-sv --time-tests $(LIT_OPTS)" \
+	  cmake --build "$(LOOM_BUILD)" -j"$(JOBS)" --target check-fabric 2>&1 \
+	  | "$(PYTHON)" "$(ROOT)/test/lit_top_slowest.py"'
 
 clean:
 	rm -rf $(LOOM_BUILD)
