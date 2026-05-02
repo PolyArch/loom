@@ -25,6 +25,12 @@ llvm_config.use_default_substitutions()
 
 config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
 
+# Perf tests are wall-clock-sensitive and pin a single core via taskset.
+# Run them one at a time across the suite so concurrent lit workers
+# don't load core 0 during the timed window. The "perf" group is
+# attached per-directory via lit.local.cfg.py under test/techmap/perf.
+lit_config.parallelism_groups["perf"] = 1
+
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
     os.path.join(config.loom_obj_root, "tools", "loom-alignment-test"),
