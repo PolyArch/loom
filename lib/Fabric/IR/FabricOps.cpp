@@ -1918,20 +1918,19 @@ LogicalResult fabric::ModuleOp::verify() {
              << " must equal declared input type " << declared;
   }
 
-  // Body whitelist: only fabric.pe, fabric.switch, fabric.fifo,
-  // fabric.module (nested), fabric.instantiate, fabric.boundary, and the
-  // implicit fabric.yield terminator may appear directly in the module
-  // body. (Future container ops -- fabric.mem -- will be added here as
-  // they land.)
+  // Body whitelist: only fabric.pe, fabric.switch, fabric.mem,
+  // fabric.fifo, fabric.module (nested), fabric.instantiate,
+  // fabric.boundary, and the implicit fabric.yield terminator may
+  // appear directly in the module body.
   for (Operation &op : entry) {
-    if (isa<PeOp, SwitchOp, FifoOp, fabric::ModuleOp, InstantiateOp,
+    if (isa<PeOp, SwitchOp, MemOp, FifoOp, fabric::ModuleOp, InstantiateOp,
             BoundaryOp, YieldOp>(op))
       continue;
     return op.emitOpError(
         "is not allowed inside fabric.module; only fabric.pe, "
-        "fabric.switch, fabric.fifo, fabric.module, fabric.instantiate, "
-        "and fabric.boundary are permitted (plus the implicit "
-        "terminator fabric.yield)");
+        "fabric.switch, fabric.mem, fabric.fifo, fabric.module, "
+        "fabric.instantiate, and fabric.boundary are permitted (plus the "
+        "implicit terminator fabric.yield)");
   }
   return success();
 }

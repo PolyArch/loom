@@ -3,6 +3,7 @@ add_mlir_dialect_library(MLIRFabric
   FabricBoundaryOps.cpp
   FabricDialect.cpp
   FabricInstantiateOp.cpp
+  FabricMemOp.cpp
   FabricOps.cpp
   FabricPeTemporalOps.cpp
   FabricSwitchOp.cpp

@@ -73,6 +73,8 @@ A module may have zero outputs (`-> ()`) or zero inputs
 * `fabric.pe` (both `[spatial]` and `[temporal]`)
 * `fabric.switch` (both `[spatial]` and `[temporal]`; see
   `docs/spec-fabric-switch.md`)
+* `fabric.mem` (both `[spatial]` and `[temporal]`; see
+  `docs/spec-fabric-mem.md`)
 * `fabric.fifo`
 * `fabric.module` (nested or sibling top-level brought in by symbol
   reference -- the body whitelist accepts top-level `fabric.module`
@@ -85,9 +87,6 @@ A module may have zero outputs (`-> ()`) or zero inputs
   and the temporal `bits_tag` domain; see
   `docs/spec-fabric-boundary.md`)
 * `fabric.yield` (terminator)
-
-Future container ops -- `fabric.mem` -- are listed in the dialect
-roadmap and will be added to the whitelist as they land.
 
 `builtin.unrealized_conversion_cast` is **not** in the whitelist. All
 fabric module values must come from a real fabric producer (a sub-
@@ -170,14 +169,32 @@ The relaxation does **not** apply inside a sub-module's body. Inside
 the FU boundary still governs FU-input asymmetry; everything else stays
 strict per the existing rules.
 
+## Optional Loom-constant overrides
+
+`fabric.module` carries two optional `i32` attributes that override
+the corresponding global Loom constants for ops nested inside the
+module body:
+
+* `loom_addr_bits` -- overrides `loom::getDefaultLoomAddrBits()`
+  (default 48).
+* `loom_mem_bus_width` -- overrides
+  `loom::getDefaultLoomMemBusWidth()` (default 32768).
+
+Both attributes are absent by default. When present they are read by
+the `fabric::resolveLoomAddrBits` / `fabric::resolveLoomMemBusWidth`
+helpers (see `docs/spec-fabric-mem.md` for the consumer side).
+Operations outside the module body fall back to the global defaults.
+The attributes round-trip through the standard
+`attributes { ... }` keyword block.
+
 ## Verifier rules
 
 * The body whitelist accepts only `fabric.pe` (both schedules),
-  `fabric.switch` (both schedules), `fabric.fifo`, `fabric.module`,
-  `fabric.instantiate`, `fabric.boundary` (covering all three
-  directions `[s2t]` / `[t2t]` / `[t2s]`), and the `fabric.yield`
-  terminator. Any other op is rejected with a diagnostic that lists
-  the allowed names.
+  `fabric.switch` (both schedules), `fabric.mem` (both schedules),
+  `fabric.fifo`, `fabric.module`, `fabric.instantiate`,
+  `fabric.boundary` (covering all three directions `[s2t]` /
+  `[t2t]` / `[t2s]`), and the `fabric.yield` terminator. Any other
+  op is rejected with a diagnostic that lists the allowed names.
 * Each block-argument type must be one of the allowed module port
   types (`!fabric.bits<W>`, `!fabric.bits_tag<W,T>`, `memref<...>`).
 * Each declared result type must be one of the same allowed types.

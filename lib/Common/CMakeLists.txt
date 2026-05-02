@@ -1,6 +1,7 @@
 add_mlir_library(LoomCommon
   Config.cpp
   IndexWidth.cpp
+  LoomConstants.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/Common

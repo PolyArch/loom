@@ -2,8 +2,11 @@
 #define FABRIC_TYPES_TD
 
 include "Fabric/IR/FabricDialect.td"
+include "mlir/IR/BuiltinTypeInterfaces.td"
 
-def Fabric_BitsType : Fabric_Type<"Bits", "bits"> {
+def Fabric_BitsType : Fabric_Type<"Bits", "bits", [
+    MemRefElementTypeInterface
+]> {
   let summary = "fabric bits type (BW >= 0), with implicit valid/ready handshake";
   let parameters = (ins "unsigned":$width);
   let assemblyFormat = "`<` $width `>`";

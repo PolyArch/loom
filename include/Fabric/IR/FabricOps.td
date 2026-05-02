@@ -215,7 +215,14 @@ def Fabric_ModuleOp : Fabric_Op<"module", [
 
   let arguments = (ins
       SymbolNameAttr:$sym_name,
-      TypeAttrOf<FunctionType>:$function_type
+      TypeAttrOf<FunctionType>:$function_type,
+      // Optional per-module overrides for the global Loom constants
+      // consumed by `fabric.mem` (and any future op that depends on the
+      // address-space width or memory-bus width). When absent the
+      // verifier falls back to ::loom::getDefaultLoomAddrBits() and
+      // ::loom::getDefaultLoomMemBusWidth().
+      OptionalAttr<I32Attr>:$loom_addr_bits,
+      OptionalAttr<I32Attr>:$loom_mem_bus_width
   );
   let regions = (region SizedRegion<1>:$body);
 
@@ -483,6 +490,51 @@ def Fabric_SwitchOp : Fabric_Op<"switch", [
       OptionalAttr<DictionaryAttr>:$sw_configs
   );
   let results = (outs Variadic<Fabric_AnyType>:$outputs);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+}
+
+def Fabric_MemOp : Fabric_Op<"mem", [
+    DeclareOpInterfaceMethods<Symbol, ["isOptionalSymbol"]>
+]> {
+  let summary =
+      "fabric memory: a multi-port load/store memory tile with a schedule "
+      "predicate (spatial or temporal)";
+  let description = [{
+    Leaf-level memory op wrapping `dataflow.load` / `dataflow.store`
+    semantics into a fabric-domain tile. Carries a mandatory `schedule`
+    predicate (`spatial` | `temporal`) that selects port type kinds.
+    The op exists in two disjoint syntactic forms by `sym_name`
+    presence:
+
+    Anonymous form has SSA operands and SSA results. Operand layout:
+    `memref_mgr` first, then per load port `(addr, ctrl)` two operands,
+    then per store port `(addr, data, ctrl)` three operands. Result
+    layout: optional `memref_sub` first (detected from result type),
+    then per load port `(data, done)` two results, then per store port
+    `done` one result.
+
+    Named template form has zero SSA operands and zero SSA results in
+    the host scope; the port signature is captured in the
+    `function_type` attribute. Hardware parameters live in `hw_params`
+    (an ArrayAttr wrapping a single DictionaryAttr) printed in
+    `[ ... ]`. Software configuration lives in `addr_table` /
+    `mem_enable` (all-or-nothing) printed in `{ ... }`.
+
+    See `docs/spec-fabric-mem.md` for the full per-schedule rules.
+  }];
+
+  let arguments = (ins
+      Variadic<Fabric_ModulePortType>:$inputs,
+      OptionalAttr<SymbolNameAttr>:$sym_name,
+      OptionalAttr<TypeAttrOf<FunctionType>>:$function_type,
+      Fabric_ScheduleAttr:$schedule,
+      OptionalAttr<ArrayAttr>:$hw_params,
+      OptionalAttr<ArrayAttr>:$addr_table,
+      OptionalAttr<BoolAttr>:$mem_enable
+  );
+  let results = (outs Variadic<Fabric_ModulePortType>:$outputs);
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;
