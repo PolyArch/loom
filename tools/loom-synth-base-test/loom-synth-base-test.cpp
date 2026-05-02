@@ -33,6 +33,8 @@
 #include "Common/SynthConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/Tech/Synthesizer/ExactMcesSolver.h"
+#include "Fabric/Tech/Synthesizer/McsGraph.h"
 #include "Fabric/Tech/Synthesizer/Synthesizer.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -66,6 +68,12 @@ static ::llvm::cl::opt<std::string>
                                   "plus `note:` lines, or `factory: "
                                   "nullptr` on an unknown name."),
                  ::llvm::cl::init(""));
+
+static ::llvm::cl::opt<bool> exactMcesCapStatus(
+    "exact-mces-cap-status",
+    ::llvm::cl::desc("Run a small exact-MCES search with candidate_cap=1 and "
+                     "print cap/proof status"),
+    ::llvm::cl::init(false));
 
 namespace {
 
@@ -147,6 +155,80 @@ int doMake(::llvm::StringRef strategy) {
   return 0;
 }
 
+::loom::fabric::tech::McsOperand blockArgOperand(unsigned argIndex,
+                                                 ::mlir::Type type) {
+  ::loom::fabric::tech::McsOperand operand;
+  operand.source = ::loom::fabric::tech::McsValueRef::blockArgument(argIndex);
+  operand.sourceLabel = ::loom::fabric::tech::labelForMcsValue(operand.source);
+  operand.type = type;
+  operand.width = ::loom::fabric::tech::bitWidthOfMcsType(type);
+  return operand;
+}
+
+::loom::fabric::tech::McsOperand nodeResultOperand(unsigned nodeIndex,
+                                                   ::mlir::Type type) {
+  ::loom::fabric::tech::McsOperand operand;
+  operand.source = ::loom::fabric::tech::McsValueRef::nodeResult(nodeIndex, 0);
+  operand.sourceLabel = ::loom::fabric::tech::labelForMcsValue(operand.source);
+  operand.type = type;
+  operand.width = ::loom::fabric::tech::bitWidthOfMcsType(type);
+  return operand;
+}
+
+::loom::fabric::tech::McsNode
+makeBinaryNode(unsigned index, ::llvm::StringRef opName,
+               ::llvm::ArrayRef<::loom::fabric::tech::McsOperand> operands,
+               ::mlir::Type resultType) {
+  ::loom::fabric::tech::McsNode node;
+  node.index = index;
+  node.opName = opName;
+  node.operands.assign(operands.begin(), operands.end());
+  node.resultTypes.push_back(resultType);
+  node.resultWidths.push_back(
+      ::loom::fabric::tech::bitWidthOfMcsType(resultType));
+  return node;
+}
+
+::loom::fabric::tech::McsGraph makeTwoNodeGraph(::mlir::Type i32,
+                                                unsigned inputIndex) {
+  ::loom::fabric::tech::McsGraph graph;
+  graph.inputIndex = inputIndex;
+  graph.blockArgTypes.push_back(i32);
+  graph.blockArgTypes.push_back(i32);
+
+  ::llvm::SmallVector<::loom::fabric::tech::McsOperand, 2> addOperands{
+      blockArgOperand(0, i32), blockArgOperand(1, i32)};
+  graph.nodes.push_back(makeBinaryNode(0, "arith.addi", addOperands, i32));
+
+  ::llvm::SmallVector<::loom::fabric::tech::McsOperand, 2> mulOperands{
+      nodeResultOperand(0, i32), blockArgOperand(1, i32)};
+  graph.nodes.push_back(makeBinaryNode(1, "arith.muli", mulOperands, i32));
+  graph.yieldSources.push_back(
+      ::loom::fabric::tech::McsValueRef::nodeResult(1, 0));
+  return graph;
+}
+
+int doExactMcesCapStatus() {
+  ::mlir::MLIRContext ctx;
+  ::mlir::Type i32 = ::mlir::IntegerType::get(&ctx, 32);
+  ::llvm::SmallVector<::loom::fabric::tech::McsGraph, 2> graphs;
+  graphs.push_back(makeTwoNodeGraph(i32, 0));
+  graphs.push_back(makeTwoNodeGraph(i32, 1));
+
+  ::loom::fabric::tech::ExactMcesSearchOptions options;
+  options.candidateCap = 1;
+  options.workers = 1;
+
+  ::loom::fabric::tech::ExactMcesSolver solver;
+  auto result = solver.enumerate(graphs, options);
+  ::llvm::outs() << "exact-mces: generated=" << result.generatedCandidates
+                 << " returned=" << result.candidates.size()
+                 << " hit_cap=" << (result.hitCap ? "true" : "false")
+                 << " proved_optimal="
+                 << (result.provedOptimal ? "true" : "false") << "\n";
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -170,9 +252,16 @@ int main(int argc, char **argv) {
       return rc;
     didSomething = true;
   }
+  if (exactMcesCapStatus.getValue()) {
+    int rc = doExactMcesCapStatus();
+    if (rc != 0)
+      return rc;
+    didSomething = true;
+  }
   if (!didSomething) {
     ::llvm::errs() << "error: one of --list-strategies / "
-                      "--list-failure-reasons / --make is required\n";
+                      "--list-failure-reasons / --make / "
+                      "--exact-mces-cap-status is required\n";
     return 1;
   }
   return 0;

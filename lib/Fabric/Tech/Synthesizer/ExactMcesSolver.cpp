@@ -1050,7 +1050,7 @@ mergeShardResults(::llvm::ArrayRef<SearchShardResult> shardResults,
 
   result.hitCap = candidateCap == 0 ||
                   result.generatedCandidates > result.candidates.size();
-  result.provedOptimal = !result.hitTimeout && candidateCap != 0;
+  result.provedOptimal = !result.hitTimeout && !result.hitCap;
   return result;
 }
 
