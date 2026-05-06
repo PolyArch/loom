@@ -212,6 +212,10 @@ each rule lands in IR.
 * **Memory dependence edge.** A directed edge `p -> o` saying memory
   access `o` must wait for memory access `p` before issuing its
   side effect or externally visible read.
+* **Loop-carried memory state.** A hidden `none`-typed control state
+  carried by a lowered loop for one alias/dependence partition. It
+  represents "all memory effects in this partition from previous
+  dynamic iterations have retired."
 * **Aggregation-form forall.** An `scf.forall` with `shared_outs`,
   op results, or non-empty `scf.forall.in_parallel` combining actions
   such as `tensor.parallel_insert_slice`.
@@ -825,12 +829,22 @@ documentation never refers to the numeric position.
   directed dependence `p -> o` iff the pair conflicts. The builder may
   drop transitively implied edges, provided the remaining immediate
   predecessor and successor sets induce the same memory partial order.
+* For structured loops, the builder also records loop-carried memory
+  state plans. Each plan is keyed by a deterministic loop id and a
+  memory partition id, and references memory accesses only by integer
+  ids. A partition requiring cross-iteration ordering lowers to one
+  hidden `none` carry in `loom-lower-scf-to-dfg-bodies`.
 * The pass leaves a stable IR snapshot so subsequent passes need no
   re-analysis: each memory access gets `loom.mem_dep_id = N` and
   `loom.mem_dep_preds = [P0, P1, ...]`, where `N` and every `P*` are
-  deterministic integer ids inside the graph. The lowering transfers
-  these attributes from source `memref` ops to replacement
-  `dataflow` ops. `loom-finalize-dfg` drops them.
+  deterministic integer ids inside the graph. Each loop with hidden
+  memory state gets `loom.mem_loop_id = L` and
+  `loom.mem_loop_states = [...]`, a loop-local memory-state plan whose
+  fields are deterministic integer ids, never operation references.
+  The lowering transfers per-access attributes from source `memref`
+  ops to replacement `dataflow` ops.
+  `loom-finalize-dfg` drops all temporary memory-dependence
+  attributes.
 
 ### 6.9 `loom-lower-scf-to-dfg-bodies`
 
@@ -842,13 +856,15 @@ documentation never refers to the numeric position.
 * Non-inlined ScalarCore-legal `func.call` operations remain outside
   graphs and are preserved as ScalarCore calls.
 * Memory ops (`memref.load`, `memref.store`) are rewritten in place
-  as `dataflow.load` / `dataflow.store`. The `ctrl` operand of each
-  memory op is wired from its memory-dependence predecessors: from the
-  graph entry `ctrl_in` block argument when the predecessor set is
-  empty, otherwise from output zero of a `dataflow.sync` over all
-  immediate predecessors' `done` outputs. The graph `done_out` yield
-  operand is output zero of a `dataflow.sync` over all memory accesses
-  with no dependence successor (see "Memory Dependence Model").
+  as `dataflow.load` / `dataflow.store`. The lowering builds a ctrl
+  source set for each memory op from immediate predecessor `done`
+  tokens and any required hidden loop-carried memory-state token. If
+  the set is empty, it uses the graph entry `ctrl_in` block argument;
+  if the set has one value, it uses that value directly; otherwise it
+  uses output zero of a `dataflow.sync` over the set. The graph
+  `done_out` yield operand is output zero of a `dataflow.sync` over
+  all memory accesses with no dependence successor (see "Memory
+  Dependence Model").
 
 ### 6.10 `loom-finalize-dfg`
 
@@ -873,7 +889,9 @@ simpler ops first.
 The dataflow primitive set is the existing one
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
 `constant`, `load`, `store`, `yield`). The four streaming ops are:
-* `carry`: loop-carried value primitive (one per `iter_arg`).
+* `carry`: loop-carried value or memory-state primitive (one per
+  `iter_arg`, plus hidden memory-state carries required by the
+  Memory Dependence Model).
 * `invariant`: loop-invariant value replay (one per outer SSA value
   used inside the loop body).
 * `gate`: filter that keeps `cond=true` cycles and drops the
@@ -886,6 +904,10 @@ the rwc bit fed into `carry` / `invariant` / `gate` does not have to
 come from `stream`; any `i1` SSA stream from arbitrary computation
 inside the graph plays the same role. This is what lets
 `scf.while` lower without a new op.
+
+The templates below show user-visible SSA value lowering. Loop-carried
+memory ordering is added by the Memory Dependence Model as hidden
+`none`-typed state; it is not an optional optimization.
 
 ### 7.1 `scf.if`
 
@@ -931,6 +953,12 @@ inside the graph plays the same role. This is what lets
   trailing operands at the iteration that turned the predicate
   false). `demux` is used because `gate` drops the false-cycle
   value.
+* For each loop-carried memory partition, the loop also has a hidden
+  `none` carry. The before-region starts from that partition's
+  incoming memory state. On the true path, the after-region tail feeds
+  the next iteration's memory state. On the false path, the
+  before-region tail is the loop-exit memory state. This preserves
+  memory effects performed by the final condition-checking iteration.
 
 ### 7.3 `scf.for` with `scf.yield`
 
@@ -948,6 +976,11 @@ inside the graph plays the same role. This is what lets
   which equals the loop result by definition of `scf.for`'s
   semantics (the value at the iteration just before rwc became
   false).
+* For each loop-carried memory partition, the loop has a hidden
+  `none` carry initialized by the memory state before the first
+  dynamic iteration. The body tail for that partition feeds the next
+  iteration. The loop-exit memory state is the final carried state,
+  with the zero-trip case forwarding the initial memory state.
 
 ### 7.4 `scf.forall` (no mapping; mapped foralls became threads)
 
@@ -1071,7 +1104,94 @@ directed graph over memory accesses inside one `dataflow.graph`.
 The snapshot uses integer ids rather than operation references so it is
 stable under printing, parsing, and later in-place memory-op rewrites.
 
-### 8.3 Token Wiring
+### 8.3 Loop-Carried Memory State
+
+A loop-carried memory dependence is represented as hidden loop state,
+not as an implicit property of the loop op. The lowering must make the
+state visible in dataflow primitives so graph scheduling, graph
+verification, and later hardware lowering all see the same ordering.
+
+For each structured loop `L`, the dependence builder computes memory
+partitions inside `L`:
+
+* The initial partitioning key is the alias root used by the active
+  oracle. A more precise implementation may split or merge by the
+  conflict graph's strongly connected components, but it must be
+  conservative: two accesses that may need cross-iteration ordering
+  must appear in at least one common partition.
+* A partition needs loop-carried state when an access in one dynamic
+  iteration can conflict with an access in a later dynamic iteration.
+  Read-read pairs never force such a partition by themselves.
+* Each partition that needs loop-carried state gets one deterministic
+  partition id unique within the graph and one hidden `none`-typed
+  carry in the lowered loop. Independent partitions get independent
+  carries so unrelated memrefs are not serialized.
+
+The canonical state names below are descriptive; implementations may
+choose different SSA names.
+
+```
+%mem_iter_P = carry %rwc, %mem_init_P, %mem_next_P : none
+```
+
+* `%mem_init_P` is the dominating memory-order token before the first
+  dynamic iteration of `L` for partition `P`. It is derived from the
+  graph `ctrl_in` token, a pre-loop dependence tail, or the enclosing
+  loop's memory-state token.
+* `%mem_iter_P` is the start-of-current-iteration memory state. Any
+  access in partition `P` that has a loop-carried predecessor syncs
+  with this token in addition to its ordinary intra-iteration
+  dependence predecessors.
+* `%mem_next_P` is the end-of-current-iteration memory state. It is
+  built from the done tokens of accesses in partition `P` whose
+  completion must precede the next dynamic iteration. If a dynamic
+  path through the loop body performs no access in `P`, that path
+  forwards `%mem_iter_P`. Mutually exclusive tails are joined with the
+  same selector that chose the path; they are never joined with
+  `sync`.
+* `%mem_after_P` is the memory state after the loop. The zero-trip
+  path forwards `%mem_init_P`. The nonzero path is the final carried
+  state. Post-loop accesses in partition `P` use `%mem_after_P` as
+  their predecessor when they may conflict with loop-body accesses.
+
+`scf.for` uses the `stream`-produced rwc bit for the hidden memory
+state carry. The per-iteration body tail feeds `%mem_next_P`, and the
+loop-exit state handles both zero-trip and nonzero execution.
+
+`scf.while` has two regions and therefore two relevant memory tails.
+The before-region executes on both true and false condition checks.
+The false path exits the loop with the before-region tail. The true
+path continues through the after-region, and the after-region tail
+feeds `%mem_next_P` for the next iteration.
+
+Nested loops are treated compositionally. An inner loop's
+`%mem_after_P` is an ordinary memory-order event in the enclosing
+loop's partition. If the same alias root participates in both loops,
+the outer loop state gates the inner loop entry and the inner loop
+exit feeds the outer loop's body tail.
+
+The loop-state plan stored by `loom-build-memory-dependencies` is the
+`loom.mem_loop_states` attribute on the source loop. Each record uses
+only deterministic integer ids:
+
+* loop id,
+* partition id,
+* member memory-access ids,
+* access ids that define the per-path `%mem_next_P` tails,
+* access ids that consume `%mem_after_P` after the loop.
+
+This avoids operation-reference attributes and keeps the snapshot
+stable across printing and parsing. The plan intentionally does not
+duplicate the type contract of `carry`, `mux`, `demux`, or `sync`; the
+primitive op definitions are the single source of truth for which
+types those ops accept.
+
+Omitting a required loop-carried memory state is illegal. Adding an
+extra conservative state is legal for correctness, but tests should
+catch it when it serializes partitions that the active oracle proves
+independent.
+
+### 8.4 Token Wiring
 
 The control-token wiring rule is derived from the dependence snapshot:
 
@@ -1081,10 +1201,14 @@ The control-token wiring rule is derived from the dependence snapshot:
   operand. These are real SSA values even if the custom assembly
   format chooses to compress their spelling.
 * For each load / store op `o` in the graph, its `ctrl` operand is
-  `none` and originates from:
-  - `ctrl_in` if `o` has no immediate dependence predecessor;
-  - output zero of a `dataflow.sync` rendezvous over all immediate
-    dependence predecessors' `done` outputs.
+  `none`. The lowering first builds a ctrl source set:
+  - immediate dependence predecessors contribute their `done` outputs;
+  - loop-carried memory dependences contribute the relevant hidden
+    `%mem_iter_P` or `%mem_after_P` state token described above.
+* If `o`'s ctrl source set is empty, `o` uses `ctrl_in`. If the set
+  has one value, `o` uses that value directly. If the set has multiple
+  values, `o` uses output zero of a `dataflow.sync` rendezvous over
+  all values in the set.
 * The graph `done_out` value is output zero of a `dataflow.sync` over
   all `done` tokens of memory accesses with no immediate dependence
   successor.
@@ -1239,6 +1363,12 @@ The lit-test layout grows three new directories:
     produce diagnostics. Mapped forall tests also check that the
     original implicit synchronization point is represented by a token
     dependency or `dataflow.thread.wait`.
+  - The `for/` and `while/` directories include loop-carried memory
+    cases: an in-place stencil, zero-trip and one-trip execution,
+    conditional memory effects whose tails must be joined by
+    selector-matched `mux`, nested loops, and two independent memrefs
+    that must produce independent memory-state partitions under the
+    active oracle.
   - `scalarcore_calls/` covers inlining or specialization of callees
     that contain graph-extractable code, preservation of graph-free
     ScalarCore calls, and diagnostics for unsupported callees.
@@ -1287,6 +1417,12 @@ following hold simultaneously:
 * The two `MemAliasOracle` implementations both drive
   `loom-build-memory-dependencies` and pass the entire lit suite under
   `test/frontend/`.
+* Loop-carried memory dependences lower to explicit hidden `none`
+  memory-state carries. Post-loop conflicting accesses depend on the
+  loop-exit memory state, zero-trip loops forward the pre-loop state,
+  branch-local loop tails use selector-matched joins, and independent
+  memory partitions are not serialized when the active oracle proves
+  them independent.
 * All previously existing tests in `test/dataflow/unit/graph/` and
   `test/dataflow/unit/subgraph/` continue to pass after the
   graph-control-port migration.
