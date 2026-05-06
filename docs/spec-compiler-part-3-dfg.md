@@ -925,6 +925,13 @@ This convention is required for the templates below to be mechanical.
 input lane. `dataflow.demux` is selective: it emits only the selected
 output lane. `dataflow.sync` is the all-input rendezvous op.
 
+Allowed pure compute ops inside `dataflow.graph`, such as
+`arith.*`, `math.*`, and allowed LLVM computation ops, follow strict
+all-operand firing: each dynamic firing consumes one token from every
+operand and emits one token on every result. In particular,
+`arith.select` is an eager three-input compute op in this model, not a
+short-circuiting dataflow mux.
+
 SSA multi-use is token broadcast. If one SSA stream value has multiple
 uses, each use observes the same ordered token sequence. This is not a
 destructive single-consumer read. The `scf.for` template relies on
@@ -973,25 +980,81 @@ whose value stream has already been normalized.
 
 ### 7.1 `scf.if`
 
+Source shape:
+
+```
+%r... = scf.if %cond -> (T_r, ...) {
+  ... then computation using live-in streams ...
+  scf.yield %then_r... : T_r, ...
+} else {
+  ... else computation using live-in streams ...
+  scf.yield %else_r... : T_r, ...
+}
+```
+
+`scf.if` regions have no block arguments, but graph lowering must not
+let branch-local computation directly consume parent-phase data streams.
+For every non-memref stream live-in used by either branch, the lowering
+projects the stream into branch phase with the same selector that
+routes control.
+The `%ctrl` stream is supplied by the current lowering context: graph
+`ctrl_in` for a top-level if, loop body control for an if inside a
+loop body, or a selected parent-branch control stream for a nested if.
+
 ```
 %cond : i1
 %t_else, %t_then = demux %cond, %ctrl : i1 -> (none, none)
-# then-region runs with t_then as its ctrl and produces done_then
-# else-region runs with t_else as its ctrl and produces done_else
-%result = mux %cond, %v_else, %v_then
+
+# For every non-memref stream live-in %x : T used in either branch:
+%x_else, %x_then = demux %cond, %x : (i1, T) -> (T, T)
+
+# then-region runs with %t_then and %x_then...; produces %v_then...
+# else-region runs with %t_else and %x_else...; produces %v_else...
+
+%result = mux %cond, %v_else, %v_then : (i1, T, T) -> T
 %done_after = mux %cond, %done_else, %done_then : (i1, none, none) -> none
 ```
 
 * Each side's loads / stores fork from the side's local ctrl token
   and join back through a branch-local tail token.
+* Frontend `memref<...>` bindings are not demuxed. The branch-specific
+  address, data, operation, and explicit `none` order streams are
+  demuxed instead.
+* If a live-in is used by only one branch, the projection for the other
+  branch is a dead output. Per the control-op contract, it is discarded
+  by target lowering and does not require a `dataflow.drop` op or
+  runtime queue.
 * Mutually exclusive branch tails are joined with `mux`, not `sync`.
   `sync` is only used inside one dynamically executed path, where all
   inputs are expected to fire. The un-selected branch produces no
   done token because `demux` only fires the selected output, while the
   exit `mux` waits only for the selected branch's `done` token.
 * If the `scf.if` has no else body, the false-path `done` is the
-  false-path local ctrl token. If a branch has no memory side effect,
-  that branch's `done` is its local ctrl token.
+  false-path local ctrl token. If a branch has no memory side effect
+  or other control-only work, that branch's `done` is its local ctrl
+  token.
+* MLIR requires an else region whenever `scf.if` has results. An
+  `scf.if` without an else region therefore has no results; only the
+  control token needs to be joined.
+* Multi-result `scf.if` lowers one result mux per result position,
+  all driven by the same `%cond` stream.
+
+For a three-token parent-phase invocation with `%cond = [T, F, T]`
+and a scalar live-in `%x = [10, 20, 30]`:
+
+| Stream | Tokens |
+|--------|--------|
+| `%x_then` | `[10, 30]` |
+| `%x_else` | `[20]` |
+| `%v_then` | `[then(10), then(30)]` |
+| `%v_else` | `[else(20)]` |
+| `%result` | `[then(10), else(20), then(30)]` |
+| `%done_after` | `[done_then0, done_else1, done_then2]` |
+
+Branch live-in demuxing is required for phase correctness. Without it,
+tokens for an unselected branch can remain buffered inside branch-local
+ops and be consumed by a later selected invocation at the wrong dynamic
+position.
 
 ### 7.2 `scf.while` with `scf.condition`
 
@@ -1313,20 +1376,102 @@ Memref operands are not iter_arg-like stream state; only explicit
 
 ### 7.6 `scf.index_switch`
 
+`scf.index_switch` has the same selected-region shape as `scf.if`, but
+its source selector is an arbitrary `index` value matched against a
+dense array of case constants. `dataflow.mux` and `dataflow.demux`
+require dense lane selectors, so lowering first normalizes the source
+argument to a dataflow lane id.
+
+Lane convention follows the operation's region order:
+
 ```
-%sel : index
-%case_ctrls = demux %sel, %ctrl : index -> (N+1 outputs)  # last is default
-... each selected case produces one case_done_i ...
-%result = mux %sel, %case_results : index
-%done = mux %sel, %case_dones : (index, none, ..., none) -> none
+lane 0     = default region
+lane i + 1 = case region i
 ```
 
-* Generalization of `scf.if`'s template. Demux's index variant
-  routes ctrl to the right case region; mux's index variant collects
-  both the selected data result and the selected case done token.
-* The default case participates as the last demux / mux lane. A case
-  with no memory side effect forwards its local case ctrl as its done
-  token.
+The zero-case form has only the default region and lowers by inlining
+that region into the surrounding graph. There is no selector, demux, or
+mux. The one-case form has two dynamic lanes and uses an `i1` selector:
+`false` selects default, `true` selects the single case. With two or
+more cases, the normalized selector has `index` type.
+
+For two or more cases, the normalized selector is computed as ordinary
+data, not with `dataflow.mux`. A `dataflow.mux` is selective and would
+leave each unselected case-lane constant token in its queue. Across
+many switch invocations those leftover tokens would accumulate without
+bound under any bounded-buffer runtime and would eventually saturate
+hardware discard/disconnect paths. Ordinary `arith.select` follows
+all-operand firing, so it consumes every candidate lane value on each
+firing and leaves no residue.
+
+```
+# Normalize arbitrary case values to dense dataflow lanes.
+%lane0 = dataflow.constant %ctrl {const_value = 0 : index} : index
+%lane = ... compare %arg to each case value and arith.select lane i+1
+
+%default_ctrl, %case0_ctrl, %case1_ctrl, ... =
+  demux %lane, %ctrl : (index, none) -> (none, none, none, ...)
+
+# For every non-memref stream live-in %x : T used by any selected region:
+%x_default, %x_case0, %x_case1, ... =
+  demux %lane, %x : (index, T) -> (T, T, T, ...)
+
+... each selected region produces one result tuple and one done token ...
+
+%result =
+  mux %lane, %r_default, %r_case0, %r_case1, ... : (index, T, T, T, ...) -> T
+%done =
+  mux %lane, %done_default, %done_case0, %done_case1, ...
+    : (index, none, none, none, ...) -> none
+```
+
+* This is a generalization of `scf.if`'s template after selector
+  normalization. Demux routes control and non-memref live-in streams
+  to exactly one selected region; mux collects the selected result and
+  done token.
+* The default region participates as lane 0. Case region `i`
+  participates as lane `i + 1`. This is different from source case
+  values; case values are used only while computing `%lane`.
+* `%lane` is constructed to be in range `[0, num_cases]`: unmatched
+  source values keep lane 0, while matched case `i` selects lane
+  `i + 1`. No dynamic selector-out-of-range diagnostic is required at
+  this lowering point.
+* A selected region with no memory side effect or other control-only
+  work has its done token equal to its local ctrl token.
+* The one-case form uses `i1` demux/mux with the same lane convention:
+  `false` is default and `true` is the single case. The comparison
+  result is an ordinary SSA stream; multiple demuxes and muxes reuse it
+  by token broadcast.
+* Multi-result `scf.index_switch` lowers one result mux per result
+  position, all driven by the same normalized selector.
+* If a live-in is used by only some selected regions, projections for
+  unused lanes are dead outputs and are discarded by target lowering.
+* The zero-case form is spliced during
+  `loom-lower-scf-to-dfg-bodies`, before the surrounding graph body is
+  finalized. Memory-dependence snapshots continue to identify memory
+  ops by their existing deterministic ids; the splice does not create a
+  selector-dependent memory path.
+
+For cases `[2, 5]` and argument stream `[2, 7, 5]`, the normalized
+selector stream is `[1, 0, 2]`:
+
+| Stream | Tokens |
+|--------|--------|
+| `%lane` | `[1, 0, 2]` |
+| `%default_ctrl` | `[ctrl1]` |
+| `%case0_ctrl` | `[ctrl0]` |
+| `%case1_ctrl` | `[ctrl2]` |
+| `%arg_default` | `[7]` |
+| `%arg_case0` | `[2]` |
+| `%arg_case1` | `[5]` |
+| `%r_default` | `[default(arg=7)]` |
+| `%r_case0` | `[case2(arg=2)]` |
+| `%r_case1` | `[case5(arg=5)]` |
+| `%result` | `[case2(arg=2), default(arg=7), case5(arg=5)]` |
+| `%done_default` | `[done_default0]` |
+| `%done_case0` | `[done_case0_0]` |
+| `%done_case1` | `[done_case1_0]` |
+| `%done` | `[done_case0_0, done_default0, done_case1_0]` |
 
 ### 7.7 `scf.execute_region`
 

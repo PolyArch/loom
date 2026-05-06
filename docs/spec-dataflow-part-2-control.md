@@ -21,6 +21,16 @@ the same ordered token sequence. `dataflow.mux` and `dataflow.demux`
 are selective routers, not all-lane rendezvous ops. `dataflow.sync` is
 the all-input rendezvous op.
 
+An op result with no SSA uses is a dead output. It does not create a
+required runtime channel, queue, or backpressure source. Implementations
+may omit it, connect it to a hardware discard/disconnect path, or drop
+the produced token at the producing boundary. This rule is deliberately
+not represented by a separate `dataflow.drop` or `dataflow.sink` op.
+It is needed for selected-control lowering, where a demux may project a
+live-in stream to lanes that no selected region actually consumes.
+Fabric lowerings can realize this with the PE-level `discard` /
+`disconnect` controls rather than with a software-visible dataflow op.
+
 For selectors:
 
 * With exactly two lanes, the selector type is `i1`; `false` selects
@@ -121,6 +131,10 @@ reason `dataflow.demux` can model mutually exclusive paths: the
 unselected path is silent, and any later join must use a selector-matched
 `dataflow.mux`, not `dataflow.sync`.
 
+If the selected output lane has no SSA uses, the produced token is a
+dead output and follows the dead-output rule above. It must not apply
+backpressure to the demux.
+
 The op requires at least two output lanes. The input and every output
 share one type. With two lanes, `%sel` is `i1`; with more than two
 lanes, `%sel` is `index`.
@@ -134,6 +148,8 @@ Lowering passes that use these ops must preserve the following rules:
   selector, or with a selector in the same dynamic phase.
 * `dataflow.sync` is used only when all inputs are expected to fire on
   the same dynamic path.
+* Unused projected lanes are dead outputs. They are discarded by the
+  target lowering rather than represented by a separate dataflow op.
 * Loop feedback muxes rely on selective firing: the true feedback lane
   and the false reset/exit lane fire on different dynamic events.
 * `i1` lane order is always false lane 0, true lane 1.
@@ -147,6 +163,8 @@ Lowering passes that use these ops must preserve the following rules:
   streaming state ops that are often combined with these control ops.
 * `include/Dataflow/IR/DataflowOps.td` -- canonical operation
   definitions.
+* `docs/spec-fabric-pe.md` -- PE-level `discard` / `disconnect`
+  controls used by hardware lowering for dead ports.
 * `lib/Dataflow/IR/DataflowOps.cpp` -- verifier implementation.
 * `test/dataflow/unit/constant/`, `test/dataflow/unit/sync/`,
   `test/dataflow/unit/mux/`, `test/dataflow/unit/demux/` --
