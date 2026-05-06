@@ -227,6 +227,9 @@ Lowering passes that use these ops must preserve the following rules:
 
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering templates
   that use these streaming semantics.
+* `docs/spec-dataflow-part-2-control.md` -- firing semantics for
+  `dataflow.mux`, `dataflow.demux`, `dataflow.sync`, and
+  `dataflow.constant`.
 * `include/Dataflow/IR/DataflowOps.td` -- canonical operation
   definitions.
 * `lib/Dataflow/IR/DataflowOps.cpp` -- verifier implementation.

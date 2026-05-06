@@ -15,7 +15,10 @@ changes only), consumes the temporary `loom.acc_region` op produced by
 Part 2, and introduces a new pass library under `lib/Frontend/`.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
-`docs/spec-dataflow-part-1-streaming.md`.
+`docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
+of `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
+`dataflow.demux` are specified separately in
+`docs/spec-dataflow-part-2-control.md`.
 
 ## 1. Scope and Contract
 
@@ -864,7 +867,10 @@ documentation never refers to the numeric position.
   tokens and any required hidden loop-carried memory-state token. If
   the set is empty, it uses the graph entry `ctrl_in` block argument;
   if the set has one value, it uses that value directly; otherwise it
-  uses output zero of a `dataflow.sync` over the set. The graph
+  uses output zero of a `dataflow.sync` over the set. This is legal
+  only because all values in the set are required predecessors on the
+  same dynamic path; mutually exclusive tails are joined by
+  selector-matched `dataflow.mux`, not by `dataflow.sync`. The graph
   `done_out` yield operand is output zero of a `dataflow.sync` over
   all memory accesses with no dependence successor (see "Memory
   Dependence Model").
@@ -895,7 +901,9 @@ The dataflow primitive set is the existing one
 ops are mechanically rewritten with those primitives. The precise
 state machines and token lengths of `stream`, `carry`, `invariant`,
 and `gate` are the single source of truth in
-`docs/spec-dataflow-part-1-streaming.md`.
+`docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
+of `constant`, `sync`, `mux`, and `demux` are the single source of
+truth in `docs/spec-dataflow-part-2-control.md`.
 
 The control op set is `mux`, `demux`, `sync`, `constant`. Crucially:
 the rwc bit fed into `carry` / `invariant` / `gate` does not have to
@@ -903,8 +911,8 @@ come from `stream`; any `i1` SSA stream from arbitrary computation
 inside the graph plays the same role. This is what lets
 `scf.while` lower without a new op.
 
-Selection lanes are positional. For `i1` selectors, lane 0 is the
-`false` lane and lane 1 is the `true` lane:
+Selection lanes follow the control-op contract. For `i1` selectors,
+lane 0 is the `false` lane and lane 1 is the `true` lane:
 
 ```
 %false_value, %true_value = demux %cond, %value : (i1, T) -> (T, T)
@@ -913,6 +921,9 @@ Selection lanes are positional. For `i1` selectors, lane 0 is the
 
 For `index` selectors, lane `k` is operand/result position `k`.
 This convention is required for the templates below to be mechanical.
+`dataflow.mux` is selective: it consumes only the selector and selected
+input lane. `dataflow.demux` is selective: it emits only the selected
+output lane. `dataflow.sync` is the all-input rendezvous op.
 
 SSA multi-use is token broadcast. If one SSA stream value has multiple
 uses, each use observes the same ordered token sequence. This is not a
@@ -976,7 +987,8 @@ whose value stream has already been normalized.
 * Mutually exclusive branch tails are joined with `mux`, not `sync`.
   `sync` is only used inside one dynamically executed path, where all
   inputs are expected to fire. The un-selected branch produces no
-  done token because `demux` only fires the selected output.
+  done token because `demux` only fires the selected output, while the
+  exit `mux` waits only for the selected branch's `done` token.
 * If the `scf.if` has no else body, the false-path `done` is the
   false-path local ctrl token. If a branch has no memory side effect,
   that branch's `done` is its local ctrl token.
@@ -1476,8 +1488,9 @@ only deterministic integer ids:
 This avoids operation-reference attributes and keeps the snapshot
 stable across printing and parsing. The plan intentionally does not
 duplicate the type contract of `carry`, `mux`, `demux`, or `sync`; the
-primitive op definitions are the single source of truth for which
-types those ops accept.
+primitive op definitions and the dataflow op semantics specs are the
+single source of truth for which types those ops accept and when they
+fire.
 
 Omitting a required loop-carried memory state is illegal. Adding an
 extra conservative state is legal for correctness, but tests should
@@ -1821,6 +1834,9 @@ milestone and have placeholders only:
 * `docs/spec-dataflow-part-1-streaming.md` -- precise timing
   semantics for `dataflow.stream`, `dataflow.carry`,
   `dataflow.invariant`, and `dataflow.gate`.
+* `docs/spec-dataflow-part-2-control.md` -- precise firing semantics
+  for `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
+  `dataflow.demux`.
 * `temp/build-compiler-frontend-0.md`, `temp/build-compiler-frontend-1.md`
   -- the originating requirements that this spec consolidates.
 * `temp/spatial-notes.md`, `temp/pact26-paper30.pdf` -- the SPGPU
