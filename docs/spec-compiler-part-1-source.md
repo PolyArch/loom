@@ -1,9 +1,10 @@
 # Loom Compiler Part 1: Source Integration
 
 This document sketches the source-facing part of the Loom compiler
-front-end. Its job is to connect high-level language front-ends to the
-rest of the Loom compiler without forcing accelerator code to be written
-as standalone functions.
+front-end. Loom's common input contract is LLVM IR plus Loom metadata.
+Any high-level language can participate if its front-end can emit
+semantically equivalent LLVM IR and enough metadata for the later Loom
+passes to recover acceleration intent.
 
 Part 1 does not lower code to `dataflow`. It emits LLVM IR plus
 metadata that Part 2 can use when raising LLVM/CFG-shaped code to
@@ -13,8 +14,10 @@ SCF-shaped MLIR and selecting accelerator regions.
 
 Part 1 owns:
 
-* Embedding or linking source front-ends, with clang as the first
-  concrete C / C++ provider.
+* Accepting LLVM IR as the stable cross-language hand-off format.
+* Embedding, linking, or importing source front-ends that can produce
+  LLVM IR plus Loom metadata.
+* Providing embedded clang as the first limited provider for C / C++.
 * Preserving source intent as metadata on functions, loops, lexical
   regions, memory objects, and calls.
 * Providing a stable hand-off format to Part 2, even when the source
@@ -26,7 +29,28 @@ Part 1 does not own:
 * Recovering structured control flow.
 * Building `dataflow.thread` or `dataflow.graph`.
 
-## 2. Metadata Classes
+## 2. Provider Model
+
+The Loom source integration model is language-neutral at the compiler
+boundary:
+
+* The required compiler input is LLVM IR plus Loom metadata.
+* Source language support is provided by front-end providers. A
+  provider may be embedded as a library, linked into the Loom binary,
+  or replaced by an external producer that emits the same LLVM IR
+  contract.
+* C / C++ through embedded clang is the first engineering target, not
+  the semantic limit of Loom.
+* A provider may mark whole functions, sub-function source ranges,
+  loop nests, or compiler-created regions as accelerator candidates.
+  None of these source constructs is a committed AccCore boundary.
+
+The provider contract is deliberately weaker than the later IR
+contract. Part 1 preserves intent and provenance; Part 2 decides which
+candidate regions are legal and profitable enough to become
+`loom.acc_region`.
+
+## 3. Metadata Classes
 
 Part 1 may emit the following metadata classes. Part 2 is allowed to
 ignore a hint, but it must not invent source intent that was not present
@@ -52,7 +76,7 @@ or proven by analysis.
   Part 2 and Part 3 can report why a candidate region cannot be
   accelerated.
 
-## 3. Boundary Principle
+## 4. Boundary Principle
 
 A source function is not an accelerator boundary by default. Source
 front-ends may emit candidate metadata for whole functions, but they may
@@ -68,7 +92,7 @@ This rule keeps the source model flexible:
 * Scalar-only accelerator regions remain representable; they do not
   need a source-level parallel loop just to become valid input.
 
-## 4. Clang Integration
+## 5. Initial Clang Provider
 
 The first source provider is an embedded clang pipeline. Loom should
 prefer library integration over invoking an external compiler binary so
@@ -86,7 +110,11 @@ Language-specific pragmas, attributes, builtins, and library calls lower
 to the metadata classes above. The exact spelling is outside this spec;
 the IR contract is the metadata observable by Part 2.
 
-## 5. Hand-Off to Part 2
+Other LLVM-producing language front-ends can be added later by
+implementing the provider contract. They do not need to mimic C / C++
+syntax; they only need to emit equivalent metadata classes.
+
+## 6. Hand-Off to Part 2
 
 Part 1 emits LLVM IR plus Loom metadata. The hand-off contract is:
 
@@ -99,7 +127,7 @@ Part 1 emits LLVM IR plus Loom metadata. The hand-off contract is:
   must conservatively keep the affected code on HostCore or emit a
   diagnostic when acceleration was explicitly required.
 
-## 6. References
+## 7. References
 
 * `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising and
   accelerator-region selection.

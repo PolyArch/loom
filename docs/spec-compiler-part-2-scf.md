@@ -31,7 +31,37 @@ Part 2 does not own:
 * Treating a whole `func.func` as an accelerator region unless source
   metadata, user options, or analysis explicitly select it.
 
-## 2. `loom.acc_region`
+## 2. Placement Model
+
+Part 2 defines the relationship between ordinary functions, temporary
+accelerator regions, and final dataflow placement:
+
+* `func.func` is a callable symbol and ABI unit. It does not imply
+  HostCore or AccCore placement by itself. A `func.func` may be used as
+  a HostCore function, a ScalarCore-callable function, or both if it
+  satisfies both legality contracts.
+* `loom.acc_region` is the temporary Part 2 to Part 3 marker saying
+  that a structured region has been selected for AccCore execution. It
+  is not a final runtime or hardware primitive.
+* `dataflow.thread` is the final AccCore execution boundary produced
+  by Part 3. It carries launch operands, mapping, memory-transfer
+  information, and completion tokens.
+* `dataflow.graph` is the SpatialCore leaf DFG produced by Part 3. It
+  cannot contain function definitions or calls.
+
+Function calls are ScalarCore-level operations when they appear inside
+an accelerator region. Part 2 must classify any `func.call` reachable
+from a `loom.acc_region`: the callee must be ScalarCore-legal,
+inlined before Part 3, or rejected with a diagnostic. A ScalarCore-legal
+callee may itself contain `loom.acc_region` markers if Part 2 selected
+nested work for AccCore execution; Part 3 later lowers those markers to
+nested `dataflow.thread` launches.
+
+`func.func` symbols remain in the nearest module-level symbol table in
+the first design. `dataflow.thread` is not made a symbol table merely to
+host local function definitions.
+
+## 3. `loom.acc_region`
 
 `loom.acc_region` is a temporary Loom front-end op. It exists only
 between Part 2 and Part 3.
@@ -57,6 +87,11 @@ not tied to a function boundary. A single `func.func` may contain
 multiple `loom.acc_region` ops, and ordinary host code may appear before,
 between, and after them.
 
+The body may contain `func.call` operations. Those calls are interpreted
+as ScalarCore calls after Part 3 lowers the enclosing accelerator
+region. They are not candidates for `dataflow.graph` extraction unless
+the callee has been inlined or specialized first.
+
 The op has no direct data results. Values produced by AccCore execution
 that must be observed by HostCore are represented through explicit
 memory effects. Scalar results that must escape are materialized into
@@ -75,7 +110,7 @@ accelerator region into a 1x1 mapped `scf.forall`. Parallel structure
 inside the region should still be represented directly by mapped
 `scf.forall` whenever it exists.
 
-## 3. Region Selection
+## 4. Region Selection
 
 Part 2 commits a region to AccCore only after legality checks succeed.
 The selected region must be single-entry/single-exit at the MLIR level
@@ -95,7 +130,7 @@ be represented as `loom.acc_region`, Part 2 emits a diagnostic. It must
 not silently widen the boundary to the entire enclosing `func.func`
 unless that exact boundary was explicitly selected.
 
-## 4. Structured Control Raising
+## 5. Structured Control Raising
 
 Part 2 converts supported LLVM/CFG shapes into structured MLIR:
 
@@ -112,7 +147,25 @@ The output may still contain dialects such as `arith`, `math`, `memref`,
 `loom.acc_region` use structured control forms for the operations it
 lowers to DFG.
 
-## 5. Memory Region Analysis
+## 6. Function Call Legality
+
+Part 2 assigns each reachable `func.func` one or more call-context
+classes:
+
+* **HostCore-callable.** May be called from ordinary host code.
+* **ScalarCore-callable.** May be called from code that Part 3 will
+  place inside a `dataflow.thread`.
+* **Inline-only.** Must be inlined before it can appear in a selected
+  accelerator region.
+* **Host-only.** Must not be reachable from a `loom.acc_region`.
+
+The first milestone may be conservative and require calls inside
+`loom.acc_region` to be inlined or explicitly marked
+ScalarCore-callable. Unsupported indirect calls, recursion, exceptions,
+unstructured stack behavior, or host-only runtime calls cause a
+diagnostic if they are reachable from an accelerator region.
+
+## 7. Memory Region Analysis
 
 Part 2 classifies memory crossing an accelerator boundary:
 
@@ -127,13 +180,16 @@ This analysis is a boundary contract, not a replacement for the Part 3
 memory-dependence builder. Part 3 still constructs conservative
 dependence edges inside each `dataflow.graph`.
 
-## 6. Hand-Off to Part 3
+## 8. Hand-Off to Part 3
 
 The Part 2 output contract is:
 
 * AccCore-selected code is inside `loom.acc_region`.
 * Host code outside `loom.acc_region` remains host code.
 * No `func.func` is an implicit accelerator boundary.
+* `func.call` operations reachable from accelerator regions are either
+  ScalarCore-legal or scheduled for inlining before Part 3 graph
+  extraction.
 * Accelerator regions have explicit operands, no direct data results,
   and enough memory-effect metadata for Part 3 to insert
   `dataflow.map_info`.
@@ -142,7 +198,7 @@ The Part 2 output contract is:
 * Scalar-only accelerator regions are legal and may rely on
   `defaultMapping` for Part 3 normalization.
 
-## 7. References
+## 9. References
 
 * `docs/spec-compiler-part-1-source.md` -- source integration and
   metadata emission.

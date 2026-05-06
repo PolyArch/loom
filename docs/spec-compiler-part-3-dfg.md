@@ -18,9 +18,10 @@ Part 2, and introduces a new pass library under `lib/Frontend/`.
 
 The compiler front-end is documented in three parts:
 
-* **Part 1, source integration.** High-level language front-ends are
-  embedded or linked as libraries where practical. They emit LLVM IR
-  plus Loom metadata that preserves programmer intent.
+* **Part 1, source integration.** LLVM IR plus Loom metadata is the
+  source-facing compiler contract. Any high-level language provider may
+  participate if it can emit that contract; embedded clang for C / C++
+  is the first limited provider.
 * **Part 2, LLVM to SCF.** LLVM/CFG-shaped input is raised to
   SCF-shaped MLIR. This part selects accelerator regions, recognizes
   parallel loops, and materializes memory-region metadata. Its output
@@ -36,10 +37,11 @@ inside explicit `loom.acc_region` ops, except in the
 `loom-normalize-acc-regions`. A `func.func` is therefore an ABI and
 ownership container, not an implicit accelerator boundary.
 
-Output is the canonical Loom front-end IR: `func.func` host scope
-holding zero or more `dataflow.thread` regions, each holding zero or
-more `dataflow.graph` regions with no `scf.*` left inside any graph
-body. All `scf` ops are supported inside accelerator regions:
+Output is the canonical Loom front-end IR: module-level `func.func`
+symbols holding ordinary HostCore or ScalarCore code and zero or more
+`dataflow.thread` regions, each holding zero or more `dataflow.graph`
+regions with no `scf.*` left inside any graph body. All `scf` ops are
+supported inside accelerator regions:
 `scf.if`, `scf.while` with `scf.condition`, `scf.for` with
 `scf.yield`, `scf.forall` with `scf.forall.in_parallel`,
 `scf.parallel` with `scf.reduce` and `scf.reduce.return`,
@@ -64,15 +66,40 @@ The front-end's IR mirrors this trio:
 
 | Hardware | Front-end IR carrier |
 |----------|----------------------|
-| HostCore | `func.func` body outside any `dataflow.thread` |
+| HostCore | Host-call-context `func.func` body code outside any `dataflow.thread` |
 | Mesh of AccCores | An outermost `dataflow.thread` with `mapping = [#loom.spatial<...>, ...]` (hardware grid coords) and optional non-spatial dims for time-multiplexed work |
-| ScalarCore on one AccCore | The body of the innermost `dataflow.thread`, minus its `dataflow.graph` regions |
+| ScalarCore on one AccCore | The body of the innermost `dataflow.thread`, minus its `dataflow.graph` regions, plus ScalarCore-legal `func.call` callees after inlining or specialization |
 | SpatialCore on one AccCore | Each `dataflow.graph` nested inside the innermost `dataflow.thread` |
 
 A single `dataflow.thread` instance corresponds to one launch of a
 multi-dimensional iteration domain, distributed across a mesh of
 AccCores. The thread body is "what one AccCore runs"; the spatial
 coords pulled from the mapping attribute identify which AccCore.
+
+### 2.1 IR Carrier Responsibilities
+
+* `func.func` is a callable symbol and ABI unit. It does not by itself
+  choose HostCore or AccCore placement. A function may be HostCore-only,
+  ScalarCore-callable, or legal in both contexts depending on the
+  Part 2 call-context classification.
+* `loom.acc_region` is a temporary Part 2 to Part 3 marker for a
+  structured region selected for AccCore execution. This part consumes
+  it and erases it.
+* `dataflow.thread` is the final AccCore execution boundary. It carries
+  launch operands, mapping, mapped-memory transfer information, and the
+  completion token.
+* `dataflow.graph` is a SpatialCore leaf DFG. It represents CGRA work
+  and cannot contain `func.func`, `func.call`, `dataflow.thread`, or
+  another `dataflow.graph`.
+
+Function definitions remain module-level symbols in this design.
+`dataflow.thread` is not a symbol table and does not physically contain
+`func.func` definitions. A `func.call` inside a `dataflow.thread` body
+is a ScalarCore call. If the callee contains code that must become
+`dataflow.graph` or nested `dataflow.thread`, Part 3 must inline or
+specialize that callee into the active thread context before graph
+extraction. Non-inlined ScalarCore calls may remain only when their
+callee body is graph-free after this preparation.
 
 ## 3. Constitutional Rules
 
@@ -87,9 +114,11 @@ each rule lands in IR.
    ScalarCore). Future hardware that calls for deeper nesting can
    raise that recommendation without an IR change. The thread body has
    a leading `thread_ctrl : none` block argument that fires once the
-   thread instance starts executing on an AccCore.
+   thread instance starts executing on an AccCore. The body may contain
+   ScalarCore operations and ScalarCore-legal `func.call` operations,
+   but not `func.func` definitions.
 2. `dataflow.graph` is a leaf-level region. Its body must not contain
-   any `dataflow.thread` and must not contain another
+   any `func.func`, `func.call`, `dataflow.thread`, or another
    `dataflow.graph`. The graph body is a single graph-kind region; it
    already permits feedback edges (existing semantics).
 3. Every `dataflow.graph` has explicit control ports: a leading
@@ -142,10 +171,15 @@ each rule lands in IR.
 
 ## 4. Glossary
 
-* **HostCore.** The general-purpose CPU that runs `func.func` body
-  code outside any `dataflow.thread`.
+* **HostCore.** The general-purpose CPU that runs host-call-context
+  `func.func` body code outside any `dataflow.thread`.
 * **AccCore.** One CGRA-attached compute element described by one
   `fabric.module`. Composed of a ScalarCore plus a SpatialCore.
+* **ScalarCore-callable function.** A module-level `func.func` that
+  Part 2 classified as legal to call from code running inside a
+  `dataflow.thread`. Such a function remains a symbol; Part 3 either
+  preserves calls to it as ScalarCore calls or inlines / specializes it
+  before graph extraction.
 * **Spatial dim.** A grid dim of a `dataflow.thread` that is mapped
   to a physical core-grid coordinate of the AccCore mesh.
 * **Temporal dim.** A grid dim of a `dataflow.thread` that is
@@ -541,10 +575,11 @@ debugging.
 [3] loom-classify-thread-regions
 [4] loom-promote-map-info
 [5] loom-build-thread-skeleton
-[6] loom-extract-graph-regions
-[7] loom-build-memory-dependencies
-[8] loom-lower-scf-to-dfg-bodies
-[9] loom-finalize-dfg
+[6] loom-prepare-scalarcore-calls
+[7] loom-extract-graph-regions
+[8] loom-build-memory-dependencies
+[9] loom-lower-scf-to-dfg-bodies
+[10] loom-finalize-dfg
 ```
 
 The pass numbering is a sequencing convenience only; downstream
@@ -673,7 +708,25 @@ documentation never refers to the numeric position.
   erased and its body is spliced back at the original host program
   point. No `loom.acc_region` remains after this pass.
 
-### 6.6 `loom-extract-graph-regions`
+### 6.6 `loom-prepare-scalarcore-calls`
+
+* Runs after thread skeleton construction and before graph extraction.
+* Inspects every `func.call` reachable inside a `dataflow.thread` body.
+  The call is a ScalarCore operation, not a SpatialCore operation.
+* If the callee contains operations that must be graph-extracted in the
+  caller's thread context, the pass inlines or specializes the callee
+  into that `dataflow.thread` before graph extraction. This keeps
+  `dataflow.graph` lexically inside the active thread without requiring
+  `dataflow.thread` to become a symbol table or carry an implicit
+  function context.
+* A non-inlined `func.call` may remain only if the callee is
+  ScalarCore-legal and graph-free after this preparation. Such calls
+  are treated as ScalarCore side-effecting operations by later passes.
+* Unsupported calls reachable from a thread body produce a diagnostic.
+  The first implementation may require all non-trivial ScalarCore calls
+  to be inlined.
+
+### 6.7 `loom-extract-graph-regions`
 
 * Within each innermost `dataflow.thread` body (no further mapped
   forall inside), groups eligible operations into one or more
@@ -683,9 +736,9 @@ documentation never refers to the numeric position.
   upward through purely value-producing ops (`arith.*`, `math.*`,
   `dataflow.local_range`, etc.) and stopping at the first
   `scf.{if,while,for,parallel,index_switch,execute_region}` boundary
-  that contains side-effecting code, or at any `dataflow.thread`
-  boundary, or at any `func.return` / `dataflow.thread.yield`
-  terminator.
+  that contains side-effecting code, or at any `func.call`,
+  `dataflow.thread` boundary, or at any `func.return` /
+  `dataflow.thread.yield` terminator.
 * Within a single graph, the `scf.*` control-flow ops appear as
   unflattened children that the next-but-one pass will lower into
   `dataflow` token primitives. The extraction pass does not modify
@@ -713,7 +766,7 @@ documentation never refers to the numeric position.
   argument. Values produced inside the graph and used outside it are
   materialized as explicit graph results and `dataflow.yield` operands.
 
-### 6.7 `loom-build-memory-dependencies`
+### 6.8 `loom-build-memory-dependencies`
 
 * Builds the per-graph memory-dependence snapshot consumed by body
   lowering. A memory access means `memref.load` / `memref.store`
@@ -762,13 +815,15 @@ documentation never refers to the numeric position.
   these attributes from source `memref` ops to replacement
   `dataflow` ops. `loom-finalize-dfg` drops them.
 
-### 6.8 `loom-lower-scf-to-dfg-bodies`
+### 6.9 `loom-lower-scf-to-dfg-bodies`
 
 * Inside every `dataflow.graph`, replaces each `scf.*` control-flow
   op with the canonical dataflow token rewrite (see "Per-scf Lowering
   Templates").
 * Inside every `dataflow.thread` body (outside any graph), `scf.*`
   ops are kept as-is; ScalarCore code remains structured.
+* Non-inlined ScalarCore-legal `func.call` operations remain outside
+  graphs and are preserved as ScalarCore calls.
 * Memory ops (`memref.load`, `memref.store`) are rewritten in place
   as `dataflow.load` / `dataflow.store`. The `ctrl` operand of each
   memory op is wired from its memory-dependence predecessors: from the
@@ -778,7 +833,7 @@ documentation never refers to the numeric position.
   operand is output zero of a `dataflow.sync` over all memory accesses
   with no dependence successor (see "Memory Dependence Model").
 
-### 6.9 `loom-finalize-dfg`
+### 6.10 `loom-finalize-dfg`
 
 * Runs the existing dataflow-graph verifier in strict mode.
 * Strips the `loom.mem_dep_id` and `loom.mem_dep_preds` attributes.
@@ -1063,6 +1118,9 @@ In addition to the existing dataflow / fabric verifier set:
     operand, the corresponding entry block argument type must be `T`.
   - Body must not contain a `dataflow.graph` whose body contains any
     `dataflow.thread` (graph is a leaf).
+  - Body may contain `func.call` only when the callee has been proven
+    ScalarCore-legal or is scheduled for inlining before graph
+    extraction. Body must not contain `func.func` definitions.
   - At least one `dataflow.thread` ancestor is required for every
     `dataflow.graph`. The graph-extraction pass only runs inside
     `dataflow.thread` bodies created from explicit accelerator
@@ -1115,9 +1173,10 @@ In addition to the existing dataflow / fabric verifier set:
   - Body may contain `dataflow.{stream, carry, invariant, gate, mux,
     demux, sync, constant, load, store, yield}` plus ordinary
     pure ops permitted in the existing graph body whitelist.
-  - Body may not contain `scf.*`, `dataflow.thread`,
-    `dataflow.thread.fence`, `dataflow.map_info`,
-    `dataflow.spatial_layout`, or another `dataflow.graph`.
+  - Body may not contain `scf.*`, `func.func`, `func.call`,
+    `dataflow.thread`, `dataflow.thread.fence`,
+    `dataflow.map_info`, `dataflow.spatial_layout`, or another
+    `dataflow.graph`.
 
 ## 11. Testing Strategy
 
@@ -1133,6 +1192,11 @@ The lit-test layout grows three new directories:
     `graph_control_ports/` (modifications to existing graph op).
   - `thread/` and `graph_control_ports/` include invalid cases that
     directly reference surrounding SSA values from isolated regions.
+  - `thread/` includes cases for ScalarCore-legal `func.call` in a
+    thread body and rejection of `func.func` definitions inside a
+    thread.
+  - `graph_control_ports/` includes invalid cases for `func.call` and
+    `func.func` inside a graph body.
 * `test/frontend/lower_scf/` -- one subdirectory per scf op. Each
   directory holds:
   - `before.mlir` (the scf input).
@@ -1150,6 +1214,9 @@ The lit-test layout grows three new directories:
     produce diagnostics. Mapped forall tests also check that the
     original implicit synchronization point is represented by a token
     dependency or `dataflow.thread.wait`.
+  - `scalarcore_calls/` covers inlining or specialization of callees
+    that contain graph-extractable code, preservation of graph-free
+    ScalarCore calls, and diagnostics for unsupported callees.
 * `test/frontend/integration/` -- end-to-end small kernels covering
   the SPGPU / Chapel-style spatial idioms (matmul, stencil, LU,
   page-rank-style irregular loop) at the IR level only. No
@@ -1188,6 +1255,10 @@ following hold simultaneously:
   ScalarCore-to-graph ordering uses `dataflow.thread.fence`, and
   child-thread completion can feed graph control through that same
   fence op.
+* `func.call` inside a `dataflow.thread` is handled as ScalarCore
+  control: graph-containing callees are inlined or specialized before
+  graph extraction, graph-free ScalarCore calls may remain, and no
+  `func.call` or `func.func` appears inside a `dataflow.graph`.
 * The two `MemAliasOracle` implementations both drive
   `loom-build-memory-dependencies` and pass the entire lit suite under
   `test/frontend/`.
@@ -1253,8 +1324,8 @@ milestone and have placeholders only:
   groups, and thread-level aggregation regions. Tensor-result
   aggregation is handled by materializing it into mapped-memory
   effects before thread promotion.
-* Any LLVM IR or clang front-end integration. Those concerns belong to
-  Part 1 and Part 2.
+* LLVM IR provider integration, source-language integration, and clang
+  embedding. Those concerns belong to Part 1 and Part 2.
 * Optimization of `dataflow.map_info` direction. Default `tofrom`.
 
 ## 15. References
