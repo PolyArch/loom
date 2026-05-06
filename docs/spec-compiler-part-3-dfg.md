@@ -13,6 +13,9 @@ implementations live in `lib/Dataflow/IR/*.cpp` and `lib/Fabric/IR/*.cpp`
 respectively. This spec modifies the `dataflow` dialect (additive
 changes only), consumes the temporary `loom.acc_region` op produced by
 Part 2, and introduces a new pass library under `lib/Frontend/`.
+The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
+`dataflow.invariant`, and `dataflow.gate` are specified separately in
+`docs/spec-dataflow-part-1-streaming.md`.
 
 ## 1. Scope and Contract
 
@@ -888,17 +891,11 @@ simpler ops first.
 
 The dataflow primitive set is the existing one
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
-`constant`, `load`, `store`, `yield`). The four streaming ops are:
-* `carry`: loop-carried value or memory-state primitive (one per
-  `iter_arg`, plus hidden memory-state carries required by the
-  Memory Dependence Model).
-* `invariant`: loop-invariant value replay (one per outer SSA value
-  used inside the loop body).
-* `gate`: phase normalizer for a `(cond, value)` stream. It emits one
-  value for each true condition and emits a phase-shifted condition
-  stream that closes with the trailing false condition.
-* `stream`: induction-variable stream with `step_op` and `cont_cond`
-  predicates; produces the rwc bit token plus the index.
+`constant`, `load`, `store`, `yield`). This section describes how SCF
+ops are mechanically rewritten with those primitives. The precise
+state machines and token lengths of `stream`, `carry`, `invariant`,
+and `gate` are the single source of truth in
+`docs/spec-dataflow-part-1-streaming.md`.
 
 The control op set is `mux`, `demux`, `sync`, `constant`. Crucially:
 the rwc bit fed into `carry` / `invariant` / `gate` does not have to
@@ -924,6 +921,16 @@ this property because the loop rwc stream is consumed by `gate`,
 `carry`, `demux`, and `mux`, and the loop-exit value may feed both
 the loop result and the feedback reset lane.
 
+Frontend `memref<...>` values are not stream values in this sense.
+They represent memory-region bindings for `dataflow.load` /
+`dataflow.store`. Lowering must not feed memref bindings through
+stream-shaping ops; it shapes address, data, operation, and explicit
+`none` memory-order streams instead. The generic result-selection
+templates below apply to scalar/data streams and `none` ordering
+streams. A memref-typed structured-control result inside graph
+extraction must be rewritten to explicit memory effects, kept in
+ScalarCore code, or rejected before graph lowering.
+
 The templates below show user-visible SSA value lowering. Loop-carried
 memory ordering is added by the Memory Dependence Model as hidden
 `none`-typed state; it is not an optional optimization.
@@ -933,17 +940,18 @@ memory ordering is added by the Memory Dependence Model as hidden
 An rwc stream is a loop-control stream, not a plain valid bit. For a
 counted loop with `N` body executions, `dataflow.stream` emits `N + 1`
 `(index, rwc)` pairs: `N` true pairs plus one trailing false sentinel.
-The loop-level rwc, or a derived body-local rwc with the same close
-semantics in the body's phase, must remain visible to stateful
-stream-shaping ops that need the sentinel to close or reset state,
-such as `carry`, `invariant`, `gate`, and loop-carried memory-state
-wiring.
+The loop-level rwc, or a derived body-local close stream in the
+body's phase, must remain visible to stateful stream-shaping ops that
+need the sentinel to close or reset state, such as `carry`,
+`invariant`, `gate`, and loop-carried memory-state wiring.
 
 Values that enter a loop body must be in the body's phase. The
 canonical way to convert a raw `(rwc, value)` pair into body phase is
 `dataflow.gate`: its value result has exactly the true-condition
-tokens, while its condition result is the body-local rwc that closes
-after the final body value. Memory side effects and address
+tokens, while its condition result is the body-local close stream. A
+true body-local condition means the current body execution is not the
+last execution; a false body-local condition means the current body
+execution is the last execution. Memory side effects and address
 computation that must not observe the sentinel index consume the gated
 value stream or are guarded by the corresponding body-local rwc.
 
@@ -975,45 +983,136 @@ whose value stream has already been normalized.
 
 ### 7.2 `scf.while` with `scf.condition`
 
+Source shape:
+
 ```
-# Each iter_arg %a -> a carry node
-%a_iter = carry %before_rwc, %a0, %a_next : T
-
-# before-region: arbitrary computation produces (cond, fwd)
-%before_rwc, %fwd_i = ... compute from %a_iter ...  # an arbitrary i1
-
-# Normalize the before->after boundary.
-%after_rwc, %after_arg = gate %before_rwc, %fwd_i : T
-
-# Preserve the false-cycle forwarded value as the loop result.
-%unused_true, %fwd_exit = demux %before_rwc, %fwd_i : i1 -> (T, T)
-
-# after-region consumes after_arg; after-local state uses after_rwc
-%a_next = ... compute from %after_arg ...
+%res... = scf.while (%a0_i = %init_i, ...) : (A_i, ...) -> (B_j, ...) {
+^before(%a_i : A_i, ...):
+  %cond, %b_j... = ... before computation ...
+  scf.condition(%cond) %b_j... : B_j, ...
+} do {
+^after(%b_after_j : B_j, ...):
+  %a_next_i... = ... after computation ...
+  scf.yield %a_next_i... : A_i, ...
+}
 ```
 
-* `%before_rwc` is the i1 token computed by the before-region's
-  `scf.condition`. There is no `stream` op here; the existing four
-  streaming ops are sufficient.
+The before-argument types `A_i` and the after/result types `B_j` are
+independent. If the after region executes `K` times, the before region
+executes `K + 1` times. The `scf.condition` operands are therefore in
+before phase: true-cycle operands enter the after region; the single
+false-cycle operand tuple becomes the while result tuple.
+
+Canonical lowering skeleton:
+
+```
+# Structural loop entry and loop-back control. This exists even when
+# the source while has no data inits.
+%iter_ctrl = carry %cond, %entry_ctrl, %ctrl_feedback : none
+
+# Each before block argument is loop-carried in before phase.
+%a_i = carry %cond, %init_i, %a_feedback_i : A_i
+
+# The before region consumes %iter_ctrl and %a_i..., then produces:
+#   %cond        : i1
+#   %b_j         : B_j, one stream per scf.condition trailing operand
+#   %before_done : none, the tail of before-region side effects
+
+# scf.condition true operands enter after; false operands are results.
+%b_exit_j, %b_after_j =
+  demux %cond, %b_j : (i1, B_j) -> (B_j, B_j)
+
+# The same before tail opens the after execution stream and produces an
+# after-local close stream.
+%after_rwc, %after_ctrl =
+  gate %cond, %before_done : none
+
+# The after region consumes %after_ctrl and %b_after_j..., then
+# produces:
+#   %a_next_i... : A_i, the scf.yield operands
+#   %after_done  : none, the after-region completion token; if the
+#                  region has no side effects and no extra control-only
+#                  work, this may be %after_ctrl
+
+# False-cycle reset tokens let carry consume the final cond=false.
+%a_reset_i, %unused_a_true_i =
+  demux %cond, %a_i : (i1, A_i) -> (A_i, A_i)
+%a_feedback_i =
+  mux %cond, %a_reset_i, %a_next_i : (i1, A_i, A_i) -> A_i
+
+%ctrl_reset, %unused_ctrl_true =
+  demux %cond, %before_done : (i1, none) -> (none, none)
+%ctrl_feedback =
+  mux %cond, %ctrl_reset, %after_done : (i1, none, none) -> none
+
+%res_j = %b_exit_j
+```
+
+* `%cond` is the i1 token computed by the before-region's
+  `scf.condition`. There is no `stream` op here; an arbitrary `i1`
+  stream produced by before-region computation drives the loop.
 * The before-region executes once more than the after-region. The
-  `gate` on the before-to-after boundary captures that phase relation:
-  `%after_arg` contains exactly the values consumed by after-region
-  executions, while `%after_rwc` is the after-region's local
-  continue/end signal. The final false condition closes after-region
-  state but does not produce an after-region value.
-* `%fwd_exit` becomes the loop result (the `scf.condition`'s
-  trailing operands at the iteration that turned the predicate
-  false). `demux` is still required because `gate` intentionally drops
-  the false-cycle value.
-* Any `carry`, `invariant`, `gate`, or loop-carried memory state local
-  to the after-region uses `%after_rwc`, not `%before_rwc`. Operations
-  that decide loop exit or produce loop results use `%before_rwc`.
+  `gate` on `%before_done` captures that phase relation:
+  `%after_ctrl` has exactly one token per after execution, while
+  `%after_rwc` is the after-region's local close stream. A true
+  `%after_rwc` token means the corresponding after execution is not
+  the last one; a false token means it is the last one.
+* `%after_rwc` is not an after-entry token. It must not be placed on
+  the critical path that completes the same after execution. Otherwise
+  the first after execution would wait for an `%after_rwc` token that
+  is only produced after the next before execution, creating a cycle:
+  after completion -> next before -> `%after_rwc` -> same after
+  completion. After-region main computation is started by
+  `%after_ctrl` and `%b_after_j`; after-local stateful streaming ops
+  may use `%after_rwc` to advance or reset state for subsequent
+  after executions.
+* `%b_exit_j` becomes the loop result. `demux` is required because
+  `gate` intentionally drops the false-cycle value.
+* Each `%a_feedback_i` has length `K + 1`: `K` true-cycle values from
+  the after region plus one false-cycle reset value projected from
+  the current `%a_i`. Without the false-cycle reset token,
+  `dataflow.carry` would wait forever on the final `cond=false`.
+* Before-region invariants use the before-phase `%cond` stream.
+  After-region-only invariants must be projected into after phase; a
+  robust lowering first replays the value in before phase, then routes
+  it through the true lane of `demux %cond`. This keeps zero-trip
+  loops from producing an after-only value.
 * For each loop-carried memory partition, the loop also has a hidden
-  `none` carry. The before-region starts from that partition's
-  incoming memory state. On the true path, the after-region tail feeds
-  the next iteration's memory state. On the false path, the
-  before-region tail is the loop-exit memory state. This preserves
-  memory effects performed by the final condition-checking iteration.
+  `none` carry following the same structure as `%iter_ctrl`. The
+  before-region starts from that partition's incoming memory state.
+  On the true path, the after-region tail feeds the next iteration's
+  memory state. On the false path, the before-region tail is the
+  loop-exit memory state. This preserves memory effects performed by
+  the final condition-checking iteration.
+
+For `K = 2`, the dynamic sequence is:
+
+```
+before0: cond0 = true,  b0 -> after0
+after0:  yield a1
+before1: cond1 = true,  b1 -> after1
+after1:  yield a2
+before2: cond2 = false, b2 -> while result
+```
+
+The corresponding token lengths are:
+
+| Stream | Tokens |
+|--------|--------|
+| `%cond` | `[T, T, F]` |
+| `%a_i` | `[a0, a1, a2]` |
+| `%b_j` | `[b0, b1, b2]` |
+| `%b_after_j` | `[b0, b1]` |
+| `%b_exit_j` | `[b2]` |
+| `%after_ctrl` | `[before_done0, before_done1]` |
+| `%after_rwc` | `[T, F]` |
+| `%a_next_i` | `[a1, a2]` |
+| `%a_feedback_i` | `[a1, a2, a2]` |
+
+The final `%a_feedback_i = a2` is a reset/dummy token. It is consumed
+with `%cond = false` by `dataflow.carry`, emits no new before value,
+and returns the carry to its init state. The same rule applies to the
+structural `%ctrl_feedback` and hidden memory-state feedback streams.
 
 ### 7.3 `scf.for` with `scf.yield`
 
@@ -1060,6 +1159,9 @@ required invariant is that body dataflow never observes the sentinel
 index. If the body contains memory side effects, their ctrl operands
 are wired by the Memory Dependence Model; `%body_ctrl` above is only
 the canonical structured-control source when such a token is needed.
+Loop-invariant memref operands are not replayed with
+`dataflow.invariant`; they remain memory bindings on the lowered
+loads and stores.
 
 #### With Iter Args
 
@@ -1159,6 +1261,8 @@ Multiple iter_args lower independently using the same pattern, one
 `carry` / `demux` / `mux` state ring per iter_arg. Body operations may
 freely combine the body-lane values from multiple iter_args before
 feeding the corresponding yielded values back through their muxes.
+Memref operands are not iter_arg-like stream state; only explicit
+`none` memory-order state is carried for memory dependences.
 
 * For each loop-carried memory partition, the loop has a hidden
   `none` carry initialized by the memory state before the first
@@ -1714,6 +1818,9 @@ milestone and have placeholders only:
   integration and metadata emission.
 * `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising,
   accelerator-region selection, and `loom.acc_region`.
+* `docs/spec-dataflow-part-1-streaming.md` -- precise timing
+  semantics for `dataflow.stream`, `dataflow.carry`,
+  `dataflow.invariant`, and `dataflow.gate`.
 * `temp/build-compiler-frontend-0.md`, `temp/build-compiler-frontend-1.md`
   -- the originating requirements that this spec consolidates.
 * `temp/spatial-notes.md`, `temp/pact26-paper30.pdf` -- the SPGPU
