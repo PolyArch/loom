@@ -165,9 +165,9 @@ each rule lands in IR.
    HostCore-to-AccCore launch ABI: memrefs and spatial-array handles
    cross through `dataflow.map_info`, while scalar values cross by
    value. For `dataflow.graph`, operands and results are the explicit
-   SpatialCore data/control ports. `RecursiveMemoryEffects` is attached
-   to `dataflow.thread` so its region effects remain visible across
-   the isolated launch boundary.
+   SpatialCore data/control ports. `dataflow.thread` implements its own
+   boundary memory-effect summary from mapped operands; it does not rely
+   on recursive region effects to expose host-visible memory behavior.
 
 ## 4. Glossary
 
@@ -301,8 +301,8 @@ traits:
   AttrSizedOperandSegments,
   AutomaticAllocationScope,
   IsolatedFromAbove,
-  RecursiveMemoryEffects,
   SingleBlockImplicitTerminator<"ThreadYieldOp">,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
   DeclareOpInterfaceMethods<LoomAsyncOpInterface>.
 ```
 
@@ -335,8 +335,25 @@ traits:
 * The op has no data results. Values produced by AccCore execution
   cross the HostCore-to-AccCore boundary through mapped memory effects;
   the token is the readiness signal for those effects.
-* `traits = RecursiveMemoryEffects` means alias analysis can reason
-  about memory effects inside the body without crossing a barrier.
+* `dataflow.thread` implements `MemoryEffectOpInterface` directly. The
+  interface reports host-visible effects by projecting each
+  `!loom.mapped<T>` body operand back through its defining
+  `dataflow.map_info` op to the map source:
+  - `direction = to` reports `Read` on the source.
+  - `direction = from` reports `Write` on the source.
+  - `direction = tofrom` reports both `Read` and `Write` on the source.
+  - `direction = alloc` reports `Allocate` on the source.
+  - `direction = release` reports `Free` on the source.
+  Scalar body operands do not contribute memory effects.
+* Effects are reported on the `dataflow.map_info` source value, not on
+  the `!loom.mapped<T>` handle. In nested-thread cases that source may
+  itself be a block argument of the enclosing thread body; the parent
+  thread's own boundary summary is responsible for projecting its
+  effects one level further outward.
+* Recursive inspection of the thread body may be used by verifier or
+  diagnostics to check that the body respects its declared boundary
+  operands, but it is not the external effect contract of
+  `dataflow.thread`.
 
 #### 5.4.2 `dataflow.thread.yield`
 
@@ -1116,6 +1133,11 @@ In addition to the existing dataflow / fabric verifier set:
   - For each scalar body operand, the corresponding entry block
     argument type must match exactly. For each `!loom.mapped<T>` body
     operand, the corresponding entry block argument type must be `T`.
+  - Each `!loom.mapped<T>` body operand must be the direct result of a
+    `dataflow.map_info` op in the enclosing control context. The
+    thread's `MemoryEffectOpInterface` must project effects to that
+    `map_info` source according to its `direction` attribute, as
+    specified in the `dataflow.thread` op contract.
   - Body must not contain a `dataflow.graph` whose body contains any
     `dataflow.thread` (graph is a leaf).
   - Body may contain `func.call` only when the callee has been proven
@@ -1195,6 +1217,9 @@ The lit-test layout grows three new directories:
   - `thread/` includes cases for ScalarCore-legal `func.call` in a
     thread body and rejection of `func.func` definitions inside a
     thread.
+  - `thread/` includes cases that check the boundary memory-effect
+    summary for `to`, `from`, and `tofrom` mapped operands, and
+    rejection of mapped operands not produced by `dataflow.map_info`.
   - `graph_control_ports/` includes invalid cases for `func.call` and
     `func.func` inside a graph body.
 * `test/frontend/lower_scf/` -- one subdirectory per scf op. Each
@@ -1272,6 +1297,11 @@ following hold simultaneously:
   direct use of a surrounding SSA value from inside their isolated
   regions; all such values must flow through explicit operands and
   entry block arguments.
+* `dataflow.thread` reports external memory effects through its
+  `MemoryEffectOpInterface` implementation, projecting mapped boundary
+  operands to their `dataflow.map_info` sources according to
+  `direction`. No acceptance test depends on recursive region effects
+  to discover host-visible thread reads or writes.
 * The integration tests in `test/frontend/integration/` produce
   structurally identical IR under `--mem-alias=basic` and
   `--mem-alias=mlir-aa`, modulo the `loom.mem_dep_preds` snapshot and
