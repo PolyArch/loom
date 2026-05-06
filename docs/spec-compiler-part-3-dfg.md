@@ -1,48 +1,56 @@
-# Loom Compiler Frontend
+# Loom Compiler Part 3: SCF to DFG
 
-This document specifies the front-end of the Loom compiler: the path that
-takes high-level source (LLVM IR or, indirectly, C / C++ via an embedded
-clang) and lifts it onto Loom's native dataflow representation, ready for
-the existing `fabric` lowering tool-chain.
+This document specifies the third compiler part of the Loom front-end:
+lowering SCF-shaped accelerator regions into Loom's native dataflow
+representation, ready for the existing `fabric` lowering tool-chain.
+It starts after source integration and LLVM-to-SCF raising have already
+selected explicit accelerator regions. It does not decide which source
+program regions should run on AccCores.
 
 The canonical IR sources of the existing `dataflow` and `fabric` dialects
 are `include/Dataflow/IR/*.td` and `include/Fabric/IR/*.td`; the verifier
 implementations live in `lib/Dataflow/IR/*.cpp` and `lib/Fabric/IR/*.cpp`
 respectively. This spec modifies the `dataflow` dialect (additive
-changes only) and introduces a new pass library under `lib/Frontend/`.
+changes only), consumes the temporary `loom.acc_region` op produced by
+Part 2, and introduces a new pass library under `lib/Frontend/`.
 
-## 1. Scope and Milestones
+## 1. Scope and Contract
 
-The front-end is built in three milestones; this spec covers the first
-in full and sketches the second and third only enough to keep the IR
-shapes future-proof.
+The compiler front-end is documented in three parts:
 
-* **scf-to-dfg.** Input is a hand-written `scf` MLIR module. Output is
-  the canonical Loom front-end IR (`func.func` host scope holding zero
-  or more `dataflow.thread` regions, each holding zero or more
-  `dataflow.graph` regions with no `scf.*` left inside any graph
-  body). All `scf` ops are supported: `scf.if`, `scf.while` with
-  `scf.condition`, `scf.for` with `scf.yield`, `scf.forall` with
-  `scf.forall.in_parallel`, `scf.parallel` with `scf.reduce` and
-  `scf.reduce.return`, `scf.index_switch`, `scf.execute_region`. The
-  recommended development order is `if`, `while`, `for`, then
-  `forall` aggregation materialization, mapped `forall` promotion,
-  the `parallel`/`reduce` family, then `index_switch` and
-  `execute_region`. Tensor-result aggregation in `scf.forall` is
-  supported by materializing `scf.forall.in_parallel` combining
-  actions into explicit destination-buffer effects before thread
-  promotion. `dataflow.thread` itself remains a launch region with a
-  completion token and mapped-memory data transfer, not a tensor-result
-  returning op. Memory dependence construction runs from day one; alias
-  analysis is only the conflict oracle used by that builder (see
-  "Memory Dependence Model").
-* **llvm-to-scf.** Input is LLVM IR, sourced either externally or from
-  the embedded clang front-end inside the Loom binary. Output is the
-  scf-shaped IR consumed by the previous milestone. The host vs.
-  accelerator boundary identification lives here, but the IR shape is
-  the one this spec already locks down.
-* **robustness.** Real C / C++ programs are fed end-to-end; failures
-  are surfaced as targeted bug fixes against the first two milestones.
+* **Part 1, source integration.** High-level language front-ends are
+  embedded or linked as libraries where practical. They emit LLVM IR
+  plus Loom metadata that preserves programmer intent.
+* **Part 2, LLVM to SCF.** LLVM/CFG-shaped input is raised to
+  SCF-shaped MLIR. This part selects accelerator regions, recognizes
+  parallel loops, and materializes memory-region metadata. Its output
+  uses `loom.acc_region` to mark code selected for AccCore execution.
+* **Part 3, SCF to DFG.** This document. It consumes SCF-shaped
+  accelerator regions and lowers them to `dataflow.thread` and
+  `dataflow.graph`.
+
+Input to this part is an MLIR module with `func.func` host containers.
+Host code may remain outside accelerator regions. AccCore code must be
+inside explicit `loom.acc_region` ops, except in the
+`wrap-standalone-kernel` test mode described under
+`loom-normalize-acc-regions`. A `func.func` is therefore an ABI and
+ownership container, not an implicit accelerator boundary.
+
+Output is the canonical Loom front-end IR: `func.func` host scope
+holding zero or more `dataflow.thread` regions, each holding zero or
+more `dataflow.graph` regions with no `scf.*` left inside any graph
+body. All `scf` ops are supported inside accelerator regions:
+`scf.if`, `scf.while` with `scf.condition`, `scf.for` with
+`scf.yield`, `scf.forall` with `scf.forall.in_parallel`,
+`scf.parallel` with `scf.reduce` and `scf.reduce.return`,
+`scf.index_switch`, `scf.execute_region`. Tensor-result aggregation in
+`scf.forall` is supported by materializing `scf.forall.in_parallel`
+combining actions into explicit destination-buffer effects before
+thread promotion. `dataflow.thread` itself remains a launch region
+with a completion token and mapped-memory data transfer, not a
+tensor-result returning op. Memory dependence construction runs in
+this part; alias analysis is only the conflict oracle used by that
+builder (see "Memory Dependence Model").
 
 ## 2. Hardware Model
 
@@ -106,10 +114,15 @@ each rule lands in IR.
    stronger oracle based on `mlir::AliasAnalysis` ships alongside it
    and the two are interchangeable through one C++ interface, both
    validated by the same lit suite.
-6. `scf.forall` with a `mapping = [#loom.spatial<...> | #loom.temporal<...>, ...]`
-   attribute is the one and only trigger for thread promotion in the
-   first milestone. Before promotion, every `scf.forall` must be in
-   effect form: no `shared_outs`, no op results, and an empty
+6. `loom.acc_region` is the explicit AccCore selection boundary
+   consumed by this part. `scf.forall` with a
+   `mapping = [#loom.spatial<...> | #loom.temporal<...>, ...]`
+   attribute is the trigger for thread promotion only inside such a
+   region. A scalar-only accelerator region may be normalized into a
+   synthetic 1x1 mapped `scf.forall`, but ordinary host code outside
+   `loom.acc_region` is never promoted merely because it appears in a
+   `func.func`. Before promotion, every `scf.forall` must be in effect
+   form: no `shared_outs`, no op results, and an empty
    `scf.forall.in_parallel` terminator. Tensor-result aggregation is
    lowered to explicit destination-buffer writes before this point.
    `scf.parallel`, `scf.forall` without mapping, and plain `scf.for` /
@@ -523,24 +536,47 @@ small, has its own lit tests, and may be run individually for
 debugging.
 
 ```
-[1] loom-materialize-forall-aggregation
-[2] loom-classify-thread-regions
-[3] loom-promote-map-info
-[4] loom-build-thread-skeleton
-[5] loom-extract-graph-regions
-[6] loom-build-memory-dependencies
-[7] loom-lower-scf-to-dfg-bodies
-[8] loom-finalize-dfg
+[1] loom-normalize-acc-regions
+[2] loom-materialize-forall-aggregation
+[3] loom-classify-thread-regions
+[4] loom-promote-map-info
+[5] loom-build-thread-skeleton
+[6] loom-extract-graph-regions
+[7] loom-build-memory-dependencies
+[8] loom-lower-scf-to-dfg-bodies
+[9] loom-finalize-dfg
 ```
 
 The pass numbering is a sequencing convenience only; downstream
 documentation never refers to the numeric position.
 
-### 6.1 `loom-materialize-forall-aggregation`
+### 6.1 `loom-normalize-acc-regions`
 
-* Runs before any thread promotion or graph extraction. Its job is to
-  convert aggregation-form `scf.forall` into effect-form `scf.forall`
-  using explicit destination buffers.
+* Consumes the `loom.acc_region` ops produced by Part 2. The pass
+  never treats a whole `func.func` body as an accelerator region by
+  default.
+* Host code outside `loom.acc_region` is preserved and is not scanned
+  for graph extraction or thread promotion.
+* The optional `wrap-standalone-kernel` mode is a test and bring-up
+  convenience for hand-written Part 3 inputs. When enabled, a selected
+  `func.func` body with no `loom.acc_region` is wrapped in one
+  synthetic `loom.acc_region` before the rest of this pipeline runs.
+  The option is disabled by default and must not be used by the
+  LLVM-to-SCF pipeline for ordinary host programs.
+* Verifies the Part 2 boundary contract before lowering: the
+  accelerator region has no direct data results, all values crossing
+  the boundary are explicit operands or memory effects, and the region
+  body is structured enough for the SCF lowering rules in this spec.
+* Records the region-local default mapping used if a scalar-only
+  accelerator region must be normalized into a 1x1 mapped forall. If
+  Part 2 did not provide a mapping policy, this part uses a single
+  spatial grid point as the conservative default.
+
+### 6.2 `loom-materialize-forall-aggregation`
+
+* Runs inside accelerator regions before any thread promotion or graph
+  extraction. Its job is to convert aggregation-form `scf.forall` into
+  effect-form `scf.forall` using explicit destination buffers.
 * Handles `scf.forall` with `shared_outs`, op results, or non-empty
   `scf.forall.in_parallel`. The canonical first-milestone combining
   op is `tensor.parallel_insert_slice`; support for additional
@@ -548,10 +584,10 @@ documentation never refers to the numeric position.
   by extending this pass.
 * The pass may use upstream one-shot bufferization infrastructure, but
   its output contract is Loom-specific: after it runs, every
-  `scf.forall` in the module has no `shared_outs`, no op results, and
-  an empty `scf.forall.in_parallel` terminator. Tensor results that
-  are still needed by surrounding code are represented through the
-  materialized destination buffer and the necessary
+  `scf.forall` inside an accelerator region has no `shared_outs`, no
+  op results, and an empty `scf.forall.in_parallel` terminator. Tensor
+  results that are still needed by surrounding code are represented
+  through the materialized destination buffer and the necessary
   `bufferization.to_tensor` or equivalent bridge ops.
 * The pass preserves forall bounds, steps, induction variables, and
   `mapping` attributes. The newly materialized destination buffers are
@@ -562,9 +598,10 @@ documentation never refers to the numeric position.
   aggregation-form forall cannot be materialized, it emits a clear
   diagnostic and the pipeline stops.
 
-### 6.2 `loom-classify-thread-regions`
+### 6.3 `loom-classify-thread-regions`
 
-* Walks every `func.func` body in the module.
+* Walks every `loom.acc_region` body in the module. It does not walk
+  ordinary host code outside accelerator regions.
 * Identifies every `scf.forall` whose `mapping` attribute is non-empty
   and contains at least one `DeviceMappingAttrInterface` element
   recognizable as a `#loom.spatial<...>` or `#loom.temporal<...>`
@@ -573,15 +610,21 @@ documentation never refers to the numeric position.
   `loom.thread_promotion = unit`. Nested mapped foralls are marked
   individually; the relative nesting order is preserved by IR
   traversal order.
-* If a `func.func` body contains zero mapped foralls, the pass adds
-  a synthetic outermost `scf.forall (%i) in (1) { ... } { mapping = [#loom.spatial<x>] }`
-  wrapping the entire body. This guarantees every front-end output
-  has at least one `dataflow.thread` per function.
+* If an accelerator region contains zero mapped foralls, the pass adds
+  a synthetic outermost `scf.forall (%i) in (1) { ... }` with the
+  region-local default mapping from `loom-normalize-acc-regions`,
+  wrapping the accelerator region body. This guarantees every explicit
+  accelerator region lowers to at least one `dataflow.thread` without
+  turning unselected host code into AccCore code.
 
-### 6.3 `loom-promote-map-info`
+### 6.4 `loom-promote-map-info`
 
 * For each marked forall, computes the set of values defined outside
   the forall body and used inside it.
+* For outermost foralls created from a scalar-only `loom.acc_region`,
+  the surrounding values are the explicit accelerator-region boundary
+  operands, not arbitrary values captured from the enclosing
+  `func.func`.
 * For every `memref<...>` value or spatial-array handle that crosses
   the thread boundary, inserts a `dataflow.map_info ...
   direction=tofrom` immediately outside the forall. Scalar values do
@@ -595,7 +638,7 @@ documentation never refers to the numeric position.
   on read/write effect summaries; this pass is intentionally
   conservative.
 
-### 6.4 `loom-build-thread-skeleton`
+### 6.5 `loom-build-thread-skeleton`
 
 * Replaces every marked `scf.forall` with a `dataflow.thread` whose
   grid bounds, mapping, body operands, body region, and
@@ -625,8 +668,12 @@ documentation never refers to the numeric position.
   the original continuation point. The first milestone uses the
   conservative form and inserts the wait unless an immediately
   following thread dependency is materialized in the same rewrite.
+* Once every marked forall inside a `loom.acc_region` has been replaced
+  by `dataflow.thread`, the temporary accelerator-region wrapper is
+  erased and its body is spliced back at the original host program
+  point. No `loom.acc_region` remains after this pass.
 
-### 6.5 `loom-extract-graph-regions`
+### 6.6 `loom-extract-graph-regions`
 
 * Within each innermost `dataflow.thread` body (no further mapped
   forall inside), groups eligible operations into one or more
@@ -666,7 +713,7 @@ documentation never refers to the numeric position.
   argument. Values produced inside the graph and used outside it are
   materialized as explicit graph results and `dataflow.yield` operands.
 
-### 6.6 `loom-build-memory-dependencies`
+### 6.7 `loom-build-memory-dependencies`
 
 * Builds the per-graph memory-dependence snapshot consumed by body
   lowering. A memory access means `memref.load` / `memref.store`
@@ -715,7 +762,7 @@ documentation never refers to the numeric position.
   these attributes from source `memref` ops to replacement
   `dataflow` ops. `loom-finalize-dfg` drops them.
 
-### 6.7 `loom-lower-scf-to-dfg-bodies`
+### 6.8 `loom-lower-scf-to-dfg-bodies`
 
 * Inside every `dataflow.graph`, replaces each `scf.*` control-flow
   op with the canonical dataflow token rewrite (see "Per-scf Lowering
@@ -731,10 +778,11 @@ documentation never refers to the numeric position.
   operand is output zero of a `dataflow.sync` over all memory accesses
   with no dependence successor (see "Memory Dependence Model").
 
-### 6.8 `loom-finalize-dfg`
+### 6.9 `loom-finalize-dfg`
 
 * Runs the existing dataflow-graph verifier in strict mode.
 * Strips the `loom.mem_dep_id` and `loom.mem_dep_preds` attributes.
+* Asserts that no temporary `loom.acc_region` op remains.
 * Asserts the front-end exit invariant: no `scf.*` op remains inside
   any `dataflow.graph` body; every `dataflow.thread` produces exactly
   one `!dataflow.thread_token` and no data results; every
@@ -746,9 +794,9 @@ documentation never refers to the numeric position.
 ## 7. Per-scf Lowering Templates
 
 This section gives the canonical pseudocode template for each
-`scf` op in terms of dataflow primitives. The development order in
-"Scope and Milestones" maps these templates: implement and lit-test
-the simpler ops first.
+`scf` op in terms of dataflow primitives. The supported op list in
+"Scope and Contract" maps these templates: implement and lit-test the
+simpler ops first.
 
 The dataflow primitive set is the existing one
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
@@ -1016,8 +1064,9 @@ In addition to the existing dataflow / fabric verifier set:
   - Body must not contain a `dataflow.graph` whose body contains any
     `dataflow.thread` (graph is a leaf).
   - At least one `dataflow.thread` ancestor is required for every
-    `dataflow.graph` in a `func.func` body; the `loom-classify-thread-regions`
-    pass guarantees this by inserting a synthetic outer thread.
+    `dataflow.graph`. The graph-extraction pass only runs inside
+    `dataflow.thread` bodies created from explicit accelerator
+    regions, or from `wrap-standalone-kernel` test-mode input.
 
 * `dataflow.thread.yield`
   - No operand allowed. The parent thread has no data results; its
@@ -1118,7 +1167,7 @@ form, and the migration is explicit in the diff.
 The first milestone is considered complete when all of the
 following hold simultaneously:
 
-* Every `scf.*` operation enumerated under "Scope and Milestones"
+* Every `scf.*` operation enumerated under "Scope and Contract"
   has a working
   lowering template, with at least one positive lit test under
   `test/frontend/lower_scf/<op>/` and at least one negative test
@@ -1204,8 +1253,8 @@ milestone and have placeholders only:
   groups, and thread-level aggregation regions. Tensor-result
   aggregation is handled by materializing it into mapped-memory
   effects before thread promotion.
-* Any LLVM IR or clang front-end integration. Belongs to the second
-  milestone.
+* Any LLVM IR or clang front-end integration. Those concerns belong to
+  Part 1 and Part 2.
 * Optimization of `dataflow.map_info` direction. Default `tofrom`.
 
 ## 15. References
@@ -1213,6 +1262,10 @@ milestone and have placeholders only:
 * `docs/spec-fabric-module.md`, `docs/spec-fabric-pe.md`,
   `docs/spec-fabric-fu.md` -- the existing fabric-side IR that the
   front-end output eventually targets.
+* `docs/spec-compiler-part-1-source.md` -- high-level source
+  integration and metadata emission.
+* `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising,
+  accelerator-region selection, and `loom.acc_region`.
 * `temp/build-compiler-frontend-0.md`, `temp/build-compiler-frontend-1.md`
   -- the originating requirements that this spec consolidates.
 * `temp/spatial-notes.md`, `temp/pact26-paper30.pdf` -- the SPGPU
