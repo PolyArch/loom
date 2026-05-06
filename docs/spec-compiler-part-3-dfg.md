@@ -894,8 +894,9 @@ The dataflow primitive set is the existing one
   Memory Dependence Model).
 * `invariant`: loop-invariant value replay (one per outer SSA value
   used inside the loop body).
-* `gate`: filter that keeps `cond=true` cycles and drops the
-  trailing `cond=false` value.
+* `gate`: phase normalizer for a `(cond, value)` stream. It emits one
+  value for each true condition and emits a phase-shifted condition
+  stream that closes with the trailing false condition.
 * `stream`: induction-variable stream with `step_op` and `cont_cond`
   predicates; produces the rwc bit token plus the index.
 
@@ -905,19 +906,61 @@ come from `stream`; any `i1` SSA stream from arbitrary computation
 inside the graph plays the same role. This is what lets
 `scf.while` lower without a new op.
 
+Selection lanes are positional. For `i1` selectors, lane 0 is the
+`false` lane and lane 1 is the `true` lane:
+
+```
+%false_value, %true_value = demux %cond, %value : (i1, T) -> (T, T)
+%value = mux %cond, %false_value, %true_value : (i1, T, T) -> T
+```
+
+For `index` selectors, lane `k` is operand/result position `k`.
+This convention is required for the templates below to be mechanical.
+
+SSA multi-use is token broadcast. If one SSA stream value has multiple
+uses, each use observes the same ordered token sequence. This is not a
+destructive single-consumer read. The `scf.for` template relies on
+this property because the loop rwc stream is consumed by `gate`,
+`carry`, `demux`, and `mux`, and the loop-exit value may feed both
+the loop result and the feedback reset lane.
+
 The templates below show user-visible SSA value lowering. Loop-carried
 memory ordering is added by the Memory Dependence Model as hidden
 `none`-typed state; it is not an optional optimization.
+
+#### RWC Phasing Rule
+
+An rwc stream is a loop-control stream, not a plain valid bit. For a
+counted loop with `N` body executions, `dataflow.stream` emits `N + 1`
+`(index, rwc)` pairs: `N` true pairs plus one trailing false sentinel.
+The loop-level rwc, or a derived body-local rwc with the same close
+semantics in the body's phase, must remain visible to stateful
+stream-shaping ops that need the sentinel to close or reset state,
+such as `carry`, `invariant`, `gate`, and loop-carried memory-state
+wiring.
+
+Values that enter a loop body must be in the body's phase. The
+canonical way to convert a raw `(rwc, value)` pair into body phase is
+`dataflow.gate`: its value result has exactly the true-condition
+tokens, while its condition result is the body-local rwc that closes
+after the final body value. Memory side effects and address
+computation that must not observe the sentinel index consume the gated
+value stream or are guarded by the corresponding body-local rwc.
+
+Different regions of one source loop may therefore have different rwc
+streams. The loop-level rwc decides whether the source loop continues
+or exits; a gated body rwc controls state local to the body region
+whose value stream has already been normalized.
 
 ### 7.1 `scf.if`
 
 ```
 %cond : i1
-%t_then, %t_else = demux %cond, %ctrl : i1 -> (none, none)
+%t_else, %t_then = demux %cond, %ctrl : i1 -> (none, none)
 # then-region runs with t_then as its ctrl and produces done_then
 # else-region runs with t_else as its ctrl and produces done_else
-%result = mux %cond, %v_then, %v_else
-%done_after = mux %cond, %done_then, %done_else : (i1, none, none) -> none
+%result = mux %cond, %v_else, %v_then
+%done_after = mux %cond, %done_else, %done_then : (i1, none, none) -> none
 ```
 
 * Each side's loads / stores fork from the side's local ctrl token
@@ -934,25 +977,37 @@ memory ordering is added by the Memory Dependence Model as hidden
 
 ```
 # Each iter_arg %a -> a carry node
-%a_iter = carry %rwc, %a0, %a_next : T
+%a_iter = carry %before_rwc, %a0, %a_next : T
 
 # before-region: arbitrary computation produces (cond, fwd)
-%rwc, %fwd_i = ... compute from %a_iter ...  # rwc is just an i1
+%before_rwc, %fwd_i = ... compute from %a_iter ...  # an arbitrary i1
 
-# Split fwd into per-iter input and exit value
-%fwd_loop, %fwd_exit = demux %rwc, %fwd_i : i1 -> (T, T)
+# Normalize the before->after boundary.
+%after_rwc, %after_arg = gate %before_rwc, %fwd_i : T
 
-# after-region runs only on rwc=true; computes %a_next from %fwd_loop
-%a_next = ... compute from %fwd_loop ...
+# Preserve the false-cycle forwarded value as the loop result.
+%unused_true, %fwd_exit = demux %before_rwc, %fwd_i : i1 -> (T, T)
+
+# after-region consumes after_arg; after-local state uses after_rwc
+%a_next = ... compute from %after_arg ...
 ```
 
-* `rwc` is the i1 token computed by the before-region's
+* `%before_rwc` is the i1 token computed by the before-region's
   `scf.condition`. There is no `stream` op here; the existing four
   streaming ops are sufficient.
+* The before-region executes once more than the after-region. The
+  `gate` on the before-to-after boundary captures that phase relation:
+  `%after_arg` contains exactly the values consumed by after-region
+  executions, while `%after_rwc` is the after-region's local
+  continue/end signal. The final false condition closes after-region
+  state but does not produce an after-region value.
 * `%fwd_exit` becomes the loop result (the `scf.condition`'s
   trailing operands at the iteration that turned the predicate
-  false). `demux` is used because `gate` drops the false-cycle
-  value.
+  false). `demux` is still required because `gate` intentionally drops
+  the false-cycle value.
+* Any `carry`, `invariant`, `gate`, or loop-carried memory state local
+  to the after-region uses `%after_rwc`, not `%before_rwc`. Operations
+  that decide loop exit or produce loop results use `%before_rwc`.
 * For each loop-carried memory partition, the loop also has a hidden
   `none` carry. The before-region starts from that partition's
   incoming memory state. On the true path, the after-region tail feeds
@@ -962,25 +1017,155 @@ memory ordering is added by the Memory Dependence Model as hidden
 
 ### 7.3 `scf.for` with `scf.yield`
 
+There are two distinct cases.
+
+#### No Iter Args
+
+Source:
+
 ```
-%i, %rwc = stream %lb, %ub, %step {step_op="+=", cont_cond="<"} : iN
-%a_iter = carry %rwc, %a0, %a_next : T
-... body computes %a_next and live-outs from %i, %a_iter, %inv_iter ...
-%rwc_out, %a_out = gate %rwc, %a_iter : T
+scf.for %i = %c0 to %n step %c1 {
+  %x = memref.load %A[%i] : memref<?xi32>
+  memref.store %x, %B[%i] : memref<?xi32>
+}
 ```
 
-* `scf.for` is the special case of the while template where the rwc
-  comes from `stream` and the iter-arg yield is straightforward.
-* Live-out values are extracted via `gate` from the corresponding
-  carry output; `gate`'s after-value is the last carry-state value,
-  which equals the loop result by definition of `scf.for`'s
-  semantics (the value at the iteration just before rwc became
-  false).
+Lowering:
+
+```
+%i_raw, %loop_rwc = stream %lb, %ub, %step {step_op="+=", cont_cond="<"} : iN
+%body_rwc, %i = gate %loop_rwc, %i_raw : iN
+# body memory and address computation consume %i, never %i_raw
+
+# Optional structured control stream when body side effects need one:
+%ctrl_raw = invariant %loop_rwc, %ctrl_in : none
+%loop_exit_ctrl, %body_ctrl =
+  demux %loop_rwc, %ctrl_raw : (i1, none) -> (none, none)
+```
+
+For `N` dynamic body executions:
+
+| Stream | Length | Meaning |
+|--------|--------|---------|
+| `%loop_rwc` | `N + 1` | `N` true tokens plus one false sentinel |
+| `%i_raw` | `N + 1` | `N` body indices plus one sentinel index |
+| `%i` | `N` | body-phase induction values |
+| `%body_rwc` | `N` | body-local close stream, empty when `N = 0` |
+| `%ctrl_raw` | `N + 1` | optional repeated control token |
+| `%body_ctrl` | `N` | optional body control tokens |
+| `%loop_exit_ctrl` | `1` | optional structured exit token |
+
+The no-result case has no data loop result to compute. The only
+required invariant is that body dataflow never observes the sentinel
+index. If the body contains memory side effects, their ctrl operands
+are wired by the Memory Dependence Model; `%body_ctrl` above is only
+the canonical structured-control source when such a token is needed.
+
+#### With Iter Args
+
+Source:
+
+```
+%sum = scf.for %i = %c0 to %n step %c1
+          iter_args(%acc = %init) -> i32 {
+  %x = memref.load %A[%i] : memref<?xi32>
+  %next = arith.addi %acc, %x : i32
+  scf.yield %next : i32
+}
+```
+
+Lowering:
+
+```
+%i_raw, %loop_rwc = stream %lb, %ub, %step {step_op="+=", cont_cond="<"} : iN
+%body_rwc, %i = gate %loop_rwc, %i_raw : iN
+
+%acc_raw = carry %loop_rwc, %init, %acc_feedback : i32
+
+%acc_exit, %acc_body =
+  demux %loop_rwc, %acc_raw : (i1, i32) -> (i32, i32)
+
+# body executes only in body phase
+%x = dataflow.load %A[%i], ... : memref<?xi32>
+%next = arith.addi %acc_body, %x : i32
+
+%acc_feedback =
+  mux %loop_rwc, %acc_exit, %next : (i1, i32, i32) -> i32
+
+%sum = %acc_exit
+```
+
+The iter-arg state stream is deliberately in loop phase, not body
+phase. `carry` sees `%loop_rwc`, so it emits an `N + 1` state stream:
+the initial value, then one carried value after each true iteration.
+The same `%loop_rwc` projects that state stream:
+
+* true lane -> `%acc_body`, exactly `N` values consumed by the body;
+* false lane -> `%acc_exit`, exactly one value used as the loop
+  result.
+
+The feedback to `carry` must also have length `N + 1`. `mux` builds it
+from `%next` on true iterations and `%acc_exit` on the final false
+sentinel. The final false-lane feedback token is a reset/dummy token;
+it lets `carry` consume `%loop_rwc = false` and return to its init
+state. It is not a body execution.
+
+For `N = 0`:
+
+| Stream | Tokens |
+|--------|--------|
+| `%loop_rwc` | `[F]` |
+| `%i_raw` | `[0]` |
+| `%i` | `[]` |
+| `%body_rwc` | `[]` |
+| `%acc_raw` | `[init]` |
+| `%acc_body` | `[]` |
+| `%next` | `[]` |
+| `%acc_exit` | `[init]` |
+| `%acc_feedback` | `[init]` |
+| `%sum` | `init` |
+
+For `N = 1`:
+
+| Stream | Tokens |
+|--------|--------|
+| `%loop_rwc` | `[T, F]` |
+| `%i_raw` | `[0, 1]` |
+| `%i` | `[0]` |
+| `%body_rwc` | `[F]` |
+| `%acc_raw` | `[init, next0]` |
+| `%acc_body` | `[init]` |
+| `%next` | `[next0]` |
+| `%acc_exit` | `[next0]` |
+| `%acc_feedback` | `[next0, next0]` |
+| `%sum` | `next0` |
+
+For `N = 2`:
+
+| Stream | Tokens |
+|--------|--------|
+| `%loop_rwc` | `[T, T, F]` |
+| `%i_raw` | `[0, 1, 2]` |
+| `%i` | `[0, 1]` |
+| `%body_rwc` | `[T, F]` |
+| `%acc_raw` | `[init, next0, next1]` |
+| `%acc_body` | `[init, next0]` |
+| `%next` | `[next0, next1]` |
+| `%acc_exit` | `[next1]` |
+| `%acc_feedback` | `[next0, next1, next1]` |
+| `%sum` | `next1` |
+
+Multiple iter_args lower independently using the same pattern, one
+`carry` / `demux` / `mux` state ring per iter_arg. Body operations may
+freely combine the body-lane values from multiple iter_args before
+feeding the corresponding yielded values back through their muxes.
+
 * For each loop-carried memory partition, the loop has a hidden
   `none` carry initialized by the memory state before the first
-  dynamic iteration. The body tail for that partition feeds the next
-  iteration. The loop-exit memory state is the final carried state,
-  with the zero-trip case forwarding the initial memory state.
+  dynamic iteration. It follows the same loop-phase rule as iter_args:
+  the carry is driven by `%loop_rwc`, body accesses consume the
+  true-lane projected state, and the false lane is the loop-exit
+  memory state. The zero-trip case forwards the initial memory state.
 
 ### 7.4 `scf.forall` (no mapping; mapped foralls became threads)
 
@@ -1005,7 +1190,8 @@ memory ordering is added by the Memory Dependence Model as hidden
   resulting `scf.for`s use the template under "scf.for with scf.yield".
 * `scf.reduce` reduction regions are inlined: each reduction lowers
   to a `carry`-based accumulator that consumes the per-iteration
-  reduction operand and emits the final value through a `gate`.
+  reduction operand and emits the final value through the same
+  phase-aware loop-result wiring used for `scf.for`.
 * This is intentionally the same flavour as `scf.for + iter_args`;
   reduction kind is captured by the region body, not by an enum.
 
@@ -1154,9 +1340,12 @@ choose different SSA names.
   state. Post-loop accesses in partition `P` use `%mem_after_P` as
   their predecessor when they may conflict with loop-body accesses.
 
-`scf.for` uses the `stream`-produced rwc bit for the hidden memory
-state carry. The per-iteration body tail feeds `%mem_next_P`, and the
-loop-exit state handles both zero-trip and nonzero execution.
+`scf.for` uses the `stream`-produced loop-level rwc bit for the
+hidden memory-state carry, following the same loop-phase rule as
+iter_args. The true lane is the per-iteration body memory state; the
+false lane is the loop-exit memory state. The body tail feeds
+`%mem_next_P`, and the loop-exit state handles both zero-trip and
+nonzero execution.
 
 `scf.while` has two regions and therefore two relevant memory tails.
 The before-region executes on both true and false condition checks.
@@ -1369,6 +1558,18 @@ The lit-test layout grows three new directories:
     selector-matched `mux`, nested loops, and two independent memrefs
     that must produce independent memory-state partitions under the
     active oracle.
+  - The `for/` directory includes a stream phasing case:
+    `dataflow.stream` emits the trailing sentinel, `dataflow.gate`
+    normalizes the index into body phase, memory side effects consume
+    only body-phase values, no-iter-arg loops produce no data result,
+    and iter-arg loops use the `carry` / `demux` / `mux` state-ring
+    template to produce the zero-trip initial value or final body
+    yield as the loop result.
+  - The `while/` directory includes a before-to-after phasing case:
+    the before-region executes one more time than the after-region,
+    `dataflow.gate` produces the after-region value stream plus the
+    after-local rwc, and a separate false-path projection preserves
+    the `scf.condition` trailing operands as loop results.
   - `scalarcore_calls/` covers inlining or specialization of callees
     that contain graph-extractable code, preservation of graph-free
     ScalarCore calls, and diagnostics for unsupported callees.
@@ -1423,6 +1624,16 @@ following hold simultaneously:
   branch-local loop tails use selector-matched joins, and independent
   memory partitions are not serialized when the active oracle proves
   them independent.
+* `scf.while` lowering preserves the one-extra-before execution
+  semantics: the before-to-after boundary is normalized by
+  `dataflow.gate`, after-local state is driven by the gated rwc, and
+  loop results still come from the false-cycle `scf.condition`
+  operands rather than from the gate.
+* `scf.for` lowering preserves stream phasing: the sentinel index is
+  not consumed by body memory effects, body-only state uses the gated
+  rwc, iter_arg state uses the loop-level rwc plus
+  `carry` / `demux` / `mux`, zero-trip loops forward initial iter_arg
+  values, and nonzero loop results come from the final body yield.
 * All previously existing tests in `test/dataflow/unit/graph/` and
   `test/dataflow/unit/subgraph/` continue to pass after the
   graph-control-port migration.
