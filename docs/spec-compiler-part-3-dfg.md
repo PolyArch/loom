@@ -586,7 +586,7 @@ The templates below show user-visible SSA value lowering. Loop-carried
 memory ordering is added by the Memory Dependence Model as hidden
 `none`-typed state; it is not an optional optimization.
 
-#### RWC Phasing Rule
+### RWC Phasing Rule
 
 An rwc stream is a loop-control stream, not a plain valid bit. For a
 counted loop with `N` body executions, `dataflow.stream` emits `N + 1`

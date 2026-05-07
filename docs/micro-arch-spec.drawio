@@ -81,6 +81,132 @@
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
+                <mxCell id="df-host-label" value="HostCore scope" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="770" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-mapinfo" value="dataflow.map_info&lt;div style=&quot;font-size:9px&quot;&gt;memref&amp;nbsp;-&amp;gt;&amp;nbsp;!loom.mapped&amp;lt;T&amp;gt;&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;direction: to | from | tofrom | alloc | release&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="80" width="280" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-wait" value="dataflow.thread.wait&lt;div style=&quot;font-size:9px&quot;&gt;!dataflow.thread_token&amp;nbsp;-&amp;gt;&amp;nbsp;()&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="340" y="80" width="220" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-spatial-layout" value="dataflow.spatial_layout&lt;div style=&quot;font-size:9px&quot;&gt;memref + tile/mesh/splitAxes&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="570" y="80" width="230" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-outer" value="dataflow.thread&lt;div&gt;dataflow.thread.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;mapping = [#loom.spatial&amp;lt;...&amp;gt; | #loom.temporal&amp;lt;...&amp;gt;]&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;async dependencies + body operands (scalar, !loom.mapped&amp;lt;T&amp;gt;)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;result: Optional&amp;lt;!dataflow.thread_token&amp;gt;&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="170" width="770" height="700" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-ctrl" value="thread_ctrl : none&lt;div style=&quot;font-size:9px&quot;&gt;leading body block argument&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="195" width="220" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-grid-args" value="grid block args : index&lt;div style=&quot;font-size:9px&quot;&gt;one per mapping entry&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="280" y="195" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-body-args" value="body block args&lt;div style=&quot;font-size:9px&quot;&gt;scalars by value, !loom.mapped&amp;lt;T&amp;gt; unwrapped to T&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="530" y="195" width="270" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-scalarcore-region" value="ScalarCore region (thread body, outside any graph)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="245" width="750" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-scf-call" value="scf.* control flow&lt;div style=&quot;font-size:9px&quot;&gt;structured control retained&lt;/div&gt;&lt;div&gt;ScalarCore-legal func.call&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="270" width="220" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-fence" value="dataflow.thread.fence&lt;div style=&quot;font-size:9px&quot;&gt;deps: none | !dataflow.thread_token&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;result: none (graph ctrl_in)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="290" y="270" width="240" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-queries-group" value="" style="group" parent="1" connectable="0" vertex="1">
+                    <mxGeometry x="540" y="270" width="250" height="125" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-queries-frame" value="spatial-array queries&lt;div style=&quot;font-size:9px&quot;&gt;thread-body only; not in graph&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="df-spatial-queries-group" vertex="1">
+                    <mxGeometry width="250" height="125" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-local-range" value="dataflow.local_range" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="df-spatial-queries-group" vertex="1">
+                    <mxGeometry x="10" y="40" width="115" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-coord" value="dataflow.spatial_coord" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="df-spatial-queries-group" vertex="1">
+                    <mxGeometry x="125" y="40" width="115" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-linear-id" value="dataflow.spatial_linear_id" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="df-spatial-queries-group" vertex="1">
+                    <mxGeometry x="10" y="80" width="115" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-layout-mirror" value="dataflow.spatial_layout&lt;div style=&quot;font-size:9px&quot;&gt;(may also appear in body)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="df-spatial-queries-group" vertex="1">
+                    <mxGeometry x="125" y="80" width="115" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-outer" value="dataflow.graph (SpatialCore leaf DFG, IsolatedFromAbove)&lt;div style=&quot;font-size:9px&quot;&gt;explicit ctrl_in : none (operand + leading block arg)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;explicit done_out : none (leading result + leading dataflow.yield operand)&lt;/div&gt;&lt;div&gt;dataflow.yield&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="420" width="750" height="440" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-ctrl-in" value="ctrl_in : none&lt;div style=&quot;font-size:9px&quot;&gt;graph start port&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="445" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-done-out" value="done_out : none&lt;div style=&quot;font-size:9px&quot;&gt;graph completion token&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="600" y="445" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-stream-frame" value="streaming primitives&lt;div style=&quot;font-size:9px&quot;&gt;token-timing semantics in spec-dataflow-part-1-streaming.md&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="500" width="360" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-stream" value="dataflow.stream&lt;div style=&quot;font-size:9px&quot;&gt;%index, %rwc = stream %lb, %ub, %step&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;{step_op, cont_cond}&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="535" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-carry" value="dataflow.carry&lt;div style=&quot;font-size:9px&quot;&gt;%out = carry %cond, %init, %feedback&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;loop-carried iter_arg / hidden state&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="240" y="535" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-invariant" value="dataflow.invariant&lt;div style=&quot;font-size:9px&quot;&gt;%out = invariant %cond, %init&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;latch-and-replay&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="600" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-gate" value="dataflow.gate&lt;div style=&quot;font-size:9px&quot;&gt;%after_cond, %after_value = gate %before_cond, %before_value&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;loop -&amp;gt; body phase&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="240" y="600" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-ctrl-frame" value="control routing&lt;div style=&quot;font-size:9px&quot;&gt;firing semantics in spec-dataflow-part-2-control.md&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="430" y="500" width="360" height="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-mux" value="dataflow.mux&lt;div style=&quot;font-size:9px&quot;&gt;%out = mux %sel, %lane0, %lane1, ...&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;selective N-to-1 router&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="535" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-demux" value="dataflow.demux&lt;div style=&quot;font-size:9px&quot;&gt;%lane0, %lane1, ... = demux %sel, %in&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;selective 1-to-N router&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="610" y="535" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-sync" value="dataflow.sync&lt;div style=&quot;font-size:9px&quot;&gt;variadic all-input rendezvous&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;same-path join&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="600" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-constant" value="dataflow.constant&lt;div style=&quot;font-size:9px&quot;&gt;%v = constant %ctrl {const_value}&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;phase-aware emission&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="610" y="600" width="170" height="55" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-mem-frame" value="memory ops (in graph; bind to memref, ordered by none tokens)" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="685" width="500" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-load" value="dataflow.load&lt;div style=&quot;font-size:9px&quot;&gt;memref + ordering ctrl : none&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;produces value + done : none&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="715" width="230" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-store" value="dataflow.store&lt;div style=&quot;font-size:9px&quot;&gt;memref + value + ordering ctrl : none&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;produces done : none&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="310" y="715" width="240" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-yield-frame" value="terminator" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="685" width="210" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-yield" value="dataflow.yield&lt;div style=&quot;font-size:9px&quot;&gt;leading operand: done_out : none&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;then user yield values&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="590" y="715" width="190" height="45" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-pure-compute" value="allowed pure compute&lt;div style=&quot;font-size:9px&quot;&gt;arith.* / math.* / allowed LLVM compute (all-operand firing)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="780" width="730" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-token-edge" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;dashed=1;" parent="1" source="df-thread-ctrl" target="df-graph-ctrl-in" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-fence-edge" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;dashed=1;" parent="1" source="df-thread-fence" target="df-graph-ctrl-in" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-done-edge" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;dashed=1;" parent="1" source="df-graph-done-out" target="df-thread-fence" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-mapinfo-edge" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;dashed=1;" parent="1" source="df-host-mapinfo" target="df-thread-body-args" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-wait-edge" style="endArrow=classic;html=1;rounded=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;dashed=1;startArrow=classic;startFill=1;" parent="1" source="df-host-wait" target="df-thread-outer" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rounded boxes = ops with regions (thread, graph)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey boxes = explicit none / token control ports&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow box = ScalarCore-side bridge (thread.fence)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrows = none / thread_token control flow&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="890" width="770" height="100" as="geometry"/>
+                </mxCell>
             </root>
         </mxGraphModel>
     </diagram>
