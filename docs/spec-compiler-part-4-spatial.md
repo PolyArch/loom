@@ -151,9 +151,10 @@ spatial_linear_id:
     (the ScalarCore portion of a thread). The verifier rejects it
     inside `dataflow.graph`. When the annotated memref crosses a
     `dataflow.thread` boundary, it does so as the source of a
-    `dataflow.map_info`; the annotation stays on the source memref
-    rather than on the `!loom.mapped<T>` handle, and is observable
-    inside the thread body through the unwrapped memref.
+    `dataflow.map_info`; the annotation stays on the source memref,
+    and because `dataflow.map_info` passes its source type through
+    unchanged, the annotation is also observable on the in-thread
+    block argument that the boundary delivers.
 
 * `dataflow.local_range`, `dataflow.spatial_coord`,
   `dataflow.spatial_linear_id`
@@ -185,8 +186,9 @@ spatial_linear_id:
 * Spatial-array values still cross the HostCore-to-AccCore boundary
   through the same `dataflow.map_info` protocol that Part 3 defines
   for any other memref-shaped boundary value. The annotation is
-  preserved on the source memref; it is not transferred onto the
-  `!loom.mapped<T>` handle.
+  preserved on the source memref, and because `dataflow.map_info`
+  passes its source type through unchanged the annotation is also
+  observable on the in-thread block argument.
 * `dataflow.thread` mapping (`#loom.spatial<...>` /
   `#loom.temporal<...>`) is the first-class binding from grid dim to
   physical core-grid coordinate. The spatial-array ops use that

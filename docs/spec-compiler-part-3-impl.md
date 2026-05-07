@@ -145,11 +145,13 @@ documentation never refers to the numeric position.
   `index`).
 * Body operands keep the deterministic ordering computed by
   `loom-promote-map-info` and become entry block arguments after the
-  leading control and induction-variable arguments.
-  `!loom.mapped<T>` operands become block arguments of type `T`;
-  scalar operands keep their original type. The pass rewrites every
-  in-body use of a surrounding SSA value to the corresponding block
-  argument before the verifier sees the isolated thread.
+  leading control and induction-variable arguments. Each block
+  argument has the same type as the matching body operand: memref-like
+  operands produced by `dataflow.map_info` are passed through as the
+  same memref type, and scalar operands keep their original type.
+  The pass rewrites every in-body use of a surrounding SSA value to
+  the corresponding block argument before the verifier sees the
+  isolated thread.
 * The empty `scf.forall.in_parallel` terminator is replaced with an
   empty `dataflow.thread.yield`. No tensor aggregation action is
   dropped by this pass; all such actions must already have been

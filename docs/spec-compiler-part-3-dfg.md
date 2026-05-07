@@ -222,9 +222,12 @@ each rule lands in IR.
   `dataflow.thread` body program point for zero or more SpatialCore
   `none` tokens and/or child `!dataflow.thread_token` values, then
   emits a `none` token usable as a `dataflow.graph` `ctrl_in`.
-* **Map info handle.** A value of type `!loom.mapped<T>` produced by
-  `dataflow.map_info`; carries direction (`to`/`from`/`tofrom`) and
-  optional bound information.
+* **Map info result.** A value produced by `dataflow.map_info` that
+  carries the same type as its source memref. It is a pure, view-like
+  alias of the source; by IR convention it must only be consumed as a
+  `dataflow.thread` body operand. Direction and optional bound
+  information live as attributes on the producing op, not on the
+  result type.
 * **Mem alias oracle.** A `MemAliasOracle` C++ interface returning
   `MustNotAlias` / `MayAlias` / `MustAlias` for any pair of memory
   access ops inside one `dataflow.graph`. It answers conflict only;
@@ -257,13 +260,11 @@ new `loom` namespaces; nothing outside this list is added.
   - Refcounted by a future runtime ABI; first milestone only manipulates
     the type as an SSA value.
 
-* `!loom.mapped<T>`
-  - Wraps any allowed inner type `T` (memref, spatial-array-annotated
-    memref, or a future spatial-array type) plus a `direction` enum
-    `to | from | tofrom | alloc | release`. Produced by
-    `dataflow.map_info`; consumed as a `dataflow.thread` boundary
-    operand when a mapped data object enters the AccCore program.
-  - `T` is preserved for downstream type matching.
+This milestone introduces no other types. The host-to-AccCore data
+plane uses `dataflow.map_info` (see §5.4.5), whose result preserves
+the source type. The "this value crossed the boundary through
+`dataflow.map_info`" provenance is enforced by the verifier on
+`dataflow.thread`, not by a wrapper type.
 
 ### 5.2 Attribute Interface Instances
 
@@ -340,11 +341,12 @@ traits:
   SSA values.
 * The entry block has one leading `thread_ctrl : none` block argument,
   then one block argument per grid dim (the iteration index, an
-  `index`), followed by one block argument per body operand. A scalar
-  body operand appears as a block argument of the same type. A
-  `!loom.mapped<T>` body operand is unwrapped to a block argument of
-  type `T`, so in-thread code sees the mapped object directly while
-  the boundary still records the mapping protocol.
+  `index`), followed by one block argument per body operand. Each
+  body operand and its corresponding entry block argument share the
+  same type exactly. A memref-like body operand must be the direct
+  SSA result of a `dataflow.map_info` op in the enclosing context;
+  the verifier enforces this provenance, and the in-thread block
+  argument is the same memref type as the source memref.
 * `thread_ctrl` is produced by the thread launch once async
   dependencies are satisfied and the AccCore instance begins
   execution. Root `dataflow.graph` ops with no ScalarCore predecessor
@@ -360,20 +362,21 @@ traits:
   cross the HostCore-to-AccCore boundary through mapped memory effects;
   the token is the readiness signal for those effects.
 * `dataflow.thread` implements `MemoryEffectOpInterface` directly. The
-  interface reports host-visible effects by projecting each
-  `!loom.mapped<T>` body operand back through its defining
-  `dataflow.map_info` op to the map source:
-  - `direction = to` reports `Read` on the source.
-  - `direction = from` reports `Write` on the source.
-  - `direction = tofrom` reports both `Read` and `Write` on the source.
-  - `direction = alloc` reports `Allocate` on the source.
-  - `direction = release` reports `Free` on the source.
+  interface reports host-visible effects by walking each memref-like
+  body operand back through its defining `dataflow.map_info` op and
+  reading the `direction` attribute there:
+  - `direction = to` reports `Read` on the map source.
+  - `direction = from` reports `Write` on the map source.
+  - `direction = tofrom` reports both `Read` and `Write` on the map
+    source.
+  - `direction = alloc` reports `Allocate` on the map source.
+  - `direction = release` reports `Free` on the map source.
   Scalar body operands do not contribute memory effects.
 * Effects are reported on the `dataflow.map_info` source value, not on
-  the `!loom.mapped<T>` handle. In nested-thread cases that source may
-  itself be a block argument of the enclosing thread body; the parent
-  thread's own boundary summary is responsible for projecting its
-  effects one level further outward.
+  the `dataflow.map_info` result (which is a view-like alias). In
+  nested-thread cases that source may itself be a block argument of
+  the enclosing thread body; the parent thread's own boundary summary
+  is responsible for projecting its effects one level further outward.
 * Recursive inspection of the thread body may be used by verifier or
   diagnostics to check that the body respects its declared boundary
   operands, but it is not the external effect contract of
@@ -461,13 +464,20 @@ arguments:
   OptionalAttr<DenseI64ArrayAttr>:$staticBounds,
   Variadic<Index>:$dynamicBounds;
 results:
-  Loom_MappedType:$mapped;
+  AnyType:$result;
 traits:
-  Pure.
+  Pure,
+  AllTypesMatch<["source", "result"]>.
 ```
 
 * `source` is a `memref<...>` (or a spatial-array-annotated memref
   in a later milestone).
+* `result` has the same type as `source`. The op is a pure,
+  view-like alias of its source: alias analysis must treat the
+  result as may-alias of the source, and bufferization must treat
+  the op as a metadata pass-through. The op exists to attach
+  boundary metadata (direction, bounds) and to give the verifier a
+  single canonical producer for thread body operands.
 * `direction` is the closed enum `to | from | tofrom | alloc |
   release`. The first milestone defaults every front-end-injected
   `map_info` to `tofrom`; an optional optimizer can later refine to
@@ -476,8 +486,6 @@ traits:
   half-open `[lo, hi)` ranges that the thread will touch. Empty
   bounds mean "the entire memref"; partial information is
   represented with `ShapedType::kDynamic` sentinels.
-* The op is `Pure`; alias analysis and bufferization can treat it as
-  a typed view.
 
 Spatial-array related ops (`dataflow.spatial_layout`,
 `dataflow.local_range`, `dataflow.spatial_coord`,
@@ -1729,14 +1737,14 @@ In addition to the existing dataflow / fabric verifier set:
   - The body is `IsolatedFromAbove`: every value used in the body and
     defined outside it must have a matching body operand and entry
     block argument.
-  - For each scalar body operand, the corresponding entry block
-    argument type must match exactly. For each `!loom.mapped<T>` body
-    operand, the corresponding entry block argument type must be `T`.
-  - Each `!loom.mapped<T>` body operand must be the direct result of a
+  - Each body operand and its corresponding entry block argument
+    must share the same type exactly.
+  - Each memref-like body operand must be the direct SSA result of a
     `dataflow.map_info` op in the enclosing control context. The
-    thread's `MemoryEffectOpInterface` must project effects to that
-    `map_info` source according to its `direction` attribute, as
-    specified in the `dataflow.thread` op contract.
+    thread's `MemoryEffectOpInterface` must walk to that `map_info`
+    op and project effects on the map source according to its
+    `direction` attribute, as specified in the `dataflow.thread` op
+    contract.
   - Body must not contain a `dataflow.graph` whose body contains any
     `dataflow.thread` (graph is a leaf).
   - Body may contain `func.call` only when the callee has been proven
