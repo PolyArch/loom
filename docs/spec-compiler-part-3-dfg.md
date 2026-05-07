@@ -465,95 +465,14 @@ traits:
 * The op is `Pure`; alias analysis and bufferization can treat it as
   a typed view.
 
-#### 5.4.6 `dataflow.spatial_layout`
-
-```
-arguments:
-  AnyMemRef:$source,
-  DenseI64ArrayAttr:$tileDims,
-  DenseI64ArrayAttr:$meshShape,
-  ArrayAttr:$splitAxes,
-  OptionalAttr<DenseI64ArrayAttr>:$haloBefore,
-  OptionalAttr<DenseI64ArrayAttr>:$haloAfter;
-results:
-  AnyMemRef:$annotated;
-traits:
-  Pure,
-  AllTypesMatch<["source", "annotated"]>.
-```
-
-* Zero-cost annotation, modelled on `shard.shard`. The result type
-  equals the input type.
-* `tileDims` describes the per-dim tile size on the AccCore mesh.
-  The first milestone restricts every entry to a power-of-two no
-  smaller than the cache line, matching the SPGPU paper's prototype
-  constraint; the verifier rejects other values.
-* `meshShape` is a small inline array; the symbol-form mesh
-  (`dataflow.mesh @M { ... }`) is deferred to a later milestone.
-* `splitAxes` follows the `shard.sharding` convention: a length-N
-  array (where N is the source memref rank) of arrays of mesh-axis
-  indices; the empty inner array means "fully replicated on this
-  data dim".
-* `haloBefore` / `haloAfter` describe per-data-dim ghost-cell sizes;
-  consumed by `dataflow.halo_exchange`.
-
-#### 5.4.7 `dataflow.local_range`
-
-```
-arguments:
-  AnyMemRef:$source,
-  IndexAttr:$dim;
-results:
-  Index:$lo,
-  Index:$hi;
-traits:
-  Pure.
-```
-
-* Returns the half-open `[lo, hi)` range of indices on
-  data-dim `dim` owned by the calling thread instance.
-* Semantically requires that `source` was produced by
-  `dataflow.spatial_layout` and is being read inside a
-  `dataflow.thread` body whose mapping reaches the spatial-layout
-  mesh axes; the verifier checks both.
-
-#### 5.4.8 `dataflow.spatial_coord` and `dataflow.spatial_linear_id`
-
-```
-spatial_coord:
-  arguments: none;
-  results: Variadic<Index>:$coords;
-
-spatial_linear_id:
-  arguments: none;
-  results: Index:$id;
-```
-
-* Both must appear inside a `dataflow.thread` body. They report the
-  current thread instance's coordinate vector (`spatial_coord`) or
-  flattened identifier (`spatial_linear_id`), based on the
-  `#loom.spatial<...>` mapping of the enclosing thread.
-* These ops let the inner ScalarCore code reason about its own
-  position without depending on entry-block argument ordering, which
-  is convenient for templated lowerings.
-
-#### 5.4.9 `dataflow.halo_exchange`
-
-```
-arguments:
-  AnyMemRef:$source;
-results:
-  AnyMemRef:$exchanged;
-traits:
-  AllTypesMatch<["source", "exchanged"]>.
-```
-
-* Exchanges ghost cells between neighboring AccCores along the mesh
-  axes that the underlying spatial layout marks as split. The op is
-  not `Pure`: it reads neighbor tiles and writes local halo regions.
-* First milestone: the verifier accepts the op but the lowering is a
-  stub that errors at fabric-mapping time. We pin the syntax now to
-  avoid a churn cycle when stencil benchmarks land.
+Spatial-array related ops (`dataflow.spatial_layout`,
+`dataflow.local_range`, `dataflow.spatial_coord`,
+`dataflow.spatial_linear_id`) are specified in
+`docs/spec-compiler-part-4-spatial.md`. `dataflow.spatial_layout`
+appears at host scope or inside a `dataflow.thread` body (the
+ScalarCore portion); the query ops appear only inside a thread
+body. None of them appear inside a `dataflow.graph`, and none of
+them participate in the SCF flattening templates in this document.
 
 ### 5.5 Modifications to Existing Ops
 
@@ -768,12 +687,17 @@ documentation never refers to the numeric position.
   `dataflow.graph` regions.
 * Eligibility for a graph region: a maximal connected sub-DAG of ops
   rooted at one or more `memref.{load, store}` operations, extended
-  upward through purely value-producing ops (`arith.*`, `math.*`,
-  `dataflow.local_range`, etc.) and stopping at the first
-  `scf.{if,while,for,parallel,index_switch,execute_region}` boundary
-  that contains side-effecting code, or at any `func.call`,
+  upward only through ops admitted by the graph body whitelist in
+  §10 -- `arith.*`, `math.*`, and `dataflow.{stream, carry,
+  invariant, gate, mux, demux, sync, constant}` -- and stopping at
+  the first `scf.{if,while,for,parallel,index_switch,execute_region}`
+  boundary that contains side-effecting code, or at any `func.call`,
   `dataflow.thread` boundary, or at any `func.return` /
-  `dataflow.thread.yield` terminator.
+  `dataflow.thread.yield` terminator. The `Pure` trait alone is not
+  sufficient for admission: `dataflow.map_info` and the spatial-array
+  ops in `docs/spec-compiler-part-4-spatial.md` are also `Pure` but
+  are boundary-only or thread-body-only, and the whitelist
+  intentionally excludes them.
 * Within a single graph, the `scf.*` control-flow ops appear as
   unflattened children that the next-but-one pass will lower into
   `dataflow` token primitives. The extraction pass does not modify
@@ -2115,24 +2039,12 @@ The control-token wiring rule is derived from the dependence snapshot:
 * Read-read pairs have no dependence edge, even when they alias, so
   independent reads can be reordered freely.
 
-## 9. Spatial Array Story
+## 9. Spatial Array
 
-The first milestone takes the annotation route (option III-b in the
-brainstorm survey), preserving `memref<...>` as the data carrier and
-attaching layout information through `dataflow.spatial_layout`.
-
-* The annotation is zero-cost: the result type equals the source
-  type, so existing memref-aware passes do not need updates.
-* In-thread queries go through `dataflow.local_range`,
-  `dataflow.spatial_coord`, `dataflow.spatial_linear_id`, and
-  `dataflow.halo_exchange` (deferred lowering, syntax-only for now).
-* The `dataflow.mesh @M { shape = [...] }` symbol-form mesh is
-  deferred. All meshes in the first milestone are inline arrays on
-  `dataflow.spatial_layout`.
-* A future milestone may promote the annotation to a strong-typed
-  carrier (`!dataflow.spatial_array<...>`); the in-thread queries'
-  signatures are designed to remain stable across that change (only
-  the source type widens).
+Spatial-array layout, in-thread queries, and halo exchange are
+specified in `docs/spec-compiler-part-4-spatial.md`. They are not
+required for SCF-to-DFG flattening; this document references them
+only at the boundary points (see §5.4 and §10).
 
 ## 10. Verifier Rules (Front-End Specific)
 
@@ -2191,19 +2103,10 @@ In addition to the existing dataflow / fabric verifier set:
     `dataflow.thread`'s ScalarCore region; it must not appear inside
     `dataflow.graph`.
 
-* `dataflow.spatial_layout`
-  - `tileDims` rank equals source memref rank.
-  - Every `tileDims` entry is a power of two and not less than the
-    cache-line size (the verifier reads the cache-line constant from
-    a Loom-wide config; a wrong value yields a clear diagnostic).
-  - `splitAxes` outer length equals source memref rank; every inner
-    array entry is a valid mesh-axis index.
-  - `meshShape` is a non-empty positive integer vector.
-
-* `dataflow.local_range`, `dataflow.spatial_coord`,
-  `dataflow.spatial_linear_id`, `dataflow.halo_exchange`
-  - Must be inside a `dataflow.thread` body. The verifier rejects
-    them at host scope or inside `dataflow.graph`.
+Verifier rules for `dataflow.spatial_layout`,
+`dataflow.local_range`, `dataflow.spatial_coord`, and
+`dataflow.spatial_linear_id` are specified in
+`docs/spec-compiler-part-4-spatial.md`.
 
 * `dataflow.graph` (modified)
   - First operand has type `none`. First block argument has type
@@ -2219,7 +2122,8 @@ In addition to the existing dataflow / fabric verifier set:
     pure ops permitted in the existing graph body whitelist.
   - Body may not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread`, `dataflow.thread.fence`,
-    `dataflow.map_info`, `dataflow.spatial_layout`, or another
+    `dataflow.map_info`, any spatial-array op specified in
+    `docs/spec-compiler-part-4-spatial.md`, or another
     `dataflow.graph`.
 
 ## 11. Testing Strategy
@@ -2231,9 +2135,10 @@ The lit-test layout grows three new directories:
   `roundtrip.mlir` confirming the printer / parser stability.
   Coverage targets:
   - `thread/`, `thread_yield/`, `thread_fence/`, `thread_wait/`,
-    `map_info/`, `spatial_layout/`, `local_range/`, `spatial_coord/`,
-    `spatial_linear_id/`, `halo_exchange/`,
+    `map_info/`,
     `graph_control_ports/` (modifications to existing graph op).
+    Unit-test coverage for spatial-array ops is owned by
+    `docs/spec-compiler-part-4-spatial.md`.
   - `thread/` and `graph_control_ports/` include invalid cases that
     directly reference surrounding SSA values from isolated regions.
   - `thread/` includes cases for ScalarCore-legal `func.call` in a
@@ -2402,10 +2307,6 @@ milestone and have placeholders only:
   a symbol reference. The thread op stays inline in this milestone,
   but it is already isolated and has an explicit boundary operand
   list.
-* Strong-typed `!dataflow.spatial_array`. Annotation-only suffices.
-* `dataflow.mesh` symbol op. Inline arrays suffice.
-* `dataflow.halo_exchange` lowering. Syntax only; lowering errors at
-  fabric-mapping time.
 * Native `dataflow.thread` data results, async value types, thread
   groups, and thread-level aggregation regions. Tensor-result
   aggregation is handled by materializing it into mapped-memory
@@ -2413,6 +2314,11 @@ milestone and have placeholders only:
 * LLVM IR provider integration, source-language integration, and clang
   embedding. Those concerns belong to Part 1 and Part 2.
 * Optimization of `dataflow.map_info` direction. Default `tofrom`.
+* Strong-typed `!dataflow.spatial_array`, the symbol-form
+  `dataflow.mesh`, and the entire `dataflow.halo_exchange` op
+  (signature, verifier, and lowering). All three are listed as
+  future work in `docs/spec-compiler-part-4-spatial.md` and are not
+  required for this milestone.
 
 ## 15. References
 
@@ -2423,17 +2329,14 @@ milestone and have placeholders only:
   integration and metadata emission.
 * `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising,
   accelerator-region selection, and `loom.acc_region`.
+* `docs/spec-compiler-part-4-spatial.md` -- spatial-array annotation,
+  in-thread queries, and halo exchange.
 * `docs/spec-dataflow-part-1-streaming.md` -- precise timing
   semantics for `dataflow.stream`, `dataflow.carry`,
   `dataflow.invariant`, and `dataflow.gate`.
 * `docs/spec-dataflow-part-2-control.md` -- precise firing semantics
   for `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
   `dataflow.demux`.
-* `temp/build-compiler-frontend-0.md`, `temp/build-compiler-frontend-1.md`
-  -- the originating requirements that this spec consolidates.
-* `temp/spatial-notes.md`, `temp/pact26-paper30.pdf` -- the SPGPU
-  programming model and the Chapel `localSubdomain` style that
-  inspired `dataflow.local_range` and the spatial-array layout.
 * Upstream MLIR references (LLVM `externals/llvm/mlir/...`):
   - `Dialect/SCF/IR/SCFOps.td`,
     `Dialect/SCF/IR/DeviceMappingInterface.td`.
@@ -2442,6 +2345,4 @@ milestone and have placeholders only:
   - `Dialect/GPU/IR/GPUOps.td`, `Dialect/GPU/IR/GPUBase.td`.
   - `Dialect/OpenMP/IR/OpenMPOps.td`,
     `Dialect/OpenACC/IR/OpenACCOps.td`.
-  - `Dialect/Shard/IR/ShardOps.td`,
-    `Dialect/Shard/IR/ShardBase.td`.
   - `Conversion/SCFToGPU/SCFToGPU.cpp`.

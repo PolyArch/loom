@@ -174,7 +174,8 @@ Part 2 classifies memory crossing an accelerator boundary:
 * AccCore-local scratch candidates.
 * Static local storage candidates.
 * Spatial layout candidates that may become `dataflow.spatial_layout`
-  annotations in Part 3.
+  annotations specified in Part 4 (see
+  `docs/spec-compiler-part-4-spatial.md`).
 
 This analysis is a boundary contract, not a replacement for the Part 3
 memory-dependence builder. Part 3 still constructs conservative
