@@ -1909,6 +1909,25 @@ Verifier rules for `dataflow.spatial_layout`,
     slot, every user operand must have a matching entry block
     argument of the same type; every externally visible graph value
     must be a graph result produced by `dataflow.yield`.
+  - Position contract for the four lists. Let `N` be the number of
+    user (non-control) operands and `M` the number of user
+    (non-control) results. Then the graph op's operand list has
+    length `N + 1` (control at index 0, user operands at indices
+    1..N), the entry block argument list has length `N + 1`
+    (control at index 0, user block arguments at indices 1..N),
+    the `dataflow.yield` operand list has length `M + 1` (control
+    at index 0, user yield operands at indices 1..M), and the
+    graph op's result list has length `M + 1` (control at index 0,
+    user results at indices 1..M). The verifier enforces, for
+    every index `i` in `1..N`, that operand `i` and block argument
+    `i` have the same type, and for every index `j` in `1..M`,
+    that yield operand `j` and graph result `j` have the same
+    type. The index-zero slots are the explicit control ports
+    already constrained to type `none` by the previous bullet.
+    There is no implicit reordering between any of the four lists;
+    the i-th user operand is bound to the i-th user block argument,
+    and the j-th user yield operand is bound to the j-th user
+    result, in declaration order.
   - Body may contain `dataflow.{stream, carry, invariant, gate, mux,
     demux, sync, constant, load, store, yield}` plus ordinary
     pure ops permitted in the existing graph body whitelist.
