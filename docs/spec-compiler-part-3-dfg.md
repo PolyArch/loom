@@ -186,8 +186,22 @@ each rule lands in IR.
    cross through `dataflow.map_info`, while scalar values cross by
    value. For `dataflow.graph`, operands and results are the explicit
    SpatialCore data/control ports. `dataflow.thread` implements its own
-   boundary memory-effect summary from mapped operands; it does not rely
-   on recursive region effects to expose host-visible memory behavior.
+   boundary memory-effect summary from mapped operands; this projection,
+   not recursive region effects, is what host code observes for an async
+   thread launch. `dataflow.graph`, by contrast, runs synchronously from
+   the enclosing ScalarCore program's perspective and uses recursive
+   region effects to report what its body touches.
+8. Effect visibility contract. Every front-end op whose execution
+   affects program order, memory state, or async completion must
+   declare its effects through MLIR's `MemoryEffectOpInterface` (or
+   an equivalent recursive trait) accurately enough that generic
+   optimizers (CSE, LICM, scheduling, code motion) preserve the
+   intended observable behavior. The first milestone uses MLIR's
+   default-resource barrier pattern -- broad, conservative
+   `MemRead + MemWrite` declarations -- where a precise per-resource
+   binding would require op-side machinery beyond this milestone's
+   scope. Tighter per-resource bindings (for example, load/store
+   keyed on the `$mem` operand) are explicit follow-up work.
 
 ## 4. Glossary
 
@@ -414,29 +428,36 @@ regions:
   none;
 traits:
   ParentOneOf<["::dataflow::ThreadOp"]>,
-  MemoryEffectOpInterface.
+  MemoryEffects<[MemRead, MemWrite]>.
 ```
 
 * ScalarCore-side fence and token bridge. It must appear directly in a
   `dataflow.thread` body, outside any `dataflow.graph`.
-* With no operands, it fires when ScalarCore execution reaches this
-  program point and all preceding ScalarCore side effects in the
-  thread body are complete; it then emits a `none` token.
-* With operands, it also waits for every SpatialCore `none` token and
-  child `!dataflow.thread_token` dependency before emitting its result.
-  The result can feed a `dataflow.graph` `ctrl_in`, so the op bridges
-  child-thread completion into SpatialCore graph control.
+* **Async dependencies.** Each `none` operand in `$deps` is a
+  SpatialCore graph `done_out` token, and each `!dataflow.thread_token`
+  operand is a child-thread completion token. SSA def-use already
+  enforces "the fence happens after every defining op of `$deps`"; no
+  extra effect machinery is needed for that part of the contract.
+* **ScalarCore-side memory barrier.** The fence declares
+  `MemRead + MemWrite` on MLIR's default memory resource. This is the
+  default-resource barrier pattern (broad and conservative, comparable
+  to an `MPI_Barrier`-style global barrier). Any ScalarCore op in the
+  same thread body that touches memory through specific memrefs (via
+  `memref.{load, store}`, `func.call`, etc.) declares effects that the
+  default resource subsumes. MLIR therefore must not reorder any such
+  op across the fence in either direction. Pure ops with no declared
+  effects may still be reordered freely; this is intentional and does
+  not change observable behavior.
+* **Result token.** The `none` result fires after both the async
+  dependencies are satisfied and the ScalarCore-side barrier is
+  observed. The result can feed a downstream `dataflow.graph`'s
+  `ctrl_in` to express "graph B starts only after graph A and the
+  surrounding ScalarCore side effects".
 * This op is the only sanctioned bridge between thread completion and
   graph-level control. There is no general cast between
   `!dataflow.thread_token` and `none`. Ordering a child thread after a
   graph completes is expressed by placing the child launch after
   `dataflow.thread.fence(%graph_done)` in ScalarCore program order.
-* ScalarCore operations after the fence in thread-body program order
-  are sequenced after the fence. Consuming a graph `done_out` with this
-  op therefore expresses "wait for SpatialCore completion before
-  continuing on ScalarCore". Placing a nested `dataflow.thread` after
-  such a fence expresses "launch the child thread only after the graph
-  is complete".
 
 #### 5.4.4 `dataflow.thread.wait`
 
@@ -446,7 +467,8 @@ arguments:
 results:
   none;
 traits:
-  DeclareOpInterfaceMethods<LoomAsyncOpInterface>.
+  DeclareOpInterfaceMethods<LoomAsyncOpInterface>,
+  MemoryEffects<[MemRead, MemWrite]>.
 ```
 
 * Synchronous wait in the enclosing control context: HostCore for an
@@ -454,6 +476,14 @@ traits:
   After this op, all listed thread tokens are guaranteed complete.
   Inside a `dataflow.thread`, prefer `dataflow.thread.fence` when the
   wait result must feed a SpatialCore `ctrl_in`.
+* The op produces no SSA result, so subsequent host or parent-context
+  memory ops cannot be made to depend on it through SSA def-use. To
+  preserve "wait for async completion before observing memory" across
+  generic MLIR optimizers, the op declares `MemRead + MemWrite` on
+  the default memory resource. This is the same default-resource
+  barrier pattern used by `dataflow.thread.fence`: it does not mean
+  the wait itself touches memory, only that no surrounding memory op
+  may be moved across it.
 
 #### 5.4.5 `dataflow.map_info`
 
@@ -523,10 +553,40 @@ them participate in the SCF flattening templates in this document.
   - All existing `dataflow.graph` lit tests are migrated in the same
     change as this spec: each test grows the explicit control operand,
     block argument, result, and `done_out` plumbing.
+  - The op declares `RecursiveMemoryEffects`. MLIR's default
+    implementation walks the graph body and reports the union of all
+    inner ops' memory effects through the op boundary. This makes a
+    graph that contains side-effecting body ops (notably
+    `dataflow.{load, store}`) visible as a memory-touching op to the
+    surrounding ScalarCore code, so that standard optimizers do not
+    reorder it across `dataflow.thread.fence` or across other
+    ScalarCore memory ops. Recursive aggregation is the right model
+    for graph because graph runs synchronously from the enclosing
+    ScalarCore program's perspective; this is the complement of the
+    boundary-projection model that `dataflow.thread` uses for its
+    async launch.
 
 * `Dataflow_YieldOp`.
   - The verifier's parent-result-count and parent-result-type checks
     are updated to know about the leading explicit control result.
+
+* `dataflow.load` and `dataflow.store`.
+  - The first milestone tightens these existing dataflow primitives
+    with explicit memory-effect traits so that
+    `dataflow.graph`'s `RecursiveMemoryEffects` correctly aggregates
+    body effects:
+    - `dataflow.load`  declares `MemoryEffects<[MemRead]>`.
+    - `dataflow.store` declares `MemoryEffects<[MemWrite]>`.
+  - These use MLIR's default memory resource. They are deliberately
+    coarse for the first milestone: any load may-read all memory,
+    any store may-write all memory. This is sufficient for graph
+    body effects to roll up correctly through `RecursiveMemoryEffects`
+    and for surrounding optimizers to keep ScalarCore memory ops
+    correctly ordered relative to graphs.
+  - Tightening these effects to a per-`$mem`-operand declaration
+    (so two loads on disjoint memrefs become reorderable) is
+    explicit follow-up work on the dataflow dialect, not part of
+    this milestone.
 
 * No other existing op is modified by this milestone.
 
@@ -1765,9 +1825,19 @@ In addition to the existing dataflow / fabric verifier set:
     scope and not inside `dataflow.graph`.
   - Every operand has type `none` or `!dataflow.thread_token`.
   - The result has type `none`.
+  - The op's `MemoryEffectOpInterface` implementation must report
+    `MemRead + MemWrite` on MLIR's default memory resource. Lowering
+    and verification must not weaken this to a per-resource effect or
+    to no effect; doing so breaks the ScalarCore-side barrier
+    contract specified in §3 rule 8.
 
 * `dataflow.thread.wait`
   - At least one operand. Each is `!dataflow.thread_token`.
+  - The op's `MemoryEffectOpInterface` implementation must report
+    `MemRead + MemWrite` on MLIR's default memory resource. The wait
+    has no SSA result, so this barrier is the only mechanism that
+    keeps surrounding host or parent-context memory ops from being
+    moved across it.
 
 * `dataflow.map_info`
   - `direction` is one of the closed enum values.
@@ -1775,6 +1845,15 @@ In addition to the existing dataflow / fabric verifier set:
   - The op may appear at host scope or inside another
     `dataflow.thread`'s ScalarCore region; it must not appear inside
     `dataflow.graph`.
+  - The op's result must be used only as a `dataflow.thread` body
+    operand. Any other use -- passing the result to `memref.load`,
+    `memref.subview`, `func.call`, another `dataflow.map_info`, or any
+    op other than `dataflow.thread` -- is rejected. This complements
+    the `dataflow.thread` rule that "each memref-like body operand
+    must be the direct SSA result of a `dataflow.map_info` op":
+    together the two rules close the loop on map_info provenance and
+    keep the same-type passthrough memref from being treated as an
+    ordinary memref by the rest of the IR.
 
 Verifier rules for `dataflow.spatial_layout`,
 `dataflow.local_range`, `dataflow.spatial_coord`, and
@@ -1798,6 +1877,12 @@ Verifier rules for `dataflow.spatial_layout`,
     `dataflow.map_info`, any spatial-array op specified in
     `docs/spec-compiler-part-4-spatial.md`, or another
     `dataflow.graph`.
+  - The op declares `RecursiveMemoryEffects`, so generic MLIR
+    optimizers see the body's memory effects through the op
+    boundary. For this to be useful, body ops with side effects
+    (notably `dataflow.load` / `dataflow.store`) must themselves
+    declare `MemoryEffects` accurately; see §5.5 for the milestone
+    contract on the dataflow primitives.
 
 ## 10. Non-Goals (First Milestone)
 
