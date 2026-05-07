@@ -651,6 +651,14 @@ documentation never refers to the numeric position.
   results that are still needed by surrounding code are represented
   through the materialized destination buffer and the necessary
   `bufferization.to_tensor` or equivalent bridge ops.
+* Nested aggregation-form forall is materialized recursively. If an
+  inner forall's `shared_out` is a slice, extract, or other view of an
+  outer materialized destination buffer, the inner destination is the
+  corresponding `memref.subview` or equivalent buffer view. Inner
+  combining actions then become explicit writes to that view. If the
+  nested destination relationship cannot be represented with ordinary
+  buffer/view operations, the pass emits a diagnostic instead of
+  inventing a new aggregation protocol.
 * The pass preserves forall bounds, steps, induction variables, and
   `mapping` attributes. The newly materialized destination buffers are
   ordinary SSA values; if such a buffer crosses a mapped forall
@@ -798,6 +806,27 @@ documentation never refers to the numeric position.
 * Builds the per-graph memory-dependence snapshot consumed by body
   lowering. A memory access means `memref.load` / `memref.store`
   before rewrite and `dataflow.load` / `dataflow.store` after rewrite.
+  Although the pass name focuses on dependence construction, this pass
+  also performs the final parallel-SCF normalization described below.
+  Keeping both tasks together ensures memory accesses cloned by
+  normalization immediately enter the same deterministic id assignment.
+* Before assigning memory-access ids, performs the remaining
+  parallel-SCF normalization inside each `dataflow.graph` body:
+  effect-form `scf.forall` with an empty mapping is normalized to
+  `scf.parallel`, and `scf.parallel` is normalized to one or more
+  `scf.for` loop nests plus any required reduction-merge `scf.if`
+  ops. This is the point where parallel provenance is planted on the
+  generated loop nests. Every cloned memory access receives its own
+  deterministic `loom.mem_dep_id`.
+* Chunk-bound arithmetic introduced by parallel-SCF normalization,
+  such as trip-count computation and per-chunk lower / upper bounds, is
+  materialized inside the same `dataflow.graph` that contained the
+  original `scf.parallel`. These new ops use only graph-local SSA
+  values and must satisfy the existing graph-body whitelist for pure
+  computation ops.
+* A user-written `scf.parallel` with a non-empty `mapping` attribute is
+  rejected here. Mapping is honored only on `scf.forall` in this
+  milestone.
 * Materializes a `MemAliasOracle` instance for each `dataflow.graph`
   region. The oracle is a per-graph conflict oracle; the rest of the
   lowering reads only through it, never directly off MLIR's analysis
@@ -831,6 +860,17 @@ documentation never refers to the numeric position.
   Alias answers are symmetric and never define direction by
   themselves; direction always comes from program order plus the
   enclosing structured-control-flow path.
+* The builder consumes parallel provenance from generated loops. For
+  accesses in different logical iterations or different chunks of the
+  same original `scf.parallel`, it must not create a dependence edge
+  solely from source order or alias conflict. Intra-iteration program
+  order is still preserved. Dependences from code before the parallel
+  group to each chunk, and from the whole group to following code, are
+  still modeled when aliasing requires them.
+* Each parallel-provenance group has one group tail token plan. The
+  group tail is the rendezvous of all chunk tail tokens. A later memory
+  access that depends on the completed memory effects of the original
+  `scf.parallel` uses this group tail as its predecessor.
 * For each ordered pair `p` before `o`, the builder records a
   directed dependence `p -> o` iff the pair conflicts. The builder may
   drop transitively implied edges, provided the remaining immediate
@@ -847,10 +887,14 @@ documentation never refers to the numeric position.
   memory state gets `loom.mem_loop_id = L` and
   `loom.mem_loop_states = [...]`, a loop-local memory-state plan whose
   fields are deterministic integer ids, never operation references.
-  The lowering transfers per-access attributes from source `memref`
-  ops to replacement `dataflow` ops.
-  `loom-finalize-dfg` drops all temporary memory-dependence
-  attributes.
+  Parallel-provenance groups are recorded with deterministic group and
+  chunk ids. These may be temporary attributes such as
+  `loom.parallel_group`, `loom.parallel_chunk`, and
+  `loom.parallel_chunks`, or an equivalent analysis side table. They
+  are implementation details consumed before final verification. The
+  lowering transfers per-access attributes from source `memref` ops to
+  replacement `dataflow` ops. `loom-finalize-dfg` drops all temporary
+  memory-dependence and parallel-provenance attributes.
 
 ### 6.9 `loom-lower-scf-to-dfg-bodies`
 
@@ -879,6 +923,9 @@ documentation never refers to the numeric position.
 
 * Runs the existing dataflow-graph verifier in strict mode.
 * Strips the `loom.mem_dep_id` and `loom.mem_dep_preds` attributes.
+* Strips temporary parallel-provenance attributes such as
+  `loom.parallel_group`, `loom.parallel_chunk`, and
+  `loom.parallel_chunks`.
 * Asserts that no temporary `loom.acc_region` op remains.
 * Asserts the front-end exit invariant: no `scf.*` op remains inside
   any `dataflow.graph` body; every `dataflow.thread` produces exactly
@@ -1346,33 +1393,403 @@ Memref operands are not iter_arg-like stream state; only explicit
   true-lane projected state, and the false lane is the loop-exit
   memory state. The zero-trip case forwards the initial memory state.
 
-### 7.4 `scf.forall` (no mapping; mapped foralls became threads)
+### 7.4 `scf.forall` with `scf.forall.in_parallel`
 
-* By the time body lowering sees an unmapped `scf.forall`, it must be
-  in effect form. Aggregation-form forall is handled earlier by
-  `loom-materialize-forall-aggregation`, which turns
-  `scf.forall.in_parallel` combining actions into explicit
-  destination-buffer memory effects.
-* Effect-form forall is lowered first to `scf.parallel` by the
-  existing upstream pass `mlir-opt -scf-forall-to-parallel`
-  (re-exposed via a thin Loom wrapper). This upstream conversion is
-  valid exactly because effect-form forall has no outputs; the empty
-  `scf.forall.in_parallel` becomes an empty `scf.reduce`.
-* If a non-empty `scf.forall.in_parallel` reaches this template, the
-  lowering must fail with a diagnostic. It is never legal to drop
-  tensor aggregation actions silently.
+`scf.forall` is not lowered directly to streaming dataflow ops. It is
+handled as a parallel-region normalization problem before ordinary SCF
+body lowering:
+
+1. Aggregation-form forall is materialized into effect-form forall.
+2. Mapped effect-form forall becomes `dataflow.thread`.
+3. Unmapped effect-form forall becomes `scf.parallel`, then follows the
+   `scf.parallel` template below.
+
+This keeps tensor aggregation, hardware thread mapping, and SpatialCore
+DFG construction as separate concerns.
+
+For this spec, an effect-form forall has no `shared_outs`, no op
+results, and an empty `scf.forall.in_parallel` terminator:
+
+```mlir
+scf.forall (%i) in (%N) {
+  %x = memref.load %A[%i] : memref<?xf32>
+  %y = arith.mulf %x, %x : f32
+  memref.store %y, %B[%i] : memref<?xf32>
+  scf.forall.in_parallel {}
+}
+```
+
+Its result is represented only by explicit side effects in the body.
+
+An aggregation-form forall has `shared_outs`, op results, or a
+non-empty `scf.forall.in_parallel` region. The canonical first required
+combining op is `tensor.parallel_insert_slice`:
+
+```mlir
+%out = scf.forall (%i) in (%N)
+    shared_outs(%o = %init) -> tensor<?xf32> {
+  %v = compute(%i) : f32
+  %slice = tensor.from_elements %v : tensor<1xf32>
+
+  scf.forall.in_parallel {
+    tensor.parallel_insert_slice %slice into %o[%i] [1] [1]
+      : tensor<1xf32> into tensor<?xf32>
+  }
+}
+```
+
+`scf.forall.in_parallel` exists only to describe tensor-result
+aggregation for `scf.forall`. It must not reach final dataflow IR.
+After `loom-materialize-forall-aggregation`, every `scf.forall` that
+Part 3 continues to lower must be in effect form.
+
+Aggregation materialization rewrites each shared tensor result into an
+explicit destination buffer:
+
+```mlir
+%buf = buffer_for_tensor_value(%init)
+
+scf.forall (%i) in (%N) {
+  %v = compute(%i) : f32
+  memref.store %v, %buf[%i] : memref<?xf32>
+  scf.forall.in_parallel {}
+}
+
+%out = tensor_value_from_buffer(%buf)
+```
+
+The materialization contract is:
+
+* The destination buffer's initial contents are equivalent to the
+  corresponding `shared_out` tensor.
+* A `tensor.parallel_insert_slice` becomes explicit writes to the
+  destination subview selected by its offsets, sizes, and strides.
+* Uses of the `shared_out` block argument inside the forall body become
+  reads from the same destination buffer. For example,
+  `tensor.extract_slice` from the block argument is rewritten to the
+  corresponding `memref.subview` or load sequence on the materialized
+  buffer.
+* Tensor elements not updated by any invocation keep their initial
+  value.
+* If multiple invocations update the same element, the source
+  `tensor.parallel_insert_slice` semantics are already undefined or
+  unspecified; Loom does not introduce a deterministic order.
+  Read/write conflicts through the shared destination are treated the
+  same way: the source forall did not provide an inter-invocation
+  order, so materialization must not invent one.
+* The pass preserves forall bounds, steps, induction variables, and
+  `mapping` attributes.
+* The produced buffers are ordinary values for boundary analysis. If a
+  destination buffer crosses a mapped forall boundary,
+  `loom-promote-map-info` treats it like any other memref-like value.
+* If any non-empty `scf.forall.in_parallel` combining action cannot be
+  materialized, lowering emits a diagnostic. Dropping the combining
+  action is never legal.
+* Nested aggregation-form forall follows the same materialization
+  contract recursively. An inner shared destination that denotes a view
+  of an outer shared destination is rewritten to the corresponding
+  buffer view, and the inner combining actions become writes through
+  that view.
+
+Mapped effect-form forall is a thread boundary. A mapped forall is one
+whose non-empty `mapping` attribute contains Loom-recognized
+`#loom.spatial<...>` or `#loom.temporal<...>` entries:
+
+```mlir
+scf.forall (%tx) in (%N) {
+  memref.store %v, %B[%tx] : memref<?xf32>
+  scf.forall.in_parallel {}
+} {mapping = [#loom.spatial<x>]}
+```
+
+It is promoted to `dataflow.thread` by the thread-skeleton pipeline:
+
+```mlir
+%tok = dataflow.thread ... mapping = [#loom.spatial<x>] {
+^bb0(%thread_ctrl : none, %tx : index, ...):
+  memref.store %v, %B[%tx] : memref<?xf32>
+  dataflow.thread.yield
+}
+dataflow.thread.wait %tok
+```
+
+The forall grid bounds and mapping become the thread grid and mapping.
+The mapping array length must equal the forall rank; this is already an
+upstream `scf.forall` verifier invariant and is repeated here as an
+input requirement for thread promotion.
+The forall induction variables become thread entry block arguments
+after the leading `thread_ctrl : none`. Values captured from outside
+the forall become explicit thread operands and entry block arguments.
+The empty `scf.forall.in_parallel` terminator becomes
+`dataflow.thread.yield`.
+
+This promotion creates the AccCore boundary only. Code inside the
+thread body is still ScalarCore code until graph extraction moves an
+eligible region into `dataflow.graph`. Only the graph body is later
+lowered to SpatialCore dataflow operations. Memory operations that
+remain outside any graph stay in the ScalarCore part of the thread.
+
+The implicit synchronization point of `scf.forall` becomes explicit
+thread-token ordering. The produced `!dataflow.thread_token` is either
+consumed by a following thread-like op as a dependency or waited on with
+`dataflow.thread.wait` at the original continuation point.
+
+Unmapped effect-form forall is generic parallel work, not a hardware
+thread boundary:
+
+```mlir
+scf.forall (%i) in (%N) {
+  memref.store %v, %B[%i] : memref<?xf32>
+  scf.forall.in_parallel {}
+}
+```
+
+It normalizes to `scf.parallel`:
+
+```mlir
+scf.parallel (%i) = (%c0) to (%N) step (%c1) {
+  memref.store %v, %B[%i] : memref<?xf32>
+  scf.reduce
+}
+```
+
+The upstream `scf-forall-to-parallel` conversion may be reused for this
+effect-form case, because the forall has no outputs and its empty
+`scf.forall.in_parallel` becomes an empty `scf.reduce`. The generated
+`scf.parallel` must carry parallel provenance so that later
+normalization to `scf.for` loop nests does not invent
+cross-invocation memory order.
+
+By the time this path runs, `loom-build-thread-skeleton` has already
+promoted every Loom-recognized mapped forall to `dataflow.thread`.
+Therefore, a forall that reaches this path must have an empty mapping
+attribute. A non-empty non-Loom mapping is rejected before
+normalization.
+
+If a forall has a non-empty `mapping` attribute that Part 3 does not
+recognize as a Loom mapping, the pipeline must not silently ignore it
+inside an accelerator region. Part 2 or an earlier Part 3 pass must
+either remove or translate that mapping with an explicit downgrade
+decision, or emit a diagnostic before this template runs.
 
 ### 7.5 `scf.parallel` with `scf.reduce`
 
-* `scf.parallel` without mapping lowers to a sequence of nested
-  `scf.for` loops (the iteration domain is unrolled per dim). The
-  resulting `scf.for`s use the template under "scf.for with scf.yield".
-* `scf.reduce` reduction regions are inlined: each reduction lowers
-  to a `carry`-based accumulator that consumes the per-iteration
-  reduction operand and emits the final value through the same
-  phase-aware loop-result wiring used for `scf.for`.
-* This is intentionally the same flavour as `scf.for + iter_args`;
-  reduction kind is captured by the region body, not by an enum.
+`scf.parallel` is not a second dataflow loop primitive. Part 3 first
+normalizes it to one or more ordinary `scf.for` loop nests, then reuses
+the already specified `scf.for` template. No new `dataflow.parallel`,
+`dataflow.reduce`, or reduction enum is introduced.
+
+A user-written `scf.parallel` with a non-empty `mapping` attribute is
+rejected in the first milestone. Mapping has Loom semantics only on
+`scf.forall`, because mapped forall is the construct that establishes a
+`dataflow.thread` boundary.
+
+The important semantic difference from `scf.for` is the absence of a
+cross-iteration program order. The source `scf.parallel` iteration
+space may execute in any order and may execute concurrently. If two
+iterations race through memory, the source behavior is undefined.
+Therefore, the normalization must preserve a `parallel provenance`
+marker on the generated loop nests. The memory-dependence builder uses
+that marker to avoid inventing loop-carried memory order between
+different logical iterations or chunks of the same original
+`scf.parallel`.
+
+The normalization has a tunable split factor `K`. The pipeline option
+`--parallel-split-factor=<K>` controls this value; the default is
+`K = 1`, and `K` must be positive. The first milestone applies one
+global split factor to every `scf.parallel` that reaches this
+normalization. There is no per-loop override in the required
+implementation.
+
+* `K = 1` is the required baseline. The whole iteration domain becomes
+  one lexicographic `scf.for` loop nest.
+* `K > 1` is an exploration point. The iteration domain is partitioned
+  into `K` ordered, disjoint chunks whose union is the original domain.
+  Each chunk becomes an independent `scf.for` loop nest with the same
+  body. Lowering those loop nests later naturally duplicates the
+  stream/carry/gate DFG structure.
+* The implementation may initially split one selected dimension into
+  contiguous subranges whose boundaries are aligned to that dimension's
+  step. The default selected dimension is the outermost dimension; a
+  later cost model may choose another dimension, but the choice must be
+  deterministic for a fixed input IR and pass option set. More advanced
+  linearized or tiled partitions are legal only if they cover the
+  original iteration space exactly once and assign every chunk a
+  deterministic ordinal.
+* For a one-dimensional contiguous split with positive `%step`, use the
+  following reference arithmetic:
+  ```
+  %trip_count = ceildiv(max(%ub - %lb, 0), %step)
+  %first_k    = floor(k * %trip_count / K)
+  %limit_k    = floor((k + 1) * %trip_count / K)
+  %chunk_lb_k = %lb + %first_k * %step
+  %chunk_ub_k = (k + 1 == K) ? %ub : %lb + %limit_k * %step
+  ```
+  The last chunk uses the original upper bound so the generated loop
+  preserves the source half-open range even when `%ub - %lb` is not a
+  multiple of `%step`.
+* `K` may exceed the dynamic iteration count. Empty chunks are legal;
+  they produce `valid = false` for reductions and a normal chunk tail
+  for control synchronization. The chunk tail of a zero-iteration
+  chunk is the structured `scf.for` loop-exit control produced by the
+  `scf.for` template: the chunk's incoming control is forwarded through
+  the loop-exit path.
+* Chunk loop nests start from the same parent control point. Their done
+  tokens are joined only where the surrounding program needs the
+  `scf.parallel` to have completed. They are not sequenced by source IR
+  order unless a true external dependence requires that ordering.
+  All chunk tails in one parallel-provenance group rendezvous into a
+  group tail token. Any later memory access that must observe the
+  parallel's memory effects depends on this group tail.
+* The provenance marker must be mechanically available to Part 3
+  lowering. It may be a temporary `DictionaryAttr` on the generated
+  loops or an analysis side table, but it is consumed before final
+  `dataflow.graph` verification. It is not a final dataflow IR feature.
+* Different `K` values may produce different reduction results when the
+  user's reduction region is not both associative and commutative. All
+  such results are allowed by `scf.parallel`'s unspecified reduction
+  order. Users who require a specific reduction order must not express
+  that computation with `scf.parallel`.
+
+For an effect-only one-dimensional parallel loop:
+
+```mlir
+scf.parallel (%i) = (%c0) to (%N) step (%c1) {
+  %x = memref.load %A[%i] : memref<?xf32>
+  %y = arith.mulf %x, %x : f32
+  memref.store %y, %B[%i] : memref<?xf32>
+  scf.reduce
+}
+```
+
+the `K = 1` baseline is equivalent to:
+
+```mlir
+scf.for %i = %c0 to %N step %c1 {
+  %x = memref.load %A[%i] : memref<?xf32>
+  %y = arith.mulf %x, %x : f32
+  memref.store %y, %B[%i] : memref<?xf32>
+}
+```
+
+With `K = 2`, a valid contiguous split is conceptually:
+
+```mlir
+%mid = split_point(%c0, %N, %c1)
+
+scf.for %i = %c0 to %mid step %c1 {
+  ...
+}
+
+scf.for %i = %mid to %N step %c1 {
+  ...
+}
+```
+
+Both generated loop nests carry the same `parallel provenance` id and
+different chunk ordinals. They represent independent chunks of one
+parallel iteration space, not two source-ordered loops. If the
+normalizer materializes them as adjacent SCF operations, Part 3 must
+use the shared provenance id to lower them as one chunk group: all
+chunks receive the group's incoming control, and their done tokens are
+joined before the continuation.
+
+If the `scf.parallel` has no results, the upstream
+`scf-parallel-for-to-nested-fors` conversion may be reused for the
+`K = 1` case. That upstream conversion is not sufficient for resultful
+`scf.parallel`, because it rejects `scf.parallel` ops with results.
+Loom must lower resultful `scf.parallel` itself.
+
+For resultful `scf.parallel`, each result position is associated with
+one initial value, one `scf.reduce` operand, and one `scf.reduce`
+region. The reduction region is the reduction operator; Loom does not
+encode the reduction kind as an attribute. The region is inlined at
+normalization time by substituting:
+
+* the first reduction block argument with the current accumulator;
+* the second reduction block argument with the current iteration's
+  reduction operand;
+* `scf.reduce.return` with the yielded next accumulator value.
+
+For `K = 1`, this becomes the same structure as `scf.for` with
+`iter_args`:
+
+```mlir
+%sum = scf.parallel (%i) = (%c0) to (%N) step (%c1)
+    init (%zero) -> f32 {
+  %x = memref.load %A[%i] : memref<?xf32>
+  scf.reduce(%x : f32) {
+  ^bb0(%lhs : f32, %rhs : f32):
+    %r = arith.addf %lhs, %rhs : f32
+    scf.reduce.return %r : f32
+  }
+}
+```
+
+normalizes to:
+
+```mlir
+%sum = scf.for %i = %c0 to %N step %c1
+    iter_args(%acc = %zero) -> f32 {
+  %x = memref.load %A[%i] : memref<?xf32>
+  %next = arith.addf %acc, %x : f32
+  scf.yield %next : f32
+}
+```
+
+For `K > 1`, every chunk computes a partial reduction without assuming
+that the reduction has an identity element. This is required because
+blindly initializing every chunk with the original `init` value would
+apply the init value once per chunk. Instead, each chunk returns:
+
+* a `valid` flag that is true iff the chunk executed at least one
+  iteration;
+* one `partial` value per reduction result, initialized from the first
+  executed iteration in that chunk and updated by the reduction region
+  for later iterations in the same chunk.
+
+The final merge starts from the original `init` tuple and folds only
+valid chunk partials in deterministic chunk-ordinal order by inlining
+the same reduction regions:
+
+```mlir
+%valid0, %partial0 = reduce_chunk_0(...)
+%valid1, %partial1 = reduce_chunk_1(...)
+
+%acc0 = %zero
+%acc1 = scf.if %valid0 -> f32 {
+  %next0 = inline_reduce(%acc0, %partial0)
+  scf.yield %next0 : f32
+} else {
+  scf.yield %acc0 : f32
+}
+%acc2 = scf.if %valid1 -> f32 {
+  %next1 = inline_reduce(%acc1, %partial1)
+  scf.yield %next1 : f32
+} else {
+  scf.yield %acc1 : f32
+}
+```
+
+For multi-result `scf.parallel`, the `valid` flag is shared by all
+reduction results of the same chunk. Each chunk carries one partial per
+result position, and the final merge conditionally folds the accumulator
+tuple. Each result position uses its own `scf.reduce` region. The
+conditional fold may be represented as one multi-result `scf.if` or as
+equivalent per-result control/data wiring, as long as all result
+positions observe the same chunk validity.
+
+This partial-and-merge scheme is correct for arbitrary `scf.reduce`
+regions. It chooses one legal reduction order allowed by
+`scf.parallel`; it does not require associativity, commutativity, or a
+known identity element. If a later analysis proves stronger algebraic
+properties, a tree merge or target-specific reduction network may be
+selected as an optimization, but that is not part of the required
+normalization contract.
+
+After normalization, all generated `scf.for` and `scf.if` operations
+use the existing templates in this section. Their stream, carry, gate,
+demux, mux, and memory-order behavior is inherited from those templates.
 
 ### 7.6 `scf.index_switch`
 
@@ -1529,7 +1946,9 @@ directed graph over memory accesses inside one `dataflow.graph`.
   `loom.mem_dep_id = N`.
 * For each ordered pair `p` before `o`, the pair conflicts iff
   `query(p, o) != MustNotAlias` and the pair is not load-load.
-  Conflicting ordered pairs become dependence candidates `p -> o`.
+  Conflicting ordered pairs become dependence candidates `p -> o`,
+  subject to the structured-control and parallel-provenance rules
+  below.
 * Direction comes only from program order and structured-control-flow
   nesting. Alias answers are symmetric; they never define a direction.
 * Dependences are path-sensitive to the extent exposed by structured
@@ -1540,6 +1959,13 @@ directed graph over memory accesses inside one `dataflow.graph`.
   when it cannot prove path exclusivity, but it must not omit a
   dependence that preserves an observable read/write or write/write
   order.
+* Parallel-provenance groups are the exception to source-order loop
+  dependence. Accesses in different logical iterations or different
+  chunks of the same original `scf.parallel` are unordered by the
+  source program. The builder must not add cross-iteration or
+  cross-chunk dependence edges for such pairs solely because they may
+  alias. It still records intra-iteration dependences and dependences
+  between the parallel group and surrounding code.
 * Loop-carried dependences are real dependences. If an access in a
   later iteration can conflict with an access in an earlier iteration,
   the lowered loop token structure must carry that ordering, rather
@@ -1558,6 +1984,15 @@ not as an implicit property of the loop op. The lowering must make the
 state visible in dataflow primitives so graph scheduling, graph
 verification, and later hardware lowering all see the same ordering.
 
+This subsection applies to source-ordered loops such as user
+`scf.for` and `scf.while`. It does not create loop-carried memory state
+for loops generated from `scf.parallel` with parallel provenance.
+Cross-iteration memory races in the original `scf.parallel` are source
+undefined behavior or unspecified behavior, not an ordering obligation
+for Loom. The generated loops still keep their ordinary intra-iteration
+memory dependences and their incoming / outgoing group-tail
+dependences.
+
 For each structured loop `L`, the dependence builder computes memory
 partitions inside `L`:
 
@@ -1569,6 +2004,8 @@ partitions inside `L`:
 * A partition needs loop-carried state when an access in one dynamic
   iteration can conflict with an access in a later dynamic iteration.
   Read-read pairs never force such a partition by themselves.
+  Parallel-provenance loops are excluded from this rule; they use the
+  group-tail rule above instead of hidden loop-carried state.
 * Each partition that needs loop-carried state gets one deterministic
   partition id unique within the graph and one hidden `none`-typed
   carry in the lowered loop. Independent partitions get independent
@@ -1620,6 +2057,13 @@ loop's partition. If the same alias root participates in both loops,
 the outer loop state gates the inner loop entry and the inner loop
 exit feeds the outer loop's body tail.
 
+Parallel-provenance groups nested inside a source-ordered loop follow
+the same compositional rule at the group boundary. The outer loop's
+memory state gates the parallel group entry when the group may touch
+the same partition, and the group's tail token feeds the outer loop's
+body tail. The chunks inside that group remain unordered with respect
+to each other.
+
 The loop-state plan stored by `loom-build-memory-dependencies` is the
 `loom.mem_loop_states` attribute on the source loop. Each record uses
 only deterministic integer ids:
@@ -1655,7 +2099,10 @@ The control-token wiring rule is derived from the dependence snapshot:
   `none`. The lowering first builds a ctrl source set:
   - immediate dependence predecessors contribute their `done` outputs;
   - loop-carried memory dependences contribute the relevant hidden
-    `%mem_iter_P` or `%mem_after_P` state token described above.
+    `%mem_iter_P` or `%mem_after_P` state token described above;
+  - a following access that depends on a completed parallel-provenance
+    group contributes the group's tail token, which is the
+    `dataflow.sync` rendezvous of all chunk tails.
 * If `o`'s ctrl source set is empty, `o` uses `ctrl_in`. If the set
   has one value, `o` uses that value directly. If the set has multiple
   values, `o` uses output zero of a `dataflow.sync` rendezvous over
