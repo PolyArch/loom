@@ -123,7 +123,7 @@ callee body is graph-free after this preparation.
 
 ## 3. Constitutional Rules
 
-The seven rules below are invariants that downstream passes and
+The eight rules below are invariants that downstream passes and
 verifiers must enforce; the rest of this spec is a refinement of how
 each rule lands in IR.
 
@@ -140,7 +140,18 @@ each rule lands in IR.
 2. `dataflow.graph` is a leaf-level region. Its body must not contain
    any `func.func`, `func.call`, `dataflow.thread`, or another
    `dataflow.graph`. The graph body is a single graph-kind region; it
-   already permits feedback edges (existing semantics).
+   already permits feedback edges (existing semantics). Equivalently
+   from the parent side: a `dataflow.thread` body must not directly
+   contain both a `dataflow.graph` and a nested `dataflow.thread` at
+   the same nesting level. ScalarCore code (`scf.*` structured
+   control flow, ScalarCore-legal `func.call`, ScalarCore memory
+   ops, `dataflow.thread.fence`, and so on) is always allowed in the
+   thread body and may freely sit before, between, or after whichever
+   of the two shapes the thread body contains; the rule only forbids
+   the simultaneous presence of a direct `dataflow.graph` and a
+   direct nested `dataflow.thread`. Mixing those two shapes
+   contradicts the leaf rule and is rejected by the verifier
+   (see §9).
 3. Every `dataflow.graph` has explicit control ports: a leading
    `ctrl_in : none` operand, a matching leading region block
    argument, a leading `done_out : none` result, and a matching
@@ -1807,6 +1818,22 @@ In addition to the existing dataflow / fabric verifier set:
     contract.
   - Body must not contain a `dataflow.graph` whose body contains any
     `dataflow.thread` (graph is a leaf).
+  - The body must not directly contain both a `dataflow.graph` and a
+    nested `dataflow.thread` at the same nesting level. ScalarCore
+    code (`scf.*` ops, ScalarCore-legal `func.call`, ScalarCore
+    memory ops, `dataflow.thread.fence`, etc.) is always allowed in
+    the thread body and may freely interleave with whichever of the
+    two shapes the body holds; this rule only rejects the
+    simultaneous direct presence of a graph and a nested thread.
+    The legal shapes are therefore:
+    - any number of `dataflow.graph` regions interleaved with
+      ScalarCore code, with no nested `dataflow.thread`;
+    - any number of nested `dataflow.thread` ops interleaved with
+      ScalarCore code, with no direct `dataflow.graph`;
+    - ScalarCore code only, with neither.
+    Mixing direct graphs with direct nested threads at the same
+    level contradicts §3 Constitutional Rule 2's "graph is a leaf"
+    principle.
   - Body may contain `func.call` only when the callee has been proven
     ScalarCore-legal or is scheduled for inlining before graph
     extraction. Body must not contain `func.func` definitions.
