@@ -157,12 +157,36 @@ documentation never refers to the numeric position.
   dropped by this pass; all such actions must already have been
   materialized as explicit memory effects.
 * `scf.forall` is an implicit synchronization point. The replacement
-  therefore must make continuation ordering explicit: either the
-  produced `!dataflow.thread_token` becomes an async dependency of a
-  following thread-like op, or a `dataflow.thread.wait` is inserted at
-  the original continuation point. The first milestone uses the
-  conservative form and inserts the wait unless an immediately
-  following thread dependency is materialized in the same rewrite.
+  must make continuation ordering explicit on the produced
+  `!dataflow.thread_token` (call it `%t`). The pass applies the
+  following mechanical rule, in order:
+  1. Compute `%t = produced thread token`.
+  2. Identify `next_op` as the op that immediately follows the
+     original `scf.forall` in source order at its continuation
+     point. "Immediately follows" means structurally adjacent in the
+     parent block, with no intervening op (no `arith.*`, no
+     `func.call`, no other op of any kind sits between the original
+     `scf.forall` and `next_op`).
+  3. The pass omits the explicit sync op iff both of the following
+     hold:
+     - (A) `next_op` implements `LoomAsyncOpInterface`.
+     - (B) On exit from this lowering, `next_op`'s
+       `asyncDependencies` operand list contains `%t`.
+
+     The two conditions are independent. Structural adjacency
+     without `%t` use is not enough; a use of `%t` somewhere later
+     in the program but not on the immediately following op is not
+     enough either.
+  4. If either condition fails, or cannot be verified at lowering
+     time, the pass inserts `dataflow.thread.wait %t` at the
+     original continuation point, before any continuation op.
+     Subsequent ops keep their source-order position.
+
+  The fallback to `dataflow.thread.wait` is the spec contract, not
+  an optimization opportunity. The wait carries the default-resource
+  memory barrier introduced by §3 Constitutional Rule 8, so
+  subsequent host or parent-context ops cannot be reordered to
+  before the synchronization.
 * Once every marked forall inside a `loom.acc_region` has been replaced
   by `dataflow.thread`, the temporary accelerator-region wrapper is
   erased and its body is spliced back at the original host program
@@ -188,23 +212,64 @@ documentation never refers to the numeric position.
 
 ### 1.7 `loom-extract-graph-regions`
 
-* Within each innermost `dataflow.thread` body (no further mapped
-  forall inside), groups eligible operations into one or more
-  `dataflow.graph` regions.
-* Eligibility for a graph region: a maximal connected sub-DAG of ops
-  rooted at one or more `memref.{load, store}` operations, extended
-  upward only through ops admitted by the graph body whitelist in
-  Part 3's verifier rules -- `arith.*`, `math.*`, and
+* Instantiates the L2 graph-placement problem from
+  `docs/spec-compiler-part-3-placement-framework.md`. The input is
+  each innermost `dataflow.thread` body after ScalarCore call
+  preparation. The placement unit is `dataflow.graph`; residual code
+  stays in the surrounding ScalarCore thread body.
+* The pass is structured as admission constraints, a cost model, and an
+  exploration policy. Admission constraints are correctness rules:
+  admitted graph bodies must satisfy Part 3's graph verifier contract,
+  `IsolatedFromAbove`, explicit control-port wiring, and effect
+  visibility. The cost model ranks only legal partitions. The
+  exploration policy decides which legal partition to materialize.
+* The baseline cost model is deterministic and trivial: it prefers the
+  partition produced by the baseline source-order greedy policy, with
+  stable tie-breaking by lexical operation order. This cost model is
+  intentionally not a performance model. Future policies may use graph
+  launch count, reconfiguration estimates, graph-result traffic, fabric
+  pressure, or profile data without changing the IR contract.
+* The baseline policy walks the direct operations of the thread body in
+  source order. A graph run opens at the first graph-admissible op,
+  accumulates following graph-admissible ops, closes at a required cut,
+  and may open again at the next graph-admissible op. A run is
+  materialized as `dataflow.graph` only when it contains a baseline
+  graph anchor. Baseline anchors are memory accesses that will become
+  `dataflow.load` / `dataflow.store`, or structured-control ops whose
+  nested regions contain such accesses. Pure-only admissible runs may
+  remain ScalarCore code in the baseline policy; a future policy may
+  choose to place them in graphs if its cost model prefers that.
+* Bridge to the framework vocabulary: a graph run is the L2
+  candidate-partition unit produced by the baseline policy, the
+  `dataflow.graph` op it materializes is the placement unit, and the
+  graph-admissible / required-cut / graph-anchor predicates together
+  encode this layer's admission constraints. Future cost-model and
+  exploration-policy work should keep these terms aligned with
+  `docs/spec-compiler-part-3-placement-framework.md` §3-§5.
+* "Graph-admissible" is not inferred from the `Pure` trait alone.
+  `dataflow.map_info` and the spatial-array ops in
+  `docs/spec-compiler-part-4-spatial.md` are also `Pure`, but they are
+  boundary-only or thread-body-only and are intentionally excluded from
+  graph bodies. The baseline admitted set is:
+  `arith.*`, `math.*`, allowed LLVM computation ops,
   `dataflow.{stream, carry, invariant, gate, mux, demux, sync,
-  constant}` -- and stopping at the first
-  `scf.{if,while,for,parallel,index_switch,execute_region}` boundary
-  that contains side-effecting code, or at any `func.call`,
-  `dataflow.thread` boundary, or at any `func.return` /
-  `dataflow.thread.yield` terminator. The `Pure` trait alone is not
-  sufficient for admission: `dataflow.map_info` and the spatial-array
-  ops in `docs/spec-compiler-part-4-spatial.md` are also `Pure` but
-  are boundary-only or thread-body-only, and the whitelist
-  intentionally excludes them.
+  constant}`, `memref.{load, store}`, and supported structured
+  `scf.*` ops whose nested regions recursively satisfy the same graph
+  admission rules.
+* Required cuts close the current graph run and remain in the ScalarCore
+  thread body. The required cuts are `dataflow.thread.fence`,
+  non-inlined `func.call`, nested `dataflow.thread`, `dataflow.map_info`,
+  spatial-array query or layout ops, graph-illegal ops, and the parent
+  terminator. The policy also cuts before any structured-control op
+  whose nested regions contain a required cut. Unsupported required
+  SpatialCore placement is a diagnostic; optional unadmitted code stays
+  ScalarCore.
+* Connectedness is not part of the baseline admission rule. If two
+  memory-access clusters are adjacent in source order and separated
+  only by graph-admissible compute, they are placed in the same graph
+  run. Future policies may split such a run for resource or
+  reconfiguration reasons, but the baseline output is mechanical and
+  deterministic.
 * Within a single graph, the `scf.*` control-flow ops appear as
   unflattened children that the next-but-one pass will lower into
   `dataflow` token primitives. The extraction pass does not modify
@@ -427,6 +492,12 @@ The lit-test layout grows three new directories:
   - `scalarcore_calls/` covers inlining or specialization of callees
     that contain graph-extractable code, preservation of graph-free
     ScalarCore calls, and diagnostics for unsupported callees.
+  - `graph_placement/` covers the baseline L2 placement policy:
+    adjacent memory-access clusters separated only by graph-admissible
+    compute become one graph, required cuts split graph runs, pure-only
+    admissible runs may remain ScalarCore code, and graph-illegal pure
+    ops such as `dataflow.map_info` or spatial-array query ops stay
+    outside graphs.
 * `test/frontend/integration/` -- end-to-end small kernels covering
   the SPGPU / Chapel-style spatial idioms (matmul, stencil, LU,
   page-rank-style irregular loop) at the IR level only. No
@@ -438,6 +509,11 @@ In addition, the existing `test/dataflow/unit/graph/` and
 graph-control-port shape in the same change as the IR change. Any
 test that relies on the old graph form is updated to use the new
 form, and the migration is explicit in the diff.
+
+Baseline L2 placement tests pin only the baseline policy output. A
+future cost-aware graph-placement policy must introduce its own fixtures
+or option-specific checks rather than rewriting the baseline
+expectations.
 
 ## 3. Acceptance Criteria
 
@@ -456,10 +532,16 @@ following hold simultaneously:
   `loom-build-thread-skeleton`, and no combining action is silently
   discarded.
 * Every promoted mapped `scf.forall` preserves the source
-  operation's implicit synchronization point by explicit
-  `!dataflow.thread_token` use: either a following thread-like op
-  consumes the token as a dependency, or a `dataflow.thread.wait`
-  appears before continuation code that can observe the effects.
+  operation's implicit synchronization point by following the
+  mechanical rule in §1.5: either the immediately structurally
+  following op is a `LoomAsyncOpInterface` op whose
+  `asyncDependencies` operand list includes the produced token (the
+  SSA use itself is the synchronization, no extra op needed), or a
+  `dataflow.thread.wait` consuming the token is present before any
+  continuation op (the conservative fallback). Acceptance verifies
+  both conditions independently; the wait's effect-visibility
+  barrier from §3 Rule 8 prevents subsequent ops from being
+  reordered to before the synchronization.
 * Root graph `ctrl_in` wiring is mechanical: graphs with no graph or
   ScalarCore fence predecessor consume the enclosing `thread_ctrl`,
   ScalarCore-to-graph ordering uses `dataflow.thread.fence`, and
@@ -537,12 +619,20 @@ following hold simultaneously:
   `loom-build-memory-dependencies`. The lit suite is expected to pass
   unchanged except for deliberate fixture differences in
   `loom.mem_dep_preds` and derived ctrl/done wiring.
+* Adding a stronger L2 graph-placement policy: implement it under
+  `lib/Frontend/Placement/` or an equivalent placement module, expose it
+  through an explicit pass option, and add option-specific tests. The
+  baseline source-order greedy policy remains the default reference
+  policy.
 
 ## 5. References
 
 * `docs/spec-compiler-part-3-dfg.md` -- Part 3 main spec (boundary
   contracts, SCF flattening templates, memory-dependence model,
   verifier invariants).
+* `docs/spec-compiler-part-3-placement-framework.md` -- common
+  placement-partition framework and the L2 graph-placement model used
+  by `loom-extract-graph-regions`.
 * `docs/spec-compiler-part-4-spatial.md` -- spatial-array spec; the
   test plan above defers to Part 4 for spatial-op unit-test coverage.
 * Upstream MLIR references used by the passes above are listed in

@@ -28,6 +28,14 @@ keeps only the first-principles content: IR boundary contracts, SCF
 flattening templates, the memory-dependence model, and verifier
 invariants.
 
+Placement decisions across the compiler are described by
+`docs/spec-compiler-part-3-placement-framework.md`. Part 3 owns the L2
+instance: choosing which code inside a `dataflow.thread` body becomes
+`dataflow.graph`. The placement framework does not weaken the verifier
+or IR contracts in this document; it only states how legal partitions
+are generated, ranked, and made replaceable by later cost-aware
+policies.
+
 ## 1. Scope and Contract
 
 The compiler front-end is documented in four parts:
@@ -44,7 +52,9 @@ The compiler front-end is documented in four parts:
   accelerator regions and lowers them to `dataflow.thread` and
   `dataflow.graph`. The accompanying
   `docs/spec-compiler-part-3-impl.md` documents the pass pipeline,
-  testing, and acceptance for this part.
+  testing, and acceptance for this part. L2 graph placement follows
+  the common placement framework in
+  `docs/spec-compiler-part-3-placement-framework.md`.
 * **Part 4, spatial array.** Annotation and in-thread queries for
   tile-and-mesh memrefs, plus a future-thoughts discussion of
   neighborhood communication / distributed-buffer protocols (see
@@ -73,6 +83,9 @@ with a completion token and mapped-memory data transfer, not a
 tensor-result returning op. Memory dependence construction runs in
 this part; alias analysis is only the conflict oracle used by that
 builder (see "Memory Dependence Model").
+Graph placement inside each thread is governed by the L2 placement
+instance specified by the placement framework and by the implementation
+contract in `docs/spec-compiler-part-3-impl.md`.
 
 ## 2. Hardware Model
 
@@ -1948,6 +1961,9 @@ milestone and have placeholders only:
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, milestone acceptance checklist, and maintenance plan
   for the SCF-to-DFG front-end.
+* `docs/spec-compiler-part-3-placement-framework.md` -- common
+  placement-partition framework; Part 3 owns the L2 graph-placement
+  instance.
 * `docs/spec-compiler-part-4-spatial.md` -- spatial-array
   annotation, in-thread queries, and future-thoughts discussion of
   neighborhood communication / distributed-buffer protocols.

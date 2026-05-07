@@ -7,6 +7,8 @@ regions to Part 3.
 
 Part 2 is where HostCore-vs-AccCore selection lives. Part 3 must not
 infer this boundary from `func.func`.
+Region selection is the L1 accelerator-placement instance of the
+placement framework in `docs/spec-compiler-part-3-placement-framework.md`.
 
 ## 1. Scope
 
@@ -115,6 +117,10 @@ inside the region should still be represented directly by mapped
 Part 2 commits a region to AccCore only after legality checks succeed.
 The selected region must be single-entry/single-exit at the MLIR level
 and structured enough that Part 3 can reason about its control flow.
+This decision is a placement-partition problem, not a fixed syntactic
+rule. Admission constraints decide which candidate regions are legal;
+cost-model and exploration-policy decisions choose among legal
+candidates when more than one boundary is possible.
 
 Region selection may use:
 
@@ -124,6 +130,12 @@ Region selection may use:
 * Memory locality and scratch-memory opportunities.
 * User options that require or forbid acceleration for a candidate.
 * Cost-model decisions.
+
+The baseline Part 2 policy may be conservative, but it must be
+deterministic for a fixed input and option set. Future policies may use
+profiling data, launch-overhead estimates, transfer-volume estimates,
+or working-set models without changing the `loom.acc_region` hand-off
+contract.
 
 If a source annotation requests acceleration but the selected code cannot
 be represented as `loom.acc_region`, Part 2 emits a diagnostic. It must
@@ -204,3 +216,6 @@ The Part 2 output contract is:
 * `docs/spec-compiler-part-1-source.md` -- source integration and
   metadata emission.
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering.
+* `docs/spec-compiler-part-3-placement-framework.md` -- common
+  placement-partition model; Part 2 region selection is the L1
+  accelerator-placement instance.
