@@ -6,8 +6,10 @@ layout and how in-thread code queries its local tile. These concerns
 are first-principles for SPGPU-style spatial GPUs, but they are not
 first-principles for SCF to DFG flattening. Part 3 stays focused on
 flattening structured control flow into dataflow primitives; this
-part owns the spatial-array story. Halo exchange between neighboring
-tiles is reserved for future work (see §6).
+part owns the spatial-array story. A general neighborhood
+communication / distributed-buffer protocol -- which would cover
+halo / stencil neighbor exchange among other patterns -- is reserved
+for future work (see §6).
 
 The canonical IR source is `include/Dataflow/IR/DataflowOps.td`; the
 verifier implementation lives in `lib/Dataflow/IR/DataflowOps.cpp`.
@@ -42,10 +44,12 @@ through `dataflow.spatial_layout`.
   type, so existing memref-aware passes do not need updates.
 * In-thread queries go through `dataflow.local_range`,
   `dataflow.spatial_coord`, and `dataflow.spatial_linear_id`.
-* Halo exchange between neighboring tiles is deferred. No
-  halo-exchange op is part of this milestone; a concrete signature
-  is intentionally left to a follow-up that is driven by real
-  stencil benchmarks (see §6).
+* Neighborhood communication between tiles, including halo /
+  stencil neighbor exchange, is deferred. No dedicated neighbor-
+  exchange op is part of this milestone; the first milestone
+  intentionally does not commit to a stencil-specific op signature
+  and instead leaves any such protocol to a follow-up that is
+  driven by real workloads (see §6).
 * The `dataflow.mesh @M { shape = [...] }` symbol-form mesh is
   deferred. All meshes in the first milestone are inline arrays on
   `dataflow.spatial_layout`.
@@ -88,9 +92,10 @@ traits:
   indices; the empty inner array means "fully replicated on this
   data dim".
 * Halo / ghost-cell metadata is intentionally not present in this
-  milestone. It is reserved for the future halo-exchange design (see
-  §6); pinning attribute fields without a consumer would freeze a
-  shape that the consumer might want to change.
+  milestone. It is reserved for whichever future neighborhood
+  communication / distributed-buffer protocol Part 4 eventually
+  adopts (see §6); pinning attribute fields without a consumer
+  would freeze a shape that the consumer might want to change.
 
 ### 3.2 `dataflow.local_range`
 
@@ -157,6 +162,14 @@ spatial_linear_id:
     per-thread-instance constants; if a `dataflow.graph` body needs
     those values, they must be computed in the surrounding
     ScalarCore code and passed in as ordinary graph operands.
+  - A ScalarCore-callable `func.func` is a module-level symbol and
+    is lexically outside any `dataflow.thread` body, so it cannot
+    contain these query ops directly. A ScalarCore-callable helper
+    that needs a spatial query must be inlined or specialized into
+    the active thread context before verifier / finalization runs.
+    This matches the ScalarCore-call handling Part 3 already
+    requires for callees that contain code which must become
+    `dataflow.graph` or nested `dataflow.thread` (see Part 3 §2.1).
 
 ## 5. Interaction with Part 3
 
@@ -180,20 +193,28 @@ spatial_linear_id:
   binding to compute local ranges and coordinates; they do not
   introduce a parallel hardware-mapping mechanism.
 
-## 6. Future Work
+## 6. Future Design Thoughts
 
 * Strong-typed `!dataflow.spatial_array<...>` carrier. The in-thread
   queries above keep their signatures; only the source type widens.
 * Symbol-form `dataflow.mesh @M { shape = [...] }` so that several
   layouts can refer to the same mesh declaration.
-* `dataflow.halo_exchange`. Pinning a software-visible op with no
-  lowering is at odds with the Occam's-razor principle this spec
-  follows, so the op is intentionally not part of the required
-  first-milestone op set. A concrete signature, verifier, and
-  lowering should be designed later, driven by stencil benchmarks
-  that exercise the spatial layout. The same milestone should add
-  any halo / ghost-cell metadata to `dataflow.spatial_layout` that
-  the consumer needs.
+* Neighborhood communication / distributed-buffer protocol. Halo /
+  stencil neighbor exchange is an important spatial pattern, but
+  the first milestone deliberately does not introduce a dedicated
+  stencil-specific op such as a hypothetical `dataflow.halo_exchange`.
+  Pinning a software-visible op without a concrete consumer would
+  freeze a shape that real workloads might need to change, which is
+  at odds with the Occam's-razor principle this spec follows. In the
+  first milestone the required behavior is expressed through explicit
+  memory effects on annotated memrefs, runtime-managed transfers, or
+  later fabric-level transport primitives. A future design should
+  start from a general neighborhood communication / distributed-buffer
+  abstraction -- one that covers stencil halos as a special case
+  alongside other neighbor-exchange shapes -- rather than from a
+  stencil-specific adhoc op. Whatever that future design looks like,
+  it would also be the right time to add any halo / ghost-cell
+  metadata to `dataflow.spatial_layout` that its consumer needs.
 * Optional analysis to refine `dataflow.map_info` direction based on
   read/write effects on spatial-array operands; this is the same
   optimizer extension point Part 3 already documents for ordinary

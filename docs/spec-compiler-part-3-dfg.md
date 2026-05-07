@@ -45,8 +45,9 @@ The compiler front-end is documented in four parts:
   `dataflow.graph`. The accompanying
   `docs/spec-compiler-part-3-impl.md` documents the pass pipeline,
   testing, and acceptance for this part.
-* **Part 4, spatial array.** Annotation, in-thread queries, and
-  future halo exchange for tile-and-mesh memrefs (see
+* **Part 4, spatial array.** Annotation and in-thread queries for
+  tile-and-mesh memrefs, plus a future-thoughts discussion of
+  neighborhood communication / distributed-buffer protocols (see
   `docs/spec-compiler-part-4-spatial.md`).
 
 Input to this part is an MLIR module with `func.func` host containers.
@@ -1703,10 +1704,12 @@ The control-token wiring rule is derived from the dependence snapshot:
 
 ## 8. Spatial Array
 
-Spatial-array layout, in-thread queries, and halo exchange are
-specified in `docs/spec-compiler-part-4-spatial.md`. They are not
-required for SCF-to-DFG flattening; this document references them
-only at the boundary points (see §5.4 and §9).
+Spatial-array layout and in-thread queries are specified in
+`docs/spec-compiler-part-4-spatial.md`, along with future-thoughts
+discussion of neighborhood communication / distributed-buffer
+protocols. They are not required for SCF-to-DFG flattening; this
+document references them only at the boundary points (see §5.4 and
+§9).
 
 ## 9. Verifier Rules (Front-End Specific)
 
@@ -1804,11 +1807,14 @@ milestone and have placeholders only:
 * LLVM IR provider integration, source-language integration, and clang
   embedding. Those concerns belong to Part 1 and Part 2.
 * Optimization of `dataflow.map_info` direction. Default `tofrom`.
-* Strong-typed `!dataflow.spatial_array`, the symbol-form
-  `dataflow.mesh`, and the entire `dataflow.halo_exchange` op
-  (signature, verifier, and lowering). All three are listed as
-  future work in `docs/spec-compiler-part-4-spatial.md` and are not
-  required for this milestone.
+* Spatial-array carrier promotion to a strong-typed
+  `!dataflow.spatial_array`, the symbol-form `dataflow.mesh`, and
+  any future neighborhood communication / distributed-buffer
+  protocol for tile-and-mesh memrefs. These are documented as
+  Part 4 future thoughts in `docs/spec-compiler-part-4-spatial.md`
+  and are not required for this milestone. In particular, the
+  first milestone does not commit to any stencil-specific op
+  signature for neighbor exchange.
 
 ## 11. References
 
@@ -1822,8 +1828,9 @@ milestone and have placeholders only:
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, milestone acceptance checklist, and maintenance plan
   for the SCF-to-DFG front-end.
-* `docs/spec-compiler-part-4-spatial.md` -- spatial-array annotation,
-  in-thread queries, and halo exchange.
+* `docs/spec-compiler-part-4-spatial.md` -- spatial-array
+  annotation, in-thread queries, and future-thoughts discussion of
+  neighborhood communication / distributed-buffer protocols.
 * `docs/spec-dataflow-part-1-streaming.md` -- precise timing
   semantics for `dataflow.stream`, `dataflow.carry`,
   `dataflow.invariant`, and `dataflow.gate`.
