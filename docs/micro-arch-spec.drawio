@@ -1,0 +1,87 @@
+<mxfile host="65bd71144e">
+    <diagram name="fabric" id="VSBeAFlHpl9mD3GfBe3m">
+        <mxGraphModel dx="1326" dy="1875" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-25" value="fabric.module&lt;div&gt;fabric.instantiate&lt;/div&gt;&lt;div&gt;fabric.yield&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="135" y="180" width="665" height="230" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-5" value="spatial" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="145" y="290" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-6" value="temporal" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="145" y="330" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-11" value="" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="225" y="290" width="360" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-24" value="fabric.fifo" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="225" y="370" width="360" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-1" value="fabric.pe" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="225" y="190" width="120" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-2" value="fabric.switch" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="345" y="250" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-3" value="fabric.mem" style="rounded=0;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="465" y="250" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-20" value="fabric.fu" style="rounded=0;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="230" y="220" width="110" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-27" value="" style="group" parent="1" connectable="0" vertex="1">
+                    <mxGeometry x="240" y="240" width="90" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-21" value="fabric&lt;br&gt;op" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="zoifn4sl-neAI-FsJMfi-27" vertex="1">
+                    <mxGeometry width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-22" value="fabric&lt;br&gt;mux" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="zoifn4sl-neAI-FsJMfi-27" vertex="1">
+                    <mxGeometry x="30" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-23" value="fabric&lt;br&gt;demux" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="zoifn4sl-neAI-FsJMfi-27" vertex="1">
+                    <mxGeometry x="60" width="30" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-30" value="" style="group" parent="1" connectable="0" vertex="1">
+                    <mxGeometry x="585" y="290" width="120" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-9" value="fabric.boundary[t2s]" style="rounded=0;whiteSpace=wrap;html=1;" parent="zoifn4sl-neAI-FsJMfi-30" vertex="1">
+                    <mxGeometry y="53.33333333333333" width="120" height="26.666666666666664" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-28" value="fabric.boundary[t2t]" style="rounded=0;whiteSpace=wrap;html=1;" parent="zoifn4sl-neAI-FsJMfi-30" vertex="1">
+                    <mxGeometry y="26.666666666666664" width="120" height="26.666666666666664" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-29" value="fabric.boundary[s2t]" style="rounded=0;whiteSpace=wrap;html=1;" parent="zoifn4sl-neAI-FsJMfi-30" vertex="1">
+                    <mxGeometry width="120" height="26.666666666666664" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-31" value="fabric.pe [spatial]" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="225" y="290" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-32" value="fabric.pe [temporal]" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="225" y="330" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-33" value="fabric.switch [spatial]" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="345" y="290" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-34" value="fabric.switch&amp;nbsp;[temporal]" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="345" y="330" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-35" value="fabric.mem [spatial]" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="465" y="290" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="zoifn4sl-neAI-FsJMfi-36" value="fabric.mem [temporal]" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="465" y="330" width="120" height="40" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="bSAgXyccILI-Kpj7DVyt" name="dataflow">
+        <mxGraphModel dx="1326" dy="1875" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
