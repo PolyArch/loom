@@ -59,7 +59,7 @@ The compiler front-end is documented in four parts:
   the common placement framework in
   `docs/spec-compiler-part-3-placement-framework.md`.
 * **Part 4, spatial array.** Annotation and in-thread queries for
-  tile-and-mesh memrefs, plus a future-thoughts discussion of
+  tile-and-lattice memrefs, plus a future-thoughts discussion of
   neighborhood communication / distributed-buffer protocols (see
   `docs/spec-compiler-part-4-spatial.md`).
 
@@ -103,14 +103,22 @@ The front-end's IR mirrors this trio:
 | Hardware | Front-end IR carrier |
 |----------|----------------------|
 | HostCore | Host-call-context `func.func` body code outside any `dataflow.thread` |
-| Mesh of AccCores | An outermost `dataflow.thread` with `mapping = [#loom.spatial<...>, ...]` (hardware grid coords) and optional non-spatial dims for time-multiplexed work |
-| ScalarCore on one AccCore | The body of the innermost `dataflow.thread`, minus its `dataflow.graph` regions, plus ScalarCore-legal `func.call` callees after inlining or specialization |
-| SpatialCore on one AccCore | Each `dataflow.graph` nested inside the innermost `dataflow.thread` |
+| Logical execution lattice | An outermost `dataflow.thread` with `mapping = [#loom.spatial<...>, ...]` (logical partition-domain coordinates) and optional non-spatial dims for time-multiplexed work. Each lattice cell is a logical execution slot. The cell-to-AccCore binding is a separate concern; see `docs/spec-compiler-part-4-spatial.md` §7. |
+| ScalarCore | The body of the innermost `dataflow.thread`, minus its `dataflow.graph` regions, plus ScalarCore-legal `func.call` callees after inlining or specialization. The body is "what one execution-lattice cell runs once it is bound to a physical AccCore by binding". |
+| SpatialCore | Each `dataflow.graph` nested inside the innermost `dataflow.thread`, again per execution-lattice cell. |
 
 A single `dataflow.thread` instance corresponds to one launch of a
-multi-dimensional iteration domain, distributed across a mesh of
-AccCores. The thread body is "what one AccCore runs"; the spatial
-coords pulled from the mapping attribute identify which AccCore.
+multi-dimensional iteration domain, distributed across a logical
+execution lattice. The thread body is "what one execution-lattice
+cell runs"; the spatial coordinates pulled from the mapping
+attribute identify which cell. The lattice is a software concept --
+the programmer's view of how work and data are partitioned -- and
+does not commit to a specific fabric topology. A fabric whose
+physical PE / memory graph is not a Cartesian mesh is supported by
+the same mapping mechanism. The binding from a logical lattice cell
+to a physical AccCore (i.e., a `fabric.module` instance) is a
+separate concern; see `docs/spec-compiler-part-4-spatial.md` §7 and
+the placement framework.
 
 ### 2.1 IR Carrier Responsibilities
 
@@ -252,13 +260,19 @@ each rule lands in IR.
   preserves calls to it as ScalarCore calls or inlines / specializes it
   before graph extraction.
 * **Spatial dim.** A grid dim of a `dataflow.thread` that is mapped
-  to a physical core-grid coordinate of the AccCore mesh.
+  to a logical partition-domain axis (a logical lattice axis declared
+  by the kernel; the lattice is software, not hardware). The mapping
+  from a logical lattice cell to a physical AccCore is a separate
+  concern owned by future binding work; see
+  `docs/spec-compiler-part-4-spatial.md` §7.
 * **Temporal dim.** A grid dim of a `dataflow.thread` that is
-  time-multiplexed on the same AccCores (analogous to the SPGPU paper's
-  z-dim).
-* **Spatial array.** A `memref<...>` annotated with a tile-and-mesh
+  time-multiplexed on a fixed cell of the logical partition domain
+  (analogous to the SPGPU paper's z-dim, but defined against a
+  logical lattice rather than a hardware grid).
+* **Spatial array.** A `memref<...>` annotated with a tile-and-lattice
   layout descriptor; lets in-thread code query its local tile via
-  `dataflow.local_range`.
+  `dataflow.local_range`. The lattice is the same logical
+  partition-domain referenced by spatial dims.
 * **Mapping attribute.** Any attribute that implements
   `mlir::DeviceMappingAttrInterface`. The front-end ships
   `#loom.spatial<...>` and `#loom.temporal<...>` instances and
@@ -368,19 +382,38 @@ the source type. The "this value crossed the boundary through
 Two new attribute classes implement the upstream
 `mlir::DeviceMappingAttrInterface`:
 
-* `#loom.spatial<x | y | z | linear_dim_0 | ... | linear_dim_9>`
-  - A grid dim of a `dataflow.thread` is bound to a physical core-grid
-    coordinate.
-  - `getMappingId()` returns a closed enum value; `isLinearMapping()`
-    is `true` for `linear_dim_*` and `false` for `x | y | z`;
-    `getRelativeIndex()` returns the position within the spatial
-    group.
+* `#loom.spatial<axis : i64, lattice = SymbolRefAttr?>`
+  - A grid dim of a `dataflow.thread` is bound to logical axis `axis`
+    of a logical partition lattice. The lattice is the one declared
+    by `dataflow.mesh @M` (see
+    `docs/spec-compiler-part-4-spatial.md` §3) and reached by the
+    spatial-array layout(s) the thread accesses; `lattice` is an
+    optional `SymbolRefAttr` qualifier that names the lattice
+    explicitly when more than one is in scope.
+  - `axis` is a non-negative integer in `[0, lattice_rank)`. There is
+    no closed enum and no fixed cap on axis count.
+  - **Print form.** The printed assembly elides `lattice` when it
+    is absent. With no qualifier the printer emits
+    `#loom.spatial<2>`; with a qualifier it emits
+    `#loom.spatial<2, @M>` (positional shorthand: integer first,
+    then mesh symbol). The parser accepts both forms and rejects a
+    third form. There is no other in-attribute syntactic form.
+  - `getMappingId()` returns the integer `axis` packed into the
+    interface's `int64_t` slot; `isLinearMapping()` is `false` (the
+    front-end does not use the upstream "linear mapping" overload --
+    each axis is a structured lattice axis); `getRelativeIndex()`
+    returns the position of this entry within the spatial group of
+    the enclosing thread's `mapping` array.
 
-* `#loom.temporal<x | y | z | linear_dim_0 | ... | linear_dim_9>`
+* `#loom.temporal<axis : i64, lattice = SymbolRefAttr?>`
   - Same shape as `#loom.spatial<...>` but marks a time-multiplexed
     dim. The lowering pass keeps temporal dims as ordinary block-arg
-    indices on the thread body and does not bind them to physical
-    coordinates.
+    indices on the thread body and does not bind them to a logical
+    lattice cell; the temporal axis identifier is a label that lets
+    the verifier and downstream passes distinguish multiple temporal
+    dims and pair them with a logical lattice axis when needed. The
+    same print / parse contract applies: `#loom.temporal<2>` (no
+    qualifier) or `#loom.temporal<2, @M>` (with qualifier).
 
 The two attribute classes are deliberately symmetric so that a future
 optimizer can swap a temporal dim for a spatial one without touching
@@ -432,7 +465,14 @@ traits:
   every entry implements `DeviceMappingAttrInterface`), one per
   grid dim. Mixed `#loom.spatial<...>` and `#loom.temporal<...>`
   in the same array is allowed; the relative order in the array
-  equals the relative order of the grid dim.
+  equals the relative order of the grid dim. Each entry's `axis`
+  refers to a logical lattice axis (per §5.2); spatial entries
+  identify which lattice cell the thread instance occupies, and
+  temporal entries identify a time-multiplex axis on that cell.
+  No entry is interpreted as a hardware coordinate by Part 3 alone;
+  any binding from logical lattice cell to physical AccCore is a
+  separate concern (see
+  `docs/spec-compiler-part-4-spatial.md` §7).
 * `bodyOperands` is the complete explicit set of non-grid values that
   cross into the thread body. The thread is `IsolatedFromAbove`, so
   these operands are the only way the body can refer to surrounding
@@ -479,7 +519,7 @@ traits:
   producer, so a thread whose `map_info` source is a
   `dataflow.spatial_layout` result reports its effects on the
   underlying `spatial_layout` source memref (per
-  `docs/spec-compiler-part-4-spatial.md` §3.1). In nested-thread
+  `docs/spec-compiler-part-4-spatial.md` §3.2). In nested-thread
   cases that source may itself be a block argument of the enclosing
   thread body; the parent thread's own boundary summary is
   responsible for projecting its effects one level further outward.
@@ -1610,13 +1650,13 @@ whose non-empty `mapping` attribute contains Loom-recognized
 scf.forall (%tx) in (%N) {
   memref.store %v, %B[%tx] : memref<?xf32>
   scf.forall.in_parallel {}
-} {mapping = [#loom.spatial<x>]}
+} {mapping = [#loom.spatial<0>]}
 ```
 
 It is promoted to `dataflow.thread` by the thread-skeleton pipeline:
 
 ```mlir
-%tok = dataflow.thread ... mapping = [#loom.spatial<x>] {
+%tok = dataflow.thread ... mapping = [#loom.spatial<0>] {
 ^bb0(%thread_ctrl : none, %tx : index, ...):
   memref.store %v, %B[%tx] : memref<?xf32>
   dataflow.thread.yield
@@ -2433,16 +2473,52 @@ In addition to the existing dataflow / fabric verifier set:
   - `mapping` array length equals grid dim count.
   - Every `mapping` entry implements
     `DeviceMappingAttrInterface`.
-  - No two `mapping` entries share the same `(kind, mappingId)`
-    pair: the verifier rejects, for example, two grid dims that
-    are both labeled `#loom.spatial<x>` or both labeled
-    `#loom.temporal<linear_dim_0>`. Uniqueness is checked across
+  - No two `mapping` entries share the same
+    `(kind, lattice, axis)` triple: the verifier rejects, for
+    example, two grid dims that are both labeled
+    `#loom.spatial<0>` (resolving to the same lattice) or both
+    labeled `#loom.temporal<2, @M>`. Uniqueness is checked across
     the whole `mapping` array, where `kind` is the discriminator
     between `#loom.spatial<...>` and `#loom.temporal<...>` (and any
     future sibling attribute that implements
-    `DeviceMappingAttrInterface`) and `mappingId` is the per-kind
-    axis identifier (`x | y | z | linear_dim_0 | ... | linear_dim_9`
-    per §5.2).
+    `DeviceMappingAttrInterface`); `lattice` is the resolved
+    `SymbolRefAttr` of the logical lattice the entry refers to;
+    and `axis` is the per-entry `i64` axis identifier (per §5.2).
+  - Lattice resolution: each Loom-recognized mapping entry
+    (`#loom.spatial<...>` or `#loom.temporal<...>`) resolves its
+    `lattice` symbol as follows. (i) If the entry carries an
+    explicit qualifier, that symbol is the resolved lattice. (ii)
+    Otherwise the resolved lattice is the unique
+    `dataflow.mesh @M` reached by the spatial-array layouts in the
+    thread body's transitive use chain (per
+    `docs/spec-compiler-part-4-spatial.md` §3.3.1). (iii) If the
+    thread body reaches more than one distinct mesh, **every
+    Loom-recognized mapping entry on the thread must carry an
+    explicit `lattice` qualifier**; an unqualified entry is
+    rejected with an ambiguous-mapping diagnostic that names the
+    candidate meshes. (iv) If the thread body reaches no
+    spatial-array layout at all, every Loom-recognized mapping
+    entry must carry an explicit `lattice` qualifier.
+  - Every spatial / temporal entry's `axis` lies in
+    `[0, lattice_rank)`, where `lattice_rank` is the rank of the
+    resolved logical lattice (per §5.2 and
+    `docs/spec-compiler-part-4-spatial.md` §3). An out-of-range
+    `axis` is rejected with a diagnostic that names the resolved
+    lattice symbol.
+  - Part 3 §9 does **not** require all spatial entries on the same
+    thread to resolve to the same lattice. A thread may host
+    `dataflow.spatial_layout`s for two different meshes
+    (e.g., one layout per mesh) and have spatial entries that
+    resolve to either mesh, as long as each entry independently
+    satisfies the resolution, axis-bounds, and uniqueness rules
+    above. The same-lattice constraint is op-local: it lives with
+    the no-operand `dataflow.spatial_coord` and
+    `dataflow.spatial_linear_id` ops (per
+    `docs/spec-compiler-part-4-spatial.md` §3.4 single-lattice
+    contract), not with `dataflow.thread`. `dataflow.local_range`
+    is unambiguous in multi-lattice bodies because its `source`
+    operand roots the relevant lattice via the
+    `docs/spec-compiler-part-4-spatial.md` §3.3.1 chain.
   - Static-bounds arrays match `dynamicGrid*` operand counts (mixed
     static / dynamic via sentinel).
   - The op has no data results. In the first milestone it produces
@@ -2601,13 +2677,15 @@ milestone and have placeholders only:
   embedding. Those concerns belong to Part 1 and Part 2.
 * Optimization of `dataflow.map_info` direction. Default `tofrom`.
 * Spatial-array carrier promotion to a strong-typed
-  `!dataflow.spatial_array`, the symbol-form `dataflow.mesh`, and
-  any future neighborhood communication / distributed-buffer
-  protocol for tile-and-mesh memrefs. These are documented as
-  Part 4 future thoughts in `docs/spec-compiler-part-4-spatial.md`
-  and are not required for this milestone. In particular, the
-  first milestone does not commit to any stencil-specific op
-  signature for neighbor exchange.
+  `!dataflow.spatial_array`, lattice-cell to fabric-resource
+  binding, and any future neighborhood communication /
+  distributed-buffer protocol for tile-and-lattice memrefs. These
+  are documented as Part 4 future thoughts in
+  `docs/spec-compiler-part-4-spatial.md` and are not required for
+  this milestone. In particular, the first milestone does not
+  commit to any stencil-specific op signature for neighbor
+  exchange, nor to a default mapping from a `dataflow.mesh @M`
+  cell to any `fabric.pe` / `fabric.mem` instance.
 
 ## 11. References
 

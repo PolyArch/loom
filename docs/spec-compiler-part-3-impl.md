@@ -386,7 +386,7 @@ documentation never refers to the numeric position.
     `memref.reinterpret_cast`, `memref.transpose`,
     `dataflow.spatial_layout`, and `dataflow.map_info` (both
     same-type view-like producers per
-    `docs/spec-compiler-part-4-spatial.md` §3.1 and
+    `docs/spec-compiler-part-4-spatial.md` §3.2 and
     `docs/spec-compiler-part-3-dfg.md` §5.4.5); the walk peels each
     into its source operand. The recognized terminal roots are
     `memref.alloca`, `memref.alloc`, `memref.get_global`, and
@@ -569,6 +569,34 @@ The lit-test layout grows three new directories:
   - `thread/` includes cases that check the boundary memory-effect
     summary for `to`, `from`, and `tofrom` mapped operands, and
     rejection of mapped operands not produced by `dataflow.map_info`.
+  - `thread/` includes mapping-attribute fixtures for the open
+    `#loom.spatial<axis : i64, lattice = SymbolRefAttr?>` /
+    `#loom.temporal<axis : i64, lattice = SymbolRefAttr?>` form
+    (per `docs/spec-compiler-part-3-dfg.md` §5.2 and §9):
+    - valid: a thread whose mapping has `#loom.spatial<0>` /
+      `#loom.spatial<1>` resolving against a single
+      `dataflow.mesh @M` reached by a layout in scope (qualifier
+      omitted); an alternative valid fixture with explicit
+      qualifiers `#loom.spatial<0, @M>` / `#loom.spatial<1, @M>`.
+    - valid: a thread that hosts two layouts of distinct meshes
+      `@M0` / `@M1`, with mixed `#loom.spatial<axis, @M0>` and
+      `#loom.spatial<axis, @M1>` entries, asserting that Part 3
+      §9 does not impose a thread-level same-lattice rule.
+    - valid: a thread that hosts no spatial layout at all but
+      carries explicit-qualifier `#loom.spatial<...>` entries
+      (lattice resolution rule iv).
+    - invalid: a thread reaching multiple meshes whose mapping
+      has an unqualified `#loom.spatial<...>` entry (rule iii
+      ambiguous diagnostic).
+    - invalid: a thread reaching no spatial layout whose mapping
+      has an unqualified entry (rule iv rejection).
+    - invalid: an `axis` value out of `[0, lattice_rank)` for the
+      resolved mesh.
+    - invalid: a duplicate `(kind, lattice, axis)` triple after
+      resolution.
+    - invalid: a foreign (non-Loom) `DeviceMappingAttrInterface`
+      attribute mixed with Loom-recognized entries (per Part 3 §3
+      Mapping attribute rules, retained from earlier milestone).
   - `graph_control_ports/` includes invalid cases for `func.call` and
     `func.func` inside a graph body.
 * `test/frontend/lower_scf/` -- one subdirectory per scf op. Each
