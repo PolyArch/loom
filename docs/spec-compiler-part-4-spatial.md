@@ -112,10 +112,94 @@ traits:
 
 * Returns the half-open `[lo, hi)` range of indices on
   data-dim `dim` owned by the calling thread instance.
-* Semantically requires that `source` was produced by
-  `dataflow.spatial_layout` and is being read inside a
-  `dataflow.thread` body whose mapping reaches the spatial-layout
-  mesh axes; the verifier checks both.
+* The op must appear inside a `dataflow.thread` body, possibly
+  nested inside `scf.*` regions of that thread body. The thread's
+  `mapping` must reach the mesh axes of the rooted
+  `dataflow.spatial_layout` so that the local range query has a
+  well-defined answer; this part of the contract is unchanged.
+* The `source` operand is required to root in a
+  `dataflow.spatial_layout` result through the recursive provenance
+  chain defined below. The `local_range` op need not be lexically
+  adjacent to the `dataflow.spatial_layout`: the chain is the
+  binding mechanism, not lexical proximity.
+
+#### 3.2.1 Source provenance chain
+
+The chain is evaluated relative to a *provenance context*: the
+chain scope where the candidate `%v` is currently being checked.
+Initially the context is the lexical scope that holds the
+`local_range` op. Crossing a `dataflow.thread` boundary moves the
+context outward to the enclosing scope; the recursion may eventually
+reach host scope, which is also a valid terminating context.
+
+A value `%v` is an admissible `local_range` source iff at least one
+of the following cases holds in the current provenance context:
+
+1. **Direct match.** `%v` is the result of a `dataflow.spatial_layout`
+   op in the current provenance context. By §4 of this document, a
+   `dataflow.spatial_layout` op may appear at host scope or inside a
+   `dataflow.thread` body. Both placements are admissible terminating
+   contexts: when the chain has unwound to either scope and `%v` is a
+   `dataflow.spatial_layout` result there, the chain terminates.
+   Recursive descent through `scf.*` regions of the same scope is
+   transparent.
+
+2. **One thread boundary.** `%v` is the entry block argument at
+   position `i` of a `dataflow.thread` body, where `i` indexes the
+   body-operand segment of the entry block argument list (the segment
+   that follows the leading `thread_ctrl` argument and the per-grid-dim
+   induction-variable arguments, in declaration order). Let `%w` be
+   the body operand at element `i` of that thread op's `bodyOperands`
+   segment in the enclosing context (this is a positional index into
+   the `bodyOperands` ODS segment of `dataflow.thread`, not an absolute
+   op operand index, so it ignores any non-body operand groups such as
+   async dependencies or dynamic grid bounds). Per Part 3 §5.4.1 / §9,
+   every memref-like body operand must be a `dataflow.map_info` result.
+   Let `%s` be the `source` operand of that `dataflow.map_info`. Case 2
+   is satisfied iff `%s` is itself an admissible source by the same
+   recursive rule, evaluated in the enclosing context.
+
+3. **Nested thread boundaries.** Apply rule 2 recursively. Each
+   thread layer crossed must satisfy the `dataflow.map_info`
+   passthrough at that layer; the recursion terminates at a
+   `dataflow.spatial_layout` result by rule 1, in either host scope
+   or a thread body, whichever is reached first.
+
+The verifier walks this chain explicitly. There is no type-level
+marker on the boundary memref: by Part 3 §5.4.5, `dataflow.map_info`
+preserves the source type unchanged, so the in-thread block argument
+at index `i` has exactly the same memref type as the outer
+`dataflow.spatial_layout` source. Same-type passthrough is therefore
+not an annotation that travels with the value; it is a property the
+verifier reconstructs by walking SSA edges.
+
+#### 3.2.2 Why a chain rather than a type marker
+
+The first milestone deliberately keeps `dataflow.spatial_layout` as
+a zero-cost annotation: its result type equals its source type (see
+§3.1 and §2). Two alternative type-level designs were considered and
+rejected for this milestone:
+
+* A boundary / provenance wrapper such as `!loom.mapped<T>` (which
+  was originally proposed for the `dataflow.thread` boundary; dropped
+  in commit `fef88b9`). Its job would have been to mark "this memref
+  came from a `dataflow.map_info`" so a downstream verifier could
+  type-check provenance.
+* A spatial-layout carrier such as `!dataflow.spatial_array<...>`
+  that would replace the source memref type at the
+  `dataflow.spatial_layout` result. Its job would have been to carry
+  the layout annotation in the type system rather than in an SSA edge
+  to the layout op.
+
+Both options would have let `local_range` admit any operand whose
+type is the marker. Neither was adopted in this milestone, in order
+to keep the annotation transparent to existing memref-aware passes
+and to match the `shard.shard` precedent. As a consequence, the
+binding from `local_range` back to its rooting
+`dataflow.spatial_layout` must be expressed as an SSA chain rather
+than as a single type check. A future milestone that adopts the
+strong-typed spatial carrier (see §6) may collapse the chain check
+to a type check, but the in-thread query signature stays the same.
 
 ### 3.3 `dataflow.spatial_coord` and `dataflow.spatial_linear_id`
 
@@ -151,10 +235,14 @@ spatial_linear_id:
     (the ScalarCore portion of a thread). The verifier rejects it
     inside `dataflow.graph`. When the annotated memref crosses a
     `dataflow.thread` boundary, it does so as the source of a
-    `dataflow.map_info`; the annotation stays on the source memref,
-    and because `dataflow.map_info` passes its source type through
-    unchanged, the annotation is also observable on the in-thread
-    block argument that the boundary delivers.
+    `dataflow.map_info`; the annotation stays on the producing
+    `dataflow.spatial_layout` op rather than on the boundary memref
+    type. Because `dataflow.map_info` passes its source type through
+    unchanged, the in-thread block argument has the same type as the
+    outer source, but no type-level marker carries the annotation.
+    Verifiers that need to recover the annotation walk the SSA chain
+    back through `dataflow.map_info` to the rooting
+    `dataflow.spatial_layout` (see §3.2.1).
 
 * `dataflow.local_range`, `dataflow.spatial_coord`,
   `dataflow.spatial_linear_id`
@@ -163,6 +251,14 @@ spatial_linear_id:
     per-thread-instance constants; if a `dataflow.graph` body needs
     those values, they must be computed in the surrounding
     ScalarCore code and passed in as ordinary graph operands.
+  - For `dataflow.local_range`, the verifier additionally checks the
+    source provenance chain defined in §3.2.1. Starting from the
+    `source` operand, it unwinds entry-block-argument-to-body-operand
+    edges across each enclosing `dataflow.thread` and follows the
+    `dataflow.map_info` passthrough at each layer until it reaches a
+    `dataflow.spatial_layout` result, or rejects the op if no such
+    chain exists. The thread mapping that the query reads must
+    reach the mesh axes of that rooted `dataflow.spatial_layout`.
   - A ScalarCore-callable `func.func` is a module-level symbol and
     is lexically outside any `dataflow.thread` body, so it cannot
     contain these query ops directly. A ScalarCore-callable helper
@@ -185,10 +281,12 @@ spatial_linear_id:
   through ordinary graph operands.
 * Spatial-array values still cross the HostCore-to-AccCore boundary
   through the same `dataflow.map_info` protocol that Part 3 defines
-  for any other memref-shaped boundary value. The annotation is
-  preserved on the source memref, and because `dataflow.map_info`
-  passes its source type through unchanged the annotation is also
-  observable on the in-thread block argument.
+  for any other memref-shaped boundary value. The annotation lives
+  on the producing `dataflow.spatial_layout` op; because
+  `dataflow.map_info` passes its source type through unchanged, the
+  in-thread block argument has the same memref type as the outer
+  source but carries no type-level marker. Verifiers that need to
+  recover the annotation walk the SSA chain (see §3.2.1).
 * `dataflow.thread` mapping (`#loom.spatial<...>` /
   `#loom.temporal<...>`) is the first-class binding from grid dim to
   physical core-grid coordinate. The spatial-array ops use that
