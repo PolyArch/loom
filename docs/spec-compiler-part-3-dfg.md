@@ -274,7 +274,8 @@ each rule lands in IR.
   `dataflow.thread` body operand. Direction and optional bound
   information live as attributes on the producing op, not on the
   result type.
-* **Mem alias oracle.** A `MemAliasOracle` C++ interface returning
+* **`MemAliasOracle`.** The C++ interface (canonical spelling
+  matches the C++ class name) returning
   `MustNotAlias` / `MayAlias` / `MustAlias` for any pair of memory
   access ops inside one `dataflow.graph`. It answers conflict only;
   it does not define execution order. Specified in
@@ -288,6 +289,29 @@ each rule lands in IR.
   represents "all memory effects in this partition from previous
   dynamic iterations have retired." Specified in
   `docs/spec-compiler-part-3-mem.md` §5.
+* **rwc bit.** A loop-control bit produced by `dataflow.stream` for
+  counted loops: it fires `true` once per body iteration and one
+  trailing `false` token at the sentinel reset cycle that closes the
+  loop. The combined `(true, ..., true, false)` stream phases the
+  structural carry and any per-partition memory carry of the loop;
+  the false-lane projection is the loop-exit value. The exact
+  timing semantics live in `docs/spec-dataflow-part-1-streaming.md`.
+* **Streaming token.** Any `none`-typed token consumed or produced
+  by the streaming primitives `dataflow.stream`, `dataflow.gate`,
+  `dataflow.invariant`, and `dataflow.carry`. Streaming tokens
+  carry phase / iteration information rather than memory-state
+  information; their precise timing semantics are owned by
+  `docs/spec-dataflow-part-1-streaming.md`. The rwc bit above is
+  one specific streaming token.
+* **Memory-order token.** A `none`-typed token used to encode
+  alias-aware ordering between memory accesses inside a
+  `dataflow.graph`. Each per-partition frontier (see §2.4 of
+  `docs/spec-compiler-part-3-mem.md`) flows through its own
+  memory-order tokens; the leaf rendezvous in §6.4 of that
+  document combines a structural permission token with a
+  memory-order predecessor token at each load / store. Memory-order
+  tokens do not encode dynamic execution path (that is the
+  structural execution role of §2.1 there).
 * **Aggregation-form forall.** An `scf.forall` with `shared_outs`,
   op results, or non-empty `scf.forall.in_parallel` combining actions
   such as `tensor.parallel_insert_slice`.
