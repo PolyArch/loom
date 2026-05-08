@@ -1,0 +1,25 @@
+# Per-corpus DFG-pipeline skip list for run_cmsis_nn_dfg.sh.
+#
+# Format:
+#   <src_relpath> # <one-line reason>
+#
+# - src_relpath matches the first column of cmsis_nn_targets.txt.
+# - The inline `# reason` portion is mandatory in spirit so the next
+#   reader can audit why a row is masked. The runner does not enforce
+#   non-empty reasons, but please add one so the audit trail survives.
+# - Blank lines and lines beginning with `#` are ignored.
+#
+# Skip budget: hybrid max(5, ceil(rows * 2%)). The runner exits with
+# status 3 if more entries are listed than the budget allows, on the
+# theory that beyond that threshold we are masking a systemic
+# loom-lower regression that should be fixed in lib/Frontend/Lowering
+# rather than papered over here.
+#
+# Skipped rows are still exercised by the IR-only and raise runners.
+# Only the SCF -> DFG lower pass is bypassed.
+#
+# This file is intentionally empty: every row in the targets file
+# currently lowers cleanly through loom-lower. If a future loom-lower
+# change regresses one of the rows, list it here with an inline
+# reason and open a follow-up to fix the underlying outliner /
+# capture / scheduling bug rather than letting the entry persist.
