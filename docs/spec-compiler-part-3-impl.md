@@ -421,8 +421,8 @@ documentation never refers to the numeric position.
   classification; the `MlirAaOracle` leaf-pair refinement does not
   propagate into the lift. Path-sensitive pruning, the parallel-
   provenance exception, the loop-carried real-edge rule, and the
-  optional transitive reduction follow `docs/spec-compiler-part-3-
-  mem.md` §4.3.
+  optional transitive reduction follow
+  `docs/spec-compiler-part-3-mem.md` §4.3.
 * The builder consumes parallel provenance from generated loops. For
   accesses in different logical iterations or different chunks of the
   same original `scf.parallel`, it must not create a dependence edge
