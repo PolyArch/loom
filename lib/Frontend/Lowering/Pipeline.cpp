@@ -5,11 +5,18 @@
 //     loom-lower-for-to-graph           (module-level)
 //     --canonicalize                    (upstream)
 //     loom-lower-reduction-to-stream    (module-level)
+//     loom-lower-graph-memory           (module-level)
+//     loom-lower-graph-invariant        (module-level)
+//     --canonicalize                    (upstream)
 //
 // The forall-to-thread pass runs first so that the for-to-graph pass
 // sees scf.for ops already inside dataflow.thread bodies. The
 // canonicalizer between for-to-graph and reduction-to-stream cleans
 // up trivial dead bridge values before we walk the graph.func body.
+// graph-memory runs before graph-invariant so the latter can skip
+// pointer args that have already been bridged to memref. The closing
+// canonicalize pass cleans up dead llvm.getelementptr / dataflow.carry
+// chains the memory pass leaves behind.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -22,6 +29,8 @@ namespace lowering {
 
 void registerLowerForallToThreadPass();
 void registerLowerForToGraphPass();
+void registerLowerGraphInvariantPass();
+void registerLowerGraphMemoryPass();
 void registerLowerReductionToStreamPass();
 
 static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
@@ -29,11 +38,16 @@ static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
   pm.addPass(createLowerForToGraphPass());
   pm.addPass(::mlir::createCanonicalizerPass());
   pm.addPass(createLowerReductionToStreamPass());
+  pm.addPass(createLowerGraphMemoryPass());
+  pm.addPass(createLowerGraphInvariantPass());
+  pm.addPass(::mlir::createCanonicalizerPass());
 }
 
 void registerLoweringPasses() {
   registerLowerForallToThreadPass();
   registerLowerForToGraphPass();
+  registerLowerGraphInvariantPass();
+  registerLowerGraphMemoryPass();
   registerLowerReductionToStreamPass();
   static bool once = []() {
     ::mlir::PassPipelineRegistration<>(

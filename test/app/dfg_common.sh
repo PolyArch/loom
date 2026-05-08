@@ -95,5 +95,40 @@ dfg_one() {
                 return 1
             fi
         fi
+        # Memory tokenization: the graph-memory pass replaces residual
+        # llvm.{load, store} ops in the graph.func body with the
+        # dataflow.{load, store} streaming primitives. Default to
+        # asserting at least one dataflow.load (every reduction body
+        # in test/app reads from an input array). Set EXPECT_LOAD=no
+        # to opt out.
+        if [[ "${EXPECT_LOAD:-yes}" == "yes" ]]; then
+            if ! grep -E -q 'dataflow\.load ' "${dfg}"; then
+                echo "[${KERNEL}/${variant}] no dataflow.load in ${dfg}" >&2
+                return 1
+            fi
+        fi
+        # Stores in graph.func bodies only appear when the kernel's
+        # reduction loop also writes back into a buffer. The five
+        # current test/app kernels are pure-reduction (read-only inside
+        # the reduction body), so EXPECT_STORE defaults to "no". The
+        # cmsis-dsp / cmsis-nn corpora exercise the store path (e.g.
+        # arm_offset_f32, arm_relu_q7).
+        if [[ "${EXPECT_STORE:-no}" == "yes" ]]; then
+            if ! grep -E -q 'dataflow\.store ' "${dfg}"; then
+                echo "[${KERNEL}/${variant}] no dataflow.store in ${dfg}" >&2
+                return 1
+            fi
+        fi
+        # Loop-invariant block-arg scalars consumed inside the body
+        # get wrapped in dataflow.invariant by the graph-invariant
+        # pass. Every test/app reduction body has at least one (the
+        # accumulator initial value), so EXPECT_INVARIANT defaults to
+        # "yes".
+        if [[ "${EXPECT_INVARIANT:-yes}" == "yes" ]]; then
+            if ! grep -E -q 'dataflow\.invariant ' "${dfg}"; then
+                echo "[${KERNEL}/${variant}] no dataflow.invariant in ${dfg}" >&2
+                return 1
+            fi
+        fi
     fi
 }

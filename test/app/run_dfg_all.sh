@@ -18,7 +18,7 @@ set -uo pipefail
 export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNELS=(vecadd gemm dotproduct conv1d reduction)
+KERNELS=(vecadd gemm dotproduct conv1d reduction prefix_sum)
 
 declare -a passed=()
 declare -a failed=()

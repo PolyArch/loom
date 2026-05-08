@@ -1,6 +1,8 @@
 add_mlir_library(LoomFrontendLowering
   LowerForallToThreadPass.cpp
   LowerForToGraphPass.cpp
+  LowerGraphInvariantPass.cpp
+  LowerGraphMemoryPass.cpp
   LowerReductionToStreamPass.cpp
   Pipeline.cpp
 
@@ -12,6 +14,8 @@ add_mlir_library(LoomFrontendLowering
   MLIRDataflow
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
+  MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
   MLIRSupport

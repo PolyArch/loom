@@ -12,7 +12,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNELS=(vecadd gemm dotproduct conv1d reduction)
+KERNELS=(vecadd gemm dotproduct conv1d reduction prefix_sum)
 
 CC="${CC:-gcc}"
 CXX="${CXX:-g++}"
