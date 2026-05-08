@@ -1,0 +1,145 @@
+# CMSIS-NN LLVM IR drop-in smoke pipeline
+
+`run_cmsis_nn_ir.sh` drives `loom-cc` against a representative subset
+of ARM CMSIS-NN sources living under
+`externals/cmsis-nn/Source/<subdir>/`. Each source is compiled with
+`--target=<arm-triple> -mcpu=<cortex-m*> -emit-llvm -S` and the
+resulting `.ll` is inspected for two cheap invariants:
+
+1. The IR carries the expected normalized ARM target triple
+   (e.g. `thumbv7em-unknown-none-eabi`), confirming clang switched to
+   the ARM frontend even though loom-cc's bundled backend is x86_64-only.
+2. The IR contains a `define` for every expected function symbol
+   listed for that source. ALL listed symbols must be present (the
+   pipeline does not pass on any-of); `declare` does not satisfy the
+   check because we want the wrapper bodies to actually lower.
+
+This is a pure smoke check: no behavioral assertions on the IR, no
+codegen step (the bundled LLVM is built with `LLVM_TARGETS_TO_BUILD=host`
+and has no ARM backend, but the clang frontend can still emit IR for
+any triple it knows).
+
+## Layout
+
+| Path                         | Role                                                        |
+|------------------------------|-------------------------------------------------------------|
+| `cmsis_nn_targets.txt`       | One row per source: triple, cpu, expected triple/symbols.   |
+| `run_cmsis_nn_ir.sh`         | Loops over rows, invokes loom-cc, asserts the invariants.   |
+| `out/<basename>.ll`          | Per-source IR artifact (regenerated each run).              |
+| `out/<basename>.log`         | loom-cc stdout/stderr captured for failures.                |
+
+`out/` is gitignored together with everything under `out/`; do not
+commit the `.ll` artifacts.
+
+## Running locally
+
+From the repo root:
+
+```bash
+bash test/cmsis-nn/run_cmsis_nn_ir.sh
+```
+
+The script honors `LOOM_CC` if you want to point at an alternate
+binary; otherwise it resolves `build/bin/loom-cc` relative to the
+repo root. If the binary is missing the script exits 2 with a hint
+to build it.
+
+## Include path requirements
+
+CMSIS-NN's public headers only pull in `<stdbool.h>`, `<stdint.h>`,
+`<limits.h>`, and `<string.h>`. They do NOT depend on CMSIS-Core. So
+the runner threads a single CMSIS include root into every invocation:
+
+1. `externals/cmsis-nn/Include` -- CMSIS-NN public.
+
+This is in contrast with the cmsis-dsp pipeline, which also threads in
+`externals/cmsis-core/CMSIS/Core/Include` and
+`externals/cmsis-dsp/PrivateInclude`. If you add a new row to
+`cmsis_nn_targets.txt` and the source needs additional include roots,
+wire them into the runner explicitly rather than reaching into the
+source tree -- the externals are vendored verbatim and must stay
+untouched.
+
+## Libc-header strategy: `-isystem /usr/include`
+
+CMSIS-NN transitively includes `<string.h>`, `<stdint.h>`,
+`<limits.h>`, and `<stdbool.h>`. We are cross-compiling for thumb but
+only emitting IR (no link, no ARM codegen here, since the bundled
+LLVM is host-only), so it is enough to point clang at the host's
+glibc headers via `-isystem /usr/include` and pretend we are hosted
+(`-D__STDC_HOSTED__=1`). The emitted IR's data layout still reflects
+the ARM target chosen by `--target=`; the host headers only affect
+preprocessing.
+
+The same `gnu/stubs.h` multilib dispatch wrinkle applies as in the
+cmsis-dsp pipeline: glibc's `gnu/stubs.h` selects a per-arch stub
+file (`gnu/stubs-32.h`, `gnu/stubs-64.h`, `gnu/stubs-x32.h`) by
+checking `__x86_64__`, `__LP64__`, and `__ILP32__`. The selected ARM
+triple defines `__ILP32__=1` and not `__x86_64__`, so vanilla
+`-isystem /usr/include` lands on the missing 32-bit stubs file. The
+runner pins the dispatch to the LP64 stub explicitly:
+
+```
+-D__x86_64__=1 -D__LP64__=1 -U__ILP32__
+```
+
+These defines only steer preprocessing through `gnu/stubs.h`. They
+do not change the target triple, the data layout, or the lowered
+intrinsics in the emitted IR -- those remain the ARM ones the
+`--target=`/`-mcpu=` pair selected.
+
+See [`../cmsis-dsp/README.md`](../cmsis-dsp/README.md) for the shared
+rationale and a longer discussion of why we accept this for
+parse-level smoke rather than vendoring an ARM newlib sysroot.
+
+## Coverage
+
+Sources are picked from the per-feature subdirectories under
+`externals/cmsis-nn/Source/`. We prefer the s8 (int8) variants since
+s8 is the modern CMSIS-NN naming and tends to have the simplest
+dependency footprint; the q7/q15 ReLU sources are kept because they
+are the classic CMSIS-NN ReLU entry points.
+
+| subdir                     | sources                                                     |
+|----------------------------|-------------------------------------------------------------|
+| `ActivationFunctions`      | `arm_relu_q15.c`, `arm_relu_q7.c`, `arm_relu6_s8.c`         |
+| `BasicMathFunctions`       | `arm_elementwise_add_s8.c`, `arm_minimum_s8.c`, `arm_maximum_s8.c` |
+| `ConcatenationFunctions`   | `arm_concatenation_s8_w.c`, `arm_concatenation_s8_x.c`      |
+| `ConvolutionFunctions`     | `arm_depthwise_conv_s8.c`, `arm_convolve_1x1_s8_fast.c`     |
+| `FullyConnectedFunctions`  | `arm_fully_connected_s8.c`, `arm_vector_sum_s8.c`           |
+| `NNSupportFunctions`       | `arm_q7_to_q15_with_offset.c`                               |
+| `PoolingFunctions`         | `arm_avgpool_s8.c`, `arm_max_pool_s8.c` (v8m.main)          |
+| `ReshapeFunctions`         | `arm_reshape_s8.c`                                          |
+| `SoftmaxFunctions`         | `arm_softmax_s8.c`, `arm_softmax_u8.c`                      |
+
+The default triple for s8 sources is `thumbv7em-none-eabi -mcpu=cortex-m4`.
+One row uses `thumbv8m.main-none-eabi -mcpu=cortex-m33` so the v8m-main
+profile is exercised end-to-end.
+
+## Extending the source list
+
+1. Pick a `.c` file under `externals/cmsis-nn/Source/<subdir>/`.
+   Prefer s8 variants when in doubt; SVE/MVE-only files require
+   target features we do not enable, so skip them.
+2. Append a pipe-separated row to `cmsis_nn_targets.txt`:
+   `src_relpath | triple | mcpu | normalized_triple | expected_symbols | extra_cflags`
+3. The normalized triple is what clang emits in the IR (run the
+   script once and grep the failing log if you are not sure).
+4. Some CMSIS-NN files (e.g. `arm_nntables.c`) define only static
+   tables. Those will not satisfy the `define ... @sym(` check; pick
+   a different source rather than weakening the runner.
+5. If the source's primary definition is gated behind a feature you
+   do not enable (`ARM_MATH_DSP`, `ARM_MATH_MVEI`, ...), the
+   non-feature path still has to compile. Pick a different source if
+   only the gated variant is meaningful.
+6. If a row needs an extra preprocessor define beyond `-mcpu=`, put
+   it in the `extra_cflags` column rather than editing the source.
+
+## Constraint: do not modify externals
+
+Everything under `externals/cmsis-nn/`, `externals/cmsis-dsp/`, and
+`externals/cmsis-core/` is vendored verbatim from ARM. The pipeline
+must remain a no-touch drop-in: any per-source tweak belongs in
+`cmsis_nn_targets.txt` or in the runner's flag composition. If a
+source genuinely cannot compile even with correct flags, drop it
+from the list and document the reason in the commit message.
