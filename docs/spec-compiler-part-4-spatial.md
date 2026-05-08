@@ -39,8 +39,9 @@ Part 4 owns:
 
 Part 4 does not own:
 
-* The HostCore-to-AccCore boundary or the `dataflow.thread` shape.
-  Those belong to Part 3.
+* The HostCore-to-AccCore boundary or the `dataflow.thread`
+  definition / `dataflow.thread.launch` shape. Those belong to
+  Part 3.
 * The structured-control-to-dataflow flattening rules. Those belong to
   Part 3.
 * The lattice-cell to fabric-resource binding. Layout-aware fabric
@@ -153,11 +154,11 @@ traits:
   ops, so a leaf access on the `annotated` result roots in the
   same storage identity as a leaf access on `source`. The op
   itself is side-effect-free; any `MemoryEffectOpInterface`
-  projection performed on a `dataflow.thread` body operand whose
+  projection performed on a `dataflow.thread` definition's body operand whose
   matching `dataflow.map_info` source is the `annotated` result
   reads through to the underlying `source` memref's effects, by
   the same passthrough rule that `dataflow.map_info` uses (see
-  Part 3 §5.4.5 and §9 thread verifier rules).
+  Part 3 §5.4.6 and §9 thread verifier rules).
 * `tileDims` describes the per-data-dim tile size, expressed in
   number of elements along each data dim. Each entry is a positive
   integer. Part 4 imposes no further numeric constraint: tile
@@ -200,7 +201,7 @@ traits:
 * `dim` is required to be in `[0, rank(source))`, where
   `rank(source)` is the rank of the `source` memref. A `dim` outside
   this half-open range is a verifier diagnostic.
-* The op must appear inside a `dataflow.thread` body, possibly
+* The op must appear inside a `dataflow.thread` definition's body, possibly
   nested inside `scf.*` regions of that thread body. The thread's
   `mapping` must reach the lattice axes of the rooted
   `dataflow.spatial_layout` so that the local range query has a
@@ -230,7 +231,7 @@ traits:
 The chain is evaluated relative to a *provenance context*: the
 chain scope where the candidate `%v` is currently being checked.
 Initially the context is the lexical scope that holds the
-`local_range` op. Crossing a `dataflow.thread` boundary moves the
+`local_range` op. Crossing a `dataflow.thread.launch` boundary moves the
 context outward to the enclosing scope; the recursion may eventually
 reach host scope, which is also a valid terminating context.
 
@@ -240,26 +241,41 @@ of the following cases holds in the current provenance context:
 1. **Direct match.** `%v` is the result of a `dataflow.spatial_layout`
    op in the current provenance context. By §4 of this document, a
    `dataflow.spatial_layout` op may appear at host scope or inside a
-   `dataflow.thread` body. Both placements are admissible terminating
+   `dataflow.thread` definition's body. Both placements are admissible terminating
    contexts: when the chain has unwound to either scope and `%v` is a
    `dataflow.spatial_layout` result there, the chain terminates.
    Recursive descent through `scf.*` regions of the same scope is
    transparent.
 
 2. **One thread boundary.** `%v` is the entry block argument at
-   position `i` of a `dataflow.thread` body, where `i` indexes the
-   body-operand segment of the entry block argument list (the segment
-   that follows the leading `thread_ctrl` argument and the per-grid-dim
-   induction-variable arguments, in declaration order). Let `%w` be
-   the body operand at element `i` of that thread op's `bodyOperands`
-   segment in the enclosing context (this is a positional index into
-   the `bodyOperands` ODS segment of `dataflow.thread`, not an absolute
-   op operand index, so it ignores any non-body operand groups such as
-   async dependencies or dynamic grid bounds). Per Part 3 §5.4.1 / §9,
-   every memref-like body operand must be a `dataflow.map_info` result.
-   Let `%s` be the `source` operand of that `dataflow.map_info`. Case 2
-   is satisfied iff `%s` is itself an admissible source by the same
-   recursive rule, evaluated in the enclosing context.
+   position `i` of a `dataflow.thread` definition's body, where
+   `i` indexes the body-operand segment of the entry block argument
+   list. Per Part 3 §5.4.1, the entry block layout is
+   `(args_*, thread_ctrl, iv_*)`; the args segment is the leading
+   `N` block args matching `function_type.inputs` exactly. Let `%w`
+   be the launch-side body operand at element `i` of the
+   corresponding `dataflow.thread.launch`'s `bodyOperands` segment
+   in the enclosing context (this is a positional index into the
+   `bodyOperands` ODS segment of `dataflow.thread.launch`, not an
+   absolute op operand index, so it ignores any non-body operand
+   groups such as async dependencies or dynamic grid bounds). Per
+   Part 3 §5.4.2 / §9, every memref-like body operand of a
+   `dataflow.thread.launch` must be a `dataflow.map_info` result.
+   Let `%s` be the `source` operand of that `dataflow.map_info`.
+   Case 2 is satisfied iff `%s` is itself an admissible source by
+   the same recursive rule, evaluated in the enclosing context.
+
+   **Multi-launch handling (v1 contract).** The first milestone
+   pipeline emits a 1:1 def + launch pairing for every promoted
+   thread, so "the corresponding `dataflow.thread.launch`" is
+   unambiguous. If a future pass shares one
+   `dataflow.thread` definition across multiple launch sites, the
+   verifier walk for `local_range` either runs once per launch
+   site (yielding per-launch admission), or an additional verifier
+   rule must require that all launch sites supply the same chain-
+   admissible `%w` for each memref-like body arg. Either path is
+   acceptable for that future change; v1 takes the simpler 1:1
+   path and reads "the corresponding launch" as unambiguous.
 
 3. **Nested thread boundaries.** Apply rule 2 recursively. Each
    thread layer crossed must satisfy the `dataflow.map_info`
@@ -268,7 +284,7 @@ of the following cases holds in the current provenance context:
    or a thread body, whichever is reached first.
 
 The verifier walks this chain explicitly. There is no type-level
-marker on the boundary memref: by Part 3 §5.4.5, `dataflow.map_info`
+marker on the boundary memref: by Part 3 §5.4.6, `dataflow.map_info`
 preserves the source type unchanged, so the in-thread block argument
 at index `i` has exactly the same memref type as the outer
 `dataflow.spatial_layout` source. Same-type passthrough is therefore
@@ -283,7 +299,7 @@ a zero-cost annotation: its result type equals its source type (see
 rejected for this milestone:
 
 * A boundary / provenance wrapper such as `!loom.mapped<T>` (an
-  earlier proposal for the `dataflow.thread` boundary, not adopted
+  earlier proposal for the `dataflow.thread.launch` boundary, not adopted
   in this milestone). Its job would have been to mark "this memref
   came from a `dataflow.map_info`" so a downstream verifier could
   type-check provenance.
@@ -315,7 +331,7 @@ spatial_linear_id:
   results: Index:$id;
 ```
 
-* Both must appear inside a `dataflow.thread` body. They report the
+* Both must appear inside a `dataflow.thread` definition's body. They report the
   current thread instance's coordinate vector (`spatial_coord`) or
   flattened cell id (`spatial_linear_id`) within the logical
   partition lattice, based only on the `#loom.spatial<...>` entries
@@ -409,10 +425,11 @@ spatial_linear_id:
     `k = len(@M.shape)`. The same axis must not appear twice across
     `splitAxes` (an axis cannot simultaneously partition two data
     dims).
-  - May appear at host scope or inside a `dataflow.thread` body
-    (the ScalarCore portion of a thread). The verifier rejects it
-    inside `dataflow.graph`. When the annotated memref crosses a
-    `dataflow.thread` boundary, it does so as the source of a
+  - May appear at host scope or inside a `dataflow.thread`
+    definition's body (the ScalarCore portion of a thread). The
+    verifier rejects it inside a `dataflow.graph` definition's body.
+    When the annotated memref crosses a `dataflow.thread.launch`
+    boundary, it does so as the source of a
     `dataflow.map_info`; the annotation stays on the producing
     `dataflow.spatial_layout` op rather than on the boundary memref
     type. Because `dataflow.map_info` passes its source type through
@@ -424,10 +441,12 @@ spatial_linear_id:
 
 * `dataflow.local_range`, `dataflow.spatial_coord`,
   `dataflow.spatial_linear_id`
-  - Must be inside a `dataflow.thread` body. The verifier rejects
-    them at host scope or inside `dataflow.graph`. Their results are
-    per-thread-instance constants; if a `dataflow.graph` body needs
-    those values, they must be computed in the surrounding
+  - Must be inside a `dataflow.thread` definition's body. The
+    verifier rejects them at host scope or inside a
+    `dataflow.graph` definition's body. Their results are
+    per-thread-instance constants; if a `dataflow.graph`
+    definition's body needs those values, they must be computed in
+    the surrounding
     ScalarCore code and passed in as ordinary graph operands.
   - For `dataflow.spatial_coord`, the result vector length must
     equal the count of `#loom.spatial<...>` entries in the enclosing
@@ -461,11 +480,12 @@ spatial_linear_id:
     when only a subset of axes is mapped).
   - For `dataflow.local_range`, the verifier additionally checks the
     source provenance chain defined in §3.3.1. Starting from the
-    `source` operand, it unwinds entry-block-argument-to-body-operand
-    edges across each enclosing `dataflow.thread` and follows the
-    `dataflow.map_info` passthrough at each layer until it reaches a
-    `dataflow.spatial_layout` result, or rejects the op if no such
-    chain exists. The thread mapping that the query reads must
+    `source` operand, it unwinds entry-block-argument-to-launch-
+    operand edges across each enclosing `dataflow.thread.launch`
+    (resolved through the launch's callee `dataflow.thread`
+    definition) and follows the `dataflow.map_info` passthrough at
+    each layer until it reaches a `dataflow.spatial_layout` result,
+    or rejects the op if no such chain exists. The thread mapping that the query reads must
     reach the lattice axes of that rooted `dataflow.spatial_layout`
     (per §3.3 reach definition). The `dim` attribute must lie in
     `[0, rank(source))`; the verifier rejects an out-of-range
@@ -473,41 +493,45 @@ spatial_linear_id:
     because the `source` operand uniquely identifies the rooted
     layout (and hence its lattice) via the §3.3.1 chain.
   - A ScalarCore-callable `func.func` is a module-level symbol and
-    is lexically outside any `dataflow.thread` body, so it cannot
+    is lexically outside any `dataflow.thread` definition's body, so it cannot
     contain these query ops directly. A ScalarCore-callable helper
     that needs a spatial query must be inlined or specialized into
-    the active thread context before verifier / finalization runs.
-    This matches the ScalarCore-call handling Part 3 already
-    requires for callees that contain code which must become
-    `dataflow.graph` or nested `dataflow.thread` (see Part 3 §2.1).
+    the active thread definition's context before verifier /
+    finalization runs. This matches the ScalarCore-call handling
+    Part 3 already requires for callees that contain code which
+    must become a `dataflow.graph.launch` or a nested
+    `dataflow.thread.launch` (see Part 3 §2.1).
 
 ## 5. Interaction with Part 3
 
 * Spatial-array ops are not part of the SCF-to-DFG flattening
   templates in Part 3 and do not appear inside a `dataflow.graph`
-  body. `dataflow.spatial_layout` is a memref annotation emitted at
-  host scope or inside the ScalarCore portion of a thread body. The
-  query ops `dataflow.local_range`, `dataflow.spatial_coord`, and
-  `dataflow.spatial_linear_id` appear only inside thread bodies.
-  Their results are per-thread-instance constants; when a graph
-  body needs them, they are computed in ScalarCore and passed in
-  through ordinary graph operands.
+  definition's body. `dataflow.spatial_layout` is a memref
+  annotation emitted at host scope or inside the ScalarCore portion
+  of a thread definition's body. The query ops
+  `dataflow.local_range`, `dataflow.spatial_coord`, and
+  `dataflow.spatial_linear_id` appear only inside thread definition
+  bodies. Their results are per-thread-instance constants; when a
+  graph definition's body needs them, they are computed in
+  ScalarCore and passed in through ordinary graph launch operands.
 * Spatial-array values still cross the HostCore-to-AccCore boundary
   through the same `dataflow.map_info` protocol that Part 3 defines
-  for any other memref-shaped boundary value. The annotation lives
-  on the producing `dataflow.spatial_layout` op; because
-  `dataflow.map_info` passes its source type through unchanged, the
-  in-thread block argument has the same memref type as the outer
-  source but carries no type-level marker. Verifiers that need to
-  recover the annotation walk the SSA chain (see §3.3.1).
-* `dataflow.thread` mapping (`#loom.spatial<...>` /
-  `#loom.temporal<...>`) is the first-class binding from grid dim to
-  logical lattice axis. The spatial-array ops use that binding to
-  compute local ranges and lattice coordinates; they do not
-  introduce a parallel hardware-mapping mechanism. The mapping
-  attribute does not commit to a fabric topology by itself; any
-  mapping from logical lattice cells to physical fabric resources
-  is supplied by a separate binding artefact (see §7).
+  for any other memref-shaped boundary value at a
+  `dataflow.thread.launch`. The annotation lives on the producing
+  `dataflow.spatial_layout` op; because `dataflow.map_info` passes
+  its source type through unchanged, the in-thread block argument
+  has the same memref type as the outer source but carries no type-
+  level marker. Verifiers that need to recover the annotation walk
+  the SSA chain (see §3.3.1).
+* The `dataflow.thread` definition's mapping
+  (`#loom.spatial<...>` / `#loom.temporal<...>`) is the first-class
+  binding from grid dim to logical lattice axis. The spatial-array
+  ops use that binding to compute local ranges and lattice
+  coordinates; they do not introduce a parallel hardware-mapping
+  mechanism. The mapping attribute does not commit to a fabric
+  topology by itself; any mapping from logical lattice cells to
+  physical fabric resources is supplied by a separate binding
+  artefact (see §7).
 
 ## 6. Testing Strategy
 
@@ -527,14 +551,14 @@ subdirectory holds `valid.mlir`, `invalid.mlir`, and
   sharing the same `sym_name` (rejected by the symbol-table
   verifier), and a nested-rather-than-top-level placement.
 * `spatial_layout/`. valid.mlir covers a layout op at host scope, a
-  layout op inside a `dataflow.thread` body, a layout op inside
+  layout op inside a `dataflow.thread` definition's body, a layout op inside
   `scf.*` regions nested in a thread body, a 1-D-mesh case (single
   lattice axis, single split axis), and a non-power-of-two `tileDims`
   entry whose acceptance demonstrates that Part 4 no longer enforces
   the SPGPU prototype constraint (the constraint is relocated to
   binding-time validation per §7). invalid.mlir pins each §4
   `dataflow.spatial_layout` verifier rule on at least one fixture:
-  a layout op inside a `dataflow.graph` body (rejected per §1 and
+  a layout op inside a `dataflow.graph` definition's body (rejected per §1 and
   §4); a layout op operating on a non-memref source; a layout op
   whose `tileDims` rank does not equal the source memref rank; a
   layout op whose `tileDims` contains a non-positive entry; a
@@ -546,29 +570,31 @@ subdirectory holds `valid.mlir`, `invalid.mlir`, and
   unresolved; and a layout op whose `mesh` symbol resolves to a
   non-`dataflow.mesh` op kind.
 * `local_range/`. valid.mlir exercises each provenance-chain rule
-  from §3.3.1 separately: rule 1 with the layout in the same thread
-  body as the query (direct match); rule 2 with the layout at host
-  scope, the value crossing one `dataflow.thread` boundary, and the
-  body operand at the matching position produced by
-  `dataflow.map_info`; rule 3 with at least one chain length covering
-  two thread layers, so the verifier walk is exercised through more
-  than one `dataflow.map_info` passthrough; and a case with `scf.*`
-  regions nested between the layout op and the query inside the same
-  thread body, confirming that scf nesting is transparent. valid.mlir
-  also includes a multi-lattice fixture: the same `dataflow.thread`
-  body hosts two `dataflow.spatial_layout` ops that reference two
-  distinct `dataflow.mesh @M0` and `@M1`, with corresponding
-  `#loom.spatial<axis, @M0>` and `#loom.spatial<axis, @M1>` entries
-  in the thread's `mapping`, and two separate `dataflow.local_range`
-  queries (one per layout). The fixture asserts that the §3.3.1
-  chain disambiguates each query's rooted lattice without rejecting
-  the multi-lattice thread. invalid.mlir covers a
+  from §3.3.1 separately: rule 1 with the layout in the same
+  thread definition's body as the query (direct match); rule 2
+  with the layout at host scope, the value crossing one
+  `dataflow.thread.launch` boundary, and the body operand at the
+  matching position produced by `dataflow.map_info`; rule 3 with
+  at least one chain length covering two thread definition layers,
+  so the verifier walk is exercised through more than one
+  `dataflow.map_info` passthrough; and a case with `scf.*` regions
+  nested between the layout op and the query inside the same
+  thread definition's body, confirming that scf nesting is
+  transparent. valid.mlir also includes a multi-lattice fixture:
+  the same `dataflow.thread` definition's body hosts two
+  `dataflow.spatial_layout` ops that reference two distinct
+  `dataflow.mesh @M0` and `@M1`, with corresponding
+  `#loom.spatial<axis, @M0>` and `#loom.spatial<axis, @M1>`
+  entries in the thread definition's `mapping`, and two separate
+  `dataflow.local_range` queries (one per layout). The fixture
+  asserts that the §3.3.1 chain disambiguates each query's rooted
+  lattice without rejecting the multi-lattice thread definition. invalid.mlir covers a
   `local_range` whose source does not chain to any
   `dataflow.spatial_layout` (chain walk fails); a `local_range`
-  outside any `dataflow.thread` body (rejected per §4); a
+  outside any `dataflow.thread` definition's body (rejected per §4); a
   `local_range` whose enclosing thread mapping does not reach the
   lattice axes of the rooted `dataflow.spatial_layout`; a chain that
-  crosses a `dataflow.thread` boundary where the body operand at the
+  crosses a `dataflow.thread.launch` boundary where the body operand at the
   matching position is not a `dataflow.map_info` result, so rule 2
   fails; a `local_range` whose `dim` attribute is out of range for
   the source memref rank (per §4 verifier rule); and a `local_range`
@@ -580,7 +606,7 @@ subdirectory holds `valid.mlir`, `invalid.mlir`, and
 * `spatial_coord/` and `spatial_linear_id/`. Both ops take no
   arguments per §3.4, so verifier coverage is purely placement and
   result-shape oriented. valid.mlir places the query inside a
-  `dataflow.thread` body, in both a non-nested thread body and a
+  `dataflow.thread` definition's body, in both a non-nested thread body and a
   nested-thread body, and confirms that `spatial_coord` returns a
   result vector whose length equals the count of `#loom.spatial<...>`
   entries in the enclosing thread's `mapping` (temporal entries do
@@ -588,7 +614,7 @@ subdirectory holds `valid.mlir`, `invalid.mlir`, and
   every `#loom.spatial<...>` entry carries an explicit `lattice`
   qualifier referring to the same single lattice (positive case
   for the optional qualifier). invalid.mlir covers a query at host
-  scope, a query inside a `dataflow.graph` body (rejected per §1
+  scope, a query inside a `dataflow.graph` definition's body (rejected per §1
   and §4), a query inside an `scf.*` region that is itself outside
   any thread body, a query inside a thread whose `mapping` contains
   no `#loom.spatial<...>` entry (the empty-result case is rejected
@@ -617,10 +643,11 @@ subdirectory holds `valid.mlir`, `invalid.mlir`, and
     duplicating one axis.
 * Cross-cutting graph rejection. Each subdirectory's invalid.mlir
   also pins a small block where the spatial op appears inside a
-  `dataflow.graph` body and is rejected. No spatial op may appear
-  inside `dataflow.graph` (cross-ref §1 Scope and §4 Verifier
-  Rules); the per-subdirectory cases keep that single rule
-  observable from each op's own test surface.
+  `dataflow.graph` definition's body and is rejected. No spatial
+  op may appear inside a `dataflow.graph` definition's body
+  (cross-ref §1 Scope and §4 Verifier Rules); the per-subdirectory
+  cases keep that single rule observable from each op's own test
+  surface.
 
 The `local_range` provenance-chain coverage is the discipline that
 makes the verifier walk testable: rule 1, rule 2, and rule 3 are
@@ -692,9 +719,9 @@ pin individual op verifier rules.
 ## 8. References
 
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering.
-  Part 3 defines `dataflow.thread`, `dataflow.graph`, and
-  `dataflow.map_info`; Part 4 extends the dialect with the
-  spatial-array ops listed here.
+  Part 3 defines `dataflow.thread` (def + launch),
+  `dataflow.graph` (def + launch), and `dataflow.map_info`; Part 4
+  extends the dialect with the spatial-array ops listed here.
 * `docs/spec-compiler-part-3-impl.md` §2 Testing Strategy --
   lit-test layout pattern (`test/frontend/unit/`,
   `test/frontend/lower_scf/`, `test/frontend/integration/`) and

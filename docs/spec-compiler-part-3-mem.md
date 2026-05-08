@@ -6,7 +6,7 @@ dataflow IR. It is the single source of truth for the compositional
 chain model, the alias-oracle interface, the dependence builder,
 loop-carried memory state, and the token-wiring rules that turn the
 dependence snapshot into explicit `ctrl` and `done` SSA edges
-inside each `dataflow.graph`.
+inside each `dataflow.graph` definition's body.
 
 The first-principles IR carriers and SCF flattening templates live
 in `docs/spec-compiler-part-3-dfg.md`. The pass pipeline, lit-test
@@ -30,7 +30,7 @@ must be answered separately:
 Alias is symmetric and carries no direction. Dependence is
 directed, derived from program order and structured nesting, and
 turns into explicit `ctrl` and `done` SSA edges inside each
-`dataflow.graph`.
+`dataflow.graph` definition's body.
 
 The chain that carries those edges is not flat. SCF nesting is
 intrinsic to the source program, and the dataflow output must
@@ -92,18 +92,18 @@ The model uses the following terms:
 
 * **Chain scope.** A region that hosts atoms and exposes
   structural and memory-order endpoints. The body of a
-  `dataflow.graph` is the root chain scope. Each inner region of
-  an `scf.*` op is also a chain scope. Inner regions of nested
-  `scf.*` ops are chain scopes recursively.
+  `dataflow.graph` definition is the root chain scope. Each inner
+  region of an `scf.*` op is also a chain scope. Inner regions of
+  nested `scf.*` ops are chain scopes recursively.
 * **Atom.** A direct child of a chain scope that participates in
   chains. Three kinds:
   - **Leaf memory event.** A `dataflow.load`, `dataflow.store`, or
     other op that the dependence builder treats as a single
     memory access. `dataflow.thread.fence` is not a leaf event in
     this model: it must appear directly in a `dataflow.thread`
-    body per the front-end verifier in
-    `docs/spec-compiler-part-3-dfg.md` §9, and a thread body is
-    not a chain scope as defined here.
+    definition's body per the front-end verifier in
+    `docs/spec-compiler-part-3-dfg.md` §9, and a thread
+    definition's body is not a chain scope as defined here.
   - **Compound `scf.*` atom.** Any `scf.*` op whose transitive
     body content has memory effects. The compound is opaque to
     its enclosing scope's chain construction, except through its
@@ -144,15 +144,17 @@ role builds its per-partition frontier.
   atom's effect summary contains `U`, the compound participates
   in every known partition's chain at every enclosing scope that
   it is part of, until either the enclosing scope itself has no
-  known partitions visible or the `dataflow.graph` boundary is
-  reached. This is the precise statement of "may-aliases every
-  known partition" applied to nested scopes: a `U` effect at any
-  depth must serialize against every known partition in every
-  ancestor scope's chain.
+  known partitions visible or the `dataflow.graph` definition's
+  body is reached. This is the precise statement of "may-aliases
+  every known partition" applied to nested scopes: a `U` effect
+  at any depth must serialize against every known partition in
+  every ancestor scope's chain.
 
 Partition identity is graph-local. Numeric partition ids in the
-dependence snapshot (see §4) are chosen per `dataflow.graph` and
-need not match across graphs.
+dependence snapshot (see §4) are chosen per `dataflow.graph`
+definition and need not match across graphs (or across launches
+of the same graph definition; per-launch frontier wiring is the
+caller-side concern, see §6.5).
 
 ### 2.4 Per-Partition Memory Frontier
 
@@ -176,11 +178,17 @@ partition's per-`P` chain, so a `U` effect inside the compound
 serializes against every conflicting known-partition effect
 outside.
 
-For the root scope (a `dataflow.graph` body), `incoming_P` for
-every touched partition is derived from the graph's `ctrl_in`
-control port and any pre-graph dependence tail. The graph's
-`done_out` is the rendezvous of all final per-partition outgoing
-frontiers (see §6.5).
+For the root scope (a `dataflow.graph` definition's body),
+`incoming_P` for every touched partition is derived from the def's
+leading `ctrl_in` block argument (the per-launch start signal at
+`dataflow.graph.launch` time) and any pre-launch dependence tail
+visible at the launch site. The def's leading `done_out` yield
+operand is the rendezvous of all final per-partition outgoing
+frontiers (see §6.5). Per-launch caller-side wiring is materialized
+at each `dataflow.graph.launch` site: the launch's `ctrl_in`
+operand carries the structural start, and its `done_out` result
+is what the surrounding ScalarCore code observes as the launch's
+single-cycle completion.
 
 ### 2.5 Single-Level Chain Rule
 
@@ -390,7 +398,8 @@ is the source of truth for SSA-level wiring.
 | `scf.for` | `stream` + `carry` on loop-rwc + sentinel reset | `carry` on loop-rwc + per-P next_P feedback; mem_after_P from false-lane projection |
 | `scf.while` | `carry` on `%cond` + `gate`; before K+1 / after K | `carry` on `%cond` + per-P feedback ring; `gate %cond` into after-region; false-lane projection to mem_after_P |
 
-A mapped `scf.forall` is promoted to `dataflow.thread` by
+A mapped `scf.forall` is promoted to a `dataflow.thread`
+definition + `dataflow.thread.launch` pair by
 `loom-build-thread-skeleton` before the chain model applies (see
 `docs/spec-compiler-part-3-impl.md` §1.5 and
 `docs/spec-compiler-part-3-dfg.md` §6.4); only an empty-mapping
@@ -404,7 +413,8 @@ the contract each template instantiates.
 ### 2.9 Non-Goals
 
 This compositional model is scoped to memory dependence inside
-`dataflow.graph` regions. It does not, in this milestone:
+`dataflow.graph` definition bodies. It does not, in this
+milestone:
 
 * Define `!dataflow.thread_token` semantics or
   `LoomAsyncOpInterface` participation. Those are launch-side
@@ -422,11 +432,13 @@ This compositional model is scoped to memory dependence inside
   `docs/spec-dataflow-part-1-streaming.md` and
   `docs/spec-dataflow-part-2-control.md`.
 * Cross-graph partition identity. `dataflow.graph` is a leaf in
-  the first milestone and partition ids are graph-local. Future
-  graph-in-graph or split-graph designs would need an explicit
-  child-block-arg to parent-operand alias-root mapping at the
-  graph boundary; numeric ids alone are not enough. This is
-  out of scope here.
+  the first milestone and partition ids are graph-local (scoped
+  to the def's body, with caller-side per-launch frontier wiring
+  materialized at each `dataflow.graph.launch` site, per §6.5).
+  Future graph-in-graph or split-graph designs would need an
+  explicit child-block-arg to parent-operand alias-root mapping
+  at the graph boundary; numeric ids alone are not enough. This
+  is out of scope here.
 
 The model assumes those other contracts are already enforced by
 their respective sections.
@@ -443,7 +455,7 @@ summaries, and per §2.3 the unknown bucket `U` is what the oracle
 reports for any leaf whose root walk leaves the recognized set. The
 two interchangeable implementations below share the `MemAliasOracle`
 interface; the C++ class signature and the pass that materializes
-oracles per `dataflow.graph` live in
+oracles per `dataflow.graph` definition's body live in
 `docs/spec-compiler-part-3-impl.md`.
 
 ### 3.1 BasicSsaOracle
@@ -463,7 +475,7 @@ conditions:
   in `docs/spec-compiler-part-4-spatial.md` §3.2, which is a
   same-type view of its source memref), and `dataflow.map_info`
   (the boundary metadata op defined in
-  `docs/spec-compiler-part-3-dfg.md` §5.4.5, which is also a pure
+  `docs/spec-compiler-part-3-dfg.md` §5.4.6, which is also a pure
   view-like alias of its source). Each of these produces a memref
   that shares storage with its source by construction, so the
   walk peels them off without breaking aliasing. Peeling
@@ -481,16 +493,46 @@ conditions:
   symbol-keyed adjustment for `memref.get_global` described below).
 * **`IsolatedFromAbove` block arguments (cross-boundary continue).**
   When the walk reaches an entry block argument of an
-  `IsolatedFromAbove` op (notably `dataflow.graph` and
-  `dataflow.thread`), it does not stop. The block argument is bound
-  positionally to the corresponding op operand in the enclosing
-  scope (the index excludes the leading `ctrl_in` for
-  `dataflow.graph` and excludes `thread_ctrl` plus the grid
-  induction-variable args for `dataflow.thread`). The walk continues
-  on that op operand in the enclosing scope. This is what makes
-  storage identity stable across the `IsolatedFromAbove` boundary:
-  two graph block arguments bound to the same parent memref (two
-  subviews of the same alloc, or the same value passed twice) walk
+  `IsolatedFromAbove` def op (notably a `dataflow.graph`
+  definition and a `dataflow.thread` definition), it does not stop.
+  The block argument is bound positionally to the corresponding
+  launch op operand in the enclosing scope, resolved via the def's
+  `function_type`: for a `dataflow.graph` definition the index
+  excludes the leading `ctrl_in` slot in `function_type.inputs`
+  (so user data block-arg `i` corresponds to graph launch operand
+  `i + 1`); for a `dataflow.thread` definition the user data
+  block-args are the leading `N` block args (per
+  `docs/spec-compiler-part-3-dfg.md` §5.4.1's
+  `(args_*, thread_ctrl, iv_*)` order), so the walk excludes
+  `thread_ctrl` and the grid induction-variable args automatically.
+
+  **Multi-launch handling (v1 contract).** The first milestone
+  pipeline (`loom-extract-graph-regions`,
+  `loom-build-thread-skeleton`) emits exactly one launch site per
+  defined symbol; the def + launch is a 1:1 pairing and the chain
+  analysis in this document is built against that pairing. Under
+  this v1 contract, "the matching launch operand" is unambiguous
+  and the walk continues on it.
+
+  If a future pass produces a def reused at multiple launch sites
+  (a graph kernel called from multiple program points), the chain
+  analysis must run per-launch and the resulting frontiers must be
+  joined caller-side, **or** the verifier must additionally
+  enforce an "all launch sites supply the same alias-root for each
+  block arg" invariant so a single per-def chain remains sound.
+  v1 takes the simpler path (1:1 def + launch) and defers the
+  multi-launch composition to a follow-up. The
+  direction/body-effect compatibility check in §3.7 of
+  `docs/spec-compiler-part-3-dfg.md` already provides part of the
+  per-launch sanity envelope; the multi-launch alias-identity
+  invariant is the missing piece for that future generalization.
+
+  The walk therefore continues on the matching launch op operand
+  in the enclosing scope. This is what makes storage identity
+  stable across the `IsolatedFromAbove` boundary in v1: two graph
+  block arguments bound to the same parent memref through one
+  `dataflow.graph.launch` (two subviews of the same alloc, or the
+  same value passed twice) walk
   to the same root; otherwise the oracle would treat them as
   disjoint and miss required read/write or write/write dep edges.
   Cross-boundary continuation is allowed only across SSA boundary
@@ -585,7 +627,7 @@ effect-summary lift defined in §2.2 and §2.3:
   every scope that exposes `U`, plus, by the lift rule of §2.3,
   every known partition's per-`P` chain at every enclosing scope,
   until either the enclosing scope itself has no known partitions
-  visible or the `dataflow.graph` boundary is reached.
+  visible or the `dataflow.graph` definition's body is reached.
 * Frontier membership at the compound boundary uses
   `BasicSsaOracle`'s classification, not pair-level MlirAaOracle
   refinement (§3.2). If any leaf inside the compound is in `U`,
@@ -631,12 +673,13 @@ one chain scope.
 
 ### 4.1 Inputs and Outputs
 
-The builder operates on one `dataflow.graph` body at a time. Its
-inputs are the graph body's IR after parallel-SCF normalization (so
-the leaf set is the same set §6 will see), a configured
-`MemAliasOracle` per §3, and the partition assignment derived from
-the §3.1 walk on each leaf's memref operand and lifted to compound
-atoms by §3.3. Its outputs are the per-graph snapshot consumed by
+The builder operates on one `dataflow.graph` definition's body at
+a time. Its inputs are the def body's IR after parallel-SCF
+normalization (so the leaf set is the same set §6 will see), a
+configured `MemAliasOracle` per §3, and the partition assignment
+derived from the §3.1 walk on each leaf's memref operand and
+lifted to compound atoms by §3.3. Its outputs are the per-graph
+snapshot consumed by
 §5 and §6: `loom.mem_dep_id` and `loom.mem_dep_preds` on each leaf
 memory op, `loom.mem_loop_id` and `loom.mem_loop_states` on each
 loop op carrying memory state (consumed only by §5), and the
@@ -726,11 +769,12 @@ symmetric and never defines a direction by itself.
 ### 4.4 Snapshot Format
 
 The builder plants a per-graph snapshot using only deterministic
-graph-local integer ids. Every numeric id introduced by this snapshot
-is graph-local: it is chosen per `dataflow.graph` and need not match
-across graphs. The mem-dep, mem-loop, partition, and parallel
-group / chunk id namespaces are independent (each may start at zero)
-and are all graph-local.
+graph-local integer ids. Every numeric id introduced by this
+snapshot is graph-local: it is chosen per `dataflow.graph`
+definition and need not match across graphs (or across launches of
+the same definition). The mem-dep, mem-loop, partition, and
+parallel group / chunk id namespaces are independent (each may
+start at zero) and are all graph-local.
 
 * `loom.mem_dep_id = N` on each leaf memory op (`dataflow.load`
   and `dataflow.store`), in deterministic traversal order.
@@ -1074,23 +1118,32 @@ the active alias oracle proves partitions independent, so that
 
 This section turns the compositional model of §2 and the snapshot
 of §4 into explicit `ctrl` and `done` SSA edges inside each
-`dataflow.graph`. The structural-permission token (§6.2) and the
-per-partition memory frontier (§6.3) stay SSA-distinct except at
-the per-leaf rendezvous (§6.4), per §2.5 plane orthogonality;
-§6.5 projects the root per-partition tails through the boundary.
+`dataflow.graph` definition's body. The structural-permission
+token (§6.2) and the per-partition memory frontier (§6.3) stay
+SSA-distinct except at the per-leaf rendezvous (§6.4), per §2.5
+plane orthogonality; §6.5 projects the root per-partition tails
+through the def's `done_out` boundary into each
+`dataflow.graph.launch` site.
 
 ### 6.1 Graph Boundary Ports
 
-Each `dataflow.graph` carries one explicit leading `ctrl_in`
-operand of type `none`, one matching leading entry-block argument
-of type `none`, one explicit leading `done_out` result of type
-`none`, and one matching leading yield operand of type `none`.
-These are real SSA values even when the custom assembly compresses
-their spelling. The op definition is owned by
-`docs/spec-compiler-part-3-dfg.md` §5.5; this document uses the
-leading block argument as the root chain scope's structural-
-permission and memory-incoming source, and the leading yield
-operand as its combined completion sink.
+Each `dataflow.graph` definition carries explicit leading `none`
+slots in its `function_type` for `ctrl_in` and `done_out`. The
+def's body has a matching leading entry-block argument of type
+`none` (the per-launch start signal), and the body's
+`dataflow.yield` terminator has a matching leading operand of
+type `none` (the per-launch completion signal). These are real
+SSA values even when the custom assembly compresses their
+spelling. At each `dataflow.graph.launch` use site, the
+per-launch ctrl_in is supplied as the launch's leading operand
+and the per-launch done_out is the launch's leading result. The
+op definitions are owned by `docs/spec-compiler-part-3-dfg.md`
+§5.5; this document uses the def's leading block argument as the
+root chain scope's structural-permission and memory-incoming
+source, and the def's leading yield operand as its combined
+completion sink. Per-launch caller-side wiring (which SSA values
+feed `ctrl_in` and which uses observe `done_out`) is materialized
+at each launch site.
 
 ### 6.2 Structural Plane Wiring
 
@@ -1238,12 +1291,14 @@ Two cross-cutting rules close the wiring specification.
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, milestone acceptance checklist, and maintenance plan.
   The `MemAliasOracle` C++ interface signature and the pass that
-  materializes oracle instances per `dataflow.graph` are specified
-  there.
+  materializes oracle instances per `dataflow.graph` definition's
+  body are specified there.
 * `docs/spec-compiler-part-3-placement-framework.md` -- common
   placement-partition framework. L2 graph placement decides which
-  ScalarCore code becomes a `dataflow.graph`; this document
-  specifies the chain model that runs inside each such graph.
+  ScalarCore code becomes a `dataflow.graph` definition + a
+  `dataflow.graph.launch` at the cut site; this document
+  specifies the chain model that runs inside each such graph
+  definition's body.
 * `docs/spec-dataflow-part-1-streaming.md` -- precise timing
   semantics for `dataflow.stream`, `dataflow.carry`,
   `dataflow.invariant`, and `dataflow.gate`.

@@ -7,8 +7,8 @@ problem appears at three hardware boundaries:
 | Name | Input region | Placement unit | Boundary chosen |
 |------|--------------|----------------|-----------------|
 | L1 accelerator placement | LLVM / SCF-shaped host code | `loom.acc_region` | HostCore vs. AccCore |
-| L2 graph placement | `dataflow.thread` body | `dataflow.graph` | ScalarCore vs. SpatialCore |
-| L3 fabric placement | `dataflow.graph` body | `dataflow.subgraph` | SpatialCore graph vs. `fabric.fu` granularity |
+| L2 graph placement | `dataflow.thread` definition's body | `dataflow.graph` definition (paired with `dataflow.graph.launch` at cut site) | ScalarCore vs. SpatialCore |
+| L3 fabric placement | `dataflow.graph` definition's body | `dataflow.subgraph` | SpatialCore graph vs. `fabric.fu` granularity |
 
 The common problem is: given a structured input region, legality
 constraints, an exploration policy, and a cost model, choose a partition
@@ -72,18 +72,26 @@ stable reference instance of the framework.
 A candidate partition is legal only when all of the following hold:
 
 * Every placement unit satisfies the target op's verifier contract.
-  For example, L2 graph placement must produce `dataflow.graph` ops that
-  are `IsolatedFromAbove` and whose bodies satisfy the graph whitelist.
-* Every cut materializes explicit boundary operands and results required
-  by the target IR. No placed region may directly use an SSA value from
-  its parent scope unless the target op explicitly permits that use. In
-  this milestone the three placement-unit ops -- `loom.acc_region`
-  (L1, the temporary Part 2 to Part 3 marker), `dataflow.graph`
-  (L2), and `dataflow.subgraph` (L3) -- are all `IsolatedFromAbove`.
-  `dataflow.thread`, the L1 final form produced by Part 3 from
-  `loom.acc_region`, is also `IsolatedFromAbove` and is the launch
-  carrier the L1 placement instance hands off to. The "explicitly
-  permits" escape is therefore reserved for future extensions.
+  For example, L2 graph placement must produce `dataflow.graph`
+  definitions that are `IsolatedFromAbove` and whose bodies satisfy
+  the graph whitelist, plus matching `dataflow.graph.launch` ops
+  at each cut site whose ctrl/done plumbing and operand types
+  resolve against the def's `function_type`.
+* Every cut materializes explicit boundary operands and results
+  required by the target IR. No placed region may directly use an
+  SSA value from its parent scope unless the target op explicitly
+  permits that use. In this milestone the placement-unit defs --
+  `loom.acc_region` (L1, the temporary Part 2 to Part 3 marker),
+  `dataflow.graph` def (L2), and `dataflow.subgraph` (L3) -- are
+  all `IsolatedFromAbove`. `dataflow.thread`, the L1 final-form
+  callable produced by Part 3 from `loom.acc_region`, is also
+  `IsolatedFromAbove` and is the kernel the L1 placement instance
+  hands off to (paired with `dataflow.thread.launch` ops at host
+  scope or inside parent thread definitions). The L2 final form
+  similarly pairs each `dataflow.graph` def with one or more
+  `dataflow.graph.launch` ops inside the enclosing thread
+  definition's body. The "explicitly permits" escape is therefore
+  reserved for future extensions.
 * Effect visibility is preserved. Any op whose execution affects program
   order, memory state, or async completion must continue to declare
   effects accurately enough for generic MLIR optimizers to preserve the
@@ -156,40 +164,44 @@ boundary.
 
 ## 7. L2 Graph Placement
 
-L2 decides which code inside a `dataflow.thread` body becomes
-`dataflow.graph`. Part 3 owns this instance.
+L2 decides which code inside a `dataflow.thread` definition's body
+becomes a `dataflow.graph` definition + a `dataflow.graph.launch`
+at the cut site. Part 3 owns this instance.
 
 The admission constraints are the Part 3 graph verifier contract,
-ScalarCore / SpatialCore boundary rules, effect visibility rules, and
-the `IsolatedFromAbove` boundary materialization rule. In the baseline
-implementation, L2 graph placement is source-order greedy: it opens a
-graph for a contiguous legal run, closes it at a required cut, and
-continues searching for the next legal run. A richer policy may choose
-larger or smaller graph units based on reconfiguration cost, graph launch
-frequency, fabric pressure, graph-result traffic, or expected reuse.
+ScalarCore / SpatialCore boundary rules, effect visibility rules,
+and the `IsolatedFromAbove` boundary materialization rule. In the
+baseline implementation, L2 graph placement is source-order
+greedy: it opens a graph run for a contiguous legal sequence,
+closes it at a required cut, materializes the run as a
+(def + launch) pair, and continues searching for the next legal
+run. A richer policy may choose larger or smaller graph units
+based on reconfiguration cost, graph launch frequency, fabric
+pressure, graph-result traffic, or expected reuse.
 
 `dataflow.thread.fence`, ScalarCore-only calls, illegal graph-body
 ops, and parent terminators are required cuts in the baseline L2
-policy. Nested `dataflow.thread` launches deserve a stronger rule:
+policy. `dataflow.thread.launch` ops deserve a stronger rule:
 per `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2,
-a thread body must not directly contain both a `dataflow.graph`
-and a nested `dataflow.thread` at the same nesting level.
-Therefore, when L2 graph placement encounters a thread body whose
-direct children include any nested `dataflow.thread` op, the
-baseline policy does not open a `dataflow.graph` at that level at
-all; graph placement runs only inside thread bodies whose direct
-children are graph-admissible code without sibling nested threads.
-Equivalent phrasings are "L2 graph placement runs on innermost
-thread bodies" or "presence of a direct nested `dataflow.thread`
-at the level under consideration suppresses graph emission at that
-level". The details are specified in
+a thread definition's body must not directly contain both a
+`dataflow.graph.launch` and a `dataflow.thread.launch` at the
+same nesting level. Therefore, when L2 graph placement encounters
+a thread definition's body whose direct children include any
+`dataflow.thread.launch` op, the baseline policy does not open a
+`dataflow.graph.launch` at that level at all; graph placement
+runs only inside thread definitions whose direct children are
+graph-admissible code without sibling thread launches. Equivalent
+phrasings are "L2 graph placement runs on innermost thread
+definitions" or "presence of a direct `dataflow.thread.launch`
+at the level under consideration suppresses graph emission at
+that level". The details are specified in
 `docs/spec-compiler-part-3-impl.md`.
 
 ## 8. L3 Fabric Placement
 
-L3 decides how a `dataflow.graph` body is partitioned into
-`dataflow.subgraph` units for fabric tech mapping. Fabric tech mapping
-owns this instance.
+L3 decides how a `dataflow.graph` definition's body is
+partitioned into `dataflow.subgraph` units for fabric tech
+mapping. Fabric tech mapping owns this instance.
 
 The admission constraints include the `dataflow.subgraph` verifier,
 the fabric-op support matrix, memory-op exclusion from `fabric.fu`,

@@ -80,8 +80,9 @@ verified at synthesis time).
 
 ### Non-goals
 
-* The pass does **not** decide partitioning of a `dataflow.graph` into
-  subgraphs (`loom-partition-graph` already does that).
+* The pass does **not** decide partitioning of a `dataflow.graph`
+  definition's body into subgraphs (`loom-partition-graph` already
+  does that).
 * The pass does **not** emit `fabric.fifo`. FIFOs are inserted later by
   scheduling/buffering passes outside this pass.
 * The pass does **not** synthesize multiple FUs from a single input

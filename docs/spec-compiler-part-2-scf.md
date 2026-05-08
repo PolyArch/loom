@@ -29,7 +29,9 @@ Part 2 owns:
 Part 2 does not own:
 
 * Lowering structured control flow into dataflow primitives.
-* Building `dataflow.thread` or `dataflow.graph`.
+* Building `dataflow.thread` / `dataflow.graph` definitions or
+  their `dataflow.thread.launch` / `dataflow.graph.launch`
+  callers.
 * Treating a whole `func.func` as an accelerator region unless source
   metadata, user options, or analysis explicitly select it.
 
@@ -45,23 +47,33 @@ accelerator regions, and final dataflow placement:
 * `loom.acc_region` is the temporary Part 2 to Part 3 marker saying
   that a structured region has been selected for AccCore execution. It
   is not a final runtime or hardware primitive.
-* `dataflow.thread` is the final AccCore execution boundary produced
-  by Part 3. It carries launch operands, mapping, memory-transfer
-  information, and completion tokens.
-* `dataflow.graph` is the SpatialCore leaf DFG produced by Part 3. It
+* `dataflow.thread` is the AccCore kernel definition produced by
+  Part 3 (Symbol-bearing, function-like, module-scope). It owns
+  the kernel body, mapping, and grid shape.
+  `dataflow.thread.launch` is the matching launch carrier (sibling
+  of host code or of a parent thread definition's body) that
+  carries launch operands, dynamic-grid values, async dependencies,
+  and the completion token.
+* `dataflow.graph` is the SpatialCore leaf DFG definition produced
+  by Part 3 (also Symbol-bearing, function-like, module-scope). It
   cannot contain function definitions or calls.
+  `dataflow.graph.launch` is the synchronous launcher that
+  references a graph definition from inside a thread definition's
+  body and supplies the per-launch ctrl_in / done_out plumbing.
 
-Function calls are ScalarCore-level operations when they appear inside
-an accelerator region. Part 2 must classify any `func.call` reachable
-from a `loom.acc_region`: the callee must be ScalarCore-legal,
-inlined before Part 3, or rejected with a diagnostic. A ScalarCore-legal
-callee may itself contain `loom.acc_region` markers if Part 2 selected
-nested work for AccCore execution; Part 3 later lowers those markers to
-nested `dataflow.thread` launches.
+Function calls are ScalarCore-level operations when they appear
+inside an accelerator region. Part 2 must classify any `func.call`
+reachable from a `loom.acc_region`: the callee must be ScalarCore-
+legal, inlined before Part 3, or rejected with a diagnostic. A
+ScalarCore-legal callee may itself contain `loom.acc_region`
+markers if Part 2 selected nested work for AccCore execution; Part
+3 later lowers those markers to nested `dataflow.thread.launch`
+ops referencing the appropriate `dataflow.thread` definitions.
 
-`func.func` symbols remain in the nearest module-level symbol table in
-the first design. `dataflow.thread` is not made a symbol table merely to
-host local function definitions.
+`func.func` symbols remain in the nearest module-level symbol
+table in the first design. `dataflow.thread` and `dataflow.graph`
+definitions live as siblings of `func.func` in the same module-
+level symbol table; neither is itself a symbol table.
 
 ## 3. `loom.acc_region`
 
@@ -89,10 +101,12 @@ not tied to a function boundary. A single `func.func` may contain
 multiple `loom.acc_region` ops, and ordinary host code may appear before,
 between, and after them.
 
-The body may contain `func.call` operations. Those calls are interpreted
-as ScalarCore calls after Part 3 lowers the enclosing accelerator
-region. They are not candidates for `dataflow.graph` extraction unless
-the callee has been inlined or specialized first.
+The body may contain `func.call` operations. Those calls are
+interpreted as ScalarCore calls after Part 3 lowers the enclosing
+accelerator region. They are not candidates for `dataflow.graph`
+definition extraction (i.e., for inclusion in a graph callable's
+body and a paired `dataflow.graph.launch`) unless the callee has
+been inlined or specialized first.
 
 The op has no direct data results. Values produced by AccCore execution
 that must be observed by HostCore are represented through explicit
@@ -165,8 +179,8 @@ Part 2 assigns each reachable `func.func` one or more call-context
 classes:
 
 * **HostCore-callable.** May be called from ordinary host code.
-* **ScalarCore-callable.** May be called from code that Part 3 will
-  place inside a `dataflow.thread`.
+* **ScalarCore-callable.** May be called from code that Part 3
+  will place inside a `dataflow.thread` definition's body.
 * **Inline-only.** Must be inlined before it can appear in a selected
   accelerator region.
 * **Host-only.** Must not be reachable from a `loom.acc_region`.
@@ -189,9 +203,10 @@ Part 2 classifies memory crossing an accelerator boundary:
   annotations specified in Part 4 (see
   `docs/spec-compiler-part-4-spatial.md`).
 
-This analysis is a boundary contract, not a replacement for the Part 3
-memory-dependence builder. Part 3 still constructs conservative
-dependence edges inside each `dataflow.graph`.
+This analysis is a boundary contract, not a replacement for the
+Part 3 memory-dependence builder. Part 3 still constructs
+conservative dependence edges inside each `dataflow.graph`
+definition's body.
 
 ## 8. Hand-Off to Part 3
 
