@@ -346,18 +346,41 @@ documentation never refers to the numeric position.
   ```
 * Two implementations ship in the same library and are selectable by
   the pass option `--mem-alias=basic|mlir-aa`:
-  - `BasicSsaOracle`: an SSA-source roll-up over `memref.alloca`,
-    function block-args, `memref.global`, `memref.cast`,
-    `memref.subview`, `memref.view`, `memref.expand_shape`,
-    `memref.collapse_shape`. Two accesses conflict iff their root
-    memrefs are the same SSA root, regardless of offset/shape, and
-    they are not both loads.
+  - `BasicSsaOracle`: an SSA-source walk that recognizes a fixed set
+    of view-like and terminal memref ops; any other memref-producing
+    op enters the conservative unknown bucket `U` per
+    `docs/spec-compiler-part-3-mem.md` §3. The recognized view-like
+    ops are `memref.cast`, `memref.subview`, `memref.view`,
+    `memref.expand_shape`, `memref.collapse_shape`,
+    `memref.reinterpret_cast`, and `memref.transpose`; the walk peels
+    each into its source operand. The recognized terminal roots are
+    `memref.alloca`, `memref.alloc`, `memref.get_global`, and
+    function-block arguments. Other memref producers, including
+    `bufferization.to_memref`, `unrealized_conversion_cast`, and
+    memref-returning `func.call`, enter `U`; their freshness or
+    aliasing relationship is not statically guaranteed. Two accesses
+    with known roots conflict iff their roots have the same storage
+    identity and the pair is not load-load. The storage identity
+    is the SSA value for `memref.alloca`, `memref.alloc`, and
+    block-args, and the referenced global symbol for
+    `memref.get_global` (so two distinct `memref.get_global @g` ops
+    correctly share storage identity). Distinct storage identities
+    default to disjoint. Any access in `U` may-aliases every other
+    access of a compatible memref kind in scope, regardless of root,
+    with the same load-load exception.
   - `MlirAaOracle`: forwards to `mlir::AliasAnalysis` from
     `mlir/Analysis/AliasAnalysis.h` as a refinement of
     `BasicSsaOracle`. It starts from the basic conflict set and removes
-    pairs that upstream MLIR AA proves `MustNotAlias`. When upstream AA
-    cannot prove anything stronger, it behaves exactly like the basic
-    oracle.
+    pairs that upstream MLIR AA proves `MustNotAlias`. The refinement
+    applies to leaf-pair queries only, uniformly across pairs where
+    one or both sides come from `U`: a specific unknown-producer op
+    proven disjoint from a specific known root or another unknown
+    producer drops out of the leaf-pair conflict set. Effect-summary
+    lift across compound `scf.*` atoms uses `BasicSsaOracle`'s
+    classification only and does not benefit from this refinement
+    (see `docs/spec-compiler-part-3-mem.md` §3.3). When upstream AA
+    cannot prove anything stronger, the oracle behaves exactly like
+    the basic oracle.
 * Runs a `MemoryDependenceBuilder` after alias queries are available.
   The builder visits memory accesses in deterministic program order.
   Alias answers are symmetric and never define direction by

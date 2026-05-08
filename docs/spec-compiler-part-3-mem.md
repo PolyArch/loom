@@ -422,30 +422,150 @@ their respective sections.
 
 ## 3. Alias Oracle
 
-Two interchangeable oracle implementations share the `MemAliasOracle`
+The alias oracle answers a single question: do two memory effects
+conflict? Conflict is symmetric and direction-free. The dependence
+builder in §4 turns those answers into directed edges using program
+order and structured-control-flow nesting. Effect-summary lift
+across compound `scf.*` atoms is also driven from the oracle: per
+§2.2 a compound's summary is the recursive union of its leaves'
+summaries, and per §2.3 the unknown bucket `U` is what the oracle
+reports for any leaf whose root walk leaves the recognized set. The
+two interchangeable implementations below share the `MemAliasOracle`
 interface; the C++ class signature and the pass that materializes
 oracles per `dataflow.graph` live in
-`docs/spec-compiler-part-3-impl.md`. The interface answers only
-the alias question framed in §1; the dependence builder in §4
-turns its symmetric answers into directed edges. Effect-summary
-lift across compound `scf.*` atoms (§2.2 and §2.8) reads from the
-same interface; a compound's summary is the union of its leaves'
-queries.
+`docs/spec-compiler-part-3-impl.md`.
 
-* `BasicSsaOracle` (default-on for fast iteration during development):
-  - Walks each operand back through the chain
-    `memref.cast | memref.subview | memref.view | memref.expand_shape |
-     memref.collapse_shape` to a root SSA value.
-  - Two accesses conflict iff their roots are equal and they are not
-    both loads. Bounds and offsets are not consulted; the oracle is
-    intentionally conservative.
-* `MlirAaOracle` (default-on for the full lit suite):
-  - Wraps `mlir::AliasAnalysis`, configured with whatever external
-    alias-analysis interfaces are registered, as a refinement of
-    `BasicSsaOracle`. It starts from the basic conflict set and removes
-    pairs that upstream MLIR AA proves `MustNotAlias`. `MayAlias` and
-    `MustAlias` keep the basic answer. Loads vs. loads still do not
-    conflict.
+### 3.1 BasicSsaOracle
+
+`BasicSsaOracle` is default-on for fast iteration during development.
+It performs a walk from each memory access's memref operand back
+through view-like ops to either a known terminal root or an
+unrecognized producer. The walk has three classes of stop / continue
+conditions:
+
+* **Recognized view-like ops (peel and continue).** The walk
+  recursively follows the source operand of each of the following
+  ops: `memref.cast`, `memref.subview`, `memref.view`,
+  `memref.expand_shape`, `memref.collapse_shape`,
+  `memref.reinterpret_cast`, `memref.transpose`. Each of these
+  produces a memref that shares storage with its source by
+  construction, so the walk peels them off without breaking aliasing.
+* **Recognized terminal roots (stop, treat as known root).** The
+  walk stops and records a known root at any of the following:
+  `memref.alloca`, `memref.alloc`, `memref.get_global`, or a
+  function-block argument with no defining op. These define a fresh
+  storage identity for the purposes of the oracle (with the
+  symbol-keyed adjustment for `memref.get_global` described below).
+* **Unknown producer (stop, enter `U`).** Any other op that produces
+  a memref-typed result terminates the walk without yielding a known
+  root. The walk does not invent a new root from such an op; instead
+  the access enters the conservative unknown bucket `U` defined in
+  §2.3. This includes ops whose freshness or aliasing relationship
+  is not statically guaranteed by the oracle, for example
+  `bufferization.to_memref` (whose resulting memref may share
+  storage with an existing buffer depending on the active
+  bufferization strategy), an SSA value returned from a
+  `func.call`, an `unrealized_conversion_cast` to a memref type,
+  custom buffer reshape ops, and any future memref-producing op the
+  oracle has not been taught about. This is the soundness rule
+  that prevents such ops from being silently treated as fresh
+  disjoint roots.
+
+Conflict is decided as follows. For two accesses `a` and `b`:
+
+* If both `a` and `b` end with known roots, they conflict iff their
+  roots have the same storage identity AND the pair is not
+  load-load. The storage identity is the SSA value for
+  `memref.alloca`, `memref.alloc`, and function block-args; for
+  `memref.get_global` it is the referenced global symbol, not the
+  result SSA value, because two distinct `memref.get_global @g` ops
+  produce different SSA values for the same storage. Distinct
+  storage identities default to disjoint, following the standard
+  basic-AA assumption that block-args, allocs, and globals have
+  pairwise-disjoint storage by default.
+* If at least one of `a` or `b` is in `U`, they may-alias every
+  other access of any compatible memref kind in scope, regardless
+  of root, with the single exception that two loads still do not
+  conflict. This realizes the rule from §2.3 that a `U` effect
+  may-aliases every known partition.
+
+The first milestone uses any-memref same bucket as the
+"compatible memref kind" predicate. Element type and shape rank are
+intentionally NOT used as disjoint witnesses, because view-like ops
+and bufferization paths can change element type or rank without
+changing underlying storage. This is conservative and matches the
+B.1 milestone direction; later milestones may refine compatibility
+once the leaf walk and the bucket policy are tightened.
+
+Bounds and offsets are not consulted at any point; the oracle is
+intentionally storage-identity only.
+
+### 3.2 MlirAaOracle
+
+`MlirAaOracle` is default-on for the full lit suite. It wraps
+`mlir::AliasAnalysis`, configured with whatever external
+alias-analysis interfaces are registered, as a refinement of
+`BasicSsaOracle`. It starts from the basic conflict set and removes
+pairs that upstream MLIR AA proves `MustNotAlias`. `MayAlias` and
+`MustAlias` keep the basic answer. Loads vs. loads still do not
+conflict.
+
+The refinement applies to leaf-pair queries only: when both
+accesses are leaves visible to the dependence builder at the same
+scope, MlirAaOracle may demote a basic-conflict pair to
+non-conflicting if upstream AA proves them `MustNotAlias`. This
+holds uniformly, including pairs where one or both sides come from
+`U`: a specific unknown-producer op proven disjoint from a specific
+known root drops out of the leaf-pair conflict set.
+
+Effect-summary lift across compound `scf.*` atoms (§3.3) does not
+benefit from this refinement. The summary records partition
+identity by `BasicSsaOracle`'s classification: a compound's summary
+contains `U` whenever any inner leaf is in `U`, regardless of
+whether MlirAaOracle would have demoted some inner leaf-pair
+conflicts. The conservative compound summary is intentional in
+the first milestone; tightening it requires summary-level AA
+support that is out of scope here.
+
+### 3.3 Effect Summary Lift Rule
+
+Per-leaf alias answers compose into compound atoms through the
+effect-summary lift defined in §2.2 and §2.3:
+
+* A compound atom's effect summary is the recursive union of its
+  inner leaves' effect summaries. Membership in the summary is by
+  partition identity: each known root the inner leaves touch
+  contributes one entry, and any inner leaf that is in `U`
+  contributes `U`. Read-only leaves still contribute their
+  partition to the summary; the read-read suppression of §4 only
+  prevents dependence edges, not summary membership.
+* If any inner leaf is in `U`, the compound's summary contains `U`.
+  The compound participates in `U`'s own per-partition chain at
+  every scope that exposes `U`, plus, by the lift rule of §2.3,
+  every known partition's per-`P` chain at every enclosing scope,
+  until either the enclosing scope itself has no known partitions
+  visible or the `dataflow.graph` boundary is reached.
+* Frontier membership at the compound boundary uses
+  `BasicSsaOracle`'s classification, not pair-level MlirAaOracle
+  refinement (§3.2). If any leaf inside the compound is in `U`,
+  the compound is wired into every enclosing known partition's
+  chain, regardless of whether MlirAaOracle would have demoted a
+  specific inner-vs-outer leaf pair to `MustNotAlias`. Pair-level
+  refinement still applies inside the same scope where both
+  leaves are visible, and inside the compound's own scope, but it
+  does not change which partitions appear at the compound's
+  boundary.
+* Within a single scope, `U` participates in its own per-partition
+  chain like any other partition: two writes in `U` (or a read and
+  a write in `U`) form a same-partition dependence pair under §4
+  and chain through `U`'s frontier. Read-read pairs in `U` still
+  do not create dependence edges, consistent with §3.1's
+  load-load rule.
+
+The per-partition memory frontier of §2.4 then wires the compound
+into the appropriate per-`P` chains using this summary; the
+single-level chain rule of §2.5 and the join rules of §2.7 take
+over once each scope's atom set is known.
 
 Both oracles pass the same lit suite. They may produce different
 `loom.mem_dep_preds` snapshots, because a stronger oracle can prove
