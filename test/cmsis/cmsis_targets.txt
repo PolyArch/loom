@@ -1,0 +1,41 @@
+# CMSIS-Core LLVM IR drop-in smoke targets.
+#
+# One row per source file. Columns are pipe-separated:
+#
+#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags
+#
+# Notes:
+#  - src_relpath is relative to externals/cmsis-core/CMSIS/Core/Test/src/.
+#  - clang_target_triple is what we pass to --target=.
+#  - clang normalizes -> expected_normalized_triple, which is what actually
+#    appears in `target triple = "..."` inside the emitted .ll. The pipeline
+#    greps for the normalized form.
+#  - expected_symbols are function names defined by the source. The pipeline
+#    requires that at least one shows up as `define ... @<sym>(`.
+#  - extra_cflags is empty for every row in this initial set; column kept so
+#    additional preprocessor defines can be added later without touching the
+#    runner script.
+#  - We deliberately do NOT modify any externals/cmsis-core source. If a
+#    source needs more flags, add them in extra_cflags here.
+#
+# Coverage rationale: 12 sources spanning four Cortex-M profiles
+#  - thumbv6m / Cortex-M0     (4) : apsr.c, clz.c, nop.c, dmb.c
+#  - thumbv7m / Cortex-M3     (3) : dsb.c, isb.c, basepri.c
+#  - thumbv7em / Cortex-M4    (3) : ldrex.c, strex.c, msp.c
+#  - thumbv8m.main / Cortex-M33 (2) : ldaex.c, stl.c
+# Picked to exercise APSR/IPSR/XPSR-style register reads, barrier intrinsics,
+# CLZ/NOP, the v7 BASEPRI intrinsics, the v7em load-exclusive / store-exclusive
+# pair, and the v8m load-acquire-exclusive / store-release pair.
+#
+apsr.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|get_apsr|
+clz.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|clz|
+nop.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|nop|
+dmb.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|dmb|
+dsb.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|dsb|
+isb.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|isb|
+basepri.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|get_basepri,set_basepri,set_basepri_max|
+ldrex.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|ldrexb,ldrexh,ldrexw|
+strex.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|strexb,strexh,strexw|
+msp.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|get_msp,set_msp|
+ldaex.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|ldaexb,ldaexh,ldaex|
+stl.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|stlb,stlh,stl|
