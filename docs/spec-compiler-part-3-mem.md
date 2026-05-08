@@ -797,19 +797,25 @@ per-partition state ring parameterized by:
     `done_out` of §6.5) waits for those body accesses to retire.
     The lowering implements the completion tail as a
     completion-aggregation carry, distinct from the loop-state
-    ring of §5.2 used for `Π_L`:
-    `dataflow.carry %selector, %incoming_P, %iter_tail` accumulates
-    one fresh sync point per iteration, where
-    `iter_tail = dataflow.sync(%prev_tail, %body_tail_P)` and
+    ring of §5.2 used for `Π_L`. The carry has the same
+    well-formedness as the structural carry (one feedback token
+    per selector token, including the false-cycle reset token):
+    on each true selector cycle, `iter_tail =
+    dataflow.sync(%prev_tail, %body_tail_P)` is fed back, where
     `%prev_tail` is the previous iteration's `iter_tail` (with
-    `%incoming_P` as the carry's initializer). The selector is
-    the loop's structural selector (`%loop_rwc` for `scf.for`,
-    `%cond` for `scf.while`). The compound's `outgoing_P` is the
-    false-lane projection of this completion carry on the loop's
-    exit cycle. The `prev_tail` dependency on the previous
-    iteration is intentional: it serializes only the *completion*
-    aggregation, never the issue-time ordering of leaf accesses.
-    Body leaf accesses in `P` get their `ctrl` operand from
+    `%incoming_P` as the carry's initializer); on the false-cycle
+    reset that closes the loop, the body produces no
+    `%body_tail_P` for `P`, so the feedback is the previous
+    iteration's `iter_tail` forwarded through `%body_tail_P
+    = %prev_tail` (analogous to a no-access path forwarding rule
+    in §2.7). The selector is the loop's structural selector
+    (`%loop_rwc` for `scf.for`, `%cond` for `scf.while`). The
+    compound's `outgoing_P` is the false-lane projection of this
+    completion carry on the loop's exit cycle. The `prev_tail`
+    dependency on the previous iteration is intentional: it
+    serializes only the *completion* aggregation, never the
+    issue-time ordering of leaf accesses. Body leaf accesses in
+    `P` get their `ctrl` operand from
     `dataflow.sync(struct_at_L, incoming_P)` per §6.4 with
     `incoming_P = %incoming_P` (the loop's incoming frontier),
     not from `%prev_tail` or any other carried token. As a result,

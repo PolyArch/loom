@@ -527,7 +527,20 @@ traits:
   graph-level control. There is no general cast between
   `!dataflow.thread_token` and `none`. Ordering a child thread after a
   graph completes is expressed by placing the child launch after
-  `dataflow.thread.fence(%graph_done)` in ScalarCore program order.
+  `dataflow.thread.fence(%graph_done)` in ScalarCore program order
+  AND consuming the fence's `none` result through the child
+  thread's `LoomAsyncOpInterface` async dependency operand. The
+  combined SSA dep plus the fence's default-resource memory
+  barrier (per §3 Constitutional Rule 8) makes the ordering robust
+  against generic code motion: a scalar-only child thread that
+  reports no boundary memory effects on its own would otherwise be
+  reorderable across the fence by a memory-aware optimizer, since
+  there is no pure SSA dep from the fence to a thread launch that
+  ignores it. Front-end lowering must therefore wire the fence
+  result into the child thread's async-dep operand list whenever
+  the child thread is supposed to follow a particular graph
+  completion; the lit suite includes a fixture covering the
+  scalar-only child-thread case.
 
 #### 5.4.4 `dataflow.thread.wait`
 
@@ -1356,34 +1369,30 @@ This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` §2.8 for `scf.for`.
 
 **Structural plane.** `dataflow.stream` produces the loop-level
-rwc, which doubles as the structural selector. The structural
-plane diverges by case to match the existing data-value templates
-above:
+rwc, which doubles as the structural selector. Both data-value
+template cases above (No Iter Args and With Iter Args) share the
+same structural-plane shape:
 
-* No-iter-arg case (per "No Iter Args" template above). The
-  compound's `struct_in` is consumed by a `dataflow.invariant`
-  to gate the body-phase ctrl, and the `demux %loop_rwc, %ctrl_raw`
-  splits out `%loop_exit_ctrl` on the sentinel cycle. There is no
-  data state ring; the body-phase structural-permission token is
-  the true-lane projection of the rwc-driven ctrl, and the
-  compound's `struct_done` is `%loop_exit_ctrl`.
-* With-iter-arg case (per "With Iter Args" template above). The
-  compound's `struct_in` seeds a `dataflow.carry` driven by
-  `%loop_rwc`, and each iter_arg gets its own `carry` ring on the
-  same selector. The body region is a single chain scope and
-  uses the body-phase structural-permission token derived from
-  `%loop_rwc` as its `S.struct_at_*` source per
-  `docs/spec-compiler-part-3-mem.md` §6.2. The compound's
-  `struct_done` is the false-lane projection of the structural
-  carry on the sentinel cycle, equivalently the `%loop_exit_ctrl`
-  output of the existing template.
+* The compound's `struct_in` is replicated by `dataflow.invariant`
+  into the rwc-driven ctrl stream so each loop cycle carries a
+  body-phase permission token. `demux %loop_rwc, %ctrl_raw`
+  projects the true-lane body-phase ctrl (the body region's
+  structural permission for each executed iteration) and the
+  false-lane `%loop_exit_ctrl` for the sentinel reset cycle.
+* The body region is a single chain scope under
+  `docs/spec-compiler-part-3-mem.md` §2.2 and uses the
+  body-phase ctrl as its `S.struct_at_*` source per
+  `docs/spec-compiler-part-3-mem.md` §6.2.
+* The compound's `struct_done` is `%loop_exit_ctrl`, taken
+  unchanged from the false-lane projection above. No additional
+  `dataflow.carry` is introduced on the structural plane; the
+  `dataflow.carry` rings present in the With Iter Args template
+  are data-value rings for iter_args, not structural-plane state.
 
-In both cases the body region is a single chain scope under
-`docs/spec-compiler-part-3-mem.md` §2.2, and `dataflow.invariant`
-or `dataflow.carry` is the only structural-control primitive
-introduced at the boundary; no `dataflow.demux` / `dataflow.mux`
-sits at the boundary's structural plane outside the rwc-driven
-sentinel reset.
+The structural plane is therefore independent of whether the
+loop has iter_args; the iter_args contribute additional
+data-value `carry` / `demux` / `mux` primitives that the data
+plane uses but that do not enter the structural plane wiring.
 
 **Memory plane (per touched partition `P`).** The compound applies
 the loop-carried memory state pattern of
