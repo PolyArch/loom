@@ -187,12 +187,17 @@ frontiers (see §6.3).
 For a fixed chain scope `S`, chain construction proceeds in two
 planes.
 
-The structural plane links atoms in source order. Each atom has
-one structural-permission input and one structural-completion
-output. Pure-control splits and joins (`dataflow.demux`,
-`dataflow.mux`, `dataflow.carry`, `dataflow.gate`) are introduced
-only by per-`scf.*` boundary translation; the single-level rule
-itself does not insert them.
+The structural plane gives each atom in `S` a structural-permission
+input drawn from `S`'s scope-level structural in-flow (or, for
+atoms inside an `scf.*` boundary translation, from the boundary
+primitive's relevant lane), and collects each atom's
+structural-completion output at `S`'s scope-level structural
+out-flow. Sibling atoms at the same scope are not chained together
+on the structural plane: source-order ordering between siblings is
+the memory plane's job. Pure-control splits and joins
+(`dataflow.demux`, `dataflow.mux`, `dataflow.carry`,
+`dataflow.gate`) are introduced only by per-`scf.*` boundary
+translation; the single-level rule itself does not insert them.
 
 **Plane orthogonality invariant.** A structural-completion token
 signals only that dynamic execution has advanced past its source
@@ -926,35 +931,162 @@ the active alias oracle proves partitions independent, so that
 
 ## 6. Token Wiring
 
-The control-token wiring rule turns the compositional model of §2
-and the dependence snapshot of §4 into explicit `ctrl` and `done`
-SSA edges inside each `dataflow.graph`. It is the SSA-level
-instantiation of the abstract join rules in §2.7.
+This section turns the compositional model of §2 and the snapshot
+of §4 into explicit `ctrl` and `done` SSA edges inside each
+`dataflow.graph`. The structural-permission token (§6.2) and the
+per-partition memory frontier (§6.3) stay SSA-distinct except at
+the per-leaf rendezvous (§6.4), per §2.5 plane orthogonality;
+§6.5 projects the root per-partition tails through the boundary.
 
-* Each `dataflow.graph` has one explicit `ctrl_in` operand of type
-  `none`, a matching leading block argument, one explicit leading
-  `done_out` result of type `none`, and a matching leading yield
-  operand. These are real SSA values even if the custom assembly
-  format chooses to compress their spelling.
-* For each load / store op `o` in the graph, its `ctrl` operand is
-  `none`. The lowering first builds a ctrl source set:
-  - immediate dependence predecessors contribute their `done` outputs;
-  - loop-carried memory dependences contribute the relevant hidden
-    `%mem_iter_P` or `%mem_after_P` state token described above;
-  - a following access that depends on a completed parallel-provenance
-    group contributes the group's tail token, which is the
-    `dataflow.sync` rendezvous of all chunk tails.
-* If `o`'s ctrl source set is empty, `o` uses `ctrl_in`. If the set
-  has one value, `o` uses that value directly. If the set has multiple
-  values, `o` uses output zero of a `dataflow.sync` rendezvous over
-  all values in the set.
-* The graph `done_out` value is output zero of a `dataflow.sync` over
-  all `done` tokens of memory accesses with no immediate dependence
-  successor.
-* Multi-fanout of a single done is handled by SSA value reuse, not by
-  an extra op.
-* Read-read pairs have no dependence edge, even when they alias, so
-  independent reads can be reordered freely.
+### 6.1 Graph Boundary Ports
+
+Each `dataflow.graph` carries one explicit leading `ctrl_in`
+operand of type `none`, one matching leading entry-block argument
+of type `none`, one explicit leading `done_out` result of type
+`none`, and one matching leading yield operand of type `none`.
+These are real SSA values even when the custom assembly compresses
+their spelling. The op definition is owned by
+`docs/spec-compiler-part-3-dfg.md` §5.5; this document uses the
+leading block argument as the root chain scope's structural-
+permission and memory-incoming source, and the leading yield
+operand as its combined completion sink.
+
+### 6.2 Structural Plane Wiring
+
+The structural plane carries the dynamic execution permission
+token from the graph boundary down to every leaf and compound
+atom inside the graph. Per §2.5 plane orthogonality it never
+aggregates memory completion; it expresses only "execution has
+reached this position on this dynamic path".
+
+* The graph's `ctrl_in` block argument is the root structural-
+  permission token, equivalently `S.struct_at_A` in §2.5 when `S`
+  is the root scope and `A` is any atom directly nested in the
+  graph body.
+* For every compound `scf.*` atom traversed on the way to a leaf,
+  the compound's per-op boundary translation in
+  `docs/spec-compiler-part-3-dfg.md` §6 specifies how the token
+  splits, mux-joins, or carries through the compound's inner
+  regions; the §2.8 table summarizes the shape per op.
+* At each leaf op `L` whose chain scope is `S`, `S.struct_at_L`
+  is the value produced by the innermost boundary translation
+  step on the dynamic path from the graph entry to `L`. Its
+  identity depends on `L`'s IR ancestry (which `scf.if` branch,
+  which loop body, which iteration phase); the per-`scf.*`
+  template names and threads it, and the wiring step here just
+  consumes it.
+
+### 6.3 Memory Plane Wiring
+
+The memory plane carries one independent frontier per partition
+through each chain scope, per §2.4. At each leaf `L` at chain
+scope `S` in partition `P`, the wiring constructs an
+`incoming_L_P` token by the single-level chain rule of §2.5 and
+the join rules of §2.7. The predecessor set is the immediate dep
+predecessors of `L` in `P` at `S`, encoded by §4.4 as
+`loom.mem_dep_preds`. Each entry resolves to a source token
+through one of:
+
+* a. Same-scope sibling leaf `L'`: the source token is `L'.done`.
+* b. Sibling compound atom `C ∈ A_P(S)` containing the predecessor
+  leaf: the source token is `C.outgoing_P` per the cross-scope
+  resolution rule of §4.4; entries resolving to the same
+  `C.outgoing_P` deduplicate. The same case applies when `C`
+  carries parallel-provenance metadata, where `C.outgoing_P` is
+  the chunk-tail rendezvous of §2.6.
+* c. Loop-carried predecessor: when `L` participates in the loop
+  state of an enclosing or sibling source-ordered loop, §5.2's
+  loop-state ring contributes a frontier source in addition to
+  the dep predecessors above. Two distinct subcases:
+  - c1. `L` is inside the loop body and `P ∈ Π_L`. The loop's
+    `%mem_iter_P` (the start-of-current-iteration token of §5.2)
+    contributes as one of `L`'s incoming sources, in addition to
+    any same-iteration predecessors at `L`'s scope.
+  - c2. `L` is in the parent scope of a loop compound `C` and
+    depends on `C`'s loop-exit memory state. Then the source
+    token is `C.outgoing_P`, which §5.3 / §5.4 materialize from
+    `%mem_after_P` (the false-lane projection for `scf.for`, or
+    the final-false-iteration before-tail projection for
+    `scf.while`). This subcase is structurally an instance of
+    case b: the compound's `outgoing_P` is the boundary endpoint;
+    §5 only specifies how that endpoint is built internally.
+
+The resolved source set is joined per §2.5 / §2.7: an empty set
+yields `incoming_L_P = S.incoming_P` (which is `ctrl_in` at the
+root scope); a single same-path source is forwarded directly;
+multiple same-path sources join via `dataflow.sync`; multiple
+mutually exclusive sources join via selector-matched `dataflow.mux`;
+mixed sets join hierarchically (per-path `sync` then selector-
+matched `mux`). `L.done` becomes the source of `outgoing_L_P`
+directly, with no further wrapping.
+
+### 6.4 Leaf Op Ctrl Operand Rendezvous
+
+At each leaf memory op `L` at chain scope `S` in partition `P`,
+the two planes meet at exactly one point:
+
+```
+L.ctrl = dataflow.sync(S.struct_at_L, incoming_L_P)
+```
+
+where `S.struct_at_L` comes from §6.2 and `incoming_L_P` from
+§6.3. This is the only place in the wiring where the planes are
+joined; everywhere else they stay SSA-distinct per §2.5.
+
+Two reductions apply by SSA value reuse. When `L` has no dep
+predecessors at `S` and no loop-carried contribution, §6.3 sets
+`incoming_L_P = S.incoming_P` (which is `ctrl_in` at the root
+scope), so the formula applies directly with no special case.
+When the two arguments are the same SSA value (for example a
+leaf at the root scope where both are literally `ctrl_in`),
+§2.7's rule that a single predecessor needs no primitive op
+extends here: the `sync` collapses and `L.ctrl` is wired directly
+to that shared value. `L.done` feeds back only into the memory
+plane via §6.3; it is never a structural-completion source.
+
+### 6.5 Graph done_out
+
+The graph's `done_out` yield operand is the boundary projection
+of the root chain scope's per-partition completion tails. For
+each partition `P` in the graph's transitive partition set, the
+wiring computes `root.outgoing_P` by applying §2.5 at the root
+scope: the `sync` / selector-matched `mux` join of `outgoing_*_P`
+tails of root-scope atoms with no `P`-successor, where a path
+contributing no atoms in `P` forwards `ctrl_in` (the root's
+`incoming_P`) through the join per §2.7.
+
+`done_out` is then output zero of `dataflow.sync` over the set
+`{ root.outgoing_P | P in transitive partition set of the graph }`.
+When the transitive partition set is empty (the graph body has
+no memory effects in any reachable scope), the wiring sets
+`done_out = ctrl_in` directly: the structural-permission token
+is the only completion event the graph produces in that case,
+and no cross-partition rendezvous is needed. When the set is
+non-empty, every per-partition tail is itself a join of leaf
+`done` tokens with `ctrl_in` forwarded along no-access paths
+(per §2.5 / §2.7), so structural completion is already implicit
+in each `root.outgoing_P` and no separate structural-completion
+operand is added at the boundary `sync`. This per-partition
+formulation replaces the prior single "`sync` over all leaves
+with no successor" wording: the cross-partition `sync` happens
+only once, at the graph boundary, so independent partitions are
+not serialized inside the body.
+
+### 6.6 Multi-fanout and Read-Read Pairs
+
+Two cross-cutting rules close the wiring specification.
+
+* Multi-fanout of a single `done` token is handled by SSA value
+  reuse, not an extra op: a `done` consumed by multiple successor
+  `incoming_*_P` constructions or by a `root.outgoing_P` join
+  appears as one SSA value with multiple uses.
+* Read-read pairs have no dependence edge, even when they alias,
+  per §3 and §4.3. Independent reads can be reordered freely;
+  their `ctrl` operands still rendezvous with the structural-
+  permission token and any same-partition write predecessor or
+  loop-carried state per §6.4, but they neither appear as
+  predecessors in `loom.mem_dep_preds` nor contribute to each
+  other's `incoming_L_P`.
 
 ## 7. References
 
