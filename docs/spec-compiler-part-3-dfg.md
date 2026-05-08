@@ -527,20 +527,23 @@ traits:
   graph-level control. There is no general cast between
   `!dataflow.thread_token` and `none`. Ordering a child thread after a
   graph completes is expressed by placing the child launch after
-  `dataflow.thread.fence(%graph_done)` in ScalarCore program order
-  AND consuming the fence's `none` result through the child
-  thread's `LoomAsyncOpInterface` async dependency operand. The
-  combined SSA dep plus the fence's default-resource memory
-  barrier (per §3 Constitutional Rule 8) makes the ordering robust
-  against generic code motion: a scalar-only child thread that
-  reports no boundary memory effects on its own would otherwise be
-  reorderable across the fence by a memory-aware optimizer, since
-  there is no pure SSA dep from the fence to a thread launch that
-  ignores it. Front-end lowering must therefore wire the fence
-  result into the child thread's async-dep operand list whenever
-  the child thread is supposed to follow a particular graph
-  completion; the lit suite includes a fixture covering the
-  scalar-only child-thread case.
+  `dataflow.thread.fence(%graph_done)` in ScalarCore program order.
+  The fence's default-resource memory barrier (per §3 Constitutional
+  Rule 8) keeps any op with declared memory effects from being
+  reordered across the fence, which covers the common case where the
+  child thread has at least one mapped operand and therefore reports
+  boundary memory effects through `MemoryEffectOpInterface`. For the
+  uncommon scalar-only child-thread case (no mapped operands, no
+  reported boundary memory effects), the front-end lowering must
+  additionally close the SSA path so generic code motion has no
+  freedom: it emits a trailing `dataflow.thread.fence(%child_done)`
+  that consumes the scalar-only child thread's `!dataflow.thread_token`
+  result, and threads the prior fence's `none` result into the same
+  trailing fence's operand list (the fence verifier accepts a mix of
+  `none` and `!dataflow.thread_token` operands, see §9). The
+  trailing fence's memory barrier then anchors the launch sequence
+  on both sides. The lit suite covers this scalar-only case; in the
+  common case the leading fence alone is sufficient.
 
 #### 5.4.4 `dataflow.thread.wait`
 
