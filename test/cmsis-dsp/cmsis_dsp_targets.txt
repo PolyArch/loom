@@ -1,0 +1,64 @@
+# CMSIS-DSP LLVM IR drop-in smoke targets.
+#
+# One row per source file. Columns are pipe-separated:
+#
+#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags
+#
+# Notes:
+#  - src_relpath is relative to externals/cmsis-dsp/Source/.
+#  - clang_target_triple is what we pass to --target=.
+#  - clang normalizes -> expected_normalized_triple, which is what actually
+#    appears in `target triple = "..."` inside the emitted .ll. The pipeline
+#    greps for the normalized form.
+#  - expected_symbols are function names defined by the source. The pipeline
+#    requires that ALL of them show up as `define ... @<sym>(`.
+#  - extra_cflags carries per-row tweaks (e.g. -mfloat-abi=hard) without
+#    needing to touch the runner script.
+#  - We deliberately do NOT modify any externals/cmsis-dsp source. If a
+#    source needs more flags, add them in extra_cflags here.
+#
+# Coverage rationale: a representative subset of the per-feature subdirs
+# under externals/cmsis-dsp/Source/. f32 variants are preferred for
+# clarity (no fixed-point saturation noise) except where the brief asks
+# for q15/q31 to exercise integer paths. Triples follow the brief:
+#  - thumbv7em / Cortex-M4              : default for f32 sources
+#  - thumbv7em + hard FP / Cortex-M4    : for sources whose names imply
+#                                         hard-float or that benefit from
+#                                         a hard-float ABI smoke
+#  - thumbv8m.main / Cortex-M33         : one v8m-leaning row to keep
+#                                         coverage of the v8m-main profile
+#
+# Subdir / source coverage (16 rows):
+#  - BasicMathFunctions      : arm_add_q15.c, arm_mult_f32.c,
+#                              arm_offset_f32.c, arm_abs_f32.c
+#  - FastMathFunctions       : arm_sin_f32.c, arm_sqrt_q15.c
+#  - FilteringFunctions      : arm_fir_f32.c (hard-float),
+#                              arm_biquad_cascade_df1_f32.c (hard-float)
+#  - MatrixFunctions         : arm_mat_mult_f32.c, arm_mat_add_f32.c
+#  - StatisticsFunctions     : arm_mean_f32.c (v8m.main),
+#                              arm_max_f32.c, arm_var_f32.c (hard-float)
+#  - SupportFunctions        : arm_copy_f32.c, arm_fill_f32.c
+#  - TransformFunctions      : arm_cfft_f32.c
+#
+# Each source's expected symbol is the function name that matches the
+# file name (the convention CMSIS-DSP follows for its public entry
+# points). Files that also emit static helpers under different names
+# are still covered by the base symbol; the pipeline asserts presence,
+# not exclusivity.
+#
+BasicMathFunctions/arm_add_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_add_q15|
+BasicMathFunctions/arm_mult_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_mult_f32|-mfloat-abi=hard
+BasicMathFunctions/arm_offset_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_offset_f32|
+BasicMathFunctions/arm_abs_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_abs_f32|
+FastMathFunctions/arm_sin_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sin_f32|
+FastMathFunctions/arm_sqrt_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sqrt_q15|
+FilteringFunctions/arm_fir_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_fir_f32|-mfloat-abi=hard
+FilteringFunctions/arm_biquad_cascade_df1_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_biquad_cascade_df1_f32|-mfloat-abi=hard
+MatrixFunctions/arm_mat_mult_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_mult_f32|
+MatrixFunctions/arm_mat_add_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_add_f32|
+StatisticsFunctions/arm_mean_f32.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_mean_f32|
+StatisticsFunctions/arm_max_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_max_f32|
+StatisticsFunctions/arm_var_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_var_f32|-mfloat-abi=hard
+SupportFunctions/arm_copy_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_copy_f32|
+SupportFunctions/arm_fill_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fill_f32|
+TransformFunctions/arm_cfft_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_cfft_f32|
