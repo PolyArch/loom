@@ -1,4 +1,4 @@
-// RUN: loom-raise-opt --loom-llvm-cf-to-cf --loom-llvm-func-to-func %s | FileCheck %s
+// RUN: loom-raise-opt --loom-llvm-func-to-func %s | FileCheck %s
 
 // llvm.func with builtin/pointer signature -> func.func; llvm.return
 // inside the body becomes func.return; direct llvm.call to a raised

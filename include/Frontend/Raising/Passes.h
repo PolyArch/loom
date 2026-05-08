@@ -12,12 +12,13 @@ class PassManager;
 namespace loom {
 namespace raising {
 
-// Convert llvm.br / llvm.cond_br terminators inside llvm.func bodies into
-// the matching cf.br / cf.cond_br ops. Pattern-rewrite based, runs only
-// inside llvm.func regions and intentionally does not replace llvm.return
-// (the function-body terminator stays). llvm.switch is not converted in
-// this design and is reported as a no-op for that op so the rest of the
-// pipeline can still proceed; the function will simply remain in llvm form.
+// Convert llvm.br / llvm.cond_br / llvm.switch terminators inside
+// func.func bodies into the matching cf.br / cf.cond_br / cf.switch
+// ops. Pattern-rewrite based, scoped to func.func (the func-to-func
+// pass runs first, raising lift-able llvm.func ops to func.func; this
+// pass is then nested under func::FuncOp). Intentionally does not
+// replace llvm.return; the func-to-func pass already replaced
+// llvm.return with func.return when raising the function shape.
 std::unique_ptr<::mlir::Pass> createLLVMCfToCfPass();
 
 // Convert llvm.* arithmetic, comparison and integer/float constant ops into
@@ -58,13 +59,17 @@ std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 //   * it has no body (declaration only);
 //   * any argument type is a non-pointer aggregate type (struct, array,
 //     non-builtin vector);
-//   * the result type is a non-pointer aggregate type;
-//   * a callee referenced by an llvm.call inside the body is itself going
-//     to be skipped.
+//   * the result type is a non-pointer aggregate type.
 //
-// This pass must run AFTER createLLVMCfToCfPass() so the body branch
-// terminators are already cf.br / cf.cond_br; otherwise the upstream
-// --lift-cf-to-scf pass that runs next will not see anything to lift.
+// Mixed-island contract: when a callee is skipped, the raised callers
+// retain `llvm.call @callee` references. This is allowed MLIR -- a
+// `func.func` body may host `llvm.call` ops as long as the referenced
+// symbol still resolves to an `llvm.func`.
+//
+// This pass runs FIRST in the standard pipeline. The cf-to-cf and
+// arith-to-arith passes that follow are nested under func::FuncOp,
+// guaranteeing that skipped llvm.func ops keep their bodies in
+// pristine LLVM form (no mixed cf.br + llvm.return half-shape).
 std::unique_ptr<::mlir::Pass> createLLVMFuncToFuncPass();
 
 // Register all raising passes with the global pass registry. Lets
@@ -73,15 +78,15 @@ std::unique_ptr<::mlir::Pass> createLLVMFuncToFuncPass();
 void registerRaisingPasses();
 
 // Append the standard Loom raising pipeline to the given pass manager:
-//   loom-llvm-cf-to-cf
-//   loom-llvm-func-to-func
-//   --lift-cf-to-scf       (upstream)
-//   loom-llvm-arith-to-arith
-//   --canonicalize         (upstream)
+//   loom-llvm-func-to-func          (module-level)
+//   loom-llvm-cf-to-cf              (nested under func.func)
+//   --lift-cf-to-scf                (nested under func.func)
+//   loom-llvm-arith-to-arith        (nested under func.func)
+//   --canonicalize                  (upstream)
 //   loom-scf-while-to-for
-//   --canonicalize         (upstream)
+//   --canonicalize                  (upstream)
 //   loom-scf-for-to-forall
-//   --canonicalize         (upstream)
+//   --canonicalize                  (upstream)
 void buildRaisingPipeline(::mlir::PassManager &pm);
 
 } // namespace raising

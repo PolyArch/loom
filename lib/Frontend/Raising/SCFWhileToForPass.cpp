@@ -26,10 +26,26 @@
 //      remaining loop-carried values. The induction-variable use inside
 //      the body is rewritten to the scf.for IV (i.e. the value before
 //      the bump).
+//
+// Correctness constraints on the do-while shape:
+//   * The predicate is restricted to `cmpi ne %iv_next, %ub` -- the
+//     EXACT shape upstream `--lift-cf-to-scf` emits for an LLVM
+//     counted loop with post-increment-then-test. Inclusive predicates
+//     (sle / ule / sge / uge) and reversed predicates (sgt / ugt / slt
+//     / ult on iv_next) would require lb/ub adjustment or direction
+//     reversal we do not perform; we leave those scf.while ops alone
+//     rather than mis-rewrite them.
+//   * The after-region must consist of nothing more than the
+//     scf.yield of the same iv and carried values back. A non-trivial
+//     after-region would be silently dropped by this rewrite, so we
+//     refuse to match. (Specifically: the after-block's only ops
+//     besides its terminator must be index-preserving casts that feed
+//     the terminator -- i.e. nothing that observes or mutates state.)
 
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -82,21 +98,17 @@ matchCountedDoWhile(::mlir::scf::WhileOp loop) {
   if (cmpOp->getParentRegion() != &loop.getBefore())
     return ::mlir::failure();
 
-  // Predicate accepted: ne/slt/sgt/ult/ugt -- in all those cases the
-  // induction variable is the bumped one and we exit when it reaches
-  // the bound.
+  // Predicate accepted: only `ne` -- the EXACT shape that upstream
+  // `--lift-cf-to-scf` emits for an ascending counted loop with the
+  // increment in the latch. Inclusive (sle/ule/sge/uge), reversed
+  // (sgt/ugt), and "<" on iv_next (slt/ult) would either need lb/ub
+  // adjustment or direction reversal we do not perform; we leave those
+  // scf.while ops alone for the next layer to handle rather than
+  // mis-rewrite them. `eq` would terminate after at most one iteration
+  // and is not a loop in the conventional sense.
   using Pred = ::mlir::arith::CmpIPredicate;
   Pred pred = cmpOp.getPredicate();
-  if (pred != Pred::ne && pred != Pred::slt && pred != Pred::sgt &&
-      pred != Pred::ult && pred != Pred::ugt && pred != Pred::sle &&
-      pred != Pred::ule && pred != Pred::sge && pred != Pred::uge &&
-      pred != Pred::eq) {
-    return ::mlir::failure();
-  }
-  // For the `eq` predicate we are testing for the exit value, but
-  // `scf.condition` keeps iterating while its condition is *true*, so
-  // `eq` would terminate exactly once which is not a loop.
-  if (pred == Pred::eq)
+  if (pred != Pred::ne)
     return ::mlir::failure();
 
   // The bumped iv comes from an arith.addi of a before-block argument
@@ -154,6 +166,46 @@ matchCountedDoWhile(::mlir::scf::WhileOp loop) {
     return ::mlir::failure();
   if (yieldOp.getResults()[ivIdx] != afterIv)
     return ::mlir::failure();
+
+  // The after-region must be effectively empty -- it is the iteration
+  // continuation, and any side-effecting op there would be silently
+  // dropped by our rewrite (we replace the entire scf.while with an
+  // scf.for whose body is the before-region's pre-cmp prefix).
+  // Allow:
+  //   * the trailing scf.yield (terminator)
+  //   * value-preserving casts (arith.index_cast / index_cast_ui /
+  //     extsi / extui / trunci / sext / zext / trunc) that take an
+  //     after-block argument and feed an scf.yield operand. Such casts
+  //     do not observe state and are safe to keep.
+  // Anything else (in particular memref.store / llvm.store / call)
+  // forces a bail-out.
+  for (::mlir::Operation &op : *afterBody) {
+    if (&op == yieldOp.getOperation())
+      continue;
+    if (::mlir::isa<::mlir::arith::IndexCastOp,
+                    ::mlir::arith::IndexCastUIOp,
+                    ::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
+                    ::mlir::arith::TruncIOp, ::mlir::LLVM::SExtOp,
+                    ::mlir::LLVM::ZExtOp, ::mlir::LLVM::TruncOp>(&op)) {
+      // Cast must have its result consumed only by the yield, and its
+      // operand must be one of the after-block arguments.
+      bool castOk = true;
+      for (::mlir::Operation *user : op.getUsers()) {
+        if (user != yieldOp.getOperation()) {
+          castOk = false;
+          break;
+        }
+      }
+      if (!castOk)
+        return ::mlir::failure();
+      ::mlir::Value src = op.getOperand(0);
+      auto bArg = ::mlir::dyn_cast<::mlir::BlockArgument>(src);
+      if (!bArg || bArg.getOwner() != afterBody)
+        return ::mlir::failure();
+      continue;
+    }
+    return ::mlir::failure();
+  }
 
   // The addi result must only feed the cmpi and the condition op's iv
   // slot. (The iv argument itself may be used freely throughout the

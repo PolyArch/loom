@@ -6,10 +6,17 @@
 // Pointer arithmetic (llvm.getelementptr), pointer ops (llvm.alloca,
 // llvm.load, llvm.store), and ext/trunc with non-builtin element types
 // stay in llvm form by design -- the spec allows multi-dialect output.
+//
+// This pass runs as a function-level pass strictly under func.func. The
+// pipeline (see Pipeline.cpp) raises lift-able llvm.func ops into
+// func.func first, then nests this pass under each func.func. Aggregate-
+// signature llvm.func ops left as llvm.func by func-to-func are
+// untouched, so their bodies stay in pristine LLVM form.
 
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -120,8 +127,9 @@ struct ConstantRewrite
 };
 
 struct LLVMArithToArithPass
-    : public ::mlir::PassWrapper<LLVMArithToArithPass,
-                                 ::mlir::OperationPass<::mlir::ModuleOp>> {
+    : public ::mlir::PassWrapper<
+          LLVMArithToArithPass,
+          ::mlir::OperationPass<::mlir::func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LLVMArithToArithPass)
 
   ::llvm::StringRef getArgument() const final {
@@ -129,7 +137,9 @@ struct LLVMArithToArithPass
   }
   ::llvm::StringRef getDescription() const final {
     return "Rewrite llvm.* arithmetic / compare / constant ops with builtin "
-           "numeric types into the matching arith dialect ops.";
+           "numeric types into the matching arith dialect ops, scoped to "
+           "func.func bodies. Skipped (aggregate-signature) llvm.func ops "
+           "are left untouched.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -137,7 +147,9 @@ struct LLVMArithToArithPass
   }
 
   void runOnOperation() final {
-    ::mlir::ModuleOp module = getOperation();
+    ::mlir::func::FuncOp funcOp = getOperation();
+    if (funcOp.isExternal())
+      return;
     ::mlir::MLIRContext *ctx = &getContext();
 
     ::mlir::RewritePatternSet patterns(ctx);
@@ -167,7 +179,8 @@ struct LLVMArithToArithPass
         // compares + constants
         ICmpRewrite, FCmpRewrite, ConstantRewrite>(ctx);
 
-    if (failed(::mlir::applyPatternsGreedily(module, std::move(patterns))))
+    if (failed(::mlir::applyPatternsGreedily(funcOp.getBody(),
+                                             std::move(patterns))))
       return signalPassFailure();
   }
 };

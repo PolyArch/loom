@@ -1,8 +1,8 @@
 // loom-raise-opt: an mlir-opt-style driver that registers all upstream
 // passes plus the Loom raising passes (loom-llvm-cf-to-cf,
 // loom-llvm-func-to-func, loom-llvm-arith-to-arith,
-// loom-scf-while-to-for). Used by lit-style hand-written .mlir
-// regression tests under test/raise/.
+// loom-scf-while-to-for, loom-scf-for-to-forall). Used by lit-style
+// hand-written .mlir regression tests under test/raise/.
 
 #include "Frontend/Raising/Passes.h"
 

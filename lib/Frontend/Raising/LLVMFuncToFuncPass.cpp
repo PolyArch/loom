@@ -13,9 +13,22 @@
 //   * llvm.call to a raised callee becomes func.call (only for direct
 //     calls; indirect llvm.call ops are left alone).
 //
-// This pass MUST run after loom-llvm-cf-to-cf so the body's terminators
-// are already cf.br / cf.cond_br (otherwise --lift-cf-to-scf, which is
-// the next pass, will not have anything to lift).
+// Contract on skipped callees / mixed islands:
+//   If a callee is SKIPPED (e.g. it has an aggregate signature), the
+//   raised callers KEEP their existing `llvm.call @callee(...)` op
+//   pointing at that unraised `llvm.func @callee`. This is allowed MLIR
+//   -- a `func.func` body may host `llvm.call` ops as long as the
+//   referenced symbol still resolves to an `llvm.func`. Callers should
+//   expect this multi-dialect island shape; do not attempt to "fix" it
+//   by re-lowering raised callers, because doing so loses parallel /
+//   structured control-flow information already recovered by the
+//   subsequent --lift-cf-to-scf and arith-to-arith passes.
+//
+// Pipeline ordering:
+//   This pass runs FIRST in the raising pipeline (see Pipeline.cpp).
+//   The cf-to-cf and arith-to-arith passes that follow are nested under
+//   func.func, so SKIPPED `llvm.func` ops keep their bodies in pristine
+//   LLVM form (no half-rewritten cf.br + llvm.return mixed shape).
 
 #include "Frontend/Raising/Passes.h"
 

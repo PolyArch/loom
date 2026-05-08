@@ -1,7 +1,8 @@
 // loom-raise: read an LLVM IR (.ll / .bc) file via parseIRFile, translate
 // to MLIR using the upstream translateLLVMIRToModule, then run the
-// standard Loom raising pipeline (cf-to-cf -> func-to-func ->
-// --lift-cf-to-scf -> arith-to-arith -> --canonicalize) and emit MLIR
+// standard Loom raising pipeline (func-to-func -> cf-to-cf ->
+// --lift-cf-to-scf -> arith-to-arith -> --canonicalize -> while-to-for
+// -> --canonicalize -> for-to-forall -> --canonicalize) and emit MLIR
 // text on stdout or to -o <file>.
 //
 // CLI shape mirrors mlir-translate / mlir-opt:
@@ -106,8 +107,9 @@ int main(int argc, char **argv) {
       "Loom LLVM IR -> SCF MLIR raising driver\n"
       "Reads an LLVM IR (.ll / .bc) file, translates it to MLIR via the "
       "upstream LLVMIR-import path, and runs the standard Loom raising "
-      "pipeline (loom-llvm-cf-to-cf, loom-llvm-func-to-func, "
-      "--lift-cf-to-scf, loom-llvm-arith-to-arith, --canonicalize).\n");
+      "pipeline (loom-llvm-func-to-func, loom-llvm-cf-to-cf, "
+      "--lift-cf-to-scf, loom-llvm-arith-to-arith, --canonicalize, "
+      "loom-scf-while-to-for, loom-scf-for-to-forall).\n");
 
   // Parse LLVM IR.
   ::llvm::LLVMContext llvmContext;
