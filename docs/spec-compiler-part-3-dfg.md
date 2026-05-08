@@ -1577,7 +1577,12 @@ The normalization has a tunable split factor `K`. The pipeline option
 `K = 1`, and `K` must be positive. The first milestone applies one
 global split factor to every `scf.parallel` that reaches this
 normalization. There is no per-loop override in the required
-implementation.
+implementation. The N-Dim Parallel With M Reductions subsection
+below assumes the per-dim chunk count `K_d` may differ across dims
+in a future implementation while still using the global factor in
+milestone 1; the carry-placement and merge contract specified
+there is independent of the K choice, so a future cost-model-driven
+per-dim K can land without changing the IR contract.
 
 * `K = 1` is the required baseline. The whole iteration domain becomes
   one lexicographic `scf.for` loop nest.
@@ -1764,6 +1769,226 @@ known identity element. If a later analysis proves stronger algebraic
 properties, a tree merge or target-specific reduction network may be
 selected as an optimization, but that is not part of the required
 normalization contract.
+
+#### N-Dim Parallel With M Reductions
+
+The single-dimensional, multi-result discussion above does not by
+itself pin the IR shape for the multi-dimensional case. This
+subsection extends the partial-and-merge scheme to a `scf.parallel`
+over `N` parallel dimensions with `M` reduction results.
+
+**Generated loop-nest layout.** After parallel-SCF normalization (per
+`docs/spec-compiler-part-3-impl.md` §1.8), an `N`-dim `scf.parallel`
+becomes one or more `scf.for` loop nests that share a single
+parallel-provenance group, plus any required reduction-merge
+`scf.if` ops. Each parallel dim becomes one `scf.for`. The loop-nest
+order is outermost-first-in-source-order: the outermost generated
+`scf.for` corresponds to the leftmost parallel dim of the source
+`scf.parallel`, and the innermost generated `scf.for` corresponds to
+the rightmost parallel dim, which is therefore the most tightly
+bound. The implementation may choose, per dim, how many chunks `K`
+to split that dim into; that choice is implementation-defined and
+does not affect the carry placement contract specified below. When a
+dim is split into `K > 1` chunks, the chunked dim is materialized as
+two nested `scf.for` ops at that dim's position in the nest -- an
+outer K-chunk loop iterating over the chunk ordinal `0 .. K-1`, and
+an inner per-chunk loop iterating the dim's subrange. The K-chunk
+loop is the carrier of the cross-chunk reduction merge; the inner
+per-chunk loop participates in the same intra-chunk body as any
+unchunked dim.
+
+**Reduction iter_arg placement.** For `M` reductions over the same
+`N` parallel dims, each reduction has one (valid, partial) tuple per
+chunk-tuple. Each reduction's `%iter_arg` is hung on the **innermost**
+generated per-chunk `scf.for` -- the loop with the smallest stride
+and the tightest binding -- so that the partial accumulates across
+all iterations of all parallel dims within one chunk-tuple. The
+reduction's `%iter_init` is the chunk-empty seed described under
+"valid flag wiring" below; it flows in from the loop-nest scope that
+encloses the innermost per-chunk loop. The reduction's `%iter_yield`
+is the partial after one iteration completes inside the chunk-tuple,
+and the reduction's `%iter_final` is the partial after the
+innermost per-chunk loop completes -- this is the per-chunk-tuple
+partial value that the outer reduction-merge `scf.if` consumes.
+Other parallel dims' per-chunk `scf.for` loops do not carry the
+reduction iter_arg directly; the partial is hoisted out of the
+innermost per-chunk loop as a normal `scf.for` result. When the
+intra-chunk iteration space is represented as a nest of multiple
+per-chunk `scf.for` loops (one per parallel dim), each reduction's
+`(valid, partial)` tuple must be threaded as iter_args through every
+enclosing per-chunk loop in the nest, not only the innermost one.
+The seed at the outer per-chunk loop's iter_arg is the dummy seed
+`(false, init_r)`; intermediate per-chunk loops yield their inner
+loop's final tuple; the outermost per-chunk loop yields the
+chunk-tuple's `(valid, partial_r)` pair. Without this pass-through
+each outer-loop iteration would restart the inner reduction from
+the seed and lose the accumulated partial. An equivalent canonical
+representation flattens the intra-chunk N-D iteration space into a
+single linearized `scf.for`, in which case each reduction has a
+single `iter_arg` on that one loop. Implementations may choose
+either canonical form.
+
+**Valid flag wiring.** The per-chunk `valid` flag is shared by all
+`M` reductions of the same chunk-tuple. It is computed inside the
+innermost per-chunk loop the same way as in the one-dim case:
+`%valid` starts false at the chunk-tuple entry and is set true on
+the first executed iteration. The `M` reduction `%iter_init` values
+are dummy seeds; their concrete value is irrelevant because the
+outer merge `scf.if` only folds a chunk-tuple's partial when its
+`%valid` is true, which guarantees that at least one body iteration
+overwrote the dummy seed before the partial was produced.
+Implementations may pick any deterministic seed (for example, the
+original `init` value, or an undef poison value); the seed choice
+does not affect the merged result.
+
+For arbitrary `scf.reduce` bodies that lack a usable identity (for
+example, a non-commutative or otherwise no-identity reduction), the
+overwrite is not implicit: the innermost body must branch on the
+chunk-local `%valid` so that the first executed iteration yields
+the iteration value as the partial directly, and subsequent
+iterations inline the source `scf.reduce` body with the running
+partial and the iteration value. The worked example below uses
+sum and max where the natural identity (`0` and `-inf`) makes the
+branch unnecessary; the generic non-identity scheme is what
+arbitrary reductions lower to.
+
+**K > 1 multi-chunk tuple nesting.** When the implementation splits
+one or more parallel dims with `K_d > 1`, the chunk-tuples are
+enumerated by a K-chunk `scf.for` nest -- one `scf.for` per chunked
+dim -- placed outside the per-chunk loop nest. The chunk-tuples
+form a flat sequence indexed by a deterministic chunk-tuple ordinal
+that respects source dim order: the outermost K-chunk loop varies
+slowest. For each reduction `r` in `0 .. M-1`, the K-chunk nest
+carries a running accumulator `%acc_r` as an iter_arg on every
+K-chunk `scf.for` in the nest, threaded through with `scf.yield` so
+that the value reaching the merge `scf.if` is the accumulator after
+the prior chunk-tuple in canonical order. The accumulator is
+**seeded** by the source `init_r` on the outermost K-chunk
+`scf.for`'s `iter_args`; each inner K-chunk loop's iter_arg is
+seeded from the enclosing K-chunk loop's iter_arg block argument,
+not from `init_r` directly. Inside the innermost K-chunk loop, a
+reduction-merge `scf.if` consumes:
+
+* the per-chunk-tuple partial `%partial_r` produced by reduction
+  `r`'s innermost per-chunk `iter_arg`'s `%iter_final`;
+* the running accumulator `%acc_r` carried in from the prior
+  chunk-tuple via the K-chunk nest's iter_args;
+* the per-chunk-tuple `%valid` bit, which determines whether the
+  merge fires for this chunk-tuple.
+
+For `M` reductions, `M` independent (valid, partial, accumulator)
+triples nest in the same K-chunk loop nest as `M` parallel
+iter_args on every K-chunk `scf.for`. The reduction-merge `scf.if`
+ops may be expressed as one multi-result `scf.if` that yields the
+next `M`-tuple `(%acc_0', .., %acc_{M-1}')`, or as `M` single-result
+`scf.if` ops sharing the same `%valid` selector; both shapes are
+equivalent under the §6.1 template. Whichever shape is chosen, the
+merged tuple is yielded back into the K-chunk nest's iter_args,
+and the final values flowing out of the outermost K-chunk
+`scf.for` are the `M` `scf.parallel` results.
+
+When every parallel dim has `K_d = 1`, there is no K-chunk loop at
+all, the merge `scf.if` collapses to a single fold equivalent to
+the one-dim `K = 1` case, and the `M` reduction `%iter_arg`s are
+hung on the innermost source-dim `scf.for` directly. When a chunked
+dim has `K_d = 1` it is omitted from the K-chunk nest entirely.
+
+**Worked example: 2D parallel, 2 reductions.** Consider:
+
+```mlir
+%sum, %max = scf.parallel (%i, %j) = (%c0, %c0) to (%I, %J)
+    step (%c1, %c1) init (%zero, %neginf) -> (f32, f32) {
+  %x = memref.load %A[%i, %j] : memref<?x?xf32>
+  scf.reduce(%x, %x : f32, f32) {
+  ^bb0(%lhs0 : f32, %rhs0 : f32):
+    %s = arith.addf %lhs0, %rhs0 : f32
+    scf.reduce.return %s : f32
+  }, {
+  ^bb0(%lhs1 : f32, %rhs1 : f32):
+    %m = arith.maximumf %lhs1, %rhs1 : f32
+    scf.reduce.return %m : f32
+  }
+}
+```
+
+For the implementation choice `K_i = K_j = 2` (two chunks per dim,
+four chunk-tuples total), the normalized loop nest has the shape:
+
+```mlir
+%sum_final, %max_final =
+  scf.for %ki = %c0 to %c2 step %c1
+      iter_args(%sum_acc = %zero, %max_acc = %neginf) -> (f32, f32) {
+    %sum_acc1, %max_acc1 =
+      scf.for %kj = %c0 to %c2 step %c1
+          iter_args(%sum_acc_j = %sum_acc, %max_acc_j = %max_acc)
+          -> (f32, f32) {
+        %i_lb, %i_ub = chunk_bounds(%ki, %c0, %I, %c1, %c2)
+        %j_lb, %j_ub = chunk_bounds(%kj, %c0, %J, %c1, %c2)
+
+        %valid_chunk, %sum_partial_chunk, %max_partial_chunk =
+          scf.for %i = %i_lb to %i_ub step %c1
+              iter_args(%v_outer = %false,
+                        %s_outer = %zero,
+                        %m_outer = %neginf) -> (i1, f32, f32) {
+            %v_inner, %s_inner, %m_inner =
+              scf.for %j = %j_lb to %j_ub step %c1
+                  iter_args(%v = %v_outer,
+                            %s = %s_outer,
+                            %m = %m_outer) -> (i1, f32, f32) {
+                %x = memref.load %A[%i, %j] : memref<?x?xf32>
+                %s_next = arith.addf %s, %x : f32
+                %m_next = arith.maximumf %m, %x : f32
+                scf.yield %true, %s_next, %m_next : i1, f32, f32
+              }
+            scf.yield %v_inner, %s_inner, %m_inner : i1, f32, f32
+          }
+
+        %sum_acc_j_next = scf.if %valid_chunk -> f32 {
+          %merged = arith.addf %sum_acc_j, %sum_partial_chunk : f32
+          scf.yield %merged : f32
+        } else {
+          scf.yield %sum_acc_j : f32
+        }
+        %max_acc_j_next = scf.if %valid_chunk -> f32 {
+          %merged = arith.maximumf %max_acc_j, %max_partial_chunk : f32
+          scf.yield %merged : f32
+        } else {
+          scf.yield %max_acc_j : f32
+        }
+
+        scf.yield %sum_acc_j_next, %max_acc_j_next : f32, f32
+      }
+    scf.yield %sum_acc1, %max_acc1 : f32, f32
+  }
+```
+
+The intra-chunk-tuple body sits inside the innermost per-chunk
+`scf.for` over `%j`, which carries the three iter_args `(%v, %s,
+%m)`. The first executed iteration of the chunk-tuple flips `%v`
+to `true` and overwrites the seed values of `%s` and `%m`, so the
+chunk-tuple's partial is well-defined whenever `%valid_chunk` is
+true. The two reduction-merge `scf.if` ops sit inside the inner
+K-chunk loop over `%kj` and fold each reduction independently
+under the shared `%valid_chunk` selector. Both running
+accumulators `%sum_acc` and `%max_acc` are threaded as iter_args
+through both K-chunk loops -- seeded by `%zero` and `%neginf` on
+the outer K-chunk loop over `%ki`, threaded through the inner
+K-chunk loop over `%kj` via its own iter_args, and yielded back
+through both K-chunk loops -- so that the value entering the merge
+`scf.if` on chunk-tuple `(ki, kj)` is the accumulator after the
+prior chunk-tuple in canonical order. The outermost K-chunk loop's
+results `%sum_final` and `%max_final` are the `scf.parallel`'s two
+results.
+
+The K choice (chunks per parallel dim) is implementation-defined;
+this section pins the carry placement and merge structure
+regardless of K, so a future implementation may pick K based on
+cost-model decisions without changing the IR contract. In
+particular, switching any dim from `K_d = 1` to `K_d > 1` only
+adds one K-chunk `scf.for` for that dim into the K-chunk nest and
+extends the running accumulators' iter_arg threading through it;
+the per-chunk-tuple body and the per-reduction `%iter_arg`
+placement on the innermost per-chunk loop are unchanged.
 
 After normalization, all generated `scf.for` and `scf.if` operations
 use the existing templates in this section. Their stream, carry, gate,
