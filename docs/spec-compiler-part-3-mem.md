@@ -458,12 +458,21 @@ conditions:
   recursively follows the source operand of each of the following
   ops: `memref.cast`, `memref.subview`, `memref.view`,
   `memref.expand_shape`, `memref.collapse_shape`,
-  `memref.reinterpret_cast`, `memref.transpose`, and
+  `memref.reinterpret_cast`, `memref.transpose`,
   `dataflow.spatial_layout` (the spatial-array annotation defined
   in `docs/spec-compiler-part-4-spatial.md` §3.1, which is a
-  same-type view of its source memref). Each of these produces a
-  memref that shares storage with its source by construction, so
-  the walk peels them off without breaking aliasing.
+  same-type view of its source memref), and `dataflow.map_info`
+  (the boundary metadata op defined in
+  `docs/spec-compiler-part-3-dfg.md` §5.4.5, which is also a pure
+  view-like alias of its source). Each of these produces a memref
+  that shares storage with its source by construction, so the
+  walk peels them off without breaking aliasing. Peeling
+  `dataflow.map_info` is what lets the cross-boundary continuation
+  rule below preserve storage identity end-to-end across a thread
+  boundary: an in-thread leaf walks to its block argument, then
+  to the matching boundary operand (a `dataflow.map_info` result),
+  then peels through `map_info` to its source, and continues from
+  there.
 * **Recognized terminal roots (stop, treat as known root).** The
   walk stops and records a known root at any of the following:
   `memref.alloca`, `memref.alloc`, `memref.get_global`, or a
@@ -954,10 +963,15 @@ partition `P`:
   for `P` flows past the inner loop unchanged per §2.4.
 * `P` is touched inside the inner loop but is not in `Π_inner`
   (no cross-iteration ordering is required, e.g. read-only body
-  accesses): the inner loop participates in `P`'s chain through
-  ordinary `incoming_P` / `outgoing_P` per §2.4 with no state
-  ring; the per-iteration body just feeds tails through ordinary
-  §2.5 chain construction.
+  accesses): the inner loop applies the touched-but-not-carried
+  rule of §5.2 to `P`. It introduces a completion-aggregation
+  carry, not a state ring; the inner loop's `outgoing_P` is the
+  false-lane projection of that completion carry on the inner
+  loop's exit cycle, exposing exactly one frontier event in the
+  outer loop's per-`P` chain. Body leaf accesses inside the inner
+  loop still get their `ctrl` from `dataflow.sync(struct_at_L,
+  incoming_P)` per §6.4, so cross-iteration leaf ordering is not
+  introduced.
 * `P ∈ Π_inner`: the inner loop applies §5.2 to `P` with its own
   state ring; `%mem_init_P` is the outer-loop frontier at the
   inner loop's position, and `%mem_after_P` is one event in the
@@ -1008,12 +1022,22 @@ wiring in §6 reconstructs each dynamic path through the loop body
 from the IR's structured-control-flow ancestry of every member
 access: the path of a contributor leaf is the sequence of
 `scf.if` / `scf.index_switch` branches and `scf.for` / `scf.while`
-nestings between the loop op and the leaf. Paths whose IR
-ancestry contains no member access in `P` carry no contributor
-and forward `%mem_iter_P` per §5.2; paths with one or more
-contributors join their tails by §2.7 (`dataflow.sync` for
-same-path required tails, selector-matched `dataflow.mux` for
-mutually exclusive tails).
+nestings between the loop op and the leaf. The reconstruction
+forks by record kind:
+
+* For a `carried` record, paths whose IR ancestry contains no
+  member access in `P` carry no contributor and forward
+  `%mem_iter_P` per §5.2; paths with one or more contributors
+  join their tails by §2.7 (`dataflow.sync` for same-path
+  required tails, selector-matched `dataflow.mux` for mutually
+  exclusive tails).
+* For a `completion` record, paths whose IR ancestry contains no
+  member access in `P` forward the completion carry's
+  `%prev_tail` (so the no-access path adds nothing to the
+  completion-aggregation chain on that iteration); paths with one
+  or more contributors join their tails by §2.7 to produce
+  `%body_tail_P` as input to the completion-aggregation carry's
+  `iter_tail` of §5.2.
 
 Access ids reference `loom.mem_dep_id` values from §4.4. The loop-id
 namespace is per-graph and separate from the `mem_dep_id` namespace;

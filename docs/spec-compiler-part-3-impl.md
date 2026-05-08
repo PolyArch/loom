@@ -366,11 +366,12 @@ documentation never refers to the numeric position.
     `docs/spec-compiler-part-3-mem.md` §3. The recognized view-like
     ops are `memref.cast`, `memref.subview`, `memref.view`,
     `memref.expand_shape`, `memref.collapse_shape`,
-    `memref.reinterpret_cast`, `memref.transpose`, and
-    `dataflow.spatial_layout` (the spatial-array annotation defined
-    in `docs/spec-compiler-part-4-spatial.md` §3.1, which is a
-    same-type view of its source memref); the walk peels each into
-    its source operand. The recognized terminal roots are
+    `memref.reinterpret_cast`, `memref.transpose`,
+    `dataflow.spatial_layout`, and `dataflow.map_info` (both
+    same-type view-like producers per
+    `docs/spec-compiler-part-4-spatial.md` §3.1 and
+    `docs/spec-compiler-part-3-dfg.md` §5.4.5); the walk peels each
+    into its source operand. The recognized terminal roots are
     `memref.alloca`, `memref.alloc`, `memref.get_global`, and
     function-block arguments. Entry-block arguments of
     `IsolatedFromAbove` ops (`dataflow.graph`, `dataflow.thread`)
