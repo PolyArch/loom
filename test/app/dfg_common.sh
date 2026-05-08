@@ -79,5 +79,21 @@ dfg_one() {
             echo "[${KERNEL}/${variant}] no dataflow.graph.launch @g_ in ${dfg}" >&2
             return 1
         fi
+        # Streaming primitives appear inside the graph.func body once
+        # the simple-reduction shape has been lowered. EXPECT_STREAM
+        # defaults to "yes" so every reduction kernel asserts that
+        # dataflow.stream + dataflow.carry are present; kernels that
+        # carry only nested or call-bearing reductions may set
+        # EXPECT_STREAM=no to opt out.
+        if [[ "${EXPECT_STREAM:-yes}" == "yes" ]]; then
+            if ! grep -E -q 'dataflow\.stream ' "${dfg}"; then
+                echo "[${KERNEL}/${variant}] no dataflow.stream in ${dfg}" >&2
+                return 1
+            fi
+            if ! grep -E -q 'dataflow\.carry ' "${dfg}"; then
+                echo "[${KERNEL}/${variant}] no dataflow.carry in ${dfg}" >&2
+                return 1
+            fi
+        fi
     fi
 }

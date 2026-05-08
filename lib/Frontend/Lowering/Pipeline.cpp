@@ -4,9 +4,12 @@
 //     loom-lower-forall-to-thread       (module-level)
 //     loom-lower-for-to-graph           (module-level)
 //     --canonicalize                    (upstream)
+//     loom-lower-reduction-to-stream    (module-level)
 //
 // The forall-to-thread pass runs first so that the for-to-graph pass
-// sees scf.for ops already inside dataflow.thread bodies.
+// sees scf.for ops already inside dataflow.thread bodies. The
+// canonicalizer between for-to-graph and reduction-to-stream cleans
+// up trivial dead bridge values before we walk the graph.func body.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -19,16 +22,19 @@ namespace lowering {
 
 void registerLowerForallToThreadPass();
 void registerLowerForToGraphPass();
+void registerLowerReductionToStreamPass();
 
 static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
   pm.addPass(createLowerForallToThreadPass());
   pm.addPass(createLowerForToGraphPass());
   pm.addPass(::mlir::createCanonicalizerPass());
+  pm.addPass(createLowerReductionToStreamPass());
 }
 
 void registerLoweringPasses() {
   registerLowerForallToThreadPass();
   registerLowerForToGraphPass();
+  registerLowerReductionToStreamPass();
   static bool once = []() {
     ::mlir::PassPipelineRegistration<>(
         "loom-lower-scf-to-dfg",

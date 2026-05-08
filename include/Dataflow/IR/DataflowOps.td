@@ -573,7 +573,8 @@ def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
     HasParent<"::mlir::ModuleOp">,
     SingleBlockImplicitTerminator<"GraphReturnOp">,
     FunctionOpInterface,
-    RecursiveMemoryEffects
+    RecursiveMemoryEffects,
+    DeclareOpInterfaceMethods<RegionKindInterface>
 ]> {
   let summary = "Symbol-bearing function-like SpatialCore graph definition";
   let description = [{

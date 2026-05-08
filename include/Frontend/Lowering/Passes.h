@@ -36,16 +36,25 @@ std::unique_ptr<::mlir::Pass> createLowerForallToThreadPass();
 // index of the scf.for cut inside the thread.
 std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 
-// Register the two lowering passes with the global pass registry so
+// Module-scope pass that, for each dataflow.graph.func body whose
+// sole top-level scf.for matches the simple-reduction shape, lowers
+// that loop into dataflow.stream + dataflow.carry streaming
+// primitives plus the original body ops moved out into the graph
+// entry block. Graph bodies that do not match (nested SCF, call ops,
+// multiple top-level loops) are left in place with a remark.
+std::unique_ptr<::mlir::Pass> createLowerReductionToStreamPass();
+
+// Register the lowering passes with the global pass registry so
 // loom-raise-opt can drive them via --loom-lower-forall-to-thread /
-// --loom-lower-for-to-graph plus the combined
-// --loom-lower-scf-to-dfg pipeline.
+// --loom-lower-for-to-graph / --loom-lower-reduction-to-stream plus
+// the combined --loom-lower-scf-to-dfg pipeline.
 void registerLoweringPasses();
 
 // Append the SCF-to-DFG lowering pipeline to the given pass manager:
-//   loom-lower-forall-to-thread       (module-level)
-//   loom-lower-for-to-graph           (module-level)
-//   --canonicalize                    (upstream)
+//   loom-lower-forall-to-thread        (module-level)
+//   loom-lower-for-to-graph            (module-level)
+//   --canonicalize                     (upstream)
+//   loom-lower-reduction-to-stream     (module-level)
 void buildLoweringPipeline(::mlir::PassManager &pm);
 
 } // namespace lowering

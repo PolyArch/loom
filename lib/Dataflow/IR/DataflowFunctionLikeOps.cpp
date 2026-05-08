@@ -317,6 +317,18 @@ ParseResult GraphFuncOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void GraphFuncOp::print(OpAsmPrinter &p) { printFunctionLike(p, *this); }
 
+// `dataflow.graph.func` carries the SpatialCore body of a leaf
+// dataflow graph. Per the streaming spec (see
+// docs/spec-dataflow-part-1-streaming.md), graph regions allow
+// feedback edges, i.e., values produced by an op can be referenced
+// by an earlier op in program order. Mirror the regional
+// `dataflow.graph` op's region kind so feedback-edge ops like
+// `dataflow.carry` (whose `next` operand is computed downstream)
+// verify cleanly inside the function body.
+RegionKind GraphFuncOp::getRegionKind(unsigned /*index*/) {
+  return RegionKind::Graph;
+}
+
 LogicalResult GraphFuncOp::verify() {
   if (auto vis = getSymVisibility()) {
     if (*vis != "private" && *vis != "")
