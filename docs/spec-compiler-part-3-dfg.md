@@ -740,6 +740,10 @@ The `%ctrl` stream is supplied by the current lowering context: graph
 loop body, or a selected parent-branch control stream for a nested if.
 
 ```
+# Lane convention: lane 0 = false, lane 1 = true
+# demux %cond, %v : (i1, T) -> (T, T) yields (%v_else, %v_then)
+# mux %cond, %v_else, %v_then : (i1, T, T) -> T (operand order:
+# false-lane first, true-lane second)
 %cond : i1
 %t_else, %t_then = demux %cond, %ctrl : i1 -> (none, none)
 
@@ -873,6 +877,9 @@ Canonical lowering skeleton:
 #   %before_done : none, the tail of before-region side effects
 
 # scf.condition true operands enter after; false operands are results.
+# Lane convention: lane 0 = false, lane 1 = true. demux yields
+# (false-lane, true-lane); mux operand order is (false-lane,
+# true-lane).
 %b_exit_j, %b_after_j =
   demux %cond, %b_j : (i1, B_j) -> (B_j, B_j)
 
@@ -2078,6 +2085,11 @@ firing and leaves no residue.
 
 ```
 # Normalize arbitrary case values to dense dataflow lanes.
+# Lane convention: lane 0 = default region, lane i+1 = case region i
+# (this is the lowering's normalized lane order; the source op prints
+# case regions before the default region in MLIR's scf.index_switch).
+# demux yields default-lane first, then case 0, case 1, ...; mux
+# operand order matches.
 %lane0 = dataflow.constant %ctrl {const_value = 0 : index} : index
 %lane = ... compare %arg to each case value and arith.select lane i+1
 
