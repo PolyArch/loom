@@ -964,14 +964,27 @@ parameterizes §5.2 for one loop and uses only deterministic
 graph-local integer ids:
 
 * graph-local loop id (also written as `loom.mem_loop_id`),
-* per-partition records for every `P ∈ Π_L`, each containing:
+* per-partition records for every `P ∈ Π_L` (carried), each
+  containing:
   - partition id (graph-local),
+  - record kind = `carried`,
   - member access ids (the leaves in `P` carried by the ring),
   - body-tail contributor access ids (the leaves whose `done`
     feeds `%mem_next_P` on some dynamic path through the loop
     body),
   - `%mem_after_P` consumers (the access ids that read
     `%mem_after_P` as a predecessor after the loop).
+* per-partition records for every partition `P` that the loop
+  body touches but that is not in `Π_L` (touched but not
+  carried), each containing:
+  - partition id (graph-local),
+  - record kind = `completion`,
+  - member access ids (the leaves in `P` inside the loop body),
+  - body-tail contributor access ids (same role as in the
+    carried case, but feeding the completion-aggregation carry
+    of §5.2 rather than a state ring),
+  - completion-tail consumers (the access ids that read the
+    loop's `outgoing_P` after the loop).
 
 Path identity is not stored as separate snapshot fields. The
 wiring in §6 reconstructs each dynamic path through the loop body

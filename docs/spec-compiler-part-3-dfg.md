@@ -1249,8 +1249,21 @@ scf.for %i = %c0 to %n step %c1 {
 Lowering:
 
 ```
-%i_raw, %loop_rwc = stream %lb, %ub, %step {step_op="+=", cont_cond="<"} : iN
-%body_rwc, %i = gate %loop_rwc, %i_raw : iN
+# Source scf.for IVs are typed `index`. dataflow.stream requires its
+# %lb / %ub / %step / iv stream to share a signless integer-like
+# type (see docs/spec-dataflow-part-1-streaming.md). The lowering
+# therefore inserts arith.index_cast at the boundary: %lb / %ub /
+# %step are cast from index to a chosen iN, and the gated body IV
+# %i is cast back to index before memref indexing. The chosen iN
+# is the smallest signless int wide enough to hold the loop's bound
+# range; iN here is shorthand for that choice (typically i32 or
+# i64).
+
+%lb_iN, %ub_iN, %step_iN  = arith.index_cast %lb, %ub, %step : index to iN
+%i_raw, %loop_rwc = stream %lb_iN, %ub_iN, %step_iN
+                      {step_op="+=", cont_cond="<"} : iN
+%body_rwc, %i_iN = gate %loop_rwc, %i_raw : iN
+%i = arith.index_cast %i_iN : iN to index
 # body memory and address computation consume %i, never %i_raw
 
 # Optional structured control stream when body side effects need one:
@@ -1297,8 +1310,13 @@ Source:
 Lowering:
 
 ```
-%i_raw, %loop_rwc = stream %lb, %ub, %step {step_op="+=", cont_cond="<"} : iN
-%body_rwc, %i = gate %loop_rwc, %i_raw : iN
+# Same IV index<->iN cast pattern as the No Iter Args case, see
+# the lowering above.
+%lb_iN, %ub_iN, %step_iN  = arith.index_cast %lb, %ub, %step : index to iN
+%i_raw, %loop_rwc = stream %lb_iN, %ub_iN, %step_iN
+                      {step_op="+=", cont_cond="<"} : iN
+%body_rwc, %i_iN = gate %loop_rwc, %i_raw : iN
+%i = arith.index_cast %i_iN : iN to index
 
 %acc_raw = carry %loop_rwc, %init, %acc_feedback : i32
 

@@ -434,11 +434,20 @@ documentation never refers to the numeric position.
   group tail is the rendezvous of all chunk tail tokens. A later memory
   access that depends on the completed memory effects of the original
   `scf.parallel` uses this group tail as its predecessor.
-* For structured loops, the builder also records loop-carried memory
-  state plans. Each plan is keyed by a deterministic loop id and a
-  memory partition id, and references memory accesses only by integer
-  ids. A partition requiring cross-iteration ordering lowers to one
-  hidden `none` carry in `loom-lower-scf-to-dfg-bodies`.
+* For structured loops, the builder also records per-loop memory
+  plans. Each plan is keyed by a deterministic loop id and a memory
+  partition id, and references memory accesses only by integer ids.
+  Each partition record has a kind: `carried` for partitions
+  requiring cross-iteration ordering (lowered to one hidden `none`
+  state-ring carry in `loom-lower-scf-to-dfg-bodies`, per
+  `docs/spec-compiler-part-3-mem.md` §5.2 abstract pattern), or
+  `completion` for partitions touched in the body but not requiring
+  cross-iteration ordering (lowered to one hidden completion-only
+  carry that aggregates per-iteration body-tail tokens into the
+  loop's `outgoing_P`, per `docs/spec-compiler-part-3-mem.md` §5.2
+  touched-but-not-carried case). Both record kinds are pinned in
+  the snapshot so `loom-lower-scf-to-dfg-bodies` does not need to
+  re-analyze.
 * The pass leaves a stable IR snapshot so subsequent passes need no
   re-analysis: each leaf memory access gets `loom.mem_dep_id = N` and
   `loom.mem_dep_preds = [P0, P1, ...]`, where `N` and every `P*` are
