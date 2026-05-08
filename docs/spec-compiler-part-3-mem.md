@@ -470,6 +470,23 @@ conditions:
   function-block argument with no defining op. These define a fresh
   storage identity for the purposes of the oracle (with the
   symbol-keyed adjustment for `memref.get_global` described below).
+* **`IsolatedFromAbove` block arguments (cross-boundary continue).**
+  When the walk reaches an entry block argument of an
+  `IsolatedFromAbove` op (notably `dataflow.graph` and
+  `dataflow.thread`), it does not stop. The block argument is bound
+  positionally to the corresponding op operand in the enclosing
+  scope (the index excludes the leading `ctrl_in` for
+  `dataflow.graph` and excludes `thread_ctrl` plus the grid
+  induction-variable args for `dataflow.thread`). The walk continues
+  on that op operand in the enclosing scope. This is what makes
+  storage identity stable across the `IsolatedFromAbove` boundary:
+  two graph block arguments bound to the same parent memref (two
+  subviews of the same alloc, or the same value passed twice) walk
+  to the same root; otherwise the oracle would treat them as
+  disjoint and miss required read/write or write/write dep edges.
+  Cross-boundary continuation is allowed only across SSA boundary
+  operands; it does not enable looking through unrelated parent
+  scopes.
 * **Unknown producer (stop, enter `U`).** Any other op that produces
   a memref-typed result terminates the walk without yielding a known
   root. The walk does not invent a new root from such an op; instead

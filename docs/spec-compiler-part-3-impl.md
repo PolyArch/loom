@@ -372,7 +372,13 @@ documentation never refers to the numeric position.
     same-type view of its source memref); the walk peels each into
     its source operand. The recognized terminal roots are
     `memref.alloca`, `memref.alloc`, `memref.get_global`, and
-    function-block arguments. Other memref producers, including
+    function-block arguments. Entry-block arguments of
+    `IsolatedFromAbove` ops (`dataflow.graph`, `dataflow.thread`)
+    are not terminal: the walk continues on the matching boundary
+    operand in the enclosing scope per
+    `docs/spec-compiler-part-3-mem.md` §3.1, so that storage
+    identity is preserved across the boundary. Other memref
+    producers, including
     `bufferization.to_memref`, `unrealized_conversion_cast`, and
     memref-returning `func.call`, enter `U`; their freshness or
     aliasing relationship is not statically guaranteed. Two accesses
