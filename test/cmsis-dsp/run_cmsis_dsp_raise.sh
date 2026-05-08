@@ -50,7 +50,6 @@ LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${LOOM_RAISE_OPT_DEFAULT}}"
 
 TARGETS_FILE="${HERE}/cmsis_dsp_targets.txt"
 SKIP_FILE="${HERE}/cmsis_dsp_raise_skip.txt"
-SKIP_BUDGET=5
 
 DSP_ROOT="${REPO_ROOT}/externals/cmsis-dsp"
 SRC_ROOT="${DSP_ROOT}/Source"
@@ -100,32 +99,25 @@ mkdir -p "${OUT_ROOT}"
 rm -f "${OUT_ROOT}"/*.scf.mlir "${OUT_ROOT}"/*.raise.log "${OUT_ROOT}"/*.parse.log 2>/dev/null || true
 
 # Skip list (one source path per line, optional inline `# reason`).
+# Budget is hybrid: max(5, ceil(rows * 2%)). The runner counts target
+# rows after parsing the targets file and enforces the budget then.
 declare -A skip_set=()
 declare -A skip_reason=()
 skip_count=0
-if [[ -f "${SKIP_FILE}" ]]; then
-    while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
-        line="${raw_line%$'\r'}"
-        case "${line}" in
-            ''|'#'*) continue ;;
-        esac
-        entry="${line%%#*}"
-        reason="${line#*#}"
-        if [[ "${reason}" == "${line}" ]]; then
-            reason=""
-        fi
-        # Trim whitespace.
-        entry="${entry#"${entry%%[![:space:]]*}"}"
-        entry="${entry%"${entry##*[![:space:]]}"}"
-        reason="${reason#"${reason%%[![:space:]]*}"}"
-        reason="${reason%"${reason##*[![:space:]]}"}"
-        [[ -z "${entry}" ]] && continue
-        skip_set["${entry}"]=1
-        skip_reason["${entry}"]="${reason}"
-        skip_count=$((skip_count + 1))
-    done < "${SKIP_FILE}"
-fi
-cmsis_common_skip_budget "${skip_count}" "${SKIP_BUDGET}" "${LABEL}"
+cmsis_common_load_skip_set "${SKIP_FILE}" skip_set skip_reason skip_count
+
+# Count non-blank, non-comment rows in the targets file so the hybrid
+# skip budget scales with corpus size.
+target_rows=0
+while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
+    line="${raw_line%$'\r'}"
+    case "${line}" in
+        ''|'#'*) continue ;;
+    esac
+    target_rows=$((target_rows + 1))
+done < "${TARGETS_FILE}"
+
+cmsis_common_skip_budget "${skip_count}" "${target_rows}" "${LABEL}"
 
 cmsis_common_libc_defines LIBC_DEFINES
 
@@ -254,7 +246,7 @@ echo
 echo "==== cmsis-dsp raise smoke summary ===="
 echo "  passed:  ${#passed[@]}"
 echo "  failed:  ${#failed[@]}"
-echo "  skipped: ${#skipped[@]} / ${SKIP_BUDGET} budget"
+echo "  skipped: ${#skipped[@]} / ${target_rows} rows (budget=max(5, 2% of rows))"
 echo "  rows:    ${total_rows}"
 
 if (( ${#failed[@]} > 0 )); then

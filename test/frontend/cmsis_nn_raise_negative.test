@@ -1,0 +1,9 @@
+# Negative-control TDD smoke for run_cmsis_nn_raise.sh. Confirms the
+# raise runner returns non-zero when handed a synthetic row whose
+# expected symbol cannot survive raising. Wires the negative shell
+# driver into lit so a regression that masks pass/fail propagation
+# would surface under check-fabric.
+#
+# RUN: bash -c 'set -o pipefail; bash %S/../cmsis-nn/test_runner_negative.sh' | FileCheck %s
+#
+# CHECK: PASS (runner correctly classified synthetic row as FAIL with rc=1)
