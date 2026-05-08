@@ -35,6 +35,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
@@ -86,31 +87,10 @@ std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   return ::llvm::cast<::mlir::Value>(ofr);
 }
 
-// Walk the forall body and collect every value used inside that is
-// defined outside the forall (i.e., not the forall iv, not produced
-// by an op inside the forall body). Preserves first-occurrence order.
+// Collect every value used inside the forall region that is defined above it.
 void collectCapturedValues(::mlir::scf::ForallOp forall,
                            ::llvm::SetVector<::mlir::Value> &captures) {
-  ::mlir::Region &body = forall.getRegion();
-  body.walk([&](::mlir::Operation *op) {
-    for (::mlir::Value operand : op->getOperands()) {
-      if (auto ba = ::mlir::dyn_cast<::mlir::BlockArgument>(operand)) {
-        // Block args defined inside the forall (the iv or any nested
-        // region's block args) flow naturally; only the forall's own
-        // induction variables and shared_outs are inside-defined here.
-        if (ba.getOwner()->getParentOp() == forall)
-          continue;
-        if (forall->isAncestor(ba.getOwner()->getParentOp()))
-          continue;
-        captures.insert(operand);
-        continue;
-      }
-      ::mlir::Operation *def = operand.getDefiningOp();
-      if (!def || forall->isAncestor(def))
-        continue;
-      captures.insert(operand);
-    }
-  });
+  ::mlir::getUsedValuesDefinedAbove(forall.getRegion(), captures);
 }
 
 struct LowerForallToThreadPass

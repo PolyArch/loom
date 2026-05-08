@@ -26,6 +26,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -59,28 +60,20 @@ std::string uniqueSymbol(::mlir::ModuleOp module, ::llvm::StringRef stem) {
   }
 }
 
-// Walk an scf.for body and collect every value used inside that is
-// defined outside the loop and is not an iter_arg. Iter_args and the
-// induction variable map to graph block args separately.
+// Collect every value used inside the loop region that is defined above it.
 void collectExternalUses(::mlir::scf::ForOp loop,
                          ::llvm::SetVector<::mlir::Value> &captures) {
-  ::mlir::Region &body = loop.getRegion();
-  body.walk([&](::mlir::Operation *op) {
-    for (::mlir::Value operand : op->getOperands()) {
-      if (auto ba = ::mlir::dyn_cast<::mlir::BlockArgument>(operand)) {
-        if (ba.getOwner()->getParentOp() == loop)
-          continue; // loop iv or iter_arg
-        if (loop->isAncestor(ba.getOwner()->getParentOp()))
-          continue; // nested-region block args
-        captures.insert(operand);
-        continue;
-      }
-      ::mlir::Operation *def = operand.getDefiningOp();
-      if (!def || loop->isAncestor(def))
-        continue;
-      captures.insert(operand);
-    }
-  });
+  ::mlir::getUsedValuesDefinedAbove(loop.getRegion(), captures);
+}
+
+bool isNestedInReductionFor(::mlir::scf::ForOp loop) {
+  for (::mlir::Operation *parent = loop->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    auto parentLoop = ::mlir::dyn_cast<::mlir::scf::ForOp>(parent);
+    if (parentLoop && !parentLoop.getInitArgs().empty())
+      return true;
+  }
+  return false;
 }
 
 struct LowerForToGraphPass
@@ -130,6 +123,8 @@ struct LowerForToGraphPass
       thread.walk([&](::mlir::scf::ForOp loop) {
         if (loop.getInitArgs().empty())
           return; // No iter_args: keep as scf.for in the thread body.
+        if (isNestedInReductionFor(loop))
+          return;
         // Skip nested-inside-another-graph cases (none in the smoke
         // shape, but keep the rule explicit).
         if (loop->getParentOfType<::dataflow::GraphFuncOp>())
@@ -188,6 +183,8 @@ struct LowerForToGraphPass
       p.func = func;
       func.walk([&](::mlir::scf::ForOp loop) {
         if (loop.getInitArgs().empty())
+          return;
+        if (isNestedInReductionFor(loop))
           return;
         // Skip if already inside a thread or graph body; only host-
         // scope reductions are wrapped here.
@@ -387,6 +384,9 @@ struct LowerForToGraphPass
     // ForOp::create above. We replace the empty body with a clone of
     // the original ops.
     ::mlir::IRMapping mapping;
+    mapping.map(loop.getLowerBound(), lbArg);
+    mapping.map(loop.getUpperBound(), ubArg);
+    mapping.map(loop.getStep(), stepArg);
     mapping.map(loop.getInductionVar(), newBody.getArgument(0));
     for (size_t i = 0; i < initArgs.size(); ++i) {
       mapping.map(loop.getRegionIterArgs()[i], newBody.getArgument(1 + i));
