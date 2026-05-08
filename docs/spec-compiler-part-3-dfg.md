@@ -788,6 +788,47 @@ tokens for an unselected branch can remain buffered inside branch-local
 ops and be consumed by a later selected invocation at the wrong dynamic
 position.
 
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.if`.
+
+**Structural plane.** The compound's `struct_in` enters
+`demux %cond` at the entry, splitting into a then-lane structural-
+permission token and an else-lane structural-permission token. Each
+inner region is its own chain scope per
+`docs/spec-compiler-part-3-mem.md` §2.2 and uses its lane's token as
+its `S.struct_at_*` source per
+`docs/spec-compiler-part-3-mem.md` §6.2. The compound's `struct_done`
+is `mux %cond` over the two branches' `struct_done` tokens, following
+the §6 selector convention (lane 0 = false-lane = else, lane 1 =
+true-lane = then). The same `mux` shape is reused for any data
+result of the `scf.if`.
+
+**Memory plane (per touched partition `P`).** The compound's
+`incoming_C_P` enters a `demux %cond` at the entry, projecting it
+into a then-lane `then_in_P` and an else-lane `else_in_P` token.
+Only the active lane's projection fires, matching the dual-plane
+contract of `docs/spec-compiler-part-3-mem.md` §2.8 (a raw SSA
+fork would risk stale memory tokens being buffered in the
+unselected branch and consumed on a later selected invocation).
+Each branch chain scope's `incoming_P` is its lane's projected
+token. Each branch's per-`P` tail is path-forwarding per
+`docs/spec-compiler-part-3-mem.md` §2.7: a branch that performs no
+access in `P` forwards its lane projection unchanged; a branch
+that performs accesses in `P` builds its tail by the single-level
+chain rule of `docs/spec-compiler-part-3-mem.md` §2.5 inside that
+branch. Call those `then_tail_P` and `else_tail_P`. The compound's
+`outgoing_C_P` is the selector-matched `mux %cond` of the two
+tails, following the §6 selector convention (lane 0 =
+`else_tail_P`, lane 1 = `then_tail_P`). Per leaf rendezvous,
+`docs/spec-compiler-part-3-mem.md` §6.4 still applies inside each
+branch: a leaf at branch scope `S_branch` uses
+`L.ctrl = dataflow.sync(S_branch.struct_at_L, incoming_L_P)`.
+
+No loop-carried state. `scf.if` does not introduce a `dataflow.carry`
+either on the structural plane or on any per-`P` plane.
+
 ### 6.2 `scf.while` with `scf.condition`
 
 Source shape:
@@ -920,6 +961,166 @@ The final `%a_feedback_i = a2` is a reset/dummy token. It is consumed
 with `%cond = false` by `dataflow.carry`, emits no new before value,
 and returns the carry to its init state. The same rule applies to the
 structural `%ctrl_feedback` and hidden memory-state feedback streams.
+
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.while`.
+
+**Structural plane.** The compound's `struct_in` initializes the
+structural carry `%iter_ctrl = carry %cond, %entry_ctrl,
+%ctrl_feedback`. The before-region is its own chain scope and uses
+`%iter_ctrl` as its `S.struct_at_*` source. The after-region is a
+separate chain scope; its structural-permission source is
+`%after_ctrl` from `gate %cond, %before_done` per the existing
+template. The compound's `struct_done` is the false-cycle exit
+projection of the carry, equivalently the false-lane of `demux %cond,
+%before_done` reused at the boundary. The before-region executes
+`K + 1` times for `K` after-region executions, matching the existing
+template.
+
+**Memory plane (per touched partition `P`).** The compound applies
+the loop-carried memory state pattern of
+`docs/spec-compiler-part-3-mem.md` §5.2 with `selector = %cond` and
+the before-region / after-region instantiation of
+`docs/spec-compiler-part-3-mem.md` §5.4. For every `P` carried by the
+loop (per `docs/spec-compiler-part-3-mem.md` §4.3,
+`P ∈ Π_L` iff some access in one iteration may conflict with some
+access in a later iteration in `P`), the lowering introduces a hidden
+per-iteration ring:
+
+```
+%mem_iter_P = carry %cond, %mem_init_P, %mem_feedback_P : none
+```
+
+* `%mem_init_P` is the compound's `incoming_C_P` per
+  `docs/spec-compiler-part-3-mem.md` §2.4, drawn from the enclosing
+  scope's per-`P` frontier at the `scf.while`'s position.
+* `%mem_iter_P` enters the before-region as its `incoming_P` for
+  `P`. The before-region's per-`P` tail `%before_tail_P` is built by
+  the single-level chain rule of
+  `docs/spec-compiler-part-3-mem.md` §2.5 inside the before-region;
+  it forwards `%mem_iter_P` unchanged when the before-region performs
+  no access in `P`.
+* The after-region's `incoming_P` is `%after_in_P = gate %cond,
+  %before_tail_P`, so only true-cycle iterations expose a
+  `incoming_P` to the after-region. The after-region's per-`P` tail
+  `%after_tail_P` is path-forwarding for the same reason
+  (`%after_tail_P = %after_in_P` when the after-region performs no
+  access in `P`).
+* The feedback that closes the ring is `%mem_feedback_P = mux %cond,
+  %before_tail_P, %after_tail_P` following the §6 selector convention
+  (lane 0 = false-lane = `%before_tail_P`, lane 1 = true-lane =
+  `%after_tail_P`). On a true iteration the after-region tail is
+  carried; on the final false iteration the before-region tail is
+  carried, because the final false iteration's before-region still
+  ran.
+* Loop-exit projection: the compound's `outgoing_C_P = %mem_after_P`,
+  taken from the false-lane projection of `%before_tail_P` on the
+  final false iteration (equivalently the false-lane of `demux %cond,
+  %before_tail_P`). The zero-trip case (`%cond` false on the first
+  check) reduces to the same projection over the single before-region
+  run. This matches `docs/spec-compiler-part-3-mem.md` §5.4 verbatim
+  and preserves any memory effect performed by the final
+  condition-checking iteration.
+
+The structural `%after_rwc` from the existing template is on the
+structural plane only and is not on the memory critical path. Per
+`docs/spec-compiler-part-3-mem.md` §2.5 plane orthogonality and
+`docs/spec-compiler-part-3-mem.md` §5.4, after-region memory ops use
+`L.ctrl = dataflow.sync(struct_after, %after_in_P)` per
+`docs/spec-compiler-part-3-mem.md` §6.4; the structural token grants
+phase permission while `%after_in_P` carries the alias-aware
+ordering. Independent partitions in `Π_L` get independent rings
+sharing only the `%cond` selector, so unrelated memrefs are not
+serialized.
+
+#### K=2 Worked Trace
+
+Consider a small `scf.while` whose before-region and after-region
+each contain one store to the same memref:
+
+```mlir
+scf.while (%i = %c0) : (index) -> index {
+  %cond = arith.cmplt %i, %c2 : index
+  memref.store %v, %A[%i] : memref<10xf32>     // before-region, P
+  scf.condition(%cond) %i : index
+} do {
+^bb0(%i: index):
+  memref.store %w, %A[%i] : memref<10xf32>     // after-region, P
+  %j = arith.addi %i, %c1 : index
+  scf.yield %j : index
+}
+```
+
+Let `P` be the alias bucket of `%A`. For `K = 2` (`%cond = [T, T,
+F]`), the before-region executes three times and the after-region
+executes twice. The chain through `P` traverses 7 named tokens:
+
+```
+mem_init_P
+  -> before_tail_P_0
+  -> after_tail_P_0
+  -> before_tail_P_1
+  -> after_tail_P_1
+  -> before_tail_P_2
+  -> mem_after_P
+```
+
+Per-iteration values:
+
+```
+iter 0 (cond_0 = true):
+  mem_iter_P_0    = carry %cond, mem_init_P, mem_feedback_P
+                  -> mem_init_P                     // first activation
+  before_tail_P_0 = store A[0]
+                    ctrl = sync(struct_before_0, mem_iter_P_0)
+  after_in_P_0    = gate %cond_0, before_tail_P_0   // fires on true
+  after_tail_P_0  = store A[0]
+                    ctrl = sync(struct_after_0, after_in_P_0)
+  mem_feedback_P_0 = mux %cond_0,
+                       before_tail_P_0,             // false lane
+                       after_tail_P_0               // true lane
+                   = after_tail_P_0
+
+iter 1 (cond_1 = true):
+  mem_iter_P_1    = carry feedback -> mem_feedback_P_0
+                  = after_tail_P_0
+  before_tail_P_1 = store A[1]
+                    ctrl = sync(struct_before_1, mem_iter_P_1)
+  after_in_P_1    = gate %cond_1, before_tail_P_1
+  after_tail_P_1  = store A[1]
+                    ctrl = sync(struct_after_1, after_in_P_1)
+  mem_feedback_P_1 = mux %cond_1,
+                       before_tail_P_1, after_tail_P_1
+                   = after_tail_P_1
+
+iter 2 (cond_2 = false; final false before, no after):
+  mem_iter_P_2    = carry feedback -> mem_feedback_P_1
+                  = after_tail_P_1
+  before_tail_P_2 = store A[2]
+                    ctrl = sync(struct_before_2, mem_iter_P_2)
+  // gate %cond_2 = false: after_in_P_2 not produced; the after
+  // region does not fire this iteration.
+  // false-lane projection of before_tail_P_2 leaves the loop:
+  mem_after_P     = false-lane(%cond_2, before_tail_P_2)
+                  = before_tail_P_2
+```
+
+Two observations close the trace. First, the final false before
+execution is memory-visible: its `before_tail_P_2` becomes the
+loop-exit memory state for `P`, exactly as
+`docs/spec-compiler-part-3-mem.md` §5.4 specifies for the
+final-false-iteration before-tail projection. Second, `%after_rwc`
+is not on the same-execution memory critical path: after-region
+memory ops use `sync(struct_after, after_in_P)` for `ctrl` per
+`docs/spec-compiler-part-3-mem.md` §2.5 plane orthogonality, while
+`%after_rwc` only advances or resets after-region structural state
+for subsequent iterations. If `P` were independent of some other
+partition `Q`, the entire trace runs in parallel for `Q` with its
+own `mem_iter_Q` / `mem_feedback_Q` / `mem_after_Q`; no
+cross-partition serialization is introduced through any single
+whole-while done token.
 
 ### 6.3 `scf.for` with `scf.yield`
 
@@ -1078,6 +1279,68 @@ Memref operands are not iter_arg-like stream state; only explicit
   the carry is driven by `%loop_rwc`, body accesses consume the
   true-lane projected state, and the false lane is the loop-exit
   memory state. The zero-trip case forwards the initial memory state.
+
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.for`.
+
+**Structural plane.** `dataflow.stream` produces the loop-level rwc,
+which doubles as the structural selector. The compound's `struct_in`
+seeds the structural iteration ring built from `dataflow.carry` on
+`%loop_rwc` (matching the existing template for both the no-iter-arg
+and with-iter-arg cases). Iter_args are carried through their own
+`carry` rings driven by the same `%loop_rwc`. The body region is a
+single chain scope and uses the body-phase structural-permission
+token derived from `%loop_rwc` as its `S.struct_at_*` source per
+`docs/spec-compiler-part-3-mem.md` §6.2. The compound's `struct_done`
+is the false-lane projection of the structural ring on the sentinel
+cycle that closes the loop, equivalently the `%loop_exit_ctrl` /
+exit-cycle output of the existing template.
+
+**Memory plane (per touched partition `P`).** The compound applies
+the loop-carried memory state pattern of
+`docs/spec-compiler-part-3-mem.md` §5.2 with `selector = %loop_rwc`,
+specialized to `scf.for` per `docs/spec-compiler-part-3-mem.md` §5.3.
+For every `P` carried by the loop (per
+`docs/spec-compiler-part-3-mem.md` §4.3,
+`P ∈ Π_L` iff some access in one iteration may conflict with some
+access in a later iteration in `P`), the lowering introduces:
+
+```
+%mem_iter_P = carry %loop_rwc, %mem_init_P, %mem_next_P : none
+```
+
+* `%mem_init_P` is the compound's `incoming_C_P`, drawn from the
+  enclosing scope's per-`P` frontier at the `scf.for`'s position.
+* `%mem_iter_P` is gated by `%loop_rwc` exactly like iter_args:
+  the true-lane projection enters the body as its `incoming_P`
+  for `P`, and the false-lane projection becomes
+  `%mem_after_P` for the enclosing scope. Body-region accesses
+  chain through the true-lane projection per
+  `docs/spec-compiler-part-3-mem.md` §2.5; they never observe
+  the sentinel-cycle (rwc=false) value.
+* `%mem_next_P` feeds the carry on the rwc=true lane and is built
+  from the body's per-`P` tail per
+  `docs/spec-compiler-part-3-mem.md` §2.5 / §2.7 (a body path that
+  performs no access in `P` forwards `%mem_iter_P` unchanged;
+  same-path required tails join via `dataflow.sync`; mutually
+  exclusive tails join via selector-matched `dataflow.mux`).
+* Loop-exit projection: the compound's `outgoing_C_P = %mem_after_P`,
+  taken from the false-lane projection of the carried state on the
+  sentinel cycle (same false-lane shape as `%acc_exit` in the
+  with-iter-arg case). The zero-trip case (rwc=false on the first
+  cycle) gives `%mem_after_P = %mem_init_P` directly, because the
+  carry produces its initializer on the first activation and the
+  false-lane projects that initializer out unchanged.
+
+The body has no after-region; `scf.for` has a single body chain
+scope. Independent partitions in `Π_L` get independent rings sharing
+only the `%loop_rwc` selector, so unrelated memrefs are not
+serialized. Per `docs/spec-compiler-part-3-mem.md` §2.5 plane
+orthogonality, the structural rwc carry and the per-`P` memory carry
+are independent state rings over the same selector; the structural
+plane never aggregates the memory tails.
 
 ### 6.4 `scf.forall` with `scf.forall.in_parallel`
 
@@ -1257,6 +1520,29 @@ recognize as a Loom mapping, the pipeline must not silently ignore it
 inside an accelerator region. Part 2 or an earlier Part 3 pass must
 either remove or translate that mapping with an explicit downgrade
 decision, or emit a diagnostic before this template runs.
+
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.forall`.
+
+A mapped `scf.forall` is promoted to a `dataflow.thread` by
+`loom-build-thread-skeleton` (per
+`docs/spec-compiler-part-3-impl.md` §1.5) before the
+`dataflow.graph` chain model ever runs over it. Mapped foralls
+therefore never appear as compound atoms inside a chain scope;
+their launch and completion are governed by the
+`!dataflow.thread_token` async protocol, which is explicitly
+out of scope for the chain model per
+`docs/spec-compiler-part-3-mem.md` §2.9.
+
+An empty-mapping `scf.forall` does reach a chain scope. The pass
+`loom-build-memory-dependencies` (per
+`docs/spec-compiler-part-3-impl.md` §1.8) normalizes such a
+forall to `scf.parallel` and from there to one or more `scf.for`
+loop nests with parallel-provenance metadata. The compound that
+stands for the original forall in the chain is therefore the
+parallel-provenance compound described in §6.5 below.
 
 ### 6.5 `scf.parallel` with `scf.reduce`
 
@@ -1477,6 +1763,56 @@ After normalization, all generated `scf.for` and `scf.if` operations
 use the existing templates in this section. Their stream, carry, gate,
 demux, mux, and memory-order behavior is inherited from those templates.
 
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.parallel`.
+
+After parallel-SCF normalization (per
+`docs/spec-compiler-part-3-impl.md` §1.8), `scf.parallel` becomes one
+or more `scf.for` loop nests with parallel-provenance attributes. The
+outer compound that "stands for" the original `scf.parallel` in the
+chain model is the parallel-provenance compound: it is the analysis-
+visible group of generated chunk loops sharing one
+`loom.parallel_group` id, not a new IR op. Each chunk loop body is
+its own chain scope per `docs/spec-compiler-part-3-mem.md` §2.2.
+
+**Structural plane.** The compound's `struct_in` forks: every chunk
+receives the same SSA value as its structural-permission input
+(shared `struct_in` across chunks per the §2.8 table for
+`scf.forall` / `scf.parallel`). Each chunk's `struct_done` is the
+`scf.for` template's `struct_done` for that chunk. The compound's
+`struct_done` is `dataflow.sync` over all chunk `struct_done` tokens,
+matching the rendezvous in `docs/spec-compiler-part-3-mem.md` §2.6
+for parallel-provenance compound atoms.
+
+**Memory plane (per touched partition `P`).** All chunks share the
+compound's `incoming_C_P`: the same SSA value forks into each chunk
+loop's `%mem_init_P` (§5.6 of `docs/spec-compiler-part-3-mem.md`
+applies recursively if a parallel group is nested inside a
+source-ordered loop). Each chunk's per-`P` tail `%chunk_tail_P` is
+independent and is built by the chunk loop's own §6.3 boundary
+translation as a stand-alone `scf.for`. The compound's `outgoing_C_P
+= dataflow.sync` over all `%chunk_tail_P` tokens, per
+`docs/spec-compiler-part-3-mem.md` §2.6 chunk-tail rendezvous and
+the parallel-provenance exception of
+`docs/spec-compiler-part-3-mem.md` §4.3 and §5.6.
+
+No loop-carried memory state is created at the parallel-provenance
+compound boundary, per the parallel-provenance exception of
+`docs/spec-compiler-part-3-mem.md` §4.3 and the no-state-ring rule
+of `docs/spec-compiler-part-3-mem.md` §5.6: cross-iteration and
+cross-chunk dependence edges inside the compound are suppressed by
+the dependence builder, so the compound never builds a per-`P` ring.
+Each chunk loop, considered as an ordinary `scf.for` instance,
+still applies §6.3 for its own body's per-`P` chain (intra-chunk
+loop-carried state on a non-suppressed partition is legal because it
+falls outside the parallel-provenance exception). The compound atom
+is marked with parallel-provenance metadata
+(`loom.parallel_group`, `loom.parallel_chunk`, `loom.parallel_chunks`)
+per `docs/spec-compiler-part-3-mem.md` §4.3 so the chain construction
+identifies it correctly.
+
 ### 6.6 `scf.index_switch`
 
 `scf.index_switch` has the same selected-region shape as `scf.if`, but
@@ -1485,7 +1821,9 @@ dense array of case constants. `dataflow.mux` and `dataflow.demux`
 require dense lane selectors, so lowering first normalizes the source
 argument to a dataflow lane id.
 
-Lane convention follows the operation's region order:
+Lane convention is a normalized lowering convention (it is not the
+print order of the source op, which lists case regions before the
+default region in the MLIR `scf.index_switch` op):
 
 ```
 lane 0     = default region
@@ -1575,11 +1913,77 @@ selector stream is `[1, 0, 2]`:
 | `%done_case1` | `[done_case1_0]` |
 | `%done` | `[done_case0_0, done_default0, done_case1_0]` |
 
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.index_switch`.
+
+**Structural plane.** The compound's `struct_in` enters an `(N + 1)`
+way `dataflow.demux` keyed on the normalized lane id `%lane` per the
+existing template (lane 0 = default region, lane `i + 1` = case
+region `i`). Each selected region is its own chain scope per
+`docs/spec-compiler-part-3-mem.md` §2.2 and uses its lane's structural-
+permission token as its `S.struct_at_*` source per
+`docs/spec-compiler-part-3-mem.md` §6.2. The compound's `struct_done`
+is `dataflow.mux` over all `(N + 1)` regions' `struct_done` tokens,
+keyed on the same `%lane`. The same `(N + 1)` way `mux` shape
+applies to every data result of the `scf.index_switch`.
+
+**Memory plane (per touched partition `P`).** The compound's
+`incoming_C_P` enters an `(N + 1)` way `dataflow.demux` keyed on
+the same normalized `%lane`, projecting it into per-region tokens
+`default_in_P`, `case0_in_P`, ..., `caseN_in_P`. Only the selected
+region's projection fires, matching the dual-plane contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 (a raw SSA fork would risk
+stale memory tokens being buffered in unselected regions and
+consumed on a later selected invocation). Each region chain scope's
+`incoming_P` is its lane's projected token. Each region's per-`P`
+tail is path-forwarding per
+`docs/spec-compiler-part-3-mem.md` §2.7: a region that performs no
+access in `P` forwards its lane projection unchanged; a region
+that performs accesses in `P` builds its tail by the single-level
+chain rule of `docs/spec-compiler-part-3-mem.md` §2.5 inside that
+region. Call those `default_tail_P`, `case0_tail_P`, ...,
+`caseN_tail_P`. The compound's `outgoing_C_P` is the
+selector-matched `(N + 1)` way `dataflow.mux %lane` of these tails
+(lane 0 = `default_tail_P`, lane `i + 1` = `case_i_tail_P`). Per
+leaf rendezvous, `docs/spec-compiler-part-3-mem.md` §6.4 still
+applies inside each region.
+
+No loop-carried state. `scf.index_switch` does not introduce a
+`dataflow.carry` either on the structural plane or on any per-`P`
+plane.
+
 ### 6.7 `scf.execute_region`
 
 * No control structure to flatten. The pass inlines the region body
   into the surrounding scope and rewires SSA values; ctrl/done
   forwarding follows program order.
+
+#### Boundary Translation
+
+This template instantiates the boundary translation contract of
+`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.execute_region`.
+
+**Structural plane.** Pass-through. `scf.execute_region` has a single
+inner region with no control selector. The inner region's chain
+scope inherits the compound's `struct_in` directly as its
+`S.struct_at_*` source per `docs/spec-compiler-part-3-mem.md` §6.2,
+and its `struct_done` directly becomes the compound's `struct_done`.
+No `dataflow.demux` / `dataflow.mux` / `dataflow.carry` /
+`dataflow.gate` is introduced by the boundary translation.
+
+**Memory plane (per touched partition `P`).** Pass-through.
+`incoming_C_P` directly enters the inner region as its `incoming_P`
+per `docs/spec-compiler-part-3-mem.md` §2.4; the inner region's
+`outgoing_P`, computed by the single-level chain rule of
+`docs/spec-compiler-part-3-mem.md` §2.5 inside the region, directly
+becomes the compound's `outgoing_C_P`. No loop-carried state.
+
+If the inlining pass described above runs first, the compound boundary
+disappears and the inner region's atoms become direct children of the
+enclosing scope, with the same effective wiring as the pass-through
+description above.
 
 ### 6.8 `scf.yield`
 
