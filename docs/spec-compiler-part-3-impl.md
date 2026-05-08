@@ -97,11 +97,17 @@ documentation never refers to the numeric position.
 
 * Walks every `loom.acc_region` body in the module. It does not walk
   ordinary host code outside accelerator regions.
-* Identifies every `scf.forall` whose `mapping` attribute is non-empty
-  and contains at least one `DeviceMappingAttrInterface` element
-  recognizable as a `#loom.spatial<...>` or `#loom.temporal<...>`
-  instance.
-* Marks each such forall with a temporary attribute
+* Identifies every `scf.forall` whose `mapping` attribute is
+  non-empty, contains at least one `DeviceMappingAttrInterface`
+  element recognizable as a `#loom.spatial<...>` or
+  `#loom.temporal<...>` instance, AND contains no foreign
+  `DeviceMappingAttrInterface` element. A `mapping` array that mixes
+  Loom-recognized entries with at least one foreign entry is
+  rejected with a diagnostic at this pass (per
+  `docs/spec-compiler-part-3-dfg.md` §4 Mapping attribute rules);
+  Part 2 or an earlier Part 3 pass must remove or translate the
+  foreign entries before promotion can run.
+* Marks each Loom-only mapped forall with a temporary attribute
   `loom.thread_promotion = unit`. Nested mapped foralls are marked
   individually; the relative nesting order is preserved by IR
   traversal order.
