@@ -345,7 +345,14 @@ documentation never refers to the numeric position.
   };
   ```
 * Two implementations ship in the same library and are selectable by
-  the pass option `--mem-alias=basic|mlir-aa`:
+  the pass option `--mem-alias=basic|mlir-aa`. The default in
+  milestone 1 is `--mem-alias=basic`; it drives the full lit suite.
+  `--mem-alias=mlir-aa` is exercised on a representative differential
+  subset (see `Testing Strategy` below). Future front-end passes that
+  consume alias information must not implicitly select `mlir-aa`;
+  they opt in through an explicit pass option, and they obtain alias
+  answers only through the `MemAliasOracle` interface per
+  `docs/spec-compiler-part-3-dfg.md` §3 Rule 5.
   - `BasicSsaOracle`: an SSA-source walk that recognizes a fixed set
     of view-like and terminal memref ops; any other memref-producing
     op enters the conservative unknown bucket `U` per
@@ -512,10 +519,19 @@ The lit-test layout grows three new directories:
   - `before.mlir` (the scf input).
   - `after.mlir` (the dataflow output, with explicit ctrl/done
     plumbing visible).
-  - `RUN` lines for both `--mem-alias=basic` and `--mem-alias=mlir-aa`,
-    each FileChecking against a distinct expected fixture file. The
-    two fixture files differ only by memory-dependence snapshots and
-    derived ctrl/done wiring; the structural rewrite is identical.
+  - One default `RUN` line using `--mem-alias=basic` and one expected
+    fixture file under that oracle. A small representative subset
+    under `test/frontend/lower_scf/diff/` adds a second `RUN` line for
+    `--mem-alias=mlir-aa` and an additional fixture that pins the
+    snapshot-and-derived-wiring difference. The differential subset is
+    intentionally small in milestone 1 with two minimum-coverage
+    floors: one case per loop family (`for/`, `while/`,
+    `forall/`-effect-form normalized to `parallel/`, plus straight-line
+    `if/` and `index_switch/`) that exercises mlir-aa refinement on
+    at least one access pair, and at least one case where the
+    refinement changes the derived ctrl/done wiring shape (not only
+    the `loom.mem_dep_preds` snapshot). Outside the differential
+    subset, the basic-oracle fixture is the only ground truth.
   - The `forall/` directory has separate cases for effect-form forall
     and aggregation-form forall. Aggregation tests check that
     `scf.forall.in_parallel` combining actions are materialized into
@@ -604,9 +620,11 @@ following hold simultaneously:
   control: graph-containing callees are inlined or specialized before
   graph extraction, graph-free ScalarCore calls may remain, and no
   `func.call` or `func.func` appears inside a `dataflow.graph`.
-* The two `MemAliasOracle` implementations both drive
-  `loom-build-memory-dependencies` and pass the entire lit suite under
-  `test/frontend/`.
+* `BasicSsaOracle` drives `loom-build-memory-dependencies` and passes
+  the full lit suite under `test/frontend/`. `MlirAaOracle` drives the
+  differential subset under `test/frontend/lower_scf/diff/` and
+  produces structurally identical IR modulo the `loom.mem_dep_preds`
+  snapshot and derived ctrl/done wiring.
 * Loop-carried memory dependences lower to explicit hidden `none`
   memory-state carries. Post-loop conflicting accesses depend on the
   loop-exit memory state, zero-trip loops forward the pre-loop state,
@@ -638,10 +656,10 @@ following hold simultaneously:
   operands to their `dataflow.map_info` sources according to
   `direction`. No acceptance test depends on recursive region effects
   to discover host-visible thread reads or writes.
-* The integration tests in `test/frontend/integration/` produce
-  structurally identical IR under `--mem-alias=basic` and
-  `--mem-alias=mlir-aa`, modulo the `loom.mem_dep_preds` snapshot and
-  the ctrl/done wiring derived from it.
+* Integration tests in `test/frontend/integration/` run under
+  `--mem-alias=basic` only in milestone 1; differential coverage in
+  this directory is reserved for follow-up work if oracle-pair
+  behavior becomes a regression risk for end-to-end kernels.
 * `make test` runtime stays within the existing budget; the test
   suite is parallel-safe (the existing `lit_top_slowest.py` machinery
   is kept).

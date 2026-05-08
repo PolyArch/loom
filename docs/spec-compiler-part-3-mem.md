@@ -509,13 +509,14 @@ intentionally storage-identity only.
 
 ### 3.2 MlirAaOracle
 
-`MlirAaOracle` is default-on for the full lit suite. It wraps
-`mlir::AliasAnalysis`, configured with whatever external
-alias-analysis interfaces are registered, as a refinement of
-`BasicSsaOracle`. It starts from the basic conflict set and removes
-pairs that upstream MLIR AA proves `MustNotAlias`. `MayAlias` and
-`MustAlias` keep the basic answer. Loads vs. loads still do not
-conflict.
+`MlirAaOracle` ships in the same library as `BasicSsaOracle` and is
+exercised on the representative differential subset described at the
+end of this section. It wraps `mlir::AliasAnalysis`, configured with
+whatever external alias-analysis interfaces are registered, as a
+refinement of `BasicSsaOracle`. It starts from the basic conflict
+set and removes pairs that upstream MLIR AA proves `MustNotAlias`.
+`MayAlias` and `MustAlias` keep the basic answer. Loads vs. loads
+still do not conflict.
 
 The refinement applies to leaf-pair queries only: when both
 accesses are leaves visible to the dependence builder at the same
@@ -574,10 +575,16 @@ into the appropriate per-`P` chains using this summary; the
 single-level chain rule of §2.5 and the join rules of §2.7 take
 over once each scope's atom set is known.
 
-Both oracles pass the same lit suite. They may produce different
-`loom.mem_dep_preds` snapshots, because a stronger oracle can prove
-that fewer ordered pairs conflict. The test suite is parameterized so
-each relevant case is run twice, once per oracle.
+`BasicSsaOracle` is the milestone 1 default and drives the full lit
+suite under `test/frontend/`. `MlirAaOracle` ships in the same library
+and is exercised on a representative differential subset of lit cases
+that pins oracle-pair equivalence modulo refinement: structural IR
+identical, `loom.mem_dep_preds` snapshot may differ when upstream MLIR
+AA proves additional `MustNotAlias` pairs. Differential coverage is
+an explicit subset rather than the entire lit suite to keep fixture
+maintenance proportional to the safety net it provides; full-suite
+dual oracle is reserved for follow-up work if the basic oracle's
+coarseness becomes a quality regression.
 
 ## 4. Dependence Builder
 

@@ -183,11 +183,17 @@ each rule lands in IR.
    analysis answers whether two memory accesses can conflict; program
    order and structured-control-flow order give edge direction; the
    dependence builder wires `ctrl` and `done` tokens inside each graph.
-   The default alias oracle is a simple SSA-source-of-memref oracle; a
-   stronger oracle based on `mlir::AliasAnalysis` ships alongside it
-   and the two are interchangeable through one C++ interface, both
-   validated by the same lit suite. The compositional chain model and
-   the oracle / builder / loop-state / wiring details are specified in
+   Front-end passes that need alias information must obtain it only
+   through the `MemAliasOracle` C++ interface; bypassing the interface
+   to call upstream MLIR analysis APIs directly is forbidden. Two
+   implementations ship in the same library and are interchangeable
+   through that interface: a simple SSA-source-of-memref oracle and a
+   stronger oracle based on `mlir::AliasAnalysis`. The basic oracle
+   is the milestone 1 default and drives the full lit suite; the
+   stronger oracle is exercised on a representative differential
+   subset that pins oracle-pair equivalence modulo refinement. The
+   compositional chain model and the oracle / builder / loop-state /
+   wiring details are specified in
    `docs/spec-compiler-part-3-mem.md`.
 6. `loom.acc_region` is the explicit AccCore selection boundary
    consumed by this part. `scf.forall` with a
