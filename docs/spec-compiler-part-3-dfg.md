@@ -588,6 +588,16 @@ them participate in the SCF flattening templates in this document.
   - All existing `dataflow.graph` lit tests are migrated in the same
     change as this spec: each test grows the explicit control operand,
     block argument, result, and `done_out` plumbing.
+  - C++ builder API breaking change. Every existing
+    `Dataflow_GraphOp::build(...)` overload acquires a leading
+    `Value ctrlIn` parameter. Callers in the front-end and any
+    downstream user of `OpBuilder` for `dataflow.graph` must pass
+    the explicit control-port value at the call site; there is no
+    auto-supplied default. The generated `OperationState` builders
+    follow the same shape. This is a source-incompatible change to
+    the C++ surface and is intentional: the leading `none`-typed
+    operand is part of the op contract and must be visible to
+    every constructor.
   - The op declares `RecursiveMemoryEffects`. MLIR's default
     implementation walks the graph body and reports the union of all
     inner ops' memory effects through the op boundary. This makes a

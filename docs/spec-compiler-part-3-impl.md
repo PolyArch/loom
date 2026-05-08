@@ -715,6 +715,15 @@ following hold simultaneously:
   through an explicit pass option, and add option-specific tests. The
   baseline source-order greedy policy remains the default reference
   policy.
+* `Dataflow_GraphOp::build(...)` C++ surface change. The op grew an
+  explicit leading `Value ctrlIn` parameter (per
+  `docs/spec-compiler-part-3-dfg.md` §5.5). Every existing call site
+  in the front-end and any downstream user of `OpBuilder` for
+  `dataflow.graph` must pass the explicit control-port value; there
+  is no auto-supplied default. The generated `OperationState` builders
+  follow the same shape. This is intentionally source-incompatible: it
+  ensures the leading `none`-typed operand is visible to every
+  constructor.
 
 ## 5. References
 
