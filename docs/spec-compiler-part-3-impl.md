@@ -267,12 +267,23 @@ documentation never refers to the numeric position.
   admission rules.
 * Required cuts close the current graph run and remain in the ScalarCore
   thread body. The required cuts are `dataflow.thread.fence`,
-  non-inlined `func.call`, nested `dataflow.thread`, `dataflow.map_info`,
-  spatial-array query or layout ops, graph-illegal ops, and the parent
-  terminator. The policy also cuts before any structured-control op
-  whose nested regions contain a required cut. Unsupported required
-  SpatialCore placement is a diagnostic; optional unadmitted code stays
+  non-inlined `func.call`, `dataflow.map_info`, spatial-array query
+  or layout ops, graph-illegal ops, and the parent terminator. The
+  policy also cuts before any structured-control op whose nested
+  regions contain a required cut. Unsupported required SpatialCore
+  placement is a diagnostic; optional unadmitted code stays
   ScalarCore.
+* Nested `dataflow.thread` is not merely a cut: per
+  `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2, a
+  thread body must not directly contain both a `dataflow.graph`
+  and a nested `dataflow.thread` at the same nesting level.
+  Whenever the thread body the pass is processing has any direct
+  child of `dataflow.thread` kind, the pass therefore emits no
+  `dataflow.graph` at that level at all (graph extraction is
+  suppressed for that thread body); equivalently, graph extraction
+  runs only on innermost thread bodies, matching the placement
+  framework's L2 graph-placement rule in
+  `docs/spec-compiler-part-3-placement-framework.md` §7.
 * Connectedness is not part of the baseline admission rule. If two
   memory-access clusters are adjacent in source order and separated
   only by graph-admissible compute, they are placed in the same graph

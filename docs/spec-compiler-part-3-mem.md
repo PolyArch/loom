@@ -757,12 +757,25 @@ and are all graph-local.
   drawn from per-graph namespaces independent of the other id
   attributes; all three are stripped by `loom-finalize-dfg`.
 
-Partition identity is not stored per leaf; each predecessor list
-is implicitly scoped to the leaf's own partition and chain scope.
-Only leaves carry `loom.mem_dep_id` in this milestone; compound
-`scf.*` atoms still present in the graph do not get their own id.
-Integer ids keep the snapshot stable across printing, parsing,
-and in-place memory-op rewrites.
+Partition identity is not stored per leaf, but the predecessor
+list is multi-partition aware. For a leaf `L` whose primary
+partition is a known root `P_L`, `loom.mem_dep_preds` lists every
+edge predecessor in `P_L` from the same chain scope (or, via the
+cross-scope rule below, from a deeper scope inside a sibling
+compound atom). For a leaf `L` whose primary partition is the
+unknown bucket `U`, `L` participates in every known partition
+visible at its chain scope per §2.3 lift; its
+`loom.mem_dep_preds` entries cover every such partition's edges
+in one combined list, so a known-`P` predecessor of a `U` leaf
+appears in the same list as any `U` predecessor or any known-`Q`
+predecessor (different partitions are not split into separate
+lists). The §6 wiring uses each predecessor leaf's primary
+partition (recovered by re-running the §3.1 walk on the
+predecessor's memref operand) to route the edge into the right
+per-`P` chain. Compound `scf.*` atoms still present in the graph
+do not get their own `loom.mem_dep_id` in this milestone, only
+leaves do. Integer ids keep the snapshot stable across printing,
+parsing, and in-place memory-op rewrites.
 
 **Cross-scope predecessor resolution.** When a `loom.mem_dep_preds`
 entry on leaf `L` at chain scope `S` names a leaf `L'` that lives

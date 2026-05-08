@@ -264,14 +264,23 @@ each rule lands in IR.
   `#loom.spatial<...>` and `#loom.temporal<...>` instances and
   recognizes them for thread promotion and verifier checks. A
   third-party attribute that implements the same interface is not
-  recognized for thread promotion in this milestone: an
-  `scf.forall` whose `mapping` array contains zero Loom-recognized
-  entries is treated as unmapped (per §6.4 lowering rules), and a
-  mixed array that combines Loom-recognized entries with foreign
-  entries is rejected by the front-end with a diagnostic, since
-  the placement framework cannot decide which dim a foreign entry
-  binds. Adding new Loom-recognized mapping attributes (for
-  example `#loom.warp<...>`) is an extension point in
+  recognized for thread promotion in this milestone. Three
+  treatment cases for an `scf.forall`'s `mapping` array, in
+  agreement with §6.4 lowering rules:
+  - **Empty `mapping` attribute** (the array is literally empty,
+    or the attribute is absent): the forall is unmapped and is
+    flattened by Part 3's `scf.parallel` normalization path.
+  - **Mapping array with at least one Loom-recognized entry and
+    no foreign entry**: the forall is promoted to a
+    `dataflow.thread`.
+  - **Mapping array with at least one foreign (non-Loom) entry**
+    (whether or not it also contains Loom-recognized entries):
+    the front-end rejects it with a diagnostic. Part 2 or an
+    earlier Part 3 pass must remove or translate the foreign
+    entries before this point; the placement framework cannot
+    decide which dim a foreign entry binds.
+  Adding new Loom-recognized mapping attributes (for example
+  `#loom.warp<...>`) is an extension point in
   `docs/spec-compiler-part-3-impl.md` §4.
 * **Thread token.** A value of type `!dataflow.thread_token`, a
   one-shot completion signal modelled on `!async.token`.
