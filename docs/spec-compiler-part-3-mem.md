@@ -621,21 +621,29 @@ parallel-provenance side data on cloned leaves and generated loops
 ### 4.2 Partition Assignment
 
 Partition identity is graph-local and follows the §3 alias-oracle
-contract. Each leaf is assigned exactly one partition by the §3.1
-walk on its memref operand: a known root storage identity, or the
-conservative bucket `U` when the walk leaves the recognized set.
-Each compound `scf.*` atom inherits a set of touched partitions by
-the §3.3 effect-summary lift: every known root any inner leaf
-touches, plus `U` if any inner leaf is in `U`. A compound that
-contains a `U` leaf additionally lifts into every known partition
-visible at every enclosing scope, per the §2.3 lift rule. Numeric
-partition ids are graph-local.
+contract. The §3.1 walk on each leaf's memref operand assigns a
+**primary partition**: either a known root storage identity, or
+the conservative bucket `U` when the walk leaves the recognized
+set. A leaf in `U` also **participates** in every known partition
+visible at the leaf's chain scope, by the §2.3 / §3.3 lift rule;
+the participation is what realizes "U may-aliases every known
+partition" at the dep-edge-candidate level. A leaf with a known
+primary partition `P` only participates in `P`. Each compound
+`scf.*` atom inherits the union of its inner leaves' partition
+participations by the §3.3 effect-summary lift, including the
+implicit lift of any inner `U` leaf into every known partition
+visible at the compound's scope and at every enclosing scope.
+Numeric partition ids are graph-local.
 
-Two atoms in the same chain scope that share a partition are the
-only direct candidates for a same-partition dep edge in that
-scope. Cross-partition pairs and cross-scope pairs are never
-direct edge candidates: cross-partition ordering is carried by
-independent frontiers, and cross-scope ordering is carried by the
+Two atoms in the same chain scope that participate in the same
+partition are the only direct candidates for a same-partition dep
+edge in that scope. A `U` leaf and a known-`P` leaf in the same
+scope therefore share `P` (through the `U` lift) and are valid
+edge candidates in `P`'s chain; the conflict gate of §4.3 then
+decides whether the pair conflicts. Cross-partition pairs and
+cross-scope pairs are never direct edge candidates:
+cross-partition ordering is carried by independent frontiers, and
+cross-scope ordering is carried by the
 boundary translation of §2.8.
 
 ### 4.3 Per-Partition Edge Construction
