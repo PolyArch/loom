@@ -103,28 +103,32 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         continue
     fi
 
-    # Triple sanity: the .ll must claim the normalized ARM triple.
-    if ! grep -qE "^target triple = \"${expected_triple}\"\$" "${out_ll}"; then
+    # Triple sanity: the .ll must claim the normalized ARM triple. Use a
+    # fixed-string match so dots in triples like 'thumbv8m.main' are not
+    # treated as regex wildcards.
+    if ! grep -qF "target triple = \"${expected_triple}\"" "${out_ll}"; then
         echo "  FAIL  ${src}  (target triple != \"${expected_triple}\" in ${out_ll})"
         failed+=("${src}")
         continue
     fi
 
-    # Symbol sanity: at least one of the listed expected_syms must appear as
-    # a `define ... @sym(` or `declare ... @sym(` in the IR.
-    sym_ok=0
+    # Symbol sanity: every listed expected_syms entry must appear as a
+    # `define ... @sym(` in the IR. We require `define` (not `declare`) so
+    # that the source's wrapper bodies are actually emitted; an external
+    # declaration of the same symbol would not catch a regression where the
+    # body fails to lower.
+    missing_syms=()
     IFS=',' read -r -a sym_arr <<< "${expected_syms}"
     for sym in "${sym_arr[@]}"; do
         sym_trimmed="${sym//[[:space:]]/}"
         [[ -z "${sym_trimmed}" ]] && continue
-        if grep -qE "^(define|declare)[^@]*@${sym_trimmed}\(" "${out_ll}"; then
-            sym_ok=1
-            break
+        if ! grep -qE "^define[^@]*@${sym_trimmed}\(" "${out_ll}"; then
+            missing_syms+=("${sym_trimmed}")
         fi
     done
 
-    if (( sym_ok == 0 )); then
-        echo "  FAIL  ${src}  (no expected symbol from {${expected_syms}} found in ${out_ll})"
+    if (( ${#missing_syms[@]} > 0 )); then
+        echo "  FAIL  ${src}  (missing define for: ${missing_syms[*]} in ${out_ll})"
         failed+=("${src}")
         continue
     fi

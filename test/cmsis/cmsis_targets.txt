@@ -18,24 +18,35 @@
 #  - We deliberately do NOT modify any externals/cmsis-core source. If a
 #    source needs more flags, add them in extra_cflags here.
 #
-# Coverage rationale: 12 sources spanning four Cortex-M profiles
-#  - thumbv6m / Cortex-M0     (4) : apsr.c, clz.c, nop.c, dmb.c
-#  - thumbv7m / Cortex-M3     (3) : dsb.c, isb.c, basepri.c
-#  - thumbv7em / Cortex-M4    (3) : ldrex.c, strex.c, msp.c
-#  - thumbv8m.main / Cortex-M33 (2) : ldaex.c, stl.c
-# Picked to exercise APSR/IPSR/XPSR-style register reads, barrier intrinsics,
-# CLZ/NOP, the v7 BASEPRI intrinsics, the v7em load-exclusive / store-exclusive
-# pair, and the v8m load-acquire-exclusive / store-release pair.
+# Coverage rationale: sources spanning Cortex-M0/M3/M4/M23/M33 profiles plus
+# DSP/saturation/FPU extensions and ARMv8-M baseline. Each row's
+# expected_symbols list is enforced as ALL-of: every listed symbol must
+# appear as `define ... @<sym>(` in the emitted .ll.
+#  - thumbv6m / Cortex-M0       : apsr.c, clz.c, nop.c, dmb.c, rev.c
+#  - thumbv7m / Cortex-M3       : dsb.c, isb.c, basepri.c, rbit.c, sat.c
+#  - thumbv7em / Cortex-M4      : ldrex.c, strex.c, msp.c
+#  - thumbv7em + hard FP / M4   : fpscr.c
+#  - thumbv8m.base / Cortex-M23 : psplim_baseline.c
+#  - thumbv8m.main / Cortex-M33 : ldaex.c, stl.c
+# Picks exercise APSR/IPSR/XPSR-style register reads, barrier intrinsics,
+# CLZ/NOP/REV/RBIT, saturation, the v7 BASEPRI intrinsics, the v7em
+# load-exclusive / store-exclusive pair, the v8m load-acquire-exclusive /
+# store-release pair, plus FP and v8m baseline PSPLIM coverage.
 #
 apsr.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|get_apsr|
 clz.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|clz|
 nop.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|nop|
 dmb.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|dmb|
+rev.c|thumbv6m-none-eabi|cortex-m0|thumbv6m-unknown-none-eabi|rev|
 dsb.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|dsb|
 isb.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|isb|
 basepri.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|get_basepri,set_basepri,set_basepri_max|
+rbit.c|thumbv7m-none-eabi|cortex-m3|thumbv7m-unknown-none-eabi|rbit|
+sat.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|ssat,usat|
 ldrex.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|ldrexb,ldrexh,ldrexw|
 strex.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|strexb,strexh,strexw|
 msp.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|get_msp,set_msp|
+fpscr.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabihf|get_fpscr,set_fpscr|-mfloat-abi=hard
+psplim_baseline.c|thumbv8m.base-none-eabi|cortex-m23|thumbv8m.base-unknown-none-eabi|get_psplim,get_psplim_ns,set_psplim,set_psplim_ns|
 ldaex.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|ldaexb,ldaexh,ldaex|
 stl.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|stlb,stlh,stl|
