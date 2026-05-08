@@ -1,9 +1,12 @@
 [submodule "externals/llvm"]
 	path = externals/llvm
 	url = https://github.com/llvm/llvm-project.git
-[submodule "externals/cmsis-core"]
-	path = externals/cmsis-core
-	url = git@github.com:STMicroelectronics/cmsis-core.git
 [submodule "externals/cmsis-dsp"]
 	path = externals/cmsis-dsp
 	url = git@github.com:ARM-software/CMSIS-DSP.git
+[submodule "externals/cmsis-nn"]
+	path = externals/cmsis-nn
+	url = git@github.com:ARM-software/CMSIS-NN.git
+[submodule "externals/cmsis-core"]
+	path = externals/cmsis-core
+	url = git@github.com:ARM-software/CMSIS_6.git
