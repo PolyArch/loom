@@ -1,5 +1,7 @@
 add_subdirectory(loom)
 add_subdirectory(loom-cc)
+add_subdirectory(loom-raise)
+add_subdirectory(loom-raise-opt)
 add_subdirectory(loom-alignment-test)
 add_subdirectory(loom-candidate-dump)
 add_subdirectory(loom-config-test)
