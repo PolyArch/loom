@@ -682,7 +682,11 @@ symmetric and never defines a direction by itself.
 ### 4.4 Snapshot Format
 
 The builder plants a per-graph snapshot using only deterministic
-graph-local integer ids:
+graph-local integer ids. Every numeric id introduced by this snapshot
+is graph-local: it is chosen per `dataflow.graph` and need not match
+across graphs. The mem-dep, mem-loop, partition, and parallel
+group / chunk id namespaces are independent (each may start at zero)
+and are all graph-local.
 
 * `loom.mem_dep_id = N` on each leaf memory op (`dataflow.load`
   and `dataflow.store`), in deterministic traversal order.
@@ -696,12 +700,18 @@ graph-local integer ids:
   chain scope or leaves nested inside a sibling compound atom
   (see "Cross-scope predecessor resolution" below).
 * `loom.mem_loop_id = L` on each loop op carrying memory state
-  (consumed only by §5).
+  (consumed only by §5). `L` is a graph-local loop id, drawn from
+  a per-graph numbering policy independent of the `mem_dep_id`
+  namespace.
 * `loom.mem_loop_states = [...]` on each such loop, referencing
-  accesses only by `loom.mem_dep_id`.
+  accesses only by `loom.mem_dep_id`. Internal partition ids and
+  any future non-reference integer fields inside this attribute are
+  graph-local on the same per-graph numbering policy.
 * Parallel-provenance side data: `loom.parallel_group`,
   `loom.parallel_chunk`, `loom.parallel_chunks`, on cloned leaves
-  and generated loops, stripped by `loom-finalize-dfg`.
+  and generated loops. Group and chunk ids are graph-local and
+  drawn from per-graph namespaces independent of the other id
+  attributes; all three are stripped by `loom-finalize-dfg`.
 
 Partition identity is not stored per leaf; each predecessor list
 is implicitly scoped to the leaf's own partition and chain scope.
