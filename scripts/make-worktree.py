@@ -129,6 +129,7 @@ class Paths:
         self.loom_build = self.root / "build"
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
         self.cmake_llvm_dir = self.llvm_build / "lib" / "cmake" / "llvm"
+        self.cmake_clang_dir = self.llvm_build / "lib" / "cmake" / "clang"
         self.llvm_lit = self.llvm_build / "bin" / "llvm-lit"
 
     @property
@@ -247,6 +248,7 @@ def configure_loom(paths: Paths) -> None:
         "-DCMAKE_CXX_COMPILER=clang++",
         f"-DMLIR_DIR={paths.mlir_dir}",
         f"-DLLVM_DIR={paths.cmake_llvm_dir}",
+        f"-DClang_DIR={paths.cmake_clang_dir}",
         f"-DLLVM_EXTERNAL_LIT={paths.llvm_lit}",
         "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",

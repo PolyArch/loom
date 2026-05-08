@@ -9,7 +9,9 @@ configure_lit_site_cfg(
 
 set(LOOM_TEST_DEPENDS
   FileCheck count not
+  llvm-objdump
   loom
+  loom-cc
   loom-alignment-test
   loom-candidate-dump
   loom-config-test

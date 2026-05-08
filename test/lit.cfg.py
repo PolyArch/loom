@@ -55,6 +55,7 @@ lit_config.parallelism_groups["perf"] = _perf_parallelism_limit()
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
+    os.path.join(config.loom_obj_root, "tools", "loom-cc"),
     os.path.join(config.loom_obj_root, "tools", "loom-alignment-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
@@ -87,3 +88,15 @@ tools = [
     "mlir-opt",
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)
+
+# %loom-c++ and %loom-cc share a "%loom-c" prefix; lit's substitution is
+# substring-based, so list the longer pattern first and pin both to the
+# built binary path explicitly.
+_loom_cc_dir = os.path.join(config.loom_obj_root, "tools", "loom-cc")
+config.substitutions.insert(
+    0, ("%loom-c\\+\\+", os.path.join(_loom_cc_dir, "loom-c++")))
+config.substitutions.insert(
+    1, ("%loom-cc\\b", os.path.join(_loom_cc_dir, "loom-cc")))
+config.substitutions.insert(
+    2, ("%objdump-h",
+        os.path.join(config.llvm_tools_dir, "llvm-objdump") + " -h"))
