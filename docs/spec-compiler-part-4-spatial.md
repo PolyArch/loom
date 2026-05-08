@@ -9,7 +9,7 @@ flattening structured control flow into dataflow primitives; this
 part owns the spatial-array story. A general neighborhood
 communication / distributed-buffer protocol -- which would cover
 halo / stencil neighbor exchange among other patterns -- is reserved
-for future work (see §6).
+for future work (see §7).
 
 The canonical IR source is `include/Dataflow/IR/DataflowOps.td`; the
 verifier implementation lives in `lib/Dataflow/IR/DataflowOps.cpp`.
@@ -49,7 +49,7 @@ through `dataflow.spatial_layout`.
   exchange op is part of this milestone; the first milestone
   intentionally does not commit to a stencil-specific op signature
   and instead leaves any such protocol to a follow-up that is
-  driven by real workloads (see §6).
+  driven by real workloads (see §7).
 * The `dataflow.mesh @M { shape = [...] }` symbol-form mesh is
   deferred. All meshes in the first milestone are inline arrays on
   `dataflow.spatial_layout`.
@@ -94,7 +94,7 @@ traits:
 * Halo / ghost-cell metadata is intentionally not present in this
   milestone. It is reserved for whichever future neighborhood
   communication / distributed-buffer protocol Part 4 eventually
-  adopts (see §6); pinning attribute fields without a consumer
+  adopts (see §7); pinning attribute fields without a consumer
   would freeze a shape that the consumer might want to change.
 
 ### 3.2 `dataflow.local_range`
@@ -198,7 +198,7 @@ and to match the `shard.shard` precedent. As a consequence, the
 binding from `local_range` back to its rooting
 `dataflow.spatial_layout` must be expressed as an SSA chain rather
 than as a single type check. A future milestone that adopts the
-strong-typed spatial carrier (see §6) may collapse the chain check
+strong-typed spatial carrier (see §7) may collapse the chain check
 to a type check, but the in-thread query signature stays the same.
 
 ### 3.3 `dataflow.spatial_coord` and `dataflow.spatial_linear_id`
@@ -293,7 +293,80 @@ spatial_linear_id:
   binding to compute local ranges and coordinates; they do not
   introduce a parallel hardware-mapping mechanism.
 
-## 6. Future Design Thoughts
+## 6. Testing Strategy
+
+Spatial-array unit tests follow the same lit-test layout pattern that
+`docs/spec-compiler-part-3-impl.md` §2 establishes for Part 3 dialect
+elements. Tests live under `test/frontend/unit/spatial/`, with one
+subdirectory per spatial op: `spatial_layout/`, `local_range/`,
+`spatial_coord/`, and `spatial_linear_id/`. Each subdirectory holds
+`valid.mlir`, `invalid.mlir`, and `roundtrip.mlir` (the last
+confirming printer / parser stability).
+
+* `spatial_layout/`. valid.mlir covers a layout op at host scope, a
+  layout op inside a `dataflow.thread` body, a layout op inside
+  `scf.*` regions nested in a thread body, and a 1-D mesh case
+  (single mesh axis, single split axis). invalid.mlir pins each §4
+  verifier rule on at least one fixture: a layout op inside a
+  `dataflow.graph` body (rejected per §1 and §4); a layout op
+  operating on a non-memref source; a layout op whose `tileDims`
+  rank does not equal the source memref rank; a layout op whose
+  `tileDims` contains a non-power-of-two entry; a layout op whose
+  `tileDims` contains an entry below the cache-line floor; a
+  layout op whose `splitAxes` outer length does not equal the
+  source memref rank; a layout op whose `splitAxes` references a
+  mesh-axis index that is not a valid index into `meshShape`; a
+  layout op with empty `meshShape`; and a layout op with a
+  non-positive `meshShape` entry.
+* `local_range/`. valid.mlir exercises each provenance-chain rule from
+  §3.2.1 separately: rule 1 with the layout in the same thread body
+  as the query (direct match); rule 2 with the layout at host scope,
+  the value crossing one `dataflow.thread` boundary, and the body
+  operand at the matching position produced by `dataflow.map_info`;
+  rule 3 with at least one chain length covering two thread layers,
+  so the verifier walk is exercised through more than one
+  `dataflow.map_info` passthrough; and a case with `scf.*` regions
+  nested between the layout op and the query inside the same thread
+  body, confirming that scf nesting is transparent. invalid.mlir
+  covers a `local_range` whose source does not chain to any
+  `dataflow.spatial_layout` (chain walk fails); a `local_range`
+  outside any `dataflow.thread` body (rejected per §4); a
+  `local_range` whose enclosing thread mapping does not reach the
+  mesh axes of the rooted `dataflow.spatial_layout`; and a chain
+  that crosses a `dataflow.thread` boundary where the body operand
+  at the matching position is not a `dataflow.map_info` result, so
+  rule 2 fails.
+* `spatial_coord/` and `spatial_linear_id/`. Both ops take no
+  arguments per §3.3, so verifier coverage is purely placement and
+  result-shape oriented. valid.mlir places the query inside a
+  `dataflow.thread` body, in both a non-nested thread body and a
+  nested-thread body, and confirms that `spatial_coord` returns a
+  result vector whose length matches the enclosing thread's grid
+  rank. invalid.mlir covers a query at host scope, a query inside a
+  `dataflow.graph` body (rejected per §1 and §4), and a query
+  inside an `scf.*` region that is itself outside any thread body.
+* Cross-cutting graph rejection. Each subdirectory's invalid.mlir
+  also pins a small block where the spatial op appears inside a
+  `dataflow.graph` body and is rejected. No spatial op may appear
+  inside `dataflow.graph` (cross-ref §1 Scope and §4 Verifier
+  Rules); the per-subdirectory cases keep that single rule
+  observable from each op's own test surface.
+
+The `local_range` provenance-chain coverage is the discipline that
+makes the verifier walk testable: rule 1, rule 2, and rule 3 are
+exercised on separate IR fixtures rather than collapsed into one
+maximal example, and at least one rule-3 fixture has chain length
+greater than or equal to two thread layers so the walk traverses
+more than one `dataflow.map_info`. Negative chain cases are kept
+small and distinct so the diagnostic surface stays mechanical.
+
+Integration tests for spatial-array kernels (matmul-like, stencil-
+like, and other SPGPU / Chapel-style idioms) live with the Part 3
+integration suite under `test/frontend/integration/` and exercise
+the chain in a realistic kernel context; the unit tests here only
+pin individual op verifier rules.
+
+## 7. Future Design Thoughts
 
 * Strong-typed `!dataflow.spatial_array<...>` carrier. The in-thread
   queries above keep their signatures; only the source type widens.
@@ -320,16 +393,22 @@ spatial_linear_id:
   optimizer extension point Part 3 already documents for ordinary
   memrefs.
 
-## 7. References
+## 8. References
 
 * `docs/spec-compiler-part-3-dfg.md` -- SCF-to-DFG lowering.
   Part 3 defines `dataflow.thread`, `dataflow.graph`, and
   `dataflow.map_info`; Part 4 extends the dialect with the
   spatial-array ops listed here.
+* `docs/spec-compiler-part-3-impl.md` §2 Testing Strategy --
+  lit-test layout pattern (`test/frontend/unit/`,
+  `test/frontend/lower_scf/`, `test/frontend/integration/`) and
+  per-op `valid.mlir` / `invalid.mlir` / `roundtrip.mlir`
+  conventions that §6 of this document mirrors.
 * `docs/spec-dataflow-part-1-streaming.md`,
   `docs/spec-dataflow-part-2-control.md` -- streaming and control
   primitive semantics. Spatial-array ops do not change those
-  semantics; they appear as ordinary in-thread or in-graph ops.
+  semantics; they appear as ordinary thread-body ops, never inside
+  `dataflow.graph` (per §1 and §4).
 * `include/Dataflow/IR/DataflowOps.td` -- canonical operation
   definitions.
 * `lib/Dataflow/IR/DataflowOps.cpp` -- verifier implementation.
