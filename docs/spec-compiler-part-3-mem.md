@@ -718,119 +718,211 @@ on, materialized through the boundary translation rules in
 
 ## 5. Loop-Carried Memory State
 
+### 5.1 Position in the Model
+
 A loop-carried memory dependence is represented as hidden loop state,
-not as an implicit property of the loop op. The lowering must make the
-state visible in dataflow primitives so graph scheduling, graph
-verification, and later hardware lowering all see the same ordering.
-This section is the loop-boundary instance of the per-partition
-memory frontier defined in §2.4: an `scf.for` or `scf.while`
-compound atom carries its per-partition incoming frontier across
-iterations through a hidden `dataflow.carry`-driven state ring,
-exposes path-sensitive tails through the join rules of §2.7, and
-projects the loop-exit memory state through the false-lane of the
-loop's structural reset.
+not as an implicit property of the loop op. This section is the
+loop-boundary instance of the per-partition memory frontier of §2.4:
+a source-ordered loop compound atom carries its per-partition
+incoming frontier across iterations through a hidden
+`dataflow.carry`-driven state ring, exposes path-sensitive tails
+through §2.7, and projects the loop-exit memory state out of the
+loop through the loop's structural reset. The state must be visible
+in dataflow primitives so graph scheduling and verification see the
+same ordering as later hardware lowering.
 
-This subsection applies to source-ordered loops such as user
-`scf.for` and `scf.while`. It does not create loop-carried memory state
-for loops generated from `scf.parallel` with parallel provenance.
-Cross-iteration memory races in the original `scf.parallel` are source
-undefined behavior or unspecified behavior, not an ordering obligation
-for Loom. The generated loops still keep their ordinary intra-iteration
-memory dependences and their incoming / outgoing group-tail
-dependences.
+This section applies to source-ordered loops only. Per §2.6 and §4.3,
+parallel-provenance compound atoms (`scf.parallel`, or `scf.forall`
+normalized to parallel-provenance `scf.for`) follow fork-join
+semantics with no cross-iteration ordering and therefore have no
+loop-carried memory state; their per-partition `outgoing_P` is the
+chunk-tail rendezvous of §2.6.
 
-For each structured loop `L`, the dependence builder computes memory
-partitions inside `L`:
+### 5.2 Abstract Pattern
 
-* The initial partitioning key is the alias root used by the active
-  oracle. A more precise implementation may split or merge by the
-  conflict graph's strongly connected components, but it must be
-  conservative: two accesses that may need cross-iteration ordering
-  must appear in at least one common partition.
-* A partition needs loop-carried state when an access in one dynamic
-  iteration can conflict with an access in a later dynamic iteration.
-  Read-read pairs never force such a partition by themselves.
-  Parallel-provenance loops are excluded from this rule; they use the
-  group-tail rule above instead of hidden loop-carried state.
-* Each partition that needs loop-carried state gets one deterministic
-  partition id unique within the graph and one hidden `none`-typed
-  carry in the lowered loop. Independent partitions get independent
-  carries so unrelated memrefs are not serialized.
+For a source-ordered loop compound `L`, the lowering instantiates a
+per-partition state ring parameterized by:
 
-The canonical state names below are descriptive; implementations may
-choose different SSA names.
+* a **structural selector token** for `L` -- a control bit produced
+  by `L`'s structural lowering that distinguishes continuing
+  iterations from the exit cycle. Each loop op supplies its own
+  selector; §5.3 and §5.4 give the concrete choices.
+* the partition set `Π_L` -- the partitions for which `L` carries
+  loop-state. Per §4.3, `P ∈ Π_L` iff some access in one dynamic
+  iteration of `L` may conflict with some access in a later
+  iteration of `L` in `P`. Read-read pairs alone never force a
+  partition into `Π_L`. Partitions outside `Π_L` flow through `L`
+  as ordinary per-partition frontiers (§2.4) without a state ring.
+
+For each `P ∈ Π_L`, the lowering introduces a hidden `none`-typed
+carry with four canonical tokens (names are descriptive;
+implementations may choose different SSA names):
 
 ```
-%mem_iter_P = carry %rwc, %mem_init_P, %mem_next_P : none
+%mem_iter_P = carry %selector, %mem_init_P, %mem_next_P : none
 ```
 
-* `%mem_init_P` is the dominating memory-order token before the first
-  dynamic iteration of `L` for partition `P`. It is derived from the
-  graph `ctrl_in` token, a pre-loop dependence tail, or the enclosing
-  loop's memory-state token.
-* `%mem_iter_P` is the start-of-current-iteration memory state. Any
-  access in partition `P` that has a loop-carried predecessor syncs
-  with this token in addition to its ordinary intra-iteration
-  dependence predecessors.
-* `%mem_next_P` is the end-of-current-iteration memory state. It is
-  built from the done tokens of accesses in partition `P` whose
-  completion must precede the next dynamic iteration. If a dynamic
-  path through the loop body performs no access in `P`, that path
-  forwards `%mem_iter_P`. Mutually exclusive tails are joined with the
-  same selector that chose the path; they are never joined with
-  `sync`.
-* `%mem_after_P` is the memory state after the loop. The zero-trip
-  path forwards `%mem_init_P`. The nonzero path is the final carried
-  state. Post-loop accesses in partition `P` use `%mem_after_P` as
-  their predecessor when they may conflict with loop-body accesses.
+* `%mem_init_P` is `L`'s `incoming_P` per §2.4: the memory-order
+  frontier flowing into `L` for `P`, derived from the graph's
+  `ctrl_in`, a pre-loop dependence tail, or an enclosing loop's
+  per-`P` state.
+* `%mem_iter_P` is the start-of-current-iteration memory state for
+  `P`. Body-region accesses in `P` use `%mem_iter_P` as their
+  scope's `incoming_P` and chain through it per §2.5.
+* `%mem_next_P` is the end-of-current-iteration memory state for `P`,
+  the input that feeds `%mem_iter_P` on the next iteration. It is
+  the §2.5 / §2.7 join of the per-path body tails for `P`: a path
+  that performs no access in `P` forwards `%mem_iter_P` unchanged;
+  mutually exclusive paths are joined with a selector-matched
+  `dataflow.mux` (never `sync`); same-path required tails are joined
+  with `dataflow.sync` (never `mux`).
+* `%mem_after_P` is the memory-order frontier flowing out of `L` for
+  `P` -- equivalently, `L`'s `outgoing_P` per §2.4. It is the
+  loop-exit projection of the final carried state, taken from the
+  cycle that produces `L`'s structural reset; the zero-trip path
+  forwards `%mem_init_P`. Post-loop accesses in `P` that may conflict
+  with loop-body accesses use `%mem_after_P` as their predecessor.
 
-`scf.for` uses the `stream`-produced loop-level rwc bit for the
-hidden memory-state carry, following the same loop-phase rule as
-iter_args. The true lane is the per-iteration body memory state; the
-false lane is the loop-exit memory state. The body tail feeds
-`%mem_next_P`, and the loop-exit state handles both zero-trip and
-nonzero execution.
+Independent partitions get independent rings sharing only the
+structural selector, so unrelated memrefs are not serialized.
 
-`scf.while` has two regions and therefore two relevant memory tails.
-The before-region executes on both true and false condition checks.
-The false path exits the loop with the before-region tail. The true
-path continues through the after-region, and the after-region tail
-feeds `%mem_next_P` for the next iteration.
+### 5.3 scf.for Instantiation
 
-Nested loops are treated compositionally. An inner loop's
-`%mem_after_P` is an ordinary memory-order event in the enclosing
-loop's partition. If the same alias root participates in both loops,
-the outer loop state gates the inner loop entry and the inner loop
-exit feeds the outer loop's body tail.
+`scf.for` parameterizes §5.2 with:
 
-Parallel-provenance groups nested inside a source-ordered loop follow
-the same compositional rule at the group boundary. The outer loop's
-memory state gates the parallel group entry when the group may touch
-the same partition, and the group's tail token feeds the outer loop's
-body tail. The chunks inside that group remain unordered with respect
-to each other.
+* selector = the loop-level rwc bit produced by the loop's
+  `dataflow.stream`. The same rwc drives the structural carry, the
+  iter-arg carries, and every per-`P` memory carry in `Π_L`.
+* body region count = 1. The body is a single chain scope; §2.5
+  applies inside it for each `P ∈ Π_L` with `%mem_iter_P` as
+  `incoming_P`.
+* phase rule: rwc=true on body iterations, rwc=false on the sentinel
+  reset cycle that marks loop exit. The body's per-`P` tail feeds
+  `%mem_next_P` on the true lane; the false lane projects the final
+  carried state out as `%mem_after_P` (the same projection forwards
+  `%mem_init_P` for the zero-trip case).
 
-The loop-state plan stored by the memory-dependence builder is the
-`loom.mem_loop_states` attribute on the source loop. Each record uses
-only deterministic integer ids:
+The structural rwc and the per-`P` memory carry are independent
+state rings over the same selector; the structural plane never
+aggregates the memory tails (§2.5 plane orthogonality).
 
-* loop id,
-* partition id,
-* member memory-access ids,
-* access ids that define the per-path `%mem_next_P` tails,
-* access ids that consume `%mem_after_P` after the loop.
+### 5.4 scf.while Instantiation
 
-This avoids operation-reference attributes and keeps the snapshot
-stable across printing and parsing. The plan intentionally does not
-duplicate the type contract of `carry`, `mux`, `demux`, or `sync`; the
-primitive op definitions and the dataflow op semantics specs are the
-single source of truth for which types those ops accept and when they
-fire.
+`scf.while` parameterizes §5.2 with:
 
-Omitting a required loop-carried memory state is illegal. Adding an
-extra conservative state is legal for correctness, but tests should
-catch it when it serializes partitions that the active oracle proves
-independent.
+* selector = `%cond`, the `i1` value produced by `scf.condition` at
+  the before-region terminator. The same `%cond` drives the
+  structural carry, the structural `gate` into the after-region, and
+  every per-`P` memory carry in `Π_L`.
+* body region count = 2. The before-region and after-region are each
+  their own chain scope. For K iterations the before-region executes
+  K+1 times (the final false check still runs it) and the
+  after-region executes K times.
+* per-`P` flow inside one iteration:
+  - `%mem_iter_P` enters the before-region as its `incoming_P`;
+    `%before_tail_P` is the before-region's per-`P` tail, forwarding
+    `%mem_iter_P` if the before-region performs no `P` access.
+  - on the true lane, the after-region's `incoming_P` is
+    `%after_in_P = gate %cond, %before_tail_P`; `%after_tail_P` is
+    the after-region's per-`P` tail, forwarding `%after_in_P` if the
+    after-region performs no `P` access.
+  - `%mem_feedback_P = mux %cond, %before_tail_P, %after_tail_P`
+    feeds `%mem_iter_P` on the next iteration. The operand order
+    follows the §6 selector convention (lane 0 = false-lane =
+    `%before_tail_P`, lane 1 = true-lane = `%after_tail_P`): on a
+    true iteration the after-region tail is carried, and on the
+    final false iteration the before-region tail is carried
+    (because the final false iteration's before-region still ran).
+* loop-exit projection: `%mem_after_P` is the false-lane projection
+  of `%before_tail_P` from the final before-region execution. The
+  zero-trip case (`%cond` false on the first check) reduces to the
+  same projection over the single before-region run.
+
+The after-region's structural rwc-style token (`%after_rwc`, if
+exposed) is not on the memory critical path. Per §2.5 plane
+orthogonality, after-region memory ops use `sync(struct_after,
+%after_in_P)` for `ctrl`; the structural token provides only phase
+permission, while `%after_in_P` carries the alias-aware ordering.
+
+### 5.5 Nested Loops
+
+Nested loops compose. From the enclosing loop's point of view, an
+inner loop is an ordinary compound atom in the §2.5 chain: its
+`%mem_after_P` is one event in the outer loop's per-`P` chain, and
+its `%mem_init_P` is the outer loop's per-`P` frontier at the inner
+loop's position. Each loop applies §5.2 to its own `Π`. For a
+partition `P`:
+
+* `P` is not touched anywhere inside the inner loop: the inner
+  loop is not part of `P`'s chain, and the outer scope's frontier
+  for `P` flows past the inner loop unchanged per §2.4.
+* `P` is touched inside the inner loop but is not in `Π_inner`
+  (no cross-iteration ordering is required, e.g. read-only body
+  accesses): the inner loop participates in `P`'s chain through
+  ordinary `incoming_P` / `outgoing_P` per §2.4 with no state
+  ring; the per-iteration body just feeds tails through ordinary
+  §2.5 chain construction.
+* `P ∈ Π_inner`: the inner loop applies §5.2 to `P` with its own
+  state ring; `%mem_init_P` is the outer-loop frontier at the
+  inner loop's position, and `%mem_after_P` is one event in the
+  outer-loop chain.
+
+### 5.6 Parallel-Provenance Groups Inside Loops
+
+A parallel-provenance compound atom nested inside a source-ordered
+loop participates in the outer loop's per-`P` chain like any other
+compound, per §2.6. The outer loop's per-`P` state at the group's
+position is the group's `incoming_P`; the group's `outgoing_P` is
+the chunk-tail rendezvous of §2.6 and feeds the outer loop's per-`P`
+body tail. Chunks remain unordered, and no loop-carried state is
+created for partitions internal to the parallel compound.
+
+### 5.7 Snapshot for Loop-Carried State
+
+The dependence builder records a per-loop plan in the
+`loom.mem_loop_states` attribute on the source loop op. Each plan
+parameterizes §5.2 for one loop and uses only deterministic
+graph-local integer ids:
+
+* graph-local loop id (also written as `loom.mem_loop_id`),
+* per-partition records for every `P ∈ Π_L`, each containing:
+  - partition id (graph-local),
+  - member access ids (the leaves in `P` carried by the ring),
+  - body-tail contributor access ids (the leaves whose `done`
+    feeds `%mem_next_P` on some dynamic path through the loop
+    body),
+  - `%mem_after_P` consumers (the access ids that read
+    `%mem_after_P` as a predecessor after the loop).
+
+Path identity is not stored as separate snapshot fields. The
+wiring in §6 reconstructs each dynamic path through the loop body
+from the IR's structured-control-flow ancestry of every member
+access: the path of a contributor leaf is the sequence of
+`scf.if` / `scf.index_switch` branches and `scf.for` / `scf.while`
+nestings between the loop op and the leaf. Paths whose IR
+ancestry contains no member access in `P` carry no contributor
+and forward `%mem_iter_P` per §5.2; paths with one or more
+contributors join their tails by §2.7 (`dataflow.sync` for
+same-path required tails, selector-matched `dataflow.mux` for
+mutually exclusive tails).
+
+Access ids reference `loom.mem_dep_id` values from §4.4. The loop-id
+namespace is per-graph and separate from the `mem_dep_id` namespace;
+both are graph-local and chosen deterministically. The plan does not
+duplicate the type contract of `carry`, `mux`, `demux`, or `sync`;
+the primitive op specs are authoritative for those.
+
+### 5.8 Soundness Notes
+
+Omitting a required loop-carried memory state is illegal: it lets
+the lowering reorder accesses across iterations in a way the source
+program does not permit, and graph verification will not catch the
+omission because the resulting circuit is still well-typed.
+
+Adding an extra conservative state ring is legal; it only
+over-serializes. Tests should catch unnecessary serialization when
+the active alias oracle proves partitions independent, so that
+`Π_L` matches §4.3 rather than a coarser upper bound.
 
 ## 6. Token Wiring
 
