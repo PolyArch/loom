@@ -192,7 +192,14 @@ documentation never refers to the numeric position.
 * Once every marked forall inside a `loom.acc_region` has been replaced
   by `dataflow.thread`, the temporary accelerator-region wrapper is
   erased and its body is spliced back at the original host program
-  point. No `loom.acc_region` remains after this pass.
+  point. Because `loom.acc_region` is `IsolatedFromAbove`, its body
+  uses entry block arguments rather than the surrounding host SSA
+  values, so the erasure step must rewrite every use of body block
+  argument `i` to the corresponding `loom.acc_region.boundaryOperands[i]`
+  in the enclosing host scope before the wrapper is removed. The
+  substitution is mechanical (positional, type-equal by
+  `IsolatedFromAbove` invariant) and runs over the entire body.
+  No `loom.acc_region` remains after this pass.
 
 ### 1.6 `loom-prepare-scalarcore-calls`
 
