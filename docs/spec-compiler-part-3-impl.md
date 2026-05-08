@@ -5,10 +5,12 @@ This document collects the engineering details that support the Part 3
 the milestone acceptance checklist, and the extension points.
 
 Part 3 itself (`docs/spec-compiler-part-3-dfg.md`) holds the
-first-principles content -- IR boundary contracts, SCF flattening
-templates, the memory-dependence model, and verifier invariants.
-Material in this file exists so that one canonical implementation is
-pinned; readers who only need the design contract can skip this file.
+first-principles IR content -- boundary contracts, SCF flattening
+templates, and verifier invariants. The memory-dependence model
+that this part lowers to is owned by
+`docs/spec-compiler-part-3-mem.md`. Material in this file exists so
+that one canonical implementation is pinned; readers who only need
+the design contract can skip this file.
 References below use Part 3 section names rather than numeric indices,
 so that Part 3 can renumber without forcing edits here.
 
@@ -302,6 +304,11 @@ documentation never refers to the numeric position.
 * Builds the per-graph memory-dependence snapshot consumed by body
   lowering. A memory access means `memref.load` / `memref.store`
   before rewrite and `dataflow.load` / `dataflow.store` after rewrite.
+  The compositional chain model the snapshot feeds, the alias-oracle
+  contract, the dependence builder rules, the loop-carried memory
+  state pattern, and the SSA-level token wiring are specified in
+  `docs/spec-compiler-part-3-mem.md`. This section pins the
+  implementing pass; the model itself is owned by that document.
   Although the pass name focuses on dependence construction, this pass
   also performs the final parallel-SCF normalization described below.
   Keeping both tasks together ensures memory accesses cloned by
@@ -412,8 +419,8 @@ documentation never refers to the numeric position.
   same dynamic path; mutually exclusive tails are joined by
   selector-matched `dataflow.mux`, not by `dataflow.sync`. The graph
   `done_out` yield operand is output zero of a `dataflow.sync` over
-  all memory accesses with no dependence successor (see Part 3's
-  Memory Dependence Model).
+  all memory accesses with no dependence successor (see
+  `docs/spec-compiler-part-3-mem.md`).
 
 ### 1.10 `loom-finalize-dfg`
 
@@ -628,8 +635,11 @@ following hold simultaneously:
 ## 5. References
 
 * `docs/spec-compiler-part-3-dfg.md` -- Part 3 main spec (boundary
-  contracts, SCF flattening templates, memory-dependence model,
-  verifier invariants).
+  contracts, SCF flattening templates, verifier invariants).
+* `docs/spec-compiler-part-3-mem.md` -- compositional chain model,
+  alias oracle, dependence builder, loop-carried memory state, and
+  token wiring. The contract that `loom-build-memory-dependencies`
+  implements lives in that document.
 * `docs/spec-compiler-part-3-placement-framework.md` -- common
   placement-partition framework and the L2 graph-placement model used
   by `loom-extract-graph-regions`.

@@ -82,7 +82,7 @@ thread promotion. `dataflow.thread` itself remains a launch region
 with a completion token and mapped-memory data transfer, not a
 tensor-result returning op. Memory dependence construction runs in
 this part; alias analysis is only the conflict oracle used by that
-builder (see "Memory Dependence Model").
+builder (see `docs/spec-compiler-part-3-mem.md`).
 Graph placement inside each thread is governed by the L2 placement
 instance specified by the placement framework and by the implementation
 contract in `docs/spec-compiler-part-3-impl.md`.
@@ -186,7 +186,9 @@ each rule lands in IR.
    The default alias oracle is a simple SSA-source-of-memref oracle; a
    stronger oracle based on `mlir::AliasAnalysis` ships alongside it
    and the two are interchangeable through one C++ interface, both
-   validated by the same lit suite.
+   validated by the same lit suite. The compositional chain model and
+   the oracle / builder / loop-state / wiring details are specified in
+   `docs/spec-compiler-part-3-mem.md`.
 6. `loom.acc_region` is the explicit AccCore selection boundary
    consumed by this part. `scf.forall` with a
    `mapping = [#loom.spatial<...> | #loom.temporal<...>, ...]`
@@ -269,14 +271,17 @@ each rule lands in IR.
 * **Mem alias oracle.** A `MemAliasOracle` C++ interface returning
   `MustNotAlias` / `MayAlias` / `MustAlias` for any pair of memory
   access ops inside one `dataflow.graph`. It answers conflict only;
-  it does not define execution order.
+  it does not define execution order. Specified in
+  `docs/spec-compiler-part-3-mem.md` §3.
 * **Memory dependence edge.** A directed edge `p -> o` saying memory
   access `o` must wait for memory access `p` before issuing its
-  side effect or externally visible read.
+  side effect or externally visible read. Specified in
+  `docs/spec-compiler-part-3-mem.md` §4.
 * **Loop-carried memory state.** A hidden `none`-typed control state
   carried by a lowered loop for one alias/dependence partition. It
   represents "all memory effects in this partition from previous
-  dynamic iterations have retired."
+  dynamic iterations have retired." Specified in
+  `docs/spec-compiler-part-3-mem.md` §5.
 * **Aggregation-form forall.** An `scf.forall` with `shared_outs`,
   op results, or non-empty `scf.forall.in_parallel` combining actions
   such as `tensor.parallel_insert_slice`.
@@ -676,8 +681,9 @@ extraction must be rewritten to explicit memory effects, kept in
 ScalarCore code, or rejected before graph lowering.
 
 The templates below show user-visible SSA value lowering. Loop-carried
-memory ordering is added by the Memory Dependence Model as hidden
-`none`-typed state; it is not an optional optimization.
+memory ordering is added by the compositional chain model in
+`docs/spec-compiler-part-3-mem.md` as hidden `none`-typed state; it is
+not an optional optimization.
 
 ### RWC Phasing Rule
 
@@ -958,8 +964,9 @@ For `N` dynamic body executions:
 The no-result case has no data loop result to compute. The only
 required invariant is that body dataflow never observes the sentinel
 index. If the body contains memory side effects, their ctrl operands
-are wired by the Memory Dependence Model; `%body_ctrl` above is only
-the canonical structured-control source when such a token is needed.
+are wired by the compositional chain model in
+`docs/spec-compiler-part-3-mem.md`; `%body_ctrl` above is only the
+canonical structured-control source when such a token is needed.
 Loop-invariant memref operands are not replayed with
 `dataflow.invariant`; they remain memory bindings on the lowered
 loads and stores.
@@ -1581,218 +1588,11 @@ selector stream is `[1, 0, 2]`:
 
 ## 7. Memory Dependence Model
 
-The first milestone separates alias, dependence, and token wiring.
-The first-principles requirement is to preserve the memory behavior of
-the input program when the graph becomes a dataflow circuit. Alias
-analysis only answers "can these two accesses touch overlapping
-storage?" A memory dependence edge answers the directional scheduling
-question: `o` cannot issue until `p` has retired on the same dynamic
-execution path.
-
-### 7.1 Alias Oracle
-
-Two interchangeable oracle implementations share the `MemAliasOracle`
-interface; the C++ class signature and the pass that materializes
-oracles per `dataflow.graph` live in
-`docs/spec-compiler-part-3-impl.md`.
-
-* `BasicSsaOracle` (default-on for fast iteration during development):
-  - Walks each operand back through the chain
-    `memref.cast | memref.subview | memref.view | memref.expand_shape |
-     memref.collapse_shape` to a root SSA value.
-  - Two accesses conflict iff their roots are equal and they are not
-    both loads. Bounds and offsets are not consulted; the oracle is
-    intentionally conservative.
-* `MlirAaOracle` (default-on for the full lit suite):
-  - Wraps `mlir::AliasAnalysis`, configured with whatever external
-    alias-analysis interfaces are registered, as a refinement of
-    `BasicSsaOracle`. It starts from the basic conflict set and removes
-    pairs that upstream MLIR AA proves `MustNotAlias`. `MayAlias` and
-    `MustAlias` keep the basic answer. Loads vs. loads still do not
-    conflict.
-
-Both oracles pass the same lit suite. They may produce different
-`loom.mem_dep_preds` snapshots, because a stronger oracle can prove
-that fewer ordered pairs conflict. The test suite is parameterized so
-each relevant case is run twice, once per oracle.
-
-### 7.2 Dependence Builder
-
-`MemoryDependenceBuilder` consumes a `MemAliasOracle` and produces a
-directed graph over memory accesses inside one `dataflow.graph`.
-
-* The builder assigns deterministic integer ids in traversal order:
-  `loom.mem_dep_id = N`.
-* For each ordered pair `p` before `o`, the pair conflicts iff
-  `query(p, o) != MustNotAlias` and the pair is not load-load.
-  Conflicting ordered pairs become dependence candidates `p -> o`,
-  subject to the structured-control and parallel-provenance rules
-  below.
-* Direction comes only from program order and structured-control-flow
-  nesting. Alias answers are symmetric; they never define a direction.
-* Dependences are path-sensitive to the extent exposed by structured
-  control flow. Accesses in mutually exclusive branches do not need an
-  edge between each other solely because they conflict; each branch's
-  tail participates in the parent merge through a selector-matched
-  `dataflow.mux`. A conservative implementation may serialize more
-  when it cannot prove path exclusivity, but it must not omit a
-  dependence that preserves an observable read/write or write/write
-  order.
-* Parallel-provenance groups are the exception to source-order loop
-  dependence. Accesses in different logical iterations or different
-  chunks of the same original `scf.parallel` are unordered by the
-  source program. The builder must not add cross-iteration or
-  cross-chunk dependence edges for such pairs solely because they may
-  alias. It still records intra-iteration dependences and dependences
-  between the parallel group and surrounding code.
-* Loop-carried dependences are real dependences. If an access in a
-  later iteration can conflict with an access in an earlier iteration,
-  the lowered loop token structure must carry that ordering, rather
-  than treating each iteration as independent.
-* The builder may remove transitively implied edges. The snapshot
-  records only immediate predecessors:
-  `loom.mem_dep_preds = [P0, P1, ...]`.
-
-The snapshot uses integer ids rather than operation references so it is
-stable under printing, parsing, and later in-place memory-op rewrites.
-
-### 7.3 Loop-Carried Memory State
-
-A loop-carried memory dependence is represented as hidden loop state,
-not as an implicit property of the loop op. The lowering must make the
-state visible in dataflow primitives so graph scheduling, graph
-verification, and later hardware lowering all see the same ordering.
-
-This subsection applies to source-ordered loops such as user
-`scf.for` and `scf.while`. It does not create loop-carried memory state
-for loops generated from `scf.parallel` with parallel provenance.
-Cross-iteration memory races in the original `scf.parallel` are source
-undefined behavior or unspecified behavior, not an ordering obligation
-for Loom. The generated loops still keep their ordinary intra-iteration
-memory dependences and their incoming / outgoing group-tail
-dependences.
-
-For each structured loop `L`, the dependence builder computes memory
-partitions inside `L`:
-
-* The initial partitioning key is the alias root used by the active
-  oracle. A more precise implementation may split or merge by the
-  conflict graph's strongly connected components, but it must be
-  conservative: two accesses that may need cross-iteration ordering
-  must appear in at least one common partition.
-* A partition needs loop-carried state when an access in one dynamic
-  iteration can conflict with an access in a later dynamic iteration.
-  Read-read pairs never force such a partition by themselves.
-  Parallel-provenance loops are excluded from this rule; they use the
-  group-tail rule above instead of hidden loop-carried state.
-* Each partition that needs loop-carried state gets one deterministic
-  partition id unique within the graph and one hidden `none`-typed
-  carry in the lowered loop. Independent partitions get independent
-  carries so unrelated memrefs are not serialized.
-
-The canonical state names below are descriptive; implementations may
-choose different SSA names.
-
-```
-%mem_iter_P = carry %rwc, %mem_init_P, %mem_next_P : none
-```
-
-* `%mem_init_P` is the dominating memory-order token before the first
-  dynamic iteration of `L` for partition `P`. It is derived from the
-  graph `ctrl_in` token, a pre-loop dependence tail, or the enclosing
-  loop's memory-state token.
-* `%mem_iter_P` is the start-of-current-iteration memory state. Any
-  access in partition `P` that has a loop-carried predecessor syncs
-  with this token in addition to its ordinary intra-iteration
-  dependence predecessors.
-* `%mem_next_P` is the end-of-current-iteration memory state. It is
-  built from the done tokens of accesses in partition `P` whose
-  completion must precede the next dynamic iteration. If a dynamic
-  path through the loop body performs no access in `P`, that path
-  forwards `%mem_iter_P`. Mutually exclusive tails are joined with the
-  same selector that chose the path; they are never joined with
-  `sync`.
-* `%mem_after_P` is the memory state after the loop. The zero-trip
-  path forwards `%mem_init_P`. The nonzero path is the final carried
-  state. Post-loop accesses in partition `P` use `%mem_after_P` as
-  their predecessor when they may conflict with loop-body accesses.
-
-`scf.for` uses the `stream`-produced loop-level rwc bit for the
-hidden memory-state carry, following the same loop-phase rule as
-iter_args. The true lane is the per-iteration body memory state; the
-false lane is the loop-exit memory state. The body tail feeds
-`%mem_next_P`, and the loop-exit state handles both zero-trip and
-nonzero execution.
-
-`scf.while` has two regions and therefore two relevant memory tails.
-The before-region executes on both true and false condition checks.
-The false path exits the loop with the before-region tail. The true
-path continues through the after-region, and the after-region tail
-feeds `%mem_next_P` for the next iteration.
-
-Nested loops are treated compositionally. An inner loop's
-`%mem_after_P` is an ordinary memory-order event in the enclosing
-loop's partition. If the same alias root participates in both loops,
-the outer loop state gates the inner loop entry and the inner loop
-exit feeds the outer loop's body tail.
-
-Parallel-provenance groups nested inside a source-ordered loop follow
-the same compositional rule at the group boundary. The outer loop's
-memory state gates the parallel group entry when the group may touch
-the same partition, and the group's tail token feeds the outer loop's
-body tail. The chunks inside that group remain unordered with respect
-to each other.
-
-The loop-state plan stored by the memory-dependence builder is the
-`loom.mem_loop_states` attribute on the source loop. Each record uses
-only deterministic integer ids:
-
-* loop id,
-* partition id,
-* member memory-access ids,
-* access ids that define the per-path `%mem_next_P` tails,
-* access ids that consume `%mem_after_P` after the loop.
-
-This avoids operation-reference attributes and keeps the snapshot
-stable across printing and parsing. The plan intentionally does not
-duplicate the type contract of `carry`, `mux`, `demux`, or `sync`; the
-primitive op definitions and the dataflow op semantics specs are the
-single source of truth for which types those ops accept and when they
-fire.
-
-Omitting a required loop-carried memory state is illegal. Adding an
-extra conservative state is legal for correctness, but tests should
-catch it when it serializes partitions that the active oracle proves
-independent.
-
-### 7.4 Token Wiring
-
-The control-token wiring rule is derived from the dependence snapshot:
-
-* Each `dataflow.graph` has one explicit `ctrl_in` operand of type
-  `none`, a matching leading block argument, one explicit leading
-  `done_out` result of type `none`, and a matching leading yield
-  operand. These are real SSA values even if the custom assembly
-  format chooses to compress their spelling.
-* For each load / store op `o` in the graph, its `ctrl` operand is
-  `none`. The lowering first builds a ctrl source set:
-  - immediate dependence predecessors contribute their `done` outputs;
-  - loop-carried memory dependences contribute the relevant hidden
-    `%mem_iter_P` or `%mem_after_P` state token described above;
-  - a following access that depends on a completed parallel-provenance
-    group contributes the group's tail token, which is the
-    `dataflow.sync` rendezvous of all chunk tails.
-* If `o`'s ctrl source set is empty, `o` uses `ctrl_in`. If the set
-  has one value, `o` uses that value directly. If the set has multiple
-  values, `o` uses output zero of a `dataflow.sync` rendezvous over
-  all values in the set.
-* The graph `done_out` value is output zero of a `dataflow.sync` over
-  all `done` tokens of memory accesses with no immediate dependence
-  successor.
-* Multi-fanout of a single done is handled by SSA value reuse, not by
-  an extra op.
-* Read-read pairs have no dependence edge, even when they alias, so
-  independent reads can be reordered freely.
+The compositional chain model, alias oracle, dependence builder,
+loop-carried memory state, and token wiring rules are specified in
+`docs/spec-compiler-part-3-mem.md`. Per-`scf.*` boundary translation
+rules in §6 instantiate that model with op-specific structural and
+memory-plane wiring.
 
 ## 8. Spatial Array
 
@@ -1980,6 +1780,11 @@ milestone and have placeholders only:
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, milestone acceptance checklist, and maintenance plan
   for the SCF-to-DFG front-end.
+* `docs/spec-compiler-part-3-mem.md` -- compositional chain model,
+  alias oracle, dependence builder, loop-carried memory state, and
+  token-wiring rules used inside each `dataflow.graph`. Per-`scf.*`
+  boundary translation rules in §6 of this document instantiate
+  that model.
 * `docs/spec-compiler-part-3-placement-framework.md` -- common
   placement-partition framework; Part 3 owns the L2 graph-placement
   instance.
