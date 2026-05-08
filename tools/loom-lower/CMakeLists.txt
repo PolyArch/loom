@@ -1,0 +1,40 @@
+set(LLVM_LINK_COMPONENTS
+  Support
+)
+
+get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+
+add_llvm_executable(loom-lower loom-lower.cpp)
+llvm_update_compile_flags(loom-lower)
+
+# Drop the binary into <build>/bin so test/app/dfg_check.sh and the
+# lit substitution can locate it next to loom-cc / loom-raise.
+set_target_properties(loom-lower PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+target_link_libraries(loom-lower PRIVATE
+  LoomFrontendLowering
+  MLIRArithDialect
+  MLIRControlFlowDialect
+  MLIRDataflow
+  MLIRFabric
+  MLIRFuncDialect
+  MLIRIR
+  MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRParser
+  MLIRPass
+  MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
+  MLIRRegisterAllPasses
+  MLIRSCFDialect
+  MLIRSupport
+  MLIRTransforms
+  MLIRUBDialect
+  ${dialect_libs}
+  ${conversion_libs}
+)
+
+mlir_check_all_link_libraries(loom-lower)

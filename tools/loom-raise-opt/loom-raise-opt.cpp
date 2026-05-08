@@ -1,9 +1,15 @@
 // loom-raise-opt: an mlir-opt-style driver that registers all upstream
-// passes plus the Loom raising passes (loom-llvm-cf-to-cf,
-// loom-llvm-func-to-func, loom-llvm-arith-to-arith,
-// loom-scf-while-to-for, loom-scf-for-to-forall). Used by lit-style
-// hand-written .mlir regression tests under test/raise/.
+// passes plus the Loom raising and lowering passes
+// (loom-llvm-cf-to-cf, loom-llvm-func-to-func,
+// loom-llvm-arith-to-arith, loom-scf-while-to-for,
+// loom-scf-for-to-forall, loom-lower-forall-to-thread,
+// loom-lower-for-to-graph, loom-lower-scf-to-dfg). The Loom dataflow
+// and fabric dialects are also registered so hand-written .mlir lit
+// tests can exercise dataflow.thread / dataflow.graph.func op shapes.
 
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Frontend/Lowering/Passes.h"
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/IR/DialectRegistry.h"
@@ -17,7 +23,9 @@ int main(int argc, char **argv) {
   ::mlir::registerAllDialects(registry);
   ::mlir::registerAllExtensions(registry);
   ::mlir::registerAllPasses();
+  registry.insert<::fabric::FabricDialect, ::dataflow::DataflowDialect>();
   loom::raising::registerRaisingPasses();
+  loom::lowering::registerLoweringPasses();
   return ::mlir::asMainReturnCode(
       ::mlir::MlirOptMain(argc, argv,
                           "Loom raising-pass MLIR optimizer driver\n",

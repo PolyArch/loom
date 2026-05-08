@@ -1,5 +1,6 @@
 add_subdirectory(loom)
 add_subdirectory(loom-cc)
+add_subdirectory(loom-lower)
 add_subdirectory(loom-raise)
 add_subdirectory(loom-raise-opt)
 add_subdirectory(loom-alignment-test)

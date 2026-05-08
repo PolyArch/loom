@@ -12,6 +12,7 @@ set(LOOM_TEST_DEPENDS
   llvm-objdump
   loom
   loom-cc
+  loom-lower
   loom-raise
   loom-raise-opt
   loom-alignment-test

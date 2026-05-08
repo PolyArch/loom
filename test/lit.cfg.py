@@ -80,6 +80,7 @@ tools = [
     "loom-cost-test",
     "loom-coverage-test",
     "loom-hwsg-test",
+    "loom-lower",
     "loom-parallel-test",
     "loom-raise",
     "loom-raise-opt",
@@ -103,5 +104,7 @@ config.substitutions.insert(
 config.substitutions.insert(
     2, ("%loom-raise\\b", os.path.join(_loom_cc_dir, "loom-raise")))
 config.substitutions.insert(
-    3, ("%objdump-h",
+    3, ("%loom-lower\\b", os.path.join(_loom_cc_dir, "loom-lower")))
+config.substitutions.insert(
+    4, ("%objdump-h",
         os.path.join(config.llvm_tools_dir, "llvm-objdump") + " -h"))

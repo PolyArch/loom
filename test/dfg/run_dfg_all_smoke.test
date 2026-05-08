@@ -1,0 +1,11 @@
+# Drives the SCF MLIR -> DFG MLIR lower-pipeline smoke tests for every
+# kernel under test/app via run_dfg_all.sh. We pin LOOM_CC, LOOM_RAISE,
+# LOOM_LOWER, and LOOM_RAISE_OPT explicitly because lit may run with a
+# clean PATH. The bash -c wrapper turns on pipefail so a runner
+# exit-nonzero before the summary line still propagates failure
+# through the FileCheck pipe.
+#
+# RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/run_dfg_all.sh' | FileCheck %s
+#
+# CHECK: ==== dfg summary ====
+# CHECK: all 5 kernel(s) passed
