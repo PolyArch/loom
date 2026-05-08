@@ -223,7 +223,7 @@ def configure_llvm(paths: Paths) -> None:
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=clang",
         "-DCMAKE_CXX_COMPILER=clang++",
-        "-DLLVM_ENABLE_PROJECTS=mlir",
+        "-DLLVM_ENABLE_PROJECTS=mlir;clang",
         "-DLLVM_TARGETS_TO_BUILD=host",
         "-DLLVM_ENABLE_ASSERTIONS=ON",
         "-DLLVM_ENABLE_RTTI=ON",
