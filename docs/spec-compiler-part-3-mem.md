@@ -783,8 +783,28 @@ per-partition state ring parameterized by:
   loop-state. Per §4.3, `P ∈ Π_L` iff some access in one dynamic
   iteration of `L` may conflict with some access in a later
   iteration of `L` in `P`. Read-read pairs alone never force a
-  partition into `Π_L`. Partitions outside `Π_L` flow through `L`
-  as ordinary per-partition frontiers (§2.4) without a state ring.
+  partition into `Π_L`. Partitions outside `Π_L` fall in two
+  cases:
+  - `P` is **not touched** anywhere in `L`'s body: the loop's
+    `incoming_P` flows through unchanged to the enclosing scope
+    as `outgoing_P`, with no per-iteration interaction
+    (§2.4 absence-from-interface rule).
+  - `P` is **touched but not carried**: at least one body access
+    touches `P`, but no cross-iteration ordering is required
+    (typically because every body access in `P` is read-only).
+    The loop must still produce a completion tail for `P` so that
+    the enclosing scope's `outgoing_P` (and ultimately the graph
+    `done_out` of §6.5) waits for those body accesses to retire.
+    The lowering builds `outgoing_P` from the rendezvous of every
+    body iteration's per-`P` tail token: the per-iteration tail
+    is fed into a streaming aggregator (`dataflow.sync` over the
+    streamed body tail tokens, or an equivalent rendezvous keyed
+    on the loop's structural selector) so that the loop's
+    `outgoing_P` fires only after every executed iteration has
+    completed its `P` accesses. No state ring is created and no
+    cross-iteration ordering is introduced; the tokens just signal
+    completion, not order. The zero-trip path forwards the loop's
+    `incoming_P` exactly as in the not-touched case.
 
 For each `P ∈ Π_L`, the lowering introduces a hidden `none`-typed
 carry with four canonical tokens (names are descriptive;

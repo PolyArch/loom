@@ -1085,6 +1085,18 @@ ordering. Independent partitions in `Π_L` get independent rings
 sharing only the `%cond` selector, so unrelated memrefs are not
 serialized.
 
+For a partition `P` touched somewhere in the before-region or the
+after-region but not in `Π_L`, no state ring is created. The
+compound's `incoming_C_P` flows into the before-region as its
+`incoming_P`; the before-region's per-iteration body-tail in `P`,
+plus (on the true path) the after-region's body-tail in `P`, are
+gathered through the compound's structural-selector-driven
+rendezvous (per `docs/spec-compiler-part-3-mem.md` §5.2) into the
+compound's `outgoing_C_P`. No cross-iteration ordering is
+introduced; the rendezvous only signals that every executed
+body access in `P` has retired. A partition not touched anywhere
+in the compound is absent from its interface, per §2.4.
+
 #### K=2 Worked Trace
 
 Consider a small `scf.while` whose before-region and after-region
@@ -1391,6 +1403,18 @@ serialized. Per `docs/spec-compiler-part-3-mem.md` §2.5 plane
 orthogonality, the structural rwc carry and the per-`P` memory carry
 are independent state rings over the same selector; the structural
 plane never aggregates the memory tails.
+
+For a partition `P` that is touched somewhere in the body but
+not in `Π_L` (typically a read-only partition), no state ring is
+created. The compound's `incoming_C_P` flows into the body as
+its per-iteration `incoming_P`, and the compound's `outgoing_C_P`
+is the streamed rendezvous of every executed iteration's body
+tail in `P`, per `docs/spec-compiler-part-3-mem.md` §5.2. No
+cross-iteration ordering is introduced; the rendezvous only
+signals that every body access in `P` has retired before the
+loop's `outgoing_C_P` fires. A partition not touched anywhere in
+the body does not appear at the compound's interface and the
+enclosing scope's frontier flows past unchanged (§2.4).
 
 ### 6.4 `scf.forall` with `scf.forall.in_parallel`
 
@@ -2063,12 +2087,19 @@ for parallel-provenance compound atoms.
 
 **Memory plane (per touched partition `P`).** All chunks share the
 compound's `incoming_C_P`: the same SSA value forks into each chunk
-loop's `%mem_init_P` (§5.6 of `docs/spec-compiler-part-3-mem.md`
-applies recursively if a parallel group is nested inside a
-source-ordered loop). Each chunk's per-`P` tail `%chunk_tail_P` is
-independent and is built by the chunk loop's own §6.3 boundary
-translation as a stand-alone `scf.for`. The compound's `outgoing_C_P
-= dataflow.sync` over all `%chunk_tail_P` tokens, per
+loop's per-iteration `incoming_P` (§5.6 of
+`docs/spec-compiler-part-3-mem.md` applies recursively if a
+parallel group is nested inside a source-ordered loop). Each
+chunk's per-`P` tail `%chunk_tail_P` is independent and is built
+under the parallel-provenance override: the chunk loop applies
+§6.3's structural plane (stream + carry on rwc + sentinel reset)
+without building a per-`P` loop-carried state ring, since its
+iterations remain logical iterations of the original
+`scf.parallel`. The chunk's body memory accesses still chain
+through their partition's frontier within a single iteration, and
+each chunk's rendezvous of completed per-iteration tails feeds its
+`%chunk_tail_P`. The compound's `outgoing_C_P = dataflow.sync`
+over all `%chunk_tail_P` tokens, per
 `docs/spec-compiler-part-3-mem.md` §2.6 chunk-tail rendezvous and
 the parallel-provenance exception of
 `docs/spec-compiler-part-3-mem.md` §4.3 and §5.6.

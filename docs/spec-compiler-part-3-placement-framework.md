@@ -168,10 +168,22 @@ continues searching for the next legal run. A richer policy may choose
 larger or smaller graph units based on reconfiguration cost, graph launch
 frequency, fabric pressure, graph-result traffic, or expected reuse.
 
-`dataflow.thread.fence`, ScalarCore-only calls, nested
-`dataflow.thread` launches, illegal graph-body ops, and parent
-terminators are required cuts in the baseline L2 policy. The details are
-specified in `docs/spec-compiler-part-3-impl.md`.
+`dataflow.thread.fence`, ScalarCore-only calls, illegal graph-body
+ops, and parent terminators are required cuts in the baseline L2
+policy. Nested `dataflow.thread` launches deserve a stronger rule:
+per `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2,
+a thread body must not directly contain both a `dataflow.graph`
+and a nested `dataflow.thread` at the same nesting level.
+Therefore, when L2 graph placement encounters a thread body whose
+direct children include any nested `dataflow.thread` op, the
+baseline policy does not open a `dataflow.graph` at that level at
+all; graph placement runs only inside thread bodies whose direct
+children are graph-admissible code without sibling nested threads.
+Equivalent phrasings are "L2 graph placement runs on innermost
+thread bodies" or "presence of a direct nested `dataflow.thread`
+at the level under consideration suppresses graph emission at that
+level". The details are specified in
+`docs/spec-compiler-part-3-impl.md`.
 
 ## 8. L3 Fabric Placement
 

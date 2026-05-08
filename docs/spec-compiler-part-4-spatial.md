@@ -132,7 +132,20 @@ traits:
   nested inside `scf.*` regions of that thread body. The thread's
   `mapping` must reach the mesh axes of the rooted
   `dataflow.spatial_layout` so that the local range query has a
-  well-defined answer; this part of the contract is unchanged.
+  well-defined answer. **Reach** is defined precisely: for every
+  mesh-axis index `m` referenced by `splitAxes` of the rooted
+  `dataflow.spatial_layout`, there is at least one entry in the
+  enclosing thread's `mapping` array of attribute kind
+  `#loom.spatial<...>` whose `mappingId` corresponds to mesh-axis
+  `m` (in the layout's mesh-axis numbering). Mesh axes that
+  `splitAxes` does not reference (a fully replicated data dim) do
+  not need to be reached; mesh axes referenced by `splitAxes` but
+  not present as a `#loom.spatial<...>` mapping entry on the
+  thread cause the verifier to reject the `local_range` query.
+  Temporal mapping entries (`#loom.temporal<...>`) do not
+  contribute to reach. This part of the contract is unchanged
+  semantically; only the wording is now precise enough to
+  mechanize.
 * The `source` operand is required to root in a
   `dataflow.spatial_layout` result through the recursive provenance
   chain defined below. The `local_range` op need not be lexically

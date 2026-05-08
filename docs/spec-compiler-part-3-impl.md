@@ -186,9 +186,9 @@ documentation never refers to the numeric position.
 
   The fallback to `dataflow.thread.wait` is the spec contract, not
   an optimization opportunity. The wait carries the default-resource
-  memory barrier introduced by §3 Constitutional Rule 8, so
-  subsequent host or parent-context ops cannot be reordered to
-  before the synchronization.
+  memory barrier introduced by `docs/spec-compiler-part-3-dfg.md`
+  §3 Constitutional Rule 8, so subsequent host or parent-context
+  ops cannot be reordered to before the synchronization.
 * Once every marked forall inside a `loom.acc_region` has been replaced
   by `dataflow.thread`, the temporary accelerator-region wrapper is
   erased and its body is spliced back at the original host program
@@ -635,8 +635,9 @@ following hold simultaneously:
   `dataflow.thread.wait` consuming the token is present before any
   continuation op (the conservative fallback). Acceptance verifies
   both conditions independently; the wait's effect-visibility
-  barrier from §3 Rule 8 prevents subsequent ops from being
-  reordered to before the synchronization.
+  barrier from `docs/spec-compiler-part-3-dfg.md` §3 Constitutional
+  Rule 8 prevents subsequent ops from being reordered to before
+  the synchronization.
 * Root graph `ctrl_in` wiring is mechanical: graphs with no graph or
   ScalarCore fence predecessor consume the enclosing `thread_ctrl`,
   ScalarCore-to-graph ordering uses `dataflow.thread.fence`, and
