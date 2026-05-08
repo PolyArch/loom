@@ -32,8 +32,14 @@ raise_one() {
         echo "[${KERNEL}/${variant}] raised MLIR is empty" >&2
         return 1
     fi
-    if ! grep -q '^[[:space:]]*scf\.for' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no scf.for in ${mlir}" >&2
+    # conv1d's outer output-iteration loop lifts to scf.forall, while
+    # the inner kernel-window sum stays as scf.for with iter_args.
+    if ! grep -q '^[[:space:]]*scf\.forall' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no scf.forall (output iteration) in ${mlir}" >&2
+        return 1
+    fi
+    if ! grep -E -q 'scf\.for .*iter_args' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no scf.for with iter_args (kernel-window sum) in ${mlir}" >&2
         return 1
     fi
     if ! grep -E -q 'arith\.mulf|llvm\.intr\.fmuladd' "${mlir}"; then

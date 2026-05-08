@@ -3,6 +3,7 @@ add_mlir_library(LoomFrontendRaising
   LLVMCfToCfPass.cpp
   LLVMFuncToFuncPass.cpp
   Pipeline.cpp
+  SCFForToForallPass.cpp
   SCFWhileToForPass.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -15,6 +16,7 @@ add_mlir_library(LoomFrontendRaising
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect
+  MLIRMemRefDialect
   MLIRPass
   MLIRSCFDialect
   MLIRSCFTransforms

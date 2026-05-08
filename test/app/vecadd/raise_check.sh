@@ -45,13 +45,14 @@ raise_one() {
         echo "[${KERNEL}/${variant}] raised MLIR is empty: ${mlir}" >&2
         return 1
     fi
-    if ! grep -q '^[[:space:]]*scf\.for' "${mlir}" \
-         && ! grep -q '^[[:space:]]*scf\.while' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no scf.for / scf.while in ${mlir}" >&2
+    # vecadd has both a parallel input-init / vecadd loop (lifts to
+    # scf.forall) and a reduction tail (stays scf.for with iter_args).
+    if ! grep -q '^[[:space:]]*scf\.forall' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no scf.forall (parallel init/vecadd) in ${mlir}" >&2
         return 1
     fi
-    if ! grep -q '^[[:space:]]*scf\.for' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no scf.for in ${mlir}" >&2
+    if ! grep -E -q 'scf\.for .*iter_args' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no scf.for with iter_args (reduction tail) in ${mlir}" >&2
         return 1
     fi
     if ! grep -q 'arith\.addf' "${mlir}"; then

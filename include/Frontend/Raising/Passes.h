@@ -40,6 +40,13 @@ std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 // counted shape are left as scf.while.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
+// Lift trivially parallel scf.for loops (no iter_args, iv-dependent
+// stores only, no nested calls or while) into scf.forall. Loops that do
+// not match the conservative parallel criterion are left as scf.for.
+// The produced scf.forall carries no shared_outs and no mapping
+// attribute -- downstream device-mapping passes can attach one later.
+std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
+
 // For each llvm.func whose signature is composed entirely of MLIR-native
 // types (builtin integers, floats, index, !llvm.ptr), create a sibling
 // func.func with the same name, move the body region over, replace the
@@ -68,10 +75,13 @@ void registerRaisingPasses();
 // Append the standard Loom raising pipeline to the given pass manager:
 //   loom-llvm-cf-to-cf
 //   loom-llvm-func-to-func
-//   --lift-cf-to-scf
+//   --lift-cf-to-scf       (upstream)
 //   loom-llvm-arith-to-arith
+//   --canonicalize         (upstream)
 //   loom-scf-while-to-for
-//   --canonicalize
+//   --canonicalize         (upstream)
+//   loom-scf-for-to-forall
+//   --canonicalize         (upstream)
 void buildRaisingPipeline(::mlir::PassManager &pm);
 
 } // namespace raising

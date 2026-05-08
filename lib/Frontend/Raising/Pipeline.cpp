@@ -28,12 +28,14 @@ void registerLLVMCfToCfPass();
 void registerLLVMArithToArithPass();
 void registerLLVMFuncToFuncPass();
 void registerSCFWhileToForPass();
+void registerSCFForToForallPass();
 
 void registerRaisingPasses() {
   registerLLVMCfToCfPass();
   registerLLVMFuncToFuncPass();
   registerLLVMArithToArithPass();
   registerSCFWhileToForPass();
+  registerSCFForToForallPass();
 }
 
 void buildRaisingPipeline(::mlir::PassManager &pm) {
@@ -46,6 +48,11 @@ void buildRaisingPipeline(::mlir::PassManager &pm) {
   // `arith.cmpi <pred>` condition without an interposed scf.if.
   pm.addPass(::mlir::createCanonicalizerPass());
   pm.addPass(createSCFWhileToForPass());
+  // Canonicalize once more so the for-to-forall pass sees a clean,
+  // single-iv counted shape (constants folded, dead block args
+  // removed) before deciding whether to lift.
+  pm.addPass(::mlir::createCanonicalizerPass());
+  pm.addPass(createSCFForToForallPass());
   pm.addPass(::mlir::createCanonicalizerPass());
 }
 

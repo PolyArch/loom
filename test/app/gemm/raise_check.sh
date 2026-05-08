@@ -33,8 +33,15 @@ raise_one() {
         echo "[${KERNEL}/${variant}] raised MLIR is empty" >&2
         return 1
     fi
-    if ! grep -q '^[[:space:]]*scf\.for' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no scf.for in ${mlir}" >&2
+    # gemm has the outer M and N loops as parallel iteration spaces
+    # (lift to scf.forall) and an inner K reduction (stays scf.for
+    # with iter_args).
+    if ! grep -q '^[[:space:]]*scf\.forall' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no scf.forall (outer M/N) in ${mlir}" >&2
+        return 1
+    fi
+    if ! grep -E -q 'scf\.for .*iter_args' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no scf.for with iter_args (inner K reduction) in ${mlir}" >&2
         return 1
     fi
     if ! grep -E -q 'arith\.mulf|llvm\.intr\.fmuladd' "${mlir}"; then
