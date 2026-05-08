@@ -795,26 +795,29 @@ per-partition state ring parameterized by:
     The loop must still produce a completion tail for `P` so that
     the enclosing scope's `outgoing_P` (and ultimately the graph
     `done_out` of §6.5) waits for those body accesses to retire.
-    The lowering implements the completion tail as a streaming
-    fold of per-iteration body tail tokens: the body's per-`P`
-    tail token on each iteration is consumed by a
-    `dataflow.carry %selector, %prev_tail, %iter_tail` ring that
-    accumulates one synchronization point per iteration (the
-    `prev_tail` operand of the carry is the previous iteration's
-    `iter_tail`, with `incoming_P` as the initializer; the
-    `iter_tail` operand is `dataflow.sync(%prev_tail, %body_tail_P)`
-    so the carry's next state fires only after the current
-    iteration's body access has retired). The selector is the
-    loop's structural selector (the same `%loop_rwc` for `scf.for`
-    or `%cond` for `scf.while` that drives the structural carry).
-    The compound's `outgoing_P` is the false-lane projection of
-    this completion-only carry on the loop's exit cycle. No
-    cross-iteration ordering is introduced because `iter_tail`
-    only depends on the current iteration's body and the carry
-    selector; the tokens signal "this iteration's P-accesses are
-    done", not "later iteration must wait for an earlier
-    iteration's P-access". The zero-trip path forwards the loop's
-    `incoming_P` exactly as in the not-touched case.
+    The lowering implements the completion tail as a
+    completion-aggregation carry, distinct from the loop-state
+    ring of §5.2 used for `Π_L`:
+    `dataflow.carry %selector, %incoming_P, %iter_tail` accumulates
+    one fresh sync point per iteration, where
+    `iter_tail = dataflow.sync(%prev_tail, %body_tail_P)` and
+    `%prev_tail` is the previous iteration's `iter_tail` (with
+    `%incoming_P` as the carry's initializer). The selector is
+    the loop's structural selector (`%loop_rwc` for `scf.for`,
+    `%cond` for `scf.while`). The compound's `outgoing_P` is the
+    false-lane projection of this completion carry on the loop's
+    exit cycle. The `prev_tail` dependency on the previous
+    iteration is intentional: it serializes only the *completion*
+    aggregation, never the issue-time ordering of leaf accesses.
+    Body leaf accesses in `P` get their `ctrl` operand from
+    `dataflow.sync(struct_at_L, incoming_P)` per §6.4 with
+    `incoming_P = %incoming_P` (the loop's incoming frontier),
+    not from `%prev_tail` or any other carried token. As a result,
+    leaf accesses in different iterations are issue-time
+    independent; only the loop's exit-time `outgoing_P` waits for
+    every executed iteration's `body_tail_P` to have arrived.
+    The zero-trip path forwards the loop's `incoming_P` exactly
+    as in the not-touched case.
 
 For each `P ∈ Π_L`, the lowering introduces a hidden `none`-typed
 carry with four canonical tokens (names are descriptive;

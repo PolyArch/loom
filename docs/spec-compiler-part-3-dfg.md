@@ -1355,18 +1355,35 @@ Memref operands are not iter_arg-like stream state; only explicit
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` §2.8 for `scf.for`.
 
-**Structural plane.** `dataflow.stream` produces the loop-level rwc,
-which doubles as the structural selector. The compound's `struct_in`
-seeds the structural iteration ring built from `dataflow.carry` on
-`%loop_rwc` (matching the existing template for both the no-iter-arg
-and with-iter-arg cases). Iter_args are carried through their own
-`carry` rings driven by the same `%loop_rwc`. The body region is a
-single chain scope and uses the body-phase structural-permission
-token derived from `%loop_rwc` as its `S.struct_at_*` source per
-`docs/spec-compiler-part-3-mem.md` §6.2. The compound's `struct_done`
-is the false-lane projection of the structural ring on the sentinel
-cycle that closes the loop, equivalently the `%loop_exit_ctrl` /
-exit-cycle output of the existing template.
+**Structural plane.** `dataflow.stream` produces the loop-level
+rwc, which doubles as the structural selector. The structural
+plane diverges by case to match the existing data-value templates
+above:
+
+* No-iter-arg case (per "No Iter Args" template above). The
+  compound's `struct_in` is consumed by a `dataflow.invariant`
+  to gate the body-phase ctrl, and the `demux %loop_rwc, %ctrl_raw`
+  splits out `%loop_exit_ctrl` on the sentinel cycle. There is no
+  data state ring; the body-phase structural-permission token is
+  the true-lane projection of the rwc-driven ctrl, and the
+  compound's `struct_done` is `%loop_exit_ctrl`.
+* With-iter-arg case (per "With Iter Args" template above). The
+  compound's `struct_in` seeds a `dataflow.carry` driven by
+  `%loop_rwc`, and each iter_arg gets its own `carry` ring on the
+  same selector. The body region is a single chain scope and
+  uses the body-phase structural-permission token derived from
+  `%loop_rwc` as its `S.struct_at_*` source per
+  `docs/spec-compiler-part-3-mem.md` §6.2. The compound's
+  `struct_done` is the false-lane projection of the structural
+  carry on the sentinel cycle, equivalently the `%loop_exit_ctrl`
+  output of the existing template.
+
+In both cases the body region is a single chain scope under
+`docs/spec-compiler-part-3-mem.md` §2.2, and `dataflow.invariant`
+or `dataflow.carry` is the only structural-control primitive
+introduced at the boundary; no `dataflow.demux` / `dataflow.mux`
+sits at the boundary's structural plane outside the rwc-driven
+sentinel reset.
 
 **Memory plane (per touched partition `P`).** The compound applies
 the loop-carried memory state pattern of
