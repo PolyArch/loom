@@ -2258,6 +2258,15 @@ In addition to the existing dataflow / fabric verifier set:
   - `mapping` array length equals grid dim count.
   - Every `mapping` entry implements
     `DeviceMappingAttrInterface`.
+  - No two `mapping` entries share the same `(kind, mappingId)`
+    pair: the verifier rejects, for example, two grid dims that
+    are both labeled `#loom.spatial<x>` or both labeled
+    `#loom.temporal<0>`. Uniqueness is checked across the whole
+    `mapping` array, where `kind` is the discriminator between
+    `#loom.spatial<...>` and `#loom.temporal<...>` (and any future
+    sibling attribute that implements
+    `DeviceMappingAttrInterface`) and `mappingId` is the per-kind
+    axis identifier.
   - Static-bounds arrays match `dynamicGrid*` operand counts (mixed
     static / dynamic via sentinel).
   - The op has no data results. In the first milestone it produces
