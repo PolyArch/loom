@@ -458,9 +458,12 @@ conditions:
   recursively follows the source operand of each of the following
   ops: `memref.cast`, `memref.subview`, `memref.view`,
   `memref.expand_shape`, `memref.collapse_shape`,
-  `memref.reinterpret_cast`, `memref.transpose`. Each of these
-  produces a memref that shares storage with its source by
-  construction, so the walk peels them off without breaking aliasing.
+  `memref.reinterpret_cast`, `memref.transpose`, and
+  `dataflow.spatial_layout` (the spatial-array annotation defined
+  in `docs/spec-compiler-part-4-spatial.md` §3.1, which is a
+  same-type view of its source memref). Each of these produces a
+  memref that shares storage with its source by construction, so
+  the walk peels them off without breaking aliasing.
 * **Recognized terminal roots (stop, treat as known root).** The
   walk stops and records a known root at any of the following:
   `memref.alloca`, `memref.alloc`, `memref.get_global`, or a

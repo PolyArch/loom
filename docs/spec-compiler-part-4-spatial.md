@@ -81,6 +81,19 @@ traits:
 
 * Zero-cost annotation, modelled on `shard.shard`. The result type
   equals the input type.
+* `dataflow.spatial_layout` is a view-like alias of its source
+  memref: the result is `Pure` and shares storage identity with
+  `source` for alias-analysis purposes. The `MemAliasOracle` walk
+  in `docs/spec-compiler-part-3-mem.md` §3.1 peels
+  `dataflow.spatial_layout` like the other recognized view-like
+  ops, so a leaf access on the `annotated` result roots in the
+  same storage identity as a leaf access on `source`. The op
+  itself is side-effect-free; any `MemoryEffectOpInterface`
+  projection performed on a `dataflow.thread` body operand whose
+  matching `dataflow.map_info` source is the `annotated` result
+  reads through to the underlying `source` memref's effects, by
+  the same passthrough rule that `dataflow.map_info` uses (see
+  Part 3 §5.4.5 and §9 thread verifier rules).
 * `tileDims` describes the per-dim tile size on the AccCore mesh.
   The first milestone restricts every entry to a power-of-two no
   smaller than the cache line, matching the SPGPU paper's prototype
@@ -374,9 +387,11 @@ confirming printer / parser stability).
   not contribute, per §3.3). invalid.mlir covers a query at host
   scope, a query inside a `dataflow.graph` body (rejected per §1
   and §4), a query inside an `scf.*` region that is itself outside
-  any thread body, and a query inside a thread whose `mapping`
-  contains no `#loom.spatial<...>` entry (the empty-result case is
-  rejected per §3.3).
+  any thread body, a query inside a thread whose `mapping` contains
+  no `#loom.spatial<...>` entry (the empty-result case is rejected
+  per §3.3), and a `spatial_coord` op inside a thread with `K`
+  spatial mapping entries whose declared variadic result count is
+  not `K` (the verifier rejects an out-of-arity result list).
 * Cross-cutting graph rejection. Each subdirectory's invalid.mlir
   also pins a small block where the spatial op appears inside a
   `dataflow.graph` body and is rejected. No spatial op may appear

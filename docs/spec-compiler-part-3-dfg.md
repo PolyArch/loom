@@ -2079,11 +2079,20 @@ compound boundary, per the parallel-provenance exception of
 of `docs/spec-compiler-part-3-mem.md` §5.6: cross-iteration and
 cross-chunk dependence edges inside the compound are suppressed by
 the dependence builder, so the compound never builds a per-`P` ring.
-Each chunk loop, considered as an ordinary `scf.for` instance,
-still applies §6.3 for its own body's per-`P` chain (intra-chunk
-loop-carried state on a non-suppressed partition is legal because it
-falls outside the parallel-provenance exception). The compound atom
-is marked with parallel-provenance metadata
+Each generated chunk loop carries its own parallel-provenance
+metadata, since its iterations are still logical iterations of the
+original `scf.parallel`; per
+`docs/spec-compiler-part-3-mem.md` §4.3 / §5.6 it therefore does
+not build a per-`P` loop-carried state ring across its own
+iterations. The §6.3 boundary translation supplies only the
+chunk loop's structural plane (stream-driven rwc, sentinel reset,
+iter_args for non-memory loop state); the chunk loop's memory
+plane reduces to "no cross-iteration memory ordering inside this
+loop". Memory accesses inside the chunk loop's body still chain
+through their partition's frontier within a single iteration and
+participate in the compound's `outgoing_C_P` rendezvous via the
+chunk-tail token described above. The compound atom is marked
+with parallel-provenance metadata
 (`loom.parallel_group`, `loom.parallel_chunk`, `loom.parallel_chunks`)
 per `docs/spec-compiler-part-3-mem.md` §4.3 so the chain construction
 identifies it correctly.
@@ -2339,8 +2348,11 @@ In addition to the existing dataflow / fabric verifier set:
       ScalarCore code, with no direct `dataflow.graph`;
     - ScalarCore code only, with neither.
     Mixing direct graphs with direct nested threads at the same
-    level contradicts §3 Constitutional Rule 2's "graph is a leaf"
-    principle.
+    level violates §3 Constitutional Rule 2's parent-side
+    constraint that a thread body must not directly contain both
+    a `dataflow.graph` and a nested `dataflow.thread` (this is a
+    separate rule from the graph-body leaf rule, per the same
+    Rule 2 wording).
   - Body may contain `func.call` only when the callee has been proven
     ScalarCore-legal or is scheduled for inlining before graph
     extraction. Body must not contain `func.func` definitions.
