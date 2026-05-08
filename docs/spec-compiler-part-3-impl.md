@@ -385,7 +385,27 @@ documentation never refers to the numeric position.
   The builder visits memory accesses in deterministic program order.
   Alias answers are symmetric and never define direction by
   themselves; direction always comes from program order plus the
-  enclosing structured-control-flow path.
+  enclosing structured-control-flow path. The builder constructs dep
+  edges per partition, where the partition is the alias bucket key
+  defined by `docs/spec-compiler-part-3-mem.md` §3 (a known root
+  storage identity from the §3.1 walk, or the conservative bucket
+  `U`). Two atoms in the same chain scope and same partition are the
+  only direct candidates for a dep edge; cross-partition and
+  cross-scope ordering is carried by per-partition frontiers and by
+  per-`scf.*` boundary translation, never by an edge.
+* Compound `scf.*` ops still inside a `dataflow.graph` at this point
+  in the pipeline participate as compound atoms via the §3.3 effect-
+  summary lift. The builder queries the alias oracle on inner leaves
+  as the unit of conflict: a compound conflicts with a leaf in
+  partition `P` iff at least one inner leaf the compound contributes
+  to `P` conflicts with the outer leaf, and two compounds conflict
+  in `P` iff at least one inner-vs-inner pair on each side
+  conflicts. Compound-boundary lift uses `BasicSsaOracle`'s
+  classification; the `MlirAaOracle` leaf-pair refinement does not
+  propagate into the lift. Path-sensitive pruning, the parallel-
+  provenance exception, the loop-carried real-edge rule, and the
+  optional transitive reduction follow `docs/spec-compiler-part-3-
+  mem.md` §4.3.
 * The builder consumes parallel provenance from generated loops. For
   accesses in different logical iterations or different chunks of the
   same original `scf.parallel`, it must not create a dependence edge
@@ -397,30 +417,33 @@ documentation never refers to the numeric position.
   group tail is the rendezvous of all chunk tail tokens. A later memory
   access that depends on the completed memory effects of the original
   `scf.parallel` uses this group tail as its predecessor.
-* For each ordered pair `p` before `o`, the builder records a
-  directed dependence `p -> o` iff the pair conflicts. The builder may
-  drop transitively implied edges, provided the remaining immediate
-  predecessor and successor sets induce the same memory partial order.
 * For structured loops, the builder also records loop-carried memory
   state plans. Each plan is keyed by a deterministic loop id and a
   memory partition id, and references memory accesses only by integer
   ids. A partition requiring cross-iteration ordering lowers to one
   hidden `none` carry in `loom-lower-scf-to-dfg-bodies`.
 * The pass leaves a stable IR snapshot so subsequent passes need no
-  re-analysis: each memory access gets `loom.mem_dep_id = N` and
+  re-analysis: each leaf memory access gets `loom.mem_dep_id = N` and
   `loom.mem_dep_preds = [P0, P1, ...]`, where `N` and every `P*` are
-  deterministic integer ids inside the graph. Each loop with hidden
-  memory state gets `loom.mem_loop_id = L` and
-  `loom.mem_loop_states = [...]`, a loop-local memory-state plan whose
-  fields are deterministic integer ids, never operation references.
-  Parallel-provenance groups are recorded with deterministic group and
-  chunk ids. These may be temporary attributes such as
+  deterministic integer ids inside the graph. Only leaf memory
+  accesses (`memref.load` / `memref.store` before rewrite,
+  `dataflow.load` / `dataflow.store` after rewrite) carry
+  `loom.mem_dep_id` in this milestone; compound `scf.*` atoms still
+  in the graph do not get their own id, and their parent-chain
+  behavior is reconstructed by §2.5 / §2.6 of
+  `docs/spec-compiler-part-3-mem.md` applied to the boundary
+  translation rules in `docs/spec-compiler-part-3-dfg.md` §6. Each
+  loop with hidden memory state gets `loom.mem_loop_id = L` and
+  `loom.mem_loop_states = [...]`, a loop-local memory-state plan
+  whose fields are deterministic integer ids, never operation
+  references. Parallel-provenance groups are recorded with
+  deterministic group and chunk ids, as temporary attributes such as
   `loom.parallel_group`, `loom.parallel_chunk`, and
   `loom.parallel_chunks`, or an equivalent analysis side table. They
   are implementation details consumed before final verification. The
-  lowering transfers per-access attributes from source `memref` ops to
-  replacement `dataflow` ops. `loom-finalize-dfg` drops all temporary
-  memory-dependence and parallel-provenance attributes.
+  lowering transfers per-access attributes from source `memref` ops
+  to replacement `dataflow` ops. `loom-finalize-dfg` drops all
+  temporary memory-dependence and parallel-provenance attributes.
 
 ### 1.9 `loom-lower-scf-to-dfg-bodies`
 

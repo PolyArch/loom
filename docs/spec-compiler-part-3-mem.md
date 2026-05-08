@@ -99,9 +99,11 @@ The model uses the following terms:
   chains. Three kinds:
   - **Leaf memory event.** A `dataflow.load`, `dataflow.store`, or
     other op that the dependence builder treats as a single
-    memory access. `dataflow.thread.fence`, when it appears in a
-    chain scope reachable by Part 3 lowering, is also a leaf
-    event for chain purposes.
+    memory access. `dataflow.thread.fence` is not a leaf event in
+    this model: it must appear directly in a `dataflow.thread`
+    body per the front-end verifier in
+    `docs/spec-compiler-part-3-dfg.md` §9, and a thread body is
+    not a chain scope as defined here.
   - **Compound `scf.*` atom.** Any `scf.*` op whose transitive
     body content has memory effects. The compound is opaque to
     its enclosing scope's chain construction, except through its
@@ -574,46 +576,145 @@ each relevant case is run twice, once per oracle.
 
 ## 4. Dependence Builder
 
-`MemoryDependenceBuilder` consumes a `MemAliasOracle` and produces a
-directed graph over memory accesses inside one `dataflow.graph`. The
-graph it produces is the per-partition dep edge set used by §2.5;
-this section specifies the per-graph snapshot the builder leaves on
-the IR for downstream passes.
+`MemoryDependenceBuilder` produces the directed dep edge set that
+the single-level chain rule of §2.5 consumes, structured around the
+per-partition frontier of §2.4. Edges live inside one partition at
+one chain scope.
 
-* The builder assigns deterministic integer ids in traversal order:
-  `loom.mem_dep_id = N`.
-* For each ordered pair `p` before `o`, the pair conflicts iff
-  `query(p, o) != MustNotAlias` and the pair is not load-load.
-  Conflicting ordered pairs become dependence candidates `p -> o`,
-  subject to the structured-control and parallel-provenance rules
-  below.
-* Direction comes only from program order and structured-control-flow
-  nesting. Alias answers are symmetric; they never define a direction.
-* Dependences are path-sensitive to the extent exposed by structured
-  control flow. Accesses in mutually exclusive branches do not need an
-  edge between each other solely because they conflict; each branch's
-  tail participates in the parent merge through a selector-matched
-  `dataflow.mux`. A conservative implementation may serialize more
-  when it cannot prove path exclusivity, but it must not omit a
-  dependence that preserves an observable read/write or write/write
-  order.
-* Parallel-provenance groups are the exception to source-order loop
-  dependence. Accesses in different logical iterations or different
-  chunks of the same original `scf.parallel` are unordered by the
-  source program. The builder must not add cross-iteration or
-  cross-chunk dependence edges for such pairs solely because they may
-  alias. It still records intra-iteration dependences and dependences
-  between the parallel group and surrounding code.
-* Loop-carried dependences are real dependences. If an access in a
-  later iteration can conflict with an access in an earlier iteration,
-  the lowered loop token structure must carry that ordering, rather
-  than treating each iteration as independent.
-* The builder may remove transitively implied edges. The snapshot
-  records only immediate predecessors:
-  `loom.mem_dep_preds = [P0, P1, ...]`.
+### 4.1 Inputs and Outputs
 
-The snapshot uses integer ids rather than operation references so it is
-stable under printing, parsing, and later in-place memory-op rewrites.
+The builder operates on one `dataflow.graph` body at a time. Its
+inputs are the graph body's IR after parallel-SCF normalization (so
+the leaf set is the same set §6 will see), a configured
+`MemAliasOracle` per §3, and the partition assignment derived from
+the §3.1 walk on each leaf's memref operand and lifted to compound
+atoms by §3.3. Its outputs are the per-graph snapshot consumed by
+§5 and §6: `loom.mem_dep_id` and `loom.mem_dep_preds` on each leaf
+memory op, `loom.mem_loop_id` and `loom.mem_loop_states` on each
+loop op carrying memory state (consumed only by §5), and the
+parallel-provenance side data on cloned leaves and generated loops
+(`loom.parallel_group`, `loom.parallel_chunk`,
+`loom.parallel_chunks`, or an equivalent analysis side table).
+
+### 4.2 Partition Assignment
+
+Partition identity is graph-local and follows the §3 alias-oracle
+contract. Each leaf is assigned exactly one partition by the §3.1
+walk on its memref operand: a known root storage identity, or the
+conservative bucket `U` when the walk leaves the recognized set.
+Each compound `scf.*` atom inherits a set of touched partitions by
+the §3.3 effect-summary lift: every known root any inner leaf
+touches, plus `U` if any inner leaf is in `U`. A compound that
+contains a `U` leaf additionally lifts into every known partition
+visible at every enclosing scope, per the §2.3 lift rule. Numeric
+partition ids are graph-local.
+
+Two atoms in the same chain scope that share a partition are the
+only direct candidates for a same-partition dep edge in that
+scope. Cross-partition pairs and cross-scope pairs are never
+direct edge candidates: cross-partition ordering is carried by
+independent frontiers, and cross-scope ordering is carried by the
+boundary translation of §2.8.
+
+### 4.3 Per-Partition Edge Construction
+
+For each chain scope `S` and each partition `P` in `S`'s transitive
+partition set, the builder constructs the dep edge set over the
+atom set `A_P(S)` defined in §2.5. Direction comes only from
+program order and structured-control-flow nesting at `S`; alias is
+symmetric and never defines a direction by itself.
+
+* **Conflict gate.** An ordered pair `(p, o)` with `p` before `o`
+  in `A_P(S)` is a dep candidate iff `MemAliasOracle` reports a
+  non-`MustNotAlias` answer for the pair restricted to `P` AND the
+  pair is not load-load. The query takes one of two forms:
+  - **Leaf-vs-leaf, same chain scope `S`.** This is the direct
+    leaf-pair query. `MlirAaOracle`'s refinement (§3.2) applies
+    here; a basic-conflict pair may be demoted to non-conflicting
+    if upstream AA proves `MustNotAlias`.
+  - **Compound-involving (leaf-vs-compound or compound-vs-compound).**
+    The pair conflicts in `P` iff at least one inner-leaf pair
+    drawn from the contributing inner leaves on each side
+    conflicts. Compound-boundary lift uses `BasicSsaOracle`'s
+    classification per §3.3 only; `MlirAaOracle`'s leaf-pair
+    refinement does not propagate into compound boundaries in
+    this milestone, regardless of whether some inner-vs-outer
+    leaf pair would have been demoted as a direct query.
+* **Path-sensitive pruning.** Atoms in mutually exclusive branches
+  do not need an edge between each other solely because they
+  conflict; each branch's tail participates in the parent merge
+  through a selector-matched `dataflow.mux` per §2.7. A
+  conservative implementation may serialize more when it cannot
+  prove path exclusivity, but it must not omit a dep edge that
+  preserves an observable read/write or write/write order.
+* **Parallel-provenance exception.** Accesses in different logical
+  iterations or different chunks of the same original
+  `scf.parallel` are unordered by the source program. The builder
+  must not add cross-iteration or cross-chunk dep edges inside a
+  parallel-provenance compound solely because they may alias. It
+  still records intra-iteration dep edges and dep edges between
+  the parallel-provenance compound and surrounding atoms in its
+  enclosing scope. The compound's `outgoing_P` frontier remains
+  the chunk-tail rendezvous of §2.6.
+* **Loop-carried dep edges are real.** If an access in a later
+  iteration of a source-ordered loop can conflict with an access
+  in an earlier iteration, the loop's per-partition frontier must
+  carry that ordering; §5 materializes the state ring from the
+  partition membership and dep edges recorded here.
+* **Transitive reduction.** The builder may remove transitively
+  implied edges intra-partition and intra-scope, provided the
+  remaining immediate predecessor set induces the same partial
+  order. It must not collapse edges across partition or scope
+  boundaries.
+
+### 4.4 Snapshot Format
+
+The builder plants a per-graph snapshot using only deterministic
+graph-local integer ids:
+
+* `loom.mem_dep_id = N` on each leaf memory op (`dataflow.load`
+  and `dataflow.store`), in deterministic traversal order.
+  `dataflow.thread.fence` is not part of the snapshot because it
+  cannot appear in a graph body; see §2.2 and the verifier rule
+  in `docs/spec-compiler-part-3-dfg.md` §9.
+* `loom.mem_dep_preds = [P0, P1, ...]` on each leaf, listing the
+  immediate dep predecessors in the leaf's partition after the
+  transitive reduction of §4.3. Each entry references another
+  leaf's `loom.mem_dep_id`; entries may name leaves at the same
+  chain scope or leaves nested inside a sibling compound atom
+  (see "Cross-scope predecessor resolution" below).
+* `loom.mem_loop_id = L` on each loop op carrying memory state
+  (consumed only by §5).
+* `loom.mem_loop_states = [...]` on each such loop, referencing
+  accesses only by `loom.mem_dep_id`.
+* Parallel-provenance side data: `loom.parallel_group`,
+  `loom.parallel_chunk`, `loom.parallel_chunks`, on cloned leaves
+  and generated loops, stripped by `loom-finalize-dfg`.
+
+Partition identity is not stored per leaf; each predecessor list
+is implicitly scoped to the leaf's own partition and chain scope.
+Only leaves carry `loom.mem_dep_id` in this milestone; compound
+`scf.*` atoms still present in the graph do not get their own id.
+Integer ids keep the snapshot stable across printing, parsing,
+and in-place memory-op rewrites.
+
+**Cross-scope predecessor resolution.** When a `loom.mem_dep_preds`
+entry on leaf `L` at chain scope `S` names a leaf `L'` that lives
+in a deeper chain scope `S'` (typically inside a sibling compound
+atom `C ∈ A_P(S)`), §6 wiring resolves the predecessor through
+`C`'s `outgoing_P` frontier per §2.5 and §2.6, not by using `L'`'s
+`done` directly. The wiring walks each predecessor id back to its
+defining leaf in the IR; if that leaf is at `L`'s own scope `S`,
+the wiring uses the leaf's `done`; otherwise it walks up the IR
+ancestor chain to the deepest ancestor that is a sibling of `L`
+in `S` (such an ancestor is necessarily a compound atom `C` that
+touches `P`), and uses that compound's `outgoing_P` frontier.
+Multiple predecessor entries that resolve to the same compound's
+`outgoing_P` deduplicate. This keeps the snapshot leaf-only while
+preserving the §2.5 chain rule that a leaf's incoming frontier in
+`P` includes the per-`P` tail of every sibling compound it depends
+on, materialized through the boundary translation rules in
+`docs/spec-compiler-part-3-dfg.md` §6.
 
 ## 5. Loop-Carried Memory State
 
