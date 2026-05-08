@@ -10,8 +10,11 @@ program regions should run on AccCores.
 The canonical IR sources of the existing `dataflow` and `fabric` dialects
 are `include/Dataflow/IR/*.td` and `include/Fabric/IR/*.td`; the verifier
 implementations live in `lib/Dataflow/IR/*.cpp` and `lib/Fabric/IR/*.cpp`
-respectively. This spec modifies the `dataflow` dialect (additive
-changes only), consumes the temporary `loom.acc_region` op produced by
+respectively. This spec modifies the `dataflow` dialect with mostly
+additive changes (new ops, new attributes, new types) plus one
+deliberately source-incompatible change to `dataflow.graph`'s
+operand / yield / result shape and its `OpBuilder` surface (see
+§5.5). It consumes the temporary `loom.acc_region` op produced by
 Part 2, and introduces a new pass library under `lib/Frontend/`.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
@@ -257,9 +260,19 @@ each rule lands in IR.
   layout descriptor; lets in-thread code query its local tile via
   `dataflow.local_range`.
 * **Mapping attribute.** Any attribute that implements
-  `mlir::DeviceMappingAttrInterface`; the front-end ships
+  `mlir::DeviceMappingAttrInterface`. The front-end ships
   `#loom.spatial<...>` and `#loom.temporal<...>` instances and
-  consumes any other implementation transparently.
+  recognizes them for thread promotion and verifier checks. A
+  third-party attribute that implements the same interface is not
+  recognized for thread promotion in this milestone: an
+  `scf.forall` whose `mapping` array contains zero Loom-recognized
+  entries is treated as unmapped (per §6.4 lowering rules), and a
+  mixed array that combines Loom-recognized entries with foreign
+  entries is rejected by the front-end with a diagnostic, since
+  the placement framework cannot decide which dim a foreign entry
+  binds. Adding new Loom-recognized mapping attributes (for
+  example `#loom.warp<...>`) is an extension point in
+  `docs/spec-compiler-part-3-impl.md` §4.
 * **Thread token.** A value of type `!dataflow.thread_token`, a
   one-shot completion signal modelled on `!async.token`.
 * **Thread control token.** The leading `none`-typed block argument of
@@ -599,9 +612,19 @@ traits:
   `map_info` to `tofrom`; an optional optimizer can later refine to
   the narrowest direction.
 * `staticBounds` / `dynamicBounds` together describe the per-dim
-  half-open `[lo, hi)` ranges that the thread will touch. Empty
-  bounds mean "the entire memref"; partial information is
-  represented with `ShapedType::kDynamic` sentinels.
+  half-open `[lo, hi)` ranges that the thread will touch. The
+  encoding pairs static and dynamic entries by dimension: for a
+  source memref of rank `R`, `staticBounds`, when present, has
+  length `2 * R` storing `(lo_0, hi_0, lo_1, hi_1, ..., lo_{R-1},
+  hi_{R-1})` in source-dim order; `dynamicBounds` is the variadic
+  list of `index` operands referenced when a `staticBounds` slot
+  holds the `ShapedType::kDynamic` sentinel, in left-to-right
+  iteration order over `staticBounds`. An entirely-omitted
+  `staticBounds` (the attribute is not present at all) means
+  "the entire memref" on every dim; in that case `dynamicBounds`
+  must be empty. Partial information is encoded by setting only
+  the affected slots to `kDynamic` and supplying a corresponding
+  `dynamicBounds` operand for each.
 
 Spatial-array related ops (`dataflow.spatial_layout`,
 `dataflow.local_range`, `dataflow.spatial_coord`,
@@ -2466,7 +2489,13 @@ In addition to the existing dataflow / fabric verifier set:
 
 * `dataflow.map_info`
   - `direction` is one of the closed enum values.
-  - `staticBounds` rank, if present, equals the source memref rank.
+  - `staticBounds`, if present, has length `2 * R` where `R` is
+    the source memref rank, encoding `(lo_0, hi_0, ..., lo_{R-1},
+    hi_{R-1})` in source-dim order; `dynamicBounds` length matches
+    the count of `ShapedType::kDynamic` sentinels in `staticBounds`,
+    in left-to-right iteration order. An omitted `staticBounds`
+    means "the entire memref" and requires `dynamicBounds` to be
+    empty.
   - The op may appear at host scope or inside another
     `dataflow.thread`'s ScalarCore region; it must not appear inside
     `dataflow.graph`.
