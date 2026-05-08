@@ -1,5 +1,16 @@
 //===-- loom-cc.cpp - Loom C/C++ frontend driver --------------------------===//
 //
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM
+// Exceptions. See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// This file is derived from clang/tools/driver/driver.cpp in the LLVM
+// project. Loom-specific deviations are confined to argv[0] mode mapping
+// (loom-cc / loom-c++) and a comment marking where Loom frontend hooks
+// will plug in.
+//
+//===----------------------------------------------------------------------===//
+//
 // Loom frontend driver. This is a thin wrapper around clang's libDriver that
 // behaves as a drop-in replacement for gcc/g++ on the same argument list.
 // The implementation mirrors upstream clang/tools/driver/driver.cpp; only

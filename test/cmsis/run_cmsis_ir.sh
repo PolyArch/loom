@@ -19,7 +19,7 @@ export LC_ALL=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 
-LOOM_CC_DEFAULT="${REPO_ROOT}/build/tools/loom-cc/loom-cc"
+LOOM_CC_DEFAULT="${REPO_ROOT}/build/bin/loom-cc"
 LOOM_CC="${LOOM_CC:-${LOOM_CC_DEFAULT}}"
 
 TARGETS_FILE="${HERE}/cmsis_targets.txt"

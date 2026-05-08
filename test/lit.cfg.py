@@ -92,7 +92,7 @@ llvm_config.add_tool_substitutions(tools, tool_dirs)
 # %loom-c++ and %loom-cc share a "%loom-c" prefix; lit's substitution is
 # substring-based, so list the longer pattern first and pin both to the
 # built binary path explicitly.
-_loom_cc_dir = os.path.join(config.loom_obj_root, "tools", "loom-cc")
+_loom_cc_dir = os.path.join(config.loom_obj_root, "bin")
 config.substitutions.insert(
     0, ("%loom-c\\+\\+", os.path.join(_loom_cc_dir, "loom-c++")))
 config.substitutions.insert(
