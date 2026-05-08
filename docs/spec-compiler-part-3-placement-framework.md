@@ -77,10 +77,13 @@ A candidate partition is legal only when all of the following hold:
 * Every cut materializes explicit boundary operands and results required
   by the target IR. No placed region may directly use an SSA value from
   its parent scope unless the target op explicitly permits that use. In
-  this milestone all four placement-unit ops -- `loom.acc_region` (L1),
-  `dataflow.thread` (L1 final form), `dataflow.graph` (L2), and
-  `dataflow.subgraph` (L3) -- are `IsolatedFromAbove`, so the
-  "explicitly permits" escape is reserved for future extensions.
+  this milestone the three placement-unit ops -- `loom.acc_region`
+  (L1, the temporary Part 2 to Part 3 marker), `dataflow.graph`
+  (L2), and `dataflow.subgraph` (L3) -- are all `IsolatedFromAbove`.
+  `dataflow.thread`, the L1 final form produced by Part 3 from
+  `loom.acc_region`, is also `IsolatedFromAbove` and is the launch
+  carrier the L1 placement instance hands off to. The "explicitly
+  permits" escape is therefore reserved for future extensions.
 * Effect visibility is preserved. Any op whose execution affects program
   order, memory state, or async completion must continue to declare
   effects accurately enough for generic MLIR optimizers to preserve the

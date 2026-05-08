@@ -112,6 +112,9 @@ traits:
 
 * Returns the half-open `[lo, hi)` range of indices on
   data-dim `dim` owned by the calling thread instance.
+* `dim` is required to be in `[0, rank(source))`, where
+  `rank(source)` is the rank of the `source` memref. A `dim` outside
+  this half-open range is a verifier diagnostic.
 * The op must appear inside a `dataflow.thread` body, possibly
   nested inside `scf.*` regions of that thread body. The thread's
   `mapping` must reach the mesh axes of the rooted
@@ -215,8 +218,20 @@ spatial_linear_id:
 
 * Both must appear inside a `dataflow.thread` body. They report the
   current thread instance's coordinate vector (`spatial_coord`) or
-  flattened identifier (`spatial_linear_id`), based on the
-  `#loom.spatial<...>` mapping of the enclosing thread.
+  flattened identifier (`spatial_linear_id`), based only on the
+  `#loom.spatial<...>` entries of the enclosing thread's `mapping`.
+* `spatial_coord` returns one `index` result per `#loom.spatial<...>`
+  entry of the enclosing thread's `mapping`, in mapping-array order.
+  `#loom.temporal<...>` entries do not contribute to the result
+  vector. The result vector length therefore equals the count of
+  spatial mapping entries, not the total grid rank. A thread with
+  no spatial mapping entries is rejected for hosting a
+  `spatial_coord` op (the result would be an empty vector with no
+  meaningful query).
+* `spatial_linear_id` returns a single `index` produced by
+  row-major flattening of the spatial-only coordinate vector against
+  the corresponding spatial mesh shape. Temporal mapping entries do
+  not enter the linearization.
 * These ops let the inner ScalarCore code reason about its own
   position without depending on entry-block argument ordering, which
   is convenient for templated lowerings.
@@ -251,6 +266,16 @@ spatial_linear_id:
     per-thread-instance constants; if a `dataflow.graph` body needs
     those values, they must be computed in the surrounding
     ScalarCore code and passed in as ordinary graph operands.
+  - For `dataflow.spatial_coord`, the result vector length must
+    equal the count of `#loom.spatial<...>` entries in the enclosing
+    thread's `mapping` array (per §3.3); the verifier rejects a
+    `spatial_coord` op inside a thread whose `mapping` has no
+    `#loom.spatial<...>` entry, since the result vector would be
+    empty.
+  - For `dataflow.spatial_linear_id`, the enclosing thread's
+    `mapping` must contain at least one `#loom.spatial<...>` entry;
+    the linear id is the row-major flattening of the spatial-only
+    coordinate vector against the spatial mesh shape.
   - For `dataflow.local_range`, the verifier additionally checks the
     source provenance chain defined in §3.2.1. Starting from the
     `source` operand, it unwinds entry-block-argument-to-body-operand
@@ -259,6 +284,8 @@ spatial_linear_id:
     `dataflow.spatial_layout` result, or rejects the op if no such
     chain exists. The thread mapping that the query reads must
     reach the mesh axes of that rooted `dataflow.spatial_layout`.
+    The `dim` attribute must lie in `[0, rank(source))`; the
+    verifier rejects an out-of-range `dim`.
   - A ScalarCore-callable `func.func` is a module-level symbol and
     is lexically outside any `dataflow.thread` body, so it cannot
     contain these query ops directly. A ScalarCore-callable helper
@@ -332,19 +359,24 @@ confirming printer / parser stability).
   `dataflow.spatial_layout` (chain walk fails); a `local_range`
   outside any `dataflow.thread` body (rejected per §4); a
   `local_range` whose enclosing thread mapping does not reach the
-  mesh axes of the rooted `dataflow.spatial_layout`; and a chain
+  mesh axes of the rooted `dataflow.spatial_layout`; a chain
   that crosses a `dataflow.thread` boundary where the body operand
   at the matching position is not a `dataflow.map_info` result, so
-  rule 2 fails.
+  rule 2 fails; and a `local_range` whose `dim` attribute is out
+  of range for the source memref rank (per §4 verifier rule).
 * `spatial_coord/` and `spatial_linear_id/`. Both ops take no
   arguments per §3.3, so verifier coverage is purely placement and
   result-shape oriented. valid.mlir places the query inside a
   `dataflow.thread` body, in both a non-nested thread body and a
   nested-thread body, and confirms that `spatial_coord` returns a
-  result vector whose length matches the enclosing thread's grid
-  rank. invalid.mlir covers a query at host scope, a query inside a
-  `dataflow.graph` body (rejected per §1 and §4), and a query
-  inside an `scf.*` region that is itself outside any thread body.
+  result vector whose length equals the count of `#loom.spatial<...>`
+  entries in the enclosing thread's `mapping` (temporal entries do
+  not contribute, per §3.3). invalid.mlir covers a query at host
+  scope, a query inside a `dataflow.graph` body (rejected per §1
+  and §4), a query inside an `scf.*` region that is itself outside
+  any thread body, and a query inside a thread whose `mapping`
+  contains no `#loom.spatial<...>` entry (the empty-result case is
+  rejected per §3.3).
 * Cross-cutting graph rejection. Each subdirectory's invalid.mlir
   also pins a small block where the spatial op appears inside a
   `dataflow.graph` body and is rejected. No spatial op may appear

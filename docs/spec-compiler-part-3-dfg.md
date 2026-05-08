@@ -153,18 +153,20 @@ each rule lands in IR.
 2. `dataflow.graph` is a leaf-level region. Its body must not contain
    any `func.func`, `func.call`, `dataflow.thread`, or another
    `dataflow.graph`. The graph body is a single graph-kind region; it
-   already permits feedback edges (existing semantics). Equivalently
+   already permits feedback edges (existing semantics). Additionally,
    from the parent side: a `dataflow.thread` body must not directly
    contain both a `dataflow.graph` and a nested `dataflow.thread` at
-   the same nesting level. ScalarCore code (`scf.*` structured
+   the same nesting level. This is a separate constraint from the
+   leaf rule above (the leaf rule constrains the graph body; this
+   parent-side constraint is on what may sit alongside a graph in
+   its enclosing thread body). ScalarCore code (`scf.*` structured
    control flow, ScalarCore-legal `func.call`, ScalarCore memory
    ops, `dataflow.thread.fence`, and so on) is always allowed in the
    thread body and may freely sit before, between, or after whichever
-   of the two shapes the thread body contains; the rule only forbids
-   the simultaneous presence of a direct `dataflow.graph` and a
-   direct nested `dataflow.thread`. Mixing those two shapes
-   contradicts the leaf rule and is rejected by the verifier
-   (see §9).
+   of the two shapes the thread body contains; the parent-side rule
+   only forbids the simultaneous presence of a direct `dataflow.graph`
+   and a direct nested `dataflow.thread`. Both rules are enforced by
+   the verifier (see §9).
 3. Every `dataflow.graph` has explicit control ports: a leading
    `ctrl_in : none` operand, a matching leading region block
    argument, a leading `done_out : none` result, and a matching
@@ -404,10 +406,11 @@ traits:
   DeclareOpInterfaceMethods<LoomAsyncOpInterface>.
 ```
 
-* `mapping` is a `DenseArrayAttr` of `DeviceMappingAttrInterface`,
-  one per grid dim. Mixed `#loom.spatial<...>` and
-  `#loom.temporal<...>` in the same array is allowed; the relative
-  order in the array equals the relative order of the grid dim.
+* `mapping` is a `DeviceMappingArrayAttr` (an `ArrayAttr` whose
+  every entry implements `DeviceMappingAttrInterface`), one per
+  grid dim. Mixed `#loom.spatial<...>` and `#loom.temporal<...>`
+  in the same array is allowed; the relative order in the array
+  equals the relative order of the grid dim.
 * `bodyOperands` is the complete explicit set of non-grid values that
   cross into the thread body. The thread is `IsolatedFromAbove`, so
   these operands are the only way the body can refer to surrounding
@@ -2295,12 +2298,13 @@ In addition to the existing dataflow / fabric verifier set:
   - No two `mapping` entries share the same `(kind, mappingId)`
     pair: the verifier rejects, for example, two grid dims that
     are both labeled `#loom.spatial<x>` or both labeled
-    `#loom.temporal<0>`. Uniqueness is checked across the whole
-    `mapping` array, where `kind` is the discriminator between
-    `#loom.spatial<...>` and `#loom.temporal<...>` (and any future
-    sibling attribute that implements
+    `#loom.temporal<linear_dim_0>`. Uniqueness is checked across
+    the whole `mapping` array, where `kind` is the discriminator
+    between `#loom.spatial<...>` and `#loom.temporal<...>` (and any
+    future sibling attribute that implements
     `DeviceMappingAttrInterface`) and `mappingId` is the per-kind
-    axis identifier.
+    axis identifier (`x | y | z | linear_dim_0 | ... | linear_dim_9`
+    per §5.2).
   - Static-bounds arrays match `dynamicGrid*` operand counts (mixed
     static / dynamic via sentinel).
   - The op has no data results. In the first milestone it produces

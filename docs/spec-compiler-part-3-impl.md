@@ -469,18 +469,24 @@ documentation never refers to the numeric position.
 * Non-inlined ScalarCore-legal `func.call` operations remain outside
   graphs and are preserved as ScalarCore calls.
 * Memory ops (`memref.load`, `memref.store`) are rewritten in place
-  as `dataflow.load` / `dataflow.store`. The lowering builds a ctrl
-  source set for each memory op from immediate predecessor `done`
-  tokens and any required hidden loop-carried memory-state token. If
-  the set is empty, it uses the graph entry `ctrl_in` block argument;
-  if the set has one value, it uses that value directly; otherwise it
-  uses output zero of a `dataflow.sync` over the set. This is legal
-  only because all values in the set are required predecessors on the
-  same dynamic path; mutually exclusive tails are joined by
-  selector-matched `dataflow.mux`, not by `dataflow.sync`. The graph
-  `done_out` yield operand is output zero of a `dataflow.sync` over
-  all memory accesses with no dependence successor (see
-  `docs/spec-compiler-part-3-mem.md`).
+  as `dataflow.load` / `dataflow.store`. The pass implements the
+  per-plane wiring rules in `docs/spec-compiler-part-3-mem.md` §6:
+  every leaf op's `ctrl` operand is materialized as
+  `dataflow.sync(S.struct_at_L, incoming_L_P)`, where the structural
+  permission token comes from the per-`scf.*` boundary translation in
+  `docs/spec-compiler-part-3-dfg.md` §6 and the memory-plane
+  predecessor token comes from the partition-`P` chain (immediate dep
+  predecessors at the same scope contribute their `done`; a sibling
+  compound atom contributes its `outgoing_P` per the cross-scope
+  resolution in mem.md §4.4; loop-carried predecessors contribute
+  `%mem_iter_P` or `%mem_after_P` per mem.md §5). Multiple
+  same-path predecessors join through `dataflow.sync`; multiple
+  mutually exclusive predecessors join through selector-matched
+  `dataflow.mux`; mixed sets compose hierarchically. The graph's
+  `done_out` yield operand is the boundary `dataflow.sync` over the
+  per-partition root `outgoing_P` tails computed at the root scope
+  (mem.md §6.5); when the graph touches no partition, `done_out`
+  forwards `ctrl_in` directly.
 
 ### 1.10 `loom-finalize-dfg`
 

@@ -134,8 +134,8 @@ role builds its per-partition frontier.
   op the active oracle does not recognize. Such effects enter a
   conservative bucket. The first milestone uses a single bucket
   `U` regardless of memref element type or rank. Compatible-type
-  filtering is intentionally off in the first milestone; B.1
-  follow-up work refines the leaf walk and the bucket policy.
+  filtering is intentionally off in the first milestone; future
+  work may refine the leaf walk and the bucket policy.
 * `U` may-aliases every known partition in scope. A scope that
   contains any unknown-root effect therefore collapses
   same-bucket behavior with all known partitions in scope, in
@@ -180,7 +180,7 @@ For the root scope (a `dataflow.graph` body), `incoming_P` for
 every touched partition is derived from the graph's `ctrl_in`
 control port and any pre-graph dependence tail. The graph's
 `done_out` is the rendezvous of all final per-partition outgoing
-frontiers (see §6.3).
+frontiers (see §6.5).
 
 ### 2.5 Single-Level Chain Rule
 
@@ -385,17 +385,21 @@ is the source of truth for SSA-level wiring.
 |----|------------------|---------------------|
 | `scf.execute_region` | pass-through | pass-through |
 | `scf.if` | `demux %cond` at entry, `mux %cond` at done | `demux/forward` at entry, `mux %cond` at tail |
-| `scf.index_switch` | N+1 way `demux` / `mux` | N+1 way `mux` at tail |
-| `scf.forall` / `scf.parallel` | fork (shared struct_in); `sync` rendezvous of struct_dones | fork incoming_P; `sync` over chunk_tail_P |
+| `scf.index_switch` | N+1 way `demux` / `mux` | N+1 way `demux` at entry, N+1 way `mux` at tail |
+| `scf.forall` (empty mapping) / `scf.parallel` | fork (shared struct_in); `sync` rendezvous of struct_dones | fork incoming_P; `sync` over chunk_tail_P |
 | `scf.for` | `stream` + `carry` on loop-rwc + sentinel reset | `carry` on loop-rwc + per-P next_P feedback; mem_after_P from false-lane projection |
 | `scf.while` | `carry` on `%cond` + `gate`; before K+1 / after K | `carry` on `%cond` + per-P feedback ring; `gate %cond` into after-region; false-lane projection to mem_after_P |
 
-The per-op SSA wiring exists in
-`docs/spec-compiler-part-3-dfg.md` §6 today only for the
-structural plane in some templates. Memory-plane per-partition
-wiring is added to those templates in subsequent commits of this
-milestone; the contract here is the target each template must
-satisfy.
+A mapped `scf.forall` is promoted to `dataflow.thread` by
+`loom-build-thread-skeleton` before the chain model applies (see
+`docs/spec-compiler-part-3-impl.md` §1.5 and
+`docs/spec-compiler-part-3-dfg.md` §6.4); only an empty-mapping
+`scf.forall` reaches the chain scope and is normalized to
+`scf.parallel`, so the table groups it with the parallel-provenance
+compound. The per-op SSA wiring is specified in
+`docs/spec-compiler-part-3-dfg.md` §6, with structural and
+memory-plane wiring spelled out per template; the table here is
+the contract each template instantiates.
 
 ### 2.9 Non-Goals
 
@@ -501,7 +505,7 @@ The first milestone uses any-memref same bucket as the
 intentionally NOT used as disjoint witnesses, because view-like ops
 and bufferization paths can change element type or rank without
 changing underlying storage. This is conservative and matches the
-B.1 milestone direction; later milestones may refine compatibility
+first-milestone soundness direction; later milestones may refine compatibility
 once the leaf walk and the bucket policy are tightened.
 
 Bounds and offsets are not consulted at any point; the oracle is
@@ -582,9 +586,12 @@ that pins oracle-pair equivalence modulo refinement: structural IR
 identical, `loom.mem_dep_preds` snapshot may differ when upstream MLIR
 AA proves additional `MustNotAlias` pairs. Differential coverage is
 an explicit subset rather than the entire lit suite to keep fixture
-maintenance proportional to the safety net it provides; full-suite
-dual oracle is reserved for follow-up work if the basic oracle's
-coarseness becomes a quality regression.
+maintenance proportional to the safety net it provides. Extending
+the differential coverage to the full lit suite is reserved for
+follow-up work if the basic oracle's coarseness becomes a quality
+regression; until then, the canonical milestone 1 framing is
+"representative differential subset" everywhere this policy is
+described.
 
 ## 4. Dependence Builder
 
