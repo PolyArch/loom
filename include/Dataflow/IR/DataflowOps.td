@@ -410,10 +410,25 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
     `dataflow.thread.launch` ops materialize launches of it.
 
     The body's entry block has the layout
-    `(args_*, thread_ctrl: none, iv_*: index)`. The first N block args
-    mirror `function_type.inputs`; the trailing `thread_ctrl` and grid
-    index args are NOT in `function_type` (they are launch-instance
-    extras).
+    `(args_*, thread_ctrl: none, iv_*: index)` (per spec section
+    5.4.1). The first N block args mirror `function_type.inputs`; the
+    trailing `thread_ctrl` and grid index args are NOT in
+    `function_type` (they are launch-instance extras). Specifically:
+
+      * Args[0 .. N-1]   match `function_type.inputs` position-wise.
+      * Args[N]          is `none` -- the per-launch `thread_ctrl`
+                         slot, used as the AccCore start signal and
+                         consumed by root `dataflow.graph.launch` ops
+                         in the body as their `ctrl_in` operand.
+      * Args[N+1 .. end] are all `index` -- one per grid dim.
+
+    The custom assembly format prints these trailing extras after the
+    function-style signature using a separate `ctrl ( ... )` clause
+    (the `thread_ctrl` slot) and an `iv ( ... )` clause (the
+    grid-index slots). Either / both clauses are optional; threads
+    written without them are accepted at parse time only when the op
+    is external (i.e., body is empty), since a body-having thread
+    must carry the trailing `thread_ctrl` slot per the verifier.
 
     The op is `IsolatedFromAbove`; values flow in only through the
     matching `dataflow.thread.launch` body operands.
@@ -459,22 +474,40 @@ def Dataflow_ThreadOp : Dataflow_Op<"thread", [
 
     /// Override the default FunctionOpInterface body verifier: a
     /// dataflow.thread body's entry block leads with the
-    /// function-signature args and may carry extra trailing block
-    /// args (per spec section 5.4.1: thread_ctrl + iv_*).
+    /// function-signature args, then a `none`-typed `thread_ctrl`
+    /// slot, then zero or more `index`-typed `iv_*` slots (per spec
+    /// section 5.4.1: `(args_*, thread_ctrl, iv_*)`).
     ::llvm::LogicalResult verifyBody() {
       if (isExternal())
         return ::mlir::success();
       ::mlir::Block &entry = getBody().front();
       ::llvm::ArrayRef<::mlir::Type> inputs = getFunctionType().getInputs();
-      if (entry.getNumArguments() < inputs.size())
+      const size_t N = inputs.size();
+      // Body-carrying threads MUST have the trailing thread_ctrl slot.
+      if (entry.getNumArguments() < N + 1)
         return emitOpError("entry block must have at least ")
-               << inputs.size() << " arguments to match function signature";
-      for (size_t i = 0, e = inputs.size(); i < e; ++i) {
+               << (N + 1)
+               << " arguments (function inputs + 1 thread_ctrl slot)";
+      // First N entry block arguments must match function_type.inputs.
+      for (size_t i = 0; i < N; ++i) {
         if (entry.getArgument(i).getType() != inputs[i])
           return emitOpError("type of entry block argument #")
                  << i << '(' << entry.getArgument(i).getType()
                  << ") must match the corresponding function signature input ("
                  << inputs[i] << ')';
+      }
+      // Slot N must be the `none`-typed thread_ctrl per spec
+      // section 5.4.1.
+      if (!::llvm::isa<::mlir::NoneType>(entry.getArgument(N).getType()))
+        return emitOpError("entry block argument #")
+               << N << " (thread_ctrl) must have type `none`, got "
+               << entry.getArgument(N).getType();
+      // All remaining slots are grid induction variables of `index`.
+      for (size_t i = N + 1, e = entry.getNumArguments(); i < e; ++i) {
+        if (!::llvm::isa<::mlir::IndexType>(entry.getArgument(i).getType()))
+          return emitOpError("entry block argument #")
+                 << i << " (grid iv) must have type `index`, got "
+                 << entry.getArgument(i).getType();
       }
       return ::mlir::success();
     }

@@ -79,14 +79,17 @@ void ThreadOp::build(OpBuilder &builder, OperationState &state, StringRef name,
 // Custom assembly format for dataflow.thread:
 //
 //   dataflow.thread [visibility] @sym (T0, T1, ...)
-//                   ( `iv` `(` ivTypes... `)` )?
+//                   ( `ctrl` `(` ctrlArg : none `)` )?
+//                   ( `iv`   `(` ivArgs... : index `)` )?
 //                   attributes? body
 //
-// Function-signature args print just like func.func; the trailing
-// `iv(...)` clause exposes any extra block arguments after the
-// function inputs (per spec section 5.4.1). This is purely a custom
-// surface; the underlying op state still tracks the entry block
-// arguments directly.
+// Function-signature args print just like func.func. The trailing
+// `ctrl(...)` clause carries the body's thread_ctrl block arg (per
+// spec section 5.4.1); the `iv(...)` clause carries the grid index
+// block args. Both clauses are optional in the parser surface so
+// that purely external thread declarations (no body) round-trip
+// cleanly. Body-carrying threads, however, are required by the
+// verifier to have a thread_ctrl slot.
 
 ParseResult ThreadOp::parse(OpAsmParser &parser, OperationState &result) {
   ::mlir::Builder &builder = parser.getBuilder();
@@ -121,27 +124,41 @@ ParseResult ThreadOp::parse(OpAsmParser &parser, OperationState &result) {
   result.addAttribute(getFunctionTypeAttrName(result.name),
                       TypeAttr::get(funcType));
 
-  // Optional `iv (` extraArg : T, extraArg : T `)` clause.
-  SmallVector<OpAsmParser::Argument> extraArgs;
-  if (succeeded(parser.parseOptionalKeyword("iv"))) {
+  // Helper: parse a parenthesized comma-separated list of typed
+  // arguments into the given vector. Allows an empty list `()`.
+  auto parseTypedArgList =
+      [&](SmallVectorImpl<OpAsmParser::Argument> &out) -> ParseResult {
     if (parser.parseLParen())
       return failure();
-    if (failed(parser.parseOptionalRParen())) {
-      auto parseExtra = [&]() -> ParseResult {
-        OpAsmParser::Argument arg;
-        if (parser.parseArgument(arg, /*allowType=*/true))
-          return failure();
-        extraArgs.push_back(arg);
-        return success();
-      };
-      if (parseExtra())
+    if (succeeded(parser.parseOptionalRParen()))
+      return success();
+    auto parseOne = [&]() -> ParseResult {
+      OpAsmParser::Argument arg;
+      if (parser.parseArgument(arg, /*allowType=*/true))
         return failure();
-      while (succeeded(parser.parseOptionalComma()))
-        if (parseExtra())
-          return failure();
-      if (parser.parseRParen())
+      out.push_back(arg);
+      return success();
+    };
+    if (parseOne())
+      return failure();
+    while (succeeded(parser.parseOptionalComma()))
+      if (parseOne())
         return failure();
-    }
+    return parser.parseRParen();
+  };
+
+  // Optional `ctrl ( <name> : <type> )` for the thread_ctrl slot.
+  SmallVector<OpAsmParser::Argument> ctrlArgs;
+  if (succeeded(parser.parseOptionalKeyword("ctrl"))) {
+    if (parseTypedArgList(ctrlArgs))
+      return failure();
+  }
+
+  // Optional `iv ( <name> : <type> [, ...] )` for grid IV slots.
+  SmallVector<OpAsmParser::Argument> ivArgs;
+  if (succeeded(parser.parseOptionalKeyword("iv"))) {
+    if (parseTypedArgList(ivArgs))
+      return failure();
   }
 
   if (visibilityAttr) {
@@ -152,7 +169,9 @@ ParseResult ThreadOp::parse(OpAsmParser &parser, OperationState &result) {
 
   Region *body = result.addRegion();
   SmallVector<OpAsmParser::Argument> allArgs(arguments);
-  for (auto &a : extraArgs)
+  for (auto &a : ctrlArgs)
+    allArgs.push_back(a);
+  for (auto &a : ivArgs)
     allArgs.push_back(a);
   if (parser.parseRegion(*body, allArgs, /*enableNameShadowing=*/false))
     return failure();
@@ -166,26 +185,43 @@ void ThreadOp::print(OpAsmPrinter &p) {
   p << ' ';
   p.printSymbolName(getSymName());
   ArrayRef<Type> argTypes = getArgumentTypes();
-  Block &entry = getBody().front();
+  Block *entry = getBody().empty() ? nullptr : &getBody().front();
   // Print function-signature arguments inline as the function's
-  // argument list.
+  // argument list. When the op is external (no body) we have to
+  // synthesize them from `argTypes`.
   p << '(';
   for (size_t i = 0, e = argTypes.size(); i < e; ++i) {
     if (i)
       p << ", ";
-    p.printRegionArgument(entry.getArgument(i));
+    if (entry) {
+      p.printRegionArgument(entry->getArgument(i));
+    } else {
+      p.printType(argTypes[i]);
+    }
   }
   p << ')';
 
-  // Print optional `iv ( ... )` for any extra block arguments.
-  if (entry.getNumArguments() > argTypes.size()) {
-    p << " iv (";
-    for (size_t i = argTypes.size(), e = entry.getNumArguments(); i < e; ++i) {
-      if (i > argTypes.size())
-        p << ", ";
-      p.printRegionArgument(entry.getArgument(i));
+  // Print the optional `ctrl ( ... )` and `iv ( ... )` clauses.
+  if (entry && entry->getNumArguments() > argTypes.size()) {
+    const size_t N = argTypes.size();
+    // Entry block args at indices [N .. end). By layout convention,
+    // the first one is the `none`-typed thread_ctrl, the rest are
+    // `index`-typed ivs. The verifier enforces this; the printer
+    // simply reflects whatever shape is present.
+    if (entry->getNumArguments() >= N + 1) {
+      p << " ctrl (";
+      p.printRegionArgument(entry->getArgument(N));
+      p << ')';
     }
-    p << ')';
+    if (entry->getNumArguments() > N + 1) {
+      p << " iv (";
+      for (size_t i = N + 1, e = entry->getNumArguments(); i < e; ++i) {
+        if (i > N + 1)
+          p << ", ";
+        p.printRegionArgument(entry->getArgument(i));
+      }
+      p << ')';
+    }
   }
 
   ::llvm::SmallVector<::llvm::StringRef, 4> elidedAttrs = {

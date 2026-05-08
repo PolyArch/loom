@@ -6,11 +6,14 @@
 // host-scope wrap path: a stand-alone reduction at host scope is
 // wrapped in a synthetic 1x1 thread before being promoted.
 
+// The thread carries the spec-mandated thread_ctrl slot, and the
+// graph.launch consumes it directly as ctrl_in (no ub.poison).
 // CHECK-LABEL: dataflow.thread private @t_existing
-// CHECK: ub.poison : none
-// CHECK: dataflow.graph.launch @g_t_existing_0
+// CHECK-SAME: ctrl (%[[CTRL:.*]]: none)
+// CHECK: dataflow.graph.launch @g_t_existing_0(%[[CTRL]]
+// CHECK-NOT: ub.poison : none
 // CHECK-NOT: scf.for {{.*}} iter_args
-dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) {
+dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: none) {
   %f0 = arith.constant 0.0 : f32
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

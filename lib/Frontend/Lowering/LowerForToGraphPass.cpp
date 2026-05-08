@@ -150,12 +150,32 @@ struct LowerForToGraphPass
     }
   }
 
-  // Walk every func.func body and, for any scf.for op with iter_args
-  // sitting at host scope (i.e., not already inside a dataflow.thread
-  // or dataflow.graph.func body), wrap it in a synthetic 1x1
-  // dataflow.thread + dataflow.thread.launch. The thread body's iv
-  // is unused; the wrap exists so the subsequent for-to-graph pass
-  // can emit a graph.launch inside the thread.
+  // ====================================================================
+  // SMOKE-ONLY: structural placeholder for host-scope reductions.
+  //
+  // This path keeps the original host-scope `scf.for` alive WHILE
+  // also emitting a synthetic 1x1 `dataflow.thread` + matching
+  // `dataflow.thread.launch` next to it (the launch site is at the
+  // host, not inside a thread). The synthetic launch exists purely
+  // so the per-kernel `dfg_check.sh` smoke gate can observe a
+  // `thread.launch` for kernels whose reduction tail otherwise lives
+  // at host scope (e.g., dotproduct, reduction, vecadd's tail).
+  //
+  // Important contract: the synthetic launch is a placeholder. Its
+  // body is a clone of the original loop, but the original loop is
+  // intentionally retained at host scope because we have NOT yet
+  // promoted host-scope reductions into their own
+  // `loom.acc_region` (and hence into a real placement-eligible
+  // thread). Downstream placement / execution semantics MUST NOT
+  // consume this shape: the launch is structural-smoke only, the
+  // host-scope loop is the truthful execution surface.
+  //
+  // Remove this entire path once host-scope reductions have been
+  // promoted under their own `loom.acc_region` and the wrapper is
+  // no longer needed for the smoke gate.
+  // ====================================================================
+  // TODO(loom-frontend): host-scope reductions need `loom.acc_region`
+  // promotion before this path can be removed.
   void wrapHostScopeReductions(::mlir::ModuleOp module,
                                ::mlir::OpBuilder &builder) {
     struct Pending {
@@ -238,8 +258,13 @@ struct LowerForToGraphPass
     ::mlir::Block *entry = builder.createBlock(&threadBody);
     for (::mlir::Type ty : inputTypes)
       entry->addArgument(ty, loc);
-    // 1x1 grid: one extra index iv just to satisfy the (args_*,
-    // iv_*) layout convention.
+    // Per spec section 5.4.1, the body's entry block layout is
+    // `(args_*, thread_ctrl, iv_*)`: a `none`-typed thread_ctrl slot
+    // followed by one `index`-typed iv per grid dim. We use a 1x1
+    // grid here so a single iv slot covers it.
+    ::mlir::BlockArgument threadCtrlArg =
+        entry->addArgument(builder.getType<::mlir::NoneType>(), loc);
+    (void)threadCtrlArg;
     ::mlir::BlockArgument ivArg =
         entry->addArgument(builder.getIndexType(), loc);
     (void)ivArg;
@@ -251,13 +276,12 @@ struct LowerForToGraphPass
     builder.clone(*loop.getOperation(), mapping);
     ::dataflow::ThreadYieldOp::create(builder, loc);
 
-    // Now emit the launch at the original loop site. The launch
-    // carries the captured values; the loop's results stay live
-    // outside the launch but are no longer used (we replace them
-    // with poison so generic DCE removes them). For the smoke
-    // deliverable we keep the original loop in place AND emit the
-    // launch alongside, so the reduction value is still available to
-    // the host. The launch's purpose is purely structural here.
+    // Emit the smoke-only synthetic launch at the original loop
+    // site. The original host-scope loop is intentionally retained
+    // alongside the launch so the reduction value remains available
+    // to the host (see the SMOKE-ONLY banner above for rationale).
+    // The launch's purpose is purely structural -- a marker for the
+    // per-kernel `dfg_check.sh` smoke gate.
     builder.setInsertionPoint(loop);
     ::llvm::SmallVector<::mlir::Value, 4> upperBounds;
     upperBounds.push_back(::mlir::arith::ConstantOp::create(
@@ -386,12 +410,29 @@ struct LowerForToGraphPass
     ::dataflow::GraphReturnOp::create(builder, loc, returnVals);
 
     // Materialize the graph.launch at the original loop site inside
-    // the thread body. We need a `none` SSA value to feed ctrl_in. The
-    // smoke driver materializes it via ub.poison; an upstream
-    // dataflow.constant or thread_ctrl block-arg would be cleaner but
-    // is outside the smoke scope.
+    // the thread body. The `ctrl_in : none` operand comes from the
+    // enclosing thread's `thread_ctrl` block argument (per spec
+    // section 5.4.1: the thread body's entry block lays out
+    // `(args_*, thread_ctrl, iv_*)` and root graph launches consume
+    // the thread_ctrl as their start signal).
     builder.setInsertionPoint(loop);
-    auto ctrlIn = ::mlir::ub::PoisonOp::create(builder, loc, noneType);
+    ::mlir::Value ctrlIn;
+    if (auto enclosingThread =
+            loop->getParentOfType<::dataflow::ThreadOp>()) {
+      ::mlir::Block &threadEntry = enclosingThread.getBody().front();
+      size_t ctrlIdx = enclosingThread.getFunctionType().getInputs().size();
+      // The verifier guarantees this slot exists and is `none`-typed.
+      ctrlIn = threadEntry.getArgument(ctrlIdx);
+    } else {
+      // SMOKE-ONLY fallback: a host-scope graph.launch (no enclosing
+      // thread) has no thread_ctrl block arg to consume. The current
+      // pipeline never emits this shape because every iter_args
+      // reduction is hoisted into a thread first (either by
+      // forall-to-thread or by wrapHostScopeReductions). We retain
+      // the `ub.poison` fallback as a structural placeholder so a
+      // future host-scope path does not silently miscompile.
+      ctrlIn = ::mlir::ub::PoisonOp::create(builder, loc, noneType);
+    }
 
     ::llvm::SmallVector<::mlir::Value, 8> launchOperands;
     launchOperands.push_back(loop.getLowerBound());

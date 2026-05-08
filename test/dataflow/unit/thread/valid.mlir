@@ -1,14 +1,16 @@
 // RUN: loom %s | loom | FileCheck %s
 
-// Empty thread definition with no body operands.
-// CHECK-LABEL: dataflow.thread private @t_empty()
-dataflow.thread private @t_empty() {
+// Empty thread body carrying just the thread_ctrl slot per spec
+// section 5.4.1's `(args_*, thread_ctrl, iv_*)` layout.
+// CHECK-LABEL: dataflow.thread private @t_empty() ctrl (%{{.*}}: none)
+dataflow.thread private @t_empty() ctrl (%c: none) {
   dataflow.thread.yield
 }
 
-// Thread definition with two body operands and one trailing iv arg.
-// CHECK-LABEL: dataflow.thread private @t_two_args(%{{.*}}: i32, %{{.*}}: f32) iv (%{{.*}}: index)
-dataflow.thread private @t_two_args(%a: i32, %b: f32) iv (%i: index) {
+// Thread definition with two body operands, the thread_ctrl slot,
+// and one trailing grid iv slot.
+// CHECK-LABEL: dataflow.thread private @t_two_args(%{{.*}}: i32, %{{.*}}: f32) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
+dataflow.thread private @t_two_args(%a: i32, %b: f32) ctrl (%c: none) iv (%i: index) {
   dataflow.thread.yield
 }
 

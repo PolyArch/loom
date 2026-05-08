@@ -8,10 +8,11 @@ dataflow.graph.func private @g_demo(%ctrl: none, %x: i32) -> (none, i32) {
 }
 
 // Synchronous launch site inside a thread body. The launch's first
-// operand and result are the per-launch ctrl_in / done_out ports.
-dataflow.thread private @t_demo(%x: i32) {
-  // CHECK: %{{.*}} = ub.poison : none
-  %ctrl = ub.poison : none
+// operand is the enclosing thread's `thread_ctrl` block argument
+// (per spec section 5.4.1); its first result is the per-launch
+// `done_out`.
+// CHECK-LABEL: dataflow.thread private @t_demo(%{{.*}}: i32) ctrl (%{{.*}}: none)
+dataflow.thread private @t_demo(%x: i32) ctrl (%ctrl: none) {
   // CHECK: %{{.*}}, %{{.*}} = dataflow.graph.launch @g_demo(%{{.*}}, %{{.*}}) : (none, i32) -> (none, i32)
   %done, %r = dataflow.graph.launch @g_demo(%ctrl, %x) : (none, i32) -> (none, i32)
   dataflow.thread.yield

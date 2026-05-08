@@ -26,5 +26,10 @@ func.func @vecadd_like(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) -> f32 {
 }
 
 // CHECK: dataflow.thread private @t_vecadd_like_0
+// CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK: dataflow.thread private @t_vecadd_like_red_0
+// CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK: dataflow.graph.func private @g_t_vecadd_like_red_0_0
+// The graph.launch's ctrl_in is the enclosing thread's thread_ctrl
+// block argument; the lowered IR contains no ub.poison.
+// CHECK-NOT: ub.poison : none

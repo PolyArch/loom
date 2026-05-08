@@ -15,10 +15,11 @@
 // sentinels).
 //
 // Per the spec, the thread body's entry block has the layout
-// `(args_*, thread_ctrl, iv_*)`. The smoke driver omits thread_ctrl
-// and only appends iv_* after the body operands; the dataflow.thread
-// verifier accepts the strict-prefix shape (it requires the leading N
-// block args to match function_type.inputs).
+// `(args_*, thread_ctrl, iv_*)`: the first N entry block args mirror
+// `function_type.inputs`, then a `none`-typed thread_ctrl slot, then
+// one `index`-typed grid iv slot per forall induction variable. The
+// thread_ctrl slot is the per-launch AccCore start signal that root
+// `dataflow.graph.launch` ops in the body consume as their `ctrl_in`.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -207,11 +208,16 @@ struct LowerForallToThreadPass
     threadOp.setSymVisibilityAttr(builder.getStringAttr("private"));
 
     // Build the thread body. Entry block layout: captured args first,
-    // then one index-typed iv argument per forall induction variable.
+    // then a `none`-typed `thread_ctrl` slot (per spec section 5.4.1),
+    // then one `index`-typed iv argument per forall induction
+    // variable.
     ::mlir::Region &threadBody = threadOp.getBody();
     ::mlir::Block *entry = builder.createBlock(&threadBody);
     for (::mlir::Type ty : inputTypes)
       entry->addArgument(ty, loc);
+    ::mlir::BlockArgument threadCtrlArg =
+        entry->addArgument(builder.getType<::mlir::NoneType>(), loc);
+    (void)threadCtrlArg;
     ::llvm::SmallVector<::mlir::Value, 4> forallIvs;
     for (::mlir::Value iv : forall.getInductionVars())
       forallIvs.push_back(iv);

@@ -36,6 +36,8 @@ func.func @two_foralls(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) {
 }
 
 // All thread defs land at module scope after the func.func bodies.
-// CHECK-DAG: dataflow.thread private @t_parallel_init_0
-// CHECK-DAG: dataflow.thread private @t_two_foralls_0
-// CHECK-DAG: dataflow.thread private @t_two_foralls_1
+// Each thread carries the spec-mandated thread_ctrl + iv slots
+// (per spec section 5.4.1) on its entry block.
+// CHECK-DAG: dataflow.thread private @t_parallel_init_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
+// CHECK-DAG: dataflow.thread private @t_two_foralls_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
+// CHECK-DAG: dataflow.thread private @t_two_foralls_1(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)

@@ -23,7 +23,10 @@ dataflow.graph.func private @g_bad_return(%ctrl: none, %x: i32) -> (none, i32) {
 }
 
 // -----
-// graph.launch must appear inside a dataflow.thread body.
+// graph.launch must appear inside a dataflow.thread body. (Outside
+// any thread there is no thread_ctrl slot, so we materialise an
+// `ub.poison : none` as a placeholder ctrl_in just to exercise the
+// "must be inside a thread" check.)
 dataflow.graph.func private @g_target(%ctrl: none) -> none {
   dataflow.graph.return %ctrl : none
 }
