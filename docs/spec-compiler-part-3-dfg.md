@@ -449,10 +449,18 @@ traits:
   - `direction = release` reports `Free` on the map source.
   Scalar body operands do not contribute memory effects.
 * Effects are reported on the `dataflow.map_info` source value, not on
-  the `dataflow.map_info` result (which is a view-like alias). In
-  nested-thread cases that source may itself be a block argument of
-  the enclosing thread body; the parent thread's own boundary summary
-  is responsible for projecting its effects one level further outward.
+  the `dataflow.map_info` result (which is a view-like alias). The
+  source value is then peeled through any recognized view-like ops
+  before the effect is projected, using the same view-like list as
+  the alias oracle in `docs/spec-compiler-part-3-mem.md` §3.1; in
+  particular, `dataflow.spatial_layout` is one such view-like
+  producer, so a thread whose `map_info` source is a
+  `dataflow.spatial_layout` result reports its effects on the
+  underlying `spatial_layout` source memref (per
+  `docs/spec-compiler-part-4-spatial.md` §3.1). In nested-thread
+  cases that source may itself be a block argument of the enclosing
+  thread body; the parent thread's own boundary summary is
+  responsible for projecting its effects one level further outward.
 * Recursive inspection of the thread body may be used by verifier or
   diagnostics to check that the body respects its declared boundary
   operands, but it is not the external effect contract of
@@ -1956,10 +1964,21 @@ and the final values flowing out of the outermost K-chunk
 `scf.for` are the `M` `scf.parallel` results.
 
 When every parallel dim has `K_d = 1`, there is no K-chunk loop at
-all, the merge `scf.if` collapses to a single fold equivalent to
-the one-dim `K = 1` case, and the `M` reduction `%iter_arg`s are
-hung on the innermost source-dim `scf.for` directly. When a chunked
-dim has `K_d = 1` it is omitted from the K-chunk nest entirely.
+all, and the merge `scf.if` collapses to a single fold equivalent
+to the one-dim `K = 1` case. The `M` reduction `(valid, partial)`
+tuples still pass through every enclosing per-chunk loop in the
+intra-chunk nest as iter_args, with the dummy seeds at the
+outermost per-chunk loop and the final tuple yielded out of the
+outermost per-chunk loop into the merge `scf.if`; this is the same
+pass-through-through-all-dims rule as the multi-chunk case, just
+without the outer K-chunk wrapper. The reduction iter_args still
+do their actual update at the innermost per-chunk loop's body, but
+they are not hung directly on that innermost loop alone. An
+implementation that flattens the intra-chunk N-D iteration space
+into a single linearized `scf.for` is the equivalent canonical
+form and may carry each reduction as a single iter_arg on that one
+loop. When a chunked dim has `K_d = 1` it is omitted from the
+K-chunk nest entirely.
 
 **Worked example: 2D parallel, 2 reductions.** Consider:
 

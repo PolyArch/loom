@@ -795,15 +795,25 @@ per-partition state ring parameterized by:
     The loop must still produce a completion tail for `P` so that
     the enclosing scope's `outgoing_P` (and ultimately the graph
     `done_out` of §6.5) waits for those body accesses to retire.
-    The lowering builds `outgoing_P` from the rendezvous of every
-    body iteration's per-`P` tail token: the per-iteration tail
-    is fed into a streaming aggregator (`dataflow.sync` over the
-    streamed body tail tokens, or an equivalent rendezvous keyed
-    on the loop's structural selector) so that the loop's
-    `outgoing_P` fires only after every executed iteration has
-    completed its `P` accesses. No state ring is created and no
-    cross-iteration ordering is introduced; the tokens just signal
-    completion, not order. The zero-trip path forwards the loop's
+    The lowering implements the completion tail as a streaming
+    fold of per-iteration body tail tokens: the body's per-`P`
+    tail token on each iteration is consumed by a
+    `dataflow.carry %selector, %prev_tail, %iter_tail` ring that
+    accumulates one synchronization point per iteration (the
+    `prev_tail` operand of the carry is the previous iteration's
+    `iter_tail`, with `incoming_P` as the initializer; the
+    `iter_tail` operand is `dataflow.sync(%prev_tail, %body_tail_P)`
+    so the carry's next state fires only after the current
+    iteration's body access has retired). The selector is the
+    loop's structural selector (the same `%loop_rwc` for `scf.for`
+    or `%cond` for `scf.while` that drives the structural carry).
+    The compound's `outgoing_P` is the false-lane projection of
+    this completion-only carry on the loop's exit cycle. No
+    cross-iteration ordering is introduced because `iter_tail`
+    only depends on the current iteration's body and the carry
+    selector; the tokens signal "this iteration's P-accesses are
+    done", not "later iteration must wait for an earlier
+    iteration's P-access". The zero-trip path forwards the loop's
     `incoming_P` exactly as in the not-touched case.
 
 For each `P ∈ Π_L`, the lowering introduces a hidden `none`-typed

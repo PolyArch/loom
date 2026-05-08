@@ -209,9 +209,9 @@ a zero-cost annotation: its result type equals its source type (see
 §3.1 and §2). Two alternative type-level designs were considered and
 rejected for this milestone:
 
-* A boundary / provenance wrapper such as `!loom.mapped<T>` (which
-  was originally proposed for the `dataflow.thread` boundary; dropped
-  in commit `fef88b9`). Its job would have been to mark "this memref
+* A boundary / provenance wrapper such as `!loom.mapped<T>` (an
+  earlier proposal for the `dataflow.thread` boundary, not adopted
+  in this milestone). Its job would have been to mark "this memref
   came from a `dataflow.map_info`" so a downstream verifier could
   type-check provenance.
 * A spatial-layout carrier such as `!dataflow.spatial_array<...>`
