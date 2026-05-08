@@ -478,10 +478,18 @@ documentation never refers to the numeric position.
 ### 1.10 `loom-finalize-dfg`
 
 * Runs the existing dataflow-graph verifier in strict mode.
-* Strips the `loom.mem_dep_id` and `loom.mem_dep_preds` attributes.
+* Strips the `loom.mem_dep_id`, `loom.mem_dep_preds`,
+  `loom.mem_loop_id`, and `loom.mem_loop_states` attributes.
 * Strips temporary parallel-provenance attributes such as
   `loom.parallel_group`, `loom.parallel_chunk`, and
   `loom.parallel_chunks`.
+* Provides a `--keep-mem-dep` debug option that suppresses the
+  attribute strip so the snapshot remains observable in the final
+  IR. The option exists only for testing the
+  `lower_scf/diff/` differential subset and for hand debugging;
+  production pipelines must run finalize without the option so the
+  exit IR matches the documented front-end output. The option does
+  not change any other finalize behavior.
 * Asserts that no temporary `loom.acc_region` op remains.
 * Asserts the front-end exit invariant: no `scf.*` op remains inside
   any `dataflow.graph` body; every `dataflow.thread` produces exactly
@@ -523,15 +531,20 @@ The lit-test layout grows three new directories:
     fixture file under that oracle. A small representative subset
     under `test/frontend/lower_scf/diff/` adds a second `RUN` line for
     `--mem-alias=mlir-aa` and an additional fixture that pins the
-    snapshot-and-derived-wiring difference. The differential subset is
-    intentionally small in milestone 1 with two minimum-coverage
-    floors: one case per loop family (`for/`, `while/`,
-    `forall/`-effect-form normalized to `parallel/`, plus straight-line
-    `if/` and `index_switch/`) that exercises mlir-aa refinement on
-    at least one access pair, and at least one case where the
-    refinement changes the derived ctrl/done wiring shape (not only
-    the `loom.mem_dep_preds` snapshot). Outside the differential
-    subset, the basic-oracle fixture is the only ground truth.
+    snapshot-and-derived-wiring difference. Differential cases use
+    `--keep-mem-dep` so the `loom.mem_dep_id` /
+    `loom.mem_dep_preds` / `loom.mem_loop_*` attributes are
+    observable on the final IR they FileCheck against; without the
+    flag the snapshot would have been stripped by `loom-finalize-dfg`
+    (per §1.10). The differential subset is intentionally small in
+    milestone 1 with two minimum-coverage floors: one case per loop
+    family (`for/`, `while/`, `forall/`-effect-form normalized to
+    `parallel/`, plus straight-line `if/` and `index_switch/`) that
+    exercises mlir-aa refinement on at least one access pair, and at
+    least one case where the refinement changes the derived ctrl/done
+    wiring shape (not only the `loom.mem_dep_preds` snapshot).
+    Outside the differential subset, the basic-oracle fixture is
+    the only ground truth.
   - The `forall/` directory has separate cases for effect-form forall
     and aggregation-form forall. Aggregation tests check that
     `scf.forall.in_parallel` combining actions are materialized into
