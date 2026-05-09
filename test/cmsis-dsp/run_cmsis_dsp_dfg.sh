@@ -11,23 +11,20 @@
 #   4. Verify the .dfg.mlir parses through loom-raise-opt (the dataflow
 #      dialect is registered there in lieu of a separate dataflow opt
 #      tool) -- this is the structural well-formedness gate.
+#   5. Count dataflow.{thread, graph.func, stream, load, store} ops in
+#      the produced .dfg.mlir and compare against the row's
+#      expect_thread / expect_graph / expect_stream / expect_load /
+#      expect_store cells. A bare integer demands exact equality; a
+#      `>=N` cell accepts any count at or above the threshold. Any
+#      drift fails the row with a per-column diagnostic.
 #
-# Pass criterion (gating):
+# Pass criterion (gating, all required):
 #   a. loom-lower exits 0.
 #   b. .dfg.mlir is non-empty and round-trips through loom-raise-opt.
-# A row clears (a)+(b) regardless of whether any dataflow.thread or
-# dataflow.graph.func is actually emitted: kernels with no parallel
-# scf.forall and no head-scope reduction (e.g., closed-form polynomial
-# approximations) legitimately stay structureless under the current
-# smoke pipeline. The corpus-level summary line tracks how many rows
-# actually emit a thread or graph symbol so a regression that drops
-# emission across the board still surfaces.
-#
-# Soft criterion (informational):
-#   - Count of dataflow.thread @ definitions per row.
-#   - Count of dataflow.graph.func @ definitions per row.
-#   - Count of scf.* ops left after lowering (residual structured
-#     control). Useful as a diagnostic when reviewing lowering passes.
+#   c. expected_symbols presence on the lowered MLIR: at least one
+#      symbol survives as a dataflow.thread / dataflow.graph.func /
+#      func.func definition.
+#   d. The five per-row count cells match the actual op counts.
 #
 # Sources whose lower breaks the mandatory gate (loom-lower crash,
 # parse failure of the produced .dfg.mlir) can be listed in
@@ -42,10 +39,18 @@
 #   - Argument-less. Honors LOOM_CC, LOOM_RAISE, LOOM_LOWER, and
 #     LOOM_RAISE_OPT overrides; otherwise resolves the binaries
 #     relative to the repo root.
+#   - Honors a TARGETS_OVERRIDE env var that points at an alternate
+#     targets file. The negative-control TDD smoke uses it to plant a
+#     synthetic row with an impossible expectation and prove the
+#     per-row gate trips.
 #
 # Output format: one PASS/FAIL/SKIP line per source plus a final
-# summary. Exits non-zero if any non-skipped row fails the mandatory
+# summary. Exits non-zero if any non-skipped row fails any mandatory
 # gate, or if the skip list overruns its budget.
+#
+# Stage layout: artifacts land under `out/dfg/` so the IR (`out/ir/`)
+# and raise (`out/raise/`) runners do not race with this stage when
+# invoked in parallel by lit or by hand.
 
 set -euo pipefail
 export LC_ALL=C
@@ -66,7 +71,7 @@ LOOM_RAISE="${LOOM_RAISE:-${LOOM_RAISE_DEFAULT}}"
 LOOM_LOWER="${LOOM_LOWER:-${LOOM_LOWER_DEFAULT}}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${LOOM_RAISE_OPT_DEFAULT}}"
 
-TARGETS_FILE="${HERE}/cmsis_dsp_targets.txt"
+TARGETS_FILE="${TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_targets.txt}"
 SKIP_FILE="${HERE}/cmsis_dsp_dfg_skip.txt"
 
 DSP_ROOT="${REPO_ROOT}/externals/cmsis-dsp"
@@ -74,7 +79,7 @@ SRC_ROOT="${DSP_ROOT}/Source"
 DSP_INC="${DSP_ROOT}/Include"
 DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
 CORE_INC="${REPO_ROOT}/externals/cmsis-core/CMSIS/Core/Include"
-OUT_ROOT="${HERE}/out"
+OUT_ROOT="${OUT_OVERRIDE:-${HERE}/out/dfg}"
 
 LABEL="cmsis-dsp-dfg"
 
@@ -116,10 +121,15 @@ if [[ ! -d "${CORE_INC}" ]]; then
 fi
 
 mkdir -p "${OUT_ROOT}"
-# Fresh DFG artifacts every run; keep IR and SCF artifacts created by
-# the upstream runners intact so a developer can sequence the three
-# pipelines without losing intermediate results.
-rm -f "${OUT_ROOT}"/*.dfg.mlir "${OUT_ROOT}"/*.lower.log "${OUT_ROOT}"/*.dfg-parse.log 2>/dev/null || true
+# Fresh DFG artifacts every run. The DFG runner owns its own subdir
+# under out/, so wiping it never touches the IR or raise stage outputs.
+rm -f "${OUT_ROOT}"/*.ll \
+      "${OUT_ROOT}"/*.scf.mlir \
+      "${OUT_ROOT}"/*.dfg.mlir \
+      "${OUT_ROOT}"/*.log \
+      "${OUT_ROOT}"/*.raise.log \
+      "${OUT_ROOT}"/*.lower.log \
+      "${OUT_ROOT}"/*.dfg-parse.log 2>/dev/null || true
 
 declare -A skip_set=()
 declare -A skip_reason=()
@@ -141,6 +151,42 @@ cmsis_common_skip_budget "${skip_count}" "${target_rows}" "${LABEL}"
 
 cmsis_common_libc_defines LIBC_DEFINES
 
+# Per-row shape gate: compare an actual count to a cell. A bare integer
+# demands exact equality; a `>=N` cell accepts any count at or above N.
+# Empty cells trip a malformed-row diagnostic so a half-populated
+# targets file does not silently pass.
+#
+# Args: kind expected actual src
+# Returns 0 on match, 1 on drift. On drift writes a diagnostic to
+# stdout naming the column, the expected value, and the actual count.
+gate_count() {
+    local kind="$1"
+    local expected="$2"
+    local actual="$3"
+    local src="$4"
+    if [[ -z "${expected}" ]]; then
+        echo "  FAIL  ${src}  (expect_${kind} cell empty in targets file)"
+        return 1
+    fi
+    if [[ "${expected}" == ">="* ]]; then
+        local threshold="${expected#>=}"
+        if [[ -z "${threshold}" ]]; then
+            echo "  FAIL  ${src}  (expect_${kind}=${expected}: malformed >= cell)"
+            return 1
+        fi
+        if (( actual >= threshold )); then
+            return 0
+        fi
+        echo "  FAIL  ${src}  (expect_${kind}=${expected} actual=${actual})"
+        return 1
+    fi
+    if (( actual == expected )); then
+        return 0
+    fi
+    echo "  FAIL  ${src}  (expect_${kind}=${expected} actual=${actual})"
+    return 1
+}
+
 declare -a passed=()
 declare -a failed=()
 declare -a skipped=()
@@ -152,10 +198,18 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         ''|'#'*) continue ;;
     esac
 
-    IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags <<< "${line}"
+    IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags \
+        expect_thread expect_graph expect_stream expect_load expect_store <<< "${line}"
 
     if [[ -z "${src}" || -z "${triple}" || -z "${cpu}" || -z "${expected_triple}" || -z "${expected_syms}" ]]; then
         echo "[${LABEL}] malformed row: ${line}" >&2
+        failed+=("(parse:${src:-?})")
+        continue
+    fi
+
+    if [[ -z "${expect_thread}" || -z "${expect_graph}" || -z "${expect_stream}" \
+          || -z "${expect_load}" || -z "${expect_store}" ]]; then
+        echo "[${LABEL}] missing per-row gate cells (expect_thread/graph/stream/load/store) in row: ${line}" >&2
         failed+=("(parse:${src:-?})")
         continue
     fi
@@ -238,10 +292,49 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         continue
     fi
 
-    # Soft criteria: structural shape of the lowered IR.
+    # Symbol presence: at least one of the row's expected symbols must
+    # survive into the lowered MLIR -- as a func.func, a dataflow.thread,
+    # or a dataflow.graph.func. The any-of contract matches the raise
+    # runner: outlining can rename or split the public symbol but at
+    # least one tagged form must remain.
+    sym_found=0
+    IFS=',' read -r -a sym_arr <<< "${expected_syms}"
+    for sym in "${sym_arr[@]}"; do
+        sym_trimmed="${sym//[[:space:]]/}"
+        [[ -z "${sym_trimmed}" ]] && continue
+        if grep -qE "(func\.func|dataflow\.thread|dataflow\.graph\.func)[^@]*@${sym_trimmed}\b" "${out_dfg}"; then
+            sym_found=1
+            break
+        fi
+    done
+
+    if (( sym_found == 0 )); then
+        echo "  FAIL  ${src}  (no func.func / dataflow.thread / dataflow.graph.func definition for any of: ${expected_syms} in ${out_dfg})"
+        failed+=("${src}")
+        continue
+    fi
+
+    # Per-row shape gate: count dataflow.{thread, graph.func, stream,
+    # load, store} occurrences in the lowered MLIR and compare against
+    # the row's expectations. Drift on any column fails the row.
     thread_count=$(grep -c -E 'dataflow\.thread (private )?@' "${out_dfg}" || true)
     graph_count=$(grep -c -E 'dataflow\.graph\.func (private )?@' "${out_dfg}" || true)
+    stream_count=$(grep -c -E '\bdataflow\.stream\b' "${out_dfg}" || true)
+    load_count=$(grep -c -E '\bdataflow\.load\b' "${out_dfg}" || true)
+    store_count=$(grep -c -E '\bdataflow\.store\b' "${out_dfg}" || true)
     scf_residual=$(grep -c -E '\bscf\.' "${out_dfg}" || true)
+
+    gate_ok=1
+    gate_count thread "${expect_thread}" "${thread_count}" "${src}" || gate_ok=0
+    gate_count graph  "${expect_graph}"  "${graph_count}"  "${src}" || gate_ok=0
+    gate_count stream "${expect_stream}" "${stream_count}" "${src}" || gate_ok=0
+    gate_count load   "${expect_load}"   "${load_count}"   "${src}" || gate_ok=0
+    gate_count store  "${expect_store}"  "${store_count}"  "${src}" || gate_ok=0
+
+    if (( gate_ok == 0 )); then
+        failed+=("${src}")
+        continue
+    fi
 
     if (( thread_count > 0 || graph_count > 0 )); then
         with_emission+=("${src}")
@@ -253,7 +346,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         emission_tag="t=0 g=0 (no outline)"
     fi
 
-    echo "  PASS  ${src}  triple=${expected_triple} cpu=${cpu} ${emission_tag} scf-res=${scf_residual}"
+    echo "  PASS  ${src}  triple=${expected_triple} cpu=${cpu} ${emission_tag} s=${stream_count} l=${load_count} st=${store_count} scf-res=${scf_residual}"
     passed+=("${src}")
 done < "${TARGETS_FILE}"
 

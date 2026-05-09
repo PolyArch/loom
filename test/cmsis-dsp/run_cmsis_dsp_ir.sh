@@ -37,13 +37,13 @@ REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 LOOM_CC_DEFAULT="${REPO_ROOT}/build/bin/loom-cc"
 LOOM_CC="${LOOM_CC:-${LOOM_CC_DEFAULT}}"
 
-TARGETS_FILE="${HERE}/cmsis_dsp_targets.txt"
+TARGETS_FILE="${TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_targets.txt}"
 DSP_ROOT="${REPO_ROOT}/externals/cmsis-dsp"
 SRC_ROOT="${DSP_ROOT}/Source"
 DSP_INC="${DSP_ROOT}/Include"
 DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
 CORE_INC="${REPO_ROOT}/externals/cmsis-core/CMSIS/Core/Include"
-OUT_ROOT="${HERE}/out"
+OUT_ROOT="${OUT_OVERRIDE:-${HERE}/out/ir}"
 
 if [[ ! -x "${LOOM_CC}" ]]; then
     echo "[cmsis-dsp-smoke] loom-cc not found or not executable at: ${LOOM_CC}" >&2
@@ -69,7 +69,8 @@ if [[ ! -d "${CORE_INC}" ]]; then
 fi
 
 mkdir -p "${OUT_ROOT}"
-# Fresh artifacts every run.
+# Fresh IR artifacts every run. The IR runner owns its own subdir
+# (`out/ir/`), so wiping it never touches the raise or DFG stage outputs.
 rm -f "${OUT_ROOT}"/*.ll "${OUT_ROOT}"/*.log 2>/dev/null || true
 
 declare -a passed=()
@@ -91,7 +92,9 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         ''|'#'*) continue ;;
     esac
 
-    IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags <<< "${line}"
+    # Newer columns (expect_thread/.../expect_store) are read but
+    # unused here -- the IR runner does not gate on dataflow shape.
+    IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags _rest <<< "${line}"
 
     if [[ -z "${src}" || -z "${triple}" || -z "${cpu}" || -z "${expected_triple}" || -z "${expected_syms}" ]]; then
         echo "[cmsis-dsp-smoke] malformed row: ${line}" >&2

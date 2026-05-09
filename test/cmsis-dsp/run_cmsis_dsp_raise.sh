@@ -48,7 +48,7 @@ LOOM_CC="${LOOM_CC:-${LOOM_CC_DEFAULT}}"
 LOOM_RAISE="${LOOM_RAISE:-${LOOM_RAISE_DEFAULT}}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${LOOM_RAISE_OPT_DEFAULT}}"
 
-TARGETS_FILE="${HERE}/cmsis_dsp_targets.txt"
+TARGETS_FILE="${TARGETS_OVERRIDE:-${HERE}/cmsis_dsp_targets.txt}"
 SKIP_FILE="${HERE}/cmsis_dsp_raise_skip.txt"
 
 DSP_ROOT="${REPO_ROOT}/externals/cmsis-dsp"
@@ -56,7 +56,7 @@ SRC_ROOT="${DSP_ROOT}/Source"
 DSP_INC="${DSP_ROOT}/Include"
 DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
 CORE_INC="${REPO_ROOT}/externals/cmsis-core/CMSIS/Core/Include"
-OUT_ROOT="${HERE}/out"
+OUT_ROOT="${OUT_OVERRIDE:-${HERE}/out/raise}"
 
 LABEL="cmsis-dsp-raise"
 
@@ -93,10 +93,14 @@ if [[ ! -d "${CORE_INC}" ]]; then
 fi
 
 mkdir -p "${OUT_ROOT}"
-# Fresh raise artifacts every run; keep IR artifacts created by the
-# IR-only runner intact so a developer can sequence the two without
-# losing intermediate results.
-rm -f "${OUT_ROOT}"/*.scf.mlir "${OUT_ROOT}"/*.raise.log "${OUT_ROOT}"/*.parse.log 2>/dev/null || true
+# Fresh raise artifacts every run. The raise runner owns its own subdir
+# (`out/raise/`), so wiping it never touches the IR or DFG stage
+# outputs even when those run in parallel under lit.
+rm -f "${OUT_ROOT}"/*.ll \
+      "${OUT_ROOT}"/*.scf.mlir \
+      "${OUT_ROOT}"/*.log \
+      "${OUT_ROOT}"/*.raise.log \
+      "${OUT_ROOT}"/*.parse.log 2>/dev/null || true
 
 # Skip list (one source path per line, optional inline `# reason`).
 # Budget is hybrid: max(5, ceil(rows * 2%)). The runner counts target
@@ -132,7 +136,9 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         ''|'#'*) continue ;;
     esac
 
-    IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags <<< "${line}"
+    # Newer columns (expect_thread/.../expect_store) are read but
+    # unused here -- the raise runner does not gate on dataflow shape.
+    IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags _rest <<< "${line}"
 
     if [[ -z "${src}" || -z "${triple}" || -z "${cpu}" || -z "${expected_triple}" || -z "${expected_syms}" ]]; then
         echo "[${LABEL}] malformed row: ${line}" >&2

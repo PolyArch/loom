@@ -2,7 +2,7 @@
 #
 # One row per source file. Columns are pipe-separated:
 #
-#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags
+#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store
 #
 # Notes:
 #  - src_relpath is relative to externals/cmsis-nn/Source/.
@@ -14,6 +14,13 @@
 #    requires that ALL of them show up as `define ... @<sym>(`.
 #  - extra_cflags carries per-row tweaks without needing to touch the runner
 #    script.
+#  - expect_thread / expect_graph / expect_stream / expect_load / expect_store
+#    pin the per-row shape of the lowered .dfg.mlir. The DFG runner counts
+#    `dataflow.thread @`, `dataflow.graph.func @`, `dataflow.stream`,
+#    `dataflow.load`, and `dataflow.store` occurrences and asserts an
+#    exact match against these cells. A leading `>=` (e.g. `>=1`) accepts
+#    any count at or above the threshold; a bare integer demands exact
+#    equality. The IR-only and raise runners ignore these columns.
 #  - We deliberately do NOT modify any externals/cmsis-nn source. If a source
 #    needs more flags, add them in extra_cflags here.
 #
@@ -49,21 +56,21 @@
 # are still covered by the base symbol; the pipeline asserts presence,
 # not exclusivity.
 #
-ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15|
-ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7|
-ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu6_s8|
-BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_elementwise_add_s8|
-BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8|
-BasicMathFunctions/arm_maximum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_maximum_s8|
-ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_w|
-ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x|
-ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8|
-ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast|
-FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8|
-FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_vector_sum_s8|
-NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset|
-PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8|
-PoolingFunctions/arm_max_pool_s8.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_max_pool_s8|
-ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8|
-SoftmaxFunctions/arm_softmax_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_s8|
-SoftmaxFunctions/arm_softmax_u8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_u8|
+ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||1|1|1|1|1
+ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7||2|2|1|2|2
+ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu6_s8||0|0|0|0|0
+BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_elementwise_add_s8||0|0|0|0|0
+BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8||1|1|0|18|9
+BasicMathFunctions/arm_maximum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_maximum_s8||1|1|0|18|9
+ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_w||0|0|0|0|0
+ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|1|0|0
+ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8||2|2|0|22|5
+ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast||0|0|0|0|0
+FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|11|0
+FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_vector_sum_s8||1|1|0|2|1
+NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset||0|0|0|0|0
+PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8||2|0|0|0|0
+PoolingFunctions/arm_max_pool_s8.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_max_pool_s8||1|1|0|6|4
+ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8||0|0|0|0|0
+SoftmaxFunctions/arm_softmax_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_s8||0|0|0|0|0
+SoftmaxFunctions/arm_softmax_u8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_u8||2|1|0|3|0
