@@ -1,8 +1,10 @@
 add_mlir_library(LoomFrontendLowering
   LowerForallToThreadPass.cpp
   LowerForToGraphPass.cpp
+  LowerGraphConstantsPass.cpp
   LowerGraphInvariantPass.cpp
   LowerGraphMemoryPass.cpp
+  LowerGraphSyncPass.cpp
   LowerReductionToStreamPass.cpp
   Pipeline.cpp
 

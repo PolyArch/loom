@@ -58,10 +58,25 @@ std::unique_ptr<::mlir::Pass> createLowerGraphMemoryPass();
 // stream are left unchanged.
 std::unique_ptr<::mlir::Pass> createLowerGraphInvariantPass();
 
+// Module-scope pass that promotes `arith.constant` ops feeding any
+// streaming primitive (stream / carry / invariant / load / store)
+// inside a dataflow.graph.func body into `dataflow.constant` ops
+// driven by the body's leading `thread_ctrl` block argument. Graphs
+// without a `dataflow.stream` are left unchanged.
+std::unique_ptr<::mlir::Pass> createLowerGraphConstantsPass();
+
+// Module-scope pass that funnels every `%done : none` token produced
+// by a `dataflow.load` / `dataflow.store` inside a dataflow.graph.func
+// body into a single `dataflow.sync` op placed before the terminator,
+// and routes the sync's first output into the graph.return's
+// `done_out` slot. Graphs without any memory ops are left unchanged.
+std::unique_ptr<::mlir::Pass> createLowerGraphSyncPass();
+
 // Register the lowering passes with the global pass registry so
 // loom-raise-opt can drive them via --loom-lower-forall-to-thread /
 // --loom-lower-for-to-graph / --loom-lower-reduction-to-stream /
-// --loom-lower-graph-memory / --loom-lower-graph-invariant plus the
+// --loom-lower-graph-memory / --loom-lower-graph-invariant /
+// --loom-lower-graph-constants / --loom-lower-graph-sync plus the
 // combined --loom-lower-scf-to-dfg pipeline.
 void registerLoweringPasses();
 
@@ -72,6 +87,8 @@ void registerLoweringPasses();
 //   loom-lower-reduction-to-stream     (module-level)
 //   loom-lower-graph-memory            (module-level)
 //   loom-lower-graph-invariant         (module-level)
+//   loom-lower-graph-constants         (module-level)
+//   loom-lower-graph-sync              (module-level)
 //   --canonicalize                     (upstream)
 void buildLoweringPipeline(::mlir::PassManager &pm);
 

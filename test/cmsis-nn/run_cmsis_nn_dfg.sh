@@ -11,12 +11,13 @@
 #   4. Verify the .dfg.mlir parses through loom-raise-opt (the dataflow
 #      dialect is registered there in lieu of a separate dataflow opt
 #      tool) -- this is the structural well-formedness gate.
-#   5. Count dataflow.{thread, graph.func, stream, load, store} ops in
-#      the produced .dfg.mlir and compare against the row's
+#   5. Count dataflow.{thread, graph.func, stream, load, store, constant,
+#      sync} ops in the produced .dfg.mlir and compare against the row's
 #      expect_thread / expect_graph / expect_stream / expect_load /
-#      expect_store cells. A bare integer demands exact equality; a
-#      `>=N` cell accepts any count at or above the threshold. Any
-#      drift fails the row with a per-column diagnostic.
+#      expect_store / expect_constant / expect_sync cells. A bare
+#      integer demands exact equality; a `>=N` cell accepts any count at
+#      or above the threshold. Any drift fails the row with a per-column
+#      diagnostic.
 #
 # Pass criterion (gating, all required):
 #   a. loom-lower exits 0.
@@ -24,7 +25,7 @@
 #   c. expected_symbols presence on the lowered MLIR: at least one
 #      symbol survives as a dataflow.thread / dataflow.graph.func /
 #      func.func definition.
-#   d. The five per-row count cells match the actual op counts.
+#   d. The seven per-row count cells match the actual op counts.
 #
 # Sources whose lower breaks the mandatory gate (loom-lower crash,
 # parse failure of the produced .dfg.mlir) can be listed in
@@ -186,7 +187,8 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     esac
 
     IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags \
-        expect_thread expect_graph expect_stream expect_load expect_store <<< "${line}"
+        expect_thread expect_graph expect_stream expect_load expect_store \
+        expect_constant expect_sync <<< "${line}"
 
     if [[ -z "${src}" || -z "${triple}" || -z "${cpu}" || -z "${expected_triple}" || -z "${expected_syms}" ]]; then
         echo "[${LABEL}] malformed row: ${line}" >&2
@@ -195,8 +197,9 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     fi
 
     if [[ -z "${expect_thread}" || -z "${expect_graph}" || -z "${expect_stream}" \
-          || -z "${expect_load}" || -z "${expect_store}" ]]; then
-        echo "[${LABEL}] missing per-row gate cells (expect_thread/graph/stream/load/store) in row: ${line}" >&2
+          || -z "${expect_load}" || -z "${expect_store}" \
+          || -z "${expect_constant}" || -z "${expect_sync}" ]]; then
+        echo "[${LABEL}] missing per-row gate cells (expect_thread/graph/stream/load/store/constant/sync) in row: ${line}" >&2
         failed+=("(parse:${src:-?})")
         continue
     fi
@@ -300,21 +303,26 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     fi
 
     # Per-row shape gate: count dataflow.{thread, graph.func, stream,
-    # load, store} occurrences in the lowered MLIR and compare against
-    # the row's expectations. Drift on any column fails the row.
+    # load, store, constant, sync} occurrences in the lowered MLIR and
+    # compare against the row's expectations. Drift on any column fails
+    # the row.
     thread_count=$(grep -c -E 'dataflow\.thread (private )?@' "${out_dfg}" || true)
     graph_count=$(grep -c -E 'dataflow\.graph\.func (private )?@' "${out_dfg}" || true)
     stream_count=$(grep -c -E '\bdataflow\.stream\b' "${out_dfg}" || true)
     load_count=$(grep -c -E '\bdataflow\.load\b' "${out_dfg}" || true)
     store_count=$(grep -c -E '\bdataflow\.store\b' "${out_dfg}" || true)
+    constant_count=$(grep -c -E '\bdataflow\.constant\b' "${out_dfg}" || true)
+    sync_count=$(grep -c -E '\bdataflow\.sync\b' "${out_dfg}" || true)
     scf_residual=$(grep -c -E '\bscf\.' "${out_dfg}" || true)
 
     gate_ok=1
-    gate_count thread "${expect_thread}" "${thread_count}" "${src}" || gate_ok=0
-    gate_count graph  "${expect_graph}"  "${graph_count}"  "${src}" || gate_ok=0
-    gate_count stream "${expect_stream}" "${stream_count}" "${src}" || gate_ok=0
-    gate_count load   "${expect_load}"   "${load_count}"   "${src}" || gate_ok=0
-    gate_count store  "${expect_store}"  "${store_count}"  "${src}" || gate_ok=0
+    gate_count thread   "${expect_thread}"   "${thread_count}"   "${src}" || gate_ok=0
+    gate_count graph    "${expect_graph}"    "${graph_count}"    "${src}" || gate_ok=0
+    gate_count stream   "${expect_stream}"   "${stream_count}"   "${src}" || gate_ok=0
+    gate_count load     "${expect_load}"     "${load_count}"     "${src}" || gate_ok=0
+    gate_count store    "${expect_store}"    "${store_count}"    "${src}" || gate_ok=0
+    gate_count constant "${expect_constant}" "${constant_count}" "${src}" || gate_ok=0
+    gate_count sync     "${expect_sync}"     "${sync_count}"     "${src}" || gate_ok=0
 
     if (( gate_ok == 0 )); then
         failed+=("${src}")
@@ -328,7 +336,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
         emission_tag="t=0 g=0 (no outline)"
     fi
 
-    echo "  PASS  ${src}  triple=${expected_triple} cpu=${cpu} ${emission_tag} s=${stream_count} l=${load_count} st=${store_count} scf-res=${scf_residual}"
+    echo "  PASS  ${src}  triple=${expected_triple} cpu=${cpu} ${emission_tag} s=${stream_count} l=${load_count} st=${store_count} c=${constant_count} sy=${sync_count} scf-res=${scf_residual}"
     passed+=("${src}")
 done < "${TARGETS_FILE}"
 

@@ -27,7 +27,7 @@ trap 'rm -rf "${TMP}"' EXIT
 # simple ActivationFunctions kernel that emits exactly one
 # dataflow.thread under the current lowering.
 cat > "${TMP}/cmsis_nn_targets.txt" <<'T'
-ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||99|1|1|1|1
+ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||99|1|1|1|1|1|1
 T
 
 mkdir -p "${TMP}/out"

@@ -127,12 +127,13 @@ profile is exercised end-to-end.
    Prefer s8 variants when in doubt; SVE/MVE-only files require
    target features we do not enable, so skip them.
 2. Append a pipe-separated row to `cmsis_nn_targets.txt`:
-   `src_relpath | triple | mcpu | normalized_triple | expected_symbols | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store`
-   The five `expect_*` cells pin the per-row DFG shape gate (counts of
+   `src_relpath | triple | mcpu | normalized_triple | expected_symbols | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync`
+   The seven `expect_*` cells pin the per-row DFG shape gate (counts of
    `dataflow.thread @`, `dataflow.graph.func @`, `dataflow.stream`,
-   `dataflow.load`, and `dataflow.store` ops). Use a bare integer for
-   exact equality or `>=N` for a lower-bound; populate them by running
-   the DFG runner once and reading the per-row PASS line.
+   `dataflow.load`, `dataflow.store`, `dataflow.constant`, and
+   `dataflow.sync` ops). Use a bare integer for exact equality or
+   `>=N` for a lower-bound; populate them by running the DFG runner
+   once and reading the per-row PASS line.
 3. The normalized triple is what clang emits in the IR (run the
    script once and grep the failing log if you are not sure).
 4. Some CMSIS-NN files (e.g. `arm_nntables.c`) define only static
