@@ -12,11 +12,12 @@
 #      dialect is registered there in lieu of a separate dataflow opt
 #      tool) -- this is the structural well-formedness gate.
 #   5. Count dataflow.{thread, graph.func, stream, load, store, constant,
-#      sync} ops in the produced .dfg.mlir and compare against the row's
-#      expect_thread / expect_graph / expect_stream / expect_load /
-#      expect_store / expect_constant / expect_sync cells. A bare
-#      integer demands exact equality; a `>=N` cell accepts any count at
-#      or above the threshold. Any drift fails the row with a per-column
+#      sync, gate, mux, demux} ops in the produced .dfg.mlir and compare
+#      against the row's expect_thread / expect_graph / expect_stream /
+#      expect_load / expect_store / expect_constant / expect_sync /
+#      expect_gate / expect_mux / expect_demux cells. A bare integer
+#      demands exact equality; a `>=N` cell accepts any count at or above
+#      the threshold. Any drift fails the row with a per-column
 #      diagnostic.
 #
 # Pass criterion (gating, all required):
@@ -25,7 +26,7 @@
 #   c. expected_symbols presence on the lowered MLIR: at least one
 #      symbol survives as a dataflow.thread / dataflow.graph.func /
 #      func.func definition.
-#   d. The seven per-row count cells match the actual op counts.
+#   d. The ten per-row count cells match the actual op counts.
 #
 # Sources whose lower breaks the mandatory gate (loom-lower crash,
 # parse failure of the produced .dfg.mlir) can be listed in
