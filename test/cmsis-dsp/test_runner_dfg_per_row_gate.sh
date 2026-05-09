@@ -27,7 +27,7 @@ trap 'rm -rf "${TMP}"' EXIT
 # simple BasicMathFunctions kernel that emits exactly one
 # dataflow.thread under the current lowering.
 cat > "${TMP}/cmsis_dsp_targets.txt" <<'T'
-BasicMathFunctions/arm_abs_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_abs_f32||99|1|1|1|1|1|1
+BasicMathFunctions/arm_abs_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_abs_f32||99|1|1|1|1|1|1|0|0|0
 T
 
 mkdir -p "${TMP}/out"

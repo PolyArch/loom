@@ -7,6 +7,7 @@
 //     loom-lower-reduction-to-stream    (module-level)
 //     loom-lower-graph-memory           (module-level)
 //     loom-lower-graph-invariant        (module-level)
+//     loom-lower-graph-control          (module-level)
 //     loom-lower-graph-constants        (module-level)
 //     loom-lower-graph-sync             (module-level)
 //     --canonicalize                    (upstream)
@@ -16,15 +17,18 @@
 // canonicalizer between for-to-graph and reduction-to-stream cleans
 // up trivial dead bridge values before we walk the graph.func body.
 // graph-memory runs before graph-invariant so the latter can skip
-// pointer args that have already been bridged to memref. The
-// graph-constants pass runs after graph-memory because the memory
-// pass introduces a `%c0 : index` constant whose only consumers are
-// the streaming load/store ports; promoting it to dataflow.constant
-// removes the last residual arith.constant from streaming bodies.
-// graph-sync runs last so it can collect every `%done : none` token
-// produced by dataflow.load / dataflow.store ops the prior passes
-// emitted; constants before sync gives the lit diffs a stable order.
-// The closing canonicalize pass cleans up dead llvm.getelementptr /
+// pointer args that have already been bridged to memref. graph-control
+// runs after graph-invariant so any enclosing loop has already been
+// streamed (its `cond` is body-phase) and before graph-constants so
+// constant promotion observes the post-mux IR. The graph-constants
+// pass runs after graph-memory because the memory pass introduces a
+// `%c0 : index` constant whose only consumers are the streaming
+// load/store ports; promoting it to dataflow.constant removes the
+// last residual arith.constant from streaming bodies. graph-sync runs
+// last so it can collect every `%done : none` token produced by
+// dataflow.load / dataflow.store ops the prior passes emitted;
+// constants before sync gives the lit diffs a stable order. The
+// closing canonicalize pass cleans up dead llvm.getelementptr /
 // dataflow.carry chains the memory pass leaves behind.
 
 #include "Frontend/Lowering/Passes.h"
@@ -39,6 +43,7 @@ namespace lowering {
 void registerLowerForallToThreadPass();
 void registerLowerForToGraphPass();
 void registerLowerGraphConstantsPass();
+void registerLowerGraphControlPass();
 void registerLowerGraphInvariantPass();
 void registerLowerGraphMemoryPass();
 void registerLowerGraphSyncPass();
@@ -51,6 +56,7 @@ static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
   pm.addPass(createLowerReductionToStreamPass());
   pm.addPass(createLowerGraphMemoryPass());
   pm.addPass(createLowerGraphInvariantPass());
+  pm.addPass(createLowerGraphControlPass());
   pm.addPass(createLowerGraphConstantsPass());
   pm.addPass(createLowerGraphSyncPass());
   pm.addPass(::mlir::createCanonicalizerPass());
@@ -60,6 +66,7 @@ void registerLoweringPasses() {
   registerLowerForallToThreadPass();
   registerLowerForToGraphPass();
   registerLowerGraphConstantsPass();
+  registerLowerGraphControlPass();
   registerLowerGraphInvariantPass();
   registerLowerGraphMemoryPass();
   registerLowerGraphSyncPass();

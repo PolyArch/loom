@@ -2,7 +2,7 @@
 #
 # One row per source file. Columns are pipe-separated:
 #
-#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync
+#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync | expect_gate | expect_mux | expect_demux
 #
 # Notes:
 #  - src_relpath is relative to externals/cmsis-dsp/Source/.
@@ -15,14 +15,18 @@
 #  - extra_cflags carries per-row tweaks (e.g. -mfloat-abi=hard) without
 #    needing to touch the runner script.
 #  - expect_thread / expect_graph / expect_stream / expect_load / expect_store /
-#    expect_constant / expect_sync pin the per-row shape of the lowered
-#    .dfg.mlir. The DFG runner counts `dataflow.thread @`,
-#    `dataflow.graph.func @`, `dataflow.stream`, `dataflow.load`,
-#    `dataflow.store`, `dataflow.constant`, and `dataflow.sync` occurrences
-#    and asserts an exact match against these cells. A leading `>=` (e.g.
-#    `>=1`) accepts any count at or above the threshold; a bare integer
-#    demands exact equality. The IR-only and raise runners ignore these
-#    columns.
+#    expect_constant / expect_sync / expect_gate / expect_mux / expect_demux
+#    pin the per-row shape of the lowered .dfg.mlir. The DFG runner counts
+#    `dataflow.thread @`, `dataflow.graph.func @`, `dataflow.stream`,
+#    `dataflow.load`, `dataflow.store`, `dataflow.constant`, `dataflow.sync`,
+#    `dataflow.gate`, `dataflow.mux`, and `dataflow.demux` occurrences and
+#    asserts an exact match against these cells. A leading `>=` (e.g. `>=1`)
+#    accepts any count at or above the threshold; a bare integer demands
+#    exact equality. The IR-only and raise runners ignore these columns.
+#  - expect_demux is reserved for symmetry with the other control-routing
+#    primitives; the current SCF-to-DFG lowering does not yet emit
+#    `dataflow.demux` (the 1-to-N route lowering is a future iteration), so
+#    every row pins it to 0.
 #  - We deliberately do NOT modify any externals/cmsis-dsp source. If a
 #    source needs more flags, add them in extra_cflags here.
 #
@@ -55,19 +59,19 @@
 # are still covered by the base symbol; the pipeline asserts presence,
 # not exclusivity.
 #
-BasicMathFunctions/arm_add_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_add_q15||1|1|1|2|1|1|1
-BasicMathFunctions/arm_mult_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_mult_f32|-mfloat-abi=hard|1|1|1|2|1|1|1
-BasicMathFunctions/arm_offset_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_offset_f32||1|1|1|1|1|1|1
-BasicMathFunctions/arm_abs_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_abs_f32||1|1|1|1|1|1|1
-FastMathFunctions/arm_sin_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sin_f32||0|0|0|0|0|0|0
-FastMathFunctions/arm_sqrt_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sqrt_q15||0|0|0|0|0|0|0
-FilteringFunctions/arm_fir_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_fir_f32|-mfloat-abi=hard|2|2|1|4|3|6|1
-FilteringFunctions/arm_biquad_cascade_df1_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_biquad_cascade_df1_f32|-mfloat-abi=hard|1|1|1|1|1|1|1
-MatrixFunctions/arm_mat_mult_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_mult_f32||1|1|0|2|1|3|0
-MatrixFunctions/arm_mat_add_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_add_f32||1|1|1|2|1|1|1
-StatisticsFunctions/arm_mean_f32.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_mean_f32||1|1|1|1|0|1|1
-StatisticsFunctions/arm_max_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_max_f32||1|1|1|0|0|0|0
-StatisticsFunctions/arm_var_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_var_f32|-mfloat-abi=hard|2|2|2|2|0|2|2
-SupportFunctions/arm_copy_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_copy_f32||1|1|1|1|1|1|1
-SupportFunctions/arm_fill_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fill_f32||1|1|1|0|1|1|1
-TransformFunctions/arm_cfft_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_cfft_f32||4|4|4|18|14|4|4
+BasicMathFunctions/arm_add_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_add_q15||1|1|1|2|1|1|1|0|0|0
+BasicMathFunctions/arm_mult_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_mult_f32|-mfloat-abi=hard|1|1|1|2|1|1|1|0|0|0
+BasicMathFunctions/arm_offset_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_offset_f32||1|1|1|1|1|1|1|0|0|0
+BasicMathFunctions/arm_abs_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_abs_f32||1|1|1|1|1|1|1|0|0|0
+FastMathFunctions/arm_sin_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sin_f32||0|0|0|0|0|0|0|0|0|0
+FastMathFunctions/arm_sqrt_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_sqrt_q15||0|0|0|0|0|0|0|0|0|0
+FilteringFunctions/arm_fir_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_fir_f32|-mfloat-abi=hard|2|2|1|4|3|6|1|0|0|0
+FilteringFunctions/arm_biquad_cascade_df1_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_biquad_cascade_df1_f32|-mfloat-abi=hard|1|1|1|1|1|1|1|0|0|0
+MatrixFunctions/arm_mat_mult_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_mult_f32||1|1|0|2|1|3|0|0|0|0
+MatrixFunctions/arm_mat_add_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_add_f32||1|1|1|2|1|1|1|0|0|0
+StatisticsFunctions/arm_mean_f32.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_mean_f32||1|1|1|1|0|1|1|0|0|0
+StatisticsFunctions/arm_max_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_max_f32||1|1|1|0|0|0|0|0|0|0
+StatisticsFunctions/arm_var_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_var_f32|-mfloat-abi=hard|2|2|2|2|0|2|2|0|0|0
+SupportFunctions/arm_copy_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_copy_f32||1|1|1|1|1|1|1|0|0|0
+SupportFunctions/arm_fill_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fill_f32||1|1|1|0|1|1|1|0|0|0
+TransformFunctions/arm_cfft_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_cfft_f32||4|4|4|18|14|4|4|0|0|0

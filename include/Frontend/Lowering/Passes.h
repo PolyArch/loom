@@ -65,6 +65,16 @@ std::unique_ptr<::mlir::Pass> createLowerGraphInvariantPass();
 // without a `dataflow.stream` are left unchanged.
 std::unique_ptr<::mlir::Pass> createLowerGraphConstantsPass();
 
+// Module-scope pass that walks every dataflow.graph.func body,
+// rewriting `scf.if` ops in post-order:
+//   * scf.if with results, both regions present and pure -> emit one
+//     dataflow.mux per result and lift the body ops out;
+//   * scf.if with no results, only the then-region populated and pure
+//     -> emit dataflow.gate around each gate-friendly body result and
+//     lift the body ops out;
+//   * effectful or unmodeled shapes are left in place with a remark.
+std::unique_ptr<::mlir::Pass> createLowerGraphControlPass();
+
 // Module-scope pass that funnels every `%done : none` token produced
 // by a `dataflow.load` / `dataflow.store` inside a dataflow.graph.func
 // body into a single `dataflow.sync` op placed before the terminator,
@@ -76,8 +86,9 @@ std::unique_ptr<::mlir::Pass> createLowerGraphSyncPass();
 // loom-raise-opt can drive them via --loom-lower-forall-to-thread /
 // --loom-lower-for-to-graph / --loom-lower-reduction-to-stream /
 // --loom-lower-graph-memory / --loom-lower-graph-invariant /
-// --loom-lower-graph-constants / --loom-lower-graph-sync plus the
-// combined --loom-lower-scf-to-dfg pipeline.
+// --loom-lower-graph-control / --loom-lower-graph-constants /
+// --loom-lower-graph-sync plus the combined --loom-lower-scf-to-dfg
+// pipeline.
 void registerLoweringPasses();
 
 // Append the SCF-to-DFG lowering pipeline to the given pass manager:
@@ -87,6 +98,7 @@ void registerLoweringPasses();
 //   loom-lower-reduction-to-stream     (module-level)
 //   loom-lower-graph-memory            (module-level)
 //   loom-lower-graph-invariant         (module-level)
+//   loom-lower-graph-control           (module-level)
 //   loom-lower-graph-constants         (module-level)
 //   loom-lower-graph-sync              (module-level)
 //   --canonicalize                     (upstream)
