@@ -64,6 +64,36 @@ dataflow.graph.func private @g_bail_effectful_gate(%arg0: none, %arg1: i1,
   dataflow.graph.return %arg0 : none
 }
 
+// Positive (side-effect-aware result gate): a graph.func body with an
+// `scf.if %c -> (i32)` whose then-region issues a llvm.store (effectful)
+// and yields a value. The mux lift bails on the effectful body, so the
+// scf.if envelope is preserved in place and each gate-friendly result
+// is wrapped in a `dataflow.gate %c, %if.result`. Downstream consumers
+// of the scf.if result are rewritten to consume the gate's after_value.
+
+// CHECK-LABEL: dataflow.graph.func private @g_side_effect_gate_result
+// CHECK: %[[IF:.*]] = scf.if %arg1 -> (i32)
+// CHECK: llvm.store
+// CHECK: scf.yield
+// CHECK: } else {
+// CHECK: scf.yield
+// CHECK: }
+// CHECK: %{{.*}}, %[[GATED:.*]] = dataflow.gate %arg1, %[[IF]] : i32
+// CHECK: dataflow.graph.return %arg0, %[[GATED]] : none, i32
+dataflow.graph.func private @g_side_effect_gate_result(%arg0: none, %arg1: i1,
+                                                       %arg2: i32,
+                                                       %arg3: i32,
+                                                       %arg4: !llvm.ptr)
+    -> (none, i32) {
+  %0 = scf.if %arg1 -> (i32) {
+    llvm.store %arg2, %arg4 : i32, !llvm.ptr
+    scf.yield %arg2 : i32
+  } else {
+    scf.yield %arg3 : i32
+  }
+  dataflow.graph.return %arg0, %0 : none, i32
+}
+
 // Negative-bail (uncommon two-sided no-result): a graph.func body with
 // an `scf.if %c { ... } else { ... }` where neither region yields a
 // value is left alone. The dataflow.gate / .mux primitives do not

@@ -36,3 +36,38 @@ func.func @launch_outside_thread() {
   %d = dataflow.graph.launch @g_target(%ctrl) : (none) -> none
   return
 }
+
+// -----
+// graph.func body whitelist: a direct func.call into a host symbol is
+// rejected. Calls into ScalarCore must go through dataflow.thread.launch
+// or dataflow.graph.launch, never through func.call.
+func.func private @host_helper(%x: i32) -> i32
+dataflow.graph.func private @g_rejects_func_call(%ctrl: none, %x: i32)
+    -> (none, i32) {
+  // expected-error @+1 {{is not allowed inside a dataflow.graph.func body}}
+  %r = func.call @host_helper(%x) : (i32) -> i32
+  dataflow.graph.return %ctrl, %r : none, i32
+}
+
+// -----
+// graph.func body whitelist: nested function-symbol definitions do not
+// belong inside a graph.func body. The body is leaf SpatialCore
+// compute, not a place to anchor further symbol definitions.
+dataflow.graph.func private @g_rejects_nested_func(%ctrl: none) -> none {
+  // expected-error @+1 {{is not allowed inside a dataflow.graph.func body}}
+  func.func private @inner_def(%y: i32) -> i32 {
+    func.return %y : i32
+  }
+  dataflow.graph.return %ctrl : none
+}
+
+// -----
+// graph.func body whitelist: a tensor-dialect op (not on the SCF-to-DFG
+// residual surface) is rejected. tensor.* is loaded by the loom driver
+// because it ships with mlir, so this exercises the dialect-membership
+// gate without requiring a synthetic test op.
+dataflow.graph.func private @g_rejects_tensor_op(%ctrl: none) -> (none, tensor<1xi32>) {
+  // expected-error @+1 {{is not allowed inside a dataflow.graph.func body}}
+  %t = tensor.empty() : tensor<1xi32>
+  dataflow.graph.return %ctrl, %t : none, tensor<1xi32>
+}

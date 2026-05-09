@@ -24,9 +24,18 @@
 //        and rewrite the op's downstream uses to consume %after_value.
 //        Lift the body ops to the parent block and erase the scf.if.
 //
-//     c. Anything else (effectful body, both no-result regions, single
-//        no-result region with effectful ops, scf.if results that the
-//        mux cannot model): leave the scf.if alone and emit a remark.
+//     c. scf.if WITH results that the mux lift cannot handle (effectful
+//        body, missing region, mismatched yield count): keep the scf.if
+//        envelope unchanged and instead wrap each gate-friendly result
+//        with a body-phase `dataflow.gate %cond, %if.result -> (i1,
+//        Ti)`. Downstream consumers see the gate's `after_value`; the
+//        unused `after_cond` is discarded. The conditional execution
+//        of the body remains an `scf.if`, so memory effects fire on
+//        the same lane they did before; only the consumer view changes.
+//
+//     d. Anything else (no results and effectful body, both no-result
+//        regions, scf.if without any gate-friendly result): leave the
+//        scf.if alone and emit a remark.
 //
 // Why post-order: rewriting an outer scf.if first invalidates iterators
 // when its body contains another scf.if we still want to lower. Walking
@@ -248,12 +257,53 @@ bool rewriteGateIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   return emittedGate;
 }
 
+// Wrap each result of a side-effecting `scf.if %cond -> (Ti...)` with a
+// `dataflow.gate %cond, %ifResult` so the scf.if envelope is preserved
+// (mandatory for safety: lifting the body would unconditionally execute
+// the side effects), but downstream consumers see a body-phase gate
+// rather than a raw scf.if result. The gate's `after_cond` is unused
+// here -- a future iteration may chain it into nested control routing
+// for predicated dataflow consumers; for now we discard it cleanly.
+//
+// Caller guarantees: `ifOp` has at least one result and at least one
+// gate-friendly result type. Returns true if at least one gate was
+// emitted, false otherwise (in which case the scf.if is left alone).
+bool rewriteSideEffectIf(::mlir::scf::IfOp ifOp,
+                         ::mlir::OpBuilder &builder) {
+  ::mlir::Value cond = ifOp.getCondition();
+  bool emittedAny = false;
+  // Insert the gates immediately after the scf.if, in result order, so
+  // the rewritten IR reads "compute scf.if; gate result 0; gate result
+  // 1; ...; downstream uses".
+  for (size_t i = 0, e = ifOp.getNumResults(); i < e; ++i) {
+    ::mlir::Value r = ifOp.getResult(i);
+    if (!isGateFriendly(r.getType()))
+      continue;
+    ::mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointAfter(ifOp.getOperation());
+    auto gate = ::dataflow::GateOp::create(
+        builder, ifOp.getLoc(), builder.getI1Type(), r.getType(), cond, r);
+    ::mlir::Value afterValue = gate.getAfterValue();
+    // Replace every consumer of `r` with the gate's `after_value`,
+    // except for the gate op itself (which must keep reading the raw
+    // scf.if result).
+    r.replaceUsesWithIf(afterValue, [&](::mlir::OpOperand &use) {
+      return use.getOwner() != gate.getOperation();
+    });
+    emittedAny = true;
+  }
+  return emittedAny;
+}
+
 // Classify and dispatch one scf.if. Returns:
 //   * 0 if the op was left alone (a remark may be emitted by caller).
 //   * 1 if the op was rewritten as a mux.
-//   * 2 if the op was rewritten as a gate.
+//   * 2 if the op was rewritten as a gate (then-only no-result lift).
 //   * 3 if the op was a gate-shape but produced no gates (then-region
 //     had only non-gate-friendly results).
+//   * 4 if the op was wrapped with side-effect-aware result gates
+//     (scf.if envelope preserved, each gate-friendly result wrapped in
+//     a `dataflow.gate %cond, %ifResult`).
 unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   bool hasResults = ifOp.getNumResults() > 0;
   bool hasThen = !ifOp.getThenRegion().empty() &&
@@ -262,27 +312,38 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
                  !ifOp.getElseRegion().front().empty();
 
   if (hasResults) {
-    // Mux case requires both regions and pure bodies. Bail otherwise.
-    if (!hasThen || !hasElse)
-      return 0;
-    if (!regionBodyIsPure(ifOp.getThenRegion()) ||
-        !regionBodyIsPure(ifOp.getElseRegion()))
-      return 0;
-    // Sanity: yield operand counts must match the result count. The
-    // verifier already guarantees this, but a defensive check guards
-    // against malformed inputs we may see in negative-bail tests.
-    auto thenYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
-        ifOp.thenBlock()->getTerminator());
-    auto elseYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
-        ifOp.elseBlock()->getTerminator());
-    if (!thenYield || !elseYield)
-      return 0;
-    if (thenYield.getNumOperands() != ifOp.getNumResults())
-      return 0;
-    if (elseYield.getNumOperands() != ifOp.getNumResults())
-      return 0;
-    rewriteMuxIf(ifOp, builder);
-    return 1;
+    // Mux case requires both regions and pure bodies. Try the lift
+    // first; only if the body has memory effects (or the scf.if is
+    // missing one of its regions) do we fall back to the
+    // side-effect-aware gate wrapping.
+    if (hasThen && hasElse &&
+        regionBodyIsPure(ifOp.getThenRegion()) &&
+        regionBodyIsPure(ifOp.getElseRegion())) {
+      // Sanity: yield operand counts must match the result count.
+      // The verifier already guarantees this, but a defensive check
+      // guards against malformed inputs we may see in negative-bail
+      // tests.
+      auto thenYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+          ifOp.thenBlock()->getTerminator());
+      auto elseYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+          ifOp.elseBlock()->getTerminator());
+      if (thenYield && elseYield &&
+          thenYield.getNumOperands() == ifOp.getNumResults() &&
+          elseYield.getNumOperands() == ifOp.getNumResults()) {
+        rewriteMuxIf(ifOp, builder);
+        return 1;
+      }
+    }
+    // Side-effect-aware gating: keep the scf.if envelope but tag every
+    // gate-friendly result with a body-phase `dataflow.gate`. This
+    // lets the corpus exercise gate emission on shapes that the mux
+    // lift cannot handle (e.g., scf.if whose body issues a
+    // dataflow.store or an llvm.store) without changing observable
+    // semantics. If no result is gate-friendly the scf.if is left
+    // alone.
+    if (rewriteSideEffectIf(ifOp, builder))
+      return 4;
+    return 0;
   }
 
   // No results.
@@ -337,9 +398,10 @@ struct LowerGraphControlPass
   }
   ::llvm::StringRef getDescription() const final {
     return "Lower scf.if ops inside dataflow.graph.func bodies into "
-           "dataflow.gate (no-result then-only) and dataflow.mux "
-           "(with-results both regions) primitives. Effectful or "
-           "two-sided no-result shapes are left in place.";
+           "dataflow.gate (no-result then-only or effectful with-result "
+           "result-wrap) and dataflow.mux (pure with-result both-regions) "
+           "primitives. Two-sided no-result and no-result-with-effects "
+           "shapes are left in place.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {

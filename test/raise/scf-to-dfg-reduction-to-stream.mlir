@@ -49,15 +49,18 @@ dataflow.graph.func private @g_nested_for(%ctrl: none, %lb: i64, %ub: i64,
   dataflow.graph.return %ctrl, %r : none, f32
 }
 
-// Negative-bail #2: a graph.func with a func.call inside the for
+// Negative-bail #2: a graph.func with an `llvm.call` inside the for
 // body is left unchanged. The pass bails on any CallOpInterface op.
+// (We use `llvm.call` rather than `func.call` because the graph.func
+// body verifier rejects `func.call` directly, and `llvm.call`
+// implements the same CallOpInterface that the bail logic checks.)
 
 // CHECK-LABEL: dataflow.graph.func private @g_with_call
 // CHECK: scf.for %{{.*}} iter_args
-// CHECK:   func.call @sink
+// CHECK:   llvm.call @sink
 // CHECK-NOT: dataflow.stream
 // CHECK-NOT: dataflow.carry
-func.func private @sink(%v: f32) -> f32
+llvm.func @sink(f32) -> f32
 
 dataflow.graph.func private @g_with_call(%ctrl: none, %lb: i64, %ub: i64,
                                          %step: i64, %buf: !llvm.ptr,
@@ -65,7 +68,7 @@ dataflow.graph.func private @g_with_call(%ctrl: none, %lb: i64, %ub: i64,
   %r = scf.for %i = %lb to %ub step %step iter_args(%acc = %init) -> (f32) : i64 {
     %p = llvm.getelementptr %buf[%i] : (!llvm.ptr, i64) -> !llvm.ptr, f32
     %v = llvm.load %p : !llvm.ptr -> f32
-    %w = func.call @sink(%v) : (f32) -> f32
+    %w = llvm.call @sink(%v) : (f32) -> f32
     %s = arith.addf %acc, %w : f32
     scf.yield %s : f32
   }

@@ -19,6 +19,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -329,6 +330,109 @@ RegionKind GraphFuncOp::getRegionKind(unsigned /*index*/) {
   return RegionKind::Graph;
 }
 
+// Whitelist for ops permitted directly or transitively inside a
+// `dataflow.graph.func` body. The body is the SpatialCore image of a
+// leaf graph; the SCF-to-DFG frontend pipeline only ever emits ops
+// from a tightly bounded set: the dataflow streaming/control
+// primitives, residual SCF envelopes (for control shapes the lowering
+// has not collapsed yet), arith/math computation, the LLVM
+// computation/intrinsic ops we lift through `loom-cc`, and the
+// `builtin.unrealized_conversion_cast` bridge between `!llvm.ptr`
+// memory ops and the dataflow load/store memref shape. Anything else
+// indicates the body has been polluted with content that does not
+// belong on SpatialCore (e.g., a nested function symbol definition or
+// a direct `func.call` into ScalarCore) and should be rejected at
+// verifier time so regressions trip immediately rather than silently
+// passing through `loom-raise-opt`.
+static bool isAllowedInDataflowGraphFuncBody(::mlir::Operation *op) {
+  // Symbol-defining ops (modules, nested functions, globals, etc.)
+  // never belong inside a graph.func body. The graph.func itself is
+  // module-level; its body is leaf compute, not a place to anchor
+  // further symbol definitions.
+  if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
+    return false;
+  if (::llvm::isa<::mlir::FunctionOpInterface>(op))
+    return false;
+
+  ::mlir::StringRef dialect =
+      op->getDialect() ? op->getDialect()->getNamespace() : ::mlir::StringRef{};
+  ::mlir::StringRef name = op->getName().getStringRef();
+
+  // dataflow.* is broadly allowed (streaming primitives, control
+  // routing, the graph.return terminator, the cross-graph
+  // thread.launch). The graph-in-graph case is moot here because
+  // `dataflow.graph.func` is module-scoped and cannot be nested.
+  if (dialect == "dataflow")
+    return true;
+  // arith.*, math.*, and memref.* are entire-dialect allowlists: every
+  // scalar computation primitive plus the memref load/store/alloc surface
+  // the SCF input uses before the graph-memory pass converts it into
+  // dataflow ops. The corpus lit tests feed graph.func bodies that
+  // still carry raw `memref.load` / `memref.store` ops, so the
+  // verifier needs to admit them mid-pipeline.
+  if (dialect == "arith" || dialect == "math" || dialect == "memref")
+    return true;
+  // ub.poison shows up as a none-typed placeholder in some lowering
+  // residuals.
+  if (dialect == "ub")
+    return true;
+  // SCF envelopes the SCF-to-DFG layer has not collapsed yet survive
+  // here so the verifier admits the IR mid-pipeline. Only
+  // structured-control-flow ops are listed -- ops that escape the
+  // body (e.g., scf.execute_region.yield) are terminator-traited and
+  // covered separately below.
+  if (dialect == "scf")
+    return true;
+  // Plain CFG ops (cf.br/cond_br/switch) round-trip through some
+  // late-stage IRs.
+  if (dialect == "cf")
+    return true;
+  // Permit unrealized_conversion_cast: the !llvm.ptr -> memref<?xT>
+  // bridge between LLVM-load/store and dataflow load/store ops.
+  if (op->getName().getStringRef() == "builtin.unrealized_conversion_cast")
+    return true;
+  // LLVM dialect: allow the computation/intrinsic surface that
+  // `loom-cc` lifts onto graph.func bodies. We list the ops we know
+  // appear (computation, conversion, compare, intrinsics, GEP,
+  // load/store, the call/call_intrinsic forms used for
+  // CMSIS-NN-style shared subroutines and ARM SIMD intrinsics) and
+  // permit `llvm.intr.*` permissively for forward-compat with new
+  // intrinsics.
+  if (dialect == "llvm") {
+    if (name.starts_with("llvm.intr."))
+      return true;
+    if (name.starts_with("llvm.mlir."))
+      return true;
+    static const ::llvm::StringSet<> llvmAllowed = {
+        // Memory and address arithmetic.
+        "llvm.getelementptr", "llvm.load", "llvm.store",
+        "llvm.alloca",        "llvm.bitcast",
+        // Calls (computation and intrinsics).
+        "llvm.call", "llvm.call_intrinsic",
+        // Computation: integer arithmetic and bitwise.
+        "llvm.add",  "llvm.sub",  "llvm.mul",  "llvm.sdiv", "llvm.udiv",
+        "llvm.srem", "llvm.urem", "llvm.and",  "llvm.or",   "llvm.xor",
+        "llvm.shl",  "llvm.lshr", "llvm.ashr",
+        // Floating-point arithmetic.
+        "llvm.fadd", "llvm.fsub", "llvm.fmul", "llvm.fdiv", "llvm.frem",
+        "llvm.fneg",
+        // Compare.
+        "llvm.icmp", "llvm.fcmp",
+        // Conversions.
+        "llvm.trunc",  "llvm.zext",        "llvm.sext",       "llvm.fpext",
+        "llvm.fptrunc", "llvm.uitofp",     "llvm.sitofp",     "llvm.fptoui",
+        "llvm.fptosi", "llvm.ptrtoint",    "llvm.inttoptr",   "llvm.addrspacecast",
+        // Element-wise / select / freeze.
+        "llvm.select", "llvm.freeze",
+        // Vector and aggregate ops.
+        "llvm.extractelement", "llvm.insertelement", "llvm.extractvalue",
+        "llvm.insertvalue",    "llvm.shufflevector",
+    };
+    return llvmAllowed.contains(name);
+  }
+  return false;
+}
+
 LogicalResult GraphFuncOp::verify() {
   if (auto vis = getSymVisibility()) {
     if (*vis != "private" && *vis != "")
@@ -364,6 +468,30 @@ LogicalResult GraphFuncOp::verify() {
              << i << " type " << entry.getArgument(i).getType()
              << " must match function_type input type " << ty;
   }
+
+  // Body content whitelist: walk every op transitively contained in
+  // the body and reject anything outside the SCF-to-DFG residual
+  // surface. The walk uses pre-order so a disallowed parent (e.g.,
+  // a nested `func.func` symbol definition) is reported before the
+  // verifier dives into its body and complains about the inner
+  // `func.return` instead. Each op's own verifier remains
+  // responsible for checking its own arguments and semantics; this
+  // loop only enforces the dialect-membership policy.
+  ::mlir::WalkResult contentResult = getBody().walk<::mlir::WalkOrder::PreOrder>(
+      [](::mlir::Operation *op) -> ::mlir::WalkResult {
+        if (!isAllowedInDataflowGraphFuncBody(op)) {
+          op->emitOpError(
+              "is not allowed inside a dataflow.graph.func body; permitted "
+              "ops are dataflow.* (incl. graph.launch and thread.launch), "
+              "arith.*, math.*, ub.*, scf.*, cf.*, "
+              "builtin.unrealized_conversion_cast, and a curated llvm.* "
+              "computation/conversion/intrinsic surface");
+          return ::mlir::WalkResult::interrupt();
+        }
+        return ::mlir::WalkResult::advance();
+      });
+  if (contentResult.wasInterrupted())
+    return failure();
   return success();
 }
 
