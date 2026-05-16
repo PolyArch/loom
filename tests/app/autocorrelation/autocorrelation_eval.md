@@ -1,6 +1,10 @@
 # Autocorrelation Performance
 Parameters: `x_size = 128`, `max_lag = 32`
 
+## Kernel Properties
+- **Input-independent**: cycle and op counts are functions of `x_size` and `max_lag` only; values of `x` do not affect the schedule.
+- **Per-lag inner trip count**: `inner_iters(lag) = x_size − lag` for `lag ∈ [0, max_lag)`. Sum is `Σ_{lag=0..31}(128 − lag) = 3,600`. 
+
 ## Cycle + Instruction Count
 - Expected cycle count:  
 inner cycles = 3,600  
