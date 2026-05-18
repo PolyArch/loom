@@ -1,0 +1,128 @@
+kernel,cpu_func,dsa_func,difficulty_class,difficulty_label,asymptotic_complexity,cycle_formula,per_inner_iter_ops,notes
+autocorrelation,autocorrelation_cpu,autocorrelation_dsa,L1,Static-Affine,O(x_size*max_lag),"sum_{lag=0..max_lag-1}(x_size-lag)*c","2LD,1MUL,1ADD,~3overhead; outer: 1ST+init","Triangular sum of inner trip counts; closed-form."
+axpy,axpy_cpu,axpy_dsa,L1,Static-Affine,O(N),~8*N,"2LD,1MUL,1ADD,1ST,~3overhead",Element-wise.
+batchnorm,batchnorm_cpu,batchnorm_dsa,L1,Static-Affine,O(C*H*W),~10*C*H*W + ~10*C,"inner: 1LD,1ST,2MUL,2ADD; per-channel: 1SQRT+1DIV+1ADD",Includes sqrtf per channel; fixed shape (C,H,W).
+binary_search,binary_search_cpu,binary_search_dsa,L4,Value-Distribution,O(M*log N) avg,"~M*log2(N)*c (avg) up to M*log2(N) worst","inner: 1LD,2CMP,~2BR,1ADD",Per-target while-loop with early `break` on hit; needs target/data distribution.
+bisection_step,bisection_step_cpu,bisection_step_dsa,L2,Branched-Bounded,O(N),~10*N,"4LD,2ST,2MUL,1ADD,1CMP,2SEL/BR",if/else both arms do equal work (2 stores).
+bitonic_stage,bitonic_stage_cpu,bitonic_stage_dsa,L2,Branched-Bounded,O(N),~12*N,"2LD,2ST(cond),1CMP,div/mod,bitwise; predicated swap",Conditional swap with predicate; per-iter cost bounded.
+bitonic_stage-modified,bitonic_stage_cpu,bitonic_stage_dsa,L3,Aggregate-Dependent,O(N*N) worst,~N*(N/2)+c*N,"adds an extra inner loop over N/2 elements","Extra nested N/2 loop inside the predicate; cycle ~ N + N*(N/2)/2."
+bitonic_stage-tweak,bitonic_stage_cpu,bitonic_stage_dsa,L2,Branched-Bounded,O(N),~13*N,"adds 1 unconditional ST per iter (inplace[i]-=1)",Variant adds extra subtract/store per element.
+bitrev,bitrev_cpu,bitrev_dsa,L1,Static-Affine,O(N*log N),~N*log2(N)*c,"outer: 1LD,1ST; inner while: ~5 bitops per log2(N) iters",While iterates exactly log2(N) times (deterministic for fixed N).
+bitrev_complex,bitrev_complex_cpu,bitrev_complex_dsa,L1,Static-Affine,O(N*log N),~N*log2(N)*c,"outer: 2LD,2ST; inner while: 5 bitops * log2(N)",Same as bitrev but for complex (real+imag).
+bit_reverse,bit_reverse_cpu,bit_reverse_dsa,L1,Static-Affine,O(N),~32*N*c,"inner fixed 32 iters: 1LD,~4 bitops,1ST",Fixed 32-bit reversal per element.
+breadth_first_search,bfs_cpu,bfs_dsa,L5,Structure-Dependent,O(V+E),"data-dependent: ~init(V) + sum over BFS expansion","queue ops; per-edge: 1LD col_idx,1LD visited,~2CMP,1ST visited,1ST distance,1ST queue",Queue-based traversal; total work depends on graph reachability and structure.
+byte_swap,byte_swap_cpu,byte_swap_dsa,L1,Static-Affine,O(N),~10*N,"1LD,1ST,4 SHR/AND,4 SHL/OR",Trivial bit shuffle.
+cdma,cdma_cpu,cdma_dsa,L1,Static-Affine,O(N),~4*N,"1LD,1ST,~2overhead",Memory copy.
+clz,clz_cpu,clz_dsa,L4,Value-Distribution,O(N) avg / O(32*N) worst,"sum_i (32 - log2(input[i])); data-dependent","outer: 1LD,1ST; inner while iters = leading zeros of value",While iters depend on value (0..32); need bit distribution.
+col2im,col2im_cpu,col2im_dsa,L1,Static-Affine,O(C*H*W + C*KH*KW*OH*OW),"~CHW*c_init + C*KH*KW*OH*OW*c_acc","init: 1ST; accumulate: 2LD,1ADD,1ST per fan-in",5-layer nested affine; closed-form.
+compact,compact_cpu,compact_dsa,L2,Branched-Bounded,O(N),~8*N,"1LD,1CMP,(1ST cond),1ADD overhead",Conditional store; per-iter cost bounded; output count data-dependent.
+compact_predicate,compact_predicate_cpu,compact_predicate_dsa,L2,Branched-Bounded,O(N),~8*N,"2LD,1CMP,1ST cond",Same as compact but predicate from separate array.
+compare_swap,compare_swap_cpu,compare_swap_dsa,L2,Branched-Bounded,O(N),~10*N,"2LD,2ST,1CMP,1SEL",if/else with equal work.
+conv2d,conv2d_cpu,conv2d_dsa,L1,Static-Affine,O(C_out*OH*OW*C_in*KH*KW),~6*C_out*OH*OW*C_in*KH*KW,"inner: 2LD,1MUL,1ADD; outer: 1ST init+1ST result",6-deep affine nest; classic conv.
+convolve_1d,convolve_1d_cpu,convolve_1d_dsa,L1,Static-Affine,O(output_size*kernel_size),~5*os*ks,"2LD,1MUL,1ADD; outer: 1ST",Standard 1D convolution.
+convolve_1d_same,convolve_1d_same_cpu,convolve_1d_same_dsa,L2,Branched-Bounded,O(input_size*kernel_size),~6*N*ks,"2LD,1MUL,1ADD,1CMP boundary",Boundary `idx>=0 && idx<N` skips ~half of edge taps; affects exact count but bounded.
+correlation,correlation_cpu,correlation_dsa,L1,Static-Affine,O((x_size-y_size+1)*y_size),~5*os*y_size,"2LD,1MUL,1ADD; outer: 1ST",Cross-correlation; affine.
+covariance,covariance_cpu,covariance_dsa,L1,Static-Affine,O(N),~8*N + 4,"pass1: 2LD,2ADD; pass2: 2LD,1SUB,1SUB,1MUL,1ADD; tail: 2DIV",Two passes over N; closed-form.
+crc32,crc32_cpu,crc32_dsa,L1,Static-Affine,O(N),~32*N + c,"outer per byte (×4): 1LD,1XOR; inner per bit (×8): 1AND,1SHR,~1XOR,1CMP","Fixed nested 4*8 inner iters per element."
+cross_product,cross_product_cpu,cross_product_dsa,L1,Static-Affine,O(N),~25*N,"6LD,6MUL,3SUB,3ST",Per-element 3D cross product.
+ctz,ctz_cpu,ctz_dsa,L4,Value-Distribution,O(N) avg / O(32*N) worst,"sum_i (trailing zeros of input[i])","outer: 1LD,1ST; inner while iters = trailing zeros",While iters depend on value; need bit distribution.
+cumsum,cumsum_cpu,cumsum_dsa,L1,Static-Affine,O(N),~5*N,"1LD,1ADD,1ST",Inclusive prefix sum (sequential).
+database_join,database_join_cpu,database_join_dsa,L2,Branched-Bounded,O(size_a*size_b),~6*size_a*size_b + matches*c_out,"2LD ids,1CMP; on match: 2LD vals,3ST,1ADD","Nested loop scan; #compares is deterministic; output writes depend on #matches."
+delta_decode,delta_decode_cpu,delta_decode_dsa,L1,Static-Affine,O(N),~5*N,"1LD,1ADD,1ST (running sum)",Sequential prefix.
+delta_encode,delta_encode_cpu,delta_encode_dsa,L1,Static-Affine,O(N),~5*N,"2LD,1SUB,1ST",Pairwise differences.
+depthwise_conv,depthwise_conv_cpu,depthwise_conv_dsa,L1,Static-Affine,O(C*OH*OW*KH*KW),~6*C*OH*OW*KH*KW,"inner: 2LD,1MUL,1ADD; outer: 1ST",5-deep affine nest.
+distance_point,distance_point_cpu,distance_point_dsa,L1,Static-Affine,O(N),~15*N,"6LD,3SUB,3MUL,2ADD,1SQRT,1ST",sqrtf per element.
+dotprod,dotprod_cpu,dotprod_dsa,L1,Static-Affine,O(n),~5*n + 2,"2LD,1MUL,1ADD",Scalar reduction.
+dot_product_3d,dot_product_3d_cpu,dot_product_3d_dsa,L1,Static-Affine,O(N),~16*N,"6LD,3MUL,2ADD,1ST",Per-element 3D dot.
+downsample,downsample_cpu,downsample_dsa,L1,Static-Affine,O(N/factor),~4*N/factor,"1LD,1ST,1MUL idx",Strided copy.
+downsample_avg,downsample_avg_cpu,downsample_avg_dsa,L1,Static-Affine,O(input_size),~5*input_size + ~3*output_size,"inner: 1LD,1ADD; outer: 1DIV,1ST",Average-pool 1D.
+edge_update,edge_update_cpu,edge_update_dsa,L3,Aggregate-Dependent,O(num_edges + deg(src)) avg,~num_edges + ~deg(src)*c,"copy: 1LD,1ST per edge; scan: 1LD,1CMP per neighbor, early return",Early return on first matching edge in row; needs avg degree of src node.
+edge_update_batch,edge_update_batch_cpu,edge_update_batch_dsa,L3,Aggregate-Dependent,O(num_edges + sum_u deg(src_u)),~num_edges + sum_u deg(src_u)*c,"copy: 1LD,1ST/edge; per update: scan with break","Batch updates; depends on degrees of update sources."
+edit_distance_step,edit_distance_step_cpu,edit_distance_step_dsa,L1,Static-Affine,O(N),~12*N,"5LD,1CMP-SEL cost,2ADD,2MIN,1ADD subst,1ST",Anti-diagonal element-wise step.
+fft_butterfly,fft_butterfly_cpu,fft_butterfly_dsa,L1,Static-Affine,O(N*log N),~10*N*log2(N) + 2N,"init copy: 2LD,2ST; butterfly: 4MUL,2ADD,2SUB,2MUL twiddle,4LD,4ST","log2(N) outer stages; twiddles computed via cos/sin per stage."
+find_first_set,find_first_set_cpu,find_first_set_dsa,L4,Value-Distribution,O(N) avg / O(32*N) worst,"sum_i (position of lowest set bit)","outer: 1LD,1ST; inner while iters = trailing zeros + 1",Value-dependent.
+fir_filter,fir_filter_cpu,fir_filter_dsa,L2,Branched-Bounded,O(input_size*num_taps),~5*input_size*num_taps,"2LD,1MUL,1ADD,1CMP idx>=0",Boundary check `idx>=0`; affects first num_taps-1 outputs only.
+fir_filter_stateful,fir_filter_stateful_cpu,fir_filter_stateful_dsa,L1,Static-Affine,O(input_size*num_taps),~5*input_size*num_taps + ~2*num_taps,"main: 2LD,1MUL,1ADD; state shift: 1LD,1ST per tap","Closed-form; deterministic state update."
+gather,gather_cpu,gather_dsa,L2,Branched-Bounded,O(N),~6*N,"1LD idx,1CMP bound,1LD src,1ST",Bounds check on index; per-iter bounded.
+gauss_seidel_step,gauss_seidel_step_cpu,gauss_seidel_step_dsa,L1,Static-Affine,O(N*N),~5*N*N,"3LD,1MUL,1ADD inner; 1SUB,1DIV,1ST outer",i-dependent inner bound but triangular -> closed-form N*(N-1)/2 + N*(N-1)/2.
+gemv,gemv_cpu,gemv_dsa,L1,Static-Affine,O(M*N),~5*M*N + 5*M,"inner: 2LD,1MUL,1ADD; outer: 2MUL,1ADD,1ST",Matrix-vector.
+gf_mul,gf_mul_cpu,gf_mul_dsa,L1,Static-Affine,O(N),~10*N + 8 inner,"outer: 2LD,1AND,1ST; inner (8 fixed iters): 1CMP,~1XOR,1SHL,1AND,1CMP,1XOR cond,1SHR",GF(2^8) multiplication; fixed 8 inner iters.
+hash_mix,hash_mix_cpu,hash_mix_dsa,L1,Static-Affine,O(N),~12*N,"2LD,1ADD,1ROT,1XOR,1MUL,1ROT,1ST",MurmurHash-style mixing.
+hist_bin,hist_bin_cpu,hist_bin_dsa,L2,Branched-Bounded,O(N + num_bins),~8*N + num_bins,"init: 1ST; main: 1LD,2CMP range,1DIV,1ADD-cap,1RMW bin",`continue` for out-of-range; needs in-range fraction for exact.
+histogram,histogram_cpu,histogram_dsa,L2,Branched-Bounded,O(N + num_bins),~6*N + num_bins,"init: 1ST; main: 1LD,1CMP,1LD bin,1ADD,1ST bin","Atomic add (scatter); cycle assumes scatter is 1 instr."
+histogram_strided,histogram_strided_cpu,histogram_strided_dsa,L2,Branched-Bounded,O(N + num_bins),~7*N + num_bins,"init: 1ST; main: 1LD,1DIV,1CMP,1LD,1ADD,1ST",Same as histogram with extra div.
+ifft_butterfly,ifft_butterfly_cpu,ifft_butterfly_dsa,L1,Static-Affine,O(N*log N),~10*N*log2(N) + 2N,"same as fft_butterfly",log2(N) stages; deterministic.
+im2col,im2col_cpu,im2col_dsa,L1,Static-Affine,O(C*KH*KW*OH*OW),~3*C*KH*KW*OH*OW,"1LD,1ST,~1ADD index per leaf",5-deep affine nest.
+integrate_trapz,integrate_trapz_cpu,integrate_trapz_dsa,L1,Static-Affine,O(N),~7*N,"4LD,1SUB,1ADD,1MUL,1ADD",Trapezoidal rule.
+interpolate_linear,interpolate_linear_cpu,interpolate_linear_dsa,L4,Value-Distribution,O(N_query*N_data) worst,"sum_q (position of xq in x)*c","search inner break; final: 4LD,1SUB,1DIV,1SUB,1MUL,1ADD,1ST",Sequential search with break; depends on query distribution.
+jacobi_stencil_5pt,jacobi_stencil_5pt_cpu,jacobi_stencil_5pt_dsa,L1,Static-Affine,O(M*N),~9*(M-2)*(N-2) + 2*(M+N),"interior: 5LD,4ADD,1MUL,1ST; boundary copy: 1LD,1ST",5-point stencil; interior closed-form.
+jacobi_stencil_7pt,jacobi_stencil_7pt_cpu,jacobi_stencil_7pt_dsa,L2,Branched-Bounded,O(L*M*N),~3*L*M*N + ~11*(L-2)*(M-2)*(N-2),"copy pass has bound check; interior: 6LD,5ADD,1MUL,1ST",Boundary check during copy; cost bounded.
+kmp_table,kmp_table_cpu,kmp_table_dsa,L4,Value-Distribution,O(M) amortized,"~O(M) amortized; worst ~M^2","outer: 1LD; inner while jumps via failure table","Inner while iters amortize to O(M) total over outer; needs pattern structure."
+line_intersect,line_intersect_cpu,line_intersect_dsa,L2,Branched-Bounded,O(N),~25*N,"8LD,4SUB,2MUL,1SUB,1FABS,1CMP parallel-test,2*(2MUL+1SUB+1DIV),4CMP,1ST",Parallel-lines `continue`; both arms bounded.
+lower_bound,lower_bound_cpu,lower_bound_dsa,L4,Value-Distribution,O(M*log N),~M*log2(N)*c,"inner: 1LD,1CMP,2ADD/SHR",Pure binary search; iters = ceil(log2(N)).
+mat3x3_mult,mat3x3_mult_cpu,mat3x3_mult_dsa,L1,Static-Affine,O(N),~50*N,"inner 27 muls/adds; output 9 ST",Per-element 3x3 matmul (fixed 27 fmas).
+matmul,matmul_cpu,matmul_dsa,L1,Static-Affine,O(M*N*K),~5*M*N*K,"inner: 2LD,1MUL,1ADD; outer: 1ST",Naive triple-loop matmul.
+matvec,matvec_cpu,matvec_dsa,L1,Static-Affine,O(M*N),~5*M*N,"inner: 2LD,1MUL,1ADD; outer: 1ST",Matrix-vector.
+mean,mean_cpu,mean_dsa,L1,Static-Affine,O(N),~4*N + 2,"1LD,1ADD; tail: 1DIV",Reduce + divide.
+merge,merge_cpu,merge_dsa,L2,Branched-Bounded,O(N+M),~8*(N+M),"2LD,1CMP,1ST,1ADD per merged element; tail loops",Total iters = N+M (deterministic); branch mix data-dependent.
+mmtile,mmtile_cpu,mmtile_dsa,L1,Static-Affine,O(M*N*K),~5*M*N*K + ~M*K,"init: 1ST; inner: 2LD,1MUL,1ADD; tile epilogue: 1RMW","Tiled matmul; closed-form once M,N,K,TILE_* fixed."
+modexp,modexp_cpu,modexp_dsa,L4,Value-Distribution,O(N*log exp) worst,"sum_i log2(exp[i])","outer: 2LD; inner while ~log2(exp): 1AND,~1MUL+1MOD cond,1MUL+1MOD,1SHR",Square-and-multiply; iters = bit-length of exponent.
+modmul,modmul_cpu,modmul_dsa,L1,Static-Affine,O(N),~6*N,"2LD,1MUL64,1MOD,1ST",Per-element multiply+mod.
+moving_avg,moving_avg_cpu,moving_avg_dsa,L1,Static-Affine,O(N*window_size) worst,~window_size*N + N,"inner: 1LD,1ADD; outer: 1DIV,1ST",Per-element O(window) sum; closed-form once window known.
+newton_iter,newton_iter_cpu,newton_iter_dsa,L1,Static-Affine,O(N),~6*N,"3LD,1DIV,1SUB,1ST",Single Newton update.
+normalize,normalize_cpu,normalize_dsa,L1,Static-Affine,O(n),~9*n + 4,"pass1: 1LD,1ADD; tail: 1CMP,1DIV/SEL; pass2: 1LD,1MUL,1ST",Two-pass.
+normalize_vec3,normalize_vec3_cpu,normalize_vec3_dsa,L2,Branched-Bounded,O(N),~18*N,"3LD,3MUL,2ADD,1SQRT,1CMP,3DIV+3ST or 3ST zero",Zero-length guard; equal-cost arms (3 stores each).
+outer,outer_cpu,outer_dsa,L1,Static-Affine,O(M*N),~5*M*N,"2LD,1MUL,1ST",Outer product.
+pack_bits,pack_bits_cpu,pack_bits_dsa,L1,Static-Affine,O(num_bits),~7*num_bits + 2*num_words,"inner: 1LD,1AND,1SHL,1OR; outer: 1ST",Fixed inner loop bound (32 bits/word).
+parity,parity_cpu,parity_dsa,L4,Value-Distribution,O(N) avg / O(32*N) worst,"sum_i (bit-length of input[i])","outer: 1LD,1ST; inner while: 1AND,1XOR,1SHR",Loop until value==0; needs distribution.
+partition,partition_cpu,partition_dsa,L2,Branched-Bounded,O(N),~8*N,"2 passes; per iter: 1LD,1CMP,1ST cond,1ADD","Two-pass stable partition; comparison count is 2N (deterministic)."
+pool_avg,pool_avg_cpu,pool_avg_dsa,L1,Static-Affine,O(OH*OW*pool_h*pool_w),~5*OH*OW*pool_h*pool_w,"inner: 1LD,1ADD; outer: 1DIV,1ST",Average pooling.
+pool_max,pool_max_cpu,pool_max_dsa,L1,Static-Affine,O(OH*OW*pool_h*pool_w),~5*OH*OW*pool_h*pool_w,"inner: 1LD,1MAX; outer: 1ST",Max pooling.
+popcount,popcount_cpu,popcount_dsa,L4,Value-Distribution,O(N) avg / O(32*N) worst,"sum_i (bit-length of input[i])","outer: 1LD,1ST; inner while: 1AND,1ADD,1SHR",Loop until value==0; needs distribution.
+prefix_sum_exclusive,prefix_sum_exclusive_cpu,prefix_sum_exclusive_dsa,L1,Static-Affine,O(N),~4*N + 1,"1LD,1ADD,1ST (chained)",Sequential.
+prefix_sum_inclusive,prefix_sum_inclusive_cpu,prefix_sum_inclusive_dsa,L1,Static-Affine,O(N),~4*N + 1,"1LD,1ADD,1ST (chained)",Sequential.
+quantile,quantile_cpu,quantile_dsa,L1,Static-Affine,O(1),~10,"4LD,1MUL,1SUB,1ADD,1MUL,1ADD",Single linear interpolation; constant work.
+quat_mult,quat_mult_cpu,quat_mult_dsa,L1,Static-Affine,O(N),~50*N,"8LD,16MUL,12ADD/SUB,4ST",Per-element quaternion multiply.
+relu,relu_cpu,relu_dsa,L1,Static-Affine,O(N),~4*N,"1LD,1MAX,1ST",max(0, x).
+rle_decode,rle_decode_cpu,rle_decode_dsa,L3,Aggregate-Dependent,O(sum counts),~3*Sum(counts) + 2*encoded_length,"outer: 2LD; inner runs of length counts[i]: 1ST,1ADD",Inner trip count = counts[i]; total = Sum(counts).
+rle_encode,rle_encode_cpu,rle_encode_dsa,L3,Aggregate-Dependent,O(N),~5*N + 3*runs,"per iter: 1LD,1CMP,~1ADD or 2ST+ADD on transition",Cost dominated by N; output writes depend on run count.
+rotate_bits,rotate_bits_cpu,rotate_bits_dsa,L1,Static-Affine,O(N),~7*N,"2LD,1AND,1CMP,1SHL,1SHR,1OR,1ST",Per-element rotate by data-driven shift (single op).
+runge_kutta_step,runge_kutta_step_cpu,runge_kutta_step_dsa,L1,Static-Affine,O(N),~10*N,"5LD,3MUL,3ADD,1MUL,1ADD,1ST",Single RK4 weight combine.
+sbox_lookup,sbox_lookup_cpu,sbox_lookup_dsa,L1,Static-Affine,O(N),~5*N,"1LD data,1AND,1LD sbox,1ST",Table lookup.
+scatter_add,scatter_add_cpu,scatter_add_dsa,L2,Branched-Bounded,O(N),~6*N,"2LD,1CMP bound,1LD dst,1ADD,1ST",Bounds-checked atomic add.
+sigmoid,sigmoid_cpu,sigmoid_dsa,L1,Static-Affine,O(N),~7*N,"1LD,1NEG,1EXP,1ADD,1DIV,1ST",Per-element exp + divide.
+softmax,softmax_cpu,softmax_dsa,L1,Static-Affine,O(N),~12*N,"pass1: 1LD,1MAX; pass2: 1LD,1SUB,1EXP,1ADD,1ST; pass3: 1LD,1DIV,1ST",Three-pass; deterministic.
+sort_bubble,sort_bubble_cpu,sort_bubble_dsa,L2,Branched-Bounded,O(N*N),~3*N*(N-1)/2,"compares deterministic; swaps data-dependent (0..N*(N-1)/2)","Pass count fixed; swap count depends on inversions."
+sort_insertion,sort_insertion_cpu,sort_insertion_dsa,L4,Value-Distribution,O(N*N) worst / O(N) best,"~N + sum_i (#elements > output[i] left of i)","outer: 1LD; inner while: 1LD,1CMP,1ST,1SUB",Iterations = #inversions; needs input ordering.
+sort_merge,sort_merge_cpu,sort_merge_dsa,L3,Aggregate-Dependent,O(N*log N),~6*N*log2(N) + N,"per width: merge passes; per merged element: 2LD,1CMP,1ST,1ADD",Bottom-up merge sort; pass count fixed but branch mix data-dependent.
+sort_quick,sort_quick_cpu,sort_quick_dsa,L5,Structure-Dependent,O(N*log N) avg / O(N*N) worst,"~N*log2(N) avg up to N*N worst","explicit stack ops; per element: 1LD,1CMP,~1 swap cond, etc","Iterative quicksort; partition imbalance varies wildly with data + pivot choice."
+spmm,spmm_cpu,spmm_dsa,L3,Aggregate-Dependent,O(NNZ_A*K + M*K),~5*NNZ_A*K + M*K,"init: 1ST; inner row: 2LD A; per A-entry: 2LD,1MUL,1RMW K times","NNZ_A is the dominant aggregate."
+spmspm,spmspm_cpu,spmspm_dsa,L3,Aggregate-Dependent,O(sum_i NNZ_A_row*avg NNZ_B_row + M*K),"complex; depends on per-row NNZs of A,B","temp_row init+scan; per (A_entry, B_entry): 2LD,1MUL,1RMW",Sparse-sparse matmul; cost depends on intersection structure.
+spmspv,spmspv_cpu,spmspv_dsa,L3,Aggregate-Dependent,O(NNZ_A + x_nnz + N + M),~5*NNZ_A + 2*x_nnz + N + M,"densify x; per A-entry: 2LD,1MUL,1ADD","NNZ_A and x_nnz aggregates."
+spmv,spmv_cpu,spmv_dsa,L3,Aggregate-Dependent,O(NNZ + M),~5*NNZ + 3*M,"per nonzero: 2LD vals/col,1LD x,1MUL,1ADD; per row: 1LD row_ptr*2,1ST",Classic CSR SpMV.
+stream_nested,stream_nested_cpu,stream_nested_dsa,L1,Static-Affine,O(log^3 n),~log^3(n) * c,"triple log-step loops; per leaf: 3ADD idx,1MOD,1LD,1ADD",All loop steps are log (i<<=1, j>>=1, k*=2); closed-form.
+stream_update,stream_update_cpu,stream_update_dsa,L1,Static-Affine,O((n/step)*log n),~(n/step)*log2(n)*c,"per leaf: 1ADD idx,1MOD,1LD,1ADD",Closed-form.
+string_compare,string_compare_cpu,string_compare_dsa,L4,Value-Distribution,O(N) worst,"position of first mismatch","2LD,2CMP,1ST,early return",Early return on first diff; needs common-prefix length.
+string_hash,string_hash_cpu,string_hash_dsa,L1,Static-Affine,O(N),~7*(N-window+1) + window,"prologue: 1MUL,1MOD per (window-1); per window: 4ops",Rolling hash; bounded by window_size and N.
+transform_point,transform_point_cpu,transform_point_dsa,L1,Static-Affine,O(N),~24*N + 9,"3LD point; 9MUL,9ADD,3ADD translate,3ST",Affine 3D transform per point.
+transpose,transpose_cpu,transpose_dsa,L1,Static-Affine,O(M*N),~3*M*N,"1LD,1ST,~1MUL+1ADD idx",Matrix transpose.
+tridiag_solve,tridiag_solve_cpu,tridiag_solve_dsa,L1,Static-Affine,O(N),~12*N,"forward: 5LD,1MUL,2SUB,2DIV,2ST; back: 3LD,1MUL,1SUB,1ST",Thomas algorithm; deterministic.
+trsv_lower,trsv_lower_cpu,trsv_lower_dsa,L1,Static-Affine,O(N*N),~5*N*N/2 + 3*N,"inner: 2LD,1MUL,1SUB; outer: 1DIV,1ST",Triangular solve; triangular trip count.
+trsv_upper,trsv_upper_cpu,trsv_upper_dsa,L1,Static-Affine,O(N*N),~5*N*N/2 + 3*N,"inner: 2LD,1MUL,1SUB; outer: 1DIV,1ST",Triangular solve; triangular trip count.
+unpack_bits,unpack_bits_cpu,unpack_bits_dsa,L1,Static-Affine,O(num_bits),~5*num_bits,"per bit: 1SHR,1AND,1ST",Fixed inner loop bound (32 bits/word).
+upper_bound,upper_bound_cpu,upper_bound_dsa,L4,Value-Distribution,O(M*log N),~M*log2(N)*c,"inner: 1LD,1CMP,2ADD/SHR",Pure binary search; iters = ceil(log2(N)).
+upsample,upsample_cpu,upsample_dsa,L1,Static-Affine,O(N*factor),~N*factor + N,"init: 1ST per output; insert: 1LD,1ST per input",Zero-insertion upsample.
+upsample_linear,upsample_linear_cpu,upsample_linear_dsa,L1,Static-Affine,O(input_size*factor),~6*input_size*factor,"per slot: 2LD,1DIV alpha,1SUB,1MUL,1ADD,1ST",Linear interpolation per slot.
+variance,variance_cpu,variance_dsa,L1,Static-Affine,O(N),~9*N + 4,"pass1: 1LD,1ADD; pass2: 1LD,1SUB,1MUL,1ADD; tail: 2DIV",Two-pass.
+vecadd,vecadd_cpu,vecadd_dsa,L1,Static-Affine,O(n),~5*n,"2LD,1ADD,1ST",Trivial element-wise.
+vecmul,vecmul_cpu,vecmul_dsa,L1,Static-Affine,O(n),~5*n,"2LD,1MUL,1ST",Trivial element-wise.
+vecnorm_l1,vecnorm_l1_cpu,vecnorm_l1_dsa,L1,Static-Affine,O(N),~3*N,"1LD,1ADD",Sum-of-elements (assumes non-negative).
+vecnorm_l2,vecnorm_l2_cpu,vecnorm_l2_dsa,L1,Static-Affine,O(N),~4*N,"1LD,1MUL,1ADD",Sum-of-squares.
+vecscale,vecscale_cpu,vecscale_dsa,L1,Static-Affine,O(N),~4*N,"1LD,1MUL,1ST",Trivial element-wise.
+vecsum,vecsum_cpu,vecsum_dsa,L1,Static-Affine,O(N),~3*N,"1LD,1ADD",Trivial reduction.
+vecsum-while,vecsum_cpu,vecsum_dsa,L1,Static-Affine,O(N),~3*N,"1LD,1ADD",Variant of vecsum (kernel body identical; differs only in DSA pragmas).
+wildcard_match,wildcard_match_cpu,wildcard_match_dsa,L4,Value-Distribution,O(N*M) worst,"sum over positions of match-length until break","outer: per offset i; inner: 2LD,1CMP wildcard,1CMP eq,early break",Early break on mismatch + early return on full match; data-dependent.
+window_blackman,window_blackman_cpu,window_blackman_dsa,L1,Static-Affine,O(N),~10*N,"1LD,2COS,2MUL,2SUB/ADD,1MUL,1ST",Two cos per sample (Blackman window).
+window_hamming,window_hamming_cpu,window_hamming_dsa,L1,Static-Affine,O(N),~7*N,"1LD,1COS,1MUL,1SUB,1MUL,1ST",One cos per sample.
+window_hanning,window_hanning_cpu,window_hanning_dsa,L1,Static-Affine,O(N),~7*N,"1LD,1COS,1MUL,1SUB,1MUL,1ST",One cos per sample.
+xor_block,xor_block_cpu,xor_block_dsa,L1,Static-Affine,O(N),~5*N,"2LD,1XOR,1ST",Trivial element-wise.

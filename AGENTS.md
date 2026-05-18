@@ -37,3 +37,50 @@ Use the following sequence as the end to end test pipeline:
 - `ninja -C build clean-loom`
 - `ninja -C build loom`
 - `ninja -C build check-loom`
+
+# Performance Modeling
+
+## Goal
+Estimate cycle counts and op counts (loads, stores, adds, multiplies, etc.) for
+each kernel under `tests/app/`, under a 1-cycle-per-op dataflow execution model
+with sufficient hardware resources.
+
+## Conventions
+1. Loop-carried values (accumulators, induction vars) are register-resident.
+   No L/S charged on access; one load at entry, one store at exit if observed.
+2. Address arithmetic is ignored. Adds/muls used solely for index/pointer math
+   (e.g., `i + lag` for `&x[i+lag]`) are not counted.
+3. Loop control is ignored. Iterator increments (`i++`) and bound compare/branch
+   are assumed absorbed by branch prediction; no cycle or op cost charged.
+4. Outer-loop work is a separate additive term. Total = inner_cycles + outer_cycles
+   (prologue inits, epilogue stores). Not folded into per-iter inner cost.
+5. Pipeline fill is dropped. Per-iteration feed-forward compute is treated as
+   one combinational stage; only the loop-carried back-edge costs an II.
+   Inner cycles = trip_count × II.
+
+## Per-kernel statistics
+- `inner_cycles`, `outer_cycles`, `total_cycles`
+- `II` (initiation interval — longest loop-carried recurrence latency)
+- Op counts: loads, stores, adds, multiplies, divides, compares, bitops,
+  transcendentals (sqrt/exp/cos/sin/log)
+
+## When conventions break (revisit case-by-case)
+- Short inner loops with deep DAGs: `mat3x3_mult`, `quat_mult`, `cross_product`,
+  `crc32`, `gf_mul`. Pipeline fill becomes non-negligible.
+- Multi-op loop-carried recurrences (II > 1): `tridiag_solve`, `trsv_lower/upper`,
+  `gauss_seidel_step`, `kmp_table`. Must model recurrence latency explicitly.
+- Data-dependent branches: binary search variants, popcount-while, early-break
+  loops (`string_compare`, `wildcard_match`). Convention 3 leaks here.
+
+## Difficulty classification
+Kernels are classified L1–L5 by performance-analysis difficulty; see
+`/home/ankaijin/loom/kernel_perf_difficulty.csv`.
+- L1 Static-Affine        — closed-form polynomial in size params
+- L2 Branched-Bounded     — affine with bounded conditional bodies
+- L3 Aggregate-Dependent  — needs input aggregates (NNZ, Σcounts, Σdeg)
+- L4 Value-Distribution   — needs value distribution (bit lengths, prefix lengths)
+- L5 Structure-Dependent  — needs input ordering/topology (quicksort, BFS)
+
+## Artifacts
+- `kernel_perf_difficulty.csv` — classification + rough formulas for 127 kernels.
+- `tests/app/<kernel>/<kernel>_eval.md` — per-kernel eval (cycles, ops, DDG).
