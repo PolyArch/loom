@@ -41,36 +41,111 @@ Use the following sequence as the end to end test pipeline:
 # Performance Modeling
 
 ## Goal
-Estimate cycle counts and op counts (loads, stores, adds, multiplies, etc.) for
-each kernel under `tests/app/`, under a 1-cycle-per-op dataflow execution model
-with sufficient hardware resources.
+Estimate the lower bound on latency and upper bound on throughput for each
+kernel under `tests/app/`, under an ASAP dataflow model with unlimited
+hardware: 1-cycle-per-op, unbounded fan-out, infinite functional units,
+infinite memory bandwidth, and full unrolling of every dimension with no
+carried dependence. The model answers "what is the shortest possible schedule
+for this DAG?", not "what would a real machine deliver?"
 
 ## Conventions
-1. Loop-carried values (accumulators, induction vars) are register-resident.
-   No L/S charged on access; one load at entry, one store at exit if observed.
-2. Address arithmetic is ignored. Adds/muls used solely for index/pointer math
-   (e.g., `i + lag` for `&x[i+lag]`) are not counted.
-3. Loop control is ignored. Iterator increments (`i++`) and bound compare/branch
-   are assumed absorbed by branch prediction; no cycle or op cost charged.
-4. Outer-loop work is a separate additive term. Total = inner_cycles + outer_cycles
-   (prologue inits, epilogue stores). Not folded into per-iter inner cost.
-5. Pipeline fill is dropped. Per-iteration feed-forward compute is treated as
-   one combinational stage; only the loop-carried back-edge costs an II.
-   Inner cycles = trip_count × II.
+
+1. **Op counts include every dynamic operation in the kernel.** Counts
+   measure total dynamic work and are independent of scheduling — unrolling
+   does not change them. All of the following are counted:
+   - **Algorithmic arithmetic** — the kernel's intended math.
+   - **Loop-carried state updates** — accumulator merges, scan steps,
+      recurrence updates. A reduction over `N` values still costs `N − 1`
+      adds even when tree-scheduled.
+   - **Memory I/O** — every load and store (see Convention 6 for uniform
+      1-cycle costing). Includes algorithmic array loads/stores, kernel-input
+      boundary loads, kernel-output boundary stores, and per-access load/
+      store for any named scalar (including loop-carried accumulators and
+      induction variables).
+   - **Induction variables** — each loop iteration charges a load (read
+      iterator), an add (increment), a store (write iterator), and a compare
+      (bound check). The bound itself is loaded once (hoisted as loop-
+      invariant) if it is a parameter.
+   - **Address generation** — every arithmetic op needed to compute an
+      address. For strided multi-dim access `a[i][j]`, charge one add per
+      dimension per iteration (incremental-stride form). For non-affine
+      indexing (gather/scatter, `a[idx[i]]`), charge the loads and arithmetic
+      the source dictates.
+   - **Dead computations** — ops whose results are not consumed by any
+      output. They still count as work.
+
+2. **`total_cycles` is the critical-path depth of the kernel's dataflow DAG.**
+   Longest dependence chain from input to output, 1 cycle per op. Any two ops
+   with no path between them schedule in the same cycle. Ops counted under
+   Convention 1 that lie off the critical path do not extend `total_cycles`.
+
+3. **Loops are classified by carried dependence:**
+   - **Parallel dim** — no value produced in iter `i` is consumed in iter
+      `i+1` (via register, accumulator, or in-place memory). Fully unrolled;
+      contributes the per-iter critical path *once* (not multiplied by trip).
+   - **Sequential dim** — has a carried scalar/register dep. Contributes
+      `trip_count × II` to the critical path, where `II` is the latency of
+      the carried recurrence.
+   - **Reduction dim** — carried dep is an associative op (sum, product,
+      min, max, xor, and, or). Tree-reduced: contributes `ceil(log2(trip))`
+      to the critical path. Op count stays at `trip − 1` ops.
+   Non-associative recurrences (modular state, division chains, KMP-table-
+   style) stay sequential — `trip × II`.
+
+  4. **Address arithmetic and loop control are counted as ops (per Convention 1)
+   and frequently lie on the critical path.** Address arithmetic typically
+   sits on the per-iteration critical path because the load it feeds is on
+   that chain (counter → address → load → compute → store). Induction
+   carry — the iterator's `i ← i+1` update — is the sequential recurrence
+   for any sequential dim, so it directly governs `II` for that dim.
+   Treat address gen and induction carry as first-class contributors to
+   `total_cycles`, not as free overhead. Example: in FFT, butterfly index
+   computation forms a significant fraction of the per-stage critical path.
+
+5. **Dead computations are counted as ops** but by definition cannot lie on
+   the critical path to any output — they extend op counts but never
+   `total_cycles`.
+
+6. **No register/memory distinction in load/store cost.** Every load and
+   store costs 1 cycle, regardless of whether the target is a local scalar,
+   an induction variable, a loop-carried accumulator, or an array element.
+   No "register-resident" exemption — each named read is a 1-cycle load and
+   each named write is a 1-cycle store, same as array access. Anonymous
+   dataflow values (unnamed intermediates flowing directly op-to-op without
+   a source-level name) remain free. Under full unrolling of a parallel
+   dim, each unrolled instance has its own private storage; no aliasing
+   assumed.
+
+   Schedule-level corollary: when a reduction dim is tree-scheduled
+   (Convention 3), the source-level accumulator collapses into the tree's
+   dataflow edges and contributes no loads/stores of its own — only the
+   `N` inputs (`N` loads) and the final result (1 store) are charged.
 
 ## Per-kernel statistics
-- `inner_cycles`, `outer_cycles`, `total_cycles`
-- `II` (initiation interval — longest loop-carried recurrence latency)
-- Op counts: loads, stores, adds, multiplies, divides, compares, bitops,
-  transcendentals (sqrt/exp/cos/sin/log)
+- `total_cycles` — critical-path depth (symbolic in size params).
+- `critical_path` — symbolic decomposition, e.g.
+   `1 (load) + 1 (mul) + ceil(log2(K)) (reduce) + 1 (store)`.
+- Per loop dim: `{name, trip_count, kind: parallel | sequential | reduction, II}`.
+   `II` is only meaningful for sequential dims.
+- Op counts (loads, stores, adds, multiplies, divides, compares, bitops,
+   transcendentals: sqrt/exp/cos/sin/log) aggregated across all sources from
+   Convention 1. Optionally split into `algorithmic` vs. `overhead` (address
+   + induction + dead + scalar L/S) for interpretability.
 
 ## When conventions break (revisit case-by-case)
-- Short inner loops with deep DAGs: `mat3x3_mult`, `quat_mult`, `cross_product`,
-  `crc32`, `gf_mul`. Pipeline fill becomes non-negligible.
-- Multi-op loop-carried recurrences (II > 1): `tridiag_solve`, `trsv_lower/upper`,
-  `gauss_seidel_step`, `kmp_table`. Must model recurrence latency explicitly.
-- Data-dependent branches: binary search variants, popcount-while, early-break
-  loops (`string_compare`, `wildcard_match`). Convention 3 leaks here.
+- **Non-associative recurrences (II > 1)**: `tridiag_solve`,
+   `trsv_lower/upper`, `gauss_seidel_step`, `kmp_table`. The reduction case
+   in Convention 3 does not apply; the recurrence is fundamentally serial.
+- **Data-dependent termination**: binary search, popcount-while,
+   `string_compare`, `wildcard_match`. Trip count and termination predicate
+   are input-dependent; the termination compare sits on the critical path
+   (Convention 4 exception applies).
+- **In-place updates that alias across iterations**: stencils, scans, sorts.
+   The carried dep is via memory, not register; check aliasing before
+   classifying a dim as parallel.
+- **Floating-point reductions**: technically non-associative, but we tree-
+   reduce them anyway under this model (lowest-latency bound). Flag the
+   kernel if bit-equivalence to a serial reference matters.
 
 ## Difficulty classification
 Kernels are classified L1–L5 by performance-analysis difficulty; see
@@ -81,6 +156,13 @@ Kernels are classified L1–L5 by performance-analysis difficulty; see
 - L4 Value-Distribution   — needs value distribution (bit lengths, prefix lengths)
 - L5 Structure-Dependent  — needs input ordering/topology (quicksort, BFS)
 
+Under the ASAP model, many L1 kernels collapse from O(N) cycles to O(1) or
+O(log N); difficulty class still reflects the information needed to predict
+op counts and trip counts, which is unchanged.
+
 ## Artifacts
 - `kernel_perf_difficulty.csv` — classification + rough formulas for 127 kernels.
 - `tests/app/<kernel>/<kernel>_eval.md` — per-kernel eval (cycles, ops, DDG).
+   Note: existing eval files were written under the prior serial model with
+   reduced op-count scope; they need re-evaluation against the ASAP +
+   full-op-count + uniform-L/S conventions above.

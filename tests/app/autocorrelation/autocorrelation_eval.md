@@ -1,52 +1,145 @@
 # Autocorrelation Performance
-Parameters: `x_size = 128`, `max_lag = 32`
+Parameters: `x_size = 128`, `max_lag = 32`. Difficulty: **L1 Static-Affine**.
 
-## Kernel Properties
-- **Input-independent**: cycle and op counts are functions of `x_size` and `max_lag` only; values of `x` do not affect the schedule.
-- **Per-lag inner trip count**: `inner_iters(lag) = x_size − lag` for `lag ∈ [0, max_lag)`. Sum is `Σ_{lag=0..31}(128 − lag) = 3,600`. 
+Kernel:
+```cpp
+for (uint32_t lag = 0; lag < max_lag; lag++) {
+  float sum = 0.0f;
+  for (uint32_t i = 0; i < x_size - lag; i++) {
+    sum += x[i] * x[i + lag];
+  }
+  output[lag] = sum;
+}
+```
 
-## Cycle + Instruction Count
-- Expected cycle count:  
-inner cycles = 3,600  
-fill (32 × 2) = 64  
-outer store = 32  
-**total ≈ 3,728**
-- loads = 7,200   (2 × 3,600)
-- stores = 32   (1 × max_lag)
-- adds = 3,600   (1 × 3,600; i++ excluded as loop control)
-- multiplies = 3,600
+## Loop classification
+| dim   | trip_count       | kind      | II   | notes |
+|-------|------------------|-----------|------|-------|
+| `lag` | `max_lag` = 32   | parallel  | n/a  | each iter privatizes `sum` and writes a distinct `output[lag]` — no carry through register or memory. |
+| `i`   | `x_size − lag` (varies) | reduction | n/a  | carried dep is `sum += …` — associative; tree-reduced per Convention 3 (float reduction note). |
+
+Note (float reductions): The inner reduction is bit-identical to a serial accumulation only if `sum` is summed in tree order. The ASAP model tree-reduces it (Convention 3); bit-equivalence to the CPU reference under arbitrary inputs is **not** guaranteed.
+
+## Critical path (`total_cycles`)
+
+Per-`lag` critical path (single unrolled outer instance, inner reduction over `N = x_size − lag` products):
+```
+1 (addr add) + 1 (load x[i] ‖ x[i+lag]) + 1 (mul) + ceil(log2(N)) (tree-reduce) + 1 (store output[lag])
+= 4 + ceil(log2(x_size − lag))
+```
+
+`lag` is a parallel dim → fully unrolled → all 32 instances overlap. `total_cycles` is the **max** over lag, dominated by `lag = 0`:
+
+```
+total_cycles = 4 + ceil(log2(x_size))
+             = 4 + ceil(log2(128))
+             = 4 + 7
+             = 11
+```
+
+For every `lag ∈ [0, 32)` here, `N ∈ [97, 128]` and `ceil(log2(N)) = 7`, so all 32 lag-instances have identical depth 11.
+
+## Op counts
+
+Total inner iterations across all lag values:
+```
+Σ_{lag=0..31} (x_size − lag) = Σ_{k=97..128} k = (97 + 128) · 32 / 2 = 3,600
+```
+
+### Algorithmic
+| op      | count | source |
+|---------|-------|--------|
+| loads   | 7,200 | `x[i]` (3,600) + `x[i+lag]` (3,600) |
+| stores  | 32    | `output[lag] = sum` (one per lag; the sole materialized scalar per Convention 6 corollary) |
+| mul     | 3,600 | `x[i] * x[i+lag]` per inner iter |
+| add     | 3,568 | reduction adds, `N−1` per lag: `Σ_{lag} (x_size − lag − 1) = 3,600 − 32` |
+
+`sum` itself is collapsed into tree edges (Convention 6 corollary), so its init store and per-iter L/S are not charged.
+
+### Overhead (address + induction + bound + param)
+| op      | count  | source |
+|---------|--------|--------|
+| loads   | 3,634  | inner `i` reads: 3,600; outer `lag` reads: 32; param hoists (`x_size`, `max_lag`): 2 |
+| stores  | 3,632  | inner `i` writes: 3,600; outer `lag` writes: 32 |
+| adds    | 10,864 | addr-gen for `&x[i]` (1 add/iter × 3,600) + addr-gen for `&x[i+lag]` (1 add/iter × 3,600) + `i++` (3,600) + `lag++` (32) + bound `x_size − lag` (32, hoisted per outer iter) |
+| compares| 3,632  | inner bound `i < x_size − lag` (3,600) + outer bound `lag < max_lag` (32) |
+
+Per the incremental-stride convention, `&x[i+lag]` is a 1-D access with `lag` invariant in the inner loop, so the pointer advances by stride 1 per iter → 1 add per access (same as `&x[i]`).
+
+### Totals
+| op       | total  |
+|----------|--------|
+| loads    | **10,834** |
+| stores   | **3,664** |
+| adds     | **14,432** |
+| mul      | **3,600** |
+| compares | **3,632** |
+| div / bitop / transcendental | 0 |
 
 ## Data Dependency Graph
+Per-lag dataflow under the ASAP + tree-reduce model. Tree branches are shown for `N = 4` for legibility; the actual tree for `lag = 0` has depth `ceil(log2(128)) = 7`. Red edges trace the critical path.
+
 ```mermaid
 graph TD
-    %% Define the input nodes
-    i_in(("i"))
-    sum_in(("sum"))
-    xi(("x[i]"))
-    xilag(("x[i+lag]"))
+    %% Address generation per inner instance
+    aa0[("&x+i")]
+    aa1[("&x+(i+lag)")]
 
-    %% Define the computation nodes
-    mult((" * "))
-    addsum((" + "))
-    addi((" + "))
-    
-    %% Define the final output
-    i_out(("i"))
-    sum_out(("sum"))
+    %% Loads (the N pairs for one lag-instance)
+    ld_a0(("ld x[0]"))
+    ld_b0(("ld x[0+lag]"))
+    ld_a1(("ld x[1]"))
+    ld_b1(("ld x[1+lag]"))
+    ld_a2(("ld x[2]"))
+    ld_b2(("ld x[2+lag]"))
+    ld_a3(("ld x[3]"))
+    ld_b3(("ld x[3+lag]"))
 
-    %% Inner loop dependencies
-    xi -->|load| mult
-    xilag -->|load| mult
-    mult --> addsum
+    %% Per-pair multiplies
+    m0((" * "))
+    m1((" * "))
+    m2((" * "))
+    m3((" * "))
 
-    %% Accumulator dependency
-    sum_in --> addsum
-    addsum --> sum_out
+    %% Tree-reduce adds (depth = ceil(log2(N)))
+    add01((" + "))
+    add23((" + "))
+    add0123((" + "))
 
-    %% Iterator dependency
-    i_in --> addi
-    addi --> i_out
+    %% Store
+    st(("st output[lag]"))
 
-    %% Critical Path
-    linkStyle 3,4 stroke:#ff0000,stroke-width:3px;
+    %% addr → load
+    aa0 -.->|repr.| ld_a0
+    aa1 -.->|repr.| ld_b0
+    ld_a0 --> m0
+    ld_b0 --> m0
+    ld_a1 --> m1
+    ld_b1 --> m1
+    ld_a2 --> m2
+    ld_b2 --> m2
+    ld_a3 --> m3
+    ld_b3 --> m3
+
+    m0 --> add01
+    m1 --> add01
+    m2 --> add23
+    m3 --> add23
+    add01 --> add0123
+    add23 --> add0123
+    add0123 --> st
+
+    %% Critical path: one (addr → load → mul) chain through the deepest tree branch
 ```
+
+Outer `lag` dim is fully unrolled → 32 such graphs run in parallel, each computing one `output[lag]`. No edges cross between lag-instances (distinct sums, distinct output addresses, read-only `x`).
+
+## Delta vs. prior (serial-model) eval
+| metric        | old (serial) | new (ASAP) | reason for change |
+|---------------|--------------|------------|-------------------|
+| total_cycles  | 3,728        | **11**     | outer `lag` is parallel (32× unroll), inner `i` is a float reduction → tree (`log2 N`), not `N` |
+| loads         | 7,200        | **10,834** | now charges induction-var reads + param hoists per Conv 1 / Conv 6 |
+| stores        | 32           | **3,664**  | now charges induction-var writes per Conv 1 / Conv 6 |
+| adds          | 3,600        | **14,432** | adds now include address-gen (7,200), `i++`/`lag++` (3,632), bound subs (32), and the reduction tree uses `N−1` adds (3,568 vs 3,600) |
+| mul           | 3,600        | 3,600      | unchanged |
+| compares      | (not listed) | **3,632**  | bound checks now counted per Conv 1 |

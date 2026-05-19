@@ -29,3 +29,7 @@ verdi*
 sysProgress*/*
 sysProgress*
 ucli.key
+
+# Claude
+draft.md
+.claude/worktrees/
