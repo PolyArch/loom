@@ -16,9 +16,9 @@ for (uint32_t lag = 0; lag < max_lag; lag++) {
 | dim   | trip_count       | kind      | II   | notes |
 |-------|------------------|-----------|------|-------|
 | `lag` | `max_lag` = 32   | parallel  | n/a  | each iter privatizes `sum` and writes a distinct `output[lag]` — no carry through register or memory. |
-| `i`   | `x_size − lag` (varies) | reduction | n/a  | carried dep is `sum += …` — associative; tree-reduced per Convention 3 (float reduction note). |
+| `i`   | `x_size − lag` (varies) | reduction | n/a  | carried dep is `sum += …` — associative float sum, tree-reduced under the ASAP model. |
 
-Note (float reductions): The inner reduction is bit-identical to a serial accumulation only if `sum` is summed in tree order. The ASAP model tree-reduces it (Convention 3); bit-equivalence to the CPU reference under arbitrary inputs is **not** guaranteed.
+Note (float reductions): The inner reduction is bit-identical to a serial accumulation only if `sum` is summed in tree order. The ASAP model tree-reduces float `+` for lowest-latency depth; bit-equivalence to the CPU reference under arbitrary inputs is **not** guaranteed.
 
 ## Critical path (`total_cycles`)
 
@@ -50,11 +50,11 @@ Total inner iterations across all lag values:
 | op      | count | source |
 |---------|-------|--------|
 | loads   | 7,200 | `x[i]` (3,600) + `x[i+lag]` (3,600) |
-| stores  | 32    | `output[lag] = sum` (one per lag; the sole materialized scalar per Convention 6 corollary) |
+| stores  | 32    | `output[lag] = sum` (one per lag; the sole materialized scalar — `sum` itself collapses into tree edges) |
 | mul     | 3,600 | `x[i] * x[i+lag]` per inner iter |
 | add     | 3,568 | reduction adds, `N−1` per lag: `Σ_{lag} (x_size − lag − 1) = 3,600 − 32` |
 
-`sum` itself is collapsed into tree edges (Convention 6 corollary), so its init store and per-iter L/S are not charged.
+`sum` itself is collapsed into tree edges under the tree-reduce schedule, so its init store and per-iter L/S are not charged.
 
 ### Overhead (address + induction + bound + param)
 | op      | count  | source |
@@ -64,7 +64,7 @@ Total inner iterations across all lag values:
 | adds    | 10,864 | addr-gen for `&x[i]` (1 add/iter × 3,600) + addr-gen for `&x[i+lag]` (1 add/iter × 3,600) + `i++` (3,600) + `lag++` (32) + bound `x_size − lag` (32, hoisted per outer iter) |
 | compares| 3,632  | inner bound `i < x_size − lag` (3,600) + outer bound `lag < max_lag` (32) |
 
-Per the incremental-stride convention, `&x[i+lag]` is a 1-D access with `lag` invariant in the inner loop, so the pointer advances by stride 1 per iter → 1 add per access (same as `&x[i]`).
+Under the incremental-stride form, `&x[i+lag]` is a 1-D access with `lag` invariant in the inner loop, so the pointer advances by stride 1 per iter → 1 add per access (same as `&x[i]`).
 
 ### Totals
 | op       | total  |
@@ -77,7 +77,7 @@ Per the incremental-stride convention, `&x[i+lag]` is a 1-D access with `lag` in
 | div / bitop / transcendental | 0 |
 
 ## Data Dependency Graph
-Per-lag dataflow under the ASAP + tree-reduce model. Tree branches are shown for `N = 4` for legibility; the actual tree for `lag = 0` has depth `ceil(log2(128)) = 7`. Red edges trace the critical path.
+Per-lag dataflow under the ASAP + tree-reduce model. Tree branches are shown for `N = 4` for legibility; the actual tree for `lag = 0` has depth `ceil(log2(128)) = 7`. No data dependencies in this kernel. 
 
 ```mermaid
 graph TD
@@ -138,8 +138,8 @@ Outer `lag` dim is fully unrolled → 32 such graphs run in parallel, each compu
 | metric        | old (serial) | new (ASAP) | reason for change |
 |---------------|--------------|------------|-------------------|
 | total_cycles  | 3,728        | **11**     | outer `lag` is parallel (32× unroll), inner `i` is a float reduction → tree (`log2 N`), not `N` |
-| loads         | 7,200        | **10,834** | now charges induction-var reads + param hoists per Conv 1 / Conv 6 |
-| stores        | 32           | **3,664**  | now charges induction-var writes per Conv 1 / Conv 6 |
+| loads         | 7,200        | **10,834** | now charges induction-var reads + param hoists (uniform 1-cycle L/S for all named scalars) |
+| stores        | 32           | **3,664**  | now charges induction-var writes (uniform 1-cycle L/S for all named scalars) |
 | adds          | 3,600        | **14,432** | adds now include address-gen (7,200), `i++`/`lag++` (3,632), bound subs (32), and the reduction tree uses `N−1` adds (3,568 vs 3,600) |
 | mul           | 3,600        | 3,600      | unchanged |
-| compares      | (not listed) | **3,632**  | bound checks now counted per Conv 1 |
+| compares      | (not listed) | **3,632**  | per-iter bound checks now counted as dynamic ops |

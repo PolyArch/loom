@@ -121,6 +121,8 @@ for this DAG?", not "what would a real machine deliver?"
    dataflow edges and contributes no loads/stores of its own — only the
    `N` inputs (`N` loads) and the final result (1 store) are charged.
 
+You can cite the convention detiails, but don't cite the convention numbers directly in the eval.md files. 
+
 ## Per-kernel statistics
 - `total_cycles` — critical-path depth (symbolic in size params).
 - `critical_path` — symbolic decomposition, e.g.
