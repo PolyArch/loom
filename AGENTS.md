@@ -73,6 +73,10 @@ for this DAG?", not "what would a real machine deliver?"
       the source dictates.
    - **Dead computations** — ops whose results are not consumed by any
       output. They still count as work.
+   - Predicated bodies count speculatively: an `if` inside a loop body gates
+     the store, not the compute — count its ops at every iter. Exception:
+     early-exit / data-dependent-termination loops count only the iters that
+     actually execute (and only the branch the source path takes).
 
 2. **`total_cycles` is the critical-path depth of the kernel's dataflow DAG.**
    Longest dependence chain from input to output, 1 cycle per op. Any two ops

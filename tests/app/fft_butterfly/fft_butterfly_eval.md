@@ -1,3 +1,6 @@
+# ASAP Model Notes
+
+
 # FFT Butterfly Performance
 Parameters: `N = 16`, `log2(N) = 4`. 
 
