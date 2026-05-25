@@ -57,23 +57,25 @@ Total inner iterations across all lag values:
 `sum` itself is collapsed into tree edges under the tree-reduce schedule, so its init store and per-iter L/S are not charged.
 
 ### Overhead (address + induction + bound + param)
-| op      | count  | source |
-|---------|--------|--------|
-| loads   | 3,634  | inner `i` reads: 3,600; outer `lag` reads: 32; param hoists (`x_size`, `max_lag`): 2 |
-| stores  | 3,632  | inner `i` writes: 3,600; outer `lag` writes: 32 |
-| adds    | 10,864 | addr-gen for `&x[i]` (1 add/iter × 3,600) + addr-gen for `&x[i+lag]` (1 add/iter × 3,600) + `i++` (3,600) + `lag++` (32) + bound `x_size − lag` (32, hoisted per outer iter) |
-| compares| 3,632  | inner bound `i < x_size − lag` (3,600) + outer bound `lag < max_lag` (32) |
+| op           | count  | source |
+|--------------|--------|--------|
+| loads        | 3,634  | inner `i` reads: 3,600; outer `lag` reads: 32; param hoists (`x_size`, `max_lag`): 2 |
+| stores       | 3,632  | inner `i` writes: 3,600; outer `lag` writes: 32 |
+| adds         | 3,664  | `i++` (3,600) + `lag++` (32) + bound `x_size − lag` (32, hoisted per outer iter) |
+| address_adds | 7,200  | addr-gen for `&x[i]` (1 add/iter × 3,600) + addr-gen for `&x[i+lag]` (1 add/iter × 3,600) |
+| compares     | 3,632  | inner bound `i < x_size − lag` (3,600) + outer bound `lag < max_lag` (32) |
 
 Under the incremental-stride form, `&x[i+lag]` is a 1-D access with `lag` invariant in the inner loop, so the pointer advances by stride 1 per iter → 1 add per access (same as `&x[i]`).
 
 ### Totals
-| op       | total  |
-|----------|--------|
-| loads    | **10,834** |
-| stores   | **3,664** |
-| adds     | **14,432** |
-| mul      | **3,600** |
-| compares | **3,632** |
+| op           | total  |
+|--------------|--------|
+| loads        | **10,834** |
+| stores       | **3,664** |
+| adds         | **7,232** |
+| address_adds | **7,200** |
+| mul          | **3,600** |
+| compares     | **3,632** |
 | div / bitop / transcendental | 0 |
 
 ## Data Dependency Graph
@@ -81,55 +83,55 @@ Per-lag dataflow under the ASAP + tree-reduce model. Tree branches are shown for
 
 ```mermaid
 graph TD
-    %% Address generation per inner instance
-    aa0[("&x+i")]
-    aa1[("&x+(i+lag)")]
+  %% Address generation per inner instance
+  aa0[("&x+i")]
+  aa1[("&x+(i+lag)")]
 
-    %% Loads (the N pairs for one lag-instance)
-    ld_a0(("ld x[0]"))
-    ld_b0(("ld x[0+lag]"))
-    ld_a1(("ld x[1]"))
-    ld_b1(("ld x[1+lag]"))
-    ld_a2(("ld x[2]"))
-    ld_b2(("ld x[2+lag]"))
-    ld_a3(("ld x[3]"))
-    ld_b3(("ld x[3+lag]"))
+  %% Loads (the N pairs for one lag-instance)
+  ld_a0(("ld x[0]"))
+  ld_b0(("ld x[0+lag]"))
+  ld_a1(("ld x[1]"))
+  ld_b1(("ld x[1+lag]"))
+  ld_a2(("ld x[2]"))
+  ld_b2(("ld x[2+lag]"))
+  ld_a3(("ld x[3]"))
+  ld_b3(("ld x[3+lag]"))
 
-    %% Per-pair multiplies
-    m0((" * "))
-    m1((" * "))
-    m2((" * "))
-    m3((" * "))
+  %% Per-pair multiplies
+  m0((" * "))
+  m1((" * "))
+  m2((" * "))
+  m3((" * "))
 
-    %% Tree-reduce adds (depth = ceil(log2(N)))
-    add01((" + "))
-    add23((" + "))
-    add0123((" + "))
+  %% Tree-reduce adds (depth = ceil(log2(N)))
+  add01((" + "))
+  add23((" + "))
+  add0123((" + "))
 
-    %% Store
-    st(("st output[lag]"))
+  %% Store
+  st(("st output[lag]"))
 
-    %% addr → load
-    aa0 -.->|repr.| ld_a0
-    aa1 -.->|repr.| ld_b0
-    ld_a0 --> m0
-    ld_b0 --> m0
-    ld_a1 --> m1
-    ld_b1 --> m1
-    ld_a2 --> m2
-    ld_b2 --> m2
-    ld_a3 --> m3
-    ld_b3 --> m3
+  %% addr → load
+  aa0 -.->|repr.| ld_a0
+  aa1 -.->|repr.| ld_b0
+  ld_a0 --> m0
+  ld_b0 --> m0
+  ld_a1 --> m1
+  ld_b1 --> m1
+  ld_a2 --> m2
+  ld_b2 --> m2
+  ld_a3 --> m3
+  ld_b3 --> m3
 
-    m0 --> add01
-    m1 --> add01
-    m2 --> add23
-    m3 --> add23
-    add01 --> add0123
-    add23 --> add0123
-    add0123 --> st
+  m0 --> add01
+  m1 --> add01
+  m2 --> add23
+  m3 --> add23
+  add01 --> add0123
+  add23 --> add0123
+  add0123 --> st
 
-    %% Critical path: one (addr → load → mul) chain through the deepest tree branch
+  %% Critical path: one (addr → load → mul) chain through the deepest tree branch
 ```
 
 Outer `lag` dim is fully unrolled → 32 such graphs run in parallel, each computing one `output[lag]`. No edges cross between lag-instances (distinct sums, distinct output addresses, read-only `x`).
@@ -140,6 +142,7 @@ Outer `lag` dim is fully unrolled → 32 such graphs run in parallel, each compu
 | total_cycles  | 3,728        | **11**     | outer `lag` is parallel (32× unroll), inner `i` is a float reduction → tree (`log2 N`), not `N` |
 | loads         | 7,200        | **10,834** | now charges induction-var reads + param hoists (uniform 1-cycle L/S for all named scalars) |
 | stores        | 32           | **3,664**  | now charges induction-var writes (uniform 1-cycle L/S for all named scalars) |
-| adds          | 3,600        | **14,432** | adds now include address-gen (7,200), `i++`/`lag++` (3,632), bound subs (32), and the reduction tree uses `N−1` adds (3,568 vs 3,600) |
+| adds          | 3,600        | **7,232**  | adds now include `i++`/`lag++` (3,632), bound subs (32), and the reduction tree uses `N−1` adds (3,568 vs 3,600); address-gen is now tracked separately under `address_adds` |
+| address_adds  | (not listed) | **7,200**  | address arithmetic now tracked as a distinct op category: `&x[i]` (3,600) + `&x[i+lag]` (3,600) |
 | mul           | 3,600        | 3,600      | unchanged |
 | compares      | (not listed) | **3,632**  | per-iter bound checks now counted as dynamic ops |

@@ -64,19 +64,29 @@ for this DAG?", not "what would a real machine deliver?"
       induction variables).
    - **Induction variables** — each loop iteration charges a load (read
       iterator), an add (increment), a store (write iterator), and a compare
-      (bound check). The bound itself is loaded once (hoisted as loop-
-      invariant) if it is a parameter.
+      (bound check). The bound itself is hoisted under the loop-invariant rule below.
    - **Address generation** — every arithmetic op needed to compute an
-      address. For strided multi-dim access `a[i][j]`, charge one add per
-      dimension per iteration (incremental-stride form). For non-affine
-      indexing (gather/scatter, `a[idx[i]]`), charge the loads and arithmetic
-      the source dictates.
-   - **Dead computations** — ops whose results are not consumed by any
-      output. They still count as work.
-   - Predicated bodies count speculatively: an `if` inside a loop body gates
-     the store, not the compute — count its ops at every iter. Exception:
-     early-exit / data-dependent-termination loops count only the iters that
-     actually execute (and only the branch the source path takes).
+      address. For strided multi-dim access `a[i][j]`, charge one
+      address-add per dimension per iteration (incremental-stride form).
+      For non-affine indexing (gather/scatter, `a[idx[i]]`), charge the
+      loads and arithmetic the source dictates. Address-arithmetic adds
+      are tracked as a separate `address_adds` category and are NOT
+      lumped into the regular `adds` total. (Induction-variable
+      increments, `i ← i+1`, remain regular `adds`.)
+   - **Loop-invariant hoisting** — any value whose inputs are loop-
+     invariant is computed once and broadcast to all consumers via free
+     fan-out. Charged 1× to op counts (compute, load, and store all
+     count once, not per iter). Applies recursively: a value is loop-
+     invariant if every input is a kernel input, a constant, or itself
+     loop-invariant. Anything depending on the iterator or carried
+     state is per-iter and charged normally.
+   - **Dead computations** — ops whose results are not consumed by any output. They still count as work.
+   - **Control flow (no predication)** — branches are not predicated. The
+      condition's compare executes first and selects which branch to take;
+      only the ops on the taken branch are counted for that iteration.
+      Both the compare and the selected branch's ops lie on the critical
+      path of that iteration. For early-exit / data-dependent-termination
+      loops, count only the iters that actually execute.
 
 2. **`total_cycles` is the critical-path depth of the kernel's dataflow DAG.**
    Longest dependence chain from input to output, 1 cycle per op. Any two ops
@@ -133,10 +143,13 @@ You can cite the convention detiails, but don't cite the convention numbers dire
    `1 (load) + 1 (mul) + ceil(log2(K)) (reduce) + 1 (store)`.
 - Per loop dim: `{name, trip_count, kind: parallel | sequential | reduction, II}`.
    `II` is only meaningful for sequential dims.
-- Op counts (loads, stores, adds, multiplies, divides, compares, bitops,
-   transcendentals: sqrt/exp/cos/sin/log) aggregated across all sources from
-   Convention 1. Optionally split into `algorithmic` vs. `overhead` (address
-   + induction + dead + scalar L/S) for interpretability.
+- Op counts (loads, stores, adds, address_adds, multiplies, divides,
+   compares, bitops, transcendentals: sqrt/exp/cos/sin/log) aggregated
+   across all sources from Convention 1. `address_adds` is tracked
+   separately from `adds` (address arithmetic is not lumped into regular
+   adds; induction increments stay in `adds`). Optionally split into
+   `algorithmic` vs. `overhead` (address + induction + dead + scalar L/S)
+   for interpretability.
 
 ## When conventions break (revisit case-by-case)
 - **Non-associative recurrences (II > 1)**: `tridiag_solve`,
