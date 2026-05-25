@@ -119,29 +119,31 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | bitops   | 24    | `block_idx & 1` (8) + `idx_in_block & distance` (8) + ascending-mux selecting `cmp_gt` vs `cmp_lt` (4) + 3-input AND swap-enable `predicate ∧ partner<N ∧ should_swap` (4) |
 
 ### Overhead (induction, address-gen, prologue, dead code)
-| op       | count | source |
-|----------|-------|--------|
-| loads    | 27    | outer `i` reads (N = 8) + j induction reads, one per j-iter ((N/2)² = 16) + param hoists `pass`, `stage`, `N` (3). `block_size`, `distance`, `N/2` flow as anonymous-equivalent loop-invariants — no per-iter load. |
-| stores   | 24    | outer `i++` writes (8) + j induction writes ((N/2)² = 16). |
-| adds     | 53    | addr-gen `&inplace[i]` per outer iter, shared by both branches (8) + addr-gen `&inplace[partner]` per if-iter (4) + addr-gen `&inplace[N/2 + k]` per j-iter (16) + outer `i++` (8) + inner `j++` (16) + prologue `stage + 1` (1) |
-| compares | 24    | outer bound `i < N` (8) + inner bound `j < N` per j-iter (16) |
-| bitops   | 11    | dead `half_block = block_size >> 1` counted at every iter per the dead-code convention (8) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) + `N >> 1` for hoisted j-init (1) |
+| op           | count | source |
+|--------------|-------|--------|
+| loads        | 27    | outer `i` reads (N = 8) + j induction reads, one per j-iter ((N/2)² = 16) + param hoists `pass`, `stage`, `N` (3). `block_size`, `distance`, `N/2` flow as anonymous-equivalent loop-invariants — no per-iter load. |
+| stores       | 24    | outer `i++` writes (8) + j induction writes ((N/2)² = 16). |
+| adds         | 25    | outer `i++` (8) + inner `j++` (16) + prologue `stage + 1` (1) |
+| address_adds | 28    | `&inplace[i]` per outer iter, shared by both branches (8) + `&inplace[partner]` per if-iter (4) + `&inplace[j]` per j-iter (16) — 1 per `[]` access, incremental-stride |
+| compares     | 24    | outer bound `i < N` (8) + inner bound `j < N` per j-iter (16) |
+| bitops       | 11    | dead `half_block = block_size >> 1` counted at every iter per the dead-code convention (8) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) + `N >> 1` for hoisted j-init (1) |
 
 ### Totals
-| op       | total |
-|----------|------:|
-| loads    | **55** |
-| stores   | **52** |
-| adds     | **57** |
-| subs     | **4**  |
-| muls     | **16** |
-| divs     | **8**  |
-| mods     | **8**  |
-| bitops   | **35** |
-| compares | **52** |
+| op           | total |
+|--------------|------:|
+| loads        | **55** |
+| stores       | **52** |
+| adds         | **29** |
+| address_adds | **28** |
+| subs         | **4**  |
+| muls         | **16** |
+| divs         | **8**  |
+| mods         | **8**  |
+| bitops       | **35** |
+| compares     | **52** |
 | shifts / transcendentals | 0 |
 
-The j-loop dominates on both axes: it owns every chain link except the two compare-swap stops on the critical path, and contributes 16 of 28 algorithmic loads/stores, all 16 muls, 32 of 53 overhead adds (via `j++` and addr-gen), and 16 of 24 overhead compares (`j < N`).
+The j-loop dominates on both axes: it owns every chain link except the two compare-swap stops on the critical path, and contributes 16 of 28 algorithmic loads/stores, all 16 muls, 16 of 25 overhead adds (`j++`) plus 16 of 28 `address_adds` (`&inplace[j]`), and 16 of 24 overhead compares (`j < N`).
 
 ## Data Dependency Graph
 The compare-swap subgraph is identical to baseline `bitonic_stage_eval.md` and is collapsed below. Solid edges are within-iter dataflow; dashed edges are loop-carried back-edges through `inplace[N/2..N-1]`. Three writers feed the j-loop's read set: the j-loop itself (RAW recurrence), the compare-swap (for `i ∈ {4,6}` and cross-iter into later if-iters), and the else (cross-iter for `i ∈ {5,7}`).

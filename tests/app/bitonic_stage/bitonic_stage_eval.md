@@ -58,85 +58,87 @@ Speculative accounting: every iter pays the body cost; predicates gate the store
 | bitops   | 32    | `block_idx & 1` for `% 2` (8) + `idx_in_block & distance` (8) + mux `should_swap = ascending ? cmp_gt : cmp_lt` (8) + 3-input AND for swap-enable `predicate ∧ (partner<N) ∧ should_swap` (8). The mux and AND are the control-gating logic that sits on the critical path at C9 and C10. |
 
 ### Overhead (induction, address-gen, prologue, dead code)
-| op       | count | source |
-|----------|-------|--------|
-| loads    | 11    | induction `i` reads (8) + param hoists `pass`, `stage`, `N` (3). `block_size` and `distance` are computed once in the prologue and broadcast via dataflow — no per-iter load. The per-iter transient scalars (`block_idx`, `idx_in_block`, `partner`, `ascending`, `should_swap`, `temp`) flow anonymously and contribute no load. |
-| stores   | 8     | induction `i` writes (8). No prologue stores: `block_size` and `distance` flow as anonymous-equivalent loop-invariants. Per-iter transient scalars contribute no store. |
-| adds     | 25    | addr-gen `&inplace[i]` (8) + addr-gen `&inplace[partner]` (8) + `i++` (8) + prologue `stage+1` (1) |
-| compares | 8     | loop bound `i < N` |
-| bitops   | 10    | dead `half_block = block_size / 2` (strength-reduced to `>> 1`, counted at every iter per Convention 5: 8) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) |
+| op           | count | source |
+|--------------|-------|--------|
+| loads        | 11    | induction `i` reads (8) + param hoists `pass`, `stage`, `N` (3). `block_size` and `distance` are computed once in the prologue and broadcast via dataflow — no per-iter load. The per-iter transient scalars (`block_idx`, `idx_in_block`, `partner`, `ascending`, `should_swap`, `temp`) flow anonymously and contribute no load. |
+| stores       | 8     | induction `i` writes (8). No prologue stores: `block_size` and `distance` flow as anonymous-equivalent loop-invariants. Per-iter transient scalars contribute no store. |
+| adds         | 9     | `i++` (8) + prologue `stage+1` (1) |
+| address_adds | 16    | `&inplace[i]` (8) + `&inplace[partner]` (8) — 1 per `[]` access, incremental-stride |
+| compares     | 8     | loop bound `i < N` |
+| bitops       | 10    | dead `half_block = block_size / 2` (strength-reduced to `>> 1`, counted at every iter per Convention 5: 8) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) |
 
 ### Totals
-| op       | total |
-|----------|------:|
-| loads    | **27** |
-| stores   | **24** |
-| adds     | **33** |
-| divs     | **8**  |
-| mods     | **8**  |
-| bitops   | **42** |
-| compares | **48** |
+| op           | total |
+|--------------|------:|
+| loads        | **27** |
+| stores       | **24** |
+| adds         | **17** |
+| address_adds | **16** |
+| divs         | **8**  |
+| mods         | **8**  |
+| bitops       | **42** |
+| compares     | **48** |
 | muls / subs / shifts / transcendentals | 0 |
 
-Load/store columns are dominated by array I/O (16 / 16) plus the induction var (8 / 8); the per-iter transient scalars cost nothing because they flow anonymously. Address-gen for the two array accesses accounts for 16 of the 33 adds. The dead `half_block` is the only Convention 5 contribution here.
+Load/store columns are dominated by array I/O (16 / 16) plus the induction var (8 / 8); the per-iter transient scalars cost nothing because they flow anonymously. Address-gen for the two array accesses contributes 16 `address_adds` (tracked separately from regular `adds` per the indexing-operator rule). The dead `half_block` is counted under the "golden standard" model.
 
 ## Data Dependency Graph
 Note that `partner = i + distance` and its edges were omitted for readability. The 2 possible values of `should_swap` are assumed to be calculated in parallel and is passed into the multiplexer. 
 ```mermaid
 graph TD
-    %% Inputs
-    i(("i"))
-    block_size(("block_size"))
-    inplace_i(("inplace[i]"))
-    distance(("distance"))
-    inplace_p(("inplace[partner]"))
+  %% Inputs
+  i(("i"))
+  block_size(("block_size"))
+  inplace_i(("inplace[i]"))
+  distance(("distance"))
+  inplace_p(("inplace[partner]"))
 
-    %% Control-predicate chain
-    div((" / "))
-    mod((" % "))
-    band_asc((" & 1 "))
-    cmp_asc((" == 1 "))
-    band_pred((" & "))
-    cmp_pred((" == 0 "))
-    cmp_in_bounds((" partner < N "))
+  %% Control-predicate chain
+  div((" / "))
+  mod((" % "))
+  band_asc((" & 1 "))
+  cmp_asc((" == 1 "))
+  band_pred((" & "))
+  cmp_pred((" == 0 "))
+  cmp_in_bounds((" partner < N "))
 
-    %% Data-compare chain
-    cmp_gt((" > "))
-    cmp_lt((" < "))
+  %% Data-compare chain
+  cmp_gt((" > "))
+  cmp_lt((" < "))
 
-    sel_dir((" multiplexer "))
-    and_active(["AND<br>(swap condition)"])
+  sel_dir((" multiplexer "))
+  and_active(["AND<br>(swap condition)"])
 
-    %% block_idx = i / block_size; ascending = (block_idx & 1) == 0
-    i --> div & mod
-    block_size --> div & mod
-    div -->|block_idx| band_asc
-    band_asc -->|control bit| cmp_asc
-    cmp_asc --> sel_dir
+  %% block_idx = i / block_size; ascending = (block_idx & 1) == 0
+  i --> div & mod
+  block_size --> div & mod
+  div -->|block_idx| band_asc
+  band_asc -->|control bit| cmp_asc
+  cmp_asc --> sel_dir
 
-    %% predicate = (idx_in_block & distance) == 0
-    mod -->|idx_in_block| band_pred
-    distance --> band_pred
-    band_pred --> cmp_pred
+  %% predicate = (idx_in_block & distance) == 0
+  mod -->|idx_in_block| band_pred
+  distance --> band_pred
+  band_pred --> cmp_pred
 
-    %% in-bounds = partner < N (partner = i + distance, index arith — not a counted op) NOT SHOWN
+  %% in-bounds = partner < N (partner = i + distance, index arith — not a counted op) NOT SHOWN
 
-    %% Loaded values feed the direction-selected compare
-    inplace_i --> cmp_gt & cmp_lt
-    inplace_p --> cmp_gt & cmp_lt
-    cmp_gt -->|if True| sel_dir
-    cmp_lt -->|if False| sel_dir
+  %% Loaded values feed the direction-selected compare
+  inplace_i --> cmp_gt & cmp_lt
+  inplace_p --> cmp_gt & cmp_lt
+  cmp_gt -->|if True| sel_dir
+  cmp_lt -->|if False| sel_dir
 
-    %% Final swap-enable
-    cmp_pred --> and_active
-    cmp_in_bounds --> and_active
-    sel_dir --> and_active
+  %% Final swap-enable
+  cmp_pred --> and_active
+  cmp_in_bounds --> and_active
+  sel_dir --> and_active
 
-    %% Predicated swap stores
-    inplace_p -.store.-> inplace_i
-    inplace_i -.store.-> inplace_p
-    and_active -.enable.-> inplace_i
-    and_active -.enable.-> inplace_p
+  %% Predicated swap stores
+  inplace_p -.store.-> inplace_i
+  inplace_i -.store.-> inplace_p
+  and_active -.enable.-> inplace_i
+  and_active -.enable.-> inplace_p
 
-    %% Critical Path N/A — feed-forward only (II = 1)
+  %% Critical Path N/A — feed-forward only (II = 1)
 ```

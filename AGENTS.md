@@ -65,14 +65,19 @@ for this DAG?", not "what would a real machine deliver?"
    - **Induction variables** — each loop iteration charges a load (read
       iterator), an add (increment), a store (write iterator), and a compare
       (bound check). The bound itself is hoisted under the loop-invariant rule below.
-   - **Address generation** — every arithmetic op needed to compute an
-      address. For strided multi-dim access `a[i][j]`, charge one
-      address-add per dimension per iteration (incremental-stride form).
-      For non-affine indexing (gather/scatter, `a[idx[i]]`), charge the
-      loads and arithmetic the source dictates. Address-arithmetic adds
-      are tracked as a separate `address_adds` category and are NOT
-      lumped into the regular `adds` total. (Induction-variable
-      increments, `i ← i+1`, remain regular `adds`.)
+   - **Address generation** — charged at the array indexing operator
+      `[]` only. Each `[]` access costs one address-add per dimension per
+      iteration in incremental-stride form. For non-affine indexing
+      (gather/scatter, `a[idx[i]]`), charge the loads and arithmetic the
+      source dictates for the inner reference, then 1 address-add for the
+      outer `[]`. Adds that produce a named source-level scalar are
+      regular `adds`, even when that scalar is used exclusively as an
+      array index downstream (e.g. `idx = c·HW + h·W + w; a[idx];` — the
+      two adds for `idx` are regular `adds`, and `a[idx]` charges 1
+      address-add per access). Address-arithmetic adds are tracked as a
+      separate `address_adds` category and are NOT lumped into the regular
+      `adds` total. (Induction-variable increments, `i ← i+1`, remain
+      regular `adds`.)
    - **Loop-invariant hoisting** — any value whose inputs are loop-
      invariant is computed once and broadcast to all consumers via free
      fan-out. Charged 1× to op counts (compute, load, and store all

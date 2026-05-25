@@ -65,9 +65,9 @@ Per outer iter (init + inner + finalize + outer overhead):
 - Init: 1 load (`input_data[i]`), 2 stores (`value`, `result = 0`).
 - Inner body (32 iters): 128 loads, 96 stores, 128 bitops, 32 adds, 32 compares.
 - Finalize: 1 load (`result`), 1 store (`output_reversed[i]`).
-- Outer overhead: 1 load (`i`), 1 store (`i`), 1 add (`i + 1`), 2 adds (input/output address gen), 1 compare (`i < N`).
+- Outer overhead: 1 load (`i`), 1 store (`i`), 1 add (`i + 1`), 2 address_adds (`&input_data[i]` + `&output_reversed[i]`, 1 per `[]` access), 1 compare (`i < N`).
 
-Per-outer-iter totals: 131 loads, 100 stores, 128 bitops, 35 adds, 33 compares.
+Per-outer-iter totals: 131 loads, 100 stores, 128 bitops, 33 adds, 2 address_adds, 33 compares.
 
 Aggregated across `N = 256` outer iters (plus one hoisted load of the `N`
 parameter):
@@ -77,14 +77,15 @@ parameter):
 | loads        | `256 · 131 + 1 = 33,537`    |
 | stores       | `256 · 100     = 25,600`    |
 | bitops       | `256 · 128     = 32,768`    |
-| adds         | `256 · 35      =  8,960`    |
+| adds         | `256 · 33      =  8,448`    |
+| address_adds | `256 · 2       =    512`    |
 | compares     | `256 · 33      =  8,448`    |
 | multiplies / divides / transcendentals | 0 |
 
 Split:
 - **Algorithmic** (`<<1`, `&1`, `|`, `>>1`): `4 · BITS · N = 32,768` bitops.
 - **Overhead** (scalar L/S of `result`/`value`, induction L/S/add/cmp,
-  address adds, outer L/S of `i`, init/finalize array I/O): everything else.
+  address_adds, outer L/S of `i`, init/finalize array I/O): everything else.
   Overhead dominates because the inner body is itself a chain of load/stores on `result` and `value`.
 
 ## Data Dependency Graph
@@ -92,41 +93,41 @@ One iteration of outer loop shown, since all outer loop iterations can be execut
 ```mermaid
 %%{init: {"graph": {"defaultRenderer": "elk"}} }%%
 graph TD
-    %% Carried scalars from previous bit-iter
-    ld_r(("ld result"))
-    ld_v_band(("ld value<br>(for &1)"))
-    ld_v_shr(("ld value<br>(for >>1)"))
+  %% Carried scalars from previous bit-iter
+  ld_r(("ld result"))
+  ld_v_band(("ld value<br>(for &1)"))
+  ld_v_shr(("ld value<br>(for >>1)"))
 
-    %% Body ops
-    shl((" << 1 "))
-    band((" & 1 "))
-    bor((" | "))
-    shr((" >> 1 "))
+  %% Body ops
+  shl((" << 1 "))
+  band((" & 1 "))
+  bor((" | "))
+  shr((" >> 1 "))
 
-    %% Stores (close the recurrences)
-    st_r(("st result"))
-    st_v(("st value"))
+  %% Stores (close the recurrences)
+  st_r(("st result"))
+  st_v(("st value"))
 
-    %% Dependencies
-    ld_r --> shl
-    ld_v_band --> band
-    shl --> bor
-    band --> bor
-    bor --> st_r
+  %% Dependencies
+  ld_r --> shl
+  ld_v_band --> band
+  shl --> bor
+  band --> bor
+  bor --> st_r
 
-    ld_v_shr --> shr
-    shr --> st_v
+  ld_v_shr --> shr
+  shr --> st_v
 
-    %% Loop-carry back-edges (RAW into next iter's loads)
-    st_r -->|RAW| ld_r
-    st_v -->|RAW| ld_v_band
-    st_v -->|RAW| ld_v_shr
+  %% Loop-carry back-edges (RAW into next iter's loads)
+  st_r -->|RAW| ld_r
+  st_v -->|RAW| ld_v_band
+  st_v -->|RAW| ld_v_shr
 
-    %% Critical path: result recurrence ld → shl → | → st, II_bit = 4
-    linkStyle 0 stroke:#ff0000,stroke-width:3px;
-    linkStyle 2 stroke:#ff0000,stroke-width:3px;
-    linkStyle 4 stroke:#ff0000,stroke-width:3px;
-    linkStyle 7 stroke:#ff0000,stroke-width:3px;
+  %% Critical path: result recurrence ld → shl → | → st, II_bit = 4
+  linkStyle 0 stroke:#ff0000,stroke-width:3px;
+  linkStyle 2 stroke:#ff0000,stroke-width:3px;
+  linkStyle 4 stroke:#ff0000,stroke-width:3px;
+  linkStyle 7 stroke:#ff0000,stroke-width:3px;
 ```
 
 The red chain is the result recurrence that sets `II_bit = 4`. The value

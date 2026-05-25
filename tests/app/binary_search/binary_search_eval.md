@@ -70,23 +70,25 @@ For comparison, the prior serial-model bound was `7 × 16 = 112` cycles.
 | compares | 47    | bound check `left ≤ right` (18) + `sorted[mid] == target` (16) + `sorted[mid] < target` (13 — skipped on the 3 break iters) |
 
 ### Overhead (named scalars, induction, address-gen, param hoists)
-| op       | count | source |
-|----------|-------|--------|
-| loads    | 53    | scalar `target` (5, hoisted per outer t and fanned to both cmps) + carried `left` (18, 1 per inner iter incl bound-check-fail) + carried `right` (18) + scalar `result` (5, post-loop read) + iter `t` (5) + param hoists `N`, `M` (2) |
-| stores   | 41    | scalar `target` (5) + scalar `left` (5 init + 8 body updates = 13) + scalar `right` (5 init + 5 body updates = 10) + scalar `result` (5 init + 3 break stores = 8) + iter `t` (5) |
-| adds     | 47    | inner `mid = left + (right−left)/2` outer add (16) + inner addr-gen `&sorted[mid]` (16) + outer addr-gen `&input_targets[t]` (5) + outer addr-gen `&output_indices[t]` (5) + outer `t++` (5) |
-| subs     | 1     | `N − 1` (hoisted outside outer t since `N` is loop-invariant) |
-| compares | 10    | outer `result == −1` (5) + outer `t < M` (5) |
+| op           | count | source |
+|--------------|-------|--------|
+| loads        | 53    | scalar `target` (5, hoisted per outer t and fanned to both cmps) + carried `left` (18, 1 per inner iter incl bound-check-fail) + carried `right` (18) + scalar `result` (5, post-loop read) + iter `t` (5) + param hoists `N`, `M` (2) |
+| stores       | 41    | scalar `target` (5) + scalar `left` (5 init + 8 body updates = 13) + scalar `right` (5 init + 5 body updates = 10) + scalar `result` (5 init + 3 break stores = 8) + iter `t` (5) |
+| adds         | 21    | inner `mid = left + (right−left)/2` outer add (16, named scalar) + outer `t++` (5) |
+| address_adds | 26    | `&sorted[mid]` (16) + `&input_targets[t]` (5) + `&output_indices[t]` (5) — 1 per `[]` access, incremental-stride |
+| subs         | 1     | `N − 1` (hoisted outside outer t since `N` is loop-invariant) |
+| compares     | 10    | outer `result == −1` (5) + outer `t < M` (5) |
 
 ### Totals
-| op       | total |
-|----------|------:|
-| loads    | **74** |
-| stores   | **46** |
-| adds     | **55** |
-| subs     | **22** |
-| shifts   | **16** |
-| compares | **57** |
+| op           | total |
+|--------------|------:|
+| loads        | **74** |
+| stores       | **46** |
+| adds         | **29** |
+| address_adds | **26** |
+| subs         | **22** |
+| shifts       | **16** |
+| compares     | **57** |
 | muls / divs / transcendentals | 0 |
 
 ## Data Dependency Graph
@@ -158,13 +160,3 @@ graph TD
     %% addr→ld_sorted (11), ld_sorted→cmp_lt (13), cmp_lt→left store-gate (19)
     linkStyle 5,6,7,8,10,11,13,19,20 stroke:#ff0000,stroke-width:3px;
 ```
-
-## Delta vs. prior (serial-model) eval
-| metric        | old (serial) | new (ASAP) | reason |
-|---------------|--------------|------------|--------|
-| total_cycles  | 112          | **40**     | outer `t` is parallel (5× unroll → max over instances); the 4× max-trip inner loop now dominates, plus setup/exit/post-loop overhead. |
-| loads         | 21           | **74**     | now charges carry-scalar reads (`left`, `right` per inner iter), hoisted scalar reads (`target`, `result`), iter reads (`t`), and param hoists under the uniform 1-cycle L/S rule. |
-| stores        | 10           | **46**     | now charges init stores (`target`, `left`, `right`, `result` per outer t), iter writes (`t`), and body update stores. |
-| adds + subs   | 64           | **77**     | adds now include address-gen (16 inner + 10 outer) and `t++` (5); inner update is correctly split between add (`mid+1` × 8) and sub (`mid−1` × 5). |
-| shifts        | 16           | 16         | unchanged. |
-| compares      | 55           | **57**     | added outer `t < M` (5); inner `cmp_lt` correctly drops to 13 since the 3 break iters skip it; bound check (18) and `result == −1` (5) preserved. |

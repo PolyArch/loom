@@ -29,89 +29,90 @@ Assumes 2-input adders/multipliers. The 3-input sum `c·HW + h·W + w` tree-redu
 
 **Op counts (N = 256, C = 4).**
 
-| op       | algorithmic | overhead | total |
-|----------|-------------|----------|------:|
-| loads    | N (`input[idx]`) + 4·C (`variance/mean/gamma/beta[c]` hoisted per c) = 272 | 292 (`c`, `h`, `w` iter reads) + 4 (`ε`, `C`, `H`, `W` param hoists) = 296 | **568** |
-| stores   | N (`output[idx]`) = 256 | 292 (`c`, `h`, `w` iter writes) | **548** |
-| adds     | N (sub) + N (`+ β`) + C (`+ ε`) = 516 | 2·N (`cHW + hW`, `+ w`) + 292 (`c++`, `h++`, `w++`) = 804 | **1320** |
-| muls     | 2·N (`× inv_std`, `× γ`) = 512 | 2·N (`c · HW`, `h · W`) + 1 (`H · W` hoist) = 513 | **1025** |
-| divides  | C (`1 / sqrt`) = 4 | 0 | **4** |
-| sqrt     | C = 4 | 0 | **4** |
-| compares | 0 | 292 (`c<C`, `h<H`, `w<W`) | **292** |
+| op           | algorithmic | overhead | total |
+|--------------|-------------|----------|------:|
+| loads        | N (`input[idx]`) + 4·C (`variance/mean/gamma/beta[c]` hoisted per c) = 272 | 292 (`c`, `h`, `w` iter reads) + 4 (`ε`, `C`, `H`, `W` param hoists) = 296 | **568** |
+| stores       | N (`output[idx]`) = 256 | 292 (`c`, `h`, `w` iter writes) | **548** |
+| adds         | N (sub) + N (`+ β`) + C (`+ ε`) = 516 | 2·N (`cHW + hW`, `+ w` → named scalar `idx`) + 292 (`c++`, `h++`, `w++`) = 804 | **1320** |
+| address_adds | 0 | 2·N (`&input[idx]`, `&output[idx]` — 1 per `[]` access, incremental-stride) = 512 | **512** |
+| muls         | 2·N (`× inv_std`, `× γ`) = 512 | 2·N (`c · HW`, `h · W`) + 1 (`H · W` hoist) = 513 | **1025** |
+| divides      | C (`1 / sqrt`) = 4 | 0 | **4** |
+| sqrt         | C = 4 | 0 | **4** |
+| compares     | 0 | 292 (`c<C`, `h<H`, `w<W`) | **292** |
 
-Address arithmetic for `idx = c·HW + h·W + w` is counted with `H*W` hoisted to a single mul outside the c loop: per pixel, 2 muls (`c · HW`, `h · W`) and 2 adds (tree-reduced 3-input sum). The induction vars `c, h, w` each charge `load + add + store + cmp` per iter, summed across nesting as `C + C·H + C·H·W = 292`. `ε`, `C`, `H`, `W` are scalar params loaded once each.
+The named scalar `idx = c·HW + h·W + w` is computed per pixel with `H*W` hoisted to a single mul outside the c loop: per pixel, 2 muls (`c · HW`, `h · W`) and 2 adds (tree-reduced 3-input sum) — these adds count as regular `adds` (named-scalar arithmetic), not `address_adds`. Each `[]` access then charges 1 `address_add` in incremental-stride form, so `input[idx]` + `output[idx]` contribute 2·N = 512 `address_adds`. The induction vars `c, h, w` each charge `load + add + store + cmp` per iter, summed across nesting as `C + C·H + C·H·W = 292`. `ε`, `C`, `H`, `W` are scalar params loaded once each.
 
 ## Data Dependency Graph
 Shown is one of N parallel pixel lanes; the per-channel `inv_std` subgraph runs once per `c` and broadcasts to all H·W pixels of that channel. `H*W` is precomputed once outside the c loop.
 ```mermaid
 graph TD
-    subgraph channel["Once per c"]
-        direction TB
-        one(("1.0"))
-        epsilon(("epsilon"))
-        variance(("variance[c]"))
-        add_var_eps((" + "))
-        sqrt_var(("sqrt"))
-        div_inv_std((" / "))
-        inv_std(("inv_std"))
+subgraph channel["Once per c"]
+    direction TB
+    one(("1.0"))
+    epsilon(("epsilon"))
+    variance(("variance[c]"))
+    add_var_eps((" + "))
+    sqrt_var(("sqrt"))
+    div_inv_std((" / "))
+    inv_std(("inv_std"))
 
-        variance -->|load| add_var_eps
-        epsilon --> add_var_eps
-        add_var_eps --> sqrt_var
-        one --> div_inv_std
-        sqrt_var --> div_inv_std
-        div_inv_std --> inv_std
-    end
+    variance -->|load| add_var_eps
+    epsilon --> add_var_eps
+    add_var_eps --> sqrt_var
+    one --> div_inv_std
+    sqrt_var --> div_inv_std
+    div_inv_std --> inv_std
+end
 
-    subgraph pixel["Per-pixel inner loop"]
-        direction TB
-        c(("c"))
-        h(("h"))
-        HW(("H·W (hoisted)"))
-        W(("W"))
-        w(("w"))
-        input(("input[idx]"))
-        mean(("mean[c]"))
-        gamma(("gamma[c]"))
-        beta(("beta[c]"))
-        mult_cHW((" * "))
-        mult_hW((" * "))
-        mult_norm((" * "))
-        mult_output((" * "))
-        add1((" + "))
-        add2((" + "))
-        add_output((" + "))
-        sub(("input[idx] - mean[c]"))
-        normalized(("normalized"))
-        idx(("idx"))
-        output(("output[idx]"))
+subgraph pixel["Per-pixel inner loop"]
+    direction TB
+    c(("c"))
+    h(("h"))
+    HW(("H·W (hoisted)"))
+    W(("W"))
+    w(("w"))
+    input(("input[idx]"))
+    mean(("mean[c]"))
+    gamma(("gamma[c]"))
+    beta(("beta[c]"))
+    mult_cHW((" * "))
+    mult_hW((" * "))
+    mult_norm((" * "))
+    mult_output((" * "))
+    add1((" + "))
+    add2((" + "))
+    add_output((" + "))
+    sub(("input[idx] - mean[c]"))
+    normalized(("normalized"))
+    idx(("idx"))
+    output(("output[idx]"))
 
-        HW --> mult_cHW
-        c --> mult_cHW
-        h --> mult_hW
-        W --> mult_hW
-        mult_cHW --> add1
-        mult_hW --> add1
-        add1 --> add2
-        w --> add2
-        add2 --> idx
+    HW --> mult_cHW
+    c --> mult_cHW
+    h --> mult_hW
+    W --> mult_hW
+    mult_cHW --> add1
+    mult_hW --> add1
+    add1 --> add2
+    w --> add2
+    add2 --> idx
 
-        idx --> input
-        input -->|load| sub
-        mean -->|load| sub
-        sub --> mult_norm
-        mult_norm --> normalized
+    idx --> input
+    input -->|load| sub
+    mean -->|load| sub
+    sub --> mult_norm
+    mult_norm --> normalized
 
-        normalized --> mult_output
-        gamma -->|load| mult_output
-        mult_output --> add_output
-        beta -->|load| add_output
-        add_output -->|store| output
-    end
+    normalized --> mult_output
+    gamma -->|load| mult_output
+    mult_output --> add_output
+    beta -->|load| add_output
+    add_output -->|store| output
+end
 
-    inv_std --> mult_norm
+inv_std --> mult_norm
 
-    %% Critical path is feed-forward only; no loop-carried data recurrence, so II = 1.
-    %% Longer chain into mult_norm is idx → load(input) → sub (6 cycles);
-    %% inv_std chain is 4 cycles and is fully overlapped.
+%% Critical path is feed-forward only; no loop-carried data recurrence, so II = 1.
+%% Longer chain into mult_norm is idx → load(input) → sub (6 cycles);
+%% inv_std chain is 4 cycles and is fully overlapped.
 ```

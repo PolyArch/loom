@@ -37,23 +37,25 @@ The two compute chains — `(a+b) * 0.5` and `(fa * fc) < 0` — have the same d
 | compares | 64    | `fa*fc < 0` per iter |
 
 ### Overhead (address-gen, induction, param hoist)
-| op       | count | source |
-|----------|-------|--------|
-| loads    | 65    | iter `i` (64 per-iter reads) + param `N` (1 hoisted, loop-invariant) |
-| stores   | 64    | iter `i` (64 per-iter writes after `i++`) |
-| adds     | 448   | addr-gen for 6 array accesses per iter (`input_a`, `input_b`, `input_fa`, `input_fc`, `output_a`, `output_b`) = 6 × 64 = 384; iter `i++` = 64 |
-| compares | 64    | iter bound check `i < N` |
+| op           | count | source |
+|--------------|-------|--------|
+| loads        | 65    | iter `i` (64 per-iter reads) + param `N` (1 hoisted, loop-invariant) |
+| stores       | 64    | iter `i` (64 per-iter writes after `i++`) |
+| adds         | 64    | iter `i++` (64) |
+| address_adds | 384   | addr-gen for 6 array accesses per iter (`input_a`, `input_b`, `input_fa`, `input_fc`, `output_a`, `output_b`) = 6 × 64 — 1 per `[]` access, incremental-stride |
+| compares     | 64    | iter bound check `i < N` |
 
 The local `c = (a+b) * 0.5f` is a per-iter dataflow value with no carry across iterations; it's treated as a **transient (anonymous-equivalent) intermediate** and isn't separately charged a named load/store. `c` does lie on the critical path through `add → mul → store`, so the cycle accounting is unaffected by this choice.
 
 ### Totals
-| op       | total |
-|----------|------:|
-| loads    | **321** |
-| stores   | **192** |
-| adds     | **512** |
-| muls     | **128** |
-| compares | **128** |
+| op           | total |
+|--------------|------:|
+| loads        | **321** |
+| stores       | **192** |
+| adds         | **128** |
+| address_adds | **384** |
+| muls         | **128** |
+| compares     | **128** |
 | divs / subs / shifts / transcendentals | 0 |
 
 ## Data Dependency Graph

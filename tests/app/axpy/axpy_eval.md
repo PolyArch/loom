@@ -13,13 +13,14 @@ The `input_y` chain is shorter (no mul): `1 + 1 + 1 + 1 = 4`. `alpha` is loop-in
 
 **Op counts (N = 8).**
 
-| op       | algorithmic | overhead | total |
-|----------|-------------|----------|------:|
-| loads    | 16 (`input_x[i]`, `input_y[i]`) | 8 (`i` read) + 2 (`alpha`, `N` param hoists) | **26** |
-| stores   | 8 (`output_y[i]`) | 8 (`i` write) | **16** |
-| adds     | 8 (`α·x + y`)     | 24 (addr-gen: 3 arrays × 8 iters) + 8 (`i++`) | **40** |
-| mul      | 8                 | 0 | **8** |
-| compares | 0                 | 8 (bound `i < N`) | **8** |
+| op           | algorithmic | overhead | total |
+|--------------|-------------|----------|------:|
+| loads        | 16 (`input_x[i]`, `input_y[i]`) | 8 (`i` read) + 2 (`alpha`, `N` param hoists) | **26** |
+| stores       | 8 (`output_y[i]`) | 8 (`i` write) | **16** |
+| adds         | 8 (`α·x + y`)     | 8 (`i++`) | **16** |
+| address_adds | 0                 | 24 (addr-gen: 3 arrays × 8 iters) | **24** |
+| mul          | 8                 | 0 | **8** |
+| compares     | 0                 | 8 (bound `i < N`) | **8** |
 
 Each per-iter address computation (`&input_x[i]`, `&input_y[i]`, `&output_y[i]`) is a 1-D incremental-stride access → 1 add each. The induction var `i` charges (load + add + store + cmp) per iter.
 
@@ -27,33 +28,33 @@ Each per-iter address computation (`&input_x[i]`, `&input_y[i]`, `&output_y[i]`)
 Shown is one of 8 parallel instances; lanes share alpha, which is loaded once. 
 ```mermaid
 graph TD
-    %% Define the input nodes
-    i_in(("i"))
-    alpha(("alpha"))
-    xi(("input_x[i]"))
-    yi(("input_y[i]"))
+%% Define the input nodes
+i_in(("i"))
+alpha(("alpha"))
+xi(("input_x[i]"))
+yi(("input_y[i]"))
 
-    %% Define the computation nodes
-    mult((" * "))
-    add((" + "))
-    addi((" + "))
-    
-    %% Define the final output
-    i_out(("i"))
-    outputy(("output_y[i]"))
+%% Define the computation nodes
+mult((" * "))
+add((" + "))
+addi((" + "))
 
-    %% Inner loop dependencies
-    xi -->|load| mult
-    yi -->|load| add
-    alpha -->|loaded once| mult
-    mult --> add
+%% Define the final output
+i_out(("i"))
+outputy(("output_y[i]"))
 
-    %% Accumulator dependency
-    add -->|store| outputy
+%% Inner loop dependencies
+xi -->|load| mult
+yi -->|load| add
+alpha -->|loaded once| mult
+mult --> add
 
-    %% Iterator dependency
-    i_in -..-> addi
-    addi -..-> i_out
+%% Accumulator dependency
+add -->|store| outputy
 
-    %% Critical Path N/A
+%% Iterator dependency
+i_in -..-> addi
+addi -..-> i_out
+
+%% Critical Path N/A
 ```
