@@ -86,12 +86,35 @@ for this DAG?", not "what would a real machine deliver?"
      loop-invariant. Anything depending on the iterator or carried
      state is per-iter and charged normally.
    - **Dead computations** — ops whose results are not consumed by any output. They still count as work.
-   - **Control flow (no predication)** — branches are not predicated. The
-      condition's compare executes first and selects which branch to take;
-      only the ops on the taken branch are counted for that iteration.
+   - **Control flow (no predication)** — branches are not predicated.
+      The condition's compare executes first, and **no instructions
+      inside an if/else body may execute before that compare retires**.
+      Only the ops on the taken branch are counted for that iteration.
       Both the compare and the selected branch's ops lie on the critical
-      path of that iteration. For early-exit / data-dependent-termination
-      loops, count only the iters that actually execute.
+      path: a body op fires no earlier than the cycle after its gating
+      compare completes, and nested `if`s serialize cumulatively (each
+      nested compare adds another compare→body gap to the chain). For
+      early-exit / data-dependent-termination loops, count only the
+      iters that actually execute; the termination compare sits on the
+      critical path.
+
+      This rule applies uniformly to every source `if`, `if/else`,
+      ternary `?:`, and conditional store — **including** patterns the
+      Loom compiler internally lowers to `handshake.mux`,
+      `arith.select`, or gated control tokens (see `convertIf` and
+      `convertStore` in `lib/loom/Conversion/SCFToHandshakeConvert.cpp`).
+      The IR lowering happens in real hardware; the performance model is
+      intentionally conservative and does not take credit for it.
+      Concrete consequences:
+      - `if (c) x = a; else x = b;` and `x = c ? a : b;` — only the
+      taken arm is counted; no mux bitop is charged; the arm cannot
+      begin before `c` resolves.
+      - `if (c) array[i] = v;` — the value compute, address-gen, and
+      store all wait for `c` to resolve; no AND-enable bitop is
+      charged.
+      - Nested `if (a) { if (b) { ... } }` — the inner body's ops wait
+      for both `a` AND `b` to resolve in sequence (two compare→body
+      gaps on the critical path).
 
 2. **`total_cycles` is the critical-path depth of the kernel's dataflow DAG.**
    Longest dependence chain from input to output, 1 cycle per op. Any two ops

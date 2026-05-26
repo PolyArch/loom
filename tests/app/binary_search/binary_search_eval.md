@@ -9,7 +9,7 @@ Parameters: `N = 10`, `M = 5`.
 | dim   | trip_count | kind | II | notes |
 |-------|------------|------|----|-------|
 | `t`   | `M` = 5    | parallel | n/a | each outer iter privatizes `target`, `left`, `right`, `result` and writes a distinct `output_indices[t]`; `input_sorted` is read-only. Fully unrolled. |
-| inner `while` | data-dependent | sequential (data-dep termination) | 8 | carries `left`, `right` (and `result` on break) via scalar. Trip count is input-dependent; for the given inputs the per-target trips are `{4, 3, 2, 4, 3}` (worst-case bound `⌈log2(N+1)⌉ = 4`). The termination compare `left ≤ right` sits on the critical path of the exit path. |
+| inner `while` | data-dependent | sequential (data-dep termination) | 11 | carries `left`, `right` (and `result` on break) via scalar. Trip count is input-dependent; for the given inputs the per-target trips are `{4, 3, 2, 4, 3}` (worst-case bound `⌈log2(N+1)⌉ = 4`). Under no-predication, the per-iter critical path includes three compare→body gaps: the `while` bound check `left ≤ right` gates the body's first op; `cmp_eq` gates the else branch's `cmp_lt`; `cmp_lt` gates the update arithmetic and its store. |
 
 Per-target trips for these inputs:
 
@@ -25,37 +25,49 @@ Per-target trips for these inputs:
 
 ## Critical path (`total_cycles`)
 
-Per inner-iter recurrence (II = 8 cycles), the carry chain from `left/right` loaded at iter `k` to `left/right` stored at iter `k`:
+Per inner-iter recurrence (II = 11 cycles for non-break iters), the carry chain from `left/right` loaded at iter `k` to `left/right` stored at iter `k`:
 ```
-1 (load left ‖ load right)
-+ 1 (sub right − left   ‖ cmp left ≤ right)
-+ 1 (shift >> 1)
-+ 1 (add → mid)
-+ 1 (addr-gen for &input_sorted[mid])
-+ 1 (load input_sorted[mid])
-+ 1 (cmp_eq ‖ cmp_lt, in parallel under unbounded fan-out)
-+ 1 (store new left or right, gated by cmp_lt select)
-= 8
+1  (load left ‖ load right)
++ 1  (cmp left ≤ right)                          [while-bound check]
++ 1  (sub right − left)                           [body fires after cmp_le]
++ 1  (shift >> 1)
++ 1  (add → mid)
++ 1  (addr-gen for &input_sorted[mid])
++ 1  (load input_sorted[mid])
++ 1  (cmp_eq sorted[mid] == target)               [break check]
++ 1  (cmp_lt sorted[mid] < target)                [inside else of cmp_eq]
++ 1  (add mid+1 OR sub mid−1)                     [inside else-if cmp_lt]
++ 1  (store new left or right)
+= 11
 ```
-`cmp_eq` and `cmp_lt` depend on the same operands (`sorted[mid]`, `target`) and fire in the same cycle. The update arithmetic (`mid + 1`, `mid − 1`) only needs `mid` so it slides earlier and is ready by the time cmps complete; the store is gated by cmp_lt selecting which value to commit. The bound check at cycle 2 runs parallel to `sub` and never extends the body depth — but its result decides whether the next iter fires.
+Under no-predication, three compare→body gaps stretch the body beyond its raw dataflow depth: (a) `sub right−left` cannot fire in parallel with `cmp_le` because it lives inside the `while` body — it waits for `cmp_le` to retire; (b) `cmp_lt` is inside the `else` of `if (cmp_eq)`, so it waits for `cmp_eq`; (c) the update arithmetic (`mid + 1` or `mid − 1`) sits inside the `else if (cmp_lt)` body and waits for `cmp_lt`, with the store one cycle further. Only one of `add` / `sub` actually fires per iter (the taken branch); the other is not counted.
+
+For a **break iter** (cmp_eq = TRUE), the chain terminates earlier: `... → cmp_eq → store result` = 9 cycles, since the break exits without firing `cmp_lt` or the update arithmetic.
 
 **Per-outer-t prologue** (before entering the while):
-- Critical chain: `load N → sub N−1 → store right` (3 cycles) — feeds iter 1's `load right`. The `static_cast<int32_t>(N)` is free under our convention (casts aren't in the counted op set).
+- Critical chain: `load N → sub N−1 → store right` (3 cycles) — feeds iter 1's `load right`. The `static_cast<int32_t>(N)` is free under our convention (casts aren't in the counted op set). No `if` in the prologue, so strict no-pred adds no gaps here.
 - Parallel chains: `load input_targets[t] → store target`, `store left = 0`, `store result = −1`. Constants `0` and `−1` need no load; the stores themselves still cost 1 cycle each per Convention 6 (named-write rule), but they overlap the critical chain.
 
 `t` is parallel → fully unrolled → `total_cycles` is the max over the 5 outer instances. For each instance with trip `K`:
 ```
-per-target depth = setup + 8·K + (2 if non-break exit else 0) + post-loop
-                 = 3 (load N → sub N−1 → store right)
-                 + 8·K
-                 + 2 (extra failing cmp_le on non-break paths only)
-                 + 3 (load result → cmp == −1 → store output_indices[t])
+per-target depth (break exit)     = 3 (prologue) + 11·(K−1) + 9 (break iter) + 3 (post-loop)
+                                  = 11·K + 4
+per-target depth (non-break exit) = 3 (prologue) + 11·K + 2 (failing cmp_le) + 3 (post-loop)
+                                  = 11·K + 8
 ```
-The longest non-break path with `K = 4` (t=3, target=20) gives `3 + 32 + 2 + 3 = 40`. The break path with `K = 4` (t=0, target=7) gives `3 + 32 + 0 + 3 = 38`. Under `t` parallel-unroll, `total_cycles = max = 40`. Note that the max-cycles target isn't necessarily the max-trip target — when trips tie, a non-break exit beats a break exit by the cost of the final failing bound check.
+The post-loop ternary `(result == −1) ? 0xFFFFFFFF : (uint32_t)result` takes 3 cycles: `load result → cmp → store output_indices[t]`. Under strict no-pred, the store waits for the cmp to resolve; both arms' values are free (a constant and an already-loaded scalar with a free cast), so the arms add no compute cycles.
 
-For comparison, the prior serial-model bound was `7 × 16 = 112` cycles.
+Per-target depths for these inputs:
 
-**Note on the `mid ± 1` calculation (not definitive):** Both `mid + 1` and `mid − 1` depend only on `mid` (ready at cycle 4), so they can fire in parallel with the addr-gen / load / cmps; the cycle-8 store is then a free select gated by `cmp_lt`. This is what makes II = 8 instead of 9. The op count below uses the **source-level dynamic** interpretation (count only the branch actually taken per iter), giving 8 adds + 5 subs for updates. A speculative interpretation (both branches always fire) would double-count to 13+13 = 26 update ops; the critical-path number is unaffected either way.
+| t | target | trip | exit | depth |
+|---|--------|------|------|------:|
+| 0 | 7   | 4 | break | 11·4 + 4 = **48** |
+| 1 | 2   | 3 | non-break | 11·3 + 8 = **41** |
+| 2 | 15  | 2 | break | 11·2 + 4 = **26** |
+| 3 | 20  | 4 | non-break | 11·4 + 8 = **52** |
+| 4 | 1   | 3 | break | 11·3 + 4 = **37** |
+
+Under `t` parallel-unroll, `total_cycles = max = 52` (t=3, target=20, non-break exit with `K = 4`). Note that the max-cycles target isn't necessarily the max-trip target — when trips tie, a non-break exit beats a break exit by the cost of the final failing bound check plus the savings from the break iter's shorter (9-cycle) tail.
 
 ## Op counts
 
@@ -121,11 +133,12 @@ graph TD
     %% Stores (carry-out)
     st_result(("store result"))
 
-    %% Bound check (parallel with sub at cycle 2)
+    %% Bound check (gates body entry under strict no-pred)
     left --> cmp_le
     right --> cmp_le
 
-    %% Compute mid
+    %% Compute mid (waits for cmp_le under strict)
+    cmp_le -. T: enter body .-> sub
     right --> sub
     left --> sub
     sub --> shift
@@ -136,27 +149,27 @@ graph TD
     add_mid --> addr
     addr --> ld_sorted
 
-    %% Compare against target
+    %% Compare against target (cmp_lt is in the else of cmp_eq → waits for cmp_eq)
     ld_sorted --> cmp_eq
-    ld_sorted --> cmp_lt
     target --> cmp_eq
+    cmp_eq -. F: enter else .-> cmp_lt
+    ld_sorted --> cmp_lt
     target --> cmp_lt
 
-    %% Update arithmetic — fires in parallel with cmps (only needs mid)
+    %% Update arithmetic — waits for cmp_lt under strict (inside else-if body)
+    cmp_lt -. T: enter mid+1 body .-> add_p1
+    cmp_lt -. F: enter mid−1 body .-> sub_m1
     add_mid --> add_p1
     add_mid --> sub_m1
 
     %% Break path
     cmp_eq -. T: store result, break .-> st_result
 
-    %% Continue path (cmp_lt selects which scalar to update)
-    cmp_lt -. T: left ← mid+1 .-> left
-    cmp_lt -. F: right ← mid−1 .-> right
+    %% Continue path (the taken arm's store closes the carry)
     add_p1 --> left
     sub_m1 --> right
 
-    %% Critical path (8-cycle body): load → sub → shift → add → addr → load → cmp → store
-    %% Edges: left/right→sub (5,6), sub→shift (7), shift→add_mid (8), add_mid→addr (10),
-    %% addr→ld_sorted (11), ld_sorted→cmp_lt (13), cmp_lt→left store-gate (19)
-    linkStyle 5,6,7,8,10,11,13,19,20 stroke:#ff0000,stroke-width:3px;
+    %% Critical path (11-cycle body): right → cmp_le → [gate] → sub → shift → add_mid → addr → ld_sorted → cmp_eq → [gate] → cmp_lt → [gate] → add_p1 → left
+    %% Highlights the dataflow chain plus the three strict no-pred compare→body gates (5, 15, 18)
+    %% linkStyle 4,5,8,9,11,12,13,15,18,23 stroke:#ff0000,stroke-width:3px;
 ```
