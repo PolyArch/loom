@@ -28,6 +28,7 @@ import argparse
 import errno
 import fcntl
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,12 @@ import time
 from pathlib import Path
 
 REQUIRED_GIT = (2, 7)
+LLVM_C_COMPILER = "gcc"
+LLVM_CXX_COMPILER = "g++"
+LLVM_GCC_MIN = (7, 4)
+LOOM_C_COMPILER = "clang"
+LOOM_CXX_COMPILER = "clang++"
+LOOM_CLANG_MIN = (21, 1, 8)
 
 
 def info(msg: str) -> None:
@@ -53,6 +60,75 @@ def die(msg: str, code: int = 1) -> None:
 def run(cmd, **kwargs) -> subprocess.CompletedProcess:
     info("$ " + " ".join(str(c) for c in cmd))
     return subprocess.run(cmd, check=True, **kwargs)
+
+
+def format_version(version: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in version)
+
+
+def normalize_version(version: tuple[int, ...], width: int) -> tuple[int, ...]:
+    return version + (0,) * max(0, width - len(version))
+
+
+def version_less(lhs: tuple[int, ...], rhs: tuple[int, ...]) -> bool:
+    width = max(len(lhs), len(rhs))
+    return normalize_version(lhs, width) < normalize_version(rhs, width)
+
+
+def parse_version(output: str) -> tuple[int, ...] | None:
+    match = re.search(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", output)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups(default="0"))
+
+
+def compiler_version(tool: str) -> tuple[tuple[int, ...], str]:
+    try:
+        out = subprocess.check_output(
+            [tool, "--version"], stderr=subprocess.STDOUT
+        ).decode(errors="replace")
+    except FileNotFoundError:
+        die(f"{tool} not found on PATH")
+    except subprocess.CalledProcessError as e:
+        detail = e.output.decode(errors="replace").strip()
+        die(f"could not run {tool} --version: {detail or e}")
+    version = parse_version(out)
+    if version is None:
+        die(f"could not parse {tool} version from {out.splitlines()[0]!r}")
+    return version, out.splitlines()[0].strip()
+
+
+def check_compiler(tool: str, nice_name: str,
+                   minimum: tuple[int, ...]) -> tuple[int, ...]:
+    version, first_line = compiler_version(tool)
+    if version_less(version, minimum):
+        die(
+            f"{nice_name} must be at least {format_version(minimum)}, "
+            f"got {format_version(version)} from {first_line}"
+        )
+    info(f"{nice_name} {format_version(version)} ok ({tool})")
+    return version
+
+
+def check_llvm_compilers() -> None:
+    check_compiler(LLVM_C_COMPILER, "GCC C compiler", LLVM_GCC_MIN)
+    check_compiler(LLVM_CXX_COMPILER, "GCC C++ compiler", LLVM_GCC_MIN)
+
+
+def check_loom_compilers() -> None:
+    check_compiler(LOOM_C_COMPILER, "Clang C compiler", LOOM_CLANG_MIN)
+    check_compiler(LOOM_CXX_COMPILER, "Clang C++ compiler", LOOM_CLANG_MIN)
+
+
+def compiler_status(tool: str, minimum: tuple[int, ...]) -> str:
+    try:
+        version, first_line = compiler_version(tool)
+    except SystemExit:
+        return f"{tool} unavailable"
+    verdict = "ok"
+    if version_less(version, minimum):
+        verdict = f"too old, need >= {format_version(minimum)}"
+    return f"{tool} {format_version(version)} ({verdict}; {first_line})"
 
 
 def real(p: Path) -> Path:
@@ -120,12 +196,13 @@ class Paths:
     def __init__(self, root: Path):
         self.root = real(root)
         self.main = resolve_main_worktree(self.root)
-        externals = self.main / "externals" / "llvm"
-        self.llvm_root = externals
-        self.llvm_src = externals / "llvm"
-        self.llvm_build = externals / "build"
-        self.llvm_lock = externals / ".build.lock"
-        self.llvm_stamp = externals / ".build.stamp"
+        externals = self.main / "externals"
+        llvm_external = externals / "llvm"
+        self.llvm_root = llvm_external
+        self.llvm_src = llvm_external / "llvm"
+        self.llvm_build = llvm_external / "build"
+        self.llvm_lock = externals / ".loom-build.llvm.lock"
+        self.llvm_stamp = externals / ".loom-build.llvm.stamp"
         self.loom_build = self.root / "build"
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
         self.cmake_llvm_dir = self.llvm_build / "lib" / "cmake" / "llvm"
@@ -216,14 +293,41 @@ def write_stamp(path: Path, value: str) -> None:
     path.write_text(value + "\n")
 
 
+def read_cmake_cache_entry(build_dir: Path, key: str) -> str:
+    cache = build_dir / "CMakeCache.txt"
+    try:
+        lines = cache.read_text().splitlines()
+    except FileNotFoundError:
+        return ""
+    prefix = f"{key}:"
+    for line in lines:
+        if line.startswith(prefix):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def compiler_basename(path: str) -> str:
+    return Path(path).name if path else ""
+
+
+def cmake_cache_uses_compilers(build_dir: Path, c_compiler: str,
+                               cxx_compiler: str) -> bool:
+    cached_c = read_cmake_cache_entry(build_dir, "CMAKE_C_COMPILER")
+    cached_cxx = read_cmake_cache_entry(build_dir, "CMAKE_CXX_COMPILER")
+    return (
+        compiler_basename(cached_c) == compiler_basename(c_compiler) and
+        compiler_basename(cached_cxx) == compiler_basename(cxx_compiler)
+    )
+
+
 def configure_llvm(paths: Paths) -> None:
     run([
         "cmake", "-G", "Ninja",
         "-S", str(paths.llvm_src),
         "-B", str(paths.llvm_build),
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_C_COMPILER=clang",
-        "-DCMAKE_CXX_COMPILER=clang++",
+        f"-DCMAKE_C_COMPILER={LLVM_C_COMPILER}",
+        f"-DCMAKE_CXX_COMPILER={LLVM_CXX_COMPILER}",
         "-DLLVM_ENABLE_PROJECTS=mlir;clang",
         "-DLLVM_TARGETS_TO_BUILD=host",
         "-DLLVM_ENABLE_ASSERTIONS=ON",
@@ -244,8 +348,8 @@ def configure_loom(paths: Paths) -> None:
         "-S", str(paths.root),
         "-B", str(paths.loom_build),
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_C_COMPILER=clang",
-        "-DCMAKE_CXX_COMPILER=clang++",
+        f"-DCMAKE_C_COMPILER={LOOM_C_COMPILER}",
+        f"-DCMAKE_CXX_COMPILER={LOOM_CXX_COMPILER}",
         f"-DMLIR_DIR={paths.mlir_dir}",
         f"-DLLVM_DIR={paths.cmake_llvm_dir}",
         f"-DClang_DIR={paths.cmake_clang_dir}",
@@ -268,6 +372,14 @@ def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
         current = llvm_source_id(paths)
         prev = read_stamp(paths.llvm_stamp)
         build_ninja = paths.llvm_build / "build.ninja"
+        if build_ninja.exists() and not cmake_cache_uses_compilers(
+            paths.llvm_build, LLVM_C_COMPILER, LLVM_CXX_COMPILER
+        ):
+            info(
+                f"LLVM build compiler changed to {LLVM_C_COMPILER}/"
+                f"{LLVM_CXX_COMPILER}; removing {paths.llvm_build}"
+            )
+            shutil.rmtree(paths.llvm_build, ignore_errors=True)
         if not build_ninja.exists():
             configure_llvm(paths)
         elif prev and prev != current:
@@ -306,6 +418,7 @@ def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> None:
     prev = read_stamp(paths.llvm_stamp)
     if not mlir_cfg.exists():
         info(f"shared MLIR not found at {paths.llvm_build}; building it now")
+        check_llvm_compilers()
         build_llvm(paths, args)
         return
     if not clang_cfg.exists():
@@ -313,6 +426,7 @@ def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> None:
             f"shared Clang not found at {paths.cmake_clang_dir}; "
             "rebuilding LLVM with clang enabled"
         )
+        check_llvm_compilers()
         build_llvm(paths, args)
         return
     if prev and prev != current:
@@ -320,6 +434,7 @@ def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> None:
             f"shared LLVM source id drifted ({prev} -> {current}); "
             "rebuilding before loom"
         )
+        check_llvm_compilers()
         build_llvm(paths, args)
 
 
@@ -330,8 +445,16 @@ def build_loom(paths: Paths, args: argparse.Namespace) -> None:
             f"LLVM ({paths.mlir_dir}); wiping and reconfiguring"
         )
         shutil.rmtree(paths.loom_build, ignore_errors=True)
-    ensure_shared_llvm(paths, args)
     bn = paths.loom_build / "build.ninja"
+    if bn.exists() and not cmake_cache_uses_compilers(
+        paths.loom_build, LOOM_C_COMPILER, LOOM_CXX_COMPILER
+    ):
+        info(
+            f"loom build compiler changed to {LOOM_C_COMPILER}/"
+            f"{LOOM_CXX_COMPILER}; removing {paths.loom_build}"
+        )
+        shutil.rmtree(paths.loom_build, ignore_errors=True)
+    ensure_shared_llvm(paths, args)
     if not bn.exists():
         configure_loom(paths)
     run(["cmake", "--build", str(paths.loom_build), f"-j{args.jobs}"])
@@ -356,17 +479,23 @@ def cmd_doctor(paths: Paths, args: argparse.Namespace) -> None:
     print(f"llvm_stamp      {paths.llvm_stamp}")
     print(f"stamp_value     {read_stamp(paths.llvm_stamp) or '(unset)'}")
     print(f"current_src_id  {llvm_source_id(paths)}")
+    print(f"llvm_c          {compiler_status(LLVM_C_COMPILER, LLVM_GCC_MIN)}")
+    print(f"llvm_cxx        {compiler_status(LLVM_CXX_COMPILER, LLVM_GCC_MIN)}")
+    print(f"loom_c          {compiler_status(LOOM_C_COMPILER, LOOM_CLANG_MIN)}")
+    print(f"loom_cxx        {compiler_status(LOOM_CXX_COMPILER, LOOM_CLANG_MIN)}")
     print(f"loom_build      {paths.loom_build}")
     print(f"loom_stale      {loom_build_is_stale(paths)}")
 
 
 def cmd_build_llvm(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
+    check_llvm_compilers()
     build_llvm(paths, args)
 
 
 def cmd_build_loom(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
+    check_loom_compilers()
     build_loom(paths, args)
 
 
@@ -396,6 +525,7 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
 
 def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     check_git_version()
+    check_loom_compilers()
     build_loom(paths, args)
     env = os.environ.copy()
     extra = env.get("LIT_OPTS", "").strip()

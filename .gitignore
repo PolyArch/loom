@@ -33,6 +33,8 @@ core.*
 # Local tool state (scheduled-task locks, scratch ExecPlans, etc.)
 /.claude/
 /temp/
+/externals/.loom-build.llvm.lock
+/externals/.loom-build.llvm.stamp
 
 # Local perf-runner cache (default LOOM_PERF_CACHE if pointed inside the repo)
 /loom_perf_cache/
