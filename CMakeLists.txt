@@ -17,7 +17,7 @@ if(LOOM_ENABLE_ILP)
     set(USE_OPENMP OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(highs
       GIT_REPOSITORY https://github.com/ERGO-Code/HiGHS
-      GIT_TAG v1.7.2)
+      GIT_TAG v1.14.0)
     FetchContent_MakeAvailable(highs)
   endif()
   add_compile_definitions(LOOM_HAS_ILP)
@@ -26,6 +26,9 @@ endif()
 find_package(MLIR REQUIRED CONFIG)
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+find_package(Clang REQUIRED CONFIG)
+message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
 list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
@@ -37,6 +40,7 @@ include(HandleLLVMOptions)
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(${CLANG_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})

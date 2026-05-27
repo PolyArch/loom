@@ -1,0 +1,82 @@
+# CMSIS-NN LLVM IR drop-in smoke targets.
+#
+# One row per source file. Columns are pipe-separated:
+#
+#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync | expect_gate | expect_mux | expect_demux
+#
+# Notes:
+#  - src_relpath is relative to externals/cmsis-nn/Source/.
+#  - clang_target_triple is what we pass to --target=.
+#  - clang normalizes -> expected_normalized_triple, which is what actually
+#    appears in `target triple = "..."` inside the emitted .ll. The pipeline
+#    greps for the normalized form.
+#  - expected_symbols are function names defined by the source. The pipeline
+#    requires that ALL of them show up as `define ... @<sym>(`.
+#  - extra_cflags carries per-row tweaks without needing to touch the runner
+#    script.
+#  - expect_thread / expect_graph / expect_stream / expect_load / expect_store /
+#    expect_constant / expect_sync / expect_gate / expect_mux / expect_demux
+#    pin the per-row shape of the lowered .dfg.mlir. The DFG runner counts
+#    `dataflow.thread @`, `dataflow.graph.func @`, `dataflow.stream`,
+#    `dataflow.load`, `dataflow.store`, `dataflow.constant`, `dataflow.sync`,
+#    `dataflow.gate`, `dataflow.mux`, and `dataflow.demux` occurrences and
+#    asserts an exact match against these cells. A leading `>=` (e.g. `>=1`)
+#    accepts any count at or above the threshold; a bare integer demands
+#    exact equality. The IR-only and raise runners ignore these columns.
+#  - expect_demux is reserved for symmetry with the other control-routing
+#    primitives; the current SCF-to-DFG lowering does not yet emit
+#    `dataflow.demux` (the 1-to-N route lowering is a future iteration), so
+#    every row pins it to 0.
+#  - We deliberately do NOT modify any externals/cmsis-nn source. If a source
+#    needs more flags, add them in extra_cflags here.
+#
+# Coverage rationale: a representative subset of the per-feature subdirs
+# under externals/cmsis-nn/Source/. s8 (int8) variants are preferred over
+# q15/q7 since s8 is the modern CMSIS-NN naming and tends to have the
+# simplest dependency footprint. We skip SVE/MVE-only files and any source
+# that references neon/mve intrinsics outside conditional gates because we
+# do not enable those vector extensions.
+#
+# Triples follow the brief:
+#  - thumbv7em / Cortex-M4              : default for s8 sources (and the
+#                                         q7/q15 ReLU variants that share
+#                                         the same parse footprint).
+#  - thumbv8m.main / Cortex-M33         : one v8m-leaning row to keep
+#                                         coverage of the v8m-main profile.
+#
+# Subdir / source coverage (18 rows):
+#  - ActivationFunctions     : arm_relu_q15.c, arm_relu_q7.c, arm_relu6_s8.c
+#  - BasicMathFunctions      : arm_elementwise_add_s8.c, arm_minimum_s8.c,
+#                              arm_maximum_s8.c
+#  - ConcatenationFunctions  : arm_concatenation_s8_w.c, arm_concatenation_s8_x.c
+#  - ConvolutionFunctions    : arm_depthwise_conv_s8.c, arm_convolve_1x1_s8_fast.c
+#  - FullyConnectedFunctions : arm_fully_connected_s8.c, arm_vector_sum_s8.c
+#  - NNSupportFunctions      : arm_q7_to_q15_with_offset.c
+#  - PoolingFunctions        : arm_avgpool_s8.c, arm_max_pool_s8.c (v8m.main)
+#  - ReshapeFunctions        : arm_reshape_s8.c
+#  - SoftmaxFunctions        : arm_softmax_s8.c, arm_softmax_u8.c
+#
+# Each source's expected symbol is the function name that matches the
+# file name (the convention CMSIS-NN follows for its public entry
+# points). Files that also emit static helpers under different names
+# are still covered by the base symbol; the pipeline asserts presence,
+# not exclusivity.
+#
+ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||1|1|1|1|1|1|1|0|0|0
+ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7||2|2|1|2|2|3|1|0|0|0
+ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu6_s8||0|0|0|0|0|0|0|0|0|0
+BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_elementwise_add_s8||0|0|0|0|0|0|0|0|0|0
+BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8||1|1|0|18|9|27|0|28|0|0
+BasicMathFunctions/arm_maximum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_maximum_s8||1|1|0|18|9|27|0|28|0|0
+ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_w||0|0|0|0|0|0|0|0|0|0
+ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|1|0|0|0|0|0|0|0
+ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8||2|2|0|22|5|20|0|26|4|0
+ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast||0|0|0|0|0|0|0|0|0|0
+FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|11|0|11|0|0|0|0
+FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_vector_sum_s8||1|1|0|2|1|3|0|2|0|0
+NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset||0|0|0|0|0|0|0|0|0|0
+PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8||2|0|0|0|0|0|0|0|0|0
+PoolingFunctions/arm_max_pool_s8.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_max_pool_s8||1|1|0|6|4|10|0|5|0|0
+ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8||0|0|0|0|0|0|0|0|0|0
+SoftmaxFunctions/arm_softmax_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_s8||0|0|0|0|0|0|0|0|0|0
+SoftmaxFunctions/arm_softmax_u8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_u8||2|1|0|3|0|1|0|1|1|0

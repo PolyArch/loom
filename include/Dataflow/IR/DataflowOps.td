@@ -6,7 +6,10 @@ include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/CommonAttrConstraints.td"
 include "mlir/IR/CommonTypeConstraints.td"
 include "mlir/IR/OpAsmInterface.td"
+include "mlir/IR/SymbolInterfaces.td"
+include "mlir/Interfaces/CallInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/IR/RegionKindInterface.td"
@@ -379,6 +382,308 @@ def Dataflow_YieldOp : Dataflow_Op<"yield", [
       build($_builder, $_state, ::mlir::ValueRange{});
     }]>
   ];
+}
+
+//===----------------------------------------------------------------------===//
+// Symbol-bearing function-like ops
+//
+// The canonical "definition + launch" shape per the Part 3 spec. The
+// regional `dataflow.graph` op above is preserved unchanged so existing
+// techmap / fabric tests (which build graph bodies inline) keep working.
+// The symbol-bearing variant for graphs is named `dataflow.graph.func`
+// in IR text to avoid colliding with the regional name; thread bodies
+// have no regional precursor and use `dataflow.thread` directly.
+//===----------------------------------------------------------------------===//
+
+def Dataflow_ThreadOp : Dataflow_Op<"thread", [
+    AutomaticAllocationScope,
+    IsolatedFromAbove,
+    HasParent<"::mlir::ModuleOp">,
+    SingleBlockImplicitTerminator<"ThreadYieldOp">,
+    FunctionOpInterface,
+    RecursiveMemoryEffects
+]> {
+  let summary = "Symbol-bearing function-like AccCore kernel definition";
+  let description = [{
+    Module-scope, function-like callable that holds an AccCore kernel
+    body. It does not itself execute; one or more
+    `dataflow.thread.launch` ops materialize launches of it.
+
+    The body's entry block has the layout
+    `(args_*, thread_ctrl: none, iv_*: index)` (per spec section
+    5.4.1). The first N block args mirror `function_type.inputs`; the
+    trailing `thread_ctrl` and grid index args are NOT in
+    `function_type` (they are launch-instance extras). Specifically:
+
+      * Args[0 .. N-1]   match `function_type.inputs` position-wise.
+      * Args[N]          is `none` -- the per-launch `thread_ctrl`
+                         slot, used as the AccCore start signal and
+                         consumed by root `dataflow.graph.launch` ops
+                         in the body as their `ctrl_in` operand.
+      * Args[N+1 .. end] are all `index` -- one per grid dim.
+
+    The custom assembly format prints these trailing extras after the
+    function-style signature using a separate `ctrl ( ... )` clause
+    (the `thread_ctrl` slot) and an `iv ( ... )` clause (the
+    grid-index slots). Either / both clauses are optional; threads
+    written without them are accepted at parse time only when the op
+    is external (i.e., body is empty), since a body-having thread
+    must carry the trailing `thread_ctrl` slot per the verifier.
+
+    The op is `IsolatedFromAbove`; values flow in only through the
+    matching `dataflow.thread.launch` body operands.
+
+    This first-milestone implementation tracks only the function-like
+    surface needed for SCF-to-DFG lowering smoke output. The
+    `staticGrid*` / `mapping` attributes from the spec are accepted as
+    optional dictionary attributes on the op for future use; the
+    smoke driver does not yet exercise them.
+  }];
+
+  let arguments = (ins
+      SymbolNameAttr:$sym_name,
+      TypeAttrOf<FunctionType>:$function_type,
+      OptionalAttr<StrAttr>:$sym_visibility,
+      OptionalAttr<DictArrayAttr>:$arg_attrs,
+      OptionalAttr<DictArrayAttr>:$res_attrs);
+
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins
+        "::llvm::StringRef":$name,
+        "::mlir::FunctionType":$type,
+        CArg<"::llvm::ArrayRef<::mlir::NamedAttribute>", "{}">:$attrs)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// FunctionOpInterface methods.
+    ::llvm::ArrayRef<::mlir::Type> getArgumentTypes() {
+      return getFunctionType().getInputs();
+    }
+    ::llvm::ArrayRef<::mlir::Type> getResultTypes() {
+      return getFunctionType().getResults();
+    }
+    ::mlir::Region *getCallableRegion() {
+      return isExternal() ? nullptr : &getBody();
+    }
+    bool isExternal() { return getBody().empty(); }
+
+    /// Override the default FunctionOpInterface body verifier: a
+    /// dataflow.thread body's entry block leads with the
+    /// function-signature args, then a `none`-typed `thread_ctrl`
+    /// slot, then zero or more `index`-typed `iv_*` slots (per spec
+    /// section 5.4.1: `(args_*, thread_ctrl, iv_*)`).
+    ::llvm::LogicalResult verifyBody() {
+      if (isExternal())
+        return ::mlir::success();
+      ::mlir::Block &entry = getBody().front();
+      ::llvm::ArrayRef<::mlir::Type> inputs = getFunctionType().getInputs();
+      const size_t N = inputs.size();
+      // Body-carrying threads MUST have the trailing thread_ctrl slot.
+      if (entry.getNumArguments() < N + 1)
+        return emitOpError("entry block must have at least ")
+               << (N + 1)
+               << " arguments (function inputs + 1 thread_ctrl slot)";
+      // First N entry block arguments must match function_type.inputs.
+      for (size_t i = 0; i < N; ++i) {
+        if (entry.getArgument(i).getType() != inputs[i])
+          return emitOpError("type of entry block argument #")
+                 << i << '(' << entry.getArgument(i).getType()
+                 << ") must match the corresponding function signature input ("
+                 << inputs[i] << ')';
+      }
+      // Slot N must be the `none`-typed thread_ctrl per spec
+      // section 5.4.1.
+      if (!::llvm::isa<::mlir::NoneType>(entry.getArgument(N).getType()))
+        return emitOpError("entry block argument #")
+               << N << " (thread_ctrl) must have type `none`, got "
+               << entry.getArgument(N).getType();
+      // All remaining slots are grid induction variables of `index`.
+      for (size_t i = N + 1, e = entry.getNumArguments(); i < e; ++i) {
+        if (!::llvm::isa<::mlir::IndexType>(entry.getArgument(i).getType()))
+          return emitOpError("entry block argument #")
+                 << i << " (grid iv) must have type `index`, got "
+                 << entry.getArgument(i).getType();
+      }
+      return ::mlir::success();
+    }
+  }];
+}
+
+def Dataflow_ThreadYieldOp : Dataflow_Op<"thread.yield", [
+    Terminator,
+    ParentOneOf<["::dataflow::ThreadOp"]>,
+    Pure
+]> {
+  let summary = "Terminator for a dataflow.thread body";
+  let description = [{
+    Operand list is intentionally empty. Tensor-result aggregation
+    from `scf.forall` is materialised into explicit destination-buffer
+    writes before thread promotion, so the thread definition has no
+    parallel combining region or thread data results.
+  }];
+
+  let arguments = (ins);
+
+  let assemblyFormat = "attr-dict";
+}
+
+def Dataflow_ThreadLaunchOp : Dataflow_Op<"thread.launch", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary = "Async launch of a dataflow.thread callable";
+  let description = [{
+    References a `dataflow.thread` definition by symbol and supplies
+    body operands and optional grid upper bounds. Produces an optional
+    `!dataflow.thread_token` async completion handle.
+
+    The first-milestone surface omits `MemoryEffectsOpInterface`
+    machinery and the spec's full async-deps + lower-bound / step
+    grid plumbing; the smoke driver only needs body operands and
+    upper-bound dynamic grid sizes.
+  }];
+
+  let arguments = (ins
+      FlatSymbolRefAttr:$callee,
+      Variadic<AnyType>:$bodyOperands,
+      Variadic<Index>:$gridUpperBounds,
+      Variadic<Dataflow_ThreadTokenType>:$asyncDependencies);
+
+  let results = (outs Optional<Dataflow_ThreadTokenType>:$asyncToken);
+
+  let assemblyFormat = [{
+    $callee
+    `(` $bodyOperands `)`
+    ( `grid` `(` $gridUpperBounds^ `)` )?
+    ( `wait` `(` $asyncDependencies^ `)` )?
+    attr-dict `:`
+    functional-type($bodyOperands, results)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def Dataflow_GraphFuncOp : Dataflow_Op<"graph.func", [
+    IsolatedFromAbove,
+    HasParent<"::mlir::ModuleOp">,
+    SingleBlockImplicitTerminator<"GraphReturnOp">,
+    FunctionOpInterface,
+    RecursiveMemoryEffects,
+    DeclareOpInterfaceMethods<RegionKindInterface>
+]> {
+  let summary = "Symbol-bearing function-like SpatialCore graph definition";
+  let description = [{
+    Module-scope, function-like callable holding the SpatialCore body
+    of a leaf dataflow graph. It does not itself execute; one or more
+    `dataflow.graph.launch` ops materialise launches of it inside the
+    body of a `dataflow.thread` definition.
+
+    `function_type` includes the explicit control ports as part of the
+    symbolic signature: inputs are `(none, T0, ..., TN)` (leading
+    `none` is the `ctrl_in` port), results are `(none, R0, ..., RM)`
+    (leading `none` is the `done_out` port). The body's terminator is
+    `dataflow.graph.return`, whose operand list matches the result
+    list of the function type.
+
+    Naming this op `graph.func` (as opposed to `graph`) avoids
+    collision with the existing regional `dataflow.graph` op, which is
+    preserved for backwards compatibility with the techmap, fabric,
+    and dataflow lit corpora.
+  }];
+
+  let arguments = (ins
+      SymbolNameAttr:$sym_name,
+      TypeAttrOf<FunctionType>:$function_type,
+      OptionalAttr<StrAttr>:$sym_visibility,
+      OptionalAttr<DictArrayAttr>:$arg_attrs,
+      OptionalAttr<DictArrayAttr>:$res_attrs);
+
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins
+        "::llvm::StringRef":$name,
+        "::mlir::FunctionType":$type,
+        CArg<"::llvm::ArrayRef<::mlir::NamedAttribute>", "{}">:$attrs)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// FunctionOpInterface methods.
+    ::llvm::ArrayRef<::mlir::Type> getArgumentTypes() {
+      return getFunctionType().getInputs();
+    }
+    ::llvm::ArrayRef<::mlir::Type> getResultTypes() {
+      return getFunctionType().getResults();
+    }
+    ::mlir::Region *getCallableRegion() {
+      return isExternal() ? nullptr : &getBody();
+    }
+    bool isExternal() { return getBody().empty(); }
+  }];
+}
+
+def Dataflow_GraphReturnOp : Dataflow_Op<"graph.return", [
+    Terminator,
+    ParentOneOf<["::dataflow::GraphFuncOp"]>,
+    Pure
+]> {
+  let summary = "Terminator for a dataflow.graph.func body";
+  let description = [{
+    Supplies the values that leave the enclosing
+    `dataflow.graph.func` on its results, including the leading
+    `done_out : none` slot.
+  }];
+
+  let arguments = (ins Variadic<AnyType>:$values);
+
+  let assemblyFormat = "($values^ `:` type($values))? attr-dict";
+
+  let hasVerifier = 1;
+}
+
+def Dataflow_GraphLaunchOp : Dataflow_Op<"graph.launch", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary = "Synchronous launch of a dataflow.graph.func callable";
+  let description = [{
+    References a `dataflow.graph.func` definition by symbol from
+    inside a `dataflow.thread` body. The first operand is the
+    per-launch `ctrl_in : none` start signal; the remaining operands
+    are body operands. The first result is the per-launch
+    `done_out : none` completion signal; the remaining results carry
+    user data.
+
+    First-milestone surface omits the manual
+    `MemoryEffectsOpInterface` projection over the callee body; the
+    smoke driver only needs the parser/printer plus
+    `SymbolUserOpInterface` resolution.
+  }];
+
+  let arguments = (ins
+      FlatSymbolRefAttr:$callee,
+      NoneType:$ctrlIn,
+      Variadic<AnyType>:$bodyOperands);
+
+  let results = (outs
+      NoneType:$doneOut,
+      Variadic<AnyType>:$results);
+
+  let assemblyFormat = [{
+    $callee
+    `(` $ctrlIn ( `,` $bodyOperands^ )? `)`
+    attr-dict `:`
+    functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
 }
 
 #endif // DATAFLOW_OPS_TD

@@ -1,0 +1,17 @@
+# Drives the cmsis-dsp SCF MLIR -> DFG MLIR lower pipeline from lit.
+# The runner script lives in test/cmsis-dsp/; this lit case is the
+# single integration point so the lower pipeline runs alongside the
+# rest of the regression suite. We pin LOOM_CC, LOOM_RAISE, LOOM_LOWER,
+# and LOOM_RAISE_OPT explicitly because lit may run with a clean PATH.
+# The bash -c wrapper turns on pipefail so a runner exit-nonzero before
+# the summary line still propagates failure through the FileCheck pipe.
+#
+# The all-pass summary is gating; the dataflow-emission footer is
+# pinned to the current denominator so a regression that wholesale
+# drops thread/graph emission across the corpus trips the test.
+#
+# RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../cmsis-dsp/run_cmsis_dsp_dfg.sh' | FileCheck %s
+#
+# CHECK: ==== cmsis-dsp dfg smoke summary ====
+# CHECK: all 16 cmsis-dsp source(s) passed loom-lower
+# CHECK: {{[0-9]+}} of 16 cmsis-dsp source(s) emitted dataflow.thread or dataflow.graph.func

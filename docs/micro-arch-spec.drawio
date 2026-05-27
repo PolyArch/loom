@@ -1,0 +1,284 @@
+<mxfile host="65bd71144e" pages="2">
+    <diagram name="fabric" id="VSBeAFlHpl9mD3GfBe3m">
+        <mxGraphModel dx="640" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="fb-types-strip" value="Fabric type system" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="40" width="770" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-type-bits" value="!fabric.bits&lt;W&gt;&lt;div style=&quot;font-size:9px&quot;&gt;spatial domain : payload + valid/ready handshake&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="70" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-type-tag" value="!fabric.bits_tag&lt;W, T&gt;&lt;div style=&quot;font-size:9px&quot;&gt;temporal domain : data + tag + handshake&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="305" y="70" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-type-memref" value="memref&lt;...x!fabric.bits&lt;W&gt;&gt;&lt;div style=&quot;font-size:9px&quot;&gt;memory port type (no width relaxation)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="550" y="70" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-module" value="fabric.module&lt;div&gt;fabric.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;top-level container ; IsolatedFromAbove ; graph region&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="150" width="770" height="810" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mod-blockargs" value="block args : bits / bits_tag / memref&lt;div style=&quot;font-size:9px&quot;&gt;module entry-block ports&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="200" width="230" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mod-loom" value="loom_addr_bits / loom_mem_bus_width&lt;div style=&quot;font-size:9px&quot;&gt;optional per-module overrides&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="305" y="200" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mod-relax" value="width relaxation : to T_inner&lt;div style=&quot;font-size:9px&quot;&gt;LSB-aligned ; zero-fill on extension&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="200" width="230" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-bridges-frame" value="domain bridges &amp; module-body utilities" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="260" width="730" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-boundary-frame" value="fabric.boundary  (Pure)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="305" width="480" height="95" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-bnd-s2t" value="boundary [s2t]&lt;div style=&quot;font-size:9px&quot;&gt;bits + tag → bits_tag&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="345" width="145" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-bnd-t2t" value="boundary [t2t]&lt;div style=&quot;font-size:9px&quot;&gt;bits_tag → bits_tag (retag)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="245" y="345" width="145" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-bnd-t2s" value="boundary [t2s]&lt;div style=&quot;font-size:9px&quot;&gt;bits_tag → bits + tag&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="395" y="345" width="145" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-fifo" value="fabric.fifo&lt;div style=&quot;font-size:9px&quot;&gt;inter-op buffer ; max_depth, bypassable&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="310" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-inst" value="fabric.instantiate @sym&lt;div style=&quot;font-size:9px&quot;&gt;bind module/pe/fu template ; per-operand to T_inner&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="580" y="360" width="200" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe" value="fabric.pe&lt;div&gt;fabric.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;PE container ; anonymous form or named template (via fabric.instantiate)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="430" width="730" height="305" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-spatial" value="[spatial]  ports = bits&lt;W&gt;&lt;div style=&quot;font-size:9px&quot;&gt;at most one fabric.fu architecturally active per config&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="490" width="350" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-temporal" value="[temporal]  ports = bits_tag&lt;W,T&gt;&lt;div style=&quot;font-size:9px&quot;&gt;instruction_mem time-multiplexes inner FUs&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="440" y="490" width="330" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-routing" value="PE port routing &amp; control" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="555" width="700" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-opcode" value="opcode&lt;div style=&quot;font-size:9px&quot;&gt;active FU selector&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="590" width="160" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-imux" value="operand_sel&lt;div style=&quot;font-size:9px&quot;&gt;PE input → FU operand mux&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="265" y="590" width="160" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-odmx" value="result_sel&lt;div style=&quot;font-size:9px&quot;&gt;FU result → PE output demux&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="435" y="590" width="160" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-pe-imem" value="instruction_mem&lt;div style=&quot;font-size:9px&quot;&gt;[temporal] num_instruction slots&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="605" y="590" width="165" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-fu" value="fabric.fu&lt;div&gt;fabric.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;graph region inside fabric.pe body&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="650" width="700" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-fu-op" value="fabric.op&lt;div style=&quot;font-size:9px&quot;&gt;op_list / hw_params / sw_configs&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="690" width="170" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-fu-mux" value="fabric.mux&lt;div style=&quot;font-size:9px&quot;&gt;sel + discard + disconnect&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="275" y="690" width="170" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-fu-demux" value="fabric.demux&lt;div style=&quot;font-size:9px&quot;&gt;sel + discard + disconnect&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="455" y="690" width="170" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-fu-axes" value="reconfigurable axes&lt;div style=&quot;font-size:9px&quot;&gt;op_sel / bitmask / predicate&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="635" y="690" width="135" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-leaf-frame" value="leaf ops in module body  (no inner region)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="755" width="730" height="195" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-switch-frame" value="fabric.switch  (routing leaf)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="795" width="345" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-switch-spatial" value="[spatial]  bits&lt;W&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="830" width="155" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-switch-temporal" value="[temporal]  bits_tag&lt;W,T&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="255" y="830" width="155" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-switch-hw" value="hw_params : connectivity_table&lt;div style=&quot;font-size:9px&quot;&gt;L×K bit-string, MSB-left ; route_table_size [temporal only]&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="865" width="315" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-switch-sw" value="sw_configs : route_table + switch_enable&lt;div style=&quot;font-size:9px&quot;&gt;all-or-nothing ; ≤ 1 source per output&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="905" width="315" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mem-frame" value="fabric.mem  (memory leaf)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="445" y="795" width="345" height="150" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mem-spatial" value="[spatial]  bits&lt;W&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="830" width="155" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mem-temporal" value="[temporal]  bits_tag&lt;W,T&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="620" y="830" width="140" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mem-mgr" value="memref_mgr (required) / memref_sub (optional bypass)&lt;div style=&quot;font-size:9px&quot;&gt;element type !fabric.bits&lt;W&gt; ; W_mgr / W_sub may differ&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="865" width="300" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-mem-ports" value="load : (addr, ctrl) → (data, done)&lt;div style=&quot;font-size:9px&quot;&gt;store : (addr, data, ctrl) → done&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="460" y="905" width="300" height="35" as="geometry"/>
+                </mxCell>
+                <mxCell id="fb-inst-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="fb-inst" target="fb-pe" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="680" y="415"/>
+                            <mxPoint x="425" y="415"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="fb-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rectangles = ops with body regions (module, pe, fu)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey cells = explicit type / port / schedule / metadata cells&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow cells = fabric.boundary domain bridges (s2t / t2t / t2s)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrow = fabric.instantiate symbol reference&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="975" width="770" height="105" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="bSAgXyccILI-Kpj7DVyt" name="dataflow">
+        <mxGraphModel dx="852" dy="773" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="df-host-strip" value="HostCore scope" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="60" width="770" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-mapinfo" value="dataflow.map_info&lt;div style=&quot;font-size:9px&quot;&gt;host/thread data boundary&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="90" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-launch" value="dataflow.thread.launch&lt;div style=&quot;font-size:9px&quot;&gt;async launch of @sym, callee resolves to a dataflow.thread def&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">
+                    <mxGeometry x="305" y="90" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-wait" value="dataflow.thread.wait&lt;div style=&quot;font-size:9px&quot;&gt;synchronize back to host&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="550" y="90" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-host-spatial-layout" value="dataflow.spatial_layout&lt;div style=&quot;font-size:9px&quot;&gt;memref tile-and-lattice attribute&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="90" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-outer" value="dataflow.thread @sym (definition)&lt;div&gt;dataflow.thread.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;Symbol-bearing, function-like, module-scope; launched by dataflow.thread.launch&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="170" width="770" height="730" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-body-args" value="body block args&lt;div style=&quot;font-size:9px&quot;&gt;function_type.inputs (T0..TN)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="215" width="230" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-ctrl" value="thread_ctrl : none&lt;div style=&quot;font-size:9px&quot;&gt;launch-supplied AccCore start signal&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="305" y="215" width="240" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-grid-args" value="iv args : index&lt;div style=&quot;font-size:9px&quot;&gt;one per mapping entry, after thread_ctrl&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="560" y="215" width="230" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-scalarcore-region" value="ScalarCore region (thread body, outside graph)" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="275" width="730" height="135" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-scf-call" value="scf.* control flow&lt;div style=&quot;font-size:9px&quot;&gt;structured ScalarCore code&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="310" width="220" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-fence" value="dataflow.thread.fence&lt;div style=&quot;font-size:9px&quot;&gt;ScalarCore-side bridge&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
+                    <mxGeometry x="315" y="310" width="220" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-spatial-queries" value="spatial-array queries&lt;div style=&quot;font-size:9px&quot;&gt;local_range / spatial_coord / spatial_linear_id&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="550" y="310" width="220" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-launch" value="dataflow.graph.launch @sym&lt;div style=&quot;font-size:9px&quot;&gt;sync launch of graph callable; supplies per-launch ctrl_in, receives done_out&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="380" width="730" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-outer" value="dataflow.graph @sym (definition, module-scope sibling of thread def)&lt;div&gt;dataflow.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;SpatialCore leaf DFG; Symbol-bearing, function-like, IsolatedFromAbove; ctrl_in/done_out are part of function_type&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="430" width="730" height="450" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-ctrl-in" value="ctrl_in : none&lt;div style=&quot;font-size:9px&quot;&gt;leading function_type input; per-launch start port&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="490" width="220" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-graph-done-out" value="done_out : none&lt;div style=&quot;font-size:9px&quot;&gt;leading function_type result; per-launch completion token&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#f5f5f5;" parent="1" vertex="1">
+                    <mxGeometry x="550" y="490" width="220" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-stream-frame" value="streaming primitives" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="550" width="350" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-stream" value="dataflow.stream&lt;div style=&quot;font-size:9px&quot;&gt;index + rwc producer&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="585" width="155" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-carry" value="dataflow.carry&lt;div style=&quot;font-size:9px&quot;&gt;loop-carried iter_arg&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="260" y="585" width="155" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-invariant" value="dataflow.invariant&lt;div style=&quot;font-size:9px&quot;&gt;latch-and-replay&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="645" width="155" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-gate" value="dataflow.gate&lt;div style=&quot;font-size:9px&quot;&gt;loop to body phase&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="260" y="645" width="155" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-ctrl-frame" value="control routing" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="550" width="320" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-mux" value="dataflow.mux&lt;div style=&quot;font-size:9px&quot;&gt;selective N-to-1 router&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="465" y="585" width="140" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-demux" value="dataflow.demux&lt;div style=&quot;font-size:9px&quot;&gt;selective 1-to-N router&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="615" y="585" width="140" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-sync" value="dataflow.sync&lt;div style=&quot;font-size:9px&quot;&gt;all-input rendezvous&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="465" y="645" width="140" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-constant" value="dataflow.constant&lt;div style=&quot;font-size:9px&quot;&gt;phase-aware emission&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="615" y="645" width="140" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-mem-frame" value="memory ops" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="725" width="470" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-load" value="dataflow.load&lt;div style=&quot;font-size:9px&quot;&gt;ordered memref read&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="95" y="755" width="215" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-store" value="dataflow.store&lt;div style=&quot;font-size:9px&quot;&gt;ordered memref write&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="755" width="215" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-yield-frame" value="terminator" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="570" y="725" width="200" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-yield" value="dataflow.yield&lt;div style=&quot;font-size:9px&quot;&gt;done_out then user values&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="585" y="755" width="170" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-pure-compute" value="allowed pure compute&lt;div style=&quot;font-size:9px&quot;&gt;arith.* / math.* / allowed LLVM (all-operand firing)&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="820" width="690" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-mapinfo-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="df-host-mapinfo" target="df-thread-body-args" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="180" y="155"/>
+                            <mxPoint x="675" y="155"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="df-wait-edge" style="endArrow=classic;startArrow=classic;startFill=1;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="df-host-wait" target="df-thread-outer" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="df-thread-ctrl-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="df-thread-ctrl" target="df-graph-ctrl-in" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="50" y="235"/>
+                            <mxPoint x="50" y="510"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="df-fence-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=0;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="df-thread-fence" target="df-graph-ctrl-in" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="315" y="420"/>
+                            <mxPoint x="190" y="420"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="df-done-edge" style="endArrow=classic;html=1;dashed=1;edgeStyle=orthogonalEdgeStyle;curved=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" parent="1" source="df-graph-done-out" target="df-thread-fence" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="800" y="510"/>
+                            <mxPoint x="800" y="385"/>
+                            <mxPoint x="425" y="385"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="df-legend" value="legend&lt;div style=&quot;font-size:9px&quot;&gt;outer rectangles = ops with regions (thread, graph)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;light-grey cells = explicit none / token control ports&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;yellow cell = ScalarCore-side bridge (thread.fence)&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;dashed arrows = none / thread_token control flow&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="40" y="930" width="770" height="90" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

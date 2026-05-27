@@ -1,6 +1,8 @@
 set(LLVM_TARGET_DEFINITIONS DataflowDialect.td)
 mlir_tablegen(DataflowDialect.h.inc -gen-dialect-decls -dialect=dataflow)
 mlir_tablegen(DataflowDialect.cpp.inc -gen-dialect-defs -dialect=dataflow)
+mlir_tablegen(DataflowTypes.h.inc -gen-typedef-decls -typedefs-dialect=dataflow)
+mlir_tablegen(DataflowTypes.cpp.inc -gen-typedef-defs -typedefs-dialect=dataflow)
 add_public_tablegen_target(MLIRDataflowDialectIncGen)
 
 set(LLVM_TARGET_DEFINITIONS DataflowOps.td)

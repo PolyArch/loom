@@ -55,6 +55,8 @@ lit_config.parallelism_groups["perf"] = _perf_parallelism_limit()
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
+    os.path.join(config.loom_obj_root, "tools", "loom-cc"),
+    os.path.join(config.loom_obj_root, "tools", "loom-raise-opt"),
     os.path.join(config.loom_obj_root, "tools", "loom-alignment-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
@@ -78,7 +80,10 @@ tools = [
     "loom-cost-test",
     "loom-coverage-test",
     "loom-hwsg-test",
+    "loom-lower",
     "loom-parallel-test",
+    "loom-raise",
+    "loom-raise-opt",
     "loom-synth-base-test",
     "loom-synth-config-test",
     "loom-synth-fu-dump",
@@ -87,3 +92,19 @@ tools = [
     "mlir-opt",
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)
+
+# %loom-c++ / %loom-cc / %loom-raise all share a "%loom-c" or "%loom-r"
+# prefix; lit's substitution is substring-based, so list the longest
+# patterns first and pin all to the built binary paths explicitly.
+_loom_cc_dir = os.path.join(config.loom_obj_root, "bin")
+config.substitutions.insert(
+    0, ("%loom-c\\+\\+", os.path.join(_loom_cc_dir, "loom-c++")))
+config.substitutions.insert(
+    1, ("%loom-cc\\b", os.path.join(_loom_cc_dir, "loom-cc")))
+config.substitutions.insert(
+    2, ("%loom-raise\\b", os.path.join(_loom_cc_dir, "loom-raise")))
+config.substitutions.insert(
+    3, ("%loom-lower\\b", os.path.join(_loom_cc_dir, "loom-lower")))
+config.substitutions.insert(
+    4, ("%objdump-h",
+        os.path.join(config.llvm_tools_dir, "llvm-objdump") + " -h"))

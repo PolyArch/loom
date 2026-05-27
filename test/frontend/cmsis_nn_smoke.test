@@ -1,0 +1,12 @@
+# Drives the cmsis-nn LLVM IR drop-in pipeline from lit. The pipeline
+# script lives in test/cmsis-nn/; this lit case is the single
+# integration point so the pipeline runs alongside the rest of the
+# regression suite. We pin LOOM_CC explicitly because lit may run with
+# a clean PATH. The bash -c wrapper turns on pipefail so a runner
+# exit-nonzero before the summary line still propagates failure
+# through the FileCheck pipe.
+#
+# RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc bash %S/../cmsis-nn/run_cmsis_nn_ir.sh' | FileCheck %s
+#
+# CHECK: ==== cmsis-nn LLVM IR smoke summary ====
+# CHECK: all 18 cmsis-nn source(s) passed

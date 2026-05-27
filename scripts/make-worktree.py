@@ -129,6 +129,7 @@ class Paths:
         self.loom_build = self.root / "build"
         self.mlir_dir = self.llvm_build / "lib" / "cmake" / "mlir"
         self.cmake_llvm_dir = self.llvm_build / "lib" / "cmake" / "llvm"
+        self.cmake_clang_dir = self.llvm_build / "lib" / "cmake" / "clang"
         self.llvm_lit = self.llvm_build / "bin" / "llvm-lit"
 
     @property
@@ -223,7 +224,7 @@ def configure_llvm(paths: Paths) -> None:
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_C_COMPILER=clang",
         "-DCMAKE_CXX_COMPILER=clang++",
-        "-DLLVM_ENABLE_PROJECTS=mlir",
+        "-DLLVM_ENABLE_PROJECTS=mlir;clang",
         "-DLLVM_TARGETS_TO_BUILD=host",
         "-DLLVM_ENABLE_ASSERTIONS=ON",
         "-DLLVM_ENABLE_RTTI=ON",
@@ -247,6 +248,7 @@ def configure_loom(paths: Paths) -> None:
         "-DCMAKE_CXX_COMPILER=clang++",
         f"-DMLIR_DIR={paths.mlir_dir}",
         f"-DLLVM_DIR={paths.cmake_llvm_dir}",
+        f"-DClang_DIR={paths.cmake_clang_dir}",
         f"-DLLVM_EXTERNAL_LIT={paths.llvm_lit}",
         "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
         "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache",
@@ -281,22 +283,36 @@ def build_llvm(paths: Paths, args: argparse.Namespace) -> None:
 def loom_build_is_stale(paths: Paths) -> bool:
     """Loom was configured against a shared LLVM that no longer exists.
 
-    Detected by checking whether the cmake package the loom build was
-    pointed at is still on disk. If not, the cached build.ninja will
-    fail at link time, so we wipe and reconfigure proactively.
+    Detected by checking whether the cmake packages the loom build was
+    pointed at are still on disk. If not, the cached build.ninja will
+    fail at link time, so we wipe and reconfigure proactively. Both
+    MLIR and Clang configs must be present because configure_loom()
+    passes -DMLIR_DIR and -DClang_DIR; an older shared LLVM built
+    without LLVM_ENABLE_PROJECTS=...;clang would otherwise silently
+    pass the missing Clang config straight to cmake.
     """
     bn = paths.loom_build / "build.ninja"
     if not bn.exists():
         return False
-    return not (paths.mlir_dir / "MLIRConfig.cmake").exists()
+    if not (paths.mlir_dir / "MLIRConfig.cmake").exists():
+        return True
+    return not (paths.cmake_clang_dir / "ClangConfig.cmake").exists()
 
 
 def ensure_shared_llvm(paths: Paths, args: argparse.Namespace) -> None:
-    cfg = paths.mlir_dir / "MLIRConfig.cmake"
+    mlir_cfg = paths.mlir_dir / "MLIRConfig.cmake"
+    clang_cfg = paths.cmake_clang_dir / "ClangConfig.cmake"
     current = llvm_source_id(paths)
     prev = read_stamp(paths.llvm_stamp)
-    if not cfg.exists():
+    if not mlir_cfg.exists():
         info(f"shared MLIR not found at {paths.llvm_build}; building it now")
+        build_llvm(paths, args)
+        return
+    if not clang_cfg.exists():
+        info(
+            f"shared Clang not found at {paths.cmake_clang_dir}; "
+            "rebuilding LLVM with clang enabled"
+        )
         build_llvm(paths, args)
         return
     if prev and prev != current:
