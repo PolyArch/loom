@@ -148,20 +148,40 @@ for this DAG?", not "what would a real machine deliver?"
    the critical path to any output — they extend op counts but never
    `total_cycles`.
 
-6. **No register/memory distinction in load/store cost.** Every load and
-   store costs 1 cycle, regardless of whether the target is a local scalar,
-   an induction variable, a loop-carried accumulator, or an array element.
-   No "register-resident" exemption — each named read is a 1-cycle load and
-   each named write is a 1-cycle store, same as array access. Anonymous
-   dataflow values (unnamed intermediates flowing directly op-to-op without
-   a source-level name) remain free. Under full unrolling of a parallel
-   dim, each unrolled instance has its own private storage; no aliasing
-   assumed.
+6. **Load/store cost for memory-backed values.** Every load and store of
+   a memory-backed value costs 1 cycle. A source-level scalar is
+   memory-backed if **any** of:
+   - it has more than one assignment site in source,
+   - it carries state across loop iterations (iter-arg / accumulator /
+      induction variable), or
+   - it aliases or destinations into an array / output buffer.
 
-   Schedule-level corollary: when a reduction dim is tree-scheduled
-   (Convention 3), the source-level accumulator collapses into the tree's
-   dataflow edges and contributes no loads/stores of its own — only the
-   `N` inputs (`N` loads) and the final result (1 store) are charged.
+   Memory-backed scalars charge 1 cycle per named read and 1 cycle per
+   named write — no "register-resident" exemption.
+
+   A scalar assigned exactly once at its declaration and not loop-carried
+   is **anonymous dataflow**: free fan-out from the defining op to all
+   consumers, no L/S cost. Loom runs `mem2reg` at `-O1`, so such scalars
+   have no IR-level memory cell — the source name is metadata, not storage.
+
+   Anonymous arithmetic intermediates (unnamed op-to-op results) remain
+   free. Under full unrolling of a parallel dim, each unrolled instance
+   has its own private storage; no aliasing assumed.
+
+   **Schedule-level corollary** (unchanged): when a reduction dim is
+   tree-scheduled (Convention 3), the source-level accumulator collapses
+   into the tree's dataflow edges and contributes no loads/stores of its
+   own — only the `N` inputs (`N` loads) and the final result (1 store)
+   are charged.
+
+   **Examples:**
+   - `uint32_t value = input_data[i]; if (value == 0) ...` — `value`
+      assigned once, not carried → anonymous. The load of `input_data[i]`
+      flows directly to the cmp.
+   - `uint32_t count = 0; while (...) { count++; }` — `count` reassigned
+      per iter → memory-backed. Each iter charges load + add + store.
+   - `int x; if (c) x = a; else x = b;` — two write sites → memory-backed
+      (conservative; we don't do phi-insertion analysis).
 
 You can cite the convention detiails, but don't cite the convention numbers directly in the eval.md files. 
 
@@ -213,3 +233,6 @@ op counts and trip counts, which is unchanged.
    Note: existing eval files were written under the prior serial model with
    reduced op-count scope; they need re-evaluation against the ASAP +
    full-op-count + uniform-L/S conventions above.
+
+## ASAP Model Notes
+Each *_eval.md file will have a header title "ASAP Model Notes". The text under this header is where I brainstorm how the performs. Do not edit the text directly under this header. Please point out any mistakes you see in that section so I can manually go over and fix them. You are free to edit the text in the rest of the file as you see fit. 

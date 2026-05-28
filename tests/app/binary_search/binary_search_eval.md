@@ -46,7 +46,7 @@ For a **break iter** (cmp_eq = TRUE), the chain terminates earlier: `... → cmp
 
 **Per-outer-t prologue** (before entering the while):
 - Critical chain: `load N → sub N−1 → store right` (3 cycles) — feeds iter 1's `load right`. The `static_cast<int32_t>(N)` is free under our convention (casts aren't in the counted op set). No `if` in the prologue, so strict no-pred adds no gaps here.
-- Parallel chains: `load input_targets[t] → store target`, `store left = 0`, `store result = −1`. Constants `0` and `−1` need no load; the stores themselves still cost 1 cycle each per Convention 6 (named-write rule), but they overlap the critical chain.
+- Parallel chains: `load input_targets[t]` (the value flows directly to the inner cmps — `target` is single-decl and not loop-carried, so it is anonymous dataflow with no store and no per-use load), `store left = 0`, `store result = −1`. Constants `0` and `−1` need no load; the stores to `left` and `result` (memory-backed: multi-assignment + loop-carried) still cost 1 cycle each, but they overlap the critical chain.
 
 `t` is parallel → fully unrolled → `total_cycles` is the max over the 5 outer instances. For each instance with trip `K`:
 ```
@@ -84,8 +84,8 @@ Under `t` parallel-unroll, `total_cycles = max = 52` (t=3, target=20, non-break 
 ### Overhead (named scalars, induction, address-gen, param hoists)
 | op           | count | source |
 |--------------|-------|--------|
-| loads        | 53    | scalar `target` (5, hoisted per outer t and fanned to both cmps) + carried `left` (18, 1 per inner iter incl bound-check-fail) + carried `right` (18) + scalar `result` (5, post-loop read) + iter `t` (5) + param hoists `N`, `M` (2) |
-| stores       | 41    | scalar `target` (5) + scalar `left` (5 init + 8 body updates = 13) + scalar `right` (5 init + 5 body updates = 10) + scalar `result` (5 init + 3 break stores = 8) + iter `t` (5) |
+| loads        | 48    | carried `left` (18, 1 per inner iter incl bound-check-fail) + carried `right` (18) + scalar `result` (5, post-loop read) + iter `t` (5) + param hoists `N`, `M` (2). `target` is anonymous (single-decl, not loop-carried) — no overhead L charged; the boundary load of `input_targets[t]` is already counted under algorithmic loads. `mid` is likewise anonymous and free. |
+| stores       | 36    | scalar `left` (5 init + 8 body updates = 13) + scalar `right` (5 init + 5 body updates = 10) + scalar `result` (5 init + 3 break stores = 8) + iter `t` (5). `target` is anonymous — no store. |
 | adds         | 21    | inner `mid = left + (right−left)/2` outer add (16, named scalar) + outer `t++` (5) |
 | address_adds | 26    | `&sorted[mid]` (16) + `&input_targets[t]` (5) + `&output_indices[t]` (5) — 1 per `[]` access, incremental-stride |
 | subs         | 1     | `N − 1` (hoisted outside outer t since `N` is loop-invariant) |
@@ -94,8 +94,8 @@ Under `t` parallel-unroll, `total_cycles = max = 52` (t=3, target=20, non-break 
 ### Totals
 | op           | total |
 |--------------|------:|
-| loads        | **74** |
-| stores       | **46** |
+| loads        | **69** |
+| stores       | **41** |
 | adds         | **29** |
 | address_adds | **26** |
 | subs         | **22** |
@@ -113,10 +113,11 @@ graph TD
     classDef hidden fill:transparent,stroke:transparent,color:transparent
     top_anchor ~~~ left ~~~ right ~~~ target
 
-    %% Carried-in scalars (per Convention 6, each named read is a 1-cycle load)
+    %% Memory-backed carried scalars (`left`, `right`) are multi-assignment + loop-carried → 1-cycle named load each per inner iter.
+    %% `target` is anonymous dataflow (single-decl, not loop-carried) → free fan-out from the outer `load input_targets[t]`, no per-iter load.
     left(("left"))
     right(("right"))
-    target(("load target"))
+    target(("target (anon fan-out)"))
 
     %% Body compute
     cmp_le((" ≤ "))

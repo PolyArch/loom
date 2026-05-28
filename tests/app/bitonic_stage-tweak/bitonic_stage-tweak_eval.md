@@ -158,101 +158,53 @@ Active-lane graph (one lane of `i ∈ {0, 2, 4, 6}`); else-lane graph is just th
 
 ```mermaid
 graph TD
-  %% Inputs
-  i(("i"))
-  block_size(("block_size"))
-  distance(("distance"))
-  N_val(("N"))
+    %% Shared predicate inputs
+    i(("i"))
+    block_size(("block_size"))
+    distance(("distance"))
 
-  %% Unconditional predicate compute (every lane)
-  div((" / "))
-  mod((" % "))
-  band_asc((" & 1 "))
-  cmp_asc((" == 0 → ascending "))
-  band_pred((" & "))
-  cmp_pred((" == 0 → outer_pred "))
+    %% Predicate ops (unconditional)
+    div((" / "))
+    mod((" % "))
+    band_pred((" & "))
+    cmp_pred((" == 0 → outer_pred "))
+    band_asc((" & 1 "))
+    cmp_asc((" == 0 → ascending "))
 
-  %% Inside outer if-body
-  add_partner((" + → partner "))
-  cmp_in_bounds((" partner < N "))
+    %% Compare-swap (inside partner<N body, inside outer body)
+    swap["compare-swap logic<br>(load → cmp → gated store)<br>commits only when should_swap=1<br>writes inplace[i] and inplace[partner]"]
 
-  %% Inside partner<N body — cmp-swap chain
-  addr_i((" addr &inplace[i] "))
-  addr_p((" addr &inplace[partner] "))
-  load_i(("load inplace[i]"))
-  load_p(("load inplace[partner]"))
-  cmp_gt((" > "))
-  cmp_lt((" < "))
-  should_swap((" should_swap "))
-  st_swap_i(("store inplace[i]<br>cmp-swap commit"))
-  st_swap_p(("store inplace[partner]<br>cmp-swap commit"))
+    %% ++ body (inside outer body, outside partner<N body)
+    pp["inplace[i]++<br>load → +1 → store, 3 cyc<br>RAW on cmp-swap's inplace[i] commit"]
 
-  %% Inside outer if-body, after partner<N — ++
-  load_pp(("load inplace[i]<br>(for ++)"))
-  add_pp((" +1 "))
-  st_pp(("store inplace[i]<br>++ commit"))
+    %% -=1 body (unconditional, outside outer if)
+    sub_body["inplace[i] -= 1<br>load → -1 → store, 3 cyc<br>RAW on latest writer to inplace[i]"]
 
-  %% Outside outer if-body — unconditional -=1
-  load_sub(("load inplace[i]<br>(for -=1)"))
-  sub((" -1 "))
-  st_sub(("store inplace[i]<br>-=1 commit"))
+    %% Predicate dataflow
+    i --> div
+    i --> mod
+    block_size --> div
+    block_size --> mod
+    div -->|block_idx| band_asc
+    band_asc --> cmp_asc
+    mod -->|idx_in_block| band_pred
+    distance --> band_pred
+    band_pred --> cmp_pred
 
-  %% Predicate dataflow
-  i --> div & mod
-  block_size --> div & mod
-  div -->|block_idx| band_asc
-  band_asc --> cmp_asc
-  mod -->|idx_in_block| band_pred
-  distance --> band_pred
-  band_pred --> cmp_pred
+    %% Outer gate: cmp-swap and ++ live inside outer body
+    cmp_pred -. T: enter outer body .-> swap
+    cmp_pred -. T: enter outer body .-> pp
 
-  %% Outer gate
-  cmp_pred -. T: enter outer body .-> add_partner
-  i --> add_partner
-  distance --> add_partner
-  add_partner --> cmp_in_bounds
-  N_val --> cmp_in_bounds
+    %% Within-iter chain: cmp-swap → ++ → -=1 on inplace[i]
+    swap -->|RAW on inplace i| pp
+    pp -->|RAW on inplace i| sub_body
 
-  %% partner<N gate
-  cmp_in_bounds -. T: enter body .-> addr_i
-  cmp_in_bounds -. T: enter body .-> addr_p
-  addr_i --> load_i
-  addr_p --> load_p
-
-  %% if (ascending) gate
-  cmp_asc -. T: cmp_gt arm .-> cmp_gt
-  cmp_asc -. F: cmp_lt arm .-> cmp_lt
-  load_i --> cmp_gt & cmp_lt
-  load_p --> cmp_gt & cmp_lt
-  cmp_gt --> should_swap
-  cmp_lt --> should_swap
-
-  %% if (should_swap) gate — cmp-swap stores
-  should_swap -. T: commit .-> st_swap_i
-  should_swap -. T: commit .-> st_swap_p
-  load_p --> st_swap_i
-  load_i --> st_swap_p
-  addr_i --> st_swap_i
-  addr_p --> st_swap_p
-
-  %% ++ chain (gated by outer_pred only; outside partner<N body)
-  cmp_pred -. T: enter outer body .-> load_pp
-  addr_i --> load_pp
-  st_swap_i -->|RAW within-iter| load_pp
-  load_pp --> add_pp
-  add_pp --> st_pp
-  addr_i --> st_pp
-
-  %% -=1 chain (unconditional; outside outer if)
-  addr_i --> load_sub
-  st_pp -->|RAW within-iter on active lanes| load_sub
-  load_sub --> sub
-  sub --> st_sub
-  addr_i --> st_sub
-
-  %% Cross-iter back-edges through inplace[odd_indices]
-  st_swap_p -.->|RAW back-edge<br>iter i cmp-swap → iter i+1's -=1| load_sub
+    %% Cross-iter back-edge: iter i cmp-swap writes inplace[partner=i+1]
+    %% which iter i+1's -=1 then reads
+    swap -. "RAW iter i cmp-swap → iter i+1's -= 1" .-> sub_body
+    
+    %% Critical path: cmp_pred gate → swap → ++ → -=1 (within-iter, 12 cyc to swap + 3 + 3 = 18)
 ```
 
-The critical-path chain is highlighted by the sequence: `cmp_pred → add_partner → cmp_in_bounds → addr_p → load_p → cmp_gt/lt → should_swap → st_swap_i → load_pp → add_pp → st_pp → load_sub → sub → st_sub`.
+Each square block can only execute after the previous block that holds the RAW edge completes. The critical-path chain is: `outer_pred gate → cmp-swap commit (C12) → ++ (C13–C15) → -=1 (C16–C18)`. 
 
