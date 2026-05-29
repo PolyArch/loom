@@ -65,16 +65,28 @@ for this DAG?", not "what would a real machine deliver?"
    - **Induction variables** — each loop iteration charges a load (read
       iterator), an add (increment), a store (write iterator), and a compare
       (bound check). The bound itself is hoisted under the loop-invariant rule below.
-   - **Address generation** — charged at the array indexing operator
-      `[]` only. Each `[]` access costs one address-add per dimension per
-      iteration in incremental-stride form. For non-affine indexing
-      (gather/scatter, `a[idx[i]]`), charge the loads and arithmetic the
-      source dictates for the inner reference, then 1 address-add for the
-      outer `[]`. Adds that produce a named source-level scalar are
-      regular `adds`, even when that scalar is used exclusively as an
+   - **Address generation** — an `address_add` is charged ONLY for
+      arithmetic baked **inline into the subscript brackets**. A bare-
+      variable or bare-named-scalar subscript — `a[i]`, `a[idx]` — charges
+      **zero** address_adds and contributes no cycle of its own: once the
+      index value is available the element is reached directly. An
+      `address_add` (and a cycle on the chain) is charged only when the
+      `[]` expression itself contains arithmetic, one per such `[]`, e.g.
+      `a[i+1]`, `a[2*i]`, `a[i+lag]`, `a[k+j+m/2]`. The inline arithmetic
+      must resolve before that access fires; a bare access need not wait.
+      Concretely, `a[i] + a[i+1]` schedules as: `cycle 0: load i`;
+      `cycle 1: access a[i] ‖ compute i+1`; `cycle 2: a[i] ready ‖
+      access a[i+1]`; `cycle 3: a[i+1] ready`; `cycle 4: a[i] + a[i+1]` —
+      `a[i]` costs no address step; only the `i+1` does.
+      Adds that produce a **named** source-level scalar are regular `adds`,
+      not address_adds, even when that scalar is used exclusively as an
       array index downstream (e.g. `idx = c·HW + h·W + w; a[idx];` — the
-      two adds for `idx` are regular `adds`, and `a[idx]` charges 1
-      address-add per access). Address-arithmetic adds are tracked as a
+      two adds for `idx` are regular `adds`, and because the `a[idx]`
+      subscript is then bare it charges **0** address_adds). For non-affine
+      indexing (gather/scatter, `a[idx[i]]`), charge the loads and
+      arithmetic the source dictates for the inner reference `idx[i]`; the
+      outer `[]` then indexes on the loaded value as a bare subscript and
+      charges no address_add. Address-arithmetic adds are tracked as a
       separate `address_adds` category and are NOT lumped into the regular
       `adds` total. (Induction-variable increments, `i ← i+1`, remain
       regular `adds`.)
@@ -134,15 +146,19 @@ for this DAG?", not "what would a real machine deliver?"
    Non-associative recurrences (modular state, division chains, KMP-table-
    style) stay sequential — `trip × II`.
 
-  4. **Address arithmetic and loop control are counted as ops (per Convention 1)
-   and frequently lie on the critical path.** Address arithmetic typically
-   sits on the per-iteration critical path because the load it feeds is on
-   that chain (counter → address → load → compute → store). Induction
-   carry — the iterator's `i ← i+1` update — is the sequential recurrence
-   for any sequential dim, so it directly governs `II` for that dim.
-   Treat address gen and induction carry as first-class contributors to
-   `total_cycles`, not as free overhead. Example: in FFT, butterfly index
-   computation forms a significant fraction of the per-stage critical path.
+4. **Inline address arithmetic and loop control are counted as ops (per
+   Convention 1) and lie on the critical path when present.** When a
+   subscript contains inline arithmetic (per the Address-generation rule
+   above), that `address_add` sits on the per-iteration critical path
+   because the load it feeds is on that chain (counter → address → load →
+   compute → store). A bare subscript carries no address arithmetic and
+   adds no such cycle — the access fires as soon as the index value and the
+   array are available. Induction carry — the iterator's `i ← i+1` update —
+   is the sequential recurrence for any sequential dim, so it directly
+   governs `II` for that dim. Treat inline address gen and induction carry
+   as first-class contributors to `total_cycles`, not as free overhead.
+   Example: in FFT, butterfly index computation (`a[k+j+m/2]`) forms a
+   significant fraction of the per-stage critical path.
 
 5. **Dead computations are counted as ops** but by definition cannot lie on
    the critical path to any output — they extend op counts but never
@@ -158,6 +174,19 @@ for this DAG?", not "what would a real machine deliver?"
 
    Memory-backed scalars charge 1 cycle per named read and 1 cycle per
    named write — no "register-resident" exemption.
+
+   **One load per iteration (fan-out within an iteration).** A memory-
+   backed scalar read several times within a single iteration with **no
+   intervening write** is loaded **once**; that one load fans out to every
+   use in the iteration at no extra cost. Reads collapse to a single load
+   only across the span between writes — a read that follows a write to the
+   same scalar within the same iteration is a fresh load. Examples:
+   - `crc & 1` and `crc >> 1` in the same bit iter (no write between) —
+      **one** load of `crc`, fanned to both.
+   - `(value & mask)` in the loop test and `mask >>= 1` in the body —
+      **one** load of `mask` per iter, fanned to test and body.
+   - `inplace[i]` read for a compare-swap, then re-read after `inplace[i]++`
+      has written it — **two** loads, because a write separates the reads.
 
    A scalar assigned exactly once at its declaration and not loop-carried
    is **anonymous dataflow**: free fan-out from the defining op to all
