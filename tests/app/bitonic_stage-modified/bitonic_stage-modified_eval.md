@@ -1,12 +1,12 @@
 # ASAP Model Notes
 - Outer `i` is **sequential**, not parallel — the j-loop's read-modify-write on `inplace[N/2..N-1]` carries through every if-iter, `i ∈ {5,7}` else stores also alias that slice, and `i ∈ {4,6}` compare-swap *would* write into it when `should_swap = 1`. This is the "in-place updates that alias across iterations" exception under the carried-memory convention.
 - Inner `j` is **parallel** within one if-iter (distinct addresses `inplace[N/2 + k]`). Under full unroll the j-loop body contributes its per-iter critical path *once* (`load → mul → store = 3 cycles`), not `trip × II`. Cross-iter serialization is between *successive if-iters' j-loops*, not between j-iters of one j-loop.
-- Under no-predication, four nested gates serialize the if-branch: outer `(idx_in_block & distance) == 0`, `partner < N`, `if (ascending)`, and `if (should_swap)`. The else-branch is gated by `¬outer_pred`. Every op inside an arm — addr-gens, loads, value compute, store — waits for its gating compare(s) to retire. No mux or AND-enable bitop is charged; only the taken arm's ops fire.
+- Under no-predication, four nested gates serialize the if-branch: outer `(idx_in_block & distance) == 0`, `partner < N`, `if (ascending)`, and `if (should_swap)`. The else-branch is gated by `¬outer_pred`. Every op inside an arm — loads, value compute, store — waits for its gating compare(s) to retire. No mux or AND-enable bitop is charged; only the taken arm's ops fire.
 - Per-iter chain link latencies through `inplace[N/2..N-1]`:
   - j-loop → next link: 3 cycles (load → mul → store)
   - else → next link: 3 cycles (load → sub → store)
   - compare-swap → next link: 3 cycles (load → cmp → store) **only when `should_swap = 1`**; otherwise the store never fires and the chain skips this writer entirely.
-- iter 0's j-loop pays a multi-cycle stall while outer_pred resolves: under strict no-pred, the j-loop's addr-gen, load, and store *all* wait for outer_pred, not just the store. Subsequent if-iters' j-loops see outer_pred already settled (in parallel across lanes), so they pay only the 3-cycle chain link.
+- iter 0's j-loop pays a multi-cycle stall while outer_pred resolves: under strict no-pred, the j-loop's load, and store *all* wait for outer_pred, not just the store. Subsequent if-iters' j-loops see outer_pred already settled (in parallel across lanes), so they pay only the 3-cycle chain link.
 
 # Bitonic Stage (Modified) Performance
 Parameters: `N = 8`, `stage = 1`, `pass = 0` ⇒ `distance = 1`, `block_size = 4`.

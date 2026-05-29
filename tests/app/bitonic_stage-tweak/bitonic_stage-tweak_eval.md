@@ -5,12 +5,11 @@
 - Like standard bitonic_stage, the prologue takes 3 cycles
     - longest path is computation of block_size (load, add, shift)
 - Outer predicate is finished at after cycle 6 (mod block_size -> idx_in_block, idx_in_block & distance, == 0 -> finished)
-- partner computed at cycle 7, partner < N done at cycle 8, inplace[addr] calc at cycle 9 and load at cycle 10, cmp at cycle 11
+- partner computed at cycle 7, partner < N done at cycle 8, load at cycle 9, cmp at cycle 10
 - if should_swap is true, stores happen in parallel at cycle 12
 - 3 cycles each for inplace[i]++ and inplace[i]-=1
 - For operation counts: there are an extra load, add, store for everytime the outer predicate evaluates to true (4 times)
 - There are an extra load, sub, store for every i iteration (8 times)
-- Note: addr computation from inplace[i] reused, so one cycle is saved
 
 # Bitonic Stage (Tweak) Performance
 Parameters: `N = 8`, `stage = 1`, `pass = 0` ⇒ `distance = 1`, `block_size = 4`.
