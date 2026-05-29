@@ -34,13 +34,13 @@ Assumes 2-input adders/multipliers. The 3-input sum `c·HW + h·W + w` tree-redu
 | loads        | N (`input[idx]`) + 4·C (`variance/mean/gamma/beta[c]` hoisted per c) = 272 | 292 (`c`, `h`, `w` iter reads) + 4 (`ε`, `C`, `H`, `W` param hoists) = 296 | **568** |
 | stores       | N (`output[idx]`) = 256 | 292 (`c`, `h`, `w` iter writes) | **548** |
 | adds         | N (sub) + N (`+ β`) + C (`+ ε`) = 516 | 2·N (`cHW + hW`, `+ w` → named scalar `idx`) + 292 (`c++`, `h++`, `w++`) = 804 | **1320** |
-| address_adds | 0 | 2·N (`&input[idx]`, `&output[idx]` — 1 per `[]` access, incremental-stride) = 512 | **512** |
+| address_adds | 0 | 0 (`input[idx]`, `output[idx]` use the bare precomputed scalar `idx` — no inline arithmetic in the brackets) | **0** |
 | muls         | 2·N (`× inv_std`, `× γ`) = 512 | 2·N (`c · HW`, `h · W`) + 1 (`H · W` hoist) = 513 | **1025** |
 | divides      | C (`1 / sqrt`) = 4 | 0 | **4** |
 | sqrt         | C = 4 | 0 | **4** |
 | compares     | 0 | 292 (`c<C`, `h<H`, `w<W`) | **292** |
 
-The named scalar `idx = c·HW + h·W + w` is computed per pixel with `H*W` hoisted to a single mul outside the c loop: per pixel, 2 muls (`c · HW`, `h · W`) and 2 adds (tree-reduced 3-input sum) — these adds count as regular `adds` (named-scalar arithmetic), not `address_adds`. Each `[]` access then charges 1 `address_add` in incremental-stride form, so `input[idx]` + `output[idx]` contribute 2·N = 512 `address_adds`. The induction vars `c, h, w` each charge `load + add + store + cmp` per iter, summed across nesting as `C + C·H + C·H·W = 292`. `ε`, `C`, `H`, `W` are scalar params loaded once each.
+The named scalar `idx = c·HW + h·W + w` is computed per pixel with `H*W` hoisted to a single mul outside the c loop: per pixel, 2 muls (`c · HW`, `h · W`) and 2 adds (tree-reduced 3-input sum) — these adds count as regular `adds` (named-scalar arithmetic), not `address_adds`. Because `input[idx]` and `output[idx]` subscript with the bare precomputed scalar `idx` (no arithmetic baked inline into the brackets), neither access charges an `address_add`, so `address_adds = 0`. The induction vars `c, h, w` each charge `load + add + store + cmp` per iter, summed across nesting as `C + C·H + C·H·W = 292`. `ε`, `C`, `H`, `W` are scalar params loaded once each.
 
 ## Data Dependency Graph
 Shown is one of N parallel pixel lanes; the per-channel `inv_std` subgraph runs once per `c` and broadcasts to all H·W pixels of that channel. `H*W` is precomputed once outside the c loop.

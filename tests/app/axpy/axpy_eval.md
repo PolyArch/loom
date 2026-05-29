@@ -5,11 +5,11 @@ Parameters: `N = 8`, `alpha = 3`
 
 **Loop classification.** `i` (trip = `N` = 8): **parallel** — no carry through register or memory; `alpha` is read-only, `input_x` / `input_y` are read-only, and each iter writes a distinct `output_y[i]`. Fully unrolled → all 8 lanes overlap.
 
-**Critical path (`total_cycles = 5`).** Per-iter chain through `input_x` (the longer of the two load chains):
+**Critical path (`total_cycles = 4`).** Per-iter chain through `input_x` (the longer of the two load chains):
 ```
-1 (addr add) + 1 (load input_x[i]) + 1 (mul) + 1 (add) + 1 (store output_y[i]) = 5
+1 (load input_x[i]) + 1 (mul) + 1 (add) + 1 (store output_y[i]) = 4
 ```
-The `input_y` chain is shorter (no mul): `1 + 1 + 1 + 1 = 4`. `alpha` is loop-invariant, hoisted once. The 8 lanes are independent, so `total_cycles` stays at the per-instance depth.
+The bare `[i]` subscripts add no address-gen cycle. The `input_y` chain is shorter (no mul): `1 + 1 + 1 = 3`. `alpha` is loop-invariant, hoisted once. The 8 lanes are independent, so `total_cycles` stays at the per-instance depth.
 
 **Op counts (N = 8).**
 
@@ -18,11 +18,11 @@ The `input_y` chain is shorter (no mul): `1 + 1 + 1 + 1 = 4`. `alpha` is loop-in
 | loads        | 16 (`input_x[i]`, `input_y[i]`) | 8 (`i` read) + 2 (`alpha`, `N` param hoists) | **26** |
 | stores       | 8 (`output_y[i]`) | 8 (`i` write) | **16** |
 | adds         | 8 (`α·x + y`)     | 8 (`i++`) | **16** |
-| address_adds | 0                 | 24 (addr-gen: 3 arrays × 8 iters) | **24** |
+| address_adds | 0                 | 0 (bare `[i]` subscripts charge no address add) | **0** |
 | mul          | 8                 | 0 | **8** |
 | compares     | 0                 | 8 (bound `i < N`) | **8** |
 
-Each per-iter address computation (`&input_x[i]`, `&input_y[i]`, `&output_y[i]`) is a 1-D incremental-stride access → 1 add each. The induction var `i` charges (load + add + store + cmp) per iter.
+The array accesses (`input_x[i]`, `input_y[i]`, `output_y[i]`) all use bare-variable subscripts, so none charges an address add. The induction var `i` charges (load + add + store + cmp) per iter.
 
 ## Data Dependency Graph
 Shown is one of 8 parallel instances; lanes share alpha, which is loaded once. 

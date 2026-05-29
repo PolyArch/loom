@@ -25,7 +25,7 @@ For these inputs:
 
 ## Critical path (`total_cycles`)
 
-Under parallel-unroll of `i`, the body runs once and `total_cycles` is the per-iter critical-path depth, taken as the max over the lane types (skipped lanes terminate at C6; non-swap active lanes at C11; swap lanes at C12). Per-iter named scalars (`block_idx`, `idx_in_block`, `half_block`, `ascending`, `partner`, `should_swap`, `temp`) are defined and consumed within a single iter with no carry, so they are treated as **transient (anonymous-equivalent) intermediates** — same convention as `c` in bisection_step and `mid` in binary_search. They flow directly via dataflow with no named store/load round-trip. The loop-invariants `block_size` and `distance` are computed in the prologue and broadcast via dataflow to all unrolled lanes (same convention as `alpha` in axpy and `H·W` in batchnorm). Under no-predication, the binding chain runs through the four nested gates; on swap lanes (`i ∈ {0,2}`):
+Under parallel-unroll of `i`, the body runs once and `total_cycles` is the per-iter critical-path depth, taken as the max over the lane types (skipped lanes terminate at C6; non-swap active lanes at C10; swap lanes at C11). Per-iter named scalars (`block_idx`, `idx_in_block`, `half_block`, `ascending`, `partner`, `should_swap`, `temp`) are defined and consumed within a single iter with no carry, so they are treated as **transient (anonymous-equivalent) intermediates** — same convention as `c` in bisection_step and `mid` in binary_search. They flow directly via dataflow with no named store/load round-trip. The loop-invariants `block_size` and `distance` are computed in the prologue and broadcast via dataflow to all unrolled lanes (same convention as `alpha` in axpy and `H·W` in batchnorm). Under no-predication, the binding chain runs through the four nested gates; on swap lanes (`i ∈ {0,2}`):
 
 ```
 C1: load stage   ‖ load pass   ‖ load i   ‖ load N       (all kernel inputs and per-lane iter constant)
@@ -36,19 +36,18 @@ C5: block_idx & 1                         ‖ idx_in_block & distance
 C6: == 0 → ascending                      ‖ == 0 → outer_pred              [outer_pred retires]
 C7: partner = i + distance                                                  [inside outer body — waits for outer_pred]
 C8: partner < N                                                             [partner<N retires]
-C9: base + i = addr_i ‖ base + partner = addr_p                             [inside partner<N body — waits for partner<N]
-C10: load inplace[i] ‖ load inplace[partner]
-C11: cmp_gt OR cmp_lt → should_swap                                         [taken arm of if (ascending); should_swap retires]
-C12: store inplace[i] ‖ store inplace[partner]                              [inside if (should_swap) body — waits for should_swap]
+C9: load inplace[i] ‖ load inplace[partner]                                 [inside partner<N body — waits for partner<N; bare-scalar subscripts, no addr-gen cycle]
+C10: cmp_gt OR cmp_lt → should_swap                                         [taken arm of if (ascending); should_swap retires]
+C11: store inplace[i] ‖ store inplace[partner]                              [inside if (should_swap) body — waits for should_swap]
 
-total_cycles = 12
+total_cycles = 11
 ```
 
-The longest chain runs `load pass → 1<<pass → idx_in_block & distance → ==0 → outer_pred → partner = i+distance → partner<N → addr_p → load inplace[partner] → cmp_gt/lt → should_swap → store`. (The `ascending` chain — `load stage → stage+1 → block_size → block_idx → block_idx&1 → ==0 → ascending` — also lands at C6, in parallel with `outer_pred`; it is no longer binding because the binding path picks up additional depth from the partner-add and partner-bound check after the outer gate retires.) Both swap stores fire at C12 in parallel: the store value for `inplace[i]` is the already-loaded `inplace[partner]` from C10, and the store value for `inplace[partner]` is the already-loaded `inplace[i]` from C10 — `temp` is a source-level convenience whose anonymous-equivalent treatment lets the two stores fire concurrently. The shared `base + i` and `base + partner` addr-gens from C9 are reused by the C12 stores (incremental-stride: same iter, same name, same offset — no fresh addr-gen op needed).
+The longest chain runs `load pass → 1<<pass → idx_in_block & distance → ==0 → outer_pred → partner = i+distance → partner<N → load inplace[partner] → cmp_gt/lt → should_swap → store`. (The `ascending` chain — `load stage → stage+1 → block_size → block_idx → block_idx&1 → ==0 → ascending` — also lands at C6, in parallel with `outer_pred`; it is no longer binding because the binding path picks up additional depth from the partner-add and partner-bound check after the outer gate retires.) The array subscripts `inplace[i]` and `inplace[partner]` are bare scalars, so the loads fire directly off the gate with no separate address-gen cycle. Both swap stores fire at C11 in parallel: the store value for `inplace[i]` is the already-loaded `inplace[partner]` from C9, and the store value for `inplace[partner]` is the already-loaded `inplace[i]` from C9 — `temp` is a source-level convenience whose anonymous-equivalent treatment lets the two stores fire concurrently.
 
-For lanes where the outer predicate fails (`i ∈ {1,3,5,7}`), the chain terminates at C6 — the body never enters. For lanes where `outer_pred = T` and `partner < N = T` but `should_swap = 0` (`i ∈ {4,6}` for these inputs), the chain terminates at C11 with `should_swap = cmp_lt` retiring and no stores firing. The max — and hence `total_cycles` — is set by swap lanes at 12.
+For lanes where the outer predicate fails (`i ∈ {1,3,5,7}`), the chain terminates at C6 — the body never enters. For lanes where `outer_pred = T` and `partner < N = T` but `should_swap = 0` (`i ∈ {4,6}` for these inputs), the chain terminates at C10 with `should_swap = cmp_lt` retiring and no stores firing. The max — and hence `total_cycles` — is set by swap lanes at 11.
 
-`total_cycles = 12`, independent of `N` since `i` is parallel.
+`total_cycles = 11`, independent of `N` since `i` is parallel.
 
 ## Op counts
 
@@ -56,7 +55,7 @@ No-predication accounting at every nested `if`: an op contributes to the count o
 
 For the test inputs (`N=8, distance=1, block_size=4`, initial `[3,1,4,2,8,6,7,5]`):
 - All 8 lanes pay for the unconditional prologue + `block_idx`, `idx_in_block`, `half_block`, `(block_idx & 1) == 0`, `(idx_in_block & distance) == 0`, and the loop bound check.
-- The 4 active lanes (`i ∈ {0,2,4,6}`) additionally pay for `partner = i + distance`, `partner < N`, the two addr-gens, the two inplace loads, and one of `cmp_gt`/`cmp_lt` (the taken arm of `if (ascending)`).
+- The 4 active lanes (`i ∈ {0,2,4,6}`) additionally pay for `partner = i + distance`, `partner < N`, the two inplace loads (bare-scalar subscripts, no addr-gen), and one of `cmp_gt`/`cmp_lt` (the taken arm of `if (ascending)`).
 - The 2 swap lanes (`i ∈ {0,2}`) additionally pay for the two swap stores.
 
 ### Algorithmic
@@ -76,7 +75,7 @@ For the test inputs (`N=8, distance=1, block_size=4`, initial `[3,1,4,2,8,6,7,5]
 | loads        | 11    | induction `i` reads (8) + param hoists `pass`, `stage`, `N` (3). `block_size` and `distance` are computed once in the prologue and broadcast via dataflow — no per-iter load. The per-iter transient scalars (`block_idx`, `idx_in_block`, `partner`, `ascending`, `should_swap`, `temp`) flow anonymously and contribute no load. |
 | stores       | 8     | induction `i` writes (8). No prologue stores: `block_size` and `distance` flow as anonymous-equivalent loop-invariants. Per-iter transient scalars contribute no store. |
 | adds         | 9     | `i++` (8) + prologue `stage+1` (1) |
-| address_adds | 8     | `&inplace[i]` (4) + `&inplace[partner]` (4) — 1 per distinct (array, index) per active iter under incremental-stride; the swap-lane stores reuse the same addresses computed at C9 for the cmp's loads (same iter, same offset), so no fresh store-side addr-gens are charged. Only active lanes pay. |
+| address_adds | 0     | `inplace[i]` and `inplace[partner]` are bare-scalar subscripts (no arithmetic baked inline into the brackets), so neither charges an address_add. The arithmetic that produces `partner` is a regular `add` (already counted under Algorithmic), not an address_add. |
 | compares     | 8     | loop bound `i < N` |
 | bitops       | 10    | dead `half_block = block_size / 2` (strength-reduced to `>> 1`, computed unconditionally before outer if, counted at every iter as a dead op: 8) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) |
 
@@ -86,14 +85,14 @@ For the test inputs (`N=8, distance=1, block_size=4`, initial `[3,1,4,2,8,6,7,5]
 | loads        | **19** |
 | stores       | **12** |
 | adds         | **13** |
-| address_adds | **8**  |
+| address_adds | **0**  |
 | divs         | **8**  |
 | mods         | **8**  |
 | bitops       | **26** |
 | compares     | **32** |
 | muls / subs / shifts / transcendentals | 0 |
 
-Load column is dominated by array I/O on the 4 active lanes (8) plus the induction var (8) and three param hoists (3). Stores: 4 from the 2 swap lanes' inplace writes plus 8 from the induction `i` writes. Address-gen for the two array accesses contributes 8 `address_adds` (only active lanes; tracked separately from regular `adds` per the indexing-operator rule). The dead `half_block` is counted as work but never on the critical path.
+Load column is dominated by array I/O on the 4 active lanes (8) plus the induction var (8) and three param hoists (3). Stores: 4 from the 2 swap lanes' inplace writes plus 8 from the induction `i` writes. The array accesses `inplace[i]` and `inplace[partner]` are bare-scalar subscripts, so they contribute 0 `address_adds` (no arithmetic baked inline into the brackets). The dead `half_block` is counted as work but never on the critical path.
 
 ## Data Dependency Graph
 Active-lane graph (one lane of `i ∈ {0,2,4,6}`). Under `i` parallel-unroll, 8 such graphs run concurrently — 4 active lanes proceed past `outer_pred`, of which 4 pass `partner < N`, of which 2 fire the swap stores. Dotted "gate" edges mark the strict no-pred compare→body serializations.
@@ -119,10 +118,6 @@ cmp_pred((" == 0 → outer_pred "))
 %% Inside outer if
 add_partner((" + → partner "))
 cmp_in_bounds((" partner < N "))
-
-%% Inside partner<N body — addr-gens and loads
-addr_i((" + base → &inplace[i] "))
-addr_p((" + base → &inplace[partner] "))
 
 %% Inside if (ascending) body — only one fires per lane
 cmp_gt((" > "))
@@ -153,15 +148,9 @@ distance --> add_partner
 add_partner --> cmp_in_bounds
 N_val --> cmp_in_bounds
 
-%% partner<N gate: addr-gens live inside its body
-cmp_in_bounds -. T: enter body .-> addr_i
-cmp_in_bounds -. T: enter body .-> addr_p
-i --> addr_i
-add_partner --> addr_p
-
-%% Loads
-addr_i --> inplace_i
-addr_p --> inplace_p
+%% partner<N gate: loads live inside its body (bare-scalar subscripts → no addr-gen node)
+cmp_in_bounds -. T: enter body .-> inplace_i
+cmp_in_bounds -. T: enter body .-> inplace_p
 
 %% if (ascending) gate: only the taken-arm cmp fires
 cmp_asc -. T: enter cmp_gt arm .-> cmp_gt
@@ -177,12 +166,10 @@ cmp_lt --> should_swap
 should_swap -. T: enter swap body .-> st_i
 should_swap -. T: enter swap body .-> st_p
 
-%% Store values flow from already-loaded array elements; addr reused from C9
+%% Store values flow from already-loaded array elements (bare-scalar subscripts → no addr-gen)
 inplace_p --> st_i
 inplace_i --> st_p
-addr_i --> st_i
-addr_p --> st_p
 
-%% Critical path (12-cycle body): load pass → 1<<pass=distance → idx_in_block & distance → ==0 → outer_pred → partner add → partner<N → addr_p → load inplace_p → cmp → should_swap → store
-%% Highlighted: band_pred→cmp_pred, gate cmp_pred→add_partner, add_partner→cmp_in_bounds, gate cmp_in_bounds→addr_p, addr_p→inplace_p, inplace_p→cmp_gt/lt, cmp_gt/lt→should_swap, gate should_swap→st, store edges
+%% Critical path (11-cycle body): load pass → 1<<pass=distance → idx_in_block & distance → ==0 → outer_pred → partner add → partner<N → load inplace_p → cmp → should_swap → store
+%% Highlighted: band_pred→cmp_pred, gate cmp_pred→add_partner, add_partner→cmp_in_bounds, gate cmp_in_bounds→inplace_p, inplace_p→cmp_gt/lt, cmp_gt/lt→should_swap, gate should_swap→st, store edges
 ```

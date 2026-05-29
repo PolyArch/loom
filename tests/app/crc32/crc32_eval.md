@@ -4,8 +4,7 @@ Computes crc32 checksum
 - C1: store crc (polynomial is anonymous)
 Enter outer i loop:
 - cycle 1: check i < N
-- cycle 2: addr gen for input_data[i]
-- cycle 3: load input_data[i]
+- cycle 2: load input_data[i]
 - Enter middle byte_idx loop:
     - cycle 1: check byte_idx < 4
     - cycle 2: byte_idx * 8 || load crc
@@ -67,14 +66,14 @@ The body op (`crc >> 1`) fires the cycle after the gating compare retires. The t
 **Total cycles (data-dependent on K):**
 ```
 1 (init store crc = 0xFFFFFFFF)
-+ 4 (cold start of iter 0: cmp i<N → addr-gen ‖ byte_idx=0 → load input_data ‖ load byte_idx → cmp byte_idx<4)
++ 3 (cold start of iter 0: cmp i<N ‖ byte_idx=0 → load input_data ‖ load byte_idx → cmp byte_idx<4)
 + Σ_i (180 + k_i) = 180·N + K        [steady-state outer iter recurrence with actual taken arms]
 + 3 (final: load crc → ~crc → store *output_checksum)
-= 180·N + K + 8
+= 180·N + K + 7
 ```
-For `N = 256, K = 4065`: `total_cycles = 180·256 + 4065 + 8 = 50153`.
-Worst-case bound (all true arms, K = 32·N = 8192): `212·N + 8 = 54280`.
-Best-case bound (all false arms, K = 0): `180·N + 8 = 46088`.
+For `N = 256, K = 4065`: `total_cycles = 180·256 + 4065 + 7 = 50152`.
+Worst-case bound (all true arms, K = 32·N = 8192): `212·N + 7 = 54279`.
+Best-case bound (all false arms, K = 0): `180·N + 7 = 46087`.
 
 The binding chain is:
 `init store crc → load crc (iter 0, byte 0) → crc^byte → store crc → 8 × bit-iter [load crc → AND → cmp → shift → (^poly if true arm) → store crc] → … repeated 4 × N times … → load crc (final) → ~crc → store *output_checksum`. Each bit-iter contributes 5 or 6 cycles depending on whether `crc & 1` resolves false or true at that step.
@@ -92,7 +91,7 @@ The binding chain is:
 - algorithmic compares: `32` (implicit `(crc & 1) != 0`)
 - muls: `4` (`byte_idx * 8`)
 - shifts: `4` (`data >>`) + `32` (`crc >> 1`, both arms always shift) = `36`
-- address_adds: `1` (`&input_data[i]`)
+- address_adds: `0` (`input_data[i]` is a bare-variable subscript — no inline arithmetic in the brackets, so it charges no address_add)
 - input_data loads: `1`
 
 Plus once per kernel: `1` init store (`crc = 0xFFFFFFFF`), `1` i-iv init store, `1` final load `crc`, `1` `~crc` bitop, `1` store `*output_checksum`.
@@ -116,7 +115,7 @@ For the test inputs (`N = 256`, `K = Σ k_i = 4065`):
 | stores       | 19970 | crc stores: 36·N + 1 = 9217 (1 init + 4·N byte pre-bit + 32·N bit body) + iv stores: 42·N + 1 = 10753 (1 i init + N byte_idx inits + 4·N bit inits + 37·N body writebacks) |
 | adds         | 9472  | iv increments: i++ (256) + byte_idx++ (1024) + bit++ (8192) |
 | compares     | 9472  | iv bound checks: i<N (256) + byte_idx<4 (1024) + bit<8 (8192) |
-| address_adds | 256   | `&input_data[i]` (1 per outer iter, N total). `*output_checksum` is a bare pointer deref — no `[]`, no address_add. |
+| address_adds | 0     | `input_data[i]` is a bare-variable subscript with no inline arithmetic in the brackets — charges no address_add. `*output_checksum` is a bare pointer deref — no `[]`, no address_add. |
 
 ### Totals
 | op | total |
@@ -128,7 +127,7 @@ For the test inputs (`N = 256`, `K = Σ k_i = 4065`):
 | shifts       | **9216**  |
 | bitops       | **14306** |
 | compares     | **17664** |
-| address_adds | **256**   |
+| address_adds | **0**     |
 | divs / mods / transcendentals | 0 |
 
 The `crc` carried chain dominates the memory traffic: 9217 of 18945 loads and 9217 of 19971 stores are `crc` round-trips across the 1024 byte iters and 8192 bit iters. The 32·N implicit `!= 0` compares from `if (crc & 1)` (8192) are nearly half the compare count; without strict no-pred those would fuse into a bit-test branch and disappear.
@@ -176,4 +175,4 @@ graph TD
     linkStyle 0,1,2,4,5,6 stroke:#ff0000,stroke-width:3px;
 ```
 
-The bit-iter II varies with the taken arm: 6 cycles on true-arm iters, 5 on false-arm iters. The false-arm short-circuit does reduce `total_cycles` — under strict no-pred only the actually-taken arm's ops sit on the chain, so for `N = 256, K = 4065` the depth is 50153 cycles, 4127 cycles below the worst-case bound. The byte and outer loops add no additional recurrence — they multiply the recurrence count (4 × N byte iters × 8 bit iters = 32·N bit iters total). 
+The bit-iter II varies with the taken arm: 6 cycles on true-arm iters, 5 on false-arm iters. The false-arm short-circuit does reduce `total_cycles` — under strict no-pred only the actually-taken arm's ops sit on the chain, so for `N = 256, K = 4065` the depth is 50152 cycles, 4127 cycles below the worst-case bound. The byte and outer loops add no additional recurrence — they multiply the recurrence count (4 × N byte iters × 8 bit iters = 32·N bit iters total). 

@@ -24,7 +24,7 @@ Note (float reductions): The inner reduction is bit-identical to a serial accumu
 
 Per-`lag` critical path (single unrolled outer instance, inner reduction over `N = x_size − lag` products):
 ```
-1 (addr add) + 1 (load x[i] ‖ x[i+lag]) + 1 (mul) + ceil(log2(N)) (tree-reduce) + 1 (store output[lag])
+1 (addr add for x[i+lag]) + 1 (load x[i] ‖ x[i+lag]) + 1 (mul) + ceil(log2(N)) (tree-reduce) + 1 (store output[lag])
 = 4 + ceil(log2(x_size − lag))
 ```
 
@@ -62,10 +62,10 @@ Total inner iterations across all lag values:
 | loads        | 3,634  | inner `i` reads: 3,600; outer `lag` reads: 32; param hoists (`x_size`, `max_lag`): 2 |
 | stores       | 3,632  | inner `i` writes: 3,600; outer `lag` writes: 32 |
 | adds         | 3,664  | `i++` (3,600) + `lag++` (32) + bound `x_size − lag` (32, hoisted per outer iter) |
-| address_adds | 7,200  | addr-gen for `&x[i]` (1 add/iter × 3,600) + addr-gen for `&x[i+lag]` (1 add/iter × 3,600) |
+| address_adds | 3,600  | addr-gen for `&x[i+lag]` (1 add/iter × 3,600). `&x[i]` is a bare-variable subscript → no inline arithmetic → 0 address_adds. |
 | compares     | 3,632  | inner bound `i < x_size − lag` (3,600) + outer bound `lag < max_lag` (32) |
 
-Under the incremental-stride form, `&x[i+lag]` is a 1-D access with `lag` invariant in the inner loop, so the pointer advances by stride 1 per iter → 1 add per access (same as `&x[i]`).
+`&x[i+lag]` has inline arithmetic (`i + lag`) in the subscript, so it charges 1 address_add per access. `&x[i]` is a bare-variable subscript with no inline arithmetic, so it charges no address_add.
 
 ### Totals
 | op           | total  |
@@ -73,7 +73,7 @@ Under the incremental-stride form, `&x[i+lag]` is a 1-D access with `lag` invari
 | loads        | **10,834** |
 | stores       | **3,664** |
 | adds         | **7,232** |
-| address_adds | **7,200** |
+| address_adds | **3,600** |
 | mul          | **3,600** |
 | compares     | **3,632** |
 | div / bitop / transcendental | 0 |
@@ -143,6 +143,6 @@ Outer `lag` dim is fully unrolled → 32 such graphs run in parallel, each compu
 | loads         | 7,200        | **10,834** | now charges induction-var reads + param hoists (uniform 1-cycle L/S for all named scalars) |
 | stores        | 32           | **3,664**  | now charges induction-var writes (uniform 1-cycle L/S for all named scalars) |
 | adds          | 3,600        | **7,232**  | adds now include `i++`/`lag++` (3,632), bound subs (32), and the reduction tree uses `N−1` adds (3,568 vs 3,600); address-gen is now tracked separately under `address_adds` |
-| address_adds  | (not listed) | **7,200**  | address arithmetic now tracked as a distinct op category: `&x[i]` (3,600) + `&x[i+lag]` (3,600) |
+| address_adds  | (not listed) | **3,600**  | address arithmetic now tracked as a distinct op category: only `&x[i+lag]` (3,600) charges, since its subscript has inline arithmetic; `&x[i]` is a bare subscript and charges none |
 | mul           | 3,600        | 3,600      | unchanged |
 | compares      | (not listed) | **3,632**  | per-iter bound checks now counted as dynamic ops |

@@ -39,7 +39,7 @@ Both are read-modify-write on `inplace[i]`. They serialize behind any prior writ
 
 ## Critical path (`total_cycles`)
 
-The binding chain runs **within iter 0** (tied with iter 2), through `inplace[0]` (resp. `inplace[2]`) in source order: cmp-swap commit → `++` → `-=1`. The cross-iter chain through `inplace[1]` (iter 0 cmp-swap → iter 1 `-=1`) terminates at C15, three cycles short of the within-iter chain, because it stacks only one extra load-modify-store onto the C12 cmp-swap commit while the within-iter chain stacks two.
+The binding chain runs **within iter 0** (tied with iter 2), through `inplace[0]` (resp. `inplace[2]`) in source order: cmp-swap commit → `++` → `-=1`. The cross-iter chain through `inplace[1]` (iter 0 cmp-swap → iter 1 `-=1`) terminates at C14, three cycles short of the within-iter chain, because it stacks only one extra load-modify-store onto the C11 cmp-swap commit while the within-iter chain stacks two.
 
 ```
 Prologue (loop-invariant compute, broadcast via dataflow):
@@ -58,21 +58,20 @@ Iter 0 chain (swap-committing lane, ascending = 1, should_swap = 1):
 ```
   C7  partner = i + distance = 1                                  [gated by outer_pred at C6]
   C8  partner < N = T                                             [partner<N retires]
-  C9  addr &inplace[0]  ‖  addr &inplace[1]                       [gated by partner<N]
-  C10 load inplace[0]=3 ‖ load inplace[1]=1
-  C11 cmp_gt → should_swap = 1                                    [taken arm of if(ascending)]
-  C12 store inplace[0]=1 ‖ store inplace[1]=3                     [cmp-swap commit, gated by should_swap]
-  C13 load inplace[0]=1                                           [++ load; RAW on C12; addr reused from C9]
-  C14 +1 → 2
-  C15 store inplace[0]=2                                          [++ commit]
-  C16 load inplace[0]=2                                           [-=1 load; RAW on C15; addr reused]
-  C17 -1 → 1
-  C18 store inplace[0]=1                                          [-=1 commit]
+  C9  load inplace[0]=3 ‖ load inplace[1]=1                       [gated by partner<N; bare subscripts, no addr-gen cycle]
+  C10 cmp_gt → should_swap = 1                                    [taken arm of if(ascending)]
+  C11 store inplace[0]=1 ‖ store inplace[1]=3                     [cmp-swap commit, gated by should_swap]
+  C12 load inplace[0]=1                                           [++ load; RAW on C11]
+  C13 +1 → 2
+  C14 store inplace[0]=2                                          [++ commit]
+  C15 load inplace[0]=2                                           [-=1 load; RAW on C14]
+  C16 -1 → 1
+  C17 store inplace[0]=1                                          [-=1 commit]
 
-total_cycles = 18
+total_cycles = 17
 ```
 
-Iter 2 mirrors iter 0 on `inplace[2]` (3 → 2 → 1) and also terminates at C18.
+Iter 2 mirrors iter 0 on `inplace[2]` (3 → 2 → 1) and also terminates at C17.
 
 ### Symbolic decomposition
 
@@ -81,29 +80,28 @@ total_cycles = 3 (prologue: load → add → shift to form block_size)
              + 3 (predicate: mod → and → ==0 → outer_pred)
              + 1 (partner = i + distance)
              + 1 (partner < N)
-             + 1 (addr-gen)
-             + 1 (load inplace[partner])
+             + 1 (load inplace[partner]; bare subscript, no addr-gen cycle)
              + 1 (cmp_gt / cmp_lt → should_swap)
              + 1 (cmp-swap store)
              + 3 (++ : load → +1 → store)
              + 3 (-=1 : load → -1 → store)
-             = 18
+             = 17
 ```
 
 ### Per-slot terminal store cycle (for the test inputs)
 
 | slot | writers (in source order) | terminal store cycle |
 |------|---------------------------|----------------------|
-| `inplace[0]` | iter 0 cmp-swap (C12) → iter 0 `++` (C15) → iter 0 `-=1` (C18) | **C18** |
-| `inplace[1]` | iter 0 cmp-swap (C12) → iter 1 `-=1` (C15) | C15 |
-| `inplace[2]` | iter 2 cmp-swap (C12) → iter 2 `++` (C15) → iter 2 `-=1` (C18) | **C18** |
-| `inplace[3]` | iter 2 cmp-swap (C12) → iter 3 `-=1` (C15) | C15 |
-| `inplace[4]` | iter 4 `++` (C10) → iter 4 `-=1` (C13)  [cmp-swap doesn't commit, addr-gen for `++` only gated by `outer_pred`] | C13 |
-| `inplace[5]` | iter 5 `-=1` (~C9) [no upstream commit from iter 4's cmp-swap] | early |
-| `inplace[6]` | iter 6 `++` (C10) → iter 6 `-=1` (C13) | C13 |
-| `inplace[7]` | iter 7 `-=1` (~C9) | early |
+| `inplace[0]` | iter 0 cmp-swap (C11) → iter 0 `++` (C14) → iter 0 `-=1` (C17) | **C17** |
+| `inplace[1]` | iter 0 cmp-swap (C11) → iter 1 `-=1` (C14) | C14 |
+| `inplace[2]` | iter 2 cmp-swap (C11) → iter 2 `++` (C14) → iter 2 `-=1` (C17) | **C17** |
+| `inplace[3]` | iter 2 cmp-swap (C11) → iter 3 `-=1` (C14) | C14 |
+| `inplace[4]` | iter 4 `++` (C9) → iter 4 `-=1` (C12)  [cmp-swap doesn't commit, `++` only gated by `outer_pred`] | C12 |
+| `inplace[5]` | iter 5 `-=1` (~C8) [no upstream commit from iter 4's cmp-swap] | early |
+| `inplace[6]` | iter 6 `++` (C9) → iter 6 `-=1` (C12) | C12 |
+| `inplace[7]` | iter 7 `-=1` (~C8) | early |
 
-For comparison: baseline `bitonic_stage` (`i` parallel-unrolled, no extra writes) is 12 cycles; `bitonic_stage-modified` (j-loop drives long memory recurrence) is 23 cycles. The tweak's extra `++` and `-=1` inflate the chain by a fixed +6 over baseline → **18 cycles, 1.5×**.
+For comparison: baseline `bitonic_stage` (`i` parallel-unrolled, no extra writes) is 11 cycles; `bitonic_stage-modified` (j-loop drives long memory recurrence) is 23 cycles. The tweak's extra `++` and `-=1` inflate the chain by a fixed +6 over baseline → **17 cycles, 1.55×**.
 
 ## Op counts
 
@@ -129,7 +127,7 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | loads        | 11    | induction `i` reads (8) + param hoists `pass`, `stage`, `N` (3). `block_size` and `distance` flow as anonymous-equivalent loop-invariants — no per-iter load. |
 | stores       | 8     | induction `i` writes (8) |
 | adds         | 9     | `i++` (8) + prologue `stage + 1` (1) |
-| address_adds | 12    | `&inplace[i]` per outer iter (8, every iter — one per iter, shared by whichever of cmp-swap / `++` / `-=1` actually fires; cmp-swap stores reuse the load-side address, and the `++`/`-=1` reuse it as same-iter same-offset) + `&inplace[partner]` per active iter (4) |
+| address_adds | 0     | `inplace[i]` and `inplace[partner]` are bare-scalar subscripts (no arithmetic baked into the brackets), so neither charges an address_add. (`partner = i + distance` is a named scalar computed once and counted as a regular add, not address arithmetic.) |
 | compares     | 8     | outer loop bound `i < N` (8) |
 | bitops       | 10    | dead `half_block = block_size >> 1` (8, unconditional per the dead-code rule) + prologue `1 << pass` (1) + `1 << (stage + 1)` (1) |
 
@@ -139,7 +137,7 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | loads        | **31** |
 | stores       | **24** |
 | adds         | **17** |
-| address_adds | **12** |
+| address_adds | **0**  |
 | subs         | **8**  |
 | divs         | **8**  |
 | mods         | **8**  |
@@ -147,10 +145,10 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | bitops       | **26** |
 | muls / shifts / transcendentals | 0 |
 
-Delta from baseline `bitonic_stage` (loads 19, stores 12, adds 13, address_adds 8, subs 0, compares 32, bitops 26):
+Delta from baseline `bitonic_stage` (loads 19, stores 12, adds 13, address_adds 0, subs 0, compares 32, bitops 26):
 - `++` adds 4 loads + 4 adds + 4 stores (active lanes).
 - `-=1` adds 8 loads + 8 subs + 8 stores (every iter).
-- `address_adds` grows by 4: else-only iters (`i ∈ {1, 3, 5, 7}`) now need `&inplace[i]` for the `-=1`, which the baseline didn't pay (no body fired on else lanes).
+- `address_adds` stays 0: all `inplace[…]` subscripts are bare scalars (`i`, `partner`), so no access charges address arithmetic in either baseline or tweak.
 - All other categories unchanged — predicate, ascending, partner, and cmp-swap structure is identical to baseline.
 
 ## Data Dependency Graph
@@ -203,8 +201,8 @@ graph TD
     %% which iter i+1's -=1 then reads
     swap -. "RAW iter i cmp-swap → iter i+1's -= 1" .-> sub_body
     
-    %% Critical path: cmp_pred gate → swap → ++ → -=1 (within-iter, 12 cyc to swap + 3 + 3 = 18)
+    %% Critical path: cmp_pred gate → swap → ++ → -=1 (within-iter, 11 cyc to swap + 3 + 3 = 17)
 ```
 
-Each square block can only execute after the previous block that holds the RAW edge completes. The critical-path chain is: `outer_pred gate → cmp-swap commit (C12) → ++ (C13–C15) → -=1 (C16–C18)`. 
+Each square block can only execute after the previous block that holds the RAW edge completes. The critical-path chain is: `outer_pred gate → cmp-swap commit (C11) → ++ (C12–C14) → -=1 (C15–C17)`. 
 

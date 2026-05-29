@@ -54,57 +54,57 @@ Per-iter predicate (parallel across all 8 outer lanes):
   C7: == 0 → ascending  ‖ == 0 → outer_pred       [outer_pred / ¬outer_pred retire]
 ```
 
-Under strict no-pred, every op inside the outer arm waits for outer_pred to retire (C7). The j-loop's addr-gens fire at C8, its loads at C9 (first chain link reads initial memory). Subsequent if-iters' j-loops see outer_pred already settled and their chain links cost 3 cycles each. Compare-swap stores fire only on lanes where `should_swap = 1` (`i ∈ {0, 2}`, touching `inplace[0..3]`); the `inplace[N/2..N-1]` chain therefore runs through j-loops and the `i ∈ {5,7}` else writes without picking up any compare-swap commits.
+Under strict no-pred, every op inside the outer arm waits for outer_pred to retire (C7). The subscripts are bare scalars (`inplace[i]`, `inplace[partner]`, `inplace[j]`), so no address-gen cycle is charged; the j-loop's first loads fire at C8 (first chain link reads initial memory) once outer_pred has retired. Subsequent if-iters' j-loops see outer_pred already settled and their chain links cost 3 cycles each. Compare-swap stores fire only on lanes where `should_swap = 1` (`i ∈ {0, 2}`, touching `inplace[0..3]`); the `inplace[N/2..N-1]` chain therefore runs through j-loops and the `i ∈ {5,7}` else writes without picking up any compare-swap commits.
 
 The longest chain runs through `inplace[5]`:
 
 ```
-  C9  load inplace[5]   (iter 0 j-loop, j=5)        ← initial memory; addr-gen at C8 gated by outer_pred (C7)
-  C10 mul × 2
-  C11 store inplace[5]  (iter 0 j-loop commits)
+  C8  load inplace[5]   (iter 0 j-loop, j=5)        ← initial memory; bare subscript, no addr-gen; gated by outer_pred (C7)
+  C9  mul × 2
+  C10 store inplace[5]  (iter 0 j-loop commits)
 
-  C12 load inplace[5]   (iter 2 j-loop, j=5)
-  C13 mul × 2
-  C14 store inplace[5]
+  C11 load inplace[5]   (iter 2 j-loop, j=5)
+  C12 mul × 2
+  C13 store inplace[5]
 
-  C15 load inplace[5]   (iter 4 j-loop, j=5)        ← iter 4 compare-swap loads inplace[5] at C15 in parallel; cmp_lt at C16 returns 0 (8<6 false) → no store
-  C16 mul × 2
-  C17 store inplace[5]
+  C14 load inplace[5]   (iter 4 j-loop, j=5)        ← iter 4 compare-swap loads inplace[5] at C14 in parallel; cmp_lt at C15 returns 0 (8<6 false) → no store
+  C15 mul × 2
+  C16 store inplace[5]
 
-  C18 load inplace[5]   (iter 5 else)               ← else body gated by ¬outer_pred (C7); load waits for prior writer (C17)
-  C19 sub 1
-  C20 store inplace[5]
+  C17 load inplace[5]   (iter 5 else)               ← else body gated by ¬outer_pred (C7); load waits for prior writer (C16)
+  C18 sub 1
+  C19 store inplace[5]
 
-  C21 load inplace[5]   (iter 6 j-loop, j=5)        ← iter 6 compare-swap touches inplace[6,7], not [5]
-  C22 mul × 2
-  C23 store inplace[5]
+  C20 load inplace[5]   (iter 6 j-loop, j=5)        ← iter 6 compare-swap touches inplace[6,7], not [5]
+  C21 mul × 2
+  C22 store inplace[5]
 
-total_cycles = 23
+total_cycles = 22
 ```
 
-The `inplace[7]` chain (`iter 0 j-loop → iter 2 j-loop → iter 4 j-loop → iter 6 j-loop → iter 7 else`) also lands at C23 and ties for the bound — same structure, with iter 6 compare-swap dropped (`should_swap = 0`, 7<5 false) and iter 7 else as the terminal writer.
+The `inplace[7]` chain (`iter 0 j-loop → iter 2 j-loop → iter 4 j-loop → iter 6 j-loop → iter 7 else`) also lands at C22 and ties for the bound — same structure, with iter 6 compare-swap dropped (`should_swap = 0`, 7<5 false) and iter 7 else as the terminal writer.
 
 Other slots retire earlier and stay off the critical path:
-- `inplace[0,1]`: iter 0 compare-swap commits at C13 (load C11, cmp_gt C12, store C13 — `should_swap = 1`); iter 1 else writes at C16 (load C14 waits on C13, sub C15, store C16). No further writers.
-- `inplace[2,3]`: iter 2 compare-swap commits at C13; iter 3 else at C16.
-- `inplace[4]`: only j-loops touch it (iter 4 compare-swap `should_swap = 0`). 4 j-loop links — last store at C20.
-- `inplace[6]`: only j-loops touch it (iter 6 compare-swap `should_swap = 0`). 4 j-loop links — last store at C20.
+- `inplace[0,1]`: iter 0 compare-swap commits at C12 (load C10, cmp_gt C11, store C12 — `should_swap = 1`); iter 1 else writes at C15 (load C13 waits on C12, sub C14, store C15). No further writers.
+- `inplace[2,3]`: iter 2 compare-swap commits at C12; iter 3 else at C15.
+- `inplace[4]`: only j-loops touch it (iter 4 compare-swap `should_swap = 0`). 4 j-loop links — last store at C19.
+- `inplace[6]`: only j-loops touch it (iter 6 compare-swap `should_swap = 0`). 4 j-loop links — last store at C19.
 
-Under unbounded fan-out, the per-iter predicate compute and the j-loop addr-gens for all 8 lanes run in parallel through C9. Only the loads on the carried memory chain serialize. iter 4's compare-swap loads `inplace[5]` at C15 in parallel with iter 4's j-loop load of `inplace[5]` — both are reads, no conflict — then iter 4's cmp_lt at C16 produces `should_swap = 0` and no store fires. Iter 6 behaves symmetrically for `inplace[7]`.
+Under unbounded fan-out, the per-iter predicate compute for all 8 lanes runs in parallel through C8. Subscripts are bare, so no address-gen cycle is charged; only the loads on the carried memory chain serialize. iter 4's compare-swap loads `inplace[5]` at C14 in parallel with iter 4's j-loop load of `inplace[5]` — both are reads, no conflict — then iter 4's cmp_lt at C15 produces `should_swap = 0` and no store fires. Iter 6 behaves symmetrically for `inplace[7]`.
 
 Under fully unbound hardware (infinite throughput model), each update to a slot only has to wait for the previous *committing* writer to finish. For example, iter 6's sub-operations wait for:
 
 | iter 6 sub-op | what it reads | who last wrote that | so it waits for |
 |---|---|---|---|
-| predicate / addr-gen for `i=6` | `i=6` + loop-invariants | nobody | nothing — fires at C4–C9 in parallel with every other iter's predicate |
-| compare-swap loads (`inplace[6,7]`) | `inplace[6]`, `inplace[7]` | iter 4's j-loop (j=6,7 sub-chain, done at C17) | iter 4's j-loop — produces `should_swap = 0`, no store |
-| j-loop, j=4 | `inplace[4]` | iter 4's j-loop j=4 (C17) | iter 4's j-loop |
-| j-loop, j=5 | `inplace[5]` | iter 5's else (C20) | iter 5's else commit only, not all of iter 5 |
-| j-loop, j=6 / j=7 | `inplace[6,7]` | iter 4's j-loop (C17) | iter 4's j-loop (iter 6's own compare-swap doesn't commit, so no within-iter wait) |
+| predicate for `i=6` | `i=6` + loop-invariants | nobody | nothing — fires at C4–C8 in parallel with every other iter's predicate |
+| compare-swap loads (`inplace[6,7]`) | `inplace[6]`, `inplace[7]` | iter 4's j-loop (j=6,7 sub-chain, done at C16) | iter 4's j-loop — produces `should_swap = 0`, no store |
+| j-loop, j=4 | `inplace[4]` | iter 4's j-loop j=4 (C16) | iter 4's j-loop |
+| j-loop, j=5 | `inplace[5]` | iter 5's else (C19) | iter 5's else commit only, not all of iter 5 |
+| j-loop, j=6 / j=7 | `inplace[6,7]` | iter 4's j-loop (C16) | iter 4's j-loop (iter 6's own compare-swap doesn't commit, so no within-iter wait) |
 
-The "sequential" classification of `i` only means a loop-carried dep exists somewhere — it does **not** mean each iter must finish before the next can start. iter 6's compare-swap (load C18, cmp C19, no store) overlaps with iter 5's else (C18–C20) since they touch disjoint slots; only the iter 6 j-loop's `j=5` sub-chain waits on iter 5's else commit.
+The "sequential" classification of `i` only means a loop-carried dep exists somewhere — it does **not** mean each iter must finish before the next can start. iter 6's compare-swap (load C17, cmp C18, no store) overlaps with iter 5's else (C17–C19) since they touch disjoint slots; only the iter 6 j-loop's `j=5` sub-chain waits on iter 5's else commit.
 
-For comparison, baseline `bitonic_stage` (`i` parallel-unrolled) is 12 cycles under strict no-pred; the modification's memory recurrence inflates that to **23 cycles, ≈ 1.9×**, with the j-loop link multiplied across the active-iter sequence providing most of the inflation.
+For comparison, baseline `bitonic_stage` (`i` parallel-unrolled) is 12 cycles under strict no-pred; the modification's memory recurrence inflates that to **22 cycles, ≈ 1.8×**, with the j-loop link multiplied across the active-iter sequence providing most of the inflation.
 
 ## Op counts
 
@@ -131,7 +131,7 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | loads        | 27    | outer `i` reads (N = 8) + j induction reads, one per j-iter on active lanes ((N/2)² = 16) + param hoists `pass`, `stage`, `N` (3). `block_size`, `distance`, `N/2` flow as anonymous-equivalent loop-invariants — no per-iter load. |
 | stores       | 24    | outer `i++` writes (8) + j induction writes ((N/2)² = 16). |
 | adds         | 25    | outer `i++` (8) + inner `j++` (16) + prologue `stage + 1` (1) |
-| address_adds | 28    | `&inplace[i]` per outer iter, shared by whichever branch is taken (8 — compare-swap on if-lanes, else-body on else-lanes) + `&inplace[partner]` per active iter (4) + `&inplace[j]` per j-iter on active lanes (16) — 1 per `[]` access, incremental-stride. Swap-lane stores reuse the load-side address. |
+| address_adds | 0     | All `inplace[...]` subscripts are bare scalars / induction vars: `inplace[i]` (`i` induction var), `inplace[partner]` (`partner` is a named scalar; the `i + distance` that produces it is a regular add, not address arithmetic), and `inplace[j]` (`j` induction var). A bare-variable subscript charges zero address_adds and adds no cycle of its own. |
 | compares     | 24    | outer bound `i < N` (8) + inner bound `j < N` per j-iter on active lanes (16) |
 | bitops       | 11    | dead `half_block = block_size >> 1` (8, unconditional per the dead-code convention) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) + `N >> 1` for hoisted j-init (1) |
 
@@ -141,7 +141,7 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | loads        | **55** |
 | stores       | **48** |
 | adds         | **29** |
-| address_adds | **28** |
+| address_adds | **0** |
 | subs         | **4**  |
 | muls         | **16** |
 | divs         | **8**  |
@@ -155,7 +155,7 @@ Compared to the prior soft-predication accounting (`stores = 52, bitops = 35, co
 - 8 bitops (4 ascending-arm muxes and 4 AND-enable swap gates that exist only in the soft lowering),
 - 4 untaken-arm value compares (the alternate of `cmp_gt` / `cmp_lt` on each active lane).
 
-The j-loop still dominates on both axes: it owns every chain link on the critical path, and contributes 16 of 28 algorithmic loads, 16 of 24 algorithmic stores, all 16 muls, 16 of 25 overhead adds (`j++`), 16 of 28 `address_adds` (`&inplace[j]`), and 16 of 24 overhead compares (`j < N`).
+The j-loop still dominates on both axes: it owns every chain link on the critical path, and contributes 16 of 28 algorithmic loads, 16 of 24 algorithmic stores, all 16 muls, 16 of 25 overhead adds (`j++`), and 16 of 24 overhead compares (`j < N`). No `address_adds` are charged anywhere — every `inplace[...]` subscript is a bare scalar / induction var.
 
 ## Data Dependency Graph
 The compare-swap subgraph mirrors the baseline `bitonic_stage_eval.md` strict layout (compares gate addr-gens, loads, value compares, and the swap stores in sequence) and is collapsed below. Solid edges are within-iter dataflow; dashed edges are loop-carried back-edges through `inplace[N/2..N-1]`. Three writers feed the j-loop's read set: the j-loop itself (RAW recurrence), the compare-swap (commits only when `should_swap = 1` — for these inputs only on iters 0, 2 which touch `inplace[0..3]`, so doesn't intersect the carried-memory chain), and the else (cross-iter for `i ∈ {5,7}`).
