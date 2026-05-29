@@ -200,7 +200,7 @@ graph TD
 
     %% Critical path (5-cycle II): mask_hdr → and_op → cmp_eq → [gate] → shift → st_mask
     %% The carry edge st_mask → next-iter mask_hdr closes the recurrence
-    linkStyle 0,3,5,8 stroke:#ff0000,stroke-width:3px;
+    linkStyle 2,5,7,10 stroke:#ff0000,stroke-width:3px;
 ```
 
 The 5-cycle II is governed by the `mask` recurrence (load mask → AND → cmp → shift → store mask); the `count` body chain fits within this window.
