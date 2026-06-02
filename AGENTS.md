@@ -65,31 +65,30 @@ for this DAG?", not "what would a real machine deliver?"
    - **Induction variables** — each loop iteration charges a load (read
       iterator), an add (increment), a store (write iterator), and a compare
       (bound check). The bound itself is hoisted under the loop-invariant rule below.
-   - **Address generation** — an `address_add` is charged ONLY for
-      arithmetic baked **inline into the subscript brackets**. A bare-
-      variable or bare-named-scalar subscript — `a[i]`, `a[idx]` — charges
-      **zero** address_adds and contributes no cycle of its own: once the
-      index value is available the element is reached directly. An
-      `address_add` (and a cycle on the chain) is charged only when the
-      `[]` expression itself contains arithmetic, one per such `[]`, e.g.
-      `a[i+1]`, `a[2*i]`, `a[i+lag]`, `a[k+j+m/2]`. The inline arithmetic
-      must resolve before that access fires; a bare access need not wait.
-      Concretely, `a[i] + a[i+1]` schedules as: `cycle 0: load i`;
-      `cycle 1: access a[i] ‖ compute i+1`; `cycle 2: a[i] ready ‖
-      access a[i+1]`; `cycle 3: a[i+1] ready`; `cycle 4: a[i] + a[i+1]` —
-      `a[i]` costs no address step; only the `i+1` does.
-      Adds that produce a **named** source-level scalar are regular `adds`,
-      not address_adds, even when that scalar is used exclusively as an
-      array index downstream (e.g. `idx = c·HW + h·W + w; a[idx];` — the
-      two adds for `idx` are regular `adds`, and because the `a[idx]`
-      subscript is then bare it charges **0** address_adds). For non-affine
-      indexing (gather/scatter, `a[idx[i]]`), charge the loads and
-      arithmetic the source dictates for the inner reference `idx[i]`; the
-      outer `[]` then indexes on the loaded value as a bare subscript and
-      charges no address_add. Address-arithmetic adds are tracked as a
-      separate `address_adds` category and are NOT lumped into the regular
-      `adds` total. (Induction-variable increments, `i ← i+1`, remain
-      regular `adds`.)
+   - **Address generation** — a bare-variable or bare-named-scalar subscript,
+      e.g. `a[i]` or `a[idx]`, charges **zero** address_adds and contributes no
+      address cycle of its own: once the index value is available, the element is
+      reached directly.
+
+      When the `[]` expression itself contains arithmetic, evaluate that subscript
+      expression as a normal expression DAG before the access can fire. Each op in
+      the expression costs 1 cycle and participates in the critical path according
+      to its data dependencies. Adds/subs inside the subscript are counted as
+      `address_adds`, not regular `adds`; multiplies/divides/shifts/bitops inside
+      the subscript are counted in their normal op categories. Loop-invariant
+      hoisting applies recursively inside index expressions.
+
+      Examples:
+      - `a[i+1]`: one `address_add`; the load waits for `i+1`.
+      - `a[i+j+k]`: two `address_adds`, tree-scheduled as a 2-level add DAG.
+      - `a[2*i]`: one multiply; no `address_add`.
+      - `a[ci*(H*W) + h*W + w]`: evaluate the index expression functionally:
+         cycle 1 computes `H*W` and `h*W`; cycle 2 computes `ci*(H*W)` and
+         `h*W + w`; cycle 3 computes the full index. The access fires after that.
+      
+      For non-affine indexing such as `a[idx[i]]`, charge the loads and arithmetic
+      required to compute `idx[i]`; the outer access `a[loaded_idx]` then indexes on
+      a loaded scalar value and charges no additional address_add.
    - **Loop-invariant hoisting** — any value whose inputs are loop-
      invariant is computed once and broadcast to all consumers via free
      fan-out. Charged 1× to op counts (compute, load, and store all
@@ -147,11 +146,10 @@ for this DAG?", not "what would a real machine deliver?"
    style) stay sequential — `trip × II`.
 
 4. **Inline address arithmetic and loop control are counted as ops (per
-   Convention 1) and lie on the critical path when present.** When a
-   subscript contains inline arithmetic (per the Address-generation rule
-   above), that `address_add` sits on the per-iteration critical path
-   because the load it feeds is on that chain (counter → address → load →
-   compute → store). A bare subscript carries no address arithmetic and
+   Convention 1) and lie on the critical path when present.** When a subscript 
+   contains inline arithmetic, the full subscript expression DAG sits on the 
+   per-iteration critical path when the load/store it feeds is on that
+   chain. A bare subscript carries no address arithmetic and
    adds no such cycle — the access fires as soon as the index value and the
    array are available. Induction carry — the iterator's `i ← i+1` update —
    is the sequential recurrence for any sequential dim, so it directly

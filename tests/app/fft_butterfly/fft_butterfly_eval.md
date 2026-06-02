@@ -1,42 +1,116 @@
 # ASAP Model Notes
-- s loop sequential, k loop parallel, j loop sequential
-  - s = 4 takes the longest to compute since j iterates m/2 or 8 times
+s loop sequential, k loop parallel, j loop sequential
+- s = 4 takes the longest to compute since j iterates m/2 or 8 times
+
+Example for N = 16, adjacent stages s = 2 and s = 3:
+
+  At s = 2, m = 4. One butterfly is:
+
+  k = 4, j = 1
+  output_real[k + j + m/2] = output_real[4 + 1 + 2] = output_real[7]
+
+  So stage 2 writes output_real[7].
+
+  At s = 3, m = 8. One later butterfly is:
+
+  k = 0, j = 3
+  float t_r = ... output_real[k + j + m/2]
+            = ... output_real[0 + 3 + 4]
+            = ... output_real[7]
+
+  So stage 3 reads output_real[7].
+
+  That is a RAW edge.
+
+Even when the s loop is unrolled, stage s+1 consumes the in-place array values produced by stage s. Since each stage writes every output_real/imag[i], and the next stage reads every output_real/imag[i], the stages must be barrier-ordered:
+
+copy -> s=1 -> s=2 -> s=3 -> s=4
+
+So unrolling s creates parallel hardware/graphs, but the data dependencies still force sequential execution between stages.
+
+k iterations within one stage can run in parallel because their index ranges are disjoint. Since all k blocks in the same stage have the same j trip count, the stage latency is just one k block’s j-loop depth, not the sum across all k blocks.
+
+The critical path is the sum of each stage’s j-loop critical-path depth. Each j loop is sequential because of the twiddle recurrence w = w * wm, and its per-stage depth also includes the index/address/load/butterfly/store chain.
+
+So the structure for the critical path is:
+
+total_cycles =
+  copy depth
+  + stage(s=1) j-chain depth
+  + stage(s=2) j-chain depth
+  + stage(s=3) j-chain depth
+  + stage(s=4) j-chain depth
+
+**s is unrolled structurally, but still sequential in latency because of RAW hazards through the in-place output arrays.**
+
 ## Cycle Count/Critical Path
-Radix-2 DIT, in-place. copy → log2(N) stages; stages serialize (whole-array RMW barrier).
+Radix-2 DIT, in-place. For the ideal infinite-throughput schedule, the outer
+stage loop is materialized as four unrolled stage instances (`s = 1..4`), but
+the stage instances are separated by whole-stage barriers. A later stage may
+read an element written by the previous stage, so the barriers are required RAW
+ordering edges, not optional serialization. For example, stage 2 (`m = 4`) at
+block base `k = 4`, `j = 1` touches index `4 + 1 + 2 = 7`; stage 3 (`m = 8`) at
+`k = 0`, `j = 3` touches `0 + 3 + 4 = 7`. Without a barrier, stage 3 could read
+the old value of element 7.
 
-Copy loop (parallel, fully unrolled) — hidden under stage-1 prologue:
-- c1: load input_real[i] ‖ load input_imag[i]      (bare [i], no addr_add)
-- c2: store output_real[i] ‖ store output_imag[i]
+Copy loop (parallel, fully unrolled):
+- c1: load `input_real[i]` ‖ load `input_imag[i]` (bare `[i]`, no addr_add)
+- c2: store `output_real[i]` ‖ store `output_imag[i]`
 
-Per-stage prologue (array-independent → overlaps prev stage, off path):
-- 1<<s = m  →  -2π/m  →  cosf ‖ sinf = wm_r,wm_i   (~3 cyc, hidden)
+Per-stage prologue (array-independent, overlaps earlier stages):
+- `1 << s = m` → `-2π/m` → `cosf` ‖ `sinf = wm_r, wm_i`
 
-Inside the j-loop: TWO data-independent chains; they meet only at t = w·X
-  TWIDDLE coefficient (scalar recurrence, II=4) — NOT an addressed load:
-  - c?: load w_r ‖ load w_i        (fixed-address scalar; fanned to t_r,t_i,new_w_r,new_w_i)
-  - +1: mul w·wm (4 muls)
-  - +1: new_w_r = sub ‖ new_w_i = add
-  - +1: store w_r ‖ store w_i       (carry → next iter's load)
-  → w^(p) ready at 1 + 4p ; last useful is w^(m/2-1) (the w-update in the final iter is dead)
+Inside each stage, the `k` blocks are independent and fully unrolled. The stage
+depth is therefore one block's `j`-loop depth. The `j` loop is still sequential
+because it carries the running twiddle `(w_r, w_i)`.
 
-  DATA operand (addressed load) — this is the ONLY place k+j+m/2 lives:
-  - counter j (induction, II=3)  →  k+j  →  +m/2     (2 addr_adds; k block-const, m/2 hoisted)
-  - load output[k+j+m/2] = X
-  → X^(p) ready at 3p + 4
+Inside the `j` loop there are two independent chains that meet only at `t = w·X`:
 
-Converge at the butterfly (only meeting point of the two chains):
-  - t = w·X   (waits for max of the two arrivals)
-  - t_r = sub ‖ t_i = add
-  - u ± t     (u = output[k+j] loaded early, off path)
-  - store output[k+j] ‖ store output[k+j+m/2]
+TWIDDLE coefficient (scalar recurrence, II = 4):
+- load `w_r` ‖ load `w_i`
+- `w·wm` products (4 muls, parallel)
+- `new_w_r` sub ‖ `new_w_i` add
+- store `w_r` ‖ store `w_i` (carry to the next `j` iteration)
+- `w^(p)` is ready at `1 + 4p`; the final iteration's `w` update is dead for
+  latency because no later `j` iteration consumes it.
 
-Per-stage CP = max(2m+1 [twiddle-bound], 1.5m+5 [addr-bound]):
-- s=1 m=2 : max(5, 8)  = 8    addr-bound  (j-trip=1 → twiddle recurrence vacuous, w-update fully dead)
-- s=2 m=4 : max(9, 11) = 11   addr-bound
-- s=3 m=8 : max(17,17) = 17   tie
-- s=4 m=16: max(33,29) = 33   twiddle-bound (8-deep rotation; dominates)
+DATA operand (addressed load):
+- `j` induction carry (`load j → j+1 → store j`, II = 3)
+- inline address arithmetic: `k+j` then `+m/2`
+- load `output[k+j+m/2] = X`
+- `X^(p)` is ready at `3p + 4`
 
-Total = 2 (copy) + 8 + 11 + 17 + 33 = 71
+Convergence at the butterfly:
+- `t = w·X` waits for the slower of the twiddle and data chains
+- `t_r` sub ‖ `t_i` add
+- `u ± t` (the `u = output[k+j]` load is earlier and off the binding chain)
+- store `output[k+j]` ‖ store `output[k+j+m/2]`
+
+Per-stage critical path:
+```
+stage_CP(m) = max(2m + 1,      // twiddle-bound path
+                  1.5m + 5)    // j/index/address-bound path
+```
+
+| s | `m` | twiddle-bound `2m+1` | index-bound `1.5m+5` | `stage_CP` | binding |
+|---|-----|----------------------|----------------------|-----------:|---------|
+| 1 | 2  | 5  | 8  | 8  | index/address |
+| 2 | 4  | 9  | 11 | 11 | index/address |
+| 3 | 8  | 17 | 17 | 17 | tie |
+| 4 | 16 | 33 | 29 | 33 | twiddle recurrence |
+
+The barrier-ordered stage graph is:
+```
+copy -> barrier -> stage(s=1) -> barrier -> stage(s=2)
+     -> barrier -> stage(s=3) -> barrier -> stage(s=4)
+```
+
+So the total critical path is:
+```
+total_cycles = 2 (copy)
+             + 8 + 11 + 17 + 33
+             = 71
+```
 
 # FFT Butterfly Performance
 Parameters (from `main.cpp`): `N = 16`, `log2(N) = 4`. 
@@ -64,8 +138,8 @@ instances = `Σ N/m = 8+4+2+1 = 15`.
 | dim | trip_count | kind | II | notes |
 |-----|------------|------|----|-------|
 | copy `i` | `N` = 16 | parallel | — | `output[i] = input[i]` at a distinct index; no carry. `LOOM_PARALLEL` + `LOOM_UNROLL(8)`, fully unrolled. Bare `[i]` subscripts → no address arithmetic. |
-| stage `s` | `log2(N)` = 4 | sequential | per-stage critical path (whole-array RMW barrier) | stage `s+1` read-modify-writes every element stage `s` wrote (in-place aliasing across the whole array), so stages serialize. The carry is via memory, not a register, and the recurrence latency is the entire stage's butterfly chain — which differs by `m`. |
-| block `k` | `N/m` (8,4,2,1) | parallel | — | block `k` owns the disjoint index range `[k, k+m)`; no value crosses blocks. Fully unrolled → `k` is a per-lane constant (no induction ops, and `k` folds into the address constants). |
+| stage `s` | 4 materialized instances | sequential | per-stage critical path (whole-stage barrier) | The outer loop is modeled as unrolled stage graphs for latency, but adjacent stages are barrier-ordered because they read-modify-write overlapping `output_*` elements. This removes ordinary `s` stream/induction latency from the critical path, while preserving the required RAW ordering between stages. |
+| block `k` | `N/m` (8,4,2,1) | parallel | — | block `k` owns the disjoint index range `[k, k+m)`; no value crosses blocks. Fully unrolled → `k` is a per-lane constant on the body critical path and folds into the address constants; the source `k` induction is still counted in op totals. |
 | butterfly `j` | `m/2` (1,2,4,8) | sequential | 4 | carries the running twiddle `(w_r, w_i)` via `w ← w·wm`. Non-associative complex rotation → cannot tree-reduce. The array footprints of successive `j` are disjoint, so the **only** carry is the twiddle. |
 
 `w_r`/`w_i` are loop-carried and have two assignment sites (`= 1.0f`/`= 0.0f` init,
@@ -80,6 +154,12 @@ dataflow (the array loads / op results flow directly into their consumers with n
 named L/S).
 
 ## Critical path (`total_cycles`)
+
+The outer `s` loop is unrolled into four explicit stage instances. Those stage
+graphs are still ordered by whole-stage barriers because stage `s+1` may read
+the same element that stage `s` just wrote. The barrier itself is not charged as
+an op; it constrains the schedule so every read in the next stage waits until all
+stores in the previous stage complete.
 
 Within a stage the `k`-blocks are parallel, so the stage's depth is one block's
 `j`-loop depth. Two **data-independent** chains advance in parallel inside that
@@ -140,10 +220,9 @@ regime the model flags for FFT — while for large `m` (late stages) the serial
 twiddle rotation dominates; they cross at `m = 8`.
 
 The copy loop (`load input[i] → store output[i]`, 2 cycles, fully unrolled) writes
-the whole array that stage 1 reads, so by the same whole-array-barrier logic it
-precedes stage 1. The per-stage twiddle prologue (`1<<s → −2π/m → cos ‖ sin`,
-~3 cycles) and the `w`/`j` inits are array-independent and overlap the previous
-stage, so they stay off the path.
+the whole array that stage 1 reads, so it precedes stage 1. The per-stage
+twiddle prologues (`1<<s → −2π/m → cos ‖ sin`) are array-independent and all four
+can be computed ahead of their stage barriers, so they stay off the path.
 
 ```
 total_cycles = 2 (copy)
@@ -152,15 +231,17 @@ total_cycles = 2 (copy)
              = 71
 ```
 
-`critical_path = 2 (copy) + max(5,8) + max(9,11) + max(17,17) + max(33,29) = 71`,
-dominated by stage 4's 8-deep serial twiddle rotation (33 of 71 cycles).
+`critical_path = 2 (copy) + max(5,8) + max(9,11) + max(17,17) + max(33,29) = 71`.
+The stage sequence is binding because of the inter-stage RAW barriers; within
+the last stage, the 8-deep serial twiddle rotation dominates that stage's depth.
 
 ## Op counts
 
 ### Per-phase formulas
 - **Copy loop** (parallel, trip `N`): `2N` loads (`input_real[i]`, `input_imag[i]`)
   + `2N` stores (`output_real[i]`, `output_imag[i]`). Bare `[i]` → 0 address_adds,
-  and parallel → no induction ops.
+  and parallel → the induction ops are counted as work but do not lie on the
+  critical path.
 - **Per butterfly** (`32` total): `6` loads (`output_real/imag[k+j+m/2]`,
   `output_real/imag[k+j]` = 4 array; `w_r`, `w_i` = 2 scalar) + `6` stores (4 array,
   2 scalar `w`) + `8` muls (4 for `t = w·X`, 4 for `w·wm`) + `4` adds (`t_i`,
@@ -170,12 +251,17 @@ dominated by stage 4's 8-deep serial twiddle rotation (33 of 71 cycles).
 - **Per k-block** (`15` total): `2` stores (`w_r=1`, `w_i=0` init).
 - **Per stage** (`4` total): `1` shift (`m = 1<<s`) + `1` shift (`m/2 ≡ m>>1`,
   hoisted) + `1` divide (`−2π/m`, float) + `1` cos + `1` sin.
-- **Once per kernel**: `1` transcendental (`log2f(N)`, the hoisted loop bound) +
-  `1` load (`N`).
+- **Once per kernel**: `1` load (`N`) + `1` transcendental (`log2f(N)`, hoisted
+  stage-loop bound). The outer stage loop is unrolled for latency, but the source
+  loop-control work is still counted as dynamic work.
+- **Copy `i` induction** (parallel, 16 iters): `16` loads + `17` stores
+  (16 writebacks + `i=0` init) + `16` adds (`i++`) + `16` compares.
+- **`k` induction** (parallel, 15 iters across 4 stages): `15` loads + `19`
+  stores (15 writebacks + 4 `k=0` inits) + `15` adds (`k += m`) + `15` compares.
 - **`j` induction** (sequential, 32 iters across 15 blocks): `32` loads + `47`
   stores (32 writebacks + 15 `j=0` inits) + `32` adds (`j++`) + `32` compares.
-- **`s` induction** (sequential, 4 stages): `4` loads + `5` stores (4 writebacks
-  + 1 init) + `4` adds (`s++`) + `4` compares (`s ≤ log2(N)`).
+- **`s` induction** (source loop, 4 stages): `4` loads + `5` stores
+  (4 writebacks + `s=1` init) + `4` adds (`s++`) + `4` compares.
 
 ### Algorithmic
 | op | count | source |
@@ -192,32 +278,32 @@ dominated by stage 4's 8-deep serial twiddle rotation (33 of 71 cycles).
 ### Overhead (loop-carried twiddle L/S, induction, address-gen, inits)
 | op | count | source |
 |----|-------|--------|
-| loads        | 101 | `w_r`/`w_i` body loads (2·32 = 64) + `j` iv (32) + `s` iv (4) + `N` hoist (1) |
-| stores       | 146 | `w_r`/`w_i` body stores (2·32 = 64) + `w` init per k-block (2·15 = 30) + `j` iv (47) + `s` iv (5) |
-| adds         | 36  | `j++` (32) + `s++` (4) |
+| loads        | 132 | `w_r`/`w_i` body loads (2·32 = 64) + `i` iv (16) + `k` iv (15) + `j` iv (32) + `s` iv (4) + `N` hoist (1) |
+| stores       | 182 | `w_r`/`w_i` body stores (2·32 = 64) + `w` init per k-block (2·15 = 30) + `i` iv (17) + `k` iv (19) + `j` iv (47) + `s` iv (5) |
+| adds         | 67  | `i++` (16) + `k += m` (15) + `j++` (32) + `s++` (4) |
 | address_adds | 64  | `k+j` (1) + `+m/2` (1) per butterfly · 32 — inline subscript arithmetic in `output_*[k+j+m/2]` / `output_*[k+j]` |
-| compares     | 36  | `j < m/2` (32) + `s ≤ log2(N)` (4) |
+| compares     | 67  | `i < N` (16) + `k < N` (15) + `j < m/2` (32) + `s ≤ log2(N)` (4) |
 
-The copy `i` and block `k` dims are **parallel** → under full unrolling their
-iterators are per-lane constants: no iv loads/adds/stores/compares (per the
-parallel-dim treatment). Only the **sequential** `s` and `j` dims charge
-induction ops.
+The copy `i`, block `k`, and stage `s` dimensions are materialized/unrolled for
+latency, so their iterators do not extend `total_cycles`. They are still counted
+as dynamic work, because op counts measure the source-level loop-control work and
+are independent of scheduling.
 
 ### Totals
 | op | total |
 |----|------:|
-| loads        | **261** |
-| stores       | **306** |
+| loads        | **292** |
+| stores       | **342** |
 | muls         | **256** |
-| adds         | **164** |
+| adds         | **195** |
 | subs         | **128** |
 | address_adds | **64**  |
 | divides      | **4**   |
 | shifts       | **8**   |
 | transcendentals | **9** |
-| compares     | **36**  |
+| compares     | **67**  |
 
-Memory traffic dominates: 567 of the load+store ops, of which the loop-carried
+Memory traffic dominates: 634 of the load+store ops, of which the loop-carried
 `w_r`/`w_i` round-trips (64 loads + 94 stores incl. inits) and the induction
 writebacks are pure model overhead — under a register-resident twiddle they would
 collapse and the `j`-loop II would fall from 4 to 2.
@@ -345,4 +431,5 @@ and **dead on `j = m/2 − 1`** (the produced twiddle is never consumed). The
 butterfly and the index path are feed-forward; for early stages the index path
 (`k+j → +m/2 → load`) reaches the final butterfly later than the short twiddle
 chain and sets the stage depth, while for stage 4 the 8-deep twiddle rotation
-dominates.
+dominates. Above this per-butterfly graph, stage-level barriers serialize
+`copy`, `s=1`, `s=2`, `s=3`, and `s=4` to protect the in-place array RAW hazards.
