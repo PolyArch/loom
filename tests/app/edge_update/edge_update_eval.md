@@ -40,12 +40,14 @@ Size parameters used in the formulas:
 | search `i` | `K ≤ D`, `K` = 2 | parallel (data-dependent termination) | n/a | each iter touches only its own `input_col_indices[i]` and a distinct `output_weights[i]`; no carried register/accumulator/in-place dep, so it is parallel by data-dependence. The early `return` makes trip `K` input-dependent, and the match compare `col_indices[i] == dst_node` is the termination predicate on the critical path. |
 
 Neither loop carries a register/accumulator/in-place dependence, so neither
-contributes a `trip × II` term to `total_cycles`. Following the parallel-dim
-treatment used for `i` in `clz_eval.md` — *under maximum unrolling the iterator
-is a compile-time constant per lane: no load, no increment, no bound compare,
-no store* — neither loop charges induction-variable ops. (Contrast `crc32_eval.md`,
-whose dims are **sequential** and therefore do charge per-iter iv load/add/
-store/compare.)
+contributes a `trip × II` term to `total_cycles`: under full unrolling each lane
+treats its iterator as a per-lane constant, so the induction work stays **off the
+critical path**. Op counts, however, are independent of scheduling — the
+source-level loop-control work is still counted. Both loops therefore charge
+per-iteration iv ops (load, add, store, compare) in the op totals exactly as a
+sequential loop would; the only difference is that here those ops do not extend
+`total_cycles`. (Contrast `crc32_eval.md`, whose **sequential** dims charge the
+same iv ops *and* put them on the critical path.)
 
 `row_start`, `row_end`, and the loaded `input_col_indices[i]` value are each
 assigned exactly once and not loop-carried, so they are anonymous dataflow —
@@ -79,8 +81,9 @@ with any trip count:
   (~c2) precedes the matched search store (~c6), so it never extends the path.
 - **The loop-bound compare does not serialize.** `i < row_end` overlaps the
   body's data path (c4) and adds no cycle once `row_end` is a known scalar —
-  treated symmetrically with the copy loop's `i < num_edges`, which is likewise
-  not charged. The search store lands at c6 only because its chain cannot
+  treated symmetrically with the copy loop's `i < num_edges`, which likewise
+  adds no cycle (both are still counted as iv compares in the op totals). The
+  search store lands at c6 only because its chain cannot
   *start* until `row_start`/`row_end` are produced by the upstream
   bounds-check → `row_ptr` chain (c1–c3); the copy chain has no such upstream
   dependence and starts at c0.
@@ -94,15 +97,18 @@ with any trip count:
 
 ### Per-phase formulas
 - **Copy loop** (parallel, trip `E`): `E` loads (`input_weights[i]`) + `E`
-  stores (`output_weights[i]`). No iv ops, no bound compare, no address_adds
-  (bare `[i]`).
+  stores (`output_weights[i]`), plus induction: `E` iv loads + `E + 1` iv stores
+  (`E` writebacks + `i = 0` init) + `E` iv adds (`i++`) + `E` iv compares
+  (`i < num_edges`). No address_adds (bare `[i]`).
 - **Bounds + row pointers**: `1` compare (`src_node >= num_nodes`) + `2` loads
   (`row_ptr[src_node]`, `row_ptr[src_node+1]`) + `1` address_add (`src_node+1`,
   inline subscript arithmetic).
 - **Search loop** (parallel, data-dependent termination, trip `K`): `K` loads
   (`input_col_indices[i]`) + `K` compares (`col_indices[i] == dst_node`, the
-  termination predicate) + `1` store (matched `output_weights[i] = new_weight`).
-  No iv ops, no bound compare, no address_adds (bare `[i]`).
+  termination predicate) + `1` store (matched `output_weights[i] = new_weight`),
+  plus induction over the `K` executed iters: `K` iv loads + `K + 1` iv stores
+  (`K` writebacks + `i = row_start` init) + `K` iv adds (`i++`) + `K` iv compares
+  (bound `i < row_end`). No address_adds (bare `[i]`).
 
 ### Algorithmic
 | op | count | source |
@@ -115,22 +121,27 @@ with any trip count:
 | op | count | source |
 |----|-------|-------|
 | address_adds | **1** | `src_node + 1` inline in `row_ptr[src_node+1]`. All other subscripts (`[i]`, `[src_node]`) are bare → no address_add. |
-| iv loads / adds / stores / bound compares | **0** | both loops are parallel; under maximum unrolling the iterator is resolved per lane and charges nothing (per `clz_eval.md`). |
+| iv loads | **18** | copy `i` (`E` = 16) + search `i` (`K` = 2), one read per executed iter |
+| iv stores | **20** | copy `i` (16 writebacks + 1 `i = 0` init = 17) + search `i` (2 writebacks + 1 `i = row_start` init = 3) |
+| iv adds | **18** | `i++`: copy (`E` = 16) + search (`K` = 2) |
+| iv compares | **18** | bound checks: copy `i < num_edges` (16) + search `i < row_end` (2) |
 
 ### Totals
 | op | total |
 |----|------:|
-| loads        | **20** |
-| stores       | **17** |
-| compares     | **3**  |
+| loads        | **38** |
+| stores       | **37** |
+| adds         | **18** |
+| compares     | **21** |
 | address_adds | **1**  |
-| adds / muls / divs / shifts / bitops / transcendentals | 0 |
+| muls / divs / shifts / bitops / transcendentals | 0 |
 
-The work is dominated by the bulk copy (`E` loads + `E` stores = 32 of the 37
-memory ops); the actual edge update is a 2-iteration scan (`K` loads, `K`
-compares, one store). Both copy and scan run off the critical path of the
-upstream bounds → row-pointer chain, so `total_cycles` stays at ≈6 regardless
-of `E`, `D`, or `K`.
+The work is dominated by the bulk copy: its algorithmic `E` loads + `E` stores
+(32) plus per-iter induction traffic (`E` iv loads + `E + 1` iv stores = 33)
+make up 65 of the 75 memory ops; the actual edge update is a 2-iteration scan
+(`K` loads + iv, `K` match compares, one store). Both copy and scan run off the
+critical path of the upstream bounds → row-pointer chain, so `total_cycles`
+stays at ≈6 regardless of `E`, `D`, or `K`.
 
 ## Data Dependency Graph
 The binding chain is the upstream bounds → row-pointer chain feeding one search

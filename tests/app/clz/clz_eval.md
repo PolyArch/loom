@@ -129,24 +129,28 @@ If-branch lane (value == 0):
 | bitops (AND) | 81 | `value & mask` per body iter + exit iter (Σ (K+1) over 5 else-lanes = 32+24+16+8+1) |
 | compares | 87 | outer `if (value == 0)` (6) + while-head `(value & mask) == 0` per body + exit iter (Σ (K+1) over else-lanes = 81) |
 
-### Overhead (loop-carried scalars, init stores, address-gen)
+### Overhead (loop-carried scalars, init stores, induction, address-gen)
 | op | count | source |
 |----|-------|-------|
 | loads | 162 | per else-lane `2K + 2` reads of `mask`/`count` (excluding input_data[i] above): Σ = (2·31+2)+(2·23+2)+(2·15+2)+(2·7+2)+(2·0+2) = 64+48+32+16+2 |
 | stores | 162 | per else-lane `2K + 2` init+body stores of `mask`/`count`: Σ = (2·31+2)+(2·23+2)+(2·15+2)+(2·7+2)+(2·0+2) = 64+48+32+16+2 |
+| iv loads | 6 | outer `i` reads: one per iter (`N` = 6) |
+| iv stores | 7 | outer `i` writes: 6 body writebacks + 1 `i = 0` init |
+| iv adds | 6 | `i++` (`N` = 6) |
+| iv compares | 6 | bound `i < N` (`N` = 6) |
 | address_adds | 0 | both `input_data[i]` and `output_count[i]` use bare `[i]` subscripts — no inline arithmetic, so no address-add is charged |
 
-`i` itself charges nothing: under maximum unrolling/parallelism, the iter var is a compile-time constant per lane (no load, no increment, no bound cmp, no store).
+The outer `i` loop is parallel and fully unrolled, so its iterator is a per-lane constant and stays **off the critical path** — but op counts are independent of scheduling, so the source-level loop-control work is still counted (as in `axpy_eval.md`/`fft_butterfly_eval.md`): the `i` loop (trip `N` = 6) charges 6 iv loads, 6 iv adds, 6 iv compares, and 7 iv stores (6 writebacks + the `i = 0` init). The inner `while` has no separate iterator — its `mask`/`count` carry and the `(value & mask) == 0` termination compare are charged above, not as iv ops.
 
 ### Totals
 | op | total |
 |----|------:|
-| loads        | **168** |
-| stores       | **168** |
-| adds         | **76**  |
+| loads        | **174** |
+| stores       | **175** |
+| adds         | **82**  |
 | shifts       | **76**  |
 | bitops (AND) | **81**  |
-| compares     | **87**  |
+| compares     | **93**  |
 | address_adds | **0**   |
 | muls / divs / transcendentals | 0 |
 
