@@ -66,7 +66,9 @@ class Config:
         self.label = label or f"P={p},L={l},S={s}"
 
     def cap(self, cls: str) -> int:
-        return self.P if cls == P else self.L if cls == L else self.S
+        # cls is always one of the resource-class names P/L/S, which are also
+        # this object's capacity attributes.
+        return getattr(self, cls)
 
 
 def parse_config(text: str) -> Config:
@@ -936,7 +938,6 @@ def _run_synthetic_tests(errors):
         errors.append(f"ordered: {ordered.scheduled_cycles} != 6")
     d = Dag(); r = d.region("overlap")
     _chain(r, P, 3); r.nodes[-1].is_output = True
-    base = len(r.nodes)
     _chain(r, P, 3); r.nodes[-1].is_output = True
     overlap = evaluate(d, "overlap", parse_config("P=4,L=1,S=1"))
     if overlap.scheduled_cycles != 3:  # two independent chains overlap
