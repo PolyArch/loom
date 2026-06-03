@@ -433,3 +433,38 @@ butterfly and the index path are feed-forward; for early stages the index path
 chain and sets the stage depth, while for stage 4 the 8-deep twiddle rotation
 dominates. Above this per-butterfly graph, stage-level barriers serialize
 `copy`, `s=1`, `s=2`, `s=3`, and `s=4` to protect the in-place array RAW hazards.
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, compares, shifts, **cos/sin** and other transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** the loop-carried `w_r`/`w_i` round-trips, the per-block twiddle inits, and the induction-variable accesses. Every counted non-load/store op (muls, adds, subs, `address_adds`, divides, shifts, transcendentals, compares) consumes a `P` slot. With `CP` the ASAP dependency bound, `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Multi-phase composition.** This kernel is barrier-ordered: `copy → s=1 → s=2 → s=3 → s=4` must run in sequence (each stage RAW-depends on the previous stage's in-place writes). With ordered phases the lower bound is the **sum** of each phase's `max(CP_phase, compute_phase, load_phase, store_phase)`, not the kernel-wide `max`. The per-phase op counts below partition the eval's totals exactly (`ΣA = 730` + 1 hoisted `log2f` = 731; `ΣLD = 291` + 1 `N` load = 292; `ΣST = 341` + 1 stage-loop init store = 342); the residual once-per-kernel ops overlap the copy phase and add no cycles.
+
+| phase | CP | A | LD | ST | compute=⌈A/36⌉ | load=⌈LD/12⌉ | store=⌈ST/12⌉ | phase cycles | binding |
+|-------|---:|---:|---:|---:|---:|---:|---:|---:|---------|
+| copy  | 2  | 32  | 48 | 49 | 1 | 4 | 5 | **5**  | store |
+| s = 1 | 8  | 183 | 65 | 90 | 6 | 6 | 8 | **8**  | dependency = store |
+| s = 2 | 11 | 175 | 61 | 74 | 5 | 6 | 7 | **11** | dependency |
+| s = 3 | 17 | 171 | 59 | 66 | 5 | 5 | 6 | **17** | dependency |
+| s = 4 | 33 | 169 | 58 | 62 | 5 | 5 | 6 | **33** | dependency (twiddle recurrence) |
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+cycles = 5 (copy) + 8 (s=1) + 11 (s=2) + 17 (s=3) + 33 (s=4) = 74
+```
+(For reference, the dependency-only phase sum is `2 + 8 + 11 + 17 + 33 = 71` — the existing ASAP `total_cycles`. A naive kernel-wide aggregate `max(CP, ⌈731/36⌉, ⌈292/12⌉, ⌈342/12⌉) = max(71, 21, 25, 29) = 71` would *under*-count, because the stage barriers forbid overlapping the phases.)
+
+**Bottleneck: dependency-bound, with a store-bound copy phase.** The stage chain (twiddle recurrence + inter-stage RAW barriers) supplies 69 of the 74 cycles, and the 8-deep serial twiddle rotation makes stage 4 alone cost 33. Finite resources add just +3 over ASAP: the copy phase is store-bound (`store = 5 > CP = 2`, because the 16-point copy plus its induction writes need ≥ 5 store-issue cycles on 12 lanes), and stage 1's store bound (8) merely ties its dependency depth. Widening `P`/`L`/`S` cannot shrink the stage recurrences, so the kernel stays latency-limited.

@@ -146,3 +146,36 @@ Outer `lag` dim is fully unrolled → 32 such graphs run in parallel, each compu
 | address_adds  | (not listed) | **3,600**  | address arithmetic now tracked as a distinct op category: only `&x[i+lag]` (3,600) charges, since its subscript has inline arithmetic; `&x[i]` is a bare subscript and charges none |
 | mul           | 3,600        | 3,600      | unchanged |
 | compares      | (not listed) | **3,632**  | per-iter bound checks now counted as dynamic ops |
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, compares, bitops, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable accesses. Every counted non-load/store op consumes a `P` slot; in particular the **`address_adds` for `&x[i+lag]` are PE work, not load traffic** — they count toward `A`, not `LD`. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, x_size = 128, max_lag = 32).**
+- `CP = 11`
+- `A  = adds (7,232) + address_adds (3,600) + mul (3,600) + compares (3,632) = 18,064`
+- `LD = 10,834`
+- `ST = 3,664`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(18,064 / 36) = 502
+load    = ceil(10,834 / 12) = 903
+store   = ceil(3,664 / 12)  = 306
+cycles  = max(11, 502, 903, 306) = 903
+```
+
+**Bottleneck: load-bound.** ASAP collapses this kernel to `CP = 11` (outer `lag` parallel, inner sum tree-reduced), but that depends on issuing all 3,600 products' operand loads at once. Each product needs two array loads (`x[i]`, `x[i+lag]`) plus induction reads, so `LD = 10,834` dominates and `load = 903` sets the floor — above `compute = 502` and well above `store = 306` (only 32 reduction outputs are stored, the accumulator collapsing into tree edges). The 2-loads-per-1-store reduction shape is exactly what makes loads the binding memory resource here.

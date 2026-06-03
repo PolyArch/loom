@@ -234,3 +234,42 @@ graph TD
   %% Critical path: outer_pred gate → j-loop body → j-loop RAW (×3) → else → j-loop RAW
   %% linkStyle 13,14,15,16,18,21,23 stroke:#ff0000,stroke-width:3px;
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, mods, bitops, compares, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable and memory-backed-scalar accesses. Every counted non-load/store op (adds, subs, `address_adds`, muls, divides, mods, bitops, compares, …) consumes a `P` slot. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, N = 8, distance = 1).**
+- `CP = 22`
+- `A  = adds (29) + address_adds (0) + subs (4) + muls (16) + divs (8) + mods (8) + bitops (27) + compares (48) = 140`
+- `LD = 55`
+- `ST = 48`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(140 / 36) = 4
+load    = ceil(55 / 12)  = 5
+store   = ceil(48 / 12)  = 4
+cycles  = max(22, 4, 5, 4) = 22
+```
+
+**Per-iteration view (sequential `i`).** The carried dependence is a memory recurrence through `inplace[N/2..N-1]`; each chain link is `load → (mul | sub) → store` with `II_dependency = 3`. Applying resources to one link (`A_iter = 1`, `LD_iter = 1`, `ST_iter = 1`):
+```
+II_constrained = max(II_dependency, ceil(1/36), ceil(1/12), ceil(1/12)) = max(3, 1, 1, 1) = 3
+```
+so finite resources do not widen the initiation interval, and the chain of links still sets the depth.
+
+**Bottleneck: dependency-bound.** The cross-iteration memory recurrence (22-cycle chain of 3-cycle links) dwarfs the aggregate resource terms (≤5), so `CP = 22` binds. The recurrence is serial regardless of how many PEs or memory lanes are provisioned — only breaking the in-place aliasing (not adding hardware) would shorten it.

@@ -169,3 +169,36 @@ graph TD
 
     %% Critical path (10-cycle body): right → cmp_le → [gate] → sub → shift → add_mid → ld_sorted → cmp_eq → [gate] → cmp_lt → [gate] → add_p1 → left
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, shifts, compares, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** the carried `left`/`right`/`result` scalar round-trips and the induction-variable accesses. Every counted non-load/store op (adds, subs, `address_adds`, shifts, compares, …) consumes a `P` slot. The counts are for the given inputs (`N = 10`, `M = 5`, data-dependent trips `{4,3,2,4,3}`), so the resource bound is input-specific just like `CP`. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, these inputs).**
+- `CP = 48`
+- `A  = adds (29) + address_adds (0) + subs (22) + shifts (16) + compares (57) = 124`
+- `LD = 69`
+- `ST = 41`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(124 / 36) = 4
+load    = ceil(69 / 12)  = 6
+store   = ceil(41 / 12)  = 4
+cycles  = max(48, 4, 6, 4) = 48
+```
+
+**Bottleneck: dependency-bound.** The binding constraint is the per-target search recurrence: a 10-cycle sequential body (three nested compare→body gaps) run up to 4 times, with the longest target setting `CP = 48`. The total work across only `M = 5` parallel targets is tiny (124 ops, 69 loads), so every resource term stays ≤ 6 and the latency-bound `CP` dominates. More lanes do not help; only shortening the data-dependent recurrence (e.g. fewer probes) would. This is the data-dependent-termination regime — the floor scales with the worst-case trip count, not with the fabric width.

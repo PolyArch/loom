@@ -58,3 +58,36 @@ addi -..-> i_out
 
 %% Critical Path N/A
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, compares, bitops, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable and memory-backed-scalar accesses. Every counted non-load/store op (adds, `address_adds`, multiplies, compares, …) consumes a `P` slot. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the counted loads, and `ST` the counted stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, N = 8).**
+- `CP = 4`
+- `A  = adds (16) + address_adds (0) + mul (8) + compares (8) = 32`
+- `LD = 26`
+- `ST = 16`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(32 / 36) = 1
+load    = ceil(26 / 12) = 3
+store   = ceil(16 / 12) = 2
+cycles  = max(4, 1, 3, 2) = 4
+```
+
+**Bottleneck: dependency-bound.** `CP = 4` exceeds every resource term, so even a 6×6 fabric runs this tiny kernel at its ASAP depth — the elementwise work is far too small to saturate 36 PEs or 12+12 memory lanes. The kernel only becomes load-bound once `N` grows enough that `ceil(2N + overhead / 12)` overtakes the constant 4-cycle chain.

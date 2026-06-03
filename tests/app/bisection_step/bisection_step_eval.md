@@ -104,3 +104,36 @@ graph TD
     %% Critical path: load_fa → mul_p → cmp_lt → [gate] → sto_a  (4-cycle body)
     linkStyle 3,5,6 stroke:#ff0000,stroke-width:3px;
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, compares, bitops, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable and memory-backed-scalar accesses. Every counted non-load/store op (adds, `address_adds`, multiplies, compares, …) consumes a `P` slot. The op counts already reflect strict no-predication (only the taken arm of `if (fa*fc<0)` is counted), so the resource bound inherits that. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, N = 64).**
+- `CP = 4`
+- `A  = adds (128) + address_adds (0) + muls (128) + compares (128) = 384`
+- `LD = 321`
+- `ST = 192`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(384 / 36) = 11
+load    = ceil(321 / 12) = 27
+store   = ceil(192 / 12) = 16
+cycles  = max(4, 11, 27, 16) = 27
+```
+
+**Bottleneck: load-bound.** Each of the 64 parallel lanes issues four input loads plus an induction read, so `LD = 321` dominates: with only 12 load lanes, `load = 27` sets the floor — far above the 4-cycle ASAP chain and above both `compute = 11` and `store = 16`. The 4-loads-to-2-stores asymmetry of the kernel is what makes loads, not stores, the binding memory resource.

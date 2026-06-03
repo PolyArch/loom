@@ -116,3 +116,36 @@ inv_std --> mult_norm
 %% Longer chain into mult_norm is idx → load(input) → sub (6 cycles);
 %% inv_std chain is 4 cycles and is fully overlapped.
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, compares, **sqrt** and other transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable and memory-backed-scalar accesses. Every counted non-load/store op (adds, `address_adds`, multiplies, divides, sqrt, compares, …) consumes a `P` slot. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, N = 256, C = 4).**
+- `CP = 10`
+- `A  = adds (1320) + address_adds (0) + muls (1025) + divides (4) + sqrt (4) + compares (292) = 2645`
+- `LD = 568`
+- `ST = 548`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(2645 / 36) = 74
+load    = ceil(568 / 12)  = 48
+store   = ceil(548 / 12)  = 46
+cycles  = max(10, 74, 48, 46) = 74
+```
+
+**Bottleneck: compute-bound.** The 256 fully-unrolled pixel lanes expose ~2.6k homogeneous ops but only 36 PEs to run them, so `compute = 74` dominates — a 7.4× stretch over the ASAP depth of 10. The arithmetic mix (1.3k adds, ~1k muls) outweighs memory traffic, so memory lanes (48 load / 46 store) sit below the compute bound. Adding PEs lowers `cycles` until `P ≈ 2645/48 ≈ 55`, where the load lanes would become the next bottleneck.

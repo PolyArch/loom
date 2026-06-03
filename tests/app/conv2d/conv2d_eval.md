@@ -131,3 +131,38 @@ graph TD
 
     %% The actual reduction tree for K = 27 has depth ceil(log2(27)) = 5.
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port).
+
+> **Symbol note.** Elsewhere in this eval, `P` denotes the number of output positions (`P = C_out·OH·OW = 144`). **Within this section only**, `P` instead denotes the number of arithmetic PEs (the hardware resource). The output-position count is written as `144` here to avoid collision.
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, compares, bitops, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable accesses. Every counted non-load/store op consumes a `P` slot; in particular the **`address_adds` from the inline subscript arithmetic are PE work, not load/store traffic** — they count toward `A`. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above; C_in = 3, C_out = 4, H = W = 8, KH = KW = 3).**
+- `CP = 17`
+- `A  = adds (17,454) + address_adds (19,728) + muls (31,397) + divs (2) + subs (2) + compares (5,932) = 74,515`
+- `LD = 13,716`
+- `ST = 6,220`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(74,515 / 36) = 2,070
+load    = ceil(13,716 / 12) = 1,143
+store   = ceil(6,220 / 12)  = 519
+cycles  = max(17, 2,070, 1,143, 519) = 2,070
+```
+
+**Bottleneck: compute-bound.** The 144 output lanes × 27 taps expose ~74.5k homogeneous ops — dominated by ~31k multiplies and ~20k `address_adds` from the deep input/kernel index expressions — so `compute = 2,070` binds, a 122× stretch over the ASAP depth of 17. Because the inline address arithmetic is charged as PE work (not memory traffic), it inflates the compute term, not the load/store terms; loads (1,143) and stores (519) trail well behind. Widening to `P ≈ 74,515/1,143 ≈ 65` PEs would shift the bottleneck onto the load lanes.

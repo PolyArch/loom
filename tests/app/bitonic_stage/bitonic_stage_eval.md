@@ -173,3 +173,36 @@ inplace_i --> st_p
 %% Critical path (11-cycle body): load pass → 1<<pass=distance → idx_in_block & distance → ==0 → outer_pred → partner add → partner<N → load inplace_p → cmp → should_swap → store
 %% Highlighted: band_pred→cmp_pred, gate cmp_pred→add_partner, add_partner→cmp_in_bounds, gate cmp_in_bounds→inplace_p, inplace_p→cmp_gt/lt, cmp_gt/lt→should_swap, gate should_swap→st, store edges
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, mods, bitops, compares, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable and memory-backed-scalar accesses. Every counted non-load/store op (adds, `address_adds`, divides, mods, bitops, compares, …) consumes a `P` slot. The op counts already reflect strict no-predication across the four nested gates, so the resource bound inherits the taken-arm-only work. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, N = 8, distance = 1).**
+- `CP = 11`
+- `A  = adds (13) + address_adds (0) + divs (8) + mods (8) + bitops (26) + compares (32) = 87`
+- `LD = 19`
+- `ST = 12`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(87 / 36) = 3
+load    = ceil(19 / 12) = 2
+store   = ceil(12 / 12) = 1
+cycles  = max(11, 3, 2, 1) = 11
+```
+
+**Bottleneck: dependency-bound.** The four serialized compare→body gates give a deep 11-cycle chain on very little total work (87 ops, 19 loads, 12 stores for `N = 8`), so every resource term stays at or below 3 and `CP = 11` binds. This kernel's depth comes from control-flow serialization, not resource pressure; widening the fabric does not help until `N` grows enough that the unrolled per-lane work saturates a memory or PE lane.

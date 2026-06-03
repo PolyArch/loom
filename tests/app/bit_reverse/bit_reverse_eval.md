@@ -145,3 +145,36 @@ graph TD
 The red chain is the result recurrence that sets `II_bit = 4`. The value
 recurrence (right side, 3 cycles) and the `bit` induction carry (not drawn,
 also 3 cycles) run in parallel and are slack against the result chain.
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth. This section adds a second lower bound for a CGRA with **separate** arithmetic and memory-issue resources (no shared or bidirectional memory port):
+
+- `P` — arithmetic PEs, homogeneous, one op/cycle each (divides, bitops, compares, transcendentals included).
+- `L` — load-issue lanes, one load/cycle each.
+- `S` — store-issue lanes, one store/cycle each.
+
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** the per-bit scalar round-trips of `result`/`value` and the induction-variable accesses. Every counted non-load/store op (bitops, adds, `address_adds`, compares, …) consumes a `P` slot. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+```
+compute = ceil(A / P)
+load    = ceil(LD / L)
+store   = ceil(ST / S)
+cycles  = max(CP, compute, load, store)
+```
+
+**Counts (from the op-count totals above, N = 256, BITS = 32).**
+- `CP = 133`
+- `A  = bitops (32,768) + adds (8,448) + address_adds (0) + compares (8,448) = 49,664`
+- `LD = 25,345`
+- `ST = 25,600`
+
+**6×6 example (`P = 36`, `L = 12`, `S = 12`).**
+```
+compute = ceil(49,664 / 36) = 1,380
+load    = ceil(25,345 / 12) = 2,113
+store   = ceil(25,600 / 12) = 2,134
+cycles  = max(133, 1,380, 2,113, 2,134) = 2,134
+```
+
+**Bottleneck: store-bound.** This is the sharpest gap between the two models. ASAP reports `CP = 133` because the 256 outer lanes are parallel and overlap fully — but that requires issuing all 256 lanes' work at once. With only 12 store lanes, the 25,600 scalar+array+induction stores alone need `store = 2,134` cycles (a 16× stretch over ASAP), just edging out `load = 2,113`. The per-bit `result`/`value`/`bit` store round-trips dominate `ST`, so this model exposes that the kernel is memory-issue-throughput limited, not latency limited. Even raising `P` to thousands leaves `cycles` pinned at the store bound until `S` is widened.
