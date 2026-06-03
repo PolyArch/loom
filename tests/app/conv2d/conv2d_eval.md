@@ -168,3 +168,26 @@ cycles  = max(17, 2,070, 1,143, 519) = 2,070
 ```
 
 **Bottleneck: compute-bound.** The 144 output lanes × 27 taps expose ~74.5k homogeneous ops — dominated by ~31k multiplies and ~20k `address_adds` from the deep input/kernel index expressions — so `compute = 2,070` binds, a ~122× stretch over the ASAP depth of 17. Because inline address arithmetic is charged as PE work (not memory traffic), it inflates the compute term, not the load/store terms; loads (1,143) and stores (519, including the dead zero-fill stores) trail well behind. Widening to `P ≈ 74,515/1,143 ≈ 65` PEs would shift the bottleneck onto the load lanes.
+
+<!-- BEGIN CGRA-SCHED:conv2d -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| conv2d | 17 | 74515 | 13716 | 6220 | 2070 | 2173 |
+
+- **scheduled_cycles** = 2173  (sum of ordered-region makespans)
+- **aggregate_cycles** = 2070  (the lower bound above, unchanged)
+- **gap_cycles** = 103  (scheduled − aggregate)
+- **gap_ratio** = 1.0498  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 2069 / 2069 / 33728
+- `L`: 1143 / 648 / 5928
+- `S`: 518 / 506 / 3204
+
+<!-- END CGRA-SCHED:conv2d -->

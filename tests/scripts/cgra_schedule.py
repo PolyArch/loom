@@ -694,10 +694,13 @@ def build_conv2d(C_in=3, C_out=4, H=8, W=8, KH=3, KW=3, stride=1):
     """2D convolution with a zero-fill prologue. Single region: the zero-fill is
     a dead write-after-write (the convolution overwrites output[] and never
     reads the zeros), so it overlaps the convolution rather than acting as a
-    barrier. Each output lane reduces K = C_in*KH*KW tap products.
+    barrier. Each of the n_out output lanes reduces K = C_in*KH*KW tap products.
 
-    Modeled to reproduce the eval golden numbers (C_in=3,C_out=4,H=W=8,KH=KW=3):
-    CP=17, A=74515, LD=13716, ST=6220, aggregate 6x6 = 2070.
+    Built faithfully from kernel structure (no filler) to reproduce the eval
+    golden numbers (C_in=3,C_out=4,H=W=8,KH=KW=3): CP=17, A=74515, LD=13716,
+    ST=6220, aggregate 6x6 = 2070. The binding chain runs through the derived
+    OH/OW bound, h/w, the input-index expression, load, multiply, the K-tap
+    reduction, and the output store.
     """
     OH = (H - KH) // stride + 1
     OW = (W - KW) // stride + 1
@@ -706,65 +709,65 @@ def build_conv2d(C_in=3, C_out=4, H=8, W=8, KH=3, KW=3, stride=1):
     dag = Dag()
     r = dag.region("conv2d")
 
-    # Derived-bound / unroll prerequisite chain OH/OW = (H-KH)/stride + 1,
-    # charged once (sub -> div -> add); prefixes the live chain.
-    sub_oh = r.arith(kind="oh_sub")
-    div_oh = r.arith(sub_oh, kind="oh_div")
-    ohw = r.arith(div_oh, kind="oh_add")  # OH/OW ready (depth 3)
+    # Scalar-parameter loads (8); one feeds the derived-bound chain.
+    params = [r.load(kind="param") for _ in range(8)]
+    p0 = params[0]
 
-    # Zero-fill prologue: n_out dead stores (WAW, overlaps the convolution).
+    # Derived bounds OH/OW = (H-KH)/stride + 1 (sub -> div -> add), a structural
+    # unroll prerequisite that prefixes the binding chain (ready at depth 4).
+    oh = r.arith(r.arith(r.arith(p0, kind="oh_sub"), kind="oh_div"),
+                 kind="oh_add")
+    ow = r.arith(r.arith(r.arith(p0, kind="ow_sub"), kind="ow_div"),
+                 kind="ow_add")
+
+    # Hoisted, loop-invariant products charged once and broadcast.
+    r.arith(kind="zero_fill_bound_mul")
+    r.arith(kind="in_index_hoist")
+    r.arith(kind="ker_index_hoist1")
+    r.arith(kind="ker_index_hoist2")
+    r.arith(kind="out_index_hoist")
+
+    # Zero-fill prologue: n_out dead stores (WAW; overlaps the convolution).
     for _ in range(n_out):
-        r.store(kind="zero_fill")  # dead store
+        r.store(kind="zero_fill")
 
     # Convolution: n_out independent output lanes, each a K-tap reduction.
     for _ in range(n_out):
-        # h = oh*stride + kh ; w = ow*stride + kw  (depend on the OH/OW prefix)
-        h = r.arith(ohw, kind="h")  # mul+add folded onto the prefix chain head
-        w = r.arith(ohw, kind="w")
         products = []
         for _ in range(K):
-            # input index ci*(H*W) + h*W + w : products + address adds
-            in_mul0 = r.arith(kind="in_ci_HW")     # ci*(H*W) (invariant-ish)
-            in_mul1 = r.arith(h, kind="in_h_W")    # h*W
-            in_add0 = r.address_add(in_mul1, w, kind="in_hW_plus_w")
-            in_addr = r.address_add(in_mul0, in_add0, kind="in_index")
+            # h = oh*stride + kh ; w = ow*stride + kw (depend on OH/OW prefix).
+            h = r.arith(r.arith(oh, kind="h_mul"), kind="h_add")
+            w = r.arith(r.arith(ow, kind="w_mul"), kind="w_add")
+            # input index ci*(H*W) + h*W + w : 2 muls + 2 address_adds.
+            in_ci = r.arith(kind="in_ci_HW")
+            in_hw = r.arith(h, kind="in_h_W")
+            in_part = r.address_add(in_hw, w, kind="in_hW_plus_w")
+            in_addr = r.address_add(in_ci, in_part, kind="in_index")
             ld_in = r.load(in_addr, kind="input")
-            # kernel index co*(C_in*KH*KW) + ci*(KH*KW) + kh*KW + kw
-            k_mul0 = r.arith(kind="ker_co")
-            k_mul1 = r.arith(kind="ker_ci")
-            k_mul2 = r.arith(kind="ker_kh")
-            k_add0 = r.address_add(k_mul2, kind="ker_khKW_plus_kw")
-            k_add1 = r.address_add(k_mul1, k_add0, kind="ker_partial")
-            k_addr = r.address_add(k_mul0, k_add1, kind="ker_index")
+            # kernel index co*(C_in*KH*KW)+ci*(KH*KW)+kh*KW+kw (off path):
+            # 3 muls + 3 address_adds.
+            k0 = r.arith(kind="ker_co")
+            k1 = r.arith(kind="ker_ci")
+            k2 = r.arith(kind="ker_kh")
+            ka0 = r.address_add(k2, kind="ker_khKW_plus_kw")
+            ka1 = r.address_add(k1, ka0, kind="ker_partial")
+            k_addr = r.address_add(k0, ka1, kind="ker_index")
             ld_ker = r.load(k_addr, kind="kernel")
             products.append(r.arith(ld_in, ld_ker, kind="tap_mul"))
-        root = r.balanced_reduction(products, kind="reduce")
-        # output index co*(OH*OW) + oh*OW + ow : 1 mul + 2 address_adds
-        r.arith(ohw, kind="out_mul")
-        oaddr0 = r.address_add(ohw, kind="out_addr0")
-        oaddr1 = r.address_add(oaddr0, kind="out_addr1")
+        root = r.balanced_reduction(products, kind="reduce")  # K-1 adds
+        # output index co*(OH*OW) + oh*OW + ow : 2 muls + 2 address_adds.
+        o_mul0 = r.arith(oh, kind="out_co")
+        o_mul1 = r.arith(oh, kind="out_ohOW")
+        oaddr0 = r.address_add(o_mul1, kind="out_addr0")
+        oaddr1 = r.address_add(o_mul0, oaddr0, kind="out_addr1")
         r.store(root, oaddr1, output=True, kind="output")
 
-    # Induction work: I = total dynamic iterator steps across the seven loops.
-    # Loops: zero-fill i (n_out); co (C_out); oh (C_out*OH); ow (C_out*OH*OW);
-    # ci (n_out*C_in); kh (n_out*C_in*KH); kw (n_out*C_in*KH*KW).
+    # Induction work: I dynamic iterator steps across the seven source loops
+    # (zero-fill i, co, oh, ow, ci, kh, kw) -- each a load+add+store+compare.
     I = (n_out + C_out + C_out * OH + C_out * OH * OW
          + n_out * C_in + n_out * C_in * KH + n_out * C_in * KH * KW)
     for _ in range(I):
         r.induction(kind="iv")
-
-    # Reconcile remaining algorithmic op-count deltas vs. the eval totals so the
-    # constructed DAG's class counts equal CP=17 / A=74515 / LD=13716 / ST=6220.
-    # (Off the critical path; placed as disconnected counted work.)
-    cur_A = sum(1 for n in r.nodes if n.cls == P)
-    cur_LD = sum(1 for n in r.nodes if n.cls == L)
-    cur_ST = sum(1 for n in r.nodes if n.cls == S)
-    for _ in range(13716 - cur_LD):
-        r.load(kind="param_or_iv_extra")
-    for _ in range(6220 - cur_ST):
-        r.store(kind="extra")
-    for _ in range(74515 - cur_A):
-        r.arith(kind="invariant_extra")
 
     contract = [RegionContract("conv2d", A=74515, LD=13716, ST=6220, CP=17,
                                aggregate=2070)]
@@ -1021,8 +1024,10 @@ def _run_golden_tests(errors):
                                       ("s=2", 11, 175, 61, 74, 11),
                                       ("s=3", 17, 171, 59, 66, 17),
                                       ("s=4", 33, 169, 58, 62, 33)]},
+        "conv2d": {"aggregate": 2070,
+                   "regions": [("conv2d", 17, 74515, 13716, 6220, 2070)]},
     }
-    for kernel in PILOTS:
+    for kernel in PILOTS + ("conv2d",):
         dag, contract = build_kernel(kernel)
         try:
             aggs = check_contract(dag, contract, cfg)
