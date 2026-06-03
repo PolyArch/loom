@@ -263,3 +263,13 @@ op counts and trip counts, which is unchanged.
 
 ## ASAP Model Notes
 Each *_eval.md file will have a header title "ASAP Model Notes". The text under this header is where I brainstorm how the performs. Do not edit the text directly under this header. Please point out any mistakes you see in that section so I can manually go over and fix them. You are free to edit the text in the rest of the file as you see fit. 
+
+## CGRA-Constrained Model
+When adding or updating CGRA-constrained eval sections, read
+`docs/spec-kernel-performance.md` first. Preserve the aggregate resource lower
+bound and, when modeling time-local resource pressure, also report the
+deterministic finite-resource schedule estimate. Report the resource
+configuration, aggregate cycles, scheduled cycles, gap cycles/ratio, and local
+P/L/S pressure summary. Do not call the finite-resource list-schedule estimate
+a lower bound; it is an estimate for the spec-defined scheduling policy.
+Continue to leave text directly under `ASAP Model Notes` untouched.
