@@ -142,27 +142,29 @@ The ASAP bound above assumes unlimited functional units and memory bandwidth. Th
 - `L` — load-issue lanes, one load/cycle each.
 - `S` — store-issue lanes, one store/cycle each.
 
-Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable accesses. Every counted non-load/store op consumes a `P` slot; in particular the **`address_adds` from the inline subscript arithmetic are PE work, not load/store traffic** — they count toward `A`. With `CP` the ASAP dependency bound (`total_cycles`), `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+Every counted load consumes an `L` slot and every counted store an `S` slot — **including** induction-variable accesses. Every counted non-load/store op consumes a `P` slot; in particular the **`address_adds` from the inline subscript arithmetic are PE work, not load/store traffic** — they count toward `A`. With `CP` the ASAP dependency bound, `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores, each phase's bound is:
 
 ```
 compute = ceil(A / P)
 load    = ceil(LD / L)
 store   = ceil(ST / S)
-cycles  = max(CP, compute, load, store)
+phase   = max(CP, compute, load, store)
 ```
 
-**Counts (from the op-count totals above; C_in = 3, C_out = 4, H = W = 8, KH = KW = 3).**
-- `CP = 17`
-- `A  = adds (17,454) + address_adds (19,728) + muls (31,397) + divs (2) + subs (2) + compares (5,932) = 74,515`
-- `LD = 13,716`
-- `ST = 6,220`
+**Two ordered phases.** The kernel runs a separate zero-fill loop (`for i: output[i] = 0`) *before* the convolution loop (`output[...] = sum`, an overwrite). Both write `output[]`, so the zero-fill must precede the convolution writes (a WAW ordering) and cannot be hidden behind the convolution under finite issue lanes. As with `fft_butterfly`'s barrier-ordered stages, the bound is the **sum** of each phase's `max(...)`, not one kernel-wide `max`. The op-count totals partition exactly across the two phases — the zero-fill loop owns its 144 zero stores plus its `i` induction; the convolution owns everything else:
+
+| phase | CP | A | LD | ST | compute=⌈A/36⌉ | load=⌈LD/12⌉ | store=⌈ST/12⌉ | phase cycles | binding |
+|-------|---:|---:|---:|---:|---:|---:|---:|---:|---------|
+| zero-fill   | 2  | 289    | 144    | 288   | 9     | 12    | 24  | **24**    | store |
+| convolution | 17 | 74,226 | 13,572 | 5,932 | 2,062 | 1,131 | 495 | **2,062** | compute |
+
+- zero-fill: `A = i++ adds (144) + i<144 compares (144) + zero-fill bound product (1) = 289`; `LD = i reads (144)`; `ST = zero stores (144) + i writes (144) = 288`.
+- convolution: `A = 74,515 − 289 = 74,226`; `LD = 13,716 − 144 = 13,572`; `ST = 6,220 − 288 = 5,932`. Partition check: `289 + 74,226 = 74,515`, `144 + 13,572 = 13,716`, `288 + 5,932 = 6,220` — all equal the eval's op-count totals.
 
 **6×6 example (`P = 36`, `L = 12`, `S = 12`).**
 ```
-compute = ceil(74,515 / 36) = 2,070
-load    = ceil(13,716 / 12) = 1,143
-store   = ceil(6,220 / 12)  = 519
-cycles  = max(17, 2,070, 1,143, 519) = 2,070
+cycles = 24 (zero-fill) + 2,062 (convolution) = 2,086
 ```
+(A naive single kernel-wide aggregate `max(17, ⌈74,515/36⌉, ⌈13,716/12⌉, ⌈6,220/12⌉) = max(17, 2,070, 1,143, 519) = 2,070` would *under*-count, because it lets the ordered zero-fill stores overlap the convolution phase.)
 
-**Bottleneck: compute-bound.** The 144 output lanes × 27 taps expose ~74.5k homogeneous ops — dominated by ~31k multiplies and ~20k `address_adds` from the deep input/kernel index expressions — so `compute = 2,070` binds, a 122× stretch over the ASAP depth of 17. Because the inline address arithmetic is charged as PE work (not memory traffic), it inflates the compute term, not the load/store terms; loads (1,143) and stores (519) trail well behind. Widening to `P ≈ 74,515/1,143 ≈ 65` PEs would shift the bottleneck onto the load lanes.
+**Bottleneck: convolution compute-bound, with a store-bound zero-fill floor.** The convolution phase dominates: its ~74k homogeneous ops — mostly ~31k multiplies and ~20k `address_adds` from the deep input/kernel index expressions — give `compute = 2,062` on 36 PEs (a ~121× stretch over the ASAP depth of 17). Because inline address arithmetic is charged as PE work (not memory traffic), it inflates the compute term, not the load/store terms; the convolution's loads (1,131) and stores (495) trail well behind. The ordered zero-fill adds a small store-bound floor of 24 (its 288 stores on 12 lanes), for `2,086` total. Widening to `P ≈ 74,226/1,131 ≈ 66` PEs would shift the convolution bottleneck onto its load lanes.
