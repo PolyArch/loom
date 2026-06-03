@@ -25,6 +25,7 @@ import argparse
 import heapq
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -1078,8 +1079,8 @@ def build_and_eval(kernel, cfg):
 
 
 def _run_drift_test(errors):
-    """Exercise apply_block / extract_block / check_eval without touching the
-    real eval files (operate on in-memory text)."""
+    """Exercise apply_block / extract_block without touching the real eval files
+    (operate on in-memory text)."""
     cfg = CONFIG_6x6
     dag, contract = build_kernel("axpy")
     check_contract(dag, contract, cfg)
@@ -1103,16 +1104,59 @@ def _run_drift_test(errors):
         errors.append("drift: tamper not detected")
 
 
+def _run_eval_check_tests(errors):
+    """Exercise the read-only eval drift checker (check_eval) against the
+    checked-in eval files (positive) and against tampered / blockless temp
+    copies (negative), without modifying any repository file."""
+    cfg = CONFIG_6x6
+    written = list(PILOTS) + ["conv2d"]
+    # Positive: every checked-in eval block matches its freshly computed block.
+    for kernel in written:
+        problems = check_eval(kernel, cfg)
+        if problems:
+            errors.append(f"eval-check: {kernel} unexpectedly drifted: "
+                          f"{problems}")
+    # Negative: drift and a missing block are both detected. Redirect the eval
+    # path to a temp copy (restored in finally) so no repo file is touched.
+    kernel = "axpy"
+    orig_path = EVAL_PATHS[kernel]
+    text = orig_path.read_text()
+    block = extract_block(text, kernel)
+    if block is None:
+        errors.append("eval-check: axpy eval has no block to tamper")
+        return
+    with tempfile.TemporaryDirectory() as td:
+        tampered_path = Path(td) / "tampered_eval.md"
+        tampered_path.write_text(
+            text.replace("**aggregate_cycles** = 4",
+                         "**aggregate_cycles** = 999"))
+        blockless_path = Path(td) / "blockless_eval.md"
+        blockless_path.write_text(text.replace(block, "stub body"))
+        try:
+            EVAL_PATHS[kernel] = tampered_path
+            problems = check_eval(kernel, cfg)
+            if not problems:
+                errors.append("eval-check: tampered block not flagged as drift")
+            EVAL_PATHS[kernel] = blockless_path
+            problems = check_eval(kernel, cfg)
+            if not any("no CGRA-SCHED block" in p for p in problems):
+                errors.append("eval-check: missing block not flagged")
+        finally:
+            EVAL_PATHS[kernel] = orig_path
+
+
 def run_self_tests() -> int:
     errors: list[str] = []
     _run_synthetic_tests(errors)
     _run_golden_tests(errors)
     _run_drift_test(errors)
+    _run_eval_check_tests(errors)
     if errors:
         for e in errors:
             print(f"  SELF-TEST FAIL: {e}")
         return 1
-    print("[PASS] cgra_schedule self-tests (synthetic + golden pilots + drift)")
+    print("[PASS] cgra_schedule self-tests "
+          "(synthetic + golden pilots + drift + eval-check)")
     return 0
 
 
