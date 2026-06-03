@@ -179,3 +179,26 @@ cycles  = max(11, 502, 903, 306) = 903
 ```
 
 **Bottleneck: load-bound.** ASAP collapses this kernel to `CP = 11` (outer `lag` parallel, inner sum tree-reduced), but that depends on issuing all 3,600 products' operand loads at once. Each product needs two array loads (`x[i]`, `x[i+lag]`) plus induction reads, so `LD = 10,834` dominates and `load = 903` sets the floor — above `compute = 502` and above `store = 306`. The store term is `⌈3,664 / 12⌉`, and `ST = 3,664` is almost entirely **induction-variable writes** (`i++` 3,600 + `lag++` 32 = 3,632) plus just 32 output stores (`output[lag]`); the accumulator collapses into the reduction tree, so it adds no accumulator stores — hence there is no per-product array-store term at all. Stores trail loads because every inner product issues two array loads but no array store, so `LD` outruns `ST` ~3:1; that load-heavy reduction shape is what makes loads the binding memory resource here.
+
+<!-- BEGIN CGRA-SCHED:autocorrelation -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| autocorrelation | 11 | 18064 | 10834 | 3664 | 903 | 906 |
+
+- **scheduled_cycles** = 906  (sum of ordered-region makespans)
+- **aggregate_cycles** = 903  (the lower bound above, unchanged)
+- **gap_cycles** = 3  (scheduled − aggregate)
+- **gap_ratio** = 1.0033  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 151 / 149 / 3596
+- `L`: 902 / 902 / 9574
+- `S`: 303 / 303 / 15
+
+<!-- END CGRA-SCHED:autocorrelation -->

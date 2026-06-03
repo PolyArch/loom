@@ -91,3 +91,26 @@ cycles  = max(4, 1, 3, 2) = 4
 ```
 
 **Bottleneck: dependency-bound.** `CP = 4` exceeds every resource term, so even a 6×6 fabric runs this tiny kernel at its ASAP depth — the elementwise work is far too small to saturate 36 PEs or 12+12 memory lanes. The kernel only becomes load-bound once `N` grows enough that `ceil(2N + overhead / 12)` overtakes the constant 4-cycle chain.
+
+<!-- BEGIN CGRA-SCHED:axpy -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| axpy | 4 | 32 | 26 | 16 | 4 | 5 |
+
+- **scheduled_cycles** = 5  (sum of ordered-region makespans)
+- **aggregate_cycles** = 4  (the lower bound above, unchanged)
+- **gap_cycles** = 1  (scheduled − aggregate)
+- **gap_ratio** = 1.25  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 2 / 2 / 14
+- `S`: 1 / 1 / 2
+
+<!-- END CGRA-SCHED:axpy -->

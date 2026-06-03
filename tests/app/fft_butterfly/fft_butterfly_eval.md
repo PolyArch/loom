@@ -468,3 +468,31 @@ cycles = 5 (copy) + 8 (s=1) + 11 (s=2) + 17 (s=3) + 33 (s=4) = 74
 (For reference, the dependency-only phase sum is `2 + 8 + 11 + 17 + 33 = 71` — the existing ASAP `total_cycles`. A naive kernel-wide aggregate `max(CP, ⌈731/36⌉, ⌈292/12⌉, ⌈342/12⌉) = max(71, 21, 25, 29) = 71` would *under*-count, because the stage barriers forbid overlapping the phases.)
 
 **Bottleneck: dependency-bound, with a store-bound copy phase.** The stage chain (twiddle recurrence + inter-stage RAW barriers) supplies 69 of the 74 cycles, and the 8-deep serial twiddle rotation makes stage 4 alone cost 33. Finite resources add just +3 over ASAP: the copy phase is store-bound (`store = 5 > CP = 2`, because the 16-point copy plus its induction writes need ≥ 5 store-issue cycles on 12 lanes), and stage 1's store bound (8) merely ties its dependency depth. Widening `P`/`L`/`S` cannot shrink the stage recurrences, so the kernel stays latency-limited.
+
+<!-- BEGIN CGRA-SCHED:fft_butterfly -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| copy | 2 | 33 | 49 | 50 | 5 | 6 |
+| s=1 | 8 | 183 | 65 | 90 | 8 | 10 |
+| s=2 | 11 | 175 | 61 | 74 | 11 | 12 |
+| s=3 | 17 | 171 | 59 | 66 | 17 | 17 |
+| s=4 | 33 | 169 | 58 | 62 | 33 | 33 |
+| **total** |  |  |  |  | **74** | **78** |
+
+- **scheduled_cycles** = 78  (sum of ordered-region makespans)
+- **aggregate_cycles** = 74  (the lower bound above, unchanged)
+- **gap_cycles** = 4  (scheduled − aggregate)
+- **gap_ratio** = 1.0541  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 1 / 1 / 0
+- `L`: 11 / 5 / 37
+- `S`: 15 / 4 / 15
+
+<!-- END CGRA-SCHED:fft_butterfly -->
