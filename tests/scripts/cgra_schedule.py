@@ -472,9 +472,26 @@ def render_block(result: KernelResult) -> str:
         lines.append(
             f"- `{c}`: {pr.saturated_cycles} / {pr.longest_run} / "
             f"{pr.peak_ready_backlog}")
+    note = KERNEL_NOTES.get(result.kernel)
+    if note:
+        lines.append("")
+        lines.append(note)
     lines.append("")
     lines.append(marker_end(result.kernel))
     return "\n".join(lines)
+
+
+# Per-kernel reconciliation notes appended inside the block (deterministic, so
+# the read-only --check still matches byte-for-byte).
+KERNEL_NOTES = {
+    "fft_butterfly": (
+        "> The `copy` row carries the three kernel-once residual ops — the `N` "
+        "load, the `log2f(N)` transcendental, and the `s`-loop init store — "
+        "that overlap the copy phase, so its `A`/`LD`/`ST` is the documented "
+        "copy phase (`32`/`48`/`49`) plus those three. This leaves the copy "
+        "aggregate at `5` and the stage-sum aggregate at `74`, matching the "
+        "section above."),
+}
 
 
 def _fmt_ratio(value: float) -> str:

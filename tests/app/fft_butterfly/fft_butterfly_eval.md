@@ -495,4 +495,6 @@ cycles = 5 (copy) + 8 (s=1) + 11 (s=2) + 17 (s=3) + 33 (s=4) = 74
 - `L`: 11 / 5 / 37
 - `S`: 15 / 4 / 15
 
+> The `copy` row carries the three kernel-once residual ops — the `N` load, the `log2f(N)` transcendental, and the `s`-loop init store — that overlap the copy phase, so its `A`/`LD`/`ST` is the documented copy phase (`32`/`48`/`49`) plus those three. This leaves the copy aggregate at `5` and the stage-sum aggregate at `74`, matching the section above.
+
 <!-- END CGRA-SCHED:fft_butterfly -->
