@@ -444,9 +444,23 @@ cover aggregate downstream ranges and are not terminal-overlap targets.
 
 ## Coherence and Consistency
 
-Every `fabric.system` must declare a system memory consistency model.
-Domain-level or node-level overrides may be represented as metadata, but
-they do not replace the required system-level declaration.
+Every `fabric.system` must declare a system memory consistency model
+through a required `memory_model` field. The baseline enum is:
+
+* `sequential`
+* `tso`
+* `release_acquire`
+* `weak`
+* `custom`
+
+`custom` must provide a `model_name` string or a non-empty `params`
+dictionary. The verifier checks that `memory_model` exists and uses a
+valid enum value. Detailed ordering semantics are consumed by
+simulators, lowering, and backend models; the system ADG verifier does
+not implement a full memory-model proof system.
+
+Domain-level or node-level consistency overrides may be represented as
+metadata, but they do not replace the required system-level declaration.
 
 `fabric.coherence_domain` defines cache coherence over memory-capable
 ports. Membership references node port endpoints, not whole nodes and
@@ -552,6 +566,8 @@ metadata, but connectivity must be emitted as links.
 The target verifier enforces:
 
 * each `fabric.system` symbol is unique in its module;
+* each `fabric.system` declares a valid `memory_model`;
+* `memory_model = custom` carries a model name or non-empty params;
 * node symbols are unique within the system;
 * external port symbols are unique within the system;
 * each external port owns exactly one complete `#fabric.port`;
