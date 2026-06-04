@@ -149,9 +149,77 @@ output request channels such as `aw`, `w`, and `ar`, and input response
 channels such as `b` and `r`. The corresponding subordinate port has the
 opposite directions.
 
-The first target form stores port and channel declarations as node
-attributes. Dedicated child ops may be introduced later only if the
-attribute form becomes too hard to verify or transform.
+The first target form stores port and channel declarations as structured
+attributes on `fabric.node` and `fabric.external_port`. The target does
+not introduce `fabric.port` or `fabric.channel` child ops.
+
+The canonical attribute family is:
+
+* `#fabric.port<...>` for a protocol interface bundle.
+* `#fabric.channel<...>` for one directed channel inside a port.
+* `#fabric.endpoint<...>` for a linkable channel endpoint.
+
+A `#fabric.port` attribute contains:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `name` | yes | Unique port name within the owning node. |
+| `protocol` | yes | Built-in protocol enum or `custom`. |
+| `role` | yes | `manager` or `subordinate`. |
+| `channels` | yes | Ordered array of `#fabric.channel` attributes. |
+| `addr_space` | no | Physical address-space identifier for memory-capable ports. |
+| `addr_ranges` | no | Array of physical address ranges served or covered by this port. |
+| `optional` | no | Whether the entire port may remain unconnected. Defaults to `false`. |
+| `params` | no | Protocol- or node-specific dictionary. |
+
+A `#fabric.channel` attribute contains:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `name` | yes | Unique channel name within the owning port. |
+| `direction` | yes | `input` or `output`, from the owning port's perspective. |
+| `optional` | no | Whether this channel may remain unconnected. Defaults to `false`. |
+| `default` | no | Default value for an unconnected optional input. Defaults to zero. |
+| `params` | no | Protocol-specific dictionary. |
+
+Node endpoints and external endpoints use distinct forms so that system
+boundary exposure cannot be confused with an internal node channel:
+
+```mlir
+#fabric.endpoint<node = @acc0, port = "mem", channel = "aw">
+#fabric.endpoint<external = @host_mem, channel = "aw">
+```
+
+The node endpoint's symbol resolves to a `fabric.node` in the enclosing
+`fabric.system`. The external endpoint's symbol resolves to a
+`fabric.external_port` in the same system.
+
+A representative node declaration is:
+
+```mlir
+fabric.node @acc0 kind = #fabric.node_kind<acc_core>
+  attributes {
+    spatial = @spatial0,
+    scalar = #fabric.scalar_core<kind = "rv32im">,
+    ports = [
+      #fabric.port<
+        name = "mem",
+        protocol = axi4_mm,
+        role = manager,
+        channels = [
+          #fabric.channel<name = "aw", direction = output>,
+          #fabric.channel<name = "w",  direction = output>,
+          #fabric.channel<name = "b",  direction = input>,
+          #fabric.channel<name = "ar", direction = output>,
+          #fabric.channel<name = "r",  direction = input>
+        ]>
+    ]
+  }
+```
+
+The `fabric.system` target does not use child-op port or channel
+declarations. Nodes and external ports own protocol ports, ports own
+directed channels, and links connect explicit channel endpoints.
 
 ## Protocols
 
@@ -177,15 +245,15 @@ the protocol spec explicitly defines a smaller variant.
 
 `fabric.link` is the only canonical connectivity op. It connects one
 directed output channel endpoint to one directed input channel endpoint.
+The canonical endpoint representation is `#fabric.endpoint<...>`.
 
-A channel endpoint has this logical shape:
+A representative link declaration is:
 
-```text
-node-symbol : port-name . channel-name
+```mlir
+fabric.link
+  src = #fabric.endpoint<node = @host0, port = "mem", channel = "aw">
+  dst = #fabric.endpoint<node = @l2,    port = "up",  channel = "aw">
 ```
-
-System boundary endpoints use the system external port symbol instead
-of a node symbol.
 
 Every link is point-to-point:
 
