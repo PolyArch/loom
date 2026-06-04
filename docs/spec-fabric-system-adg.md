@@ -792,9 +792,10 @@ visualization metadata without changing any hardware or mapping result.
 
 `fabric.system` does not contain software-to-hardware placement or
 routing decisions. Mapping is a separate artifact specified in
-`docs/spec-mapping-artifact.md`. It references a software dataflow
-graph, a selected `fabric.system`, and the hardware resources chosen by
-PnR.
+`docs/spec-mapping-artifact.md`, and the PnR tool that produces it is
+specified in `docs/spec-pnr.md`. The artifact references a software
+dataflow graph, a selected `fabric.system`, and the hardware resources
+chosen by PnR.
 
 System nodes, links, domains, ports, and channels are hardware facts.
 They remain valid whether no workload is mapped, one workload is mapped,

@@ -198,7 +198,7 @@ pressure, graph-result traffic, or expected reuse.
 `dataflow.thread.fence`, ScalarCore-only calls, illegal graph-body
 ops, and parent terminators are required cuts in the baseline L2
 policy. `dataflow.thread.launch` ops deserve a stronger rule:
-per `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2,
+per `docs/spec-compiler-part-3-dfg.md` section 3 Constitutional Rule 2,
 a thread definition's body must not directly contain both a
 `dataflow.graph.launch` and a `dataflow.thread.launch` at the
 same thread-body placement level. Therefore, when L2 graph placement encounters
@@ -268,3 +268,6 @@ baseline tests remain stable.
 * `docs/spec-compiler-part-3-impl.md` -- Part 3 baseline L2 policy.
 * `docs/spec-fabric-reconfigurable-op.md` and
   `docs/spec-generalize-subgraphs-to-fu.md` -- fabric-side L3 context.
+* `docs/spec-pnr.md` and `docs/spec-mapping-artifact.md` -- physical
+  software-to-hardware binding after software-side placement boundaries
+  are available.

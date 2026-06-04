@@ -2,8 +2,9 @@
 
 This document specifies the target software-to-hardware mapping
 artifact used by Loom PnR, CGRA-sim, RTL-oriented lowering, hardware
-estimation, and DSE. The mapping artifact is independent from both
-software dataflow IR and hardware Fabric ADG.
+estimation, and DSE. PnR is specified in `docs/spec-pnr.md` and is the
+primary producer of mapping artifacts. The mapping artifact is
+independent from both software dataflow IR and hardware Fabric ADG.
 
 ## Purpose
 
@@ -12,6 +13,10 @@ description and produces a concrete mapping candidate. That candidate
 must be represented as a standalone artifact rather than being written
 back into `dataflow.graph`, `dataflow.thread`, `dataflow.subgraph`, or
 `fabric.system`.
+
+The artifact records the chosen mapping. It does not record PnR
+internal search queues, rejected internal candidates, or mutable solver
+state. DSE-level comparisons belong in a mapping-set manifest.
 
 The artifact is the source of truth for:
 

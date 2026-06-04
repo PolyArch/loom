@@ -188,13 +188,22 @@ Loom needs two simulation levels:
   resource limits. Its results are expected to be optimistic.
 * CGRA-sim simulates mapped software on a concrete hardware graph with
   resource, routing, memory, buffering, and temporal-sharing limits.
+  Despite the name, CGRA-sim is hardware-aware simulation for mapped
+  Loom workloads, not only simulation of a `fabric.module` or
+  SpatialCore.
 
 PnR connects the two sides. It takes software dataflow IR plus hardware
 fabric/ADG IR and emits the independent mapping artifact specified in
-`docs/spec-mapping-artifact.md`. The artifact records placed software
-nodes, routed edges, memory bindings, resource sharing, buffers,
-schedule slots, temporal tags, diagnostics, and metrics required by the
-selected hardware mapping.
+`docs/spec-mapping-artifact.md`; the PnR tool contract is specified in
+`docs/spec-pnr.md`. The artifact records placed software nodes, routed
+edges, memory bindings, resource sharing, buffers, schedule slots,
+temporal tags, diagnostics, and metrics required by the selected
+hardware mapping.
+
+PnR chooses and records a mapping. CGRA-sim consumes that mapping plus
+runtime inputs and reports hardware-aware behavior. CGRA-sim may reject
+an inconsistent mapping artifact, but it must not choose placements,
+routes, schedules, or bindings.
 
 Mapping artifacts and Fabric ADG may carry optional visualization
 metadata. Visualization metadata helps GUI tools draw regular
