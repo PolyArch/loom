@@ -10,17 +10,14 @@ program regions should run on AccCores.
 The canonical IR sources of the existing `dataflow` and `fabric` dialects
 are `include/Dataflow/IR/*.td` and `include/Fabric/IR/*.td`; the verifier
 implementations live in `lib/Dataflow/IR/*.cpp` and `lib/Fabric/IR/*.cpp`
-respectively. This spec modifies the `dataflow` dialect with
-additive changes (new ops, new attributes, new types) plus two
-deliberately source-incompatible changes: (a) `dataflow.thread`
-becomes a Symbol-bearing, function-like callable (the regional
-"define-and-execute" form is replaced by a def + new
-`dataflow.thread.launch` pair, see §5.4), and (b) `dataflow.graph`
-becomes a Symbol-bearing, function-like callable as well (regional
-form is replaced by a def + new `dataflow.graph.launch` pair, with
-ctrl_in / done_out exposed in the def's `function_type`, see §5.5).
-It consumes the temporary `loom.acc_region` op produced by Part 2,
-and introduces a new pass library under `lib/Frontend/`.
+respectively. The target Part 3 dataflow surface uses module-scope,
+Symbol-bearing, function-like definitions for both `dataflow.thread`
+and `dataflow.graph`. Execution is materialized only by
+`dataflow.thread.launch` and `dataflow.graph.launch`. Graph control
+ports are explicit: `ctrl_in` and `done_out` are part of the
+`dataflow.graph` definition's `function_type` and of every launch
+site. Part 3 consumes the temporary `loom.acc_region` op produced by
+Part 2, and introduces a new pass library under `lib/Frontend/`.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
 `docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
@@ -539,8 +536,7 @@ op (`dataflow.thread`, §5.4.1) and a **launcher** op
 (`dataflow.thread.launch`, §5.4.2). The definition op is a Symbol-
 bearing, function-like, module-scope callable; the launcher op
 references the definition by symbol and materializes one async
-launch instance per use site. There is no anonymous / inline form
-of `dataflow.thread`; every executable thread in the IR is a
+launch instance per use site. Every executable thread in the IR is a
 def + at least one launch. This split mirrors `gpu.func` /
 `gpu.launch_func`.
 
@@ -925,15 +921,14 @@ the SCF flattening templates in this document.
 ### 5.5 Modifications to Existing Ops
 
 The graph half of the front-end IR is split into a **definition**
-op (`dataflow.graph`, §5.5.1, modified from today's regional op)
-and a new **launcher** op (`dataflow.graph.launch`, §5.5.2). The
-definition op is a Symbol-bearing, function-like, module-scope
-callable; the launcher op references the definition by symbol from
-inside a `dataflow.thread` definition's body, supplies a per-launch
+op (`dataflow.graph`, §5.5.1) and a **launcher** op
+(`dataflow.graph.launch`, §5.5.2). The definition op is a
+Symbol-bearing, function-like, module-scope callable; the launcher
+op references the definition by symbol from inside a
+`dataflow.thread` definition's body, supplies a per-launch
 `ctrl_in : none` operand and user data operands, and produces a
-per-launch `done_out : none` result and user data results. There is
-no anonymous / inline form of `dataflow.graph`; every executable
-graph in the IR is a def + at least one launch.
+per-launch `done_out : none` result and user data results. Every
+executable graph in the IR is a def + at least one launch.
 
 #### 5.5.1 `dataflow.graph` (definition)
 
@@ -991,24 +986,17 @@ traits:
   control ports, but the generic form must expose the leading
   `none` slots. No analysis may depend on a hidden compiler-global
   graph start or completion state.
-* All existing `dataflow.graph` lit tests are migrated in the same
-  change as this spec: each test (a) lifts the regional graph body
-  to a module-scope `dataflow.graph` definition with a deterministic
-  symbol name, (b) replaces the original regional op with a
-  `dataflow.graph.launch` referencing that symbol, and (c) carries
-  the explicit control operand, block argument, result, and
-  `done_out` plumbing through the new shape.
-* C++ builder API breaking change. Every existing
-  `Dataflow_GraphOp::build(...)` overload is replaced by a
-  function-like builder that accepts `(StringRef sym_name,
-  FunctionType functionType, ArrayRef<NamedAttribute> attrs)` and
-  optional `arg_attrs` / `res_attrs` arrays. Callers no longer
-  supply a region inline; the body is added via the standard
-  `FunctionOpInterface` body-construction path (with the entry
-  block created carrying the function-type-prefixed `none` block
-  argument and the user-data block arguments). This is a source-
-  incompatible change to the C++ surface and is intentional: the
-  op is now a callable, not a region executor.
+* `dataflow.graph` lit tests use module-scope graph definitions with
+  deterministic symbol names and `dataflow.graph.launch` use sites.
+  The tests carry the explicit control operand, block argument,
+  result, and `done_out` plumbing through the def + launch shape.
+* C++ builders construct `dataflow.graph` as a function-like
+  definition from `(StringRef sym_name, FunctionType functionType,
+  ArrayRef<NamedAttribute> attrs)` plus optional `arg_attrs` /
+  `res_attrs` arrays. The body is added via the standard
+  `FunctionOpInterface` body-construction path, with the entry block
+  carrying the leading `none` `ctrl_in` block argument and the
+  user-data block arguments.
 * The op declares `RecursiveMemoryEffects` so module-scope walkers
   can observe per-callable effects without re-implementing the
   per-launch projection. This is **not** the primary effect surface
@@ -1182,8 +1170,7 @@ dataflow.graph @<deterministic_sym>
 }
 
 // At the cut site inside the enclosing dataflow.thread definition's
-// body (replaces what older spec drafts wrote as an inline
-// `dataflow.graph { ... }`):
+// body:
 %done, <user results> = dataflow.graph.launch @<deterministic_sym>
     (%ctrl, <user operands>) : (none, <input types>) -> (none, <result types>)
 ```

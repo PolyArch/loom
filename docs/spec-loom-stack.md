@@ -127,10 +127,11 @@ x/y axis, mesh coordinate, PE coordinate, route, or topology statement.
 Physical core selection, reuse order, routing, and resource arbitration
 belong to binding/PnR artifacts.
 
-`dataflow.graph` represents SpatialCore software dataflow. The dialect
-must use one canonical graph-definition surface for new compiler output.
-Any remaining regional graph surface is compatibility or testing
-infrastructure unless a later accepted design explicitly promotes it.
+`dataflow.graph` represents SpatialCore software dataflow. The target
+form is a symbol-bearing, module-scope callable definition. It executes
+only through `dataflow.graph.launch` inside an innermost executable
+thread body. The target dataflow dialect has no separate
+`dataflow.graph.func` surface.
 
 ## Hardware Representation
 

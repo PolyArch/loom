@@ -732,17 +732,12 @@ The lit-test layout grows three new directories:
   hardware execution; the assertion is structural well-formedness
   and round-trip stability.
 
-In addition, the existing `test/dataflow/unit/graph/` and
-`test/dataflow/unit/subgraph/` lit tests are migrated to the new
-def + launch shape in the same change as the IR change: each test
-(a) lifts the regional graph body to a module-scope
-`dataflow.graph` definition with a deterministic symbol name,
-(b) replaces the original regional op with a `dataflow.graph.launch`
-referencing that symbol, and (c) preserves the explicit ctrl/done
-plumbing on both the def's `function_type` (leading `none` slots)
-and the launch (per-instance `ctrl_in` / `done_out`). Any test
-that relies on the old regional graph form is updated to use the
-new shape, and the migration is explicit in the diff.
+In addition, `test/dataflow/unit/graph/` and
+`test/dataflow/unit/subgraph/` lit tests use the target def + launch
+shape: module-scope `dataflow.graph` definitions with deterministic
+symbol names, `dataflow.graph.launch` use sites, and explicit
+ctrl/done plumbing on both the def's `function_type` (leading `none`
+slots) and each launch (per-instance `ctrl_in` / `done_out`).
 
 Baseline L2 placement tests pin only the baseline policy output. A
 future cost-aware graph-placement policy must introduce its own fixtures
@@ -878,29 +873,22 @@ following hold simultaneously:
   through an explicit pass option, and add option-specific tests. The
   baseline source-order greedy policy remains the default reference
   policy.
-* `Dataflow_GraphOp::build(...)` C++ surface change. The op is now
-  a function-like definition (per
-  `docs/spec-compiler-part-3-dfg.md` §5.5.1). Every existing
-  regional-form `build(...)` overload is replaced by a function-
-  like builder accepting `(StringRef sym_name, FunctionType
-  functionType, ArrayRef<NamedAttribute> attrs)` and optional
-  `arg_attrs` / `res_attrs` arrays. Callers no longer construct an
-  inline body region; the body is added through the standard
-  `FunctionOpInterface` body-construction path, with the entry
-  block carrying the leading `none` ctrl_in block argument and the
-  user-data block arguments matching `function_type.inputs`. This
-  is intentionally source-incompatible: the op is now a callable,
-  not a region executor. Construction of per-launch sites uses the
-  separate `Dataflow_GraphLaunchOp` builders.
-* `Dataflow_ThreadOp::build(...)` C++ surface change. The op is
-  now a function-like definition (per
-  `docs/spec-compiler-part-3-dfg.md` §5.4.1). The previous regional
-  builder is replaced by a function-like builder analogous to the
-  graph builder above, with additional grid attributes
-  (`staticGrid*`, `mapping`) and entry-block layout
+* `Dataflow_GraphOp::build(...)` constructs a function-like
+  definition (per `docs/spec-compiler-part-3-dfg.md` §5.5.1). The
+  builder accepts `(StringRef sym_name, FunctionType functionType,
+  ArrayRef<NamedAttribute> attrs)` plus optional `arg_attrs` /
+  `res_attrs` arrays. The body is added through the standard
+  `FunctionOpInterface` body-construction path, with the entry block
+  carrying the leading `none` ctrl_in block argument and the
+  user-data block arguments matching `function_type.inputs`.
+  Construction of per-launch sites uses the separate
+  `Dataflow_GraphLaunchOp` builders.
+* `Dataflow_ThreadOp::build(...)` constructs a function-like
+  definition (per `docs/spec-compiler-part-3-dfg.md` §5.4.1). The
+  builder is analogous to the graph builder above, with additional
+  grid attributes (`staticGrid*`, `mapping`) and entry-block layout
   `(args_*, thread_ctrl, iv_*)`. Per-launch sites use the separate
-  `Dataflow_ThreadLaunchOp` builders. This is intentionally source-
-  incompatible.
+  `Dataflow_ThreadLaunchOp` builders.
 
 ## 5. References
 
