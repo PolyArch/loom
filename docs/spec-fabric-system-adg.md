@@ -178,6 +178,11 @@ A `#fabric.port` attribute contains:
 | `optional` | no | Whether the entire port may remain unconnected. Defaults to `false`. |
 | `params` | no | Protocol- or node-specific dictionary. |
 
+Memory capability is derived from the port's protocol, role, and
+protocol-specific params. `addr_space` and `addr_ranges` may appear only
+on memory-capable ports. Their presence does not make a port
+memory-capable by itself.
+
 A `#fabric.channel` attribute contains:
 
 | Field | Required | Meaning |
@@ -243,7 +248,25 @@ The baseline protocol enum includes:
 
 Built-in protocols define required channel sets and channel directions
 for each role. `custom` requires an explicit protocol name, channel set,
-channel directions, and any required params.
+channel directions, memory-capability declaration, and any required
+params.
+
+Memory-capability rules:
+
+| Protocol | Role | Memory-capable rule |
+|----------|------|---------------------|
+| `axi4_mm` | `manager`, `subordinate` | always memory-capable |
+| `axi4_lite` | `manager`, `subordinate` | always memory-capable |
+| `dma` | `manager`, `subordinate` | always memory-capable |
+| `csr` | `manager`, `subordinate` | memory-capable only when `params.memory_capable = true` |
+| `stream` | any | never memory-capable |
+| `interrupt` | any | never memory-capable |
+| `custom` | any | must declare `params.memory_capable = true` or `false` |
+
+`csr` defaults to not memory-capable because many CSR links are control
+interfaces rather than addressable memory ports. A memory-mapped CSR or
+MMIO control port sets `params.memory_capable = true` and then follows
+the same address-space and range rules as other memory-capable ports.
 
 For AXI4-MM, the canonical channel set is `aw`, `w`, `b`, `ar`, and
 `r`. A complete built-in port must declare every required channel unless
@@ -576,6 +599,9 @@ The target verifier enforces:
 * channel names are unique within each port;
 * built-in protocol and role imply the required channel set and channel
   directions;
+* port memory capability is derived from protocol, role, and params;
+* `custom` ports declare `params.memory_capable`;
+* `addr_space` and `addr_ranges` appear only on memory-capable ports;
 * each link source endpoint exists and is an output channel;
 * each link destination endpoint exists and is an input channel;
 * absent link protocol is inferred from both endpoint ports;
