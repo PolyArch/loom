@@ -332,13 +332,85 @@ The baseline protocol enum includes:
 * `csr`
 * `dma`
 * `interrupt`
+* `packet`
 * `stream`
 * `custom`
 
-Built-in protocols define required channel sets and channel directions
-for each role. `custom` requires an explicit protocol name, channel set,
-channel directions, memory-capability declaration, and any required
-params.
+Built-in protocols define required channel sets, channel directions,
+minimal required params, transaction-flow classification, and memory
+capability for each role. They do not define a complete bus
+implementation. Payload details such as AXI burst fields, protection
+bits, response bits, user fields, or packet header formats are channel
+payload metadata carried by the protocol params.
+
+The verifier treats built-in protocol schemas as closed over channel
+names. A built-in port may declare only the required channels and the
+optional channels allowed by that protocol schema. Unknown built-in
+channel names are illegal. Use `custom` for protocol extensions that
+need different channel names.
+
+### Built-in Protocol Schemas
+
+Channel directions are from the owning port's perspective.
+
+| Protocol | Role | Required channels | Conditionally required channels | Required params | Transaction-flow side |
+|----------|------|-------------------|---------------------------------|-----------------|-----------------------|
+| `axi4_mm` | `manager` | `aw:output`, `w:output`, `b:input`, `ar:output`, `r:input` | none | `addr_width`, `data_width` | output-side |
+| `axi4_mm` | `subordinate` | `aw:input`, `w:input`, `b:output`, `ar:input`, `r:output` | none | `addr_width`, `data_width` | input-side |
+| `axi4_lite` | `manager` | `aw:output`, `w:output`, `b:input`, `ar:output`, `r:input` | none | `addr_width`, `data_width` | output-side |
+| `axi4_lite` | `subordinate` | `aw:input`, `w:input`, `b:output`, `ar:input`, `r:output` | none | `addr_width`, `data_width` | input-side |
+| `csr` | `manager` | `req:output`, `resp:input` | none | `addr_width`, `data_width` | output-side |
+| `csr` | `subordinate` | `req:input`, `resp:output` | none | `addr_width`, `data_width` | input-side |
+| `dma` | `manager` | `cmd:output`, `status:input` | none | `addr_width`, `length_width` | output-side |
+| `dma` | `subordinate` | `cmd:input`, `status:output` | none | `addr_width`, `length_width` | input-side |
+| `interrupt` | `manager` | `irq:output` | none | none | output-side |
+| `interrupt` | `subordinate` | `irq:input` | none | none | input-side |
+| `packet` | `manager` | `flit:output` | `credit:input` when `params.flow_control = credit` | `flit_width` | output-side |
+| `packet` | `subordinate` | `flit:input` | `credit:output` when `params.flow_control = credit` | `flit_width` | input-side |
+| `stream` | `manager` | `data:output` | `ready:input` when `params.flow_control = ready_valid` | `data_width` | output-side |
+| `stream` | `subordinate` | `data:input` | `ready:output` when `params.flow_control = ready_valid` | `data_width` | input-side |
+
+Full-duplex traffic is expressed by two directed protocol ports or by
+two directed channel-link sets. A single `stream` or `packet` port is a
+single transaction-flow direction.
+
+`dma` is a descriptor-level memory movement protocol. It is
+memory-capable because its commands name physical addresses and lengths.
+The actual memory-beat interfaces of a DMA engine are still represented
+as separate memory-capable ports, such as `axi4_mm`, `axi4_lite`, or
+custom memory ports.
+
+Protocol params have these baseline verifier rules. Params listed as
+required in the protocol schema must be present; optional params are
+checked only when present, except where a default is specified.
+
+| Param | Rule |
+|-------|------|
+| `addr_width` | Positive address width in bits. |
+| `data_width` | Positive data width in bits and a multiple of 8. |
+| `length_width` | Positive transfer-length width in bits. |
+| `flit_width` | Positive packet flit width in bits. |
+| `flow_control` | For `stream`, one of `none` or `ready_valid`; for `packet`, one of `none` or `credit`. |
+| `protocol_name` | Non-empty stable identifier for `custom` protocol semantics. |
+
+`flow_control` defaults to `none` when absent. If a port declares
+`flow_control = ready_valid`, both sides of a connected `stream` port
+must expose the `ready` channel. If a port declares
+`flow_control = credit`, both sides of a connected `packet` port must
+expose the `credit` channel.
+
+`axi4_mm` may declare optional `id_width` and `user_width` params. If
+present, they must be non-negative integers. `axi4_lite` must not
+declare `id_width` because AXI4-Lite has no transaction IDs in the
+target schema. Both AXI schemas model their five channel groups as
+atomic directed channels; individual signal fields live in payload
+metadata, not in separate ADG channels.
+
+`custom` requires `params.protocol_name`, explicit channel names,
+explicit channel directions, explicit transaction-flow classification,
+explicit memory capability, and any custom-required params. A `custom`
+protocol is a primitive extension point with a complete declared schema;
+it is not an escape hatch for implicit or partially specified hardware.
 
 Memory-capability rules:
 
@@ -350,6 +422,7 @@ Memory-capability rules:
 | `csr` | `manager`, `subordinate` | memory-capable only when `params.memory_capable = true` |
 | `stream` | any | never memory-capable |
 | `interrupt` | any | never memory-capable |
+| `packet` | any | never memory-capable |
 | `custom` | any | must declare `params.memory_capable = true` or `false` |
 
 `csr` defaults to not memory-capable because many CSR links are control
@@ -357,9 +430,10 @@ interfaces rather than addressable memory ports. A memory-mapped CSR or
 MMIO control port sets `params.memory_capable = true` and then follows
 the same address-space and range rules as other memory-capable ports.
 
-For AXI4-MM, the canonical channel set is `aw`, `w`, `b`, `ar`, and
-`r`. A complete built-in port must declare every required channel unless
-the protocol spec explicitly defines a smaller variant.
+For AXI4-MM and AXI4-Lite, the canonical channel set is `aw`, `w`,
+`b`, `ar`, and `r`. A complete built-in port must declare every
+required channel unless the protocol schema explicitly defines a
+smaller variant.
 
 ## Links
 
@@ -384,13 +458,13 @@ The fixed `fabric.link` fields are:
 | `protocol` | no | Protocol enum for this link. If absent, it is inferred from both endpoint ports. If present, it must match both endpoint ports. |
 | `latency` | no | Non-negative latency metadata for simulation, RTL generation, or estimation. |
 | `bandwidth` | no | Positive bandwidth metadata for simulation, RTL generation, or estimation. |
-| `crossing` | conditionally | Clock-domain crossing description. Required when endpoint owner nodes are in different clock domains. |
+| `crossing` | conditionally | Clock-domain crossing description. Required when endpoint effective clock domains differ. |
 | `params` | no | Open dictionary for hardware link implementation metadata. |
 
 `src` and `dst` are the only fields required for connectivity. They
 define the graph edge. All other fixed fields are metadata except
 `crossing`, which becomes a legality requirement when the endpoints are
-in different clock domains.
+in different effective clock domains.
 
 When `protocol` is absent, the verifier infers it from the source and
 destination ports. The inferred protocols must match. If two endpoints
@@ -402,14 +476,16 @@ one-to-one links.
 protocol legality. They are hardware facts or estimates used by
 CGRA-sim, RTL generation, and FPA estimation.
 
-`crossing` is absent when both endpoint owners are in the same clock
-domain. A node with no explicit clock-domain annotation belongs to the
-system default clock domain. If endpoint owners are in different clock
-domains, `crossing` must be present and must describe the crossing
-mechanism, such as `async_fifo`, `cdc_sync`, `explicit_bridge`, or
-`custom`. An explicit `clock_converter` node may be used instead of a
-link-level `crossing` field; in that case each link endpoint pair is
-same-domain. A `crossing` field on a same-domain link is illegal.
+`crossing` is absent when both endpoint effective clock domains are the
+same. A node with no explicit clock-domain annotation belongs to the
+system default clock domain, and a port with no port-level clock-domain
+override inherits the owning node's clock domain. If endpoint effective
+clock domains differ, `crossing` must be present and must describe the
+crossing mechanism, such as `async_fifo`, `cdc_sync`,
+`explicit_bridge`, or `custom`. An explicit `clock_converter` node may
+be used instead of a link-level `crossing` field; in that case each link
+endpoint pair is same-domain. A `crossing` field on a same-domain link
+is illegal.
 
 `params` may contain physical or implementation metadata such as wire
 class, estimated length, technology hint, or buffer-depth hint. It must
@@ -701,6 +777,17 @@ The target verifier enforces:
 * channel names are unique within each port;
 * built-in protocol and role imply the required channel set and channel
   directions;
+* built-in ports declare only schema-defined required or conditional
+  channels;
+* required protocol params are present and satisfy the protocol schema;
+* `stream` `ready` channels appear if and only if
+  `params.flow_control = ready_valid`;
+* `packet` `credit` channels appear if and only if
+  `params.flow_control = credit`;
+* paired `stream` endpoints use compatible flow-control modes;
+* paired `packet` endpoints use compatible flow-control modes;
+* `custom` protocol ports declare `params.protocol_name` and explicit
+  transaction-flow classification;
 * port memory capability is derived from protocol, role, and params;
 * `custom` ports declare `params.memory_capable`;
 * `addr_space` and `addr_ranges` appear only on memory-capable ports;
