@@ -203,7 +203,8 @@ The PnR cost model ranks legal candidates. It may include:
 * cache and coherence pressure;
 * temporal reuse quality;
 * reconfiguration count;
-* energy, area, or frequency estimates;
+* energy, area, or frequency estimates from
+  `docs/spec-fpa-estimation.md`;
 * diagnostic severity;
 * DFG-sim, CGRA-sim, or FPA feedback from previous candidates.
 

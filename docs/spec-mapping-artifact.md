@@ -202,7 +202,8 @@ Metrics may include DFG-sim report references, CGRA-sim report
 references, simulation comparison report references, or FPA estimates
 when available. DFG-sim, CGRA-sim, and comparison contracts are
 specified in `docs/spec-sim-dfg.md`, `docs/spec-sim-cgra.md`, and
-`docs/spec-sim-comparison.md`. Metrics are evidence for DSE and
+`docs/spec-sim-comparison.md`. FPA reports are specified in
+`docs/spec-fpa-estimation.md`. Metrics are evidence for DSE and
 reporting; they do not change mapping legality.
 
 ## Visualization Metadata

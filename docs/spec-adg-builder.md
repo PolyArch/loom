@@ -252,7 +252,8 @@ The Builder is not a simulator. It may attach timing, bandwidth,
 latency, or capacity metadata, but it does not execute workloads.
 
 The Builder is not an RTL generator. It emits Fabric ADG, which can be
-consumed by later RTL and estimation tools.
+consumed by later RTL and estimation tools specified in
+`docs/spec-rtl-lowering.md` and `docs/spec-fpa-estimation.md`.
 
 The Builder is not a second hardware IR. It must not preserve helper
 semantics that downstream tools must understand separately from Fabric

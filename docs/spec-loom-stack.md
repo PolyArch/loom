@@ -228,9 +228,17 @@ estimation should be combined with CGRA-sim cycle counts to form a
 cycle-frequency-power-area feedback loop for software and hardware
 design-space exploration.
 
-The local environment may provide multiple backend options. The design
-should support quick open-source checks first, then higher-fidelity ASIC
-or FPGA flows when the required tools and libraries are available.
+The target RTL lowering contract is specified in
+`docs/spec-rtl-lowering.md`. The target frequency, power, and area
+contract is specified in `docs/spec-fpa-estimation.md`. Portable EDA
+tool discovery and backend profile rules are specified in
+`docs/spec-eda-tooling.md`.
+
+Public Loom specs describe tool classes, profile contracts, artifacts,
+and reports. Site-specific activation commands, install paths, license
+details, and private library paths belong in local ignored
+configuration or temporary execution guides, not in public project
+specs.
 
 ## Current Implementation Caveat
 

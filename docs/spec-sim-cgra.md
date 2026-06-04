@@ -157,8 +157,8 @@ CGRA-sim is not RTL simulation. It may be checked against RTL
 simulation later, but it does not replace RTL validation.
 
 CGRA-sim is not FPA estimation. It may produce activity data consumed
-by FPA tools, but it does not by itself produce final frequency, power,
-or area estimates.
+by the FPA flow specified in `docs/spec-fpa-estimation.md`, but it does
+not by itself produce final frequency, power, or area estimates.
 
 ## Acceptance Criteria
 
