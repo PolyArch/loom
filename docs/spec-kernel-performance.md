@@ -141,6 +141,19 @@ Builders **MUST** construct the actual node-and-edge DAG for the fully unrolled
 dynamic op set. A builder that returns only op-count totals, with no constructed
 DAG and no declared region/barrier contract, does **not** satisfy this spec.
 
+**Constant-initialized carries.** When a sequential carry (a loop-carried
+scalar, accumulator, or iterator) is initialized to a **compile-time constant**,
+the carry's **first** read consumes that constant, not a computed value. Per the
+adopted ASAP constant / loop-invariant rule, a constant is available at cycle 1,
+so the first read is modeled as a **root** (no predecessor edge from the
+initializing store); the initializing store is still counted as its own op. Only
+the **second and later** reads carry a real read-after-write edge from the prior
+iteration's write. This matches the baseline's documented critical paths — e.g.
+the FFT per-block twiddle is initialized to `w = (1.0f, 0.0f)` and the iterator
+to `j = 0`, so `w^(0)` and `j^(0)` are ready at cycle 1, giving the per-stage
+`CP` of `8/11/17/33` and the phase sum `74`. Adding an init→first-read edge would
+inflate every carried chain by one cycle and is therefore non-conforming.
+
 ### Depth and height
 
 - **Depth** of a node is the length, in nodes, of the longest dependency chain

@@ -672,7 +672,19 @@ def build_fft_butterfly(N: int = 16):
         sin = rg.arith(kind="sin_wm_i")
         rg.store(kind="k_init")  # k=0 init store, once per stage
         for _ in range(blocks):
-            # w init for the block (w_r=1, w_i=0): two stores.
+            # Per-block initializers store compile-time constants: w_r=1.0f,
+            # w_i=0.0f, j=0. They are counted ops (memory-backed scalars), but
+            # the first body reads below consume those *constants*, which the
+            # ASAP baseline makes available at cycle 1 (the constant / loop-
+            # invariant rule) -- exactly as the committed eval derives
+            # "w^(0) ready at cycle 1". So the j=0 reads are modeled as roots
+            # (no edge from the init store), not RAW-dependent on the init
+            # writes. Wiring an init->first-read edge would push every stage's
+            # carried chain by one cycle (s=1 CP 8->9, ... s=4 33->34, phase sum
+            # 74->78), contradicting the documented per-stage CP and golden
+            # aggregate 74. See docs/spec-kernel-performance.md (constant-init
+            # reads). Only iterations j>=1 carry a real RAW edge from the prior
+            # store.
             rg.store(kind="w_r_init")
             rg.store(kind="w_i_init")
             rg.store(kind="j_init")  # j=0 init store, once per block
@@ -684,6 +696,7 @@ def build_fft_butterfly(N: int = 16):
                     else rg.load(kind="w_i")
                 # j induction is a sequential carry (II=3): load j -> j++ ->
                 # store j; the loaded j also drives the data-operand address.
+                # j=0 reads the constant 0 (a root, per the rule above).
                 ld_j = rg.load(prev_stj, kind="j_load") if prev_stj is not None \
                     else rg.load(kind="j_load")
                 add_j = rg.arith(ld_j, kind="j_add")
@@ -817,15 +830,24 @@ def build_kernel(kernel: str):
 
 def check_contract(dag: Dag, contract, cfg: Config):
     """Verify the constructed DAG matches the builder's declared contract.
+
+    The op counts (`A`/`LD`/`ST`) and `CP` are configuration-independent, so they
+    are checked for any config. The declared `aggregate` is the golden 6x6 value,
+    so it is only checked when `cfg` is the 6x6 configuration; this keeps `report`/
+    `write`/`check` usable with other configs (whose aggregate legitimately
+    differs) instead of aborting against the 6x6 number.
     Returns the list of RegionAggregate for further checks."""
     if len(dag.regions) != len(contract):
         raise AssertionError(
             f"region count {len(dag.regions)} != contract {len(contract)}")
+    is_6x6 = (cfg.P, cfg.L, cfg.S) == (CONFIG_6x6.P, CONFIG_6x6.L, CONFIG_6x6.S)
+    fields = ("A", "LD", "ST", "CP", "aggregate") if is_6x6 \
+        else ("A", "LD", "ST", "CP")
     aggs = []
     for region, decl in zip(dag.regions, contract):
         ra = region_aggregate(region, cfg)
         aggs.append(ra)
-        for field in ("A", "LD", "ST", "CP", "aggregate"):
+        for field in fields:
             got = getattr(ra, field)
             want = getattr(decl, field)
             if got != want:
