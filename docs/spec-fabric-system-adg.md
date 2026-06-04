@@ -285,11 +285,13 @@ protocol legality. They are hardware facts or estimates used by
 CGRA-sim, RTL generation, and FPA estimation.
 
 `crossing` is absent when both endpoint owners are in the same clock
-domain. If endpoint owners are in different clock domains, `crossing`
-must be present and must describe the crossing mechanism, such as
-`async_fifo`, `cdc_sync`, `explicit_bridge`, or `custom`. An explicit
-`clock_converter` node may be used instead of a link-level `crossing`
-field; in that case each link endpoint pair is same-domain.
+domain. A node with no explicit clock-domain annotation belongs to the
+system default clock domain. If endpoint owners are in different clock
+domains, `crossing` must be present and must describe the crossing
+mechanism, such as `async_fifo`, `cdc_sync`, `explicit_bridge`, or
+`custom`. An explicit `clock_converter` node may be used instead of a
+link-level `crossing` field; in that case each link endpoint pair is
+same-domain. A `crossing` field on a same-domain link is illegal.
 
 `params` may contain physical or implementation metadata such as wire
 class, estimated length, technology hint, or buffer-depth hint. It must
@@ -395,10 +397,17 @@ Clock, reset, and power domains are explicit optional metadata. They are
 used by RTL generation, FPA estimation, and legality checks that depend
 on domains.
 
+Every `fabric.system` has an implicit default clock domain. A node that
+does not declare a clock-domain annotation belongs to that default
+domain. Explicit clock-domain annotations are required only for nodes
+outside the default domain.
+
 If a link connects endpoints whose owning nodes are in different clock
 domains, the crossing must be explicit. This can be represented by a
 link crossing attribute or by an explicit `clock_converter` node. Silent
-cross-domain connectivity is illegal.
+cross-domain connectivity is illegal. A same-domain link must not carry
+a link-level `crossing` field; the verifier rejects it because no
+clock-domain crossing exists on that edge.
 
 ## Address Spaces
 
@@ -500,8 +509,11 @@ The target verifier enforces:
 * `acc_core` nodes reference visible `fabric.module` symbols;
 * cache nodes satisfy required upstream, downstream, line-size, and
   capacity fields;
-* clock-domain crossings are explicit either through a link `crossing`
-  field or through an explicit clock-converter node;
+* nodes without clock-domain annotations belong to the system default
+  clock domain;
+* cross-domain links are explicit either through a link `crossing` field
+  or through an explicit clock-converter node;
+* same-domain links do not carry a `crossing` field;
 * terminal memory target ranges in the same physical address space do
   not overlap by default;
 * coherence-domain memberships reference memory-capable ports;
