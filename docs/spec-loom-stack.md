@@ -143,17 +143,27 @@ binding, PnR, or fabric-side IR.
 
 ## Hardware Representation
 
-The fabric dialect is the hardware-side representation for CGRA and
-spatial hardware structure. Existing concepts such as `fabric.module`,
-`fabric.pe`, `fabric.fu`, `fabric.switch`, `fabric.mem`,
-`fabric.fifo`, `fabric.boundary`, and `fabric.instantiate` form the
-starting point for hardware descriptions.
+The fabric dialect is the hardware-side representation for both CGRA
+SpatialCore templates and system-level architecture graphs.
+`fabric.module` remains the SpatialCore or CGRA fabric template.
+Existing concepts such as `fabric.pe`, `fabric.fu`, `fabric.switch`,
+`fabric.mem`, `fabric.fifo`, `fabric.boundary`, and
+`fabric.instantiate` form the starting point for SpatialCore
+descriptions.
 
-The full stack also needs a system-level architecture description graph
-for `HostCore + AccCore x M` systems, memory hierarchy, external memory,
-and interconnect. The final design must decide whether this is expressed
-as an extension of the fabric dialect or as a separate system/ADG layer
-that emits fabric IR for SpatialCore internals.
+`fabric.system` is the system-level architecture description graph for
+`HostCore + AccCore x M` systems, memory hierarchy, external memory,
+and interconnect. It contains physical nodes, protocol ports, directed
+channels, explicit one-to-one links, optional domain metadata, and
+coherence or consistency declarations. An `acc_core` system node
+references a `fabric.module` symbol as its SpatialCore template while
+remaining an independent physical instance.
+
+System topology is explicit graph connectivity. The system ADG does not
+introduce hardware primitives named `mux` or `demux`; system-level
+selection and routing use precise primitive node kinds such as
+`route_decoder`, `arbiter`, and `broadcast`. The detailed target
+contract is in `docs/spec-fabric-system-adg.md`.
 
 An ergonomic C++ ADG Builder is required. It should let users construct
 heterogeneous systems and arbitrary-topology fabrics quickly, then emit
