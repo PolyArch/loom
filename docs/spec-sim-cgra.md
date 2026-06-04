@@ -41,7 +41,7 @@ CGRA-sim produces:
 ## Boundary With DFG-sim
 
 DFG-sim is the pure software semantic baseline specified in
-`docs/spec-dfg-sim.md`. CGRA-sim must preserve the same software
+`docs/spec-sim-dfg.md`. CGRA-sim must preserve the same software
 semantics for legal mappings, then add hardware constraints.
 
 CGRA-sim may reuse DFG-sim semantic components for dataflow operation
@@ -49,7 +49,7 @@ behavior, token semantics, and memory-order semantics. It must not
 replace those semantics with a different interpretation of dataflow IR.
 
 The comparison protocol is specified in
-`docs/spec-simulation-comparison.md`.
+`docs/spec-sim-comparison.md`.
 
 ## Boundary With PnR
 
@@ -173,6 +173,6 @@ CGRA-sim is complete at the target-spec level when:
 * it does not choose placements, routes, schedules, buffers, memory
   bindings, or resource sharing;
 * its reports can be compared against DFG-sim reports through
-  `docs/spec-simulation-comparison.md`;
+  `docs/spec-sim-comparison.md`;
 * its reports can feed later PnR, DSE, or FPA flows as explicit input
   evidence.

@@ -1,8 +1,8 @@
 # Simulation Comparison
 
 This document specifies how Loom compares DFG-sim and CGRA-sim results.
-DFG-sim is specified in `docs/spec-dfg-sim.md`. CGRA-sim is specified
-in `docs/spec-cgra-sim.md`.
+DFG-sim is specified in `docs/spec-sim-dfg.md`. CGRA-sim is specified
+in `docs/spec-sim-cgra.md`.
 
 ## Purpose
 

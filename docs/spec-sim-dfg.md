@@ -37,14 +37,14 @@ temporal tags, buffers, memory bindings, or hardware resources.
 ## Boundary With CGRA-sim
 
 DFG-sim is the software semantic baseline. CGRA-sim is the
-hardware-aware simulator specified in `docs/spec-cgra-sim.md`.
+hardware-aware simulator specified in `docs/spec-sim-cgra.md`.
 
 DFG-sim and CGRA-sim must agree on functional behavior for the same
 software input, runtime data, and legal mapping. Performance differences
 are expected because DFG-sim intentionally ignores hardware limits.
 
 The comparison protocol is specified in
-`docs/spec-simulation-comparison.md`.
+`docs/spec-sim-comparison.md`.
 
 ## Semantic Scope
 
@@ -166,4 +166,4 @@ DFG-sim is complete at the target-spec level when:
 * reports expose functional outputs, memory diffs, token counts, event
   counts, and optimistic metrics;
 * the same workload and input can be compared against CGRA-sim through
-  `docs/spec-simulation-comparison.md`.
+  `docs/spec-sim-comparison.md`.
