@@ -175,7 +175,10 @@ contract is in `docs/spec-fabric-system-adg.md`.
 An ergonomic C++ ADG Builder is required. It should let users construct
 heterogeneous systems and arbitrary-topology fabrics quickly, then emit
 MLIR hardware descriptions suitable for mapping, simulation, and RTL or
-estimation flows.
+estimation flows. Its target API contract is in
+`docs/spec-adg-builder.md`; it is a construction frontend and must emit
+explicit Fabric ADG rather than preserve separate builder-only hardware
+semantics.
 
 ## Mapping and Simulation
 

@@ -746,6 +746,7 @@ or multiple workloads are evaluated against the same architecture.
 ## ADG Builder Output Contract
 
 The ergonomic C++ ADG Builder emits this fabric dialect target form.
+Its full C++ API contract is specified in `docs/spec-adg-builder.md`.
 Builder conveniences may construct common structures such as:
 
 * heterogeneous accelerator arrays
