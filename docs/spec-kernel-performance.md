@@ -154,6 +154,33 @@ to `j = 0`, so `w^(0)` and `j^(0)` are ready at cycle 1, giving the per-stage
 `CP` of `8/11/17/33` and the phase sum `74`. Adding an init→first-read edge would
 inflate every carried chain by one cycle and is therefore non-conforming.
 
+**Fully-unrolled iterators are per-lane constants.** When a **parallel** or
+**reduction** dimension is fully unrolled, its iterator takes a distinct
+**compile-time constant** value in each unrolled lane/leaf. Per the constant /
+loop-invariant rule, that value is available at cycle 1, so:
+
+- Address or compare arithmetic whose only varying inputs are such iterators
+  (e.g. `&x[i + lag]` where both `i` and `lag` are fully-unrolled iterators) is
+  modeled as a **root** (depth 1) — it does **not** take a predecessor edge from
+  the iterator's modeled induction read.
+- The per-iteration induction work (the iterator load, increment, write-back, and
+  bound compare counted under the op-count conventions) is **counted overhead**
+  that, for a parallel/reduction dim, lies **off** the output-reachable critical
+  path (it is dead with respect to `CP`, while still scheduled and counted).
+
+This is what makes `autocorrelation`'s `CP = 11` (`1` address-add + `1` load +
+`1` mul + `ceil(log2 N)` reduce + `1` store): the `i + lag` address-add is a
+cycle-1 root. Feeding the induction reads into the address would push it to
+depth 2 and the kernel to `CP = 12`, contradicting the committed eval and the
+golden anchor, and is therefore non-conforming.
+
+The contrast with a **sequential** carry is deliberate: a sequential-dim iterator
+(e.g. the FFT butterfly `j`, whose loop carries the twiddle recurrence) is **not**
+a per-lane constant — its read is part of the carried chain, so the data-operand
+address **does** depend on the iterator read (giving the FFT index path its
+`3p + 4` depth). Builders therefore wire the induction read into the address for
+sequential dims and leave it rooted for fully-unrolled parallel/reduction dims.
+
 ### Depth and height
 
 - **Depth** of a node is the length, in nodes, of the longest dependency chain

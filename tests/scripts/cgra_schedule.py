@@ -581,14 +581,25 @@ def build_autocorrelation(x_size: int = 128, max_lag: int = 32):
         r.arith(kind="bound_sub")  # x_size - lag, once per outer iter
         products = []
         for _ in range(n_lag):
+            # `lag` (parallel) and `i` (reduction) are both fully unrolled, so
+            # each is a per-lane compile-time constant available at cycle 1. The
+            # `i+lag` address-add therefore has no predecessor edge from the
+            # induction reads -- it is a cycle-1 root (see the "fully-unrolled
+            # iterators are per-lane constants" rule in
+            # docs/spec-kernel-performance.md). This is what gives CP=11; wiring
+            # the induction reads in would make it CP=12 and break the eval.
             aa = r.address_add(kind="addr_i_plus_lag")  # &x[i+lag]
             ld_a = r.load(kind="x_i")                    # bare subscript
             ld_b = r.load(aa, kind="x_i_plus_lag")
             products.append(r.arith(ld_a, ld_b, kind="mul"))
-            r.induction(kind="i")  # inner induction (off output path)
+            # Inner induction: counted overhead, off the output-reachable path
+            # (reduction dim -> i is a per-lane constant, not a carried value).
+            r.induction(kind="i")
         root = r.balanced_reduction(products, kind="reduce")
         r.store(root, output=True, kind="output_lag")
-        r.induction(kind="lag")  # outer induction (off output path)
+        # Outer induction: counted overhead, off path (lag is a parallel-dim
+        # per-lane constant).
+        r.induction(kind="lag")
     contract = [RegionContract("autocorrelation", A=18064, LD=10834, ST=3664,
                                CP=11, aggregate=903)]
     return dag, contract
