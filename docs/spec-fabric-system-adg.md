@@ -26,6 +26,12 @@ the dataflow dialect:
 * Keep software selection operations and hardware routing operations
   separate in naming and semantics.
 
+This simplicity is semantic simplicity, not reduced product scope. The
+system ADG should expose first-principles hardware architecture
+concepts, make them explicit and composable, and avoid opaque meta-nodes.
+The resulting implementation can still be large, systematic, and
+complete.
+
 Meshes, arrays, x/y coordinates, and Manhattan routing are optional
 metadata or builder conveniences. They are not system semantics.
 

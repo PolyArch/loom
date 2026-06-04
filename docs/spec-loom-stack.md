@@ -26,6 +26,13 @@ operations whose behavior is easy to simulate, verify, and map. A complex
 instruction should exist only when it expresses a first-principles concept
 that cannot be cleanly composed from simpler operations.
 
+This simplicity is semantic simplicity, not reduced product scope. It
+means that the core abstractions should be first-principles concepts with
+clear composition rules. It does not mean the implementation should be a
+small prototype or a minimal feature subset. A complete Loom stack may be
+large and systematic while still preserving a small set of coherent
+semantic building blocks.
+
 Current stable dataflow primitives include stream shaping, control
 routing, explicit memory access, and synchronization primitives such as
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`,
