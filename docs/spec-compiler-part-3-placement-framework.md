@@ -162,6 +162,22 @@ This framework does not change the Part 2 hand-off rule:
 consumed by Part 3, and `func.func` is not an implicit accelerator
 boundary.
 
+A ScalarCore-only `dataflow.thread` body is a legal AccCore binding
+candidate only after L1 placement has selected the enclosing region for
+accelerator execution. L2 graph placement may leave an already-selected
+thread body with no graph launches; it must not promote unselected host
+code to AccCore work merely because no graph candidate was found.
+
+Thread hierarchy transforms sit between L1 accelerator placement and
+physical binding. They are legal only when an explicit policy can prove
+that reordering independent thread levels, collapsing adjacent
+independent levels, or tiling and splitting levels preserves the logical
+instance set, per-instance scalar values, memory-order constraints,
+async launch/fence ordering, and the strict layering rule between child
+thread launches and graph launches. The baseline implementation may
+start with annotation and canonicalization only; graph placement must not
+implicitly reshape the thread hierarchy.
+
 ## 7. L2 Graph Placement
 
 L2 decides which code inside a `dataflow.thread` definition's body
@@ -185,17 +201,20 @@ policy. `dataflow.thread.launch` ops deserve a stronger rule:
 per `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2,
 a thread definition's body must not directly contain both a
 `dataflow.graph.launch` and a `dataflow.thread.launch` at the
-same nesting level. Therefore, when L2 graph placement encounters
+same thread-body placement level. Therefore, when L2 graph placement encounters
 a thread definition's body whose direct children include any
 `dataflow.thread.launch` op, the baseline policy does not open a
 `dataflow.graph.launch` at that level at all; graph placement
-runs only inside thread definitions whose direct children are
-graph-admissible code without sibling thread launches. Equivalent
-phrasings are "L2 graph placement runs on innermost thread
-definitions" or "presence of a direct `dataflow.thread.launch`
-at the level under consideration suppresses graph emission at
-that level". The details are specified in
-`docs/spec-compiler-part-3-impl.md`.
+runs only on innermost executable thread bodies. In this framework,
+an innermost executable thread body is a body that does not launch
+another `dataflow.thread` at the thread-body placement level. Such
+threads may contain ScalarCore residual code, any number of
+`dataflow.graph.launch` ops, or scalar-only code with no launch shape.
+Non-innermost thread bodies contain ScalarCore orchestration code and
+child `dataflow.thread.launch` ops, but no direct graph launches. The
+scalar-only case is a fallback for explicitly selected accelerator
+regions, not an implicit L1 selection rule. The
+details are specified in `docs/spec-compiler-part-3-impl.md`.
 
 ## 8. L3 Fabric Placement
 

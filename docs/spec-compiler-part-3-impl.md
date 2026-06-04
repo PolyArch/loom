@@ -118,6 +118,10 @@ documentation never refers to the numeric position.
   accelerator region lowers to at least one `dataflow.thread`
   definition + launch pair without turning unselected host code
   into AccCore code.
+* The synthetic 1x1 case is allowed only for an explicit
+  `loom.acc_region`. It is the implementation path for a selected
+  scalar-only accelerator region, not a recovery path for failed graph
+  placement in ordinary host code.
 
 ### 1.4 `loom-promote-map-info`
 
@@ -317,17 +321,15 @@ documentation never refers to the numeric position.
   placement is a diagnostic; optional unadmitted code stays
   ScalarCore.
 * `dataflow.thread.launch` is not merely a cut: per
-  `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2, a
-  thread definition's body must not directly contain both a
-  `dataflow.graph.launch` and a `dataflow.thread.launch` at the
-  same nesting level. Whenever the thread definition's body the
-  pass is processing has any direct `dataflow.thread.launch` op,
-  the pass therefore emits no `dataflow.graph.launch` at that
-  level at all (graph extraction is suppressed for that thread
-  definition's body); equivalently, graph extraction runs only on
-  innermost thread definitions whose direct children are graph-
-  admissible code without sibling thread launches, matching the
-  placement framework's L2 graph-placement rule in
+  `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2,
+  thread hierarchy is strictly layered. Whenever the thread
+  definition's body the pass is processing has any direct
+  `dataflow.thread.launch` op, the pass emits no
+  `dataflow.graph.launch` at that level at all. Graph extraction
+  runs only on innermost executable thread bodies: bodies with no
+  direct child `dataflow.thread.launch`, and with graph-admissible
+  code or scalar-only residual code. This matches the placement
+  framework's L2 graph-placement rule in
   `docs/spec-compiler-part-3-placement-framework.md` §7.
 * Connectedness is not part of the baseline admission rule. If two
   memory-access clusters are adjacent in source order and separated
@@ -668,8 +670,8 @@ The lit-test layout grows three new directories:
     host scope (graph launch must be inside a thread definition's
     body), for callee mismatches (callee is not a `dataflow.graph`
     definition, function_type does not match operand/result types),
-    and for the parent-side rule (a launch at the same level as a
-    `dataflow.thread.launch` inside one thread definition's body).
+    and for the parent-side strict-layering rule (a graph launch in a
+    non-innermost thread body that directly launches child threads).
 * `test/frontend/lower_scf/` -- one subdirectory per scf op. Each
   directory holds:
   - `before.mlir` (the scf input).

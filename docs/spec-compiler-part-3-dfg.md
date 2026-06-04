@@ -116,9 +116,9 @@ The front-end's IR mirrors this trio:
 | Hardware | Front-end IR carrier |
 |----------|----------------------|
 | HostCore | Host-call-context `func.func` body code outside any `dataflow.thread.launch` |
-| Logical execution lattice | An outermost `dataflow.thread` definition (Symbol-bearing, module-scope), launched at host scope by `dataflow.thread.launch` with `mapping = [#loom.spatial<...>, ...]` (logical partition-domain coordinates) and optional non-spatial dims for time-multiplexed work. Each lattice cell is a logical execution slot. The cell-to-AccCore binding is a separate concern; see `docs/spec-compiler-part-4-spatial.md` §7. |
-| ScalarCore | The body of the innermost `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus ScalarCore-legal `func.call` callees after inlining or specialization. The body is "what one execution-lattice cell runs once it is bound to a physical AccCore by binding". |
-| SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside the innermost `dataflow.thread` definition's body, again per execution-lattice cell. |
+| Logical execution lattice | An outermost `dataflow.thread` definition (Symbol-bearing, module-scope), launched at host scope by `dataflow.thread.launch` with `mapping = [#loom.spatial<...>, ...]` (logical partition-domain coordinates) and optional non-spatial dims for time-multiplexed work. Each dynamic thread instance is a logical execution cell before binding. The cell-to-AccCore binding is a separate concern; see `docs/spec-compiler-part-4-spatial.md` §7. |
+| ScalarCore | The body of an innermost executable `dataflow.thread` definition, minus its `dataflow.graph.launch` ops, plus ScalarCore-legal `func.call` callees after inlining or specialization. The body is "what one logical execution cell runs once binding maps it to a physical AccCore". |
+| SpatialCore | Each `dataflow.graph` definition referenced by a `dataflow.graph.launch` inside an innermost executable `dataflow.thread` definition's body, again per bound logical execution cell. |
 
 A single `dataflow.thread.launch` corresponds to one launch of a
 multi-dimensional iteration domain, distributed across a logical
@@ -135,6 +135,41 @@ logical lattice cell to a physical AccCore (i.e., a
 `docs/spec-compiler-part-4-spatial.md` §7 and the placement
 framework.
 
+An innermost executable thread is a `dataflow.thread` whose body, at
+the thread-body placement level, does not launch another
+`dataflow.thread`. Such a body may contain ScalarCore residual code and
+`dataflow.graph.launch` ops. Only dynamic instances of innermost
+executable threads are eligible to become one physical AccCore
+execution slot after binding/PnR. Non-innermost threads remain logical
+parallel hierarchy and scheduling structure before binding.
+
+A ScalarCore-only innermost executable thread body is legal, but this is
+only an IR legality statement. Such a thread remains AccCore work only
+when L1 placement, explicit source intent, or a DSE policy selected the
+enclosing region for accelerator execution. L2 graph placement failure
+must not synthesize a new accelerator offload from unselected host code.
+
+Thread completion and graph/dataflow control are distinct token domains.
+`!dataflow.thread_token` is the inter-thread asynchronous completion
+token produced by `dataflow.thread.launch`. `none` values are the
+graph-control, graph-completion, streaming-control, and memory-order
+tokens used inside dataflow. There is no implicit cast or general
+conversion between the two domains. `dataflow.thread.fence` is the
+explicit bridge that accepts `none` and/or `!dataflow.thread_token`
+dependencies and emits one `none` control value. `dataflow.thread.wait`
+consumes `!dataflow.thread_token` values for host or parent-context
+synchronization and emits no SSA value.
+
+Thread hierarchy transforms before binding are legal only as explicit
+optimization policies. They may reorder independent thread levels,
+collapse adjacent independent levels, or tile and split a level when the
+transform preserves the logical instance set, each instance's scalar
+values, memory-order constraints, async launch and fence ordering, and
+the strict layering rule between child thread launches and graph
+launches. A conservative implementation may initially perform only
+annotation and canonicalization; it must not silently change hierarchy
+shape as a verifier or parsing side effect.
+
 ### 2.1 IR Carrier Responsibilities
 
 * `func.func` is a callable symbol and ABI unit. It does not by itself
@@ -144,12 +179,15 @@ framework.
 * `loom.acc_region` is a temporary Part 2 to Part 3 marker for a
   structured region selected for AccCore execution. This part consumes
   it and erases it.
-* `dataflow.thread` is the AccCore kernel **definition** (Symbol-
-  bearing, module-scope, function-like). It owns the kernel body,
-  the static grid shape, and the mapping attribute. It does not
-  itself execute; its execution is materialized by one or more
-  `dataflow.thread.launch` ops at use sites.
-* `dataflow.thread.launch` is the AccCore execution boundary. It
+* `dataflow.thread` is the logical accelerator execution-domain
+  **definition** (Symbol-bearing, module-scope, function-like). It
+  owns the kernel body, the static grid shape, and the mapping
+  attribute. It does not itself execute; dynamic logical instances are
+  materialized by one or more `dataflow.thread.launch` ops at use
+  sites, then later binding decides which innermost executable
+  instances occupy physical AccCore slots.
+* `dataflow.thread.launch` is the logical accelerator execution
+  boundary. It
   references a `dataflow.thread` callable by symbol, supplies async
   dependencies, dynamic-grid values, and body operands (memrefs
   through `dataflow.map_info`, scalars by value), and produces the
@@ -181,20 +219,19 @@ The eight rules below are invariants that downstream passes and
 verifiers must enforce; the rest of this spec is a refinement of how
 each rule lands in IR.
 
-1. `dataflow.thread` is the outermost parallel and host/accelerator
-   boundary primitive. It is a Symbol-bearing, module-scope, function-
-   like definition (Part 3 §5.4.1); execution is materialized by
+1. `dataflow.thread` is the logical parallel execution-domain
+   primitive used for selected accelerator work. It is a
+   Symbol-bearing, module-scope, function-like definition (Part 3
+   §5.4.1); dynamic logical instances are materialized by
    `dataflow.thread.launch` ops. Multi-level launch nesting is
-   allowed; depth has no hard upper bound but is documented as
-   recommended at most three levels (outer spatial grid, inner SIMT-
-   style fan-out, innermost ScalarCore). Future hardware that calls
-   for deeper nesting can raise that recommendation without an IR
-   change. The thread definition's body has a `thread_ctrl : none`
-   block argument that fires once the thread instance starts
-   executing on an AccCore (entry-block layout: `(args_*,
-   thread_ctrl, iv_*)`, see §5.4.1). The body may contain ScalarCore
-   operations and ScalarCore-legal `func.call` operations, but not
-   `func.func` definitions.
+   allowed; depth has no hard upper bound. A dynamic instance becomes
+   a physical AccCore execution slot only after binding/PnR, and only
+   when it is an innermost executable thread instance. The thread
+   definition's body has a `thread_ctrl : none` block argument that
+   fires once the logical thread instance starts executing
+   (entry-block layout: `(args_*, thread_ctrl, iv_*)`, see §5.4.1).
+   The body may contain ScalarCore operations and ScalarCore-legal
+   `func.call` operations, but not `func.func` definitions.
 2. `dataflow.graph` is a leaf-level definition. It is also a Symbol-
    bearing, module-scope, function-like definition (Part 3 §5.5);
    execution is materialized by `dataflow.graph.launch` ops inside a
@@ -205,18 +242,20 @@ each rule lands in IR.
    feedback edges (existing semantics). Additionally, from the
    parent side: a `dataflow.thread` definition's body must not
    directly contain both a `dataflow.graph.launch` and a
-   `dataflow.thread.launch` at the same nesting level. This is a
+   `dataflow.thread.launch` at the same thread-body placement level.
+   This is a
    separate constraint from the leaf rule above (the leaf rule
    constrains the graph body; this parent-side constraint is on
    what may sit alongside a graph launch in its enclosing thread
-   body). ScalarCore code (`scf.*` structured control flow,
-   ScalarCore-legal `func.call`, ScalarCore memory ops,
-   `dataflow.thread.fence`, and so on) is always allowed in the
-   thread body and may freely sit before, between, or after whichever
-   of the two launch shapes the thread body contains; the parent-side
-   rule only forbids the simultaneous presence of a direct
-   `dataflow.graph.launch` and a direct `dataflow.thread.launch`.
-   Both rules are enforced by the verifier (see §9).
+   body). The accepted thread hierarchy is strictly layered:
+   non-innermost thread bodies may contain ScalarCore orchestration
+   code and direct `dataflow.thread.launch` ops, but must not directly
+   contain `dataflow.graph.launch` ops. Innermost executable thread
+   bodies may contain ScalarCore residual code and direct
+   `dataflow.graph.launch` ops, but must not directly contain child
+   `dataflow.thread.launch` ops. A single thread-body placement level
+   must never directly mix thread launches and graph launches. Both
+   rules are enforced by the verifier (see §9).
 3. Every `dataflow.graph` definition has explicit control ports
    inside its `function_type`: the inputs lead with `ctrl_in : none`,
    the results lead with `done_out : none`, the entry block of the
@@ -360,7 +399,9 @@ each rule lands in IR.
   `#loom.warp<...>`) is an extension point in
   `docs/spec-compiler-part-3-impl.md` §4.
 * **Thread token.** A value of type `!dataflow.thread_token`, a
-  one-shot completion signal modelled on `!async.token`.
+  one-shot completion signal modelled on `!async.token`. It belongs to
+  the inter-thread asynchronous-completion domain, not to the
+  `none`-typed graph/control token domain.
 * **Thread control token.** A `none`-typed entry-block argument of
   a `dataflow.thread` definition's body (named `thread_ctrl`,
   positioned after the function-signature args per §5.4.1). It is
@@ -370,7 +411,9 @@ each rule lands in IR.
   `dataflow.thread` definition's body program point for zero or
   more SpatialCore `none` tokens and/or child
   `!dataflow.thread_token` values, then emits a `none` token usable
-  as a `dataflow.graph.launch` `ctrl_in` operand.
+  as a `dataflow.graph.launch` `ctrl_in` operand. It is the only
+  primitive that bridges thread-completion tokens into graph-control
+  tokens.
 * **Map info result.** A value produced by `dataflow.map_info` that
   carries the same type as its source memref. It is a pure, view-
   like alias of the source; by IR convention it must only be
@@ -434,6 +477,9 @@ new `loom` namespaces; nothing outside this list is added.
 * `!dataflow.thread_token`
   - One-shot completion signal. Equivalent of `!async.token` for the
     Loom front-end.
+  - Belongs only to the inter-thread asynchronous-completion domain.
+    It is not a `none`-typed graph-control token, and there is no
+    implicit cast between the two domains.
   - Refcounted by a future runtime ABI; first milestone only manipulates
     the type as an SSA value.
 
@@ -2921,23 +2967,24 @@ In addition to the existing dataflow / fabric verifier set:
     definitions are also module-scope siblings). A
     `dataflow.thread.launch` is the only way to invoke a thread
     callable from inside another thread definition's body.
-  - The body must not directly contain both a `dataflow.graph.launch`
-    and a `dataflow.thread.launch` at the same nesting level.
-    ScalarCore code (`scf.*` ops, ScalarCore-legal `func.call`,
-    ScalarCore memory ops, `dataflow.thread.fence`, etc.) is always
-    allowed in the thread definition's body and may freely
-    interleave with whichever of the two launch shapes the body
-    holds; this rule only rejects the simultaneous direct presence
-    of a graph launch and a thread launch. The legal shapes are
-    therefore:
-    - any number of `dataflow.graph.launch` ops interleaved with
-      ScalarCore code, with no `dataflow.thread.launch`;
-    - any number of `dataflow.thread.launch` ops interleaved with
-      ScalarCore code, with no direct `dataflow.graph.launch`;
-    - ScalarCore code only, with neither.
-    Mixing direct graph launches with direct thread launches at
-    the same level violates §3 Constitutional Rule 2's parent-side
-    constraint.
+  - The body must follow strict thread layering. ScalarCore code
+    (`scf.*` ops, ScalarCore-legal `func.call`, ScalarCore memory
+    ops, `dataflow.thread.fence`, etc.) is always allowed in the
+    thread definition's body. Direct launch shapes are constrained:
+    - an innermost executable thread body may contain any number of
+      direct `dataflow.graph.launch` ops interleaved with ScalarCore
+      residual code, and no direct `dataflow.thread.launch`;
+    - a non-innermost thread body may contain any number of direct
+      `dataflow.thread.launch` ops interleaved with ScalarCore
+      orchestration code, and no direct `dataflow.graph.launch`;
+    - a ScalarCore-only body with neither launch shape is legal; by
+      absence of direct child thread launches it is an innermost
+      executable scalar-only AccCore binding candidate. This verifier
+      rule does not itself select AccCore execution; placement must have
+      selected the enclosing accelerator region first.
+    Mixing direct graph launches with direct thread launches at the
+    same thread-body placement level violates §3 Constitutional
+    Rule 2's parent-side constraint.
   - Body may contain `func.call` only when the callee has been
     proven ScalarCore-legal or is scheduled for inlining before
     graph extraction. Body must not contain `func.func`
@@ -3000,6 +3047,9 @@ In addition to the existing dataflow / fabric verifier set:
     `dataflow.graph` definition's body.
   - Every operand has type `none` or `!dataflow.thread_token`.
   - The result has type `none`.
+  - This op is the only explicit bridge from thread completion to
+    graph-control `none` values. No verifier or canonicalizer may
+    replace it with an implicit cast.
   - The op's `MemoryEffectOpInterface` implementation must report
     `MemRead + MemWrite` on MLIR's default memory resource. Lowering
     and verification must not weaken this to a per-resource effect or
@@ -3009,6 +3059,9 @@ In addition to the existing dataflow / fabric verifier set:
 * `dataflow.thread.wait`
   - At least one operand. Each is `!dataflow.thread_token` produced
     by a `dataflow.thread.launch`.
+  - The op has no SSA result and therefore does not produce a
+    graph-control `none` value. Use `dataflow.thread.fence` instead
+    when child-thread completion must feed a graph launch's `ctrl_in`.
   - The op's `MemoryEffectOpInterface` implementation must report
     `MemRead + MemWrite` on MLIR's default memory resource. The wait
     has no SSA result, so this barrier is the only mechanism that

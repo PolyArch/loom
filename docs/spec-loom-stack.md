@@ -1,0 +1,179 @@
+# Loom Full-Stack Architecture
+
+This document records the accepted top-level target architecture for
+Loom. Subsystem documents own the detailed contracts for individual
+dialects and tools. This document is intentionally limited to invariants
+that have been accepted across the whole stack.
+
+## Scope
+
+Loom is a compiler and architecture exploration stack for heterogeneous
+spatial acceleration. Its source-facing contract starts from LLVM IR.
+The first production language surface is C and C++ through `loom-cc` and
+`loom-c++`, with the long-term requirement that any language capable of
+emitting the supported LLVM IR contract can participate.
+
+Loom's near-term product target is a drop-in CMSIS compiler path. For
+CMSIS-DSP and CMSIS-NN, Loom should eventually be usable where a user
+would otherwise use `gcc` or `g++`, while still producing Loom's internal
+dataflow representation, hardware mapping artifacts, and performance
+reports when acceleration is enabled.
+
+## Design Principles
+
+The IR design follows a RISC-style principle. Prefer simple, atomic
+operations whose behavior is easy to simulate, verify, and map. A complex
+instruction should exist only when it expresses a first-principles concept
+that cannot be cleanly composed from simpler operations.
+
+Current stable dataflow primitives include stream shaping, control
+routing, explicit memory access, and synchronization primitives such as
+`dataflow.stream`, `dataflow.carry`, `dataflow.invariant`,
+`dataflow.gate`, `dataflow.constant`, `dataflow.load`,
+`dataflow.store`, `dataflow.sync`, `dataflow.mux`, and
+`dataflow.demux`. These are the semantic base for DFG simulation and for
+later hardware mapping.
+
+## Hardware Model
+
+The target machine model is:
+
+```text
+System = HostCore + AccCore x M + memory hierarchy + interconnect
+AccCore = ScalarCore + SpatialCore
+SpatialCore = CGRA-like fabric described through fabric IR
+```
+
+AccCores may be heterogeneous. The system must not assume that all
+AccCores share the same ScalarCore, SpatialCore, memory attachment, or
+interconnect cost.
+
+Arbitrary topology is the default. Meshes, arrays, x/y coordinates, and
+Manhattan-distance routing are optional conveniences supplied by an
+architecture builder or by user metadata. They are never the baseline
+semantic assumption. Hardware connectivity is represented as graph
+connectivity, adjacency, or connectivity-table data.
+
+## Software Representation
+
+The software side lowers selected LLVM/SCF regions into dataflow IR. The
+compiler owns three placement problems:
+
+| Name | Boundary | Meaning |
+|------|----------|---------|
+| L1 accelerator placement | HostCore vs AccCore | Select which program regions execute on the accelerator fabric. |
+| L2 graph placement | ScalarCore vs SpatialCore | Select which code inside an accelerator kernel becomes a SpatialCore dataflow graph. |
+| L3 FU placement | Spatial graph vs fabric FU template | Partition a software graph into subgraphs that can map to function-unit templates. |
+
+All three are optimization problems. A deterministic baseline policy is
+allowed and useful for tests, but fixed syntactic lowering is not the
+final design.
+
+`dataflow.thread` is a software execution-domain carrier. A dynamic
+thread instance is a logical execution cell until later binding maps it
+onto physical AccCore resources. The accepted direction is a two-level
+model: front-end IR preserves logical parallel structure, while PnR or a
+binding artifact assigns selected innermost executable instances to
+AccCore execution slots.
+
+An innermost executable thread is a `dataflow.thread` whose body, at the
+thread-body placement level, does not launch another `dataflow.thread`.
+It may contain ScalarCore residual code and `dataflow.graph.launch` ops.
+Only dynamic instances of such threads are eligible to become one
+AccCore execution slot after binding. Non-innermost threads remain
+logical hierarchy and scheduling structure. Before binding, hierarchy
+transforms may reorder independent thread levels, collapse adjacent
+independent levels, or tile and split levels only when they preserve the
+logical instance set, per-instance scalar values, memory-order
+constraints, async launch/fence ordering, and strict thread/graph
+layering. The baseline implementation may initially stop at annotation
+and canonicalization; nontrivial hierarchy transforms are explicit
+optimization policies, not verifier side effects.
+
+Thread nesting is strictly layered. A non-innermost thread may contain
+ScalarCore orchestration code and child `dataflow.thread.launch` ops,
+but it must not directly contain `dataflow.graph.launch` ops. An
+innermost executable thread may contain ScalarCore residual code and
+`dataflow.graph.launch` ops, but must not directly contain child
+`dataflow.thread.launch` ops. A single thread-body placement level must
+never directly mix thread launches and graph launches. A ScalarCore-only
+thread body with neither launch shape is legal and is an innermost
+scalar-only AccCore binding candidate. This legality is not an implicit
+offload decision: a scalar-only thread is retained as AccCore work only
+when L1 placement, source intent, or an explicit DSE policy selected that
+region for accelerator execution. Failed L2 graph extraction must not
+create a new accelerator offload by itself.
+
+Thread completion and dataflow control are separate token domains.
+`!dataflow.thread_token` represents inter-thread asynchronous
+completion from `dataflow.thread.launch`. `none`-typed control values
+represent graph launch control, graph completion, streaming control, and
+memory-order tokens inside dataflow. There is no implicit cast between
+these domains. `dataflow.thread.fence` is the explicit bridge from
+thread completion and graph-control dependencies to a `none` control
+result; `dataflow.thread.wait` consumes thread completion tokens for
+host or parent-context synchronization and produces no graph-control
+value.
+
+`dataflow.graph` represents SpatialCore software dataflow. The dialect
+must use one canonical graph-definition surface for new compiler output.
+Any remaining regional graph surface is compatibility or testing
+infrastructure unless a later accepted design explicitly promotes it.
+
+## Hardware Representation
+
+The fabric dialect is the hardware-side representation for CGRA and
+spatial hardware structure. Existing concepts such as `fabric.module`,
+`fabric.pe`, `fabric.fu`, `fabric.switch`, `fabric.mem`,
+`fabric.fifo`, `fabric.boundary`, and `fabric.instantiate` form the
+starting point for hardware descriptions.
+
+The full stack also needs a system-level architecture description graph
+for `HostCore + AccCore x M` systems, memory hierarchy, external memory,
+and interconnect. The final design must decide whether this is expressed
+as an extension of the fabric dialect or as a separate system/ADG layer
+that emits fabric IR for SpatialCore internals.
+
+An ergonomic C++ ADG Builder is required. It should let users construct
+heterogeneous systems and arbitrary-topology fabrics quickly, then emit
+MLIR hardware descriptions suitable for mapping, simulation, and RTL or
+estimation flows.
+
+## Mapping and Simulation
+
+Loom needs two simulation levels:
+
+* DFG-sim simulates pure dataflow software semantics without hardware
+  resource limits. Its results are expected to be optimistic.
+* CGRA-sim simulates mapped software on a concrete hardware graph with
+  resource, routing, memory, buffering, and temporal-sharing limits.
+
+PnR connects the two sides. It takes software dataflow IR plus hardware
+fabric/ADG IR and emits a mapping artifact that records placed software
+nodes, routed edges, memory bindings, temporal tags or schedule slots
+where applicable, and diagnostics for unmappable regions.
+
+DFG-sim and CGRA-sim results must be compared for the same workload and
+input data. Differences are acceptable only when they are explained by
+hardware constraints that DFG-sim intentionally ignores.
+
+## RTL and Estimation
+
+Fabric hardware descriptions must eventually lower to synthesizable and
+simulatable SystemVerilog. The RTL path must support fast sanity checks
+and a higher-fidelity evaluation path. Frequency, power, and area
+estimation should be combined with CGRA-sim cycle counts to form a
+cycle-frequency-power-area feedback loop for software and hardware
+design-space exploration.
+
+The local environment may provide multiple backend options. The design
+should support quick open-source checks first, then higher-fidelity ASIC
+or FPGA flows when the required tools and libraries are available.
+
+## Current Implementation Caveat
+
+The current repository is a partial implementation. Existing CMSIS tests
+are smoke and shape gates, not full behavior or backend evidence.
+Existing dataflow and fabric dialect implementations are valuable
+starting points, but they do not yet implement the full stack described
+here.
