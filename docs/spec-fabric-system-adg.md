@@ -397,10 +397,11 @@ Clock, reset, and power domains are explicit optional metadata. They are
 used by RTL generation, FPA estimation, and legality checks that depend
 on domains.
 
-Every `fabric.system` has an implicit default clock domain. A node that
-does not declare a clock-domain annotation belongs to that default
-domain. Explicit clock-domain annotations are required only for nodes
-outside the default domain.
+Every `fabric.system` has implicit default clock, reset, and power
+domains. A node that does not declare a clock-domain, reset-domain, or
+power-domain annotation belongs to the corresponding default domain.
+Explicit domain annotations are required only for nodes outside the
+corresponding default domain.
 
 If a link connects endpoints whose owning nodes are in different clock
 domains, the crossing must be explicit. This can be represented by a
@@ -408,6 +409,13 @@ link crossing attribute or by an explicit `clock_converter` node. Silent
 cross-domain connectivity is illegal. A same-domain link must not carry
 a link-level `crossing` field; the verifier rejects it because no
 clock-domain crossing exists on that edge.
+
+Reset-domain and power-domain differences do not affect `fabric.link`
+legality. They are metadata for RTL generation and FPA estimation. The
+system ADG verifier checks that explicit reset-domain and power-domain
+annotations reference declared domains, but it does not require link
+crossing fields, adapters, isolation cells, level shifters, or reset
+synchronizers solely because reset or power domains differ.
 
 ## Address Spaces
 
@@ -509,11 +517,12 @@ The target verifier enforces:
 * `acc_core` nodes reference visible `fabric.module` symbols;
 * cache nodes satisfy required upstream, downstream, line-size, and
   capacity fields;
-* nodes without clock-domain annotations belong to the system default
-  clock domain;
+* nodes without clock-domain, reset-domain, or power-domain annotations
+  belong to the corresponding system default domain;
 * cross-domain links are explicit either through a link `crossing` field
   or through an explicit clock-converter node;
 * same-domain links do not carry a `crossing` field;
+* reset-domain and power-domain differences do not affect link legality;
 * terminal memory target ranges in the same physical address space do
   not overlap by default;
 * coherence-domain memberships reference memory-capable ports;
