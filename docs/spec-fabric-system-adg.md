@@ -126,12 +126,25 @@ policy, allocate policy, hit latency, miss latency, and MSHR count.
 
 ### Memory
 
-A `memory` node represents a terminal storage service when one of its
-subordinate memory ports serves final storage. Examples include external
-DRAM, scratchpad SRAM, local SRAM, and MMIO endpoints.
+A `memory` node represents final storage services. A terminal memory
+target port is any port that satisfies all of these conditions:
 
-Caches, interconnect nodes, arbiters, routers, and DMA managers are not
-terminal storage targets for address-range overlap checking.
+* the owning node kind is `memory`;
+* the port role is `subordinate`;
+* the port is memory-capable.
+
+Every terminal memory target port must declare `addr_space` and a
+non-empty `addr_ranges` array. External DRAM, scratchpad SRAM, local
+SRAM, and MMIO endpoints are all modeled as `memory` nodes.
+
+A `memory` node may also expose non-terminal ports, but only
+memory-capable subordinate ports on a `memory` node are terminal memory
+target ports.
+
+Caches, interconnect nodes, arbiters, routers, `route_decoder` nodes,
+`broadcast` nodes, `network_endpoint` nodes, `protocol_converter` nodes,
+and DMA manager ports are not terminal memory targets for address-range
+overlap checking.
 
 ## Ports and Channels
 
@@ -464,6 +477,10 @@ range:
 For the same physical address space, terminal memory target port ranges
 must not overlap by default. Upstream cache and interconnect ports may
 cover aggregate downstream ranges and are not terminal-overlap targets.
+The overlap rule applies only to terminal memory target ports.
+Non-terminal memory-capable manager, upstream, cache, and interconnect
+ports may cover aggregate ranges and are excluded from terminal-overlap
+checking.
 
 ## Coherence and Consistency
 
@@ -602,6 +619,10 @@ The target verifier enforces:
 * port memory capability is derived from protocol, role, and params;
 * `custom` ports declare `params.memory_capable`;
 * `addr_space` and `addr_ranges` appear only on memory-capable ports;
+* a terminal memory target port is exactly a memory-capable subordinate
+  port on a `memory` node;
+* every terminal memory target port declares `addr_space` and non-empty
+  `addr_ranges`;
 * each link source endpoint exists and is an output channel;
 * each link destination endpoint exists and is an input channel;
 * absent link protocol is inferred from both endpoint ports;
