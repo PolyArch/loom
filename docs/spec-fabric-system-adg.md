@@ -95,6 +95,81 @@ is a fixed enum, not a free-form string. The baseline node kinds are:
 Core invariants are strongly typed through dedicated attributes. Other
 node-specific data lives in an open `params` dictionary.
 
+### Node Attribute Contract
+
+A `fabric.node` has these common fields:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `sym_name` | yes | Unique symbol name within the enclosing system. |
+| `kind` | yes | One baseline node-kind enum value. |
+| `ports` | yes | Ordered array of complete `#fabric.port` attributes. |
+| `clock_domain` | no | Node clock-domain override. Defaults to the system default domain. |
+| `reset_domain` | no | Node reset-domain override. Defaults to the system default domain. |
+| `power_domain` | no | Node power-domain override. Defaults to the system default domain. |
+| `params` | no | Node-kind-specific implementation, timing, capacity, and policy metadata. |
+
+Baseline node kinds use the fields below as the required semantic
+contract. `params` may refine a node, but it must not weaken the
+required fields or required port shape for that node kind.
+
+The interconnect rules below use input-side and output-side in the
+transaction-flow sense. For manager/subordinate protocols, an input-side
+port is usually a subordinate port that receives upstream requests, and
+an output-side port is usually a manager port that issues downstream
+requests. For stream-like protocols, the protocol definition provides
+the transaction-flow classification from channel directions.
+
+### Node Kind Contract
+
+| Kind | Required attributes | Required ports | Required params |
+|------|---------------------|----------------|-----------------|
+| `host_core` | none | At least one memory-capable manager port. | none |
+| `acc_core` | `spatial`, `scalar` | At least one memory-capable port. | none |
+| `cache` | none | At least one upstream memory-capable subordinate port and at least one downstream memory-capable manager port. | `line_bytes`, `capacity_bytes` |
+| `memory` | none | At least one terminal memory target port. | none |
+| `router` | none | At least two network-facing packet ports. | `routing` |
+| `network_endpoint` | none | At least one local-facing port and at least one network-facing port. | `network_protocol` |
+| `arbiter` | none | At least two input-side ports and exactly one output-side port for the arbitrated transaction class. | `policy` |
+| `route_decoder` | none | Exactly one input-side port and at least two output-side ports. | `decode` |
+| `broadcast` | none | Exactly one input-side port and at least two output-side ports. | none |
+| `width_converter` | none | Exactly one input-side port and exactly one output-side port. | `in_width`, `out_width` |
+| `clock_converter` | none | Exactly one input-side port and exactly one output-side port, each with an explicit port-level `clock_domain`. | none |
+| `protocol_converter` | none | Exactly one input-side port and exactly one output-side port with different endpoint protocols. | none |
+| `custom` | none | Non-empty explicit ports and channels. | `kind_name` |
+
+`clock_converter` is the only baseline node kind whose ports may carry
+port-level clock-domain overrides. The two port-level clock domains must
+be different. Link clock-domain legality checks use the endpoint port's
+clock domain when present; otherwise they use the owning node's clock
+domain.
+
+`width_converter` ports must describe unequal widths through the
+required width params. A same-width adapter is not a width conversion
+and should be removed or represented as ordinary links.
+
+`protocol_converter` is the only baseline node kind that may directly
+connect two different endpoint protocols. Its two sides must name the
+source and destination protocols through their port declarations.
+
+`custom` nodes remain explicit graph nodes, not opaque meta-nodes. They
+must declare a stable `kind_name`, complete ports, complete channels,
+and memory capability for every `custom` protocol port.
+
+Required node params have these baseline verifier rules:
+
+| Param | Rule |
+|-------|------|
+| `line_bytes` | Positive power-of-two byte count. |
+| `capacity_bytes` | Positive byte count and at least one line. |
+| `routing` | One of `static_table`, `source_routed`, `adaptive`, or `custom`; `custom` requires a non-empty payload. |
+| `network_protocol` | Names the packet protocol used on router-facing ports. |
+| `policy` | One of `fixed_priority`, `round_robin`, `weighted_round_robin`, or `custom`; weighted and custom policies require non-empty policy payload. |
+| `decode` | Non-empty deterministic decode table or custom deterministic decode payload. |
+| `in_width` | Positive data width in bits. |
+| `out_width` | Positive data width in bits and unequal to `in_width`. |
+| `kind_name` | Non-empty stable identifier for the custom node semantics. |
+
 ### Host Core
 
 A `host_core` node must have at least one memory-capable manager port.
@@ -188,6 +263,7 @@ A `#fabric.port` attribute contains:
 | `channels` | yes | Ordered array of `#fabric.channel` attributes. |
 | `addr_space` | no | Physical address-space identifier for memory-capable ports. |
 | `addr_ranges` | no | Array of physical address ranges served or covered by this port. |
+| `clock_domain` | no | Port-level clock-domain override. Legal only on `clock_converter` ports. |
 | `optional` | no | Whether the entire port may remain unconnected. Defaults to `false`. |
 | `params` | no | Protocol- or node-specific dictionary. |
 
@@ -445,12 +521,18 @@ power-domain annotation belongs to the corresponding default domain.
 Explicit domain annotations are required only for nodes outside the
 corresponding default domain.
 
-If a link connects endpoints whose owning nodes are in different clock
-domains, the crossing must be explicit. This can be represented by a
-link crossing attribute or by an explicit `clock_converter` node. Silent
-cross-domain connectivity is illegal. A same-domain link must not carry
-a link-level `crossing` field; the verifier rejects it because no
-clock-domain crossing exists on that edge.
+Ports inherit the owning node's clock domain by default. Port-level
+clock-domain overrides are legal only on `clock_converter` ports. This
+lets a `clock_converter` expose one transaction-flow side in the source
+clock domain and the other side in the destination clock domain, while
+each adjacent `fabric.link` remains same-domain.
+
+If a link connects endpoints whose effective clock domains differ, the
+crossing must be explicit. This can be represented by a link crossing
+attribute or by an explicit `clock_converter` node. Silent cross-domain
+connectivity is illegal. A same-domain link must not carry a link-level
+`crossing` field; the verifier rejects it because no clock-domain
+crossing exists on that edge.
 
 Reset-domain and power-domain differences do not affect `fabric.link`
 legality. They are metadata for RTL generation and FPA estimation. The
@@ -612,6 +694,9 @@ The target verifier enforces:
 * external port symbols are unique within the system;
 * each external port owns exactly one complete `#fabric.port`;
 * node kinds are valid enum values;
+* each node satisfies the common node attribute contract;
+* each baseline node kind satisfies its required attributes, required
+  ports, and required params;
 * port names are unique within each node or external port;
 * channel names are unique within each port;
 * built-in protocol and role imply the required channel set and channel
@@ -619,6 +704,13 @@ The target verifier enforces:
 * port memory capability is derived from protocol, role, and params;
 * `custom` ports declare `params.memory_capable`;
 * `addr_space` and `addr_ranges` appear only on memory-capable ports;
+* port-level `clock_domain` appears only on `clock_converter` ports and
+  references a declared clock domain;
+* each `clock_converter` has exactly two transaction-flow sides with
+  different explicit port-level clock domains;
+* each `width_converter` declares unequal input and output widths;
+* each `protocol_converter` has different source and destination
+  protocols;
 * a terminal memory target port is exactly a memory-capable subordinate
   port on a `memory` node;
 * every terminal memory target port declares `addr_space` and non-empty
