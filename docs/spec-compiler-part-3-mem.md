@@ -471,8 +471,8 @@ conditions:
   ops: `memref.cast`, `memref.subview`, `memref.view`,
   `memref.expand_shape`, `memref.collapse_shape`,
   `memref.reinterpret_cast`, `memref.transpose`,
-  `dataflow.spatial_layout` (the spatial-array annotation defined
-  in `docs/spec-compiler-part-4-spatial.md` §3.2, which is a
+  `dataflow.partition_layout` (the partitioned-data annotation defined
+  in `docs/spec-compiler-part-4-partitioned-data.md`, which is a
   same-type view of its source memref), and `dataflow.map_info`
   (the boundary metadata op defined in
   `docs/spec-compiler-part-3-dfg.md` §5.4.6, which is also a pure

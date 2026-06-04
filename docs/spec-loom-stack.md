@@ -115,6 +115,18 @@ result; `dataflow.thread.wait` consumes thread completion tokens for
 host or parent-context synchronization and produces no graph-control
 value.
 
+Thread grid mapping uses domain-neutral logical-axis attributes. The
+target spelling is `#loom.thread_axis<parallel, axis>` or
+`#loom.thread_axis<multiplexed, axis>`, with an optional logical-domain
+symbol as the third parameter. `parallel` means distinct dynamic values
+along that logical axis may be bound to distinct AccCore slots and run
+concurrently when resources and policy allow it. `multiplexed` means
+distinct dynamic values along that logical axis may reuse an AccCore
+slot through time multiplexing. Neither kind is a hardware coordinate,
+x/y axis, mesh coordinate, PE coordinate, route, or topology statement.
+Physical core selection, reuse order, routing, and resource arbitration
+belong to binding/PnR artifacts.
+
 `dataflow.graph` represents SpatialCore software dataflow. The dialect
 must use one canonical graph-definition surface for new compiler output.
 Any remaining regional graph surface is compatibility or testing

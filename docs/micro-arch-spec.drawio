@@ -152,7 +152,7 @@
                 <mxCell id="df-host-wait" value="dataflow.thread.wait&lt;div style=&quot;font-size:9px&quot;&gt;synchronize back to host&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="550" y="90" width="240" height="40" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-host-spatial-layout" value="dataflow.spatial_layout&lt;div style=&quot;font-size:9px&quot;&gt;memref tile-and-lattice attribute&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-host-partition-layout" value="dataflow.partition_layout&lt;div style=&quot;font-size:9px&quot;&gt;memref tile-and-domain attribute&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="60" y="90" width="240" height="40" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-thread-outer" value="dataflow.thread @sym (definition)&lt;div&gt;dataflow.thread.yield&lt;/div&gt;&lt;div style=&quot;font-size:9px&quot;&gt;Symbol-bearing, function-like, module-scope; launched by dataflow.thread.launch&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;align=right;verticalAlign=top;" parent="1" vertex="1">
@@ -176,7 +176,7 @@
                 <mxCell id="df-thread-fence" value="dataflow.thread.fence&lt;div style=&quot;font-size:9px&quot;&gt;ScalarCore-side bridge&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#fff2cc;" parent="1" vertex="1">
                     <mxGeometry x="315" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
-                <mxCell id="df-spatial-queries" value="spatial-array queries&lt;div style=&quot;font-size:9px&quot;&gt;local_range / spatial_coord / spatial_linear_id&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="df-partitioned-data-queries" value="partitioned-data queries&lt;div style=&quot;font-size:9px&quot;&gt;local_range / thread_coord / thread_linear_id&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="550" y="310" width="220" height="50" as="geometry"/>
                 </mxCell>
                 <mxCell id="df-graph-launch" value="dataflow.graph.launch @sym&lt;div style=&quot;font-size:9px&quot;&gt;sync launch of graph callable; supplies per-launch ctrl_in, receives done_out&lt;/div&gt;" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;fillColor=#dae8fc;" parent="1" vertex="1">

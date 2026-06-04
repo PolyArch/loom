@@ -99,9 +99,9 @@ documentation never refers to the numeric position.
   ordinary host code outside accelerator regions.
 * Identifies every `scf.forall` whose `mapping` attribute is
   non-empty, contains at least one `DeviceMappingAttrInterface`
-  element recognizable as a `#loom.spatial<...>` or
-  `#loom.temporal<...>` instance, AND contains no foreign
-  `DeviceMappingAttrInterface` element. A `mapping` array that mixes
+  element recognizable as a `#loom.thread_axis<...>` instance, AND
+  contains no foreign `DeviceMappingAttrInterface` element. A
+  `mapping` array that mixes
   Loom-recognized entries with at least one foreign entry is
   rejected with a diagnostic at this pass (per
   `docs/spec-compiler-part-3-dfg.md` §4 Mapping attribute rules);
@@ -131,7 +131,7 @@ documentation never refers to the numeric position.
   the surrounding values are the explicit accelerator-region boundary
   operands, not arbitrary values captured from the enclosing
   `func.func`.
-* For every `memref<...>` value or spatial-array handle that crosses
+* For every `memref<...>` value or partitioned-data handle that crosses
   the thread boundary, inserts a `dataflow.map_info ...
   direction=tofrom` immediately outside the forall. Scalar values do
   not need `map_info`; they become by-value launch operands.
@@ -302,8 +302,8 @@ documentation never refers to the numeric position.
   aligned with
   `docs/spec-compiler-part-3-placement-framework.md` §3-§5.
 * "Graph-admissible" is not inferred from the `Pure` trait alone.
-  `dataflow.map_info` and the spatial-array ops in
-  `docs/spec-compiler-part-4-spatial.md` are also `Pure`, but they
+  `dataflow.map_info` and the partitioned-data ops in
+  `docs/spec-compiler-part-4-partitioned-data.md` are also `Pure`, but they
   are boundary-only or thread-body-only and are intentionally
   excluded from graph definition bodies. The baseline admitted set
   is: `arith.*`, `math.*`, allowed LLVM computation ops,
@@ -314,7 +314,7 @@ documentation never refers to the numeric position.
 * Required cuts close the current graph run and remain in the
   ScalarCore thread definition's body. The required cuts are
   `dataflow.thread.fence`, non-inlined `func.call`,
-  `dataflow.map_info`, spatial-array query or layout ops,
+  `dataflow.map_info`, partitioned-data query or layout ops,
   graph-illegal ops, and the parent terminator. The policy also
   cuts before any structured-control op whose nested regions
   contain a required cut. Unsupported required SpatialCore
@@ -432,9 +432,9 @@ documentation never refers to the numeric position.
     ops are `memref.cast`, `memref.subview`, `memref.view`,
     `memref.expand_shape`, `memref.collapse_shape`,
     `memref.reinterpret_cast`, `memref.transpose`,
-    `dataflow.spatial_layout`, and `dataflow.map_info` (both
+    `dataflow.partition_layout`, and `dataflow.map_info` (both
     same-type view-like producers per
-    `docs/spec-compiler-part-4-spatial.md` §3.2 and
+    `docs/spec-compiler-part-4-partitioned-data.md` and
     `docs/spec-compiler-part-3-dfg.md` §5.4.6); the walk peels each
     into its source operand. The recognized terminal roots are
     `memref.alloca`, `memref.alloc`, `memref.get_global`, and
@@ -619,8 +619,8 @@ The lit-test layout grows three new directories:
     cover launch-side contracts (callee resolution, type checking
     against the def's function_type, map_info-provenance,
     direction/body-effect compatibility, ctrl/done plumbing).
-    Unit-test coverage for spatial-array ops is owned by
-    `docs/spec-compiler-part-4-spatial.md`.
+    Unit-test coverage for partitioned-data ops is owned by
+    `docs/spec-compiler-part-4-partitioned-data.md`.
   - `thread/`, `thread_launch/`, `graph/`, and `graph_launch/`
     include invalid cases that directly reference surrounding SSA
     values from isolated regions.
@@ -634,31 +634,21 @@ The lit-test layout grows three new directories:
     compatibility check (a launch declaring `direction = to` whose
     callee writes through that arg is rejected with a diagnostic
     naming both ops).
-  - `thread/` includes mapping-attribute fixtures for the open
-    `#loom.spatial<axis : i64, lattice = SymbolRefAttr?>` /
-    `#loom.temporal<axis : i64, lattice = SymbolRefAttr?>` form
+  - `thread/` includes mapping-attribute fixtures for the
+    `#loom.thread_axis<kind, axis, domain?>` form
     (per `docs/spec-compiler-part-3-dfg.md` §5.2 and §9):
-    - valid: a thread whose mapping has `#loom.spatial<0>` /
-      `#loom.spatial<1>` resolving against a single
-      `dataflow.mesh @M` reached by a layout in scope (qualifier
-      omitted); an alternative valid fixture with explicit
-      qualifiers `#loom.spatial<0, @M>` / `#loom.spatial<1, @M>`.
-    - valid: a thread that hosts two layouts of distinct meshes
-      `@M0` / `@M1`, with mixed `#loom.spatial<axis, @M0>` and
-      `#loom.spatial<axis, @M1>` entries, asserting that Part 3
-      §9 does not impose a thread-level same-lattice rule.
-    - valid: a thread that hosts no spatial layout at all but
-      carries explicit-qualifier `#loom.spatial<...>` entries
-      (lattice resolution rule iv).
-    - invalid: a thread reaching multiple meshes whose mapping
-      has an unqualified `#loom.spatial<...>` entry (rule iii
-      ambiguous diagnostic).
-    - invalid: a thread reaching no spatial layout whose mapping
-      has an unqualified entry (rule iv rejection).
-    - invalid: an `axis` value out of `[0, lattice_rank)` for the
-      resolved mesh.
-    - invalid: a duplicate `(kind, lattice, axis)` triple after
-      resolution.
+    - valid: `#loom.thread_axis<parallel, 0>` and
+      `#loom.thread_axis<multiplexed, 1>` entries with no domain
+      qualifier.
+    - valid: explicit-domain entries such as
+      `#loom.thread_axis<parallel, 0, @D>` and
+      `#loom.thread_axis<multiplexed, 1, @D>`, where `@D` is a
+      visible `dataflow.partition_domain`.
+    - invalid: a duplicate `(kind, domain, axis)` triple.
+    - invalid: a domain-qualified entry whose symbol does not resolve
+      to `dataflow.partition_domain`.
+    - invalid: an axis value outside `[0, domain_rank)` for a
+      domain-qualified entry.
     - invalid: a foreign (non-Loom) `DeviceMappingAttrInterface`
       attribute mixed with Loom-recognized entries (per Part 3 §3
       Mapping attribute rules, retained from earlier milestone).
@@ -732,7 +722,7 @@ The lit-test layout grows three new directories:
     required cuts split graph runs into multiple def + launch
     pairs, pure-only admissible runs may remain ScalarCore code,
     and graph-illegal pure ops such as `dataflow.map_info` or
-    spatial-array query ops stay outside graph definition bodies.
+    partitioned-data query ops stay outside graph definition bodies.
     Tests pin the deterministic symbol-naming convention
     (`g_<threadSym>_<seq>`) so cuts produce the same names across
     runs.
@@ -923,7 +913,8 @@ following hold simultaneously:
 * `docs/spec-compiler-part-3-placement-framework.md` -- common
   placement-partition framework and the L2 graph-placement model used
   by `loom-extract-graph-regions`.
-* `docs/spec-compiler-part-4-spatial.md` -- spatial-array spec; the
-  test plan above defers to Part 4 for spatial-op unit-test coverage.
+* `docs/spec-compiler-part-4-partitioned-data.md` -- partitioned-data spec; the
+  test plan above defers to Part 4 for partitioned-data unit-test
+  coverage.
 * Upstream MLIR references used by the passes above are listed in
   Part 3's References section.
