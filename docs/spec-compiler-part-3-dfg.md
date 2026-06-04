@@ -196,6 +196,11 @@ shape as a verifier or parsing side effect.
   `dataflow.graph` callable by symbol, supplies the leading
   `ctrl_in : none` and user operands, and yields a leading
   `done_out : none` plus user results.
+* `dataflow.subgraph` is the L3 software partition unit inside a
+  `dataflow.graph` definition's body. It is used by fabric tech
+  mapping as a candidate for matching or generalizing against
+  `fabric.fu` templates. It is not a hardware hierarchy node,
+  schedule marker, route, tag, or resource-sharing decision.
 
 Function definitions remain module-level symbols in this design.
 `dataflow.thread` definitions are also module-level symbols (and
@@ -370,6 +375,10 @@ each rule lands in IR.
   layout descriptor; lets in-thread code query its local tile via
   `dataflow.local_range`. The domain is the same logical
   partition-domain referenced by thread-axis tags.
+* **Software subgraph.** A `dataflow.subgraph` inside a
+  `dataflow.graph` definition. It groups graph-compute operations for
+  L3 fabric matching. It carries no fabric placement, route, schedule,
+  temporal tag, or physical-resource binding semantics.
 * **Mapping attribute.** Any attribute that implements
   `mlir::DeviceMappingAttrInterface`. The target front-end ships
   `#loom.thread_axis<kind, axis, domain?>` instances and recognizes
@@ -3037,6 +3046,20 @@ Verifier rules for `dataflow.partition_layout`,
 `dataflow.local_range`, `dataflow.thread_coord`, and
 `dataflow.thread_linear_id` are specified in
 `docs/spec-compiler-part-4-partitioned-data.md`.
+
+* `dataflow.subgraph`
+  - The op appears only inside a `dataflow.graph` definition body.
+  - The op is `IsolatedFromAbove`; all external values enter through
+    explicit operands and region block arguments.
+  - Operand and result types are graph-compute scalar types or `none`
+    control values. Memrefs do not cross a subgraph boundary.
+  - The body contains only ops supported by the fabric-op support
+    matrix plus `dataflow.yield`. Nested `dataflow.graph`,
+    nested `dataflow.subgraph`, `dataflow.load`, and
+    `dataflow.store` are rejected.
+  - The op carries no hardware topology, PE identity, route,
+    schedule slot, spatial / temporal mode, temporal tag, or
+    resource-sharing attribute.
 
 * `dataflow.graph` (definition, §5.5.1)
   - The op is a Symbol-bearing, function-like callable; it must

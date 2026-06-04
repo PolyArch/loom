@@ -224,10 +224,21 @@ mapping. Fabric tech mapping owns this instance.
 
 The admission constraints include the `dataflow.subgraph` verifier,
 the fabric-op support matrix, memory-op exclusion from `fabric.fu`,
-acyclic or feedback legality as required by the selected fabric
-strategy, and the target template library. The cost model may consider
-FU utilization, mux / demux cost, reconfiguration pressure, template
-coverage, and time-multiplexing opportunities.
+explicit subgraph boundary values, acyclic or feedback legality as
+required by the selected fabric strategy, and the target template
+library. A `dataflow.subgraph` is a software partition unit only. It
+does not encode a hardware hierarchy level, PE identity, route,
+resource sharing decision, schedule slot, or temporal tag. Boundary
+types are limited to graph-compute values and `none` control; memref
+traffic remains at the enclosing `dataflow.graph` level through
+`dataflow.load` / `dataflow.store` and is not part of a `fabric.fu`
+candidate.
+
+The L3 cost model may consider FU utilization, mux / demux cost,
+reconfiguration pressure, template coverage, and reuse opportunities
+when evaluating how software subgraphs match fabric templates. Those
+costs are mapping criteria, not attributes on `dataflow.subgraph`
+itself.
 
 The existing `loom-partition-graph-into-subgraphs` pass already has
 multiple policy implementations and a cost model. Future work may align

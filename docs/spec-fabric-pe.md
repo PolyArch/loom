@@ -143,13 +143,12 @@ Inner `fabric.fu` instances may be homogeneous (every FU has the same
 op_list / hw_params shape) or heterogeneous. The PE imposes no rule on
 FU similarity beyond what the verifier requires for individual FUs.
 
-Conceptually, the PE level only answers one question: how many
-`dataflow.subgraph`s can this PE module realize? Exactly one -> use
-`fabric.pe [spatial]`; more than one through time multiplexing -> use
-`fabric.pe [temporal]`. PE-level abstraction is solely about whether the
-contained FU(s) can be time-multiplexed; it is not a routing or
-enumeration boundary in its own right. Place and route operates at the
-`dataflow.subgraph` -> `fabric.fu` granularity, not at the PE level.
+Conceptually, the PE level organizes one or more FU resources and, in
+temporal mode, describes how those resources may be time-multiplexed.
+It is not the software partition boundary: `dataflow.subgraph` maps to
+`fabric.fu` candidates, and place and route operates at that
+`dataflow.subgraph` -> `fabric.fu` granularity before considering the
+enclosing PE resource context.
 
 PE-level routing (input mux, output demux) is expressed entirely
 through the PE's `sw_configs`, not through nested IR ops, because PE-

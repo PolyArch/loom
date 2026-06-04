@@ -133,6 +133,14 @@ only through `dataflow.graph.launch` inside an innermost executable
 thread body. The target dataflow dialect has no separate
 `dataflow.graph.func` surface.
 
+`dataflow.subgraph` represents an L3 software partition inside a
+`dataflow.graph` definition. It is a candidate unit for matching or
+generalizing against `fabric.fu` templates. It is not a hardware
+hierarchy node, PE, route, schedule, tag, or time-sharing statement.
+The dataflow dialect does not attach spatial / temporal schedule
+semantics to subgraphs; resource sharing and tags are introduced by
+binding, PnR, or fabric-side IR.
+
 ## Hardware Representation
 
 The fabric dialect is the hardware-side representation for CGRA and
@@ -163,8 +171,9 @@ Loom needs two simulation levels:
 
 PnR connects the two sides. It takes software dataflow IR plus hardware
 fabric/ADG IR and emits a mapping artifact that records placed software
-nodes, routed edges, memory bindings, temporal tags or schedule slots
-where applicable, and diagnostics for unmappable regions.
+nodes, routed edges, memory bindings, and any fabric-side temporal tags
+or schedule slots required by the selected hardware mapping, plus
+diagnostics for unmappable regions.
 
 DFG-sim and CGRA-sim results must be compared for the same workload and
 input data. Differences are acceptable only when they are explained by

@@ -2,14 +2,17 @@
 
 This document specifies the design of `loom-generalize-subgraphs-to-fu`, a
 new MLIR pass that performs the **inverse** of the existing FU enumeration
-pipeline. Given a set of `dataflow.subgraph` instances (the input "software
-patterns"), the pass synthesizes a single `fabric.fu` (a "hardware
-template") whose materialization, under
+pipeline. Given a set of `dataflow.subgraph` instances from
+`dataflow.graph` definitions, the pass synthesizes a single `fabric.fu`
+(a "hardware template") whose materialization, under
 `loom-enumerate-fu-subgraphs`, is a **superset** of the input set.
 
 The output `fabric.fu` represents a reconfigurable hardware block that can
 be programmed (via `sw_configs`) to realize every input subgraph, plus
 possibly additional configurations that fall out of the merged structure.
+The input `dataflow.subgraph` operations remain software partition units:
+they do not carry schedule slots, temporal tags, PE identity, routes, or
+resource-sharing decisions.
 
 The canonical source for the inverse pipeline is:
 
@@ -95,12 +98,12 @@ verified at synthesis time).
 ## Glossary
 
 * **input subgraph**: a `dataflow.subgraph` operation contained in a
-  `func.func` body of the input module. Represents one observed software
-  pattern that the FU must support.
+  `dataflow.graph` definition body. Represents one observed software
+  partition pattern that the FU must support.
 * **synth group**: a set of input subgraphs intended to be covered by one
   synthesized FU. Identified by a string-valued attribute
-  `loom.synth_group` on the enclosing `func.func`. Subgraphs without the
-  attribute belong to the implicit `"default"` group.
+  `loom.synth_group` on the `dataflow.subgraph` operation. Subgraphs
+  without the attribute belong to the implicit `"default"` group.
 * **synthesized FU**: the output `fabric.fu` produced for one synth
   group, appended to the module under a fresh symbol name.
 * **alignment**: a partial mapping between nodes/edges of two or more
@@ -121,15 +124,15 @@ verified at synthesis time).
 ```
 Pass:     loom-generalize-subgraphs-to-fu
 Scope:    ModuleOp
-Inputs:   any number of func.func, each containing exactly one
-          dataflow.subgraph in its body, optionally annotated with
+Inputs:   any number of dataflow.subgraph ops inside dataflow.graph
+          definitions, optionally annotated with
             loom.synth_group = "<group_name>"
-          Functions without the attribute belong to the "default" group.
-          Functions whose body shape violates the "exactly one subgraph"
-          rule are rejected with loom.synth_failed = "invalid_input".
+          Subgraphs without the attribute belong to the "default" group.
+          Subgraphs whose body violates the subgraph verifier contract
+          are rejected with loom.synth_failed = "invalid_input".
 Output:   the same module, with one wrapper func.func (containing one
           fabric.fu) appended per group that synthesized successfully,
-          and loom.synth_failed string attribute on input func.func of
+          and loom.synth_failed string attribute on input subgraphs of
           any group that failed.
 Options:  config=<path>            -- YAML or TOML SynthConfig file;
                                        same option name as
@@ -167,8 +170,8 @@ stable format for lit tests, and is not part of the production pipeline.
    CoverageVerifier).
 5. **Failure isolation**: failure to synthesize one group does not
    prevent synthesis of other groups. Failed groups have their input
-   `func.func`s annotated with `loom.synth_failed = "<reason>"` (see
-   failure enumeration below).
+   `dataflow.subgraph` ops annotated with
+   `loom.synth_failed = "<reason>"` (see failure enumeration below).
 6. **Idempotence on synthesized output**: the synthesized wrapper
    function symbol name for group `<g>` is `@fu_<sanitized(g)>` where
    `sanitized` replaces any character outside `[A-Za-z0-9_]` with `_`.
@@ -185,11 +188,12 @@ stable format for lit tests, and is not part of the production pipeline.
    the verifier on the freshly built FU before splicing it into the
    module; a verifier failure is reported as `verifier_failed` with a
    diagnostic.
-8. **Input validation**: each input `func.func` must contain exactly
-   one `dataflow.subgraph` operation in its body. Functions with zero
-   or with more than one subgraph are skipped, the function is
-   annotated with `loom.synth_failed = "invalid_input"`, and a
-   `warning` is emitted.
+8. **Input validation**: each input `dataflow.subgraph` must satisfy
+   the subgraph verifier contract, including explicit boundary values,
+   supported body operations, and memory exclusion. Invalid subgraphs
+   are skipped, annotated with
+   `loom.synth_failed = "invalid_input"`, and reported with a
+   `warning`.
 
 ### IR conventions
 
@@ -197,32 +201,35 @@ stable format for lit tests, and is not part of the production pipeline.
 
 ```mlir
 // Group "alu_int_32"
-func.func @pattern_addi_subi() attributes {loom.synth_group = "alu_int_32"} {
+dataflow.graph @pattern_addi_subi(%ctrl : none, %a : i32, %b : i32)
+    -> (none, i32) {
   %g = dataflow.subgraph (...) -> (...) {
     ...
     %y = arith.addi %a, %b : i32
     dataflow.yield %y : i32
-  }
-  return
+  } {loom.synth_group = "alu_int_32"}
+  dataflow.yield %ctrl, %g : none, i32
 }
 
-func.func @pattern_subi() attributes {loom.synth_group = "alu_int_32"} {
+dataflow.graph @pattern_subi(%ctrl : none, %a : i32, %b : i32)
+    -> (none, i32) {
   %g = dataflow.subgraph (...) -> (...) {
     ...
     %y = arith.subi %a, %b : i32
     dataflow.yield %y : i32
-  }
-  return
+  } {loom.synth_group = "alu_int_32"}
+  dataflow.yield %ctrl, %g : none, i32
 }
 
 // Group default
-func.func @pattern_loose_floor() {
+dataflow.graph @pattern_loose_floor(%ctrl : none, %x : f32)
+    -> (none, f32) {
   %g = dataflow.subgraph (...) -> (...) {
     ...
     %y = math.floor %x : f32
     dataflow.yield %y : f32
   }
-  return
+  dataflow.yield %ctrl, %g : none, f32
 }
 ```
 
@@ -252,11 +259,15 @@ func.func @fu_alu_int_32_addi_subi(%a: !fabric.bits<32>,
   return %y : !fabric.bits<32>
 }
 
-// Failed groups have their input func.func annotated:
-func.func @pattern_x() attributes {
-  loom.synth_group = "loose",
-  loom.synth_failed = "cross_share_group"
-} { ... }
+// Failed groups annotate the input subgraphs:
+dataflow.graph @pattern_x(%ctrl : none, %x : i32) -> (none, i32) {
+  %g = dataflow.subgraph (...) -> (...) {
+    ...
+    dataflow.yield %x : i32
+  } {loom.synth_group = "loose",
+     loom.synth_failed = "cross_share_group"}
+  dataflow.yield %ctrl, %g : none, i32
+}
 ```
 
 The synthesized FU never contains `fabric.fifo`. FIFO insertion is the
@@ -283,9 +294,9 @@ body.
   supported by `fabric.op` (per `opSchemas()` in
   `lib/Fabric/IR/FabricOps.cpp`); for example `dataflow.load`,
   `dataflow.store`, `dataflow.graph`, `arith.constant`, `ub.poison`.
-* `invalid_input` -- the enclosing `func.func` does not contain
-  exactly one `dataflow.subgraph`, or a subgraph signature is
-  ill-typed.
+* `invalid_input` -- an input `dataflow.subgraph` violates the
+  subgraph verifier contract, such as an ill-typed boundary or an
+  unsupported body operation.
 * `verifier_failed` -- the synthesized FU did not pass MLIR's verifier
   (`FuOp::verify` or a nested `OpOp::verify`). Indicates a compiler
   bug; the FU is dropped, no IR is appended.
@@ -393,7 +404,7 @@ synth:
     demux_penalty: 1.5
     carry_penalty: 2.0              # register area weight
   anchor:
-    allow_intra_position_mux: false # tier A behavior, see Q11
+    allow_intra_position_mux: false # tier A cross-share-group behavior
   incremental:
     input_order_heuristic: largest_first
                                     # largest_first | smallest_first
@@ -414,8 +425,8 @@ synth:
     timeout_sec: 60
     branch_workers: 8
     candidate_cap: 1000000
-  scc_full_unroll: false            # tier C: see Q13
-  subgraph_share_recurse: false     # tier B: see Q12
+  scc_full_unroll: false            # tier C SCC alignment mode
+  subgraph_share_recurse: false     # tier B recursive sharing mode
 ```
 
 The schema is loaded into a `SynthConfig` C++ struct that mirrors
@@ -584,8 +595,8 @@ by stable structural id.
    `cross_share_group`. With `=true`, produce two parallel `fabric.op`s
    merged through an inserted `fabric.mux`.
 4. Two i32 subgraphs and one i64 subgraph at the same topology position
-   fail with `topology_mismatch` regardless of the mux flag (bit-width
-   is part of the share-group identity per Q5).
+   fail with `topology_mismatch` regardless of the mux flag because
+   bit-width is part of share-group identity.
 
 ### Strategy: mcs (all tiers)
 
@@ -934,7 +945,7 @@ fails `feedback_align_conflict`.
 ```
 function pre_align_sccs(sccsets):
     if not config.scc_full_unroll:
-        // signature heuristic per Q13
+        // use the configured flow-signature heuristic
         all_heads = collect_state_heads_across(sccsets)
         classes = partition(all_heads,
                             equiv = signature_equality)
@@ -1011,7 +1022,7 @@ baseArea(group, bw) = baseUnit[group] * (bw / 32.0)
 ```
 
 Initial `baseUnit` table (informative; tunable in code, not in user
-config per Q15):
+configuration):
 
 | Share group                                         | baseUnit |
 |-----------------------------------------------------|----------|
@@ -1097,14 +1108,13 @@ form happens at every emission boundary.
 
 ## Failure handling
 
-Per Q14 (best-effort + optional fallback chain):
+The pass uses best-effort synthesis with an optional fallback chain:
 
 ```
 function generalize_pass(module, config):
-    valid, invalid = validate_input_funcs(module)
-        // invalid: zero-or-many dataflow.subgraph in body, or other
-        // schema violations -> annotated immediately with
-        // loom.synth_failed = "invalid_input"; not enqueued for synth.
+    valid, invalid = validate_input_subgraphs(module)
+        // invalid: verifier or schema violations -> annotated immediately
+        // with loom.synth_failed = "invalid_input"; not enqueued for synth.
     annotate_invalid(invalid)
     groups = collect_groups(valid)              // by loom.synth_group
     sorted = sort(groups, by=name)              // determinism
@@ -1173,19 +1183,19 @@ emit verbatim.
 // All three inputs share identical topology and bit-width; only the
 // op identity at the single internal node varies. All belong to
 // share group {arith.addi, arith.subi}.
-func.func @p_addi() attributes {loom.synth_group = "alu_int_32_addi_subi"} {
+dataflow.graph @p_addi(%ctrl : none, %a : i32, %b : i32) -> (none, i32) {
   %g = dataflow.subgraph (%a, %b) -> (%y) {
     %y = arith.addi %a, %b : i32
     dataflow.yield %y : i32
-  }
-  return
+  } {loom.synth_group = "alu_int_32_addi_subi"}
+  dataflow.yield %ctrl, %g : none, i32
 }
-func.func @p_subi() attributes {loom.synth_group = "alu_int_32_addi_subi"} {
+dataflow.graph @p_subi(%ctrl : none, %a : i32, %b : i32) -> (none, i32) {
   %g = dataflow.subgraph (%a, %b) -> (%y) {
     %y = arith.subi %a, %b : i32
     dataflow.yield %y : i32
-  }
-  return
+  } {loom.synth_group = "alu_int_32_addi_subi"}
+  dataflow.yield %ctrl, %g : none, i32
 }
 ```
 
@@ -1220,20 +1230,21 @@ input_addi:        input_subi:        synth_fu:
 ```mlir
 // Two inputs share an arith.addi prefix; one extends with arith.muli,
 // one terminates immediately.
-func.func @p_add_only() attributes {loom.synth_group = "tierB_demo"} {
+dataflow.graph @p_add_only(%ctrl : none, %a : i32, %b : i32) -> (none, i32) {
   %g = dataflow.subgraph (%a, %b) -> (%y) {
     %t = arith.addi %a, %b : i32
     dataflow.yield %t : i32
-  }
-  return
+  } {loom.synth_group = "tierB_demo"}
+  dataflow.yield %ctrl, %g : none, i32
 }
-func.func @p_add_then_mul() attributes {loom.synth_group = "tierB_demo"} {
+dataflow.graph @p_add_then_mul(%ctrl : none, %a : i32, %b : i32, %c : i32)
+    -> (none, i32) {
   %g = dataflow.subgraph (%a, %b, %c) -> (%y) {
     %t = arith.addi %a, %b : i32
     %y = arith.muli %t, %c : i32
     dataflow.yield %y : i32
-  }
-  return
+  } {loom.synth_group = "tierB_demo"}
+  dataflow.yield %ctrl, %g : none, i32
 }
 ```
 
@@ -1298,7 +1309,8 @@ synth_fu (tier B):
 // dataflow.carry whose carried value is then post-processed differently
 // (arith.addi vs arith.xori). addi and xori are in different share
 // groups, so the post-carry op cannot share a single fabric.op.
-func.func @p_accum_addi() attributes {loom.synth_group = "accum"} {
+dataflow.graph @p_accum_addi(%ctrl : none, %lb : i32, %ub : i32,
+                             %step : i32, %init : i32) -> (none, i32) {
   %g = dataflow.subgraph (%lb, %ub, %step, %init)
                           -> (%out) {
     %idx, %rwc = dataflow.stream %lb, %ub, %step
@@ -1306,10 +1318,11 @@ func.func @p_accum_addi() attributes {loom.synth_group = "accum"} {
     %c = dataflow.carry %rwc, %init, %nxt : i32
     %nxt = arith.addi %c, %idx : i32          // post-carry: addi
     dataflow.yield %c : i32
-  }
-  return
+  } {loom.synth_group = "accum"}
+  dataflow.yield %ctrl, %g : none, i32
 }
-func.func @p_accum_xori() attributes {loom.synth_group = "accum"} {
+dataflow.graph @p_accum_xori(%ctrl : none, %lb : i32, %ub : i32,
+                             %step : i32, %init : i32) -> (none, i32) {
   %g = dataflow.subgraph (%lb, %ub, %step, %init)
                           -> (%out) {
     %idx, %rwc = dataflow.stream %lb, %ub, %step
@@ -1317,8 +1330,8 @@ func.func @p_accum_xori() attributes {loom.synth_group = "accum"} {
     %c = dataflow.carry %rwc, %init, %nxt : i32
     %nxt = arith.xori %c, %idx : i32          // post-carry: xori
     dataflow.yield %c : i32
-  }
-  return
+  } {loom.synth_group = "accum"}
+  dataflow.yield %ctrl, %g : none, i32
 }
 ```
 
@@ -1422,8 +1435,8 @@ test/techmap/synth/
       timeout.mlir
       resource_exhausted.mlir
       unsupported_op.mlir           # dataflow.load in input
-      invalid_input_zero.mlir       # func.func with 0 dataflow.subgraph
-      invalid_input_many.mlir       # func.func with 2 dataflow.subgraphs
+      invalid_input_bad_body.mlir   # unsupported op in dataflow.subgraph
+      invalid_input_bad_io.mlir     # invalid dataflow.subgraph boundary type
       verifier_failed.mlir          # FU build that intentionally
                                     # violates FuOp::verify; assert the
                                     # pass detects and aborts cleanly
@@ -1503,7 +1516,8 @@ test/techmap/synth/
   `hw_params`, so omission would prevent the synthesized FU from
   enumerating any matching candidate.
 * The `baseArea` weight table is encoded in C++ source. PDK-specific
-  override, or a YAML data file, is explicitly out of scope per Q16.
+  override, or a YAML data file, is explicitly out of scope for this
+  pass.
 * `IncrementalRandom` cost ranking with ties: the current spec picks
   the lowest permutation index. This is deterministic but arbitrary;
   no semantic preference is implied.
