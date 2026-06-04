@@ -257,6 +257,46 @@ fabric.link
   dst = #fabric.endpoint<node = @l2,    port = "up",  channel = "aw">
 ```
 
+The fixed `fabric.link` fields are:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `src` | yes | Output channel endpoint. |
+| `dst` | yes | Input channel endpoint. |
+| `protocol` | no | Protocol enum for this link. If absent, it is inferred from both endpoint ports. If present, it must match both endpoint ports. |
+| `latency` | no | Non-negative latency metadata for simulation, RTL generation, or estimation. |
+| `bandwidth` | no | Positive bandwidth metadata for simulation, RTL generation, or estimation. |
+| `crossing` | conditionally | Clock-domain crossing description. Required when endpoint owner nodes are in different clock domains. |
+| `params` | no | Open dictionary for hardware link implementation metadata. |
+
+`src` and `dst` are the only fields required for connectivity. They
+define the graph edge. All other fixed fields are metadata except
+`crossing`, which becomes a legality requirement when the endpoints are
+in different clock domains.
+
+When `protocol` is absent, the verifier infers it from the source and
+destination ports. The inferred protocols must match. If two endpoints
+use different protocols, the link is illegal; the system graph must
+insert a `protocol_converter` node and connect each side with its own
+one-to-one links.
+
+`latency` and `bandwidth` do not change connectivity, ownership, or
+protocol legality. They are hardware facts or estimates used by
+CGRA-sim, RTL generation, and FPA estimation.
+
+`crossing` is absent when both endpoint owners are in the same clock
+domain. If endpoint owners are in different clock domains, `crossing`
+must be present and must describe the crossing mechanism, such as
+`async_fifo`, `cdc_sync`, `explicit_bridge`, or `custom`. An explicit
+`clock_converter` node may be used instead of a link-level `crossing`
+field; in that case each link endpoint pair is same-domain.
+
+`params` may contain physical or implementation metadata such as wire
+class, estimated length, technology hint, or buffer-depth hint. It must
+not contain software mapping decisions, route paths selected by PnR,
+schedule slots, temporal tags, placement decisions, or workload-specific
+state. Those belong to a separate mapping artifact.
+
 Every link is point-to-point:
 
 * one output channel endpoint
@@ -272,10 +312,6 @@ nodes with their own ports, channels, and one-to-one links.
 Builder-level bundle connection syntax is allowed only as sugar. It
 must expand into per-channel `fabric.link` operations, and each expanded
 link must obey the point-to-point rule.
-
-Link attributes include a small fixed set plus an open `params`
-dictionary. The fixed set includes protocol identity, latency metadata,
-bandwidth metadata, and explicit crossing metadata when needed.
 
 ## External Ports and Dangling Channels
 
@@ -451,6 +487,10 @@ The target verifier enforces:
   directions;
 * each link source endpoint exists and is an output channel;
 * each link destination endpoint exists and is an input channel;
+* absent link protocol is inferred from both endpoint ports;
+* explicit link protocol matches both endpoint ports;
+* links between different endpoint protocols are illegal unless an
+  explicit protocol-converter node sits between them;
 * each channel endpoint participates in at most one link;
 * required non-optional internal channels are connected or exposed;
 * external exposure declares a complete required channel set for the
@@ -460,7 +500,8 @@ The target verifier enforces:
 * `acc_core` nodes reference visible `fabric.module` symbols;
 * cache nodes satisfy required upstream, downstream, line-size, and
   capacity fields;
-* clock-domain crossings are explicit;
+* clock-domain crossings are explicit either through a link `crossing`
+  field or through an explicit clock-converter node;
 * terminal memory target ranges in the same physical address space do
   not overlap by default;
 * coherence-domain memberships reference memory-capable ports;
