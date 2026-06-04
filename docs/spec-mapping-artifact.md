@@ -198,9 +198,12 @@ mapping candidate. Baseline metrics include cycle estimate, resource
 utilization, route length, buffer usage, memory traffic, temporal reuse,
 unmapped software count, and diagnostic count.
 
-Metrics may include DFG-sim comparison data, CGRA-sim results, or FPA
-estimates when available. Metrics are evidence for DSE and reporting;
-they do not change mapping legality.
+Metrics may include DFG-sim report references, CGRA-sim report
+references, simulation comparison report references, or FPA estimates
+when available. DFG-sim, CGRA-sim, and comparison contracts are
+specified in `docs/spec-dfg-sim.md`, `docs/spec-cgra-sim.md`, and
+`docs/spec-simulation-comparison.md`. Metrics are evidence for DSE and
+reporting; they do not change mapping legality.
 
 ## Visualization Metadata
 

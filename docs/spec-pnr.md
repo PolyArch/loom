@@ -269,7 +269,7 @@ to users, tests, DSE reports, and visualization tools.
 
 ## Interface With CGRA-sim
 
-CGRA-sim consumes:
+CGRA-sim is specified in `docs/spec-cgra-sim.md`. It consumes:
 
 * software dataflow IR;
 * Fabric ADG;
@@ -285,9 +285,11 @@ artifact.
 
 CGRA-sim reports observed cycles, resource activity, queue occupancy,
 memory activity, route activity, temporal reuse, stalls, and other
-hardware-aware metrics. These reports may feed a later PnR or DSE run
-as cost feedback, but they are not part of the original PnR decision
-unless explicitly referenced in a new mapping-set manifest.
+hardware-aware metrics. Its reports can be compared with DFG-sim reports
+through `docs/spec-simulation-comparison.md`. These reports may feed a
+later PnR or DSE run as cost feedback, but they are not part of the
+original PnR decision unless explicitly referenced in a new mapping-set
+manifest.
 
 ## Acceptance Criteria
 

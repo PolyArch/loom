@@ -185,12 +185,14 @@ semantics.
 Loom needs two simulation levels:
 
 * DFG-sim simulates pure dataflow software semantics without hardware
-  resource limits. Its results are expected to be optimistic.
+  resource limits. Its results are expected to be optimistic. Its
+  target contract is specified in `docs/spec-dfg-sim.md`.
 * CGRA-sim simulates mapped software on a concrete hardware graph with
   resource, routing, memory, buffering, and temporal-sharing limits.
   Despite the name, CGRA-sim is hardware-aware simulation for mapped
   Loom workloads, not only simulation of a `fabric.module` or
-  SpatialCore.
+  SpatialCore. Its target contract is specified in
+  `docs/spec-cgra-sim.md`.
 
 PnR connects the two sides. It takes software dataflow IR plus hardware
 fabric/ADG IR and emits the independent mapping artifact specified in
@@ -214,7 +216,8 @@ or estimation.
 
 DFG-sim and CGRA-sim results must be compared for the same workload and
 input data. Differences are acceptable only when they are explained by
-hardware constraints that DFG-sim intentionally ignores.
+hardware constraints that DFG-sim intentionally ignores. The comparison
+contract is specified in `docs/spec-simulation-comparison.md`.
 
 ## RTL and Estimation
 
