@@ -816,6 +816,11 @@ BUILDERS = {
 
 PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
 
+# Kernels with a committed CGRA-SCHED eval block: the default set for the
+# `write`/`check` commands and the self-test eval-check, so the read-only drift
+# guard covers every checked-in block (including conv2d).
+WRITTEN_KERNELS = PILOTS + ("conv2d",)
+
 EVAL_PATHS = {
     name: Path(__file__).resolve().parents[1] / "app" / name / f"{name}_eval.md"
     for name in BUILDERS
@@ -845,6 +850,13 @@ def check_contract(dag: Dag, contract, cfg: Config):
         else ("A", "LD", "ST", "CP")
     aggs = []
     for region, decl in zip(dag.regions, contract):
+        # Region names encode the phase/barrier contract (e.g. the FFT stage
+        # order), so a renamed or reordered region must not pass even if the
+        # numeric fields match.
+        if region.name != decl.name:
+            raise AssertionError(
+                f"region name {region.name!r} != contract {decl.name!r} "
+                "(wrong name or order)")
         ra = region_aggregate(region, cfg)
         aggs.append(ra)
         for field in fields:
@@ -1068,7 +1080,7 @@ def _run_golden_tests(errors):
         "conv2d": {"aggregate": 2070,
                    "regions": [("conv2d", 17, 74515, 13716, 6220, 2070)]},
     }
-    for kernel in PILOTS + ("conv2d",):
+    for kernel in WRITTEN_KERNELS:
         dag, contract = build_kernel(kernel)
         try:
             aggs = check_contract(dag, contract, cfg)
@@ -1131,7 +1143,7 @@ def _run_eval_check_tests(errors):
     checked-in eval files (positive) and against tampered / blockless temp
     copies (negative), without modifying any repository file."""
     cfg = CONFIG_6x6
-    written = list(PILOTS) + ["conv2d"]
+    written = list(WRITTEN_KERNELS)
     # Positive: every checked-in eval block matches its freshly computed block.
     for kernel in written:
         problems = check_eval(kernel, cfg)
@@ -1167,10 +1179,25 @@ def _run_eval_check_tests(errors):
             EVAL_PATHS[kernel] = orig_path
 
 
+def _run_contract_validation_test(errors):
+    """check_contract must reject a region whose declared name disagrees with the
+    constructed region (wrong name or order), even when numeric fields match."""
+    dag, contract = build_kernel("axpy")
+    decl = contract[0]
+    renamed = [RegionContract("WRONG", decl.A, decl.LD, decl.ST, decl.CP,
+                              decl.aggregate)]
+    try:
+        check_contract(dag, renamed, CONFIG_6x6)
+        errors.append("contract-validation: wrong region name not rejected")
+    except AssertionError:
+        pass
+
+
 def run_self_tests() -> int:
     errors: list[str] = []
     _run_synthetic_tests(errors)
     _run_golden_tests(errors)
+    _run_contract_validation_test(errors)
     _run_drift_test(errors)
     _run_eval_check_tests(errors)
     if errors:
@@ -1178,7 +1205,7 @@ def run_self_tests() -> int:
             print(f"  SELF-TEST FAIL: {e}")
         return 1
     print("[PASS] cgra_schedule self-tests "
-          "(synthetic + golden pilots + drift + eval-check)")
+          "(synthetic + golden pilots + contract + drift + eval-check)")
     return 0
 
 
@@ -1210,7 +1237,7 @@ def main(argv) -> int:
         return 0
     if args.cmd == "write":
         cfg = parse_config(args.config)
-        kernels = args.kernels or list(PILOTS)
+        kernels = args.kernels or list(WRITTEN_KERNELS)
         for kernel in kernels:
             changed = write_eval(kernel, cfg)
             print(f"{kernel}: {'updated' if changed else 'unchanged'} "
@@ -1218,7 +1245,7 @@ def main(argv) -> int:
         return 0
     if args.cmd == "check":
         cfg = parse_config(args.config)
-        kernels = args.kernels or list(PILOTS)
+        kernels = args.kernels or list(WRITTEN_KERNELS)
         problems = []
         for kernel in kernels:
             problems.extend(check_eval(kernel, cfg))
