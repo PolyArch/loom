@@ -7,6 +7,11 @@ enclosing `fabric.pe`. The canonical IR source is `Fabric_FuOp` in
 `include/Fabric/IR/FabricOps.td`; verifier rules live in
 `lib/Fabric/IR/FabricOps.cpp`.
 
+`fabric.mux` and `fabric.demux` are FU-local configurable connectivity
+ops. They are part of a SpatialCore template inside `fabric.module`;
+they are not `fabric.system` interconnect primitives and must not be
+used to model system-level fan-in, fanout, arbitration, or routing.
+
 ## Op shape
 
 `fabric.fu` carries an optional `sym_name`. The op exists in two

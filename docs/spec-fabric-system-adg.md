@@ -231,7 +231,10 @@ definition explicitly says so.
 The system ADG does not introduce hardware primitives named `mux` or
 `demux`. Those names are reserved for software dataflow selection and
 would blur the distinction between dataflow control and hardware
-routing.
+routing at system level. This restriction applies to `fabric.system`
+node kinds. It does not rename the existing `fabric.mux` and
+`fabric.demux` ops inside `fabric.fu`; those remain FU-local
+configuration primitives inside `fabric.module` templates.
 
 The baseline system interconnect primitives are:
 
@@ -367,4 +370,3 @@ The target verifier enforces:
 * a memory-capable port participates in at most one coherence domain in
   the first target design;
 * caches in a coherence domain use the domain line size.
-

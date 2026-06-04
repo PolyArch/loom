@@ -70,6 +70,11 @@ Compared to a bare `fabric.fu`:
 * The PE provides a single, unified runtime configuration record whose
   layout is fixed and self-describing.
 
+The PE input-mux and output-demux terms refer to local configuration
+fields inside a SpatialCore template. They are not `fabric.system`
+interconnect primitives. System-level routing and arbitration use the
+primitive node kinds specified in `docs/spec-fabric-system-adg.md`.
+
 Compared to allowing arbitrary multi-FU placement:
 
 * At most one physical `fabric.fu` inside a `fabric.pe [spatial]` may be
