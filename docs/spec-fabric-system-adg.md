@@ -49,8 +49,8 @@ symbol.
 symbolic graph:
 
 * `fabric.node` operations define physical nodes.
-* `fabric.external_port` operations define intentional system boundary
-  exposure.
+* `fabric.external_port` operations define complete intentional protocol
+  ports at the system boundary.
 * `fabric.link` operations define directed point-to-point channel
   connections.
 * `fabric.clock_domain`, `fabric.reset_domain`, and
@@ -192,7 +192,9 @@ boundary exposure cannot be confused with an internal node channel:
 
 The node endpoint's symbol resolves to a `fabric.node` in the enclosing
 `fabric.system`. The external endpoint's symbol resolves to a
-`fabric.external_port` in the same system.
+`fabric.external_port` in the same system. An external endpoint does not
+carry a port name because `fabric.external_port` owns exactly one
+complete protocol port.
 
 A representative node declaration is:
 
@@ -277,9 +279,33 @@ bandwidth metadata, and explicit crossing metadata when needed.
 
 ## External Ports and Dangling Channels
 
-`fabric.external_port` declares intentional system boundary exposure.
-It distinguishes a real top-level hardware port from an accidentally
+`fabric.external_port` declares intentional system boundary exposure. It
+distinguishes a real top-level hardware port from an accidentally
 unconnected internal channel.
+
+A `fabric.external_port` is a complete protocol port, not a single
+channel exposure. It owns exactly one `#fabric.port` attribute. For a
+built-in protocol, that port must declare the complete required channel
+set for its role. Each channel is still connected individually through a
+`fabric.link` endpoint, but the externally exposed interface is the full
+protocol bundle.
+
+A representative declaration is:
+
+```mlir
+fabric.external_port @host_mem
+  port = #fabric.port<
+    name = "host_mem",
+    protocol = axi4_mm,
+    role = subordinate,
+    channels = [
+      #fabric.channel<name = "aw", direction = input>,
+      #fabric.channel<name = "w",  direction = input>,
+      #fabric.channel<name = "b",  direction = output>,
+      #fabric.channel<name = "ar", direction = input>,
+      #fabric.channel<name = "r",  direction = output>
+    ]>
+```
 
 Non-optional internal channels must be connected or intentionally
 exposed through a matching external port. Otherwise the hardware is
@@ -417,6 +443,7 @@ The target verifier enforces:
 * each `fabric.system` symbol is unique in its module;
 * node symbols are unique within the system;
 * external port symbols are unique within the system;
+* each external port owns exactly one complete `#fabric.port`;
 * node kinds are valid enum values;
 * port names are unique within each node or external port;
 * channel names are unique within each port;
@@ -428,6 +455,8 @@ The target verifier enforces:
 * required non-optional internal channels are connected or exposed;
 * external exposure declares a complete required channel set for the
   exposed protocol;
+* external endpoints resolve to channels of a complete external protocol
+  port;
 * `acc_core` nodes reference visible `fabric.module` symbols;
 * cache nodes satisfy required upstream, downstream, line-size, and
   capacity fields;
