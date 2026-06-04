@@ -446,6 +446,31 @@ they do not replace the required system-level declaration.
 ports. Membership references node port endpoints, not whole nodes and
 not individual channels.
 
+The domain is explicit and verifier-checked. It is not inferred from
+topology. A domain declaration contains:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `sym_name` | yes | Domain symbol unique within the enclosing system. |
+| `addr_space` | yes | Physical address-space identifier covered by this coherence domain. |
+| `line_bytes` | yes | Positive cache-line size in bytes. |
+| `protocol` | yes | Coherence protocol enum or `custom`. |
+| `members` | yes | Non-empty array of memory-capable port endpoints. |
+| `home` | no | Optional home-agent port endpoint for directory-style protocols. |
+| `params` | no | Protocol-specific dictionary. |
+
+Membership uses port endpoints, not channel endpoints:
+
+```mlir
+#fabric.port_endpoint<node = @l2, port = "up">
+#fabric.port_endpoint<external = @host_mem>
+```
+
+The node form resolves to a `fabric.node` port. The external form
+resolves to the complete protocol port owned by a `fabric.external_port`.
+Every member endpoint must refer to a memory-capable port whose
+`addr_space` equals the domain `addr_space`.
+
 The baseline coherence protocol enum is:
 
 * `none`
@@ -455,12 +480,39 @@ The baseline coherence protocol enum is:
 * `directory`
 * `custom`
 
+A representative declaration is:
+
+```mlir
+fabric.coherence_domain @coh0
+  addr_space = 0
+  line_bytes = 64
+  protocol = #fabric.coherence_protocol<mesi>
+  members = [
+    #fabric.port_endpoint<node = @host0, port = "mem">,
+    #fabric.port_endpoint<node = @l2,    port = "up">,
+    #fabric.port_endpoint<node = @dram0, port = "mem">
+  ]
+```
+
 A directory or home-agent coherence protocol may define an optional
-`home` endpoint. A memory-capable port may participate in at most one
-coherence domain in the first target design.
+`home` endpoint. `home` is legal for `directory` and for `custom`
+protocols whose params explicitly declare home-agent semantics. It is
+illegal for `none`, `snooping`, `mesi`, and `moesi`.
+
+`protocol = none` explicitly records a non-coherent memory-sharing
+group. It may contain memory-capable ports in the domain address space,
+but it must not contain cache node ports. Coherent cache membership uses
+one of the coherent protocols.
+
+A memory-capable port may participate in at most one coherence domain in
+the first target design.
 
 If a cache is in a coherence domain, its line size must match the
-domain line size.
+domain line size. All cache member ports must belong to a cache node in
+the same `addr_space`. Terminal memory target member port ranges remain
+subject to the address-space non-overlap rule. Manager and upstream
+ports may omit `addr_ranges`; if they declare ranges, those ranges must
+belong to the domain `addr_space`.
 
 ## Mapping Boundary
 
@@ -525,7 +577,14 @@ The target verifier enforces:
 * reset-domain and power-domain differences do not affect link legality;
 * terminal memory target ranges in the same physical address space do
   not overlap by default;
-* coherence-domain memberships reference memory-capable ports;
+* coherence-domain memberships reference memory-capable port endpoints;
+* each coherence-domain member port uses the domain address space;
+* coherence-domain `line_bytes` is positive;
+* coherence-domain `members` is non-empty;
+* coherence-domain `home` is legal only for directory-style protocols;
+* a `protocol = none` coherence domain does not include cache node
+  ports;
 * a memory-capable port participates in at most one coherence domain in
   the first target design;
-* caches in a coherence domain use the domain line size.
+* caches in a coherence domain use the domain line size;
+* member port ranges, when present, belong to the domain address space.
