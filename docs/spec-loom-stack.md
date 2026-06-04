@@ -190,10 +190,18 @@ Loom needs two simulation levels:
   resource, routing, memory, buffering, and temporal-sharing limits.
 
 PnR connects the two sides. It takes software dataflow IR plus hardware
-fabric/ADG IR and emits a mapping artifact that records placed software
-nodes, routed edges, memory bindings, and any fabric-side temporal tags
-or schedule slots required by the selected hardware mapping, plus
-diagnostics for unmappable regions.
+fabric/ADG IR and emits the independent mapping artifact specified in
+`docs/spec-mapping-artifact.md`. The artifact records placed software
+nodes, routed edges, memory bindings, resource sharing, buffers,
+schedule slots, temporal tags, diagnostics, and metrics required by the
+selected hardware mapping.
+
+Mapping artifacts and Fabric ADG may carry optional visualization
+metadata. Visualization metadata helps GUI tools draw regular
+topologies such as two-dimensional meshes or three-dimensional grids
+and overlay software-to-hardware mappings. It must not affect software
+semantics, hardware semantics, PnR legality, simulation, RTL lowering,
+or estimation.
 
 DFG-sim and CGRA-sim results must be compared for the same workload and
 input data. Differences are acceptable only when they are explained by

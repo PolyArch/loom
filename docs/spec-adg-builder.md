@@ -136,6 +136,13 @@ Convenience helpers may attach optional metadata such as coordinates or
 labels. They must not make that metadata semantically required unless
 the same fact is represented by explicit Fabric ADG fields.
 
+Convenience helpers for regular structures should attach optional
+visualization metadata when it improves human inspection. For example,
+a mesh-like helper may emit a `grid2d` visualization layout and per-node
+coordinates, and a stacked-grid helper may emit a `grid3d` visualization
+layout. These hints are for GUI tools only. Explicit links remain the
+topology source of truth.
+
 ## Ergonomics Requirements
 
 The common construction path must be concise:
@@ -260,6 +267,7 @@ The ADG Builder target is complete when:
 * all required examples emit deterministic MLIR;
 * emitted MLIR verifies under the Fabric ADG verifier;
 * generated names and operation ordering are stable;
+* regular-topology helpers can emit optional visualization metadata;
 * no convenience helper requires mesh, x/y coordinates, Manhattan
   routing, or homogeneous accelerator cores;
 * inline-fabric construction can be mixed with convenience construction

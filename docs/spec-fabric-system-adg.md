@@ -71,6 +71,12 @@ The body is a symbolic graph description. It does not use SSA edges or a
 region terminator to encode connectivity. `fabric.link` is the
 connectivity source of truth.
 
+`fabric.system` and its child objects may carry optional visualization
+metadata. Visualization metadata helps a GUI draw regular structures
+such as two-dimensional meshes, three-dimensional grids, trees, or
+hierarchies. It does not define topology, routing, placement, hardware
+legality, or mapping legality.
+
 ## Nodes
 
 `fabric.node` represents one physical hardware instance. The node kind
@@ -107,6 +113,7 @@ A `fabric.node` has these common fields:
 | `clock_domain` | no | Node clock-domain override. Defaults to the system default domain. |
 | `reset_domain` | no | Node reset-domain override. Defaults to the system default domain. |
 | `power_domain` | no | Node power-domain override. Defaults to the system default domain. |
+| `visual` | no | Visualization metadata. Never affects hardware semantics. |
 | `params` | no | Node-kind-specific implementation, timing, capacity, and policy metadata. |
 
 Baseline node kinds use the fields below as the required semantic
@@ -459,6 +466,7 @@ The fixed `fabric.link` fields are:
 | `latency` | no | Non-negative latency metadata for simulation, RTL generation, or estimation. |
 | `bandwidth` | no | Positive bandwidth metadata for simulation, RTL generation, or estimation. |
 | `crossing` | conditionally | Clock-domain crossing description. Required when endpoint effective clock domains differ. |
+| `visual` | no | Visualization metadata. Never affects connectivity or hardware semantics. |
 | `params` | no | Open dictionary for hardware link implementation metadata. |
 
 `src` and `dst` are the only fields required for connectivity. They
@@ -520,7 +528,7 @@ channel exposure. It owns exactly one `#fabric.port` attribute. For a
 built-in protocol, that port must declare the complete required channel
 set for its role. Each channel is still connected individually through a
 `fabric.link` endpoint, but the externally exposed interface is the full
-protocol bundle.
+protocol bundle. An external port may carry optional `visual` metadata.
 
 A representative declaration is:
 
@@ -732,12 +740,61 @@ subject to the address-space non-overlap rule. Manager and upstream
 ports may omit `addr_ranges`; if they declare ranges, those ranges must
 belong to the domain `addr_space`.
 
+## Visualization Metadata
+
+Fabric ADG supports optional visualization metadata for human
+inspection. This metadata is intended for GUI tools and reports. It
+must not affect hardware semantics, verifier legality, PnR legality,
+simulation, RTL lowering, or FPA estimation.
+
+A system may define visualization layouts. A layout has:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `name` | yes | Unique layout identifier inside the system. |
+| `kind` | yes | `free_graph`, `grid2d`, `grid3d`, `hierarchy`, or `custom`. |
+| `rank` | conditionally | Coordinate rank. Required for grid and custom coordinate layouts. |
+| `dims` | no | Optional positive extents for grid layouts. |
+| `axes` | no | Human-readable axis names. |
+| `params` | no | GUI-oriented metadata. |
+
+When represented in Fabric ADG, these layouts live in an optional
+system-level `visual_layouts` attribute. Object-level `visual`
+metadata may reference entries in that layout set.
+
+Objects may attach visualization metadata that references a layout and
+provides optional display hints:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `layout` | no | Referenced visualization layout name. |
+| `coord` | no | Integer coordinate vector in the referenced layout. |
+| `pos` | no | Continuous drawing position for free-form layouts. |
+| `group` | no | Visual grouping label. |
+| `label` | no | Preferred display label. |
+| `style` | no | GUI style class. |
+| `params` | no | GUI-specific metadata. |
+
+For a `grid2d` layout, `coord` rank is two. For a `grid3d` layout,
+`coord` rank is three. When `dims` is present, coordinates must be
+inside the declared extents. Coordinates need not be unique unless the
+visualization layout declares uniqueness in `params`.
+
+Visualization metadata may be attached to systems, nodes, external
+ports, links, and domains. The metadata may describe regular views such
+as a mesh accelerator array or a stacked three-dimensional topology, but
+the explicit Fabric links remain the topology source of truth.
+
+Tools that do not render visualizations must be able to ignore
+visualization metadata without changing any hardware or mapping result.
+
 ## Mapping Boundary
 
 `fabric.system` does not contain software-to-hardware placement or
-routing decisions. Mapping is a separate artifact that references a
-software dataflow graph, a selected `fabric.system`, and the hardware
-resources chosen by PnR.
+routing decisions. Mapping is a separate artifact specified in
+`docs/spec-mapping-artifact.md`. It references a software dataflow
+graph, a selected `fabric.system`, and the hardware resources chosen by
+PnR.
 
 System nodes, links, domains, ports, and channels are hardware facts.
 They remain valid whether no workload is mapped, one workload is mapped,
@@ -757,8 +814,9 @@ Builder conveniences may construct common structures such as:
 * external memory attachments
 
 Every convenience must lower to explicit nodes, ports, channels, and
-one-to-one `fabric.link` operations. Coordinates may be emitted as
-metadata, but connectivity must be emitted as links.
+one-to-one `fabric.link` operations. Regular-topology helpers may emit
+optional visualization layouts and coordinates, but connectivity must be
+emitted as links.
 
 ## Verifier Rules
 
@@ -824,6 +882,10 @@ The target verifier enforces:
   or through an explicit clock-converter node;
 * same-domain links do not carry a `crossing` field;
 * reset-domain and power-domain differences do not affect link legality;
+* visualization layout names are unique when visualization metadata is
+  present;
+* visualization metadata references declared layouts and uses coordinate
+  rank and extents consistent with the referenced layout;
 * terminal memory target ranges in the same physical address space do
   not overlap by default;
 * coherence-domain memberships reference memory-capable port endpoints;
