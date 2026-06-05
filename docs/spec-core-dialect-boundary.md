@@ -45,7 +45,7 @@ requests.
 | Runtime ABI | Host-visible work packages, launch descriptors, memory descriptors, launch handles, platform binding, data movement policy, synchronization policy, target selection, fallback policy, runtime diagnostics. | Dataflow token semantics, Fabric topology, PnR legality, route selection, coherence definition, FPA estimates. |
 | DFG-sim | Pure dataflow execution for concrete inputs without hardware resource limits. | Fabric ADG, mapping artifacts, hardware placement, hardware routing, hardware resource contention. |
 | CGRA-sim | Execution of mapped dataflow on selected hardware using the mapping artifact, with hardware resource, route, memory, buffering, timing, and activity constraints. | Choosing placements, routes, schedules, memory bindings, or resource-sharing assignments. |
-| Full-stack reporting | Report bundles, metric provenance, derived metrics, simulator cycle summary exports, diagnostic aggregation, artifact trace references. | New software operations, new hardware nodes, new mappings, simulator execution, backend execution, DSE candidate mutation. |
+| Full-stack reporting | Report bundles, metric provenance, derived metrics, intermediate artifact gates, simulator cycle summary exports, content-audit summaries, diagnostic aggregation, artifact trace references. | New software operations, new hardware nodes, new mappings, simulator execution, backend execution, DSE candidate mutation. |
 | DSE feedback | Objective records, candidate records, Pareto or selected-candidate records, explicit requests for new compiler, hardware, mapping, simulator, RTL, or FPA candidates. | Mutating existing dataflow IR, Fabric ADG, mapping artifacts, simulator reports, RTL manifests, EDA reports, or FPA reports. |
 
 ## Dataflow Boundary
@@ -209,8 +209,9 @@ constraints that DFG-sim intentionally ignores.
 Full-stack reporting consumes artifacts and reports from compiler,
 mapping, runtime, simulator, RTL, EDA, FPA, and DSE tools. It packages
 evidence, records metric provenance, computes derived metrics, and
-emits summary table exports. It must not create or modify software IR,
-hardware IR, mapping artifacts, simulator reports, or backend reports.
+emits intermediate artifact gates, content-audit summaries, and summary
+table exports. It must not create or modify software IR, hardware IR,
+mapping artifacts, simulator reports, or backend reports.
 
 DSE feedback consumes immutable artifacts and report bundles to choose
 or request new candidates. A DSE request may ask the compiler, ADG

@@ -139,6 +139,11 @@ Full-stack reporting must support compact table exports for regression
 tracking and DSE dashboards. A table export is a projection of report
 bundle metrics. It does not replace the report bundle.
 
+Portable intermediate artifact gate schemas are specified in
+`docs/spec-intermediate-artifacts.md`. Full-stack report bundles may
+consume those artifacts, but they do not replace the per-artifact
+schemas or content-audit requirements.
+
 The required simulator cycle summary export has one row per kernel or
 app case and these required columns:
 

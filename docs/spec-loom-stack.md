@@ -250,6 +250,9 @@ summary exports, is specified in
 `docs/spec-full-stack-reporting.md`. End-to-end demonstrator
 requirements are specified in
 `docs/spec-end-to-end-demonstrators.md`.
+Intermediate artifact gate schemas for mid-run evidence, summary
+exports, and content audits are specified in
+`docs/spec-intermediate-artifacts.md`.
 
 ## Runtime ABI
 

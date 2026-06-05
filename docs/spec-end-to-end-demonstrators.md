@@ -73,6 +73,7 @@ Required generated artifacts:
 * EDA reports when selected;
 * FPA report;
 * workload report bundle.
+* intermediate artifact gate rows covering this demonstrator.
 
 Minimum positive behavior: compatibility-mode output matches the app
 oracle, and reporting mode emits every required artifact for the
@@ -176,6 +177,8 @@ Required generated artifacts:
 * FPA report;
 * workload report bundle with derived cycle/frequency/power/area
   metrics.
+* intermediate artifact gate rows covering mapping, simulation, FPA,
+  and reporting evidence.
 
 Minimum positive behavior: PnR emits the mapping artifact, CGRA-sim
 consumes it without choosing a new mapping, functional results match
@@ -221,5 +224,7 @@ The demonstrator matrix target is complete when:
 * the regular-topology demonstrator proves coordinates are metadata;
 * the mapped workload demonstrator proves PnR, mapping verification,
   CGRA-sim, FPA, and combined reporting boundaries;
+* required intermediate artifact gate rows exist and pass content audit
+  for the demonstrators they summarize;
 * unsupported-scope records are explicit and never counted as ordinary
   pass evidence.
