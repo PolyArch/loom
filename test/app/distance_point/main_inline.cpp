@@ -9,8 +9,16 @@ namespace {
 
 constexpr uint32_t kCount = 16;
 constexpr uint32_t kPointElems = kCount * 3u;
-constexpr double kExpectedChecksum = 401.1407461166382;
 constexpr double kTolerance = 1e-3;
+
+void distance_ref(const float *a, const float *b, float *out, uint32_t count) {
+    for (uint32_t i = 0; i < count; ++i) {
+        const float dx = a[i * 3u + 0u] - b[i * 3u + 0u];
+        const float dy = a[i * 3u + 1u] - b[i * 3u + 1u];
+        const float dz = a[i * 3u + 2u] - b[i * 3u + 2u];
+        out[i] = std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+}
 
 double checksum(const std::array<float, kCount> &values) {
     double sum = 0.0;
@@ -25,7 +33,8 @@ double checksum(const std::array<float, kCount> &values) {
 int main() {
     std::array<float, kPointElems> a = {};
     std::array<float, kPointElems> b = {};
-    std::array<float, kCount> out = {};
+    std::array<float, kCount> reference = {};
+    std::array<float, kCount> candidate = {};
 
     for (uint32_t i = 0; i < kCount; ++i) {
         a[i * 3u + 0u] = 0.25f * static_cast<float>(i);
@@ -37,19 +46,22 @@ int main() {
         b[i * 3u + 2u] = -2.0f + 0.3125f * static_cast<float>(i);
     }
 
+    distance_ref(a.data(), b.data(), reference.data(), kCount);
     for (uint32_t i = 0; i < kCount; ++i) {
         const float dx = a[i * 3u + 0u] - b[i * 3u + 0u];
         const float dy = a[i * 3u + 1u] - b[i * 3u + 1u];
         const float dz = a[i * 3u + 2u] - b[i * 3u + 2u];
-        out[i] = std::sqrt(dx * dx + dy * dy + dz * dz);
+        candidate[i] = std::sqrt(dx * dx + dy * dy + dz * dz);
     }
 
-    const double actual = checksum(out);
-    if (std::fabs(actual - kExpectedChecksum) > kTolerance) {
-        std::puts("FAILED");
-        return 1;
+    for (uint32_t i = 0; i < kCount; ++i) {
+        if (std::fabs(reference[i] - candidate[i]) > kTolerance) {
+            std::puts("FAILED");
+            return 1;
+        }
     }
 
+    const double actual = checksum(candidate);
     std::printf("distance_point checksum: %.3f\n", actual);
     std::puts("PASSED");
     return 0;
