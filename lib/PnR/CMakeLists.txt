@@ -16,5 +16,6 @@ add_mlir_library(LoomPnR
   MLIRParser
   MLIRSCFDialect
   MLIRSupport
+  MLIRUBDialect
   LLVMSupport
 )

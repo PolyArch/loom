@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -98,7 +99,7 @@ mlir::DialectRegistry makeRegistry() {
   registry.insert<dataflow::DataflowDialect, fabric::FabricDialect,
                   mlir::arith::ArithDialect, mlir::DLTIDialect,
                   mlir::func::FuncDialect, mlir::LLVM::LLVMDialect,
-                  mlir::scf::SCFDialect>();
+                  mlir::scf::SCFDialect, mlir::ub::UBDialect>();
   return registry;
 }
 
