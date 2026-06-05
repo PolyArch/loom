@@ -575,7 +575,7 @@ loom::pnr::createMapping(const MappingOptions &options) {
       summary.status = "fail";
       summary.diagnostic =
           "missing hardware resource for software op " + node.operation;
-      ++summary.unroutedEdges;
+      ++summary.unplacedRecords;
       continue;
     }
     summary.placements.push_back(PlacementRecord{
@@ -610,12 +610,13 @@ loom::pnr::writeMappingCsv(llvm::StringRef outputPath,
                                    outputPath.str().c_str());
 
   out << "workload,hardware,mapping_id,placed_records,routed_edges,"
-         "unrouted_edges,status,diagnostic\n";
+         "unrouted_edges,unplaced_records,status,diagnostic\n";
   for (const MappingSummary &summary : summaries) {
     out << csvEscape(summary.workload) << ',' << csvEscape(summary.hardware)
         << ',' << csvEscape(summary.mappingId) << ','
         << summary.placements.size() << ',' << summary.routes.size() << ','
-        << summary.unroutedEdges << ',' << csvEscape(summary.status) << ','
+        << summary.unroutedEdges << ',' << summary.unplacedRecords << ','
+        << csvEscape(summary.status) << ','
         << csvEscape(summary.diagnostic) << '\n';
   }
   return llvm::Error::success();
@@ -649,7 +650,7 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
       {"placed_records", static_cast<int64_t>(summary.placements.size())},
       {"routed_edges", static_cast<int64_t>(summary.routes.size())},
       {"unrouted_edges", static_cast<int64_t>(summary.unroutedEdges)},
-      {"unplaced_records", static_cast<int64_t>(summary.unroutedEdges)},
+      {"unplaced_records", static_cast<int64_t>(summary.unplacedRecords)},
       {"config_records", static_cast<int64_t>(summary.configEntries.size())},
       {"placements", std::move(placements)},
       {"routes", std::move(routes)},

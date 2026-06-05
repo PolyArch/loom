@@ -4,8 +4,8 @@
 // RUN: FileCheck %s --check-prefix=CSV < %t.dir/mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.dir/mapping.json
 
-// CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic
-// CSV-NEXT: vecsum,shared_reduction_adg,vecsum__shared_reduction_adg,6,8,0,pass
+// CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CSV-NEXT: vecsum,shared_reduction_adg,vecsum__shared_reduction_adg,6,8,0,0,pass
 
 // JSON-DAG: "kind": "pnr_mapping"
 // JSON-DAG: "workload": "vecsum"
@@ -13,6 +13,8 @@
 // JSON-DAG: "status": "pass"
 // JSON-DAG: "placed_records": 6
 // JSON-DAG: "routed_edges": 8
+// JSON-DAG: "unrouted_edges": 0
+// JSON-DAG: "unplaced_records": 0
 // JSON-DAG: "config_records": 43
 // JSON-DAG: "config_bitstream"
 // JSON-DAG: "register": "sw_configs.step_op"

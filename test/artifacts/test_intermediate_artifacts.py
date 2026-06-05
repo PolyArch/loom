@@ -51,6 +51,7 @@ CSV_COMMANDS = [
             "placed_records",
             "routed_edges",
             "unrouted_edges",
+            "unplaced_records",
             "status",
         ],
     ),
@@ -279,8 +280,8 @@ def main() -> int:
         )
         stale_mapping = out_dir / "stale-pnr-mapping-summary.csv"
         stale_mapping.write_text(
-            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
-            "ghost,missing_hw,,,,,blocked,stale candidate references\n"
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"
+            "ghost,missing_hw,,,,,,blocked,stale candidate references\n"
         )
         audit_cross = out_dir / "artifact-audit-summary-cross-fail.json"
         result = run_command(
@@ -469,8 +470,8 @@ def main() -> int:
 
         valid_mapping = out_dir / "valid-pnr-mapping-summary.csv"
         valid_mapping.write_text(
-            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
-            "vecadd,fabric0,map0,1,1,0,pass,verified mapping\n"
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"
+            "vecadd,fabric0,map0,1,1,0,0,pass,verified mapping\n"
         )
         cgra_without_report = out_dir / "cgra-without-report-sim-cycle-summary.csv"
         cgra_without_report.write_text(
@@ -645,8 +646,8 @@ def main() -> int:
 
         invalid_mapping = out_dir / "invalid-pnr-mapping-summary.csv"
         invalid_mapping.write_text(
-            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
-            "vecadd,fabric0,map0,1,0,1,pass,\n"
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"
+            "vecadd,fabric0,map0,1,0,1,0,pass,\n"
         )
         result = run_command(
             repo,
@@ -660,6 +661,41 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("PnR pass row with unrouted edges unexpectedly passed audit")
+
+        invalid_mapping_artifact = out_dir / "invalid-pnr-mapping.json"
+        invalid_mapping_artifact.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "pnr_mapping",
+                    "workload": "vecadd",
+                    "hardware": "fabric0",
+                    "graph": "g_vecadd",
+                    "mapping_id": "map0",
+                    "status": "pass",
+                    "placed_records": 0,
+                    "routed_edges": 0,
+                    "unrouted_edges": 0,
+                    "unplaced_records": 0,
+                    "config_records": 1,
+                    "placements": [],
+                    "routes": [],
+                    "config_bitstream": [],
+                }
+            )
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-invalid-pnr-json.json"),
+                str(invalid_mapping_artifact),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("PnR mapping JSON with mismatched config_records unexpectedly passed audit")
 
         invalid_hardware = out_dir / "invalid-adg-hardware-summary.csv"
         invalid_hardware.write_text(

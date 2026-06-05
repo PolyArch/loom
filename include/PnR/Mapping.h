@@ -50,6 +50,7 @@ struct MappingSummary {
   llvm::SmallVector<PlacementRecord> placements;
   llvm::SmallVector<RouteRecord> routes;
   llvm::SmallVector<ConfigEntry> configEntries;
+  std::uint64_t unplacedRecords = 0;
   std::uint64_t unroutedEdges = 0;
 };
 

@@ -16,6 +16,7 @@ HEADER = [
     "placed_records",
     "routed_edges",
     "unrouted_edges",
+    "unplaced_records",
     "status",
 ]
 
@@ -46,7 +47,7 @@ def main() -> int:
         if len(matches) != 1:
             raise AssertionError(f"expected one vecadd to pe_two_pes row, got {rows}")
         row = matches[0]
-        for column in ("mapping_id", "placed_records", "routed_edges", "unrouted_edges"):
+        for column in ("mapping_id", "placed_records", "routed_edges", "unrouted_edges", "unplaced_records"):
             if row[column] != "":
                 raise AssertionError(f"blocked row must not fake {column}: {row}")
         if row["status"] != "blocked":
@@ -101,6 +102,7 @@ def main() -> int:
             "placed_records": "6",
             "routed_edges": "8",
             "unrouted_edges": "0",
+            "unplaced_records": "0",
             "status": "pass",
         }
         for key, value in expected.items():

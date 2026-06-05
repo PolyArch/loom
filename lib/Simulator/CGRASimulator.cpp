@@ -155,12 +155,23 @@ llvm::Error expectConfig(const ConfigEntries &entries, llvm::StringRef target,
 }
 
 llvm::Error collectConfigEntries(const llvm::json::Object &mapping,
+                                 llvm::StringRef mappingArtifactPath,
                                  CGRASimReport &report,
                                  ConfigEntries &entries) {
   const llvm::json::Array *configArray = mapping.getArray("config_bitstream");
   if (!configArray)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "mapping artifact lacks config_bitstream");
+  auto declaredRecordsOrErr =
+      requireNonNegativeInteger(mapping, "config_records", mappingArtifactPath);
+  if (!declaredRecordsOrErr)
+    return declaredRecordsOrErr.takeError();
+  if (*declaredRecordsOrErr != configArray->size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping config_records field %llu does not match config_bitstream size %llu",
+        static_cast<unsigned long long>(*declaredRecordsOrErr),
+        static_cast<unsigned long long>(configArray->size()));
   report.configRecords = configArray->size();
   for (const llvm::json::Value &value : *configArray) {
     const llvm::json::Object *entry = value.getAsObject();
@@ -413,7 +424,8 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
 
   ConfigEntries configEntries;
   if (llvm::Error err =
-          collectConfigEntries(*mappingOrErr, report, configEntries))
+          collectConfigEntries(*mappingOrErr, options.mappingArtifactPath,
+                               report, configEntries))
     return std::move(err);
   if (llvm::Error err =
           validateConfigCoverage(*mappingOrErr, report, configEntries))

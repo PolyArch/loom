@@ -110,8 +110,8 @@ def main() -> int:
 
         selected_like_mapping = out_dir / "selected-like-pnr-mapping-summary.csv"
         selected_like_mapping.write_text(
-            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
-            "vecadd,fabric0,map0,1,1,0,pass,synthetic complete mapping\n"
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"
+            "vecadd,fabric0,map0,1,1,0,0,pass,synthetic complete mapping\n"
         )
         selected_like_sim = out_dir / "selected-like-sim-cycle-summary.csv"
         selected_like_sim.write_text(

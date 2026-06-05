@@ -170,17 +170,21 @@ Required first columns:
 * `placed_records`;
 * `routed_edges`;
 * `unrouted_edges`;
+* `unplaced_records`;
 * `status`.
 
 Rules:
 
-* `placed_records`, `routed_edges`, and `unrouted_edges` are
-  non-negative integers.
+* `placed_records`, `routed_edges`, `unrouted_edges`, and
+  `unplaced_records` are non-negative integers.
+* `unplaced_records` counts software nodes that could not claim a
+  hardware resource. `unrouted_edges` counts software edges whose
+  endpoints were placed but whose route could not be established.
 * Blocked or unsupported rows must include a diagnostic column explaining
   the missing upstream artifact, profile, or mapping implementation.
 * `status = pass` requires a non-empty `mapping_id`, positive placed
-  records, and no unrouted edges unless the mapping profile explicitly
-  permits partial mappings.
+  records, no unplaced records, and no unrouted edges unless the mapping
+  profile explicitly permits partial mappings.
 * A mapping row must agree with the referenced mapping artifact
   identity and verifier result when those optional columns are present.
 

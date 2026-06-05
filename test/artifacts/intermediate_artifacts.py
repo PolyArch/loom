@@ -154,15 +154,17 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "placed_records",
             "routed_edges",
             "unrouted_edges",
+            "unplaced_records",
             "status",
         ),
         status_columns=("status",),
         extra_columns=("diagnostic",),
-        numeric_columns=("placed_records", "routed_edges", "unrouted_edges"),
+        numeric_columns=("placed_records", "routed_edges", "unrouted_edges", "unplaced_records"),
         identity_columns=("workload", "hardware", "mapping_id"),
         scaffold_row=(
             "scaffold",
             "scaffold",
+            "",
             "",
             "",
             "",
@@ -379,6 +381,26 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "diagnostics",
         },
     },
+    "pnr_mapping_artifact": {
+        "filename": "pnr-mapping.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "workload",
+            "hardware",
+            "graph",
+            "mapping_id",
+            "status",
+            "placed_records",
+            "routed_edges",
+            "unrouted_edges",
+            "unplaced_records",
+            "config_records",
+            "placements",
+            "routes",
+            "config_bitstream",
+        },
+    },
 }
 
 
@@ -573,10 +595,13 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
     if schema.kind == "pnr_mapping" and statuses.get("status") == "pass":
         placed_records = numeric_value(row, "placed_records")
         unrouted_edges = numeric_value(row, "unrouted_edges")
+        unplaced_records = numeric_value(row, "unplaced_records")
         if placed_records is not None and placed_records <= 0:
             diagnostics.append(f"row {row_index}: PnR pass row has no placed records")
         if unrouted_edges is not None and unrouted_edges != 0:
             diagnostics.append(f"row {row_index}: PnR pass row has unrouted edges")
+        if unplaced_records is not None and unplaced_records != 0:
+            diagnostics.append(f"row {row_index}: PnR pass row has unplaced records")
     if schema.kind == "adg_hardware" and statuses.get("verify_status") == "pass":
         node_count = numeric_value(row, "node_count")
         link_count = numeric_value(row, "link_count")
@@ -759,6 +784,41 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report needs first_principles_checks")
         elif any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
             diagnostics.append("CGRA simulator report has failing first-principles check")
+    if kind == "pnr_mapping_artifact":
+        if data.get("kind") != "pnr_mapping":
+            diagnostics.append("PnR mapping artifact kind must be pnr_mapping")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("PnR mapping artifact status must be a known status")
+        placements = data.get("placements")
+        routes = data.get("routes")
+        bitstream = data.get("config_bitstream")
+        placed_records = data.get("placed_records")
+        routed_edges = data.get("routed_edges")
+        unrouted_edges = data.get("unrouted_edges")
+        unplaced_records = data.get("unplaced_records")
+        config_records = data.get("config_records")
+        if not isinstance(placements, list):
+            diagnostics.append("PnR mapping artifact placements must be a list")
+        if not isinstance(routes, list):
+            diagnostics.append("PnR mapping artifact routes must be a list")
+        if not isinstance(bitstream, list):
+            diagnostics.append("PnR mapping artifact config_bitstream must be a list")
+        if not isinstance(placed_records, int) or placed_records < 0:
+            diagnostics.append("PnR mapping artifact placed_records must be non-negative integer")
+        if not isinstance(routed_edges, int) or routed_edges < 0:
+            diagnostics.append("PnR mapping artifact routed_edges must be non-negative integer")
+        if not isinstance(unrouted_edges, int) or unrouted_edges < 0:
+            diagnostics.append("PnR mapping artifact unrouted_edges must be non-negative integer")
+        if not isinstance(unplaced_records, int) or unplaced_records < 0:
+            diagnostics.append("PnR mapping artifact unplaced_records must be non-negative integer")
+        if not isinstance(config_records, int) or config_records < 0:
+            diagnostics.append("PnR mapping artifact config_records must be non-negative integer")
+        if isinstance(placements, list) and isinstance(placed_records, int) and placed_records != len(placements):
+            diagnostics.append("PnR mapping artifact placed_records does not match placements size")
+        if isinstance(routes, list) and isinstance(routed_edges, int) and routed_edges != len(routes):
+            diagnostics.append("PnR mapping artifact routed_edges does not match routes size")
+        if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
+            diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
     return {
         "artifact": str(path),
         "schema": kind,
