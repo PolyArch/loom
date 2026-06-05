@@ -106,6 +106,14 @@
       "feature_tags": ["reduction", "integer"]
     },
     {
+      "case": "upper_bound",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["search", "control"]
+    },
+    {
       "case": "vecadd",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
