@@ -12,7 +12,13 @@ SUMMARY_CSV="$3"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
-LOOM_DFG_SIM="${LOOM_DFG_SIM:-${REPO}/build/tools/loom-dfg-sim/loom-dfg-sim}"
+if [[ -n "${LOOM_DFG_SIM:-}" ]]; then
+    :
+elif command -v loom-dfg-sim >/dev/null 2>&1; then
+    LOOM_DFG_SIM="$(command -v loom-dfg-sim)"
+else
+    LOOM_DFG_SIM="${REPO}/build/tools/loom-dfg-sim/loom-dfg-sim"
+fi
 
 if [[ ! -x "${LOOM_DFG_SIM}" ]]; then
     echo "missing loom-dfg-sim: ${LOOM_DFG_SIM}" >&2
