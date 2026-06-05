@@ -42,6 +42,14 @@ routing, explicit memory access, and synchronization primitives such as
 `dataflow.demux`. These are the semantic base for DFG simulation and for
 later hardware mapping.
 
+## Core Dialect Boundary
+
+The target ownership boundary between dataflow software semantics,
+fabric hardware structure, mapping artifacts, runtime execution, and
+simulation evidence is specified in
+`docs/spec-core-dialect-boundary.md`. That boundary is authoritative
+when a fact could otherwise be assigned to more than one subsystem.
+
 ## Hardware Model
 
 The target machine model is:
@@ -252,11 +260,3 @@ and reports. Site-specific activation commands, install paths, license
 details, and private library paths belong in local ignored
 configuration or temporary execution guides, not in public project
 specs.
-
-## Current Implementation Caveat
-
-The current repository is a partial implementation. Existing CMSIS tests
-are smoke and shape gates, not full behavior or backend evidence.
-Existing dataflow and fabric dialect implementations are valuable
-starting points, but they do not yet implement the full stack described
-here.

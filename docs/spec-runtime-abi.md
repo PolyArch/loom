@@ -43,6 +43,7 @@ temporal sharing, memory coherence, or FPA estimates.
 
 Those contracts remain in:
 
+* `docs/spec-core-dialect-boundary.md`;
 * `docs/spec-loom-stack.md`;
 * `docs/spec-fabric-system-adg.md`;
 * `docs/spec-mapping-artifact.md`;

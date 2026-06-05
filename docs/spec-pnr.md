@@ -28,6 +28,11 @@ DFG-sim results, previous CGRA-sim results, or FPA estimates as cost
 inputs, but it does not execute workloads and it must not present its
 estimates as hardware-aware simulation results.
 
+The subsystem ownership boundary that separates dataflow facts, Fabric
+facts, mapping facts, runtime facts, and simulation facts is specified
+in `docs/spec-core-dialect-boundary.md`. PnR follows that boundary and
+serializes its choices in mapping artifacts.
+
 ## Boundary With CGRA-sim
 
 PnR and CGRA-sim have different responsibilities:
