@@ -24,7 +24,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def discover_cases() -> list[str]:
-    return app_summary_common.discover_app_cases("run_check.sh")
+    return app_summary_common.discover_app_cases("run")
 
 
 def compiler_path(env_name: str, fallback: Path) -> str:

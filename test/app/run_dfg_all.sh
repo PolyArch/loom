@@ -18,7 +18,10 @@ set -uo pipefail
 export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNELS=(vecadd gemm dotproduct conv1d reduction prefix_sum)
+if ! KERNELS_TEXT="$(python3 "${HERE}/app_manifest.py" list --tier dfg)"; then
+    exit 1
+fi
+mapfile -t KERNELS <<< "${KERNELS_TEXT}"
 
 declare -a passed=()
 declare -a failed=()

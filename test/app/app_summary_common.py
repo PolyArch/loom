@@ -13,14 +13,19 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import app_manifest  # noqa: E402
 
 
-def discover_app_cases(*required_scripts: str) -> list[str]:
-    app_root = ROOT / "test" / "app"
+def discover_app_cases(tier: str) -> list[str]:
+    data, diagnostics = app_manifest.validate_manifest(app_manifest.DEFAULT_MANIFEST)
+    if diagnostics:
+        raise RuntimeError("; ".join(diagnostics))
+    cases = data["cases"]
+    assert isinstance(cases, list)
     return sorted(
-        path.name
-        for path in app_root.iterdir()
-        if all((path / script).is_file() for script in required_scripts)
+        str(entry["case"])
+        for entry in cases
+        if isinstance(entry, dict) and tier in entry.get("tiers", [])
     )
 
 

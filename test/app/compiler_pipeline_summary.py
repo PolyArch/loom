@@ -24,7 +24,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def discover_cases() -> list[str]:
-    return app_summary_common.discover_app_cases("raise_check.sh", "dfg_check.sh")
+    raise_cases = set(app_summary_common.discover_app_cases("raise"))
+    dfg_cases = set(app_summary_common.discover_app_cases("dfg"))
+    return sorted(raise_cases & dfg_cases)
 
 
 def tool_path(env_name: str, fallback: str) -> str:

@@ -12,7 +12,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-KERNELS=(vecadd gemm dotproduct conv1d reduction prefix_sum)
+if ! KERNELS_TEXT="$(python3 "${HERE}/app_manifest.py" list --tier run)"; then
+    exit 1
+fi
+mapfile -t KERNELS <<< "${KERNELS_TEXT}"
 
 CC="${CC:-gcc}"
 CXX="${CXX:-g++}"

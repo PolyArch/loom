@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Regression test for the app corpus manifest contract."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import artifact_test_common
+
+
+EXPECTED_CASES = {"conv1d", "dotproduct", "gemm", "prefix_sum", "reduction", "vecadd"}
+
+
+def main() -> int:
+    repo = Path(sys.argv[1]).resolve()
+    manifest = repo / "test" / "app" / "manifest.json"
+    artifact_test_common.require_success(
+        repo,
+        ["bash", "test/app/run_manifest_check.sh"],
+        "app manifest validation",
+    )
+
+    result = artifact_test_common.require_success(
+        repo,
+        ["python3", "test/app/app_manifest.py", "list", "--tier", "run"],
+        "app manifest list",
+    )
+    cases = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    if cases != EXPECTED_CASES:
+        raise AssertionError(f"manifest run tier cases {cases} do not match {EXPECTED_CASES}")
+
+    data = json.loads(manifest.read_text())
+    if {entry["case"] for entry in data["cases"]} != EXPECTED_CASES:
+        raise AssertionError(f"manifest cases do not match expected seed set: {data}")
+
+    with tempfile.TemporaryDirectory(prefix="loom-bad-app-manifest-") as tmp:
+        bad_manifest = Path(tmp) / "manifest.json"
+        bad_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cases": [
+                        {
+                            "case": "vecadd",
+                            "language": "c",
+                            "sources": ["missing.c"],
+                            "expected_stdout": "expected.txt",
+                            "tiers": ["run"],
+                            "feature_tags": ["vector"],
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
+        )
+        if result.returncode == 0:
+            raise AssertionError("bad manifest with missing source unexpectedly passed")
+        if "missing source" not in result.stderr:
+            raise AssertionError(f"bad manifest diagnostic should name missing source: {result.stderr}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
