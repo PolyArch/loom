@@ -1,0 +1,2 @@
+edge_update_batch checksum: 11990
+PASSED
