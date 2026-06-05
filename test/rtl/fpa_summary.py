@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -13,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import candidate_summary_common  # noqa: E402
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -21,31 +21,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--primitive-coverage")
     parser.add_argument("--hardware-summary")
     return parser.parse_args(argv)
-
-
-def read_rows(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def workloads_from_primitive_coverage(path: Path) -> list[str]:
-    workloads = {
-        row["workload"]
-        for row in read_rows(path)
-        if row.get("workload") not in {"", "scaffold", "none", None}
-    }
-    return sorted(workloads)
-
-
-def hardware_from_summary(path: Path) -> list[str]:
-    hardware = {
-        row["hardware"]
-        for row in read_rows(path)
-        if row.get("verify_status") == "pass" and row.get("hardware")
-    }
-    return sorted(hardware)
 
 
 def fpa_row(workload: str, hardware: str) -> dict[str, str]:
@@ -70,8 +45,8 @@ def main(argv: list[str]) -> int:
     primitive_path = Path(args.primitive_coverage) if args.primitive_coverage else ROOT / "temp/dataflow-primitive-coverage.csv"
     hardware_path = Path(args.hardware_summary) if args.hardware_summary else ROOT / "temp/adg-hardware-summary.csv"
 
-    workloads = workloads_from_primitive_coverage(primitive_path)
-    hardware = hardware_from_summary(hardware_path)
+    workloads = candidate_summary_common.workloads_from_primitive_coverage(primitive_path)
+    hardware = candidate_summary_common.hardware_from_summary(hardware_path)
     if not workloads or not hardware:
         intermediate_artifacts.write_csv("rtl_fpa", intermediate_artifacts.output_path(args.output))
         return 0

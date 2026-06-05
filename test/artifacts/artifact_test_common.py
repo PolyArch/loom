@@ -59,3 +59,33 @@ def run_csv_summary(
         label,
     )
     return read_csv_rows(output, expected_header)
+
+
+def prepare_candidate_inputs(repo: Path, out_dir: Path) -> tuple[Path, Path]:
+    primitive = out_dir / "dataflow-primitive-coverage.csv"
+    hardware = out_dir / "adg-hardware-summary.csv"
+    require_success(
+        repo,
+        [
+            "bash",
+            "test/dataflow/run_primitive_coverage.sh",
+            "--case",
+            "vecadd",
+            "--output",
+            str(primitive),
+        ],
+        "primitive coverage summary",
+    )
+    require_success(
+        repo,
+        [
+            "bash",
+            "test/fabric/run_adg_hardware_summary.sh",
+            "--input",
+            "test/fabric/unit/pe/valid.mlir",
+            "--output",
+            str(hardware),
+        ],
+        "ADG hardware summary",
+    )
+    return primitive, hardware

@@ -110,38 +110,25 @@ def summarize_module(input_path: Path, name: str, body: list[str]) -> dict[str, 
     }
 
 
+def failed_row(input_path: Path, diagnostic: str) -> dict[str, str]:
+    return {
+        "hardware": relative_id(input_path),
+        "topology_class": "fabric_module_template",
+        "node_count": "0",
+        "link_count": "0",
+        "verify_status": "fail",
+        "diagnostic": diagnostic,
+    }
+
+
 def summarize_input(tool: str, input_path: Path) -> tuple[list[dict[str, str]], bool]:
     text, diagnostic = run_loom(tool, input_path)
     if text is None:
-        return (
-            [
-                {
-                    "hardware": relative_id(input_path),
-                    "topology_class": "fabric_module_template",
-                    "node_count": "0",
-                    "link_count": "0",
-                    "verify_status": "fail",
-                    "diagnostic": diagnostic,
-                }
-            ],
-            False,
-        )
+        return [failed_row(input_path, diagnostic)], False
 
     modules = iter_module_bodies(text)
     if not modules:
-        return (
-            [
-                {
-                    "hardware": relative_id(input_path),
-                    "topology_class": "fabric_module_template",
-                    "node_count": "0",
-                    "link_count": "0",
-                    "verify_status": "fail",
-                    "diagnostic": "verified file contains no fabric.module hardware template",
-                }
-            ],
-            False,
-        )
+        return [failed_row(input_path, "verified file contains no fabric.module hardware template")], False
     return [summarize_module(input_path, name, body) for name, body in modules], True
 
 

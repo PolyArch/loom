@@ -27,34 +27,8 @@ def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="loom-rtl-fpa-") as tmp:
         out_dir = Path(tmp)
-        primitive = out_dir / "dataflow-primitive-coverage.csv"
-        hardware = out_dir / "adg-hardware-summary.csv"
         fpa = out_dir / "rtl-fpa-summary.csv"
-
-        artifact_test_common.require_success(
-            repo,
-            [
-                "bash",
-                "test/dataflow/run_primitive_coverage.sh",
-                "--case",
-                "vecadd",
-                "--output",
-                str(primitive),
-            ],
-            "primitive coverage summary",
-        )
-        artifact_test_common.require_success(
-            repo,
-            [
-                "bash",
-                "test/fabric/run_adg_hardware_summary.sh",
-                "--input",
-                "test/fabric/unit/pe/valid.mlir",
-                "--output",
-                str(hardware),
-            ],
-            "ADG hardware summary",
-        )
+        primitive, hardware = artifact_test_common.prepare_candidate_inputs(repo, out_dir)
         rows = artifact_test_common.run_csv_summary(
             repo,
             "test/rtl/run_rtl_fpa_summary.sh",
