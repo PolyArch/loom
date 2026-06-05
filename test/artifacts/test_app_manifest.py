@@ -83,6 +83,7 @@ EXPECTED_CASES = {
     "softmax",
     "sort_bubble",
     "sort_insertion",
+    "sort_merge",
     "string_compare",
     "string_hash",
     "stream_update",
