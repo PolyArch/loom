@@ -28,7 +28,8 @@ It produces:
 * performance comparison status;
 * explanation categories for differences;
 * diagnostics;
-* a comparison report usable by tests, DSE, and user-facing reports.
+* a comparison report usable by tests, DSE, and user-facing reports;
+* optional comparison table exports for regression dashboards.
 
 ## Shared Identity
 
@@ -114,6 +115,26 @@ A simulation comparison report must include:
 * difference classification;
 * diagnostics and explanation categories.
 
+## Cycle Table Export
+
+The comparison tool must be able to emit a compact cycle table for
+mid-level regression tracking. The canonical table form has one row per
+kernel or app case and these required columns:
+
+* `kernel`: stable kernel or app case name;
+* `dfg_sim_cycles`: DFG-sim optimistic cycle or step estimate;
+* `cgra_sim_cycles`: CGRA-sim hardware-aware cycle count.
+
+Optional columns may include workload identity, input identity, mapping
+artifact identity, classification, ratio, and diagnostics. Optional
+columns must not change the meaning or order of the three required
+columns when the compact three-column profile is selected.
+
+If either simulator report is unavailable, the row must contain an
+explicit unsupported or diagnostic marker according to the selected
+export profile. It must not silently write zero for a missing cycle
+value.
+
 ## Use By PnR And DSE
 
 PnR may consume comparison reports from previous candidates as cost
@@ -135,4 +156,6 @@ The comparison protocol is complete at the target-spec level when:
   constraint differences;
 * it reports metric definitions before performance ratios;
 * it explains why CGRA-sim differs from the optimistic DFG-sim baseline;
-* it can feed PnR and DSE as explicit evidence.
+* it can feed PnR and DSE as explicit evidence;
+* it can emit the compact cycle table export with `kernel`,
+  `dfg_sim_cycles`, and `cgra_sim_cycles` columns.

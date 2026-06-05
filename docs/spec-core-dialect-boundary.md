@@ -27,6 +27,9 @@ The mapping artifact owns the chosen relation between them.
 Runtime owns dynamic launch and platform execution.
 DFG-sim owns dataflow-only execution evidence.
 CGRA-sim owns mapped hardware-aware execution evidence.
+Full-stack reporting owns evidence packaging and metric provenance.
+DSE feedback owns explicit candidate selection and next-candidate
+requests.
 ```
 
 ## Ownership Table
@@ -42,6 +45,8 @@ CGRA-sim owns mapped hardware-aware execution evidence.
 | Runtime ABI | Host-visible work packages, launch descriptors, memory descriptors, launch handles, platform binding, data movement policy, synchronization policy, target selection, fallback policy, runtime diagnostics. | Dataflow token semantics, Fabric topology, PnR legality, route selection, coherence definition, FPA estimates. |
 | DFG-sim | Pure dataflow execution for concrete inputs without hardware resource limits. | Fabric ADG, mapping artifacts, hardware placement, hardware routing, hardware resource contention. |
 | CGRA-sim | Execution of mapped dataflow on selected hardware using the mapping artifact, with hardware resource, route, memory, buffering, timing, and activity constraints. | Choosing placements, routes, schedules, memory bindings, or resource-sharing assignments. |
+| Full-stack reporting | Report bundles, metric provenance, derived metrics, simulator cycle summary exports, diagnostic aggregation, artifact trace references. | New software operations, new hardware nodes, new mappings, simulator execution, backend execution, DSE candidate mutation. |
+| DSE feedback | Objective records, candidate records, Pareto or selected-candidate records, explicit requests for new compiler, hardware, mapping, simulator, RTL, or FPA candidates. | Mutating existing dataflow IR, Fabric ADG, mapping artifacts, simulator reports, RTL manifests, EDA reports, or FPA reports. |
 
 ## Dataflow Boundary
 
@@ -199,6 +204,20 @@ refer to the same workload, input data, and observable outputs. Gaps
 between their metrics are acceptable only when explained by hardware
 constraints that DFG-sim intentionally ignores.
 
+## Reporting And DSE Boundary
+
+Full-stack reporting consumes artifacts and reports from compiler,
+mapping, runtime, simulator, RTL, EDA, FPA, and DSE tools. It packages
+evidence, records metric provenance, computes derived metrics, and
+emits summary table exports. It must not create or modify software IR,
+hardware IR, mapping artifacts, simulator reports, or backend reports.
+
+DSE feedback consumes immutable artifacts and report bundles to choose
+or request new candidates. A DSE request may ask the compiler, ADG
+Builder, PnR, simulator, RTL, or FPA tooling to produce a new artifact.
+It must not rewrite an existing artifact in place. Candidate selection
+must cite objective records and metric records.
+
 ## Acceptance Criteria
 
 The core boundary is satisfied when:
@@ -216,5 +235,9 @@ The core boundary is satisfied when:
   upstream artifacts;
 * DFG-sim and CGRA-sim consume different artifact sets according to
   their contracts;
+* full-stack reports summarize and derive from evidence without
+  mutating the evidence;
+* DSE feedback records candidate choices and requests without mutating
+  existing artifacts;
 * optional visualization metadata never changes compiler, mapping,
   simulation, RTL, or FPA legality.

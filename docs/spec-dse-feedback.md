@@ -1,0 +1,206 @@
+# DSE Feedback
+
+This document specifies Loom's target design-space exploration feedback
+contract. DSE uses immutable artifacts and reports to choose new
+software placement, hardware, mapping, simulator, RTL, or estimation
+candidates.
+
+## Purpose
+
+DSE feedback answers this question:
+
+```text
+Given a set of compiler, hardware, mapping, simulation, RTL, and FPA
+evidence, which new candidate should Loom generate or select next, and
+which objective explains that choice?
+```
+
+DSE feedback is not a hidden side channel. A feedback decision must be
+represented by explicit records that reference the artifacts and
+metrics that motivated it.
+
+## Feedback Boundary
+
+DSE may consume:
+
+* source workload identities;
+* compiler placement candidates;
+* dataflow IR artifacts;
+* DFG-sim reports;
+* ADG Builder recipes;
+* Fabric ADG artifacts;
+* mapping artifacts and mapping-set manifests;
+* CGRA-sim reports;
+* simulation comparison reports;
+* runtime reports;
+* RTL manifests;
+* EDA reports;
+* FPA reports;
+* full-stack report bundles;
+* user constraints and objectives.
+
+DSE may produce:
+
+* new compiler placement requests;
+* new ADG Builder recipe requests;
+* new PnR search requests;
+* new simulator or FPA evaluation requests;
+* selected candidate records;
+* Pareto set records;
+* rejected candidate records;
+* DSE report bundles.
+
+DSE must not mutate source IR, dataflow IR, Fabric ADG, mapping
+artifacts, simulator reports, RTL manifests, EDA reports, or FPA
+reports. It creates new explicit artifacts when it explores new
+candidates.
+
+## Objective Records
+
+An objective record has these required fields:
+
+* objective id;
+* objective kind;
+* metric inputs;
+* priority or weight;
+* constraint or optimization mode;
+* comparison direction;
+* units;
+* validity conditions.
+
+Baseline objective kinds include:
+
+* minimize runtime;
+* maximize throughput;
+* minimize area;
+* minimize dynamic power;
+* minimize leakage power;
+* minimize energy;
+* maximize performance per watt;
+* maximize performance per area;
+* satisfy timing target;
+* satisfy memory capacity;
+* satisfy resource utilization bound;
+* minimize unsupported-scope diagnostics;
+* custom objective with explicit model identity.
+
+When objectives conflict, the selected policy must state how conflicts
+are resolved: weighted score, lexicographic ordering, Pareto ranking,
+constraint filtering, or custom policy.
+
+## Candidate Records
+
+A candidate record identifies:
+
+* candidate id;
+* candidate kind;
+* parent candidate ids when derived from earlier candidates;
+* referenced input artifacts;
+* generated output artifacts;
+* objective records used;
+* metric records used;
+* status;
+* diagnostics.
+
+Candidate kinds include:
+
+* compiler L1 accelerator placement candidate;
+* compiler L2 graph placement candidate;
+* compiler L3 subgraph partition candidate;
+* hardware ADG candidate;
+* mapping candidate;
+* simulator configuration candidate;
+* RTL/FPA profile candidate;
+* combined full-stack candidate.
+
+## Feedback Targets
+
+### Compiler Placement Feedback
+
+DSE may request new L1, L2, or L3 software placement candidates. The
+request must cite reports or metrics that motivate the change. The
+compiler must produce new dataflow artifacts rather than modifying an
+old artifact in place.
+
+### Hardware Candidate Feedback
+
+DSE may request a new ADG Builder recipe or new Fabric ADG candidate.
+The request must cite hardware metrics, mapping failures, simulator
+stalls, route congestion, memory pressure, FPA reports, or user
+constraints.
+
+### PnR Feedback
+
+DSE may request new PnR runs with updated objectives, constraints, or
+cost-model weights. The output is a new mapping artifact or mapping-set
+manifest.
+
+### Simulator And FPA Feedback
+
+DSE may request additional simulator or FPA runs to resolve missing or
+low-confidence metrics. The output is a new report, not a mutation of
+an old report.
+
+## Reproducibility
+
+DSE feedback must record:
+
+* selected policy id;
+* policy configuration;
+* random seed when stochastic search is used;
+* input artifact identities and fingerprints when available;
+* objective records;
+* candidate ordering rule;
+* selected candidate or Pareto set;
+* rejected candidate summaries.
+
+Given the same inputs, policy, and seed, deterministic and seeded
+policies must reproduce the same selected candidate records.
+
+## Diagnostics
+
+DSE diagnostics must distinguish:
+
+* missing objective;
+* missing required metric;
+* unsupported feedback target;
+* conflicting hard constraints;
+* no candidate satisfies constraints;
+* stale artifact fingerprint;
+* incompatible report fidelity;
+* non-reproducible stochastic run without seed;
+* custom model unavailable;
+* candidate generation failed.
+
+Diagnostics must identify the artifact or metric that caused the
+failure when applicable.
+
+## Relationship To PnR
+
+PnR maps one software candidate to one hardware candidate and emits a
+mapping artifact or mapping-set manifest. DSE may run PnR repeatedly,
+compare the resulting artifacts, and select one candidate. PnR does not
+own cross-run candidate policy unless it is acting as the selected DSE
+policy for mapping search and records that policy in a manifest.
+
+## Relationship To Reporting
+
+Full-stack report bundles are immutable DSE inputs. DSE report bundles
+summarize candidate sets and selections. They must cite the workload
+and hardware report bundles they compare.
+
+## Acceptance Criteria
+
+The DSE feedback target is complete when:
+
+* objectives are explicit records rather than hidden command-line
+  assumptions;
+* candidate records identify input and output artifacts;
+* DSE can request new compiler placement, hardware, mapping, simulator,
+  RTL, or FPA candidates without mutating old artifacts;
+* candidate selection is reproducible for deterministic or seeded
+  policies;
+* selected candidates and Pareto sets cite the metrics that justify
+  them;
+* unsupported feedback targets and missing metrics produce structured
+  diagnostics.

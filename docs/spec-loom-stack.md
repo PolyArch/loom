@@ -243,6 +243,14 @@ input data. Differences are acceptable only when they are explained by
 hardware constraints that DFG-sim intentionally ignores. The comparison
 contract is specified in `docs/spec-sim-comparison.md`.
 
+The cross-tool fidelity ladder is specified in
+`docs/spec-fidelity-ladder.md`. Full-stack reporting, including
+cycle/frequency/power/area derived metrics and compact simulator cycle
+summary exports, is specified in
+`docs/spec-full-stack-reporting.md`. End-to-end demonstrator
+requirements are specified in
+`docs/spec-end-to-end-demonstrators.md`.
+
 ## Runtime ABI
 
 The runtime ABI connects compiled host code, accelerator work packages,
@@ -269,6 +277,13 @@ The target RTL lowering contract is specified in
 contract is specified in `docs/spec-fpa-estimation.md`. Portable EDA
 tool discovery and backend profile rules are specified in
 `docs/spec-eda-tooling.md`.
+
+Full-stack artifact traceability from source input through compiler,
+dataflow, hardware, mapping, simulation, runtime, RTL, EDA, FPA,
+reporting, and DSE is specified in
+`docs/spec-full-stack-traceability.md`. DSE feedback records and
+candidate-generation boundaries are specified in
+`docs/spec-dse-feedback.md`.
 
 Public Loom specs describe tool classes, profile contracts, artifacts,
 and reports. Site-specific activation commands, install paths, license
