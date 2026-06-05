@@ -28,6 +28,7 @@ EXPECTED_CASES = {
     "upper_bound",
     "vecadd",
     "vecmul",
+    "vecscale",
 }
 
 
