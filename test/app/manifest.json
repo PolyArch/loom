@@ -18,6 +18,14 @@
       "feature_tags": ["bit", "integer", "per-element"]
     },
     {
+      "case": "bitrev",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["bit", "permutation", "float", "indirect-store"]
+    },
+    {
       "case": "byte_swap",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
