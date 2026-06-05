@@ -8,7 +8,7 @@ problem appears at three hardware boundaries:
 |------|--------------|----------------|-----------------|
 | L1 accelerator placement | LLVM / SCF-shaped host code | `loom.acc_region` | HostCore vs. AccCore |
 | L2 graph placement | `dataflow.thread` definition's body | `dataflow.graph` definition (paired with `dataflow.graph.launch` at cut site) | ScalarCore vs. SpatialCore |
-| L3 fabric placement | `dataflow.graph` definition's body | `dataflow.subgraph` | SpatialCore graph vs. `fabric.fu` granularity |
+| L3 subgraph partitioning | `dataflow.graph` definition's body | `dataflow.subgraph` | SpatialCore software graph vs. FU-candidate granularity |
 
 The common problem is: given a structured input region, legality
 constraints, an exploration policy, and a cost model, choose a partition
@@ -17,8 +17,11 @@ interface must stay open to later hardware-aware, profile-guided, or
 search-based policies.
 
 Part 3 instantiates this framework immediately for L2 graph placement.
-Part 2 owns the L1 instance for `loom.acc_region` selection. Fabric tech
-mapping owns the L3 instance for `dataflow.subgraph` partitioning.
+Part 2 owns the L1 instance for `loom.acc_region` selection. The
+dataflow compiler owns the L3 software partitioning instance for
+`dataflow.subgraph` formation. Fabric tech supplies FU template
+compatibility and generalization, while PnR and the mapping artifact own
+selected binding to concrete hardware resources.
 
 ## 1. Core Model
 
@@ -113,7 +116,7 @@ score = evaluate(problem, candidate_partition)
 ```
 
 The result is an ordered score value. A plain numeric score is sufficient
-for the baseline implementation; future implementations may compute a
+for the deterministic baseline policy. Other policies may compute a
 structured record such as launch count, estimated reconfiguration count,
 boundary traffic, fabric resource pressure, and expected reuse. Such a
 record must still define a deterministic total order for candidates that
@@ -174,9 +177,9 @@ that reordering independent thread levels, collapsing adjacent
 independent levels, or tiling and splitting levels preserves the logical
 instance set, per-instance scalar values, memory-order constraints,
 async launch/fence ordering, and the strict layering rule between child
-thread launches and graph launches. The baseline implementation may
-start with annotation and canonicalization only; graph placement must not
-implicitly reshape the thread hierarchy.
+thread launches and graph launches. The deterministic baseline policy
+starts with annotation and canonicalization only; graph placement must
+not implicitly reshape the thread hierarchy.
 
 ## 7. L2 Graph Placement
 
@@ -187,7 +190,7 @@ at the cut site. Part 3 owns this instance.
 The admission constraints are the Part 3 graph verifier contract,
 ScalarCore / SpatialCore boundary rules, effect visibility rules,
 and the `IsolatedFromAbove` boundary materialization rule. In the
-baseline implementation, L2 graph placement is source-order
+deterministic baseline policy, L2 graph placement is source-order
 greedy: it opens a graph run for a contiguous legal sequence,
 closes it at a required cut, materializes the run as a
 (def + launch) pair, and continues searching for the next legal
@@ -216,11 +219,14 @@ scalar-only case is a fallback for explicitly selected accelerator
 regions, not an implicit L1 selection rule. The
 details are specified in `docs/spec-compiler-part-3-impl.md`.
 
-## 8. L3 Fabric Placement
+## 8. L3 Subgraph Partitioning
 
 L3 decides how a `dataflow.graph` definition's body is
-partitioned into `dataflow.subgraph` units for fabric tech
-mapping. Fabric tech mapping owns this instance.
+partitioned into `dataflow.subgraph` units that can be matched or
+generalized against FU templates. The dataflow compiler owns this
+software partitioning instance. Fabric tech owns template compatibility
+and template synthesis. PnR and the mapping artifact own selected
+binding between software subgraphs and concrete hardware resources.
 
 The admission constraints include the `dataflow.subgraph` verifier,
 the fabric-op support matrix, memory-op exclusion from `fabric.fu`,

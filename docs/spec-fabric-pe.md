@@ -38,7 +38,7 @@ fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
 * `spatial`: at most one inner `fabric.fu` is architecturally active per
   PE configuration. Routing between PE ports and the active FU's ports
   is described by the PE's runtime configuration record (see "Software
-  configuration"). All current verifier rules in this document apply to
+  configuration"). The verifier rules in this document apply to
   this branch.
 * `temporal`: time-multiplexes multiple FUs / instructions through the
   PE. The temporal-branch IR shape, hardware parameters, and software
@@ -168,8 +168,8 @@ Inside a fabric.pe [spatial] body, a `fabric.fu` may declare a block argument
 of type `!fabric.bits<F>` while its operand SSA source is the PE's
 `!fabric.bits<W>` value (`W >= F`). The textual form is
 `(%fa = %src : !fabric.bits<W> to !fabric.bits<F>)` -- without the
-`to ...` clause, the inner type defaults to the outer type (current
-behavior). The high `W - F` bits of the source are dropped; the
+`to ...` clause, the inner type defaults to the outer type. The high
+`W - F` bits of the source are dropped; the
 inner block argument carries the low `F` bits.
 
 This input-direction relaxation lets ops with narrower inner ports

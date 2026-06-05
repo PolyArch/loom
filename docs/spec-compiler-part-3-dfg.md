@@ -264,11 +264,12 @@ each rule lands in IR.
    These `none` values are real SSA values in the operation state and
    the function signature, because they lower to physical start/done
    ports on hardware and because they expose the synchronization
-   contract symbolically (so future graph-to-graph chaining can
-   match end-to-end at the symbol-ref level). Custom assembly may
-   hide or compress them for readability, but generic form and
-   verifier logic treat them as ordinary signature elements,
-   operands, and results. At each `dataflow.graph.launch` site the
+   contract symbolically (so launch-to-launch sequencing inside the
+   same innermost thread body can match end-to-end at the symbol-ref
+   level). Custom assembly may hide or compress them for readability,
+   but generic form and verifier logic treat them as ordinary
+   signature elements, operands, and results. At each
+   `dataflow.graph.launch` site the
    ctrl/done slots become real per-launch SSA values: the contract
    is "graph clients may begin issuing memory ops once the launch's
    `ctrl_in` operand is hot; the launch's `done_out` result becomes
@@ -972,10 +973,9 @@ traits:
   where the leading `none` is the `done_out` completion port and
   the remaining types are the kernel's user-data results. Keeping
   ctrl and done in `function_type` exposes the synchronization
-  signature symbolically, so future graph-to-graph chaining (one
-  graph's `done_out` feeding the next graph's `ctrl_in`) is
-  expressible as a type-equality check at the symbol-ref level
-  rather than a body walk.
+  signature symbolically, so launch-to-launch sequencing inside the
+  same innermost thread body can be checked at the symbol-ref type
+  level rather than by walking graph bodies.
 * `sym_name` is required and module-unique. `sym_visibility` is
   required and must equal `"private"` in the first milestone; the
   verifier rejects `"public"` and `"nested"` until cross-module

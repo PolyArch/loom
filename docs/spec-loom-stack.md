@@ -40,7 +40,7 @@ small prototype or a minimal feature subset. A complete Loom stack may be
 large and systematic while still preserving a small set of coherent
 semantic building blocks.
 
-Current stable dataflow primitives include stream shaping, control
+Accepted stable dataflow primitives include stream shaping, control
 routing, explicit memory access, and synchronization primitives such as
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`,
 `dataflow.gate`, `dataflow.constant`, `dataflow.load`,
@@ -108,9 +108,10 @@ transforms may reorder independent thread levels, collapse adjacent
 independent levels, or tile and split levels only when they preserve the
 logical instance set, per-instance scalar values, memory-order
 constraints, async launch/fence ordering, and strict thread/graph
-layering. The baseline implementation may initially stop at annotation
-and canonicalization; nontrivial hierarchy transforms are explicit
-optimization policies, not verifier side effects.
+layering. The deterministic baseline policy stops at annotation and
+canonicalization. Nontrivial hierarchy transforms are explicit
+optimization policies, not verifier side effects, and must be enabled
+through documented placement policies.
 
 Thread nesting is strictly layered. A non-innermost thread may contain
 ScalarCore orchestration code and child `dataflow.thread.launch` ops,

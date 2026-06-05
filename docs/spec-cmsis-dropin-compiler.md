@@ -270,9 +270,6 @@ The target is complete when:
 * at least one mapped CMSIS workload can proceed through PnR,
   CGRA-sim, and FPA reporting when a compatible ADG is provided.
 
-Current smoke tests are useful evidence, but they are not the full
-target contract.
-
 ## Non-Goals
 
 The CMSIS drop-in compiler spec is not a replacement for the dataflow,

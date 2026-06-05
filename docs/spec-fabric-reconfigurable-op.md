@@ -2,8 +2,7 @@
 
 This document specifies the set of software op kinds that the loom fabric
 dialect can wrap inside a `fabric.op`, and which of those have **runtime
-sw_config axes** that the subgraph enumerator explores. The canonical source
-is `opSchemas()` in `lib/Fabric/IR/FabricOps.cpp`.
+sw_config axes** that the subgraph enumerator explores.
 
 ## Background
 
@@ -108,8 +107,9 @@ reject them:
   or pseudo ops that have no fabric realization.
 * `dataflow.{load, store}` -- memory ops that the partitioner handles
   separately (they live at graph level, not inside `fabric.fu`).
-* `dataflow.{graph, yield}`, `dataflow.subgraph` -- region ops, not
-  computations.
+* `dataflow.subgraph`, `dataflow.yield` -- software graph structure, not
+  computations. The canonical `dataflow.graph` definition is a module-scope
+  callable container and is never a `fabric.op` computation kind.
 
 ## How sw_configs become enumerator axes
 
@@ -142,13 +142,10 @@ sw_configs, that is a smell in the FU design itself, not in the
 enumerator. The enumerator's dedup discards the redundant configurations
 deliberately.
 
-## Maintenance
+## Implementation Mirror
 
-The canonical source of truth for the runtime sw-configurable set is
-`opSchemas()` in `lib/Fabric/IR/FabricOps.cpp`. The `Variadic*` kinds
-(`OpSchema::VariadicSync`, `VariadicMux`, `VariadicDemux`) flag which
-schema entries get a bitmask axis; non-variadic schemas have an axis only
-when `hw_params` restricts them. To extend either set, edit
-`opSchemas()` and add a corresponding lit test under
-`test/fabric/unit/fu_enum/` that pins the new axis behavior, then mirror
-the change here.
+The implementation should mirror this table in the fabric op schema code.
+The `Variadic*` schema kinds flag which entries get a bitmask axis;
+non-variadic schemas have an axis only when `hw_params` restricts them.
+To extend either set, update this target table, the implementation mirror,
+and the corresponding fabric tests in the same change.

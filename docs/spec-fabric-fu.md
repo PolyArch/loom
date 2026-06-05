@@ -78,8 +78,9 @@ same hardware: they reshape the in-FU op connectivity rather than
 attaching to the FU's external inputs / outputs. Allowing back-edges
 in the body lets configurable compute ops (e.g.
 `fabric.op[@dataflow.carry]`) and user-facing cyclic
-`dataflow.subgraph`s map onto a single FU. The FU body region is a
-graph region (`RegionKindInterface::Graph`).
+`dataflow.subgraph`s be matched or bound to an FU through mapping.
+The FU body region is a graph region
+(`RegionKindInterface::Graph`).
 
 ## FU-boundary truncation (input side)
 
