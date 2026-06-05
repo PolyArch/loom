@@ -14,6 +14,8 @@ from typing import Iterable
 
 BASE_STATUSES = {"pass", "fail", "unsupported", "skipped", "blocked", "not_run"}
 SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
+IMPORT_STATES = {"accepted", "deferred", "excluded"}
+INVENTORY_STATES = {"ready", "blocked"}
 IGNORED_IDENTITIES = {"", "scaffold", "none", None}
 
 
@@ -30,6 +32,47 @@ class CsvSchema:
 
 
 CSV_SCHEMAS: dict[str, CsvSchema] = {
+    "old_app_corpus_inventory": CsvSchema(
+        kind="old_app_corpus_inventory",
+        filename="old-app-corpus-inventory.csv",
+        first_columns=(
+            "case",
+            "main_source",
+            "implementation_sources",
+            "headers",
+            "source_count",
+            "header_count",
+            "status",
+            "diagnostic",
+        ),
+        status_columns=("status",),
+        numeric_columns=("source_count", "header_count"),
+        identity_columns=("case",),
+        scaffold_row=(
+            "scaffold",
+            "",
+            "",
+            "",
+            "0",
+            "0",
+            "blocked",
+            "legacy app corpus inventory is not available yet",
+        ),
+    ),
+    "app_import_status": CsvSchema(
+        kind="app_import_status",
+        filename="app-corpus-import-status.csv",
+        first_columns=("case", "import_state", "manifest_case", "reason", "owner"),
+        status_columns=("import_state",),
+        identity_columns=("case",),
+        scaffold_row=(
+            "scaffold",
+            "deferred",
+            "",
+            "legacy app corpus import status is not available yet",
+            "test_migration",
+        ),
+    ),
     "source_compat": CsvSchema(
         kind="source_compat",
         filename="source-compat-summary.csv",
@@ -294,6 +337,8 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
 
 
 STANDARD_ARTIFACT_PATHS = (
+    ("old_app_corpus_inventory", "temp/old-app-corpus-inventory.csv"),
+    ("app_import_status", "temp/app-corpus-import-status.csv"),
     ("source_compat", "temp/source-compat-summary.csv"),
     ("compiler_pipeline", "temp/compiler-pipeline-summary.csv"),
     ("dataflow_primitive_coverage", "temp/dataflow-primitive-coverage.csv"),
@@ -420,7 +465,14 @@ def validate_numeric(schema: CsvSchema, row: dict[str, str], diagnostics: list[s
 
 def validate_statuses(schema: CsvSchema, row: dict[str, str], diagnostics: list[str], row_index: int) -> None:
     for column, value in row_statuses(schema, row):
-        allowed = SELECTION_STATUSES if column == "selection_status" else BASE_STATUSES
+        if column == "selection_status":
+            allowed = SELECTION_STATUSES
+        elif column == "import_state":
+            allowed = IMPORT_STATES
+        elif schema.kind == "old_app_corpus_inventory" and column == "status":
+            allowed = INVENTORY_STATES
+        else:
+            allowed = BASE_STATUSES
         if value not in allowed:
             diagnostics.append(f"row {row_index}: {column} has unknown status {value!r}")
 

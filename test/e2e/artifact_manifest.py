@@ -17,6 +17,8 @@ import intermediate_artifacts  # noqa: E402
 
 
 CHAIN = (
+    "old_app_corpus_inventory",
+    "app_import_status",
     "source_compat",
     "compiler_pipeline",
     "dataflow_primitive_coverage",

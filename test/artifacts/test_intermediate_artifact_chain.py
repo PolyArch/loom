@@ -12,6 +12,8 @@ import artifact_test_common
 
 
 EXPECTED_FILES = [
+    "old-app-corpus-inventory.csv",
+    "app-corpus-import-status.csv",
     "source-compat-summary.csv",
     "compiler-pipeline-summary.csv",
     "dataflow-primitive-coverage.csv",
@@ -32,10 +34,21 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def write_legacy_case(root: Path, name: str) -> None:
+    case_dir = root / name
+    case_dir.mkdir(parents=True)
+    (case_dir / "main.cpp").write_text("int main() { return 0; }\n")
+    (case_dir / f"{name}.cpp").write_text(f'#include "{name}.h"\n')
+    (case_dir / f"{name}.h").write_text("#pragma once\n")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-artifact-chain-") as tmp:
         out_dir = Path(tmp)
+        legacy_root = out_dir / "legacy-app"
+        write_legacy_case(legacy_root, "legacy_missing")
+        write_legacy_case(legacy_root, "vecadd")
         artifact_test_common.require_success(
             repo,
             [
@@ -43,6 +56,8 @@ def main() -> int:
                 "test/e2e/run_intermediate_artifact_chain.sh",
                 "--output-dir",
                 str(out_dir),
+                "--legacy-app-root",
+                str(legacy_root),
             ],
             "intermediate artifact chain",
         )
@@ -57,6 +72,11 @@ def main() -> int:
             raise AssertionError(f"expected one vecadd sim row, got {sim_rows}")
         if vecadd_rows[0]["dfg_sim_cycles"] != "" or vecadd_rows[0]["cgra_sim_cycles"] != "":
             raise AssertionError(f"blocked sim row must not fake cycles: {vecadd_rows[0]}")
+
+        import_rows = read_csv_rows(out_dir / "app-corpus-import-status.csv")
+        states = {row["case"]: row["import_state"] for row in import_rows}
+        if states != {"legacy_missing": "deferred", "vecadd": "accepted"}:
+            raise AssertionError(f"unexpected app import states: {import_rows}")
 
         audit = json.loads((out_dir / "artifact-audit-summary.json").read_text())
         if audit.get("verdict") != "pass":
