@@ -6,7 +6,7 @@
 
 namespace {
 
-constexpr uint32_t kSize = 8;
+constexpr uint32_t kSize = 32;
 
 uint32_t bswap32(uint32_t value) {
     uint32_t byte0 = (value >> 0) & 0xffu;
@@ -40,7 +40,7 @@ uint64_t checksum(const std::array<uint32_t, kSize> &values) {
 } // namespace
 
 int main() {
-    const std::array<uint32_t, kSize> input = {
+    std::array<uint32_t, kSize> input = {
         0x00000000u,
         0xffffffffu,
         0x12345678u,
@@ -52,6 +52,10 @@ int main() {
     };
     std::array<uint32_t, kSize> reference = {};
     std::array<uint32_t, kSize> candidate = {};
+
+    for (uint32_t i = 8; i < kSize; ++i) {
+        input[i] = i * 0x01020304u;
+    }
 
     byte_swap_ref(input.data(), reference.data(), kSize);
     byte_swap_candidate(input.data(), candidate.data(), kSize);
