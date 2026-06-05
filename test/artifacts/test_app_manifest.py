@@ -70,6 +70,7 @@ EXPECTED_CASES = {
     "sigmoid",
     "softmax",
     "string_compare",
+    "string_hash",
     "transpose",
     "transform_point",
     "unpack_bits",
