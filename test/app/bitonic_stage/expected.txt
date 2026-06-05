@@ -1,0 +1,2 @@
+bitonic_stage checksum: 194
+PASSED

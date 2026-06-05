@@ -26,6 +26,14 @@
       "feature_tags": ["search", "control"]
     },
     {
+      "case": "bitonic_stage",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["sort", "control", "float"]
+    },
+    {
       "case": "clz",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
