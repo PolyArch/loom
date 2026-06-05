@@ -24,6 +24,17 @@ std::int64_t asInteger(const PrimitiveValue &value) {
   return value.intValue;
 }
 
+llvm::Expected<unsigned> asShiftAmount(llvm::StringRef opName,
+                                       const PrimitiveValue &value) {
+  std::int64_t raw = asInteger(value);
+  if (raw < 0 || raw >= 64)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s shift amount must be in [0, 63], got %lld",
+                                   opName.str().c_str(),
+                                   static_cast<long long>(raw));
+  return static_cast<unsigned>(raw);
+}
+
 double asFloat(const PrimitiveValue &value) {
   if (value.kind == PrimitiveValueKind::Float)
     return value.floatValue;
@@ -58,7 +69,9 @@ PrimitiveValue PrimitiveValue::boolean(bool value) {
 bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {
   return opName == "arith.addf" || opName == "arith.subf" ||
          opName == "arith.mulf" || opName == "arith.addi" ||
-         opName == "arith.muli" || opName == "arith.index_cast" ||
+         opName == "arith.muli" || opName == "arith.andi" ||
+         opName == "arith.ori" || opName == "arith.shli" ||
+         opName == "arith.shrui" || opName == "arith.index_cast" ||
          opName == "llvm.intr.fmuladd" || opName == "llvm.intr.abs";
 }
 
@@ -103,6 +116,36 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
       return std::move(arity);
     return PrimitiveValue::integer(asInteger(operands[0]) *
                                    asInteger(operands[1]));
+  }
+  if (opName == "arith.andi") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    return PrimitiveValue::integer(asInteger(operands[0]) &
+                                   asInteger(operands[1]));
+  }
+  if (opName == "arith.ori") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    return PrimitiveValue::integer(asInteger(operands[0]) |
+                                   asInteger(operands[1]));
+  }
+  if (opName == "arith.shli") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    auto amountOrErr = asShiftAmount(opName, operands[1]);
+    if (!amountOrErr)
+      return amountOrErr.takeError();
+    return PrimitiveValue::integer(static_cast<std::int64_t>(
+        static_cast<std::uint64_t>(asInteger(operands[0])) << *amountOrErr));
+  }
+  if (opName == "arith.shrui") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    auto amountOrErr = asShiftAmount(opName, operands[1]);
+    if (!amountOrErr)
+      return amountOrErr.takeError();
+    return PrimitiveValue::integer(static_cast<std::int64_t>(
+        static_cast<std::uint64_t>(asInteger(operands[0])) >> *amountOrErr));
   }
   if (opName == "arith.index_cast") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

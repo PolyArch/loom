@@ -141,10 +141,10 @@ dfg_one() {
         fi
         # Loop-invariant block-arg scalars consumed inside the body
         # get wrapped in dataflow.invariant by the graph-invariant
-        # pass. Every test/app reduction body has at least one (the
-        # accumulator initial value), so EXPECT_INVARIANT defaults to
-        # "yes".
-        if [[ "${EXPECT_INVARIANT:-yes}" == "yes" ]]; then
+        # pass. Loop-carried initializer operands stay as raw one-shot
+        # carry init tokens, so kernels that require an invariant
+        # hyperparameter should opt in explicitly.
+        if [[ "${EXPECT_INVARIANT:-no}" == "yes" ]]; then
             if ! grep -E -q 'dataflow\.invariant ' "${dfg}"; then
                 echo "[${KERNEL}/${variant}] no dataflow.invariant in ${dfg}" >&2
                 return 1

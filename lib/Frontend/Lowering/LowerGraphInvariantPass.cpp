@@ -20,8 +20,8 @@
 //              none),
 //        materialize `%inv = dataflow.invariant %rwc, %BA : T` once
 //        and rewrite all in-body uses of BA (other than the new
-//        invariant op itself, each stream operand, and the bridge
-//        cast) to read %inv.
+//        invariant op itself, each stream operand, each carry init
+//        operand, and the bridge cast) to read %inv.
 //
 // Bail conditions (graph left unchanged):
 //   * No `dataflow.stream` in the body (the loop is not yet streamed,
@@ -33,7 +33,8 @@
 //
 // Rationale: this surfaces the "constant during the loop" semantics
 // that the SpatialCore wrapper expects for arguments such as scaling
-// factors (`f32`), accumulator initializers, and integer hyperparams.
+// factors (`f32`) and integer hyperparams. Loop-carried initializers
+// remain one-shot carry init tokens.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -92,6 +93,11 @@ bool isStreamLoopBoundUse(::mlir::OpOperand &use) {
          value == stream.getStep();
 }
 
+bool isCarryInitUse(::mlir::OpOperand &use) {
+  auto carry = ::llvm::dyn_cast<::dataflow::CarryOp>(use.getOwner());
+  return carry && use.getOperandNumber() == 1;
+}
+
 // Rewrite eligible block arguments of `graph` with dataflow.invariant
 // carriers driven by the first stream's rwc. Returns the number of
 // invariants emitted.
@@ -121,6 +127,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     for (::mlir::OpOperand &use : ba.getUses()) {
       if (isStreamLoopBoundUse(use))
         continue;
+      if (isCarryInitUse(use))
+        continue;
       hasNonStreamUse = true;
       break;
     }
@@ -142,7 +150,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     // op (which must keep reading the raw block arg), (ii) any
     // unrealized_conversion_cast (the bridge consumes the raw arg),
     // and (iii) any dataflow.stream operand (lb / ub / step), because
-    // the stream op owns the raw loop-bound contract.
+    // the stream op owns the raw loop-bound contract, and (iv) any
+    // dataflow.carry init operand, which must remain a one-shot token.
     ba.replaceUsesWithIf(newVal, [&](::mlir::OpOperand &use) {
       ::mlir::Operation *owner = use.getOwner();
       if (owner == inv.getOperation())
@@ -150,6 +159,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
       if (::llvm::isa<::mlir::UnrealizedConversionCastOp>(owner))
         return false;
       if (isStreamLoopBoundUse(use))
+        return false;
+      if (isCarryInitUse(use))
         return false;
       return true;
     });

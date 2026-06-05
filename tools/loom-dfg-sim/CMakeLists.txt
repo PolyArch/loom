@@ -17,6 +17,7 @@ target_link_libraries(loom-dfg-sim
   MLIRSCFDialect
   MLIRSupport
   MLIRTransforms
+  MLIRUBDialect
 )
 
 mlir_check_all_link_libraries(loom-dfg-sim)

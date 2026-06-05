@@ -9,10 +9,10 @@
 // REPORT-DAG: "graph": "g_t_main_red_0_0"
 // REPORT-DAG: "status": "pass"
 // REPORT-DAG: "metric_definition": "optimistic_event_count"
-// REPORT-DAG: "optimistic_cycles": 453
+// REPORT-DAG: "optimistic_cycles": 387
 // REPORT-DAG: "wavefront_steps": 131
-// REPORT-DAG: "event_count": 453
+// REPORT-DAG: "event_count": 387
 // REPORT-DAG: "f32:3024"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY: vecadd,453,,blocked,DFG-sim report available
+// SUMMARY: vecadd,387,,blocked,DFG-sim report available

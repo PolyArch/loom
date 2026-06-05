@@ -76,8 +76,8 @@ def main() -> int:
             raise AssertionError(f"expected one vecsum mapping row, got {mapping_rows}")
         if (
             vecsum_mapping_rows[0]["mapping_id"] != "vecsum__shared_reduction_adg"
-            or vecsum_mapping_rows[0]["placed_records"] != "6"
-            or vecsum_mapping_rows[0]["routed_edges"] != "8"
+            or vecsum_mapping_rows[0]["placed_records"] != "5"
+            or vecsum_mapping_rows[0]["routed_edges"] != "6"
             or vecsum_mapping_rows[0].get("status") != "pass"
         ):
             raise AssertionError(f"expected real vecsum mapping evidence: {vecsum_mapping_rows[0]}")

@@ -10,7 +10,7 @@ import artifact_test_common
 
 
 HEADER = ["workload", "primitive", "op_count", "dfg_sim_status", "diagnostic"]
-EXPECTED_POSITIVE = {"stream", "carry", "invariant", "load"}
+EXPECTED_POSITIVE = {"stream", "carry", "load"}
 
 
 def run_summary(repo: Path, output: Path, *args: str) -> list[dict[str, str]]:

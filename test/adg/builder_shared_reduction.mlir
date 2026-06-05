@@ -14,9 +14,9 @@
 // HARDWARE-DAG: fabric.mem [spatial]
 
 // MAPPING-DAG: "hardware": "shared_reduction_adg"
-// MAPPING-DAG: "placed_records": 6
-// MAPPING-DAG: "routed_edges": 8
-// MAPPING-DAG: "config_records": 83
+// MAPPING-DAG: "placed_records": 5
+// MAPPING-DAG: "routed_edges": 6
+// MAPPING-DAG: "config_records": 65
 // MAPPING-DAG: "segments"
 // MAPPING-DAG: "segment_kind": "module_path"
 // MAPPING-DAG: "status": "pass"

@@ -108,6 +108,18 @@ append_trapz_memrefs() {
 }
 
 case "${CASE}" in
+    bit_reverse)
+        append_ctrl_tokens 32
+        sim_args+=(
+            --graph g_t_bit_reverse_kernel_0_0
+            --workload bit_reverse
+            --arg 1=0
+            --arg 2=32
+            --arg 3=1
+            --arg 4=0
+            --arg 5=305419896
+        )
+        ;;
     vecadd)
         append_ctrl_tokens 64
         append_linear_memref 4 64 1.5 "%.6e"

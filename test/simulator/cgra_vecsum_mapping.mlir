@@ -10,7 +10,7 @@
 
 // MAPPING-DAG: "schedule": "spatial"
 // MAPPING-DAG: "resource_kind": "fabric.mem.load"
-// MAPPING-DAG: "config_records": 83
+// MAPPING-DAG: "config_records": 65
 // MAPPING-DAG: "config_bitstream"
 
 // CGRA-DAG: "kind": "cgra_sim_report"
@@ -21,16 +21,16 @@
 // CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 // CGRA-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
 // CGRA-DAG: "difference_classification": "expected_hardware_constraint"
-// CGRA-DAG: "dfg_cycles": 453
-// CGRA-DAG: "modeled_lower_bound_cycles": 465
+// CGRA-DAG: "dfg_cycles": 387
+// CGRA-DAG: "modeled_lower_bound_cycles": 397
 // CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
-// CGRA-DAG: "performance_delta_cycles": 12
-// CGRA-DAG: "route_latency_cycles": 8
-// CGRA-DAG: "route_segments": 8
+// CGRA-DAG: "performance_delta_cycles": 10
+// CGRA-DAG: "route_latency_cycles": 6
+// CGRA-DAG: "route_segments": 6
 // CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
-// CGRA-DAG: "hardware_aware_cycles": 465
-// CGRA-DAG: "config_records": 83
+// CGRA-DAG: "hardware_aware_cycles": 397
+// CGRA-DAG: "config_records": 65
 // CGRA-DAG: "cycle_breakdown"
 // CGRA-DAG: "category": "route_latency"
 // CGRA-DAG: "evidence": "mapping.route_segments"
@@ -49,4 +49,4 @@
 // CGRA-DAG: "delta_explained_by_modeled_constraints"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-NEXT: vecsum,453,465,pass
+// SUMMARY-NEXT: vecsum,387,397,pass
