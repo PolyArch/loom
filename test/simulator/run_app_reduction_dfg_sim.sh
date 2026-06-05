@@ -133,6 +133,36 @@ case "${CASE}" in
             --arg 6=0.000000e+00
         )
         ;;
+    convolve_1d)
+        append_ctrl_tokens 7
+        append_constant_memref 6 7 "1.000000e+00"
+        append_constant_memref 7 7 "1.42857149e-01"
+        sim_args+=(
+            --graph g_t_convolve_1d_kernel_0_0
+            --workload convolve_1d
+            --arg 1=0
+            --arg 2=7
+            --arg 3=1
+            --arg 4=4294967295
+            --arg 5=0
+            --arg 8=0.000000e+00
+        )
+        ;;
+    correlation)
+        append_ctrl_tokens 16
+        append_constant_memref 6 16 "1.000000e+00"
+        append_constant_memref 7 16 "1.000000e+00"
+        sim_args+=(
+            --graph g_t_correlation_kernel_0_0
+            --workload correlation
+            --arg 1=0
+            --arg 2=16
+            --arg 3=1
+            --arg 4=4294967295
+            --arg 5=0
+            --arg 8=0.000000e+00
+        )
+        ;;
     cumsum)
         append_ctrl_tokens 1024
         append_mod_shift_memref 4 1024 10 1

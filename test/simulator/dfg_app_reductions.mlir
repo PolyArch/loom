@@ -1,6 +1,8 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir/bit_reverse LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/bit_reverse/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/conv1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/conv1d/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/convolve_1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/convolve_1d/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/correlation LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/correlation/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/cumsum LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/cumsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
@@ -14,6 +16,8 @@
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh bit_reverse %t.dir/bit_reverse/main_func.dfg.mlir %t.dir/reports/bit_reverse.report.json %t.dir/summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh conv1d %t.dir/conv1d/main_func.dfg.mlir %t.dir/reports/conv1d.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh convolve_1d %t.dir/convolve_1d/main_func.dfg.mlir %t.dir/reports/convolve_1d.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh correlation %t.dir/correlation/main_func.dfg.mlir %t.dir/reports/correlation.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh cumsum %t.dir/cumsum/main_func.dfg.mlir %t.dir/reports/cumsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
@@ -26,6 +30,8 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=BIT-REVERSE < %t.dir/reports/bit_reverse.report.json
 // RUN: FileCheck %s --check-prefix=CONV1D < %t.dir/reports/conv1d.report.json
+// RUN: FileCheck %s --check-prefix=CONVOLVE-1D < %t.dir/reports/convolve_1d.report.json
+// RUN: FileCheck %s --check-prefix=CORRELATION < %t.dir/reports/correlation.report.json
 // RUN: FileCheck %s --check-prefix=CUMSUM < %t.dir/reports/cumsum.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
@@ -55,6 +61,24 @@
 // CONV1D-DAG: "wavefront_steps": 13
 // CONV1D-DAG: "event_count": 38
 // CONV1D-DAG: "f32:5"
+
+// CONVOLVE-1D-DAG: "kind": "dfg_sim_report"
+// CONVOLVE-1D-DAG: "workload": "convolve_1d"
+// CONVOLVE-1D-DAG: "graph": "g_t_convolve_1d_kernel_0_0"
+// CONVOLVE-1D-DAG: "status": "pass"
+// CONVOLVE-1D-DAG: "optimistic_cycles": 94
+// CONVOLVE-1D-DAG: "wavefront_steps": 19
+// CONVOLVE-1D-DAG: "event_count": 94
+// CONVOLVE-1D-DAG: "f32:1.000000"
+
+// CORRELATION-DAG: "kind": "dfg_sim_report"
+// CORRELATION-DAG: "workload": "correlation"
+// CORRELATION-DAG: "graph": "g_t_correlation_kernel_0_0"
+// CORRELATION-DAG: "status": "pass"
+// CORRELATION-DAG: "optimistic_cycles": 202
+// CORRELATION-DAG: "wavefront_steps": 37
+// CORRELATION-DAG: "event_count": 202
+// CORRELATION-DAG: "f32:16"
 
 // CUMSUM-DAG: "kind": "dfg_sim_report"
 // CUMSUM-DAG: "workload": "cumsum"
@@ -150,6 +174,8 @@
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: bit_reverse,267,,blocked,DFG-sim report available
 // SUMMARY-DAG: conv1d,38,,blocked,DFG-sim report available
+// SUMMARY-DAG: convolve_1d,94,,blocked,DFG-sim report available
+// SUMMARY-DAG: correlation,202,,blocked,DFG-sim report available
 // SUMMARY-DAG: cumsum,7171,,blocked,DFG-sim report available
 // SUMMARY-DAG: dotproduct,451,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,147,,blocked,DFG-sim report available
