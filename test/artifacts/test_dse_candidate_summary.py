@@ -109,6 +109,43 @@ def main() -> int:
         if "missing mapping, simulator, or FPA evidence" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
 
+        selected_like_mapping = out_dir / "selected-like-pnr-mapping-summary.csv"
+        selected_like_mapping.write_text(
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
+            "vecadd,fabric0,map0,1,1,0,pass,synthetic complete mapping\n"
+        )
+        selected_like_sim = out_dir / "selected-like-sim-cycle-summary.csv"
+        selected_like_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,12,pass,synthetic cycle evidence\n"
+        )
+        selected_like_fpa = out_dir / "selected-like-rtl-fpa-summary.csv"
+        selected_like_fpa.write_text(
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
+            "fabric0,vecadd,pass,pass,pass,100,200,3,1,pass,synthetic FPA evidence without energy\n"
+        )
+        selected_like_output = out_dir / "selected-like-dse-candidate-summary.csv"
+        rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/dse/run_candidate_summary.sh",
+            selected_like_output,
+            HEADER,
+            "--artifact",
+            str(selected_like_mapping),
+            "--artifact",
+            str(selected_like_sim),
+            "--artifact",
+            str(selected_like_fpa),
+            label="selected-like DSE candidate summary",
+        )
+        if len(rows) != 1:
+            raise AssertionError(f"expected one selected-like row, got {rows}")
+        row = rows[0]
+        if row["selection_status"] != "blocked":
+            raise AssertionError(f"selected-like row must stay blocked until energy evidence exists: {row}")
+        if row["energy_nj"] != "":
+            raise AssertionError(f"blocked selected-like row must not fake energy: {row}")
+
     return 0
 
 

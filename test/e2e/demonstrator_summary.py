@@ -97,8 +97,6 @@ def sim_status(sim_paths: list[Path], workload: str) -> str:
                 status = row.get("status", "")
                 if status:
                     statuses.append(status)
-                elif row.get("dfg_sim_cycles") and row.get("cgra_sim_cycles"):
-                    statuses.append("pass")
     return aggregate_statuses(statuses)
 
 

@@ -65,19 +65,6 @@ def fpa_for_candidate(paths: list[Path], workload: str, hardware: str) -> dict[s
     return {}
 
 
-def complete_evidence(mapping: dict[str, str], sim: dict[str, str], fpa: dict[str, str]) -> bool:
-    return (
-        mapping.get("status") == "pass"
-        and mapping.get("mapping_id", "") != ""
-        and sim.get("status") == "pass"
-        and sim.get("cgra_sim_cycles", "") != ""
-        and fpa.get("status") == "pass"
-        and fpa.get("frequency_mhz", "") != ""
-        and fpa.get("area_um2", "") != ""
-        and fpa.get("dynamic_power_mw", "") != ""
-    )
-
-
 def candidate_row(
     mapping: dict[str, str],
     sim: dict[str, str],
@@ -86,20 +73,20 @@ def candidate_row(
 ) -> dict[str, str]:
     workload = mapping["workload"]
     hardware = mapping["hardware"]
-    selected = complete_evidence(mapping, sim, fpa)
+    _ = (sim, fpa)
     return {
         "candidate": f"candidate::{workload}::{hardware}",
         "workload": workload,
         "hardware": hardware,
-        "mapping_id": mapping.get("mapping_id", "") if selected else "",
+        "mapping_id": "",
         "objective": objective,
-        "cgra_sim_cycles": sim.get("cgra_sim_cycles", "") if selected else "",
-        "frequency_mhz": fpa.get("frequency_mhz", "") if selected else "",
-        "area_um2": fpa.get("area_um2", "") if selected else "",
-        "dynamic_power_mw": fpa.get("dynamic_power_mw", "") if selected else "",
+        "cgra_sim_cycles": "",
+        "frequency_mhz": "",
+        "area_um2": "",
+        "dynamic_power_mw": "",
         "energy_nj": "",
-        "selection_status": "selected" if selected else "blocked",
-        "diagnostic": "" if selected else "missing mapping, simulator, or FPA evidence for DSE selection",
+        "selection_status": "blocked",
+        "diagnostic": "missing mapping, simulator, or FPA evidence for DSE selection",
     }
 
 

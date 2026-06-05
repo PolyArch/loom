@@ -141,6 +141,35 @@ def main() -> int:
         if "workload report bundle is not available yet" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
 
+        statusless_sim = out_dir / "statusless-sim-cycle-summary.csv"
+        statusless_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,0,0,,synthetic statusless numeric row\n"
+        )
+        statusless_output = out_dir / "statusless-e2e-demonstrator-summary.csv"
+        rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/e2e/run_demonstrator_summary.sh",
+            statusless_output,
+            HEADER,
+            "--artifact",
+            str(source),
+            "--artifact",
+            str(mapping),
+            "--artifact",
+            str(statusless_sim),
+            "--artifact",
+            str(rtl_fpa),
+            "--artifact",
+            str(manifest),
+            label="statusless sim demonstrator summary",
+        )
+        matches = [row for row in rows if "vecadd" in row["demonstrator"] and row["demonstrator"].endswith("pe_two_pes")]
+        if len(matches) != 1:
+            raise AssertionError(f"expected one statusless sim row, got {rows}")
+        if matches[0]["sim_status"] != "blocked":
+            raise AssertionError(f"statusless sim row must not infer pass from numeric cells: {matches[0]}")
+
     return 0
 
 
