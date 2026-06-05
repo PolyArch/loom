@@ -34,16 +34,34 @@ raise_one() {
         echo "[${KERNEL}/${variant}] no scf loop in ${mlir}" >&2
         return 1
     fi
-    if ! grep -E -q 'arith\.mulf|llvm\.intr\.fmuladd' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no floating multiply body in ${mlir}" >&2
-        return 1
-    fi
-    if ! grep -E -q 'arith\.addf|llvm\.intr\.fmuladd' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no floating add body in ${mlir}" >&2
-        return 1
-    fi
-    if ! grep -q 'llvm\.store' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no output store in ${mlir}" >&2
+    if ! awk '
+        /scf\.forall/ {
+            in_loop = 1
+            has_mul = 0
+            has_add = 0
+            has_store = 0
+            next
+        }
+        in_loop {
+            if ($0 ~ /arith\.mulf|llvm\.intr\.fmuladd/) {
+                has_mul = 1
+            }
+            if ($0 ~ /arith\.addf|llvm\.intr\.fmuladd/) {
+                has_add = 1
+            }
+            if ($0 ~ /llvm\.store/) {
+                has_store = 1
+            }
+            if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) {
+                if (has_mul && has_add && has_store) {
+                    found = 1
+                }
+                in_loop = 0
+            }
+        }
+        END { exit found ? 0 : 1 }
+    ' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no dot-product loop with multiply, add, and output store in ${mlir}" >&2
         return 1
     fi
     if ! grep -q 'func\.func @main' "${mlir}"; then

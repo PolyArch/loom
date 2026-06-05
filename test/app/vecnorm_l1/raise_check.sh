@@ -30,16 +30,30 @@ raise_one() {
         echo "[${KERNEL}/${variant}] raised MLIR is empty" >&2
         return 1
     fi
-    if ! grep -q '^[[:space:]]*scf\.for' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no scf.for in ${mlir}" >&2
-        return 1
-    fi
-    if ! grep -q 'arith\.addi' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no reduction add in ${mlir}" >&2
-        return 1
-    fi
-    if ! grep -E -q 'arith\.cmpi|arith\.select|llvm\.icmp' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no absolute-value compare/select in ${mlir}" >&2
+    if ! awk '
+        /scf\.for .*iter_args/ {
+            in_loop = 1
+            has_abs = 0
+            has_add = 0
+            next
+        }
+        in_loop {
+            if ($0 ~ /"llvm\.intr\.abs"|arith\.cmpi|arith\.select|llvm\.icmp/) {
+                has_abs = 1
+            }
+            if ($0 ~ /arith\.addi/) {
+                has_add = 1
+            }
+            if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) {
+                if (has_abs && has_add) {
+                    found = 1
+                }
+                in_loop = 0
+            }
+        }
+        END { exit found ? 0 : 1 }
+    ' "${mlir}"; then
+        echo "[${KERNEL}/${variant}] no absolute-value reduction loop in ${mlir}" >&2
         return 1
     fi
     if ! grep -q 'func\.func @main' "${mlir}"; then
