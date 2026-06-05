@@ -175,16 +175,16 @@ keys.
 }
 ```
 
-Validation rules (per entry `i ∈ [0, num_instruction)`):
+Validation rules (per entry `i in [0, num_instruction)`):
 
 * `opcode` must be in `[0, num_fu)`.
-* For each `operand_sel[j]` (`j ∈ [0, max_fu_inputs)`):
-  * If `is_port == true`, `src_sel ∈ [0, K)`.
-  * If `is_port == false`, then `num_reg_fifo > 0` and `src_sel ∈ [0,
+* For each `operand_sel[j]` (`j in [0, max_fu_inputs)`):
+  * If `is_port == true`, `src_sel in [0, K)`.
+  * If `is_port == false`, then `num_reg_fifo > 0` and `src_sel in [0,
     num_reg_fifo)`. Setting `is_port == false` while
     `num_reg_fifo == 0` is rejected.
   * `discard && disconnect` is rejected.
-* For each `result_sel[j]` (`j ∈ [0, max_fu_outputs)`):
+* For each `result_sel[j]` (`j in [0, max_fu_outputs)`):
   * Same rules as `operand_sel[j]`, with `dst_sel` replacing `src_sel`
     and `L` replacing `K`.
 

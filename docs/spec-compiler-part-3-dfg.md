@@ -222,18 +222,18 @@ each rule lands in IR.
 1. `dataflow.thread` is the logical parallel execution-domain
    primitive used for selected accelerator work. It is a
    Symbol-bearing, module-scope, function-like definition (Part 3
-   §5.4.1); dynamic logical instances are materialized by
+   Section 5.4.1); dynamic logical instances are materialized by
    `dataflow.thread.launch` ops. Multi-level launch nesting is
    allowed; depth has no hard upper bound. A dynamic instance becomes
    a physical AccCore execution slot only after binding/PnR, and only
    when it is an innermost executable thread instance. The thread
    definition's body has a `thread_ctrl : none` block argument that
    fires once the logical thread instance starts executing
-   (entry-block layout: `(args_*, thread_ctrl, iv_*)`, see §5.4.1).
+   (entry-block layout: `(args_*, thread_ctrl, iv_*)`, see Section 5.4.1).
    The body may contain ScalarCore operations and ScalarCore-legal
    `func.call` operations, but not `func.func` definitions.
 2. `dataflow.graph` is a leaf-level definition. It is also a Symbol-
-   bearing, module-scope, function-like definition (Part 3 §5.5);
+   bearing, module-scope, function-like definition (Part 3 Section 5.5);
    execution is materialized by `dataflow.graph.launch` ops inside a
    thread definition's body. Its body must not contain any
    `func.func`, `func.call`, `dataflow.thread.launch`,
@@ -255,7 +255,7 @@ each rule lands in IR.
    `dataflow.graph.launch` ops, but must not directly contain child
    `dataflow.thread.launch` ops. A single thread-body placement level
    must never directly mix thread launches and graph launches. Both
-   rules are enforced by the verifier (see §9).
+   rules are enforced by the verifier (see Section 9).
 3. Every `dataflow.graph` definition has explicit control ports
    inside its `function_type`: the inputs lead with `ctrl_in : none`,
    the results lead with `done_out : none`, the entry block of the
@@ -347,7 +347,7 @@ each rule lands in IR.
    addition, `dataflow.thread.launch` declares a conservative
    side effect on a custom `LoomAsyncResource` resource so that
    generic CSE / DCE never removes a launch even when its callee
-   body has no host-visible memory effects (see §5.4 for the launch
+   body has no host-visible memory effects (see Section 5.4 for the launch
    signatures).
 
 ## 4. Glossary
@@ -387,7 +387,7 @@ each rule lands in IR.
   attribute that implements the same interface is not recognized for
   thread promotion. Three treatment cases for an `scf.forall`'s
   `mapping` array, in
-  agreement with §6.4 lowering rules:
+  agreement with Section 6.4 lowering rules:
   - **Empty `mapping` attribute** (the array is literally empty,
     or the attribute is absent): the forall is unmapped and is
     flattened by Part 3's `scf.parallel` normalization path.
@@ -403,14 +403,14 @@ each rule lands in IR.
     decide which dim a foreign entry binds.
   Adding new Loom-recognized mapping attributes (for example
   `#loom.warp<...>`) is an extension point in
-  `docs/spec-compiler-part-3-impl.md` §4.
+  `docs/spec-compiler-part-3-impl.md` Section 4.
 * **Thread token.** A value of type `!dataflow.thread_token`, a
   one-shot completion signal modelled on `!async.token`. It belongs to
   the inter-thread asynchronous-completion domain, not to the
   `none`-typed graph/control token domain.
 * **Thread control token.** A `none`-typed entry-block argument of
   a `dataflow.thread` definition's body (named `thread_ctrl`,
-  positioned after the function-signature args per §5.4.1). It is
+  positioned after the function-signature args per Section 5.4.1). It is
   the per-instance AccCore start signal used to launch root
   `dataflow.graph.launch` ops or ScalarCore / SpatialCore fences.
 * **Thread fence.** A ScalarCore barrier op that waits at a precise
@@ -431,16 +431,16 @@ each rule lands in IR.
   `MustNotAlias` / `MayAlias` / `MustAlias` for any pair of memory
   access ops inside one `dataflow.graph` definition's body. It
   answers conflict only; it does not define execution order.
-  Specified in `docs/spec-compiler-part-3-mem.md` §3.
+  Specified in `docs/spec-compiler-part-3-mem.md` Section 3.
 * **Memory dependence edge.** A directed edge `p -> o` saying memory
   access `o` must wait for memory access `p` before issuing its
   side effect or externally visible read. Specified in
-  `docs/spec-compiler-part-3-mem.md` §4.
+  `docs/spec-compiler-part-3-mem.md` Section 4.
 * **Loop-carried memory state.** A hidden `none`-typed control state
   carried by a lowered loop for one alias/dependence partition. It
   represents "all memory effects in this partition from previous
   dynamic iterations have retired." Specified in
-  `docs/spec-compiler-part-3-mem.md` §5.
+  `docs/spec-compiler-part-3-mem.md` Section 5.
 * **rwc bit.** A loop-control bit produced by `dataflow.stream` for
   counted loops: it fires `true` once per body iteration and one
   trailing `false` token at the sentinel reset cycle that closes the
@@ -458,13 +458,13 @@ each rule lands in IR.
 * **Memory-order token.** A `none`-typed token used to encode
   alias-aware ordering between memory accesses inside a
   `dataflow.graph` definition's body. Each per-partition frontier
-  (see §2.4 of
+  (see Section 2.4 of
   `docs/spec-compiler-part-3-mem.md`) flows through its own
-  memory-order tokens; the leaf rendezvous in §6.4 of that
+  memory-order tokens; the leaf rendezvous in Section 6.4 of that
   document combines a structural permission token with a
   memory-order predecessor token at each load / store. Memory-order
   tokens do not encode dynamic execution path (that is the
-  structural execution role of §2.1 there).
+  structural execution role of Section 2.1 there).
 * **Aggregation-form forall.** An `scf.forall` with `shared_outs`,
   op results, or non-empty `scf.forall.in_parallel` combining actions
   such as `tensor.parallel_insert_slice`.
@@ -490,7 +490,7 @@ new `loom` namespaces; nothing outside this list is added.
     the type as an SSA value.
 
 This milestone introduces no other types. The host-to-AccCore data
-plane uses `dataflow.map_info` (see §5.4.6), whose result preserves
+plane uses `dataflow.map_info` (see Section 5.4.6), whose result preserves
 the source type. The "this value crossed the boundary through
 `dataflow.map_info`" provenance is enforced by the verifier on
 `dataflow.thread.launch`, not by a wrapper type.
@@ -542,8 +542,8 @@ results, regions, traits. Implementation bodies are out of scope for
 this spec.
 
 The thread half of the front-end IR is split into a **definition**
-op (`dataflow.thread`, §5.4.1) and a **launcher** op
-(`dataflow.thread.launch`, §5.4.2). The definition op is a Symbol-
+op (`dataflow.thread`, Section 5.4.1) and a **launcher** op
+(`dataflow.thread.launch`, Section 5.4.2). The definition op is a Symbol-
 bearing, function-like, module-scope callable; the launcher op
 references the definition by symbol and materializes one async
 launch instance per use site. Every executable thread in the IR is a
@@ -598,7 +598,7 @@ traits:
   `#loom.thread_axis<parallel, ...>` and
   `#loom.thread_axis<multiplexed, ...>`. The relative order in the
   array equals the relative order of the grid dim. Each entry's
-  `axis` refers to a logical execution axis (per §5.2). If an axis
+  `axis` refers to a logical execution axis (per Section 5.2). If an axis
   participates in a partitioned-data query, it must carry the
   relevant logical partition-domain symbol explicitly. No entry is
   interpreted as a hardware coordinate by Part 3 alone; any binding
@@ -633,7 +633,7 @@ traits:
   implementing the boundary projection. This is **not** the
   primary effect surface seen by host code; that is the
   `dataflow.thread.launch` op's own
-  `MemoryEffectsOpInterface` projection (§5.4.2). A graph
+  `MemoryEffectsOpInterface` projection (Section 5.4.2). A graph
   reached through this body is exposed to the def's recursive
   effect rollup via its inner launch's effects.
 
@@ -660,7 +660,7 @@ traits:
 `CallOpInterface`. The op's only result is a `!dataflow.thread_token`,
 which is a launch-level async-completion handle, not a callable
 return value (the callee's `function_type` results are empty by
-§5.4.1). Generic call-graph and inliner consumers that read
+Section 5.4.1). Generic call-graph and inliner consumers that read
 `CallOpInterface::getResults()` would get a misleading "call returns
 a thread token" picture; matching the upstream `gpu.launch_func`
 precedent (which also exposes async tokens but does not implement
@@ -714,7 +714,7 @@ custom Loom analyses can introspect the callable through
   the `dataflow.map_info` result (which is a view-like alias). The
   source value is then peeled through any recognized view-like ops
   before the effect is projected, using the same view-like list as
-  the alias oracle in `docs/spec-compiler-part-3-mem.md` §3.1; in
+  the alias oracle in `docs/spec-compiler-part-3-mem.md` Section 3.1; in
   particular, `dataflow.partition_layout` is one such view-like
   producer, so a launch whose `map_info` source is a
   `dataflow.partition_layout` result reports its effects on the
@@ -826,7 +826,7 @@ traits:
   after a graph launch completes is expressed by placing the child
   `dataflow.thread.launch` after
   `dataflow.thread.fence(%graph_done)` in ScalarCore program order.
-  The fence's default-resource memory barrier (per §3 Constitutional
+  The fence's default-resource memory barrier (per Section 3 Constitutional
   Rule 8) keeps any op with declared memory effects from being
   reordered across the fence, which covers the common case where the
   child thread launch has at least one mapped operand and therefore
@@ -839,11 +839,11 @@ traits:
   `!dataflow.thread_token` result, and threads the prior fence's
   `none` result into the same trailing fence's operand list (the
   fence verifier accepts a mix of `none` and `!dataflow.thread_token`
-  operands, see §9). The trailing fence's memory barrier then anchors
+  operands, see Section 9). The trailing fence's memory barrier then anchors
   the launch sequence on both sides. The lit suite covers this
   scalar-only case; in the common case the leading fence alone is
   sufficient. Note that the launch op's `LoomAsyncResource` effect
-  (§5.4.2) is an additional belt-and-braces guard against generic
+  (Section 5.4.2) is an additional belt-and-braces guard against generic
   CSE / DCE in the scalar-only case, but the fence + trailing fence
   pair remains the canonical ordering primitive.
 
@@ -931,8 +931,8 @@ the SCF flattening templates in this document.
 ### 5.5 Modifications to Existing Ops
 
 The graph half of the front-end IR is split into a **definition**
-op (`dataflow.graph`, §5.5.1) and a **launcher** op
-(`dataflow.graph.launch`, §5.5.2). The definition op is a
+op (`dataflow.graph`, Section 5.5.1) and a **launcher** op
+(`dataflow.graph.launch`, Section 5.5.2). The definition op is a
 Symbol-bearing, function-like, module-scope callable; the launcher
 op references the definition by symbol from inside a
 `dataflow.thread` definition's body, supplies a per-launch
@@ -1011,7 +1011,7 @@ traits:
   per-launch projection. This is **not** the primary effect surface
   seen by enclosing ScalarCore code; that is the
   `dataflow.graph.launch` op's own `MemoryEffectsOpInterface`
-  projection (§5.5.2, which resolves the callee and walks the
+  projection (Section 5.5.2, which resolves the callee and walks the
   callee body).
 
 #### 5.5.2 `dataflow.graph.launch`
@@ -1164,7 +1164,7 @@ not an optional optimization.
 
 ### Def + Launch Output Convention
 
-The pseudocode templates in §6.1-§6.8 below show the **graph body
+The pseudocode templates in Section 6.1-Section 6.8 below show the **graph body
 contents** for clarity. Every template's actual lowering output is a
 `dataflow.graph` definition + a `dataflow.graph.launch` pair, with
 the body shown lifted to module scope and the launch carrying the
@@ -1202,7 +1202,7 @@ templates below place inside the thread.
 The templates therefore omit the def + launch wrap to keep the
 body's structural diff readable. The wrap is mandatory output, not
 an optimization, and is verified by the front-end's standard
-verifier rules in §9.
+verifier rules in Section 9.
 
 ### RWC Phasing Rule
 
@@ -1314,17 +1314,17 @@ position.
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.if`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.if`.
 
 **Structural plane.** The compound's `struct_in` enters
 `demux %cond` at the entry, splitting into a then-lane structural-
 permission token and an else-lane structural-permission token. Each
 inner region is its own chain scope per
-`docs/spec-compiler-part-3-mem.md` §2.2 and uses its lane's token as
+`docs/spec-compiler-part-3-mem.md` Section 2.2 and uses its lane's token as
 its `S.struct_at_*` source per
-`docs/spec-compiler-part-3-mem.md` §6.2. The compound's `struct_done`
+`docs/spec-compiler-part-3-mem.md` Section 6.2. The compound's `struct_done`
 is `mux %cond` over the two branches' `struct_done` tokens, following
-the §6 selector convention (lane 0 = false-lane = else, lane 1 =
+the Section 6 selector convention (lane 0 = false-lane = else, lane 1 =
 true-lane = then). The same `mux` shape is reused for any data
 result of the `scf.if`.
 
@@ -1332,20 +1332,20 @@ result of the `scf.if`.
 `incoming_C_P` enters a `demux %cond` at the entry, projecting it
 into a then-lane `then_in_P` and an else-lane `else_in_P` token.
 Only the active lane's projection fires, matching the dual-plane
-contract of `docs/spec-compiler-part-3-mem.md` §2.8 (a raw SSA
+contract of `docs/spec-compiler-part-3-mem.md` Section 2.8 (a raw SSA
 fork would risk stranded memory tokens being buffered in the
 unselected branch and consumed on a later selected invocation).
 Each branch chain scope's `incoming_P` is its lane's projected
 token. Each branch's per-`P` tail is path-forwarding per
-`docs/spec-compiler-part-3-mem.md` §2.7: a branch that performs no
+`docs/spec-compiler-part-3-mem.md` Section 2.7: a branch that performs no
 access in `P` forwards its lane projection unchanged; a branch
 that performs accesses in `P` builds its tail by the single-level
-chain rule of `docs/spec-compiler-part-3-mem.md` §2.5 inside that
+chain rule of `docs/spec-compiler-part-3-mem.md` Section 2.5 inside that
 branch. Call those `then_tail_P` and `else_tail_P`. The compound's
 `outgoing_C_P` is the selector-matched `mux %cond` of the two
-tails, following the §6 selector convention (lane 0 =
+tails, following the Section 6 selector convention (lane 0 =
 `else_tail_P`, lane 1 = `then_tail_P`). Per leaf rendezvous,
-`docs/spec-compiler-part-3-mem.md` §6.4 still applies inside each
+`docs/spec-compiler-part-3-mem.md` Section 6.4 still applies inside each
 branch: a leaf at branch scope `S_branch` uses
 `L.ctrl = dataflow.sync(S_branch.struct_at_L, incoming_L_P)`.
 
@@ -1491,7 +1491,7 @@ structural `%ctrl_feedback` and hidden memory-state feedback streams.
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.while`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.while`.
 
 **Structural plane.** The compound's `struct_in` initializes the
 structural carry `%iter_ctrl = carry %cond, %entry_ctrl,
@@ -1507,11 +1507,11 @@ template.
 
 **Memory plane (per touched partition `P`).** The compound applies
 the loop-carried memory state pattern of
-`docs/spec-compiler-part-3-mem.md` §5.2 with `selector = %cond` and
+`docs/spec-compiler-part-3-mem.md` Section 5.2 with `selector = %cond` and
 the before-region / after-region instantiation of
-`docs/spec-compiler-part-3-mem.md` §5.4. For every `P` carried by the
-loop (per `docs/spec-compiler-part-3-mem.md` §4.3,
-`P ∈ Π_L` iff some access in one iteration may conflict with some
+`docs/spec-compiler-part-3-mem.md` Section 5.4. For every `P` carried by the
+loop (per `docs/spec-compiler-part-3-mem.md` Section 4.3,
+`P in Pi_L` iff some access in one iteration may conflict with some
 access in a later iteration in `P`), the lowering introduces a hidden
 per-iteration ring:
 
@@ -1520,12 +1520,12 @@ per-iteration ring:
 ```
 
 * `%mem_init_P` is the compound's `incoming_C_P` per
-  `docs/spec-compiler-part-3-mem.md` §2.4, drawn from the enclosing
+  `docs/spec-compiler-part-3-mem.md` Section 2.4, drawn from the enclosing
   scope's per-`P` frontier at the `scf.while`'s position.
 * `%mem_iter_P` enters the before-region as its `incoming_P` for
   `P`. The before-region's per-`P` tail `%before_tail_P` is built by
   the single-level chain rule of
-  `docs/spec-compiler-part-3-mem.md` §2.5 inside the before-region;
+  `docs/spec-compiler-part-3-mem.md` Section 2.5 inside the before-region;
   it forwards `%mem_iter_P` unchanged when the before-region performs
   no access in `P`.
 * The after-region's `incoming_P` is `%after_in_P = gate %cond,
@@ -1535,7 +1535,7 @@ per-iteration ring:
   (`%after_tail_P = %after_in_P` when the after-region performs no
   access in `P`).
 * The feedback that closes the ring is `%mem_feedback_P = mux %cond,
-  %before_tail_P, %after_tail_P` following the §6 selector convention
+  %before_tail_P, %after_tail_P` following the Section 6 selector convention
   (lane 0 = false-lane = `%before_tail_P`, lane 1 = true-lane =
   `%after_tail_P`). On a true iteration the after-region tail is
   carried; on the final false iteration the before-region tail is
@@ -1546,32 +1546,32 @@ per-iteration ring:
   final false iteration (equivalently the false-lane of `demux %cond,
   %before_tail_P`). The zero-trip case (`%cond` false on the first
   check) reduces to the same projection over the single before-region
-  run. This matches `docs/spec-compiler-part-3-mem.md` §5.4 verbatim
+  run. This matches `docs/spec-compiler-part-3-mem.md` Section 5.4 verbatim
   and preserves any memory effect performed by the final
   condition-checking iteration.
 
 The structural `%after_rwc` from the existing template is on the
 structural plane only and is not on the memory critical path. Per
-`docs/spec-compiler-part-3-mem.md` §2.5 plane orthogonality and
-`docs/spec-compiler-part-3-mem.md` §5.4, after-region memory ops use
+`docs/spec-compiler-part-3-mem.md` Section 2.5 plane orthogonality and
+`docs/spec-compiler-part-3-mem.md` Section 5.4, after-region memory ops use
 `L.ctrl = dataflow.sync(struct_after, %after_in_P)` per
-`docs/spec-compiler-part-3-mem.md` §6.4; the structural token grants
+`docs/spec-compiler-part-3-mem.md` Section 6.4; the structural token grants
 phase permission while `%after_in_P` carries the alias-aware
-ordering. Independent partitions in `Π_L` get independent rings
+ordering. Independent partitions in `Pi_L` get independent rings
 sharing only the `%cond` selector, so unrelated memrefs are not
 serialized.
 
 For a partition `P` touched somewhere in the before-region or the
-after-region but not in `Π_L`, no state ring is created. The
+after-region but not in `Pi_L`, no state ring is created. The
 compound's `incoming_C_P` flows into the before-region as its
 `incoming_P`; the before-region's per-iteration body-tail in `P`,
 plus (on the true path) the after-region's body-tail in `P`, are
 gathered through the compound's structural-selector-driven
-rendezvous (per `docs/spec-compiler-part-3-mem.md` §5.2) into the
+rendezvous (per `docs/spec-compiler-part-3-mem.md` Section 5.2) into the
 compound's `outgoing_C_P`. No cross-iteration ordering is
 introduced; the rendezvous only signals that every executed
 body access in `P` has retired. A partition not touched anywhere
-in the compound is absent from its interface, per §2.4.
+in the compound is absent from its interface, per Section 2.4.
 
 #### K=2 Worked Trace
 
@@ -1648,11 +1648,11 @@ iter 2 (cond_2 = false; final false before, no after):
 Two observations close the trace. First, the final false before
 execution is memory-visible: its `before_tail_P_2` becomes the
 loop-exit memory state for `P`, exactly as
-`docs/spec-compiler-part-3-mem.md` §5.4 specifies for the
+`docs/spec-compiler-part-3-mem.md` Section 5.4 specifies for the
 final-false-iteration before-tail projection. Second, `%after_rwc`
 is not on the same-execution memory critical path: after-region
 memory ops use `sync(struct_after, after_in_P)` for `ctrl` per
-`docs/spec-compiler-part-3-mem.md` §2.5 plane orthogonality, while
+`docs/spec-compiler-part-3-mem.md` Section 2.5 plane orthogonality, while
 `%after_rwc` only advances or resets after-region structural state
 for subsequent iterations. If `P` were independent of some other
 partition `Q`, the entire trace runs in parallel for `Q` with its
@@ -1839,7 +1839,7 @@ Memref operands are not iter_arg-like stream state; only explicit
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.for`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.for`.
 
 **Structural plane.** `dataflow.stream` produces the loop-level
 rwc, which doubles as the structural selector. Both data-value
@@ -1853,9 +1853,9 @@ same structural-plane shape:
   structural permission for each executed iteration) and the
   false-lane `%loop_exit_ctrl` for the sentinel reset cycle.
 * The body region is a single chain scope under
-  `docs/spec-compiler-part-3-mem.md` §2.2 and uses the
+  `docs/spec-compiler-part-3-mem.md` Section 2.2 and uses the
   body-phase ctrl as its `S.struct_at_*` source per
-  `docs/spec-compiler-part-3-mem.md` §6.2.
+  `docs/spec-compiler-part-3-mem.md` Section 6.2.
 * The compound's `struct_done` is `%loop_exit_ctrl`, taken
   unchanged from the false-lane projection above. No additional
   `dataflow.carry` is introduced on the structural plane; the
@@ -1869,11 +1869,11 @@ plane uses but that do not enter the structural plane wiring.
 
 **Memory plane (per touched partition `P`).** The compound applies
 the loop-carried memory state pattern of
-`docs/spec-compiler-part-3-mem.md` §5.2 with `selector = %loop_rwc`,
-specialized to `scf.for` per `docs/spec-compiler-part-3-mem.md` §5.3.
+`docs/spec-compiler-part-3-mem.md` Section 5.2 with `selector = %loop_rwc`,
+specialized to `scf.for` per `docs/spec-compiler-part-3-mem.md` Section 5.3.
 For every `P` carried by the loop (per
-`docs/spec-compiler-part-3-mem.md` §4.3,
-`P ∈ Π_L` iff some access in one iteration may conflict with some
+`docs/spec-compiler-part-3-mem.md` Section 4.3,
+`P in Pi_L` iff some access in one iteration may conflict with some
 access in a later iteration in `P`), the lowering introduces:
 
 ```
@@ -1887,11 +1887,11 @@ access in a later iteration in `P`), the lowering introduces:
   for `P`, and the false-lane projection becomes
   `%mem_after_P` for the enclosing scope. Body-region accesses
   chain through the true-lane projection per
-  `docs/spec-compiler-part-3-mem.md` §2.5; they never observe
+  `docs/spec-compiler-part-3-mem.md` Section 2.5; they never observe
   the sentinel-cycle (rwc=false) value.
 * `%mem_next_P` feeds the carry on the rwc=true lane and is built
   from the body's per-`P` tail per
-  `docs/spec-compiler-part-3-mem.md` §2.5 / §2.7 (a body path that
+  `docs/spec-compiler-part-3-mem.md` Section 2.5 / Section 2.7 (a body path that
   performs no access in `P` forwards `%mem_iter_P` unchanged;
   same-path required tails join via `dataflow.sync`; mutually
   exclusive tails join via selector-matched `dataflow.mux`).
@@ -1904,24 +1904,24 @@ access in a later iteration in `P`), the lowering introduces:
   false-lane projects that initializer out unchanged.
 
 The body has no after-region; `scf.for` has a single body chain
-scope. Independent partitions in `Π_L` get independent rings sharing
+scope. Independent partitions in `Pi_L` get independent rings sharing
 only the `%loop_rwc` selector, so unrelated memrefs are not
-serialized. Per `docs/spec-compiler-part-3-mem.md` §2.5 plane
+serialized. Per `docs/spec-compiler-part-3-mem.md` Section 2.5 plane
 orthogonality, the structural rwc carry and the per-`P` memory carry
 are independent state rings over the same selector; the structural
 plane never aggregates the memory tails.
 
 For a partition `P` that is touched somewhere in the body but
-not in `Π_L` (typically a read-only partition), no state ring is
+not in `Pi_L` (typically a read-only partition), no state ring is
 created. The compound's `incoming_C_P` flows into the body as
 its per-iteration `incoming_P`, and the compound's `outgoing_C_P`
 is the streamed rendezvous of every executed iteration's body
-tail in `P`, per `docs/spec-compiler-part-3-mem.md` §5.2. No
+tail in `P`, per `docs/spec-compiler-part-3-mem.md` Section 5.2. No
 cross-iteration ordering is introduced; the rendezvous only
 signals that every body access in `P` has retired before the
 loop's `outgoing_C_P` fires. A partition not touched anywhere in
 the body does not appear at the compound's interface and the
-enclosing scope's frontier flows past unchanged (§2.4).
+enclosing scope's frontier flows past unchanged (Section 2.4).
 
 ### 6.4 `scf.forall` with `scf.forall.in_parallel`
 
@@ -2064,7 +2064,7 @@ this is already an upstream `scf.forall` verifier invariant and is
 repeated here as an input requirement for thread promotion. The
 forall induction variables become the trailing `iv_*` block-args of
 the def's entry block (after the leading `args_*` and `thread_ctrl`,
-per §5.4.1's `(args_*, thread_ctrl, iv_*)` layout). Values captured
+per Section 5.4.1's `(args_*, thread_ctrl, iv_*)` layout). Values captured
 from outside the forall become explicit launch operands at the use
 site and matching def block-args (the leading `args_*` of the entry
 block). The empty `scf.forall.in_parallel` terminator becomes
@@ -2124,25 +2124,25 @@ decision, or emit a diagnostic before this template runs.
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.forall`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.forall`.
 
 A mapped `scf.forall` is promoted to a `dataflow.thread` by
 `loom-build-thread-skeleton` (per
-`docs/spec-compiler-part-3-impl.md` §1.5) before the
+`docs/spec-compiler-part-3-impl.md` Section 1.5) before the
 `dataflow.graph` chain model ever runs over it. Mapped foralls
 therefore never appear as compound atoms inside a chain scope;
 their launch and completion are governed by the
 `!dataflow.thread_token` async protocol, which is explicitly
 out of scope for the chain model per
-`docs/spec-compiler-part-3-mem.md` §2.9.
+`docs/spec-compiler-part-3-mem.md` Section 2.9.
 
 An empty-mapping `scf.forall` does reach a chain scope. The pass
 `loom-build-memory-dependencies` (per
-`docs/spec-compiler-part-3-impl.md` §1.8) normalizes such a
+`docs/spec-compiler-part-3-impl.md` Section 1.8) normalizes such a
 forall to `scf.parallel` and from there to one or more `scf.for`
 loop nests with parallel-provenance metadata. The compound that
 stands for the original forall in the chain is therefore the
-parallel-provenance compound described in §6.5 below.
+parallel-provenance compound described in Section 6.5 below.
 
 ### 6.5 `scf.parallel` with `scf.reduce`
 
@@ -2372,7 +2372,7 @@ subsection extends the partial-and-merge scheme to a `scf.parallel`
 over `N` parallel dimensions with `M` reduction results.
 
 **Generated loop-nest layout.** After parallel-SCF normalization (per
-`docs/spec-compiler-part-3-impl.md` §1.8), an `N`-dim `scf.parallel`
+`docs/spec-compiler-part-3-impl.md` Section 1.8), an `N`-dim `scf.parallel`
 becomes one or more `scf.for` loop nests that share a single
 parallel-provenance group, plus any required reduction-merge
 `scf.if` ops. Each parallel dim becomes one `scf.for`. The loop-nest
@@ -2476,7 +2476,7 @@ iter_args on every K-chunk `scf.for`. The reduction-merge `scf.if`
 ops may be expressed as one multi-result `scf.if` that yields the
 next `M`-tuple `(%acc_0', .., %acc_{M-1}')`, or as `M` single-result
 `scf.if` ops sharing the same `%valid` selector; both shapes are
-equivalent under the §6.1 template. Whichever shape is chosen, the
+equivalent under the Section 6.1 template. Whichever shape is chosen, the
 merged tuple is yielded back into the K-chunk nest's iter_args,
 and the final values flowing out of the outermost K-chunk
 `scf.for` are the `M` `scf.parallel` results.
@@ -2602,34 +2602,34 @@ demux, mux, and memory-order behavior is inherited from those templates.
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.parallel`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.parallel`.
 
 After parallel-SCF normalization (per
-`docs/spec-compiler-part-3-impl.md` §1.8), `scf.parallel` becomes one
+`docs/spec-compiler-part-3-impl.md` Section 1.8), `scf.parallel` becomes one
 or more `scf.for` loop nests with parallel-provenance attributes. The
 outer compound that "stands for" the original `scf.parallel` in the
 chain model is the parallel-provenance compound: it is the analysis-
 visible group of generated chunk loops sharing one
 `loom.parallel_group` id, not a new IR op. Each chunk loop body is
-its own chain scope per `docs/spec-compiler-part-3-mem.md` §2.2.
+its own chain scope per `docs/spec-compiler-part-3-mem.md` Section 2.2.
 
 **Structural plane.** The compound's `struct_in` forks: every chunk
 receives the same SSA value as its structural-permission input
-(shared `struct_in` across chunks per the §2.8 table for
+(shared `struct_in` across chunks per the Section 2.8 table for
 `scf.forall` / `scf.parallel`). Each chunk's `struct_done` is the
 `scf.for` template's `struct_done` for that chunk. The compound's
 `struct_done` is `dataflow.sync` over all chunk `struct_done` tokens,
-matching the rendezvous in `docs/spec-compiler-part-3-mem.md` §2.6
+matching the rendezvous in `docs/spec-compiler-part-3-mem.md` Section 2.6
 for parallel-provenance compound atoms.
 
 **Memory plane (per touched partition `P`).** All chunks share the
 compound's `incoming_C_P`: the same SSA value forks into each chunk
-loop's per-iteration `incoming_P` (§5.6 of
+loop's per-iteration `incoming_P` (Section 5.6 of
 `docs/spec-compiler-part-3-mem.md` applies recursively if a
 parallel group is nested inside a source-ordered loop). Each
 chunk's per-`P` tail `%chunk_tail_P` is independent and is built
 under the parallel-provenance override: the chunk loop applies
-§6.3's structural plane (stream + carry on rwc + sentinel reset)
+Section 6.3's structural plane (stream + carry on rwc + sentinel reset)
 without building a per-`P` loop-carried state ring, since its
 iterations remain logical iterations of the original
 `scf.parallel`. The chunk's body memory accesses still chain
@@ -2637,22 +2637,22 @@ through their partition's frontier within a single iteration, and
 each chunk's rendezvous of completed per-iteration tails feeds its
 `%chunk_tail_P`. The compound's `outgoing_C_P = dataflow.sync`
 over all `%chunk_tail_P` tokens, per
-`docs/spec-compiler-part-3-mem.md` §2.6 chunk-tail rendezvous and
+`docs/spec-compiler-part-3-mem.md` Section 2.6 chunk-tail rendezvous and
 the parallel-provenance exception of
-`docs/spec-compiler-part-3-mem.md` §4.3 and §5.6.
+`docs/spec-compiler-part-3-mem.md` Section 4.3 and Section 5.6.
 
 No loop-carried memory state is created at the parallel-provenance
 compound boundary, per the parallel-provenance exception of
-`docs/spec-compiler-part-3-mem.md` §4.3 and the no-state-ring rule
-of `docs/spec-compiler-part-3-mem.md` §5.6: cross-iteration and
+`docs/spec-compiler-part-3-mem.md` Section 4.3 and the no-state-ring rule
+of `docs/spec-compiler-part-3-mem.md` Section 5.6: cross-iteration and
 cross-chunk dependence edges inside the compound are suppressed by
 the dependence builder, so the compound never builds a per-`P` ring.
 Each generated chunk loop carries its own parallel-provenance
 metadata, since its iterations are still logical iterations of the
 original `scf.parallel`; per
-`docs/spec-compiler-part-3-mem.md` §4.3 / §5.6 it therefore does
+`docs/spec-compiler-part-3-mem.md` Section 4.3 / Section 5.6 it therefore does
 not build a per-`P` loop-carried state ring across its own
-iterations. The §6.3 boundary translation supplies only the
+iterations. The Section 6.3 boundary translation supplies only the
 chunk loop's structural plane (stream-driven rwc, sentinel reset,
 iter_args for non-memory loop state); the chunk loop's memory
 plane reduces to "no cross-iteration memory ordering inside this
@@ -2662,7 +2662,7 @@ participate in the compound's `outgoing_C_P` rendezvous via the
 chunk-tail token described above. The compound atom is marked
 with parallel-provenance metadata
 (`loom.parallel_group`, `loom.parallel_chunk`, `loom.parallel_chunks`)
-per `docs/spec-compiler-part-3-mem.md` §4.3 so the chain construction
+per `docs/spec-compiler-part-3-mem.md` Section 4.3 so the chain construction
 identifies it correctly.
 
 ### 6.6 `scf.index_switch`
@@ -2773,15 +2773,15 @@ selector stream is `[1, 0, 2]`:
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.index_switch`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.index_switch`.
 
 **Structural plane.** The compound's `struct_in` enters an `(N + 1)`
 way `dataflow.demux` keyed on the normalized lane id `%lane` per the
 existing template (lane 0 = default region, lane `i + 1` = case
 region `i`). Each selected region is its own chain scope per
-`docs/spec-compiler-part-3-mem.md` §2.2 and uses its lane's structural-
+`docs/spec-compiler-part-3-mem.md` Section 2.2 and uses its lane's structural-
 permission token as its `S.struct_at_*` source per
-`docs/spec-compiler-part-3-mem.md` §6.2. The compound's `struct_done`
+`docs/spec-compiler-part-3-mem.md` Section 6.2. The compound's `struct_done`
 is `dataflow.mux` over all `(N + 1)` regions' `struct_done` tokens,
 keyed on the same `%lane`. The same `(N + 1)` way `mux` shape
 applies to every data result of the `scf.index_switch`.
@@ -2791,20 +2791,20 @@ applies to every data result of the `scf.index_switch`.
 the same normalized `%lane`, projecting it into per-region tokens
 `default_in_P`, `case0_in_P`, ..., `caseN_in_P`. Only the selected
 region's projection fires, matching the dual-plane contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 (a raw SSA fork would risk
+`docs/spec-compiler-part-3-mem.md` Section 2.8 (a raw SSA fork would risk
 stranded memory tokens being buffered in unselected regions and
 consumed on a later selected invocation). Each region chain scope's
 `incoming_P` is its lane's projected token. Each region's per-`P`
 tail is path-forwarding per
-`docs/spec-compiler-part-3-mem.md` §2.7: a region that performs no
+`docs/spec-compiler-part-3-mem.md` Section 2.7: a region that performs no
 access in `P` forwards its lane projection unchanged; a region
 that performs accesses in `P` builds its tail by the single-level
-chain rule of `docs/spec-compiler-part-3-mem.md` §2.5 inside that
+chain rule of `docs/spec-compiler-part-3-mem.md` Section 2.5 inside that
 region. Call those `default_tail_P`, `case0_tail_P`, ...,
 `caseN_tail_P`. The compound's `outgoing_C_P` is the
 selector-matched `(N + 1)` way `dataflow.mux %lane` of these tails
 (lane 0 = `default_tail_P`, lane `i + 1` = `case_i_tail_P`). Per
-leaf rendezvous, `docs/spec-compiler-part-3-mem.md` §6.4 still
+leaf rendezvous, `docs/spec-compiler-part-3-mem.md` Section 6.4 still
 applies inside each region.
 
 No loop-carried state. `scf.index_switch` does not introduce a
@@ -2820,21 +2820,21 @@ plane.
 #### Boundary Translation
 
 This template instantiates the boundary translation contract of
-`docs/spec-compiler-part-3-mem.md` §2.8 for `scf.execute_region`.
+`docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.execute_region`.
 
 **Structural plane.** Pass-through. `scf.execute_region` has a single
 inner region with no control selector. The inner region's chain
 scope inherits the compound's `struct_in` directly as its
-`S.struct_at_*` source per `docs/spec-compiler-part-3-mem.md` §6.2,
+`S.struct_at_*` source per `docs/spec-compiler-part-3-mem.md` Section 6.2,
 and its `struct_done` directly becomes the compound's `struct_done`.
 No `dataflow.demux` / `dataflow.mux` / `dataflow.carry` /
 `dataflow.gate` is introduced by the boundary translation.
 
 **Memory plane (per touched partition `P`).** Pass-through.
 `incoming_C_P` directly enters the inner region as its `incoming_P`
-per `docs/spec-compiler-part-3-mem.md` §2.4; the inner region's
+per `docs/spec-compiler-part-3-mem.md` Section 2.4; the inner region's
 `outgoing_P`, computed by the single-level chain rule of
-`docs/spec-compiler-part-3-mem.md` §2.5 inside the region, directly
+`docs/spec-compiler-part-3-mem.md` Section 2.5 inside the region, directly
 becomes the compound's `outgoing_C_P`. No loop-carried state.
 
 If the inlining pass described above runs first, the compound boundary
@@ -2852,7 +2852,7 @@ description above.
 The compositional chain model, alias oracle, dependence builder,
 loop-carried memory state, and token wiring rules are specified in
 `docs/spec-compiler-part-3-mem.md`. Per-`scf.*` boundary translation
-rules in §6 instantiate that model with op-specific structural and
+rules in Section 6 instantiate that model with op-specific structural and
 memory-plane wiring.
 
 ## 8. Partitioned Data
@@ -2861,14 +2861,14 @@ Partitioned-data layout and in-thread queries are specified in
 `docs/spec-compiler-part-4-partitioned-data.md`, along with future work
 on neighborhood communication / distributed-buffer protocols. They are
 not required for SCF-to-DFG flattening; this
-document references them only at the boundary points (see §5.4 and
-§9).
+document references them only at the boundary points (see Section 5.4 and
+Section 9).
 
 ## 9. Verifier Rules (Front-End Specific)
 
 In addition to the existing dataflow / fabric verifier set:
 
-* `dataflow.thread` (definition, §5.4.1)
+* `dataflow.thread` (definition, Section 5.4.1)
   - The op is a Symbol-bearing, function-like callable; it must
     be a direct child of a `ModuleOp` (`HasParent<"ModuleOp">`).
   - `sym_name` is required and module-unique among
@@ -2934,7 +2934,7 @@ In addition to the existing dataflow / fabric verifier set:
       rule does not itself select AccCore execution; placement must have
       selected the enclosing accelerator region first.
     Mixing direct graph launches with direct thread launches at the
-    same thread-body placement level violates §3 Constitutional
+    same thread-body placement level violates Section 3 Constitutional
     Rule 2's parent-side constraint.
   - Body may contain `func.call` only when the callee has been
     proven ScalarCore-legal or is scheduled for inlining before
@@ -2947,7 +2947,7 @@ In addition to the existing dataflow / fabric verifier set:
     `loom-dead-symbol-prune` is the cleanup pass that removes
     such symbols before pipeline exit.
 
-* `dataflow.thread.launch` (§5.4.2)
+* `dataflow.thread.launch` (Section 5.4.2)
   - `callee` resolves to a `dataflow.thread` definition in the
     same module (verifier rejects unresolved or wrong-kind callee).
   - `bodyOperands` types equal `callee.function_type.inputs`
@@ -2962,7 +2962,7 @@ In addition to the existing dataflow / fabric verifier set:
     result of a `dataflow.map_info` op in the launch's enclosing
     context. The launch's `MemoryEffectsOpInterface` walks back
     through that `map_info` op and projects effects on the map
-    source according to its `direction` attribute (per §5.4.2
+    source according to its `direction` attribute (per Section 5.4.2
     contract).
   - **Direction / body-effect compatibility.** For each memref-
     like operand `i`, the projected `direction` must cover every
@@ -2980,7 +2980,7 @@ In addition to the existing dataflow / fabric verifier set:
   - The op declares a conservative effect on the
     `LoomAsyncResource` resource so generic CSE / DCE never
     removes a launch even when its callee body has no host-
-    visible memory effects (per §3 Constitutional Rule 8).
+    visible memory effects (per Section 3 Constitutional Rule 8).
   - May appear at host scope (`func.func` body) or inside a
     parent `dataflow.thread` definition's body (nested launch).
     Must not appear inside a `dataflow.graph` definition's body.
@@ -3005,7 +3005,7 @@ In addition to the existing dataflow / fabric verifier set:
     `MemRead + MemWrite` on MLIR's default memory resource. Lowering
     and verification must not weaken this to a per-resource effect or
     to no effect; doing so breaks the ScalarCore-side barrier
-    contract specified in §3 rule 8.
+    contract specified in Section 3 rule 8.
 
 * `dataflow.thread.wait`
   - At least one operand. Each is `!dataflow.thread_token` produced
@@ -3061,7 +3061,7 @@ Verifier rules for `dataflow.partition_layout`,
     schedule slot, spatial / temporal mode, temporal tag, or
     resource-sharing attribute.
 
-* `dataflow.graph` (definition, §5.5.1)
+* `dataflow.graph` (definition, Section 5.5.1)
   - The op is a Symbol-bearing, function-like callable; it must
     be a direct child of a `ModuleOp` (`HasParent<"ModuleOp">`).
   - `sym_name` is required and module-unique among
@@ -3098,7 +3098,7 @@ Verifier rules for `dataflow.partition_layout`,
     is the `dataflow.graph.launch`'s manual projection (next
     bullet group).
 
-* `dataflow.graph.launch` (§5.5.2)
+* `dataflow.graph.launch` (Section 5.5.2)
   - `callee` resolves to a `dataflow.graph` definition in the
     same module (verifier rejects unresolved or wrong-kind callee).
   - `(none, type(bodyOperands)) == callee.function_type.inputs`
@@ -3168,7 +3168,7 @@ milestone and have placeholders only:
 * `docs/spec-compiler-part-3-mem.md` -- compositional chain model,
   alias oracle, dependence builder, loop-carried memory state, and
   token-wiring rules used inside each `dataflow.graph`. Per-`scf.*`
-  boundary translation rules in §6 of this document instantiate
+  boundary translation rules in Section 6 of this document instantiate
   that model.
 * `docs/spec-compiler-part-3-placement-framework.md` -- common
   placement-partition framework; Part 3 owns the L2 graph-placement

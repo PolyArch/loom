@@ -77,8 +77,8 @@ fabric ops). `fabric.switch` requires `hw_params` to be present.
 Software parameters live in `sw_configs`, a DictionaryAttr printed in
 `{ ... }`. Two attributes:
 
-1. `route_table` — shape depends on the schedule.
-2. `switch_enable` — `BoolAttr`. Power/clock-gate equivalent. `true`
+1. `route_table` -- shape depends on the schedule.
+2. `switch_enable` -- `BoolAttr`. Power/clock-gate equivalent. `true`
    means the switch is active; `false` gates the entire switch off.
 
 **All-or-nothing rule.** When the switch is programmed, BOTH
@@ -86,7 +86,7 @@ Software parameters live in `sw_configs`, a DictionaryAttr printed in
 hardware-only declaration (not yet programmed), BOTH must be absent.
 Mixing the two is rejected as an "all-or-nothing violation".
 
-### route_table — spatial
+### route_table -- spatial
 
 * ArrayAttr of `L` `StringAttr`s (one row per output).
 * Row `j` has length equal to the count of `'1'`s in
@@ -106,15 +106,15 @@ Spatial switches allow **broadcast** (one input may be selected by
 multiple `route_table` rows simultaneously) but FORBID **fan-in** to a
 single output (the per-row `'1'` <= 1 rule enforces this).
 
-### route_table — temporal
+### route_table -- temporal
 
 * ArrayAttr of exactly `route_table_size` entries.
 * Each entry is a DictionaryAttr with three keys:
-  * `route_sel` — ArrayAttr of `L` `StringAttr`s with the same shape as
+  * `route_sel` -- ArrayAttr of `L` `StringAttr`s with the same shape as
     a spatial `route_table`.
-  * `tag` — `IntegerAttr` of width `T` (matching the port tag width),
+  * `tag` -- `IntegerAttr` of width `T` (matching the port tag width),
     value in `[0, 2^T)`.
-  * `valid` — `BoolAttr`.
+  * `valid` -- `BoolAttr`.
 * Per-entry `route_sel` follows the spatial-route-table per-row rules
   (each row at most one `'1'`).
 * **Tag uniqueness.** Among entries with `valid == true`, all `tag`
@@ -245,10 +245,10 @@ greps for stable diagnostic anchors):
 
 ## Cross-references
 
-* `spec-fabric-module.md` — top-level module body whitelist (which lists
+* `spec-fabric-module.md` -- top-level module body whitelist (which lists
   `fabric.switch` alongside `fabric.pe`, `fabric.fifo`,
   `fabric.boundary`, etc.).
-* `spec-fabric-pe.md` — schedule predicate (`spatial` / `temporal`)
+* `spec-fabric-pe.md` -- schedule predicate (`spatial` / `temporal`)
   shared with `fabric.switch`.
 
 ## Maintenance

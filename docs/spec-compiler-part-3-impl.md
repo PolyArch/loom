@@ -104,7 +104,7 @@ documentation never refers to the numeric position.
   `mapping` array that mixes
   Loom-recognized entries with at least one foreign entry is
   rejected with a diagnostic at this pass (per
-  `docs/spec-compiler-part-3-dfg.md` §4 Mapping attribute rules);
+  `docs/spec-compiler-part-3-dfg.md` Section 4 Mapping attribute rules);
   Part 2 or an earlier Part 3 pass must remove or translate the
   foreign entries before promotion can run.
 * Marks each Loom-only mapped forall with a temporary attribute
@@ -166,7 +166,7 @@ documentation never refers to the numeric position.
   `loom-materialize-forall-aggregation`.
 * The thread definition's body entry block uses the layout
   `(args_*, thread_ctrl, iv_*)` per
-  `docs/spec-compiler-part-3-dfg.md` §5.4.1: the leading `N` block
+  `docs/spec-compiler-part-3-dfg.md` Section 5.4.1: the leading `N` block
   args mirror `function_type.inputs` exactly, then one
   `thread_ctrl : none`, then one `index`-typed iv per grid dim
   (in source-dim order). This ordering preserves the upstream
@@ -213,7 +213,7 @@ documentation never refers to the numeric position.
   The fallback to `dataflow.thread.wait` is the spec contract, not
   an optimization opportunity. The wait carries the default-resource
   memory barrier introduced by `docs/spec-compiler-part-3-dfg.md`
-  §3 Constitutional Rule 8, so subsequent host or parent-context
+  Section 3 Constitutional Rule 8, so subsequent host or parent-context
   ops cannot be reordered to before the synchronization.
 * Once every marked forall inside a `loom.acc_region` has been
   replaced by a def + launch pair (def at module scope, launch in
@@ -265,7 +265,7 @@ documentation never refers to the numeric position.
   enclosing thread definition's symbol name and `<seq>` is the
   zero-based source-order index of the cut inside that thread
   definition. Symbol-grammar-illegal characters are sanitized as in
-  §1.5 above. The launch's `callee` field references this symbol.
+  Section 1.5 above. The launch's `callee` field references this symbol.
 * The pass is structured as admission constraints, a cost model,
   and an exploration policy. Admission constraints are correctness
   rules: admitted graph definition bodies must satisfy Part 3's
@@ -300,7 +300,7 @@ documentation never refers to the numeric position.
   together encode this layer's admission constraints. Future
   cost-model and exploration-policy work should keep these terms
   aligned with
-  `docs/spec-compiler-part-3-placement-framework.md` §3-§5.
+  `docs/spec-compiler-part-3-placement-framework.md` Section 3-Section 5.
 * "Graph-admissible" is not inferred from the `Pure` trait alone.
   `dataflow.map_info` and the partitioned-data ops in
   `docs/spec-compiler-part-4-partitioned-data.md` are also `Pure`, but they
@@ -321,7 +321,7 @@ documentation never refers to the numeric position.
   placement is a diagnostic; optional unadmitted code stays
   ScalarCore.
 * `dataflow.thread.launch` is not merely a cut: per
-  `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 2,
+  `docs/spec-compiler-part-3-dfg.md` Section 3 Constitutional Rule 2,
   thread hierarchy is strictly layered. Whenever the thread
   definition's body the pass is processing has any direct
   `dataflow.thread.launch` op, the pass emits no
@@ -330,7 +330,7 @@ documentation never refers to the numeric position.
   direct child `dataflow.thread.launch`, and with graph-admissible
   code or scalar-only residual code. This matches the placement
   framework's L2 graph-placement rule in
-  `docs/spec-compiler-part-3-placement-framework.md` §7.
+  `docs/spec-compiler-part-3-placement-framework.md` Section 7.
 * Connectedness is not part of the baseline admission rule. If two
   memory-access clusters are adjacent in source order and separated
   only by graph-admissible compute, they are placed in the same
@@ -424,18 +424,18 @@ documentation never refers to the numeric position.
   consume alias information must not implicitly select `mlir-aa`;
   they opt in through an explicit pass option, and they obtain alias
   answers only through the `MemAliasOracle` interface per
-  `docs/spec-compiler-part-3-dfg.md` §3 Rule 5.
+  `docs/spec-compiler-part-3-dfg.md` Section 3 Rule 5.
   - `BasicSsaOracle`: an SSA-source walk that recognizes a fixed set
     of view-like and terminal memref ops; any other memref-producing
     op enters the conservative unknown bucket `U` per
-    `docs/spec-compiler-part-3-mem.md` §3. The recognized view-like
+    `docs/spec-compiler-part-3-mem.md` Section 3. The recognized view-like
     ops are `memref.cast`, `memref.subview`, `memref.view`,
     `memref.expand_shape`, `memref.collapse_shape`,
     `memref.reinterpret_cast`, `memref.transpose`,
     `dataflow.partition_layout`, and `dataflow.map_info` (both
     same-type view-like producers per
     `docs/spec-compiler-part-4-partitioned-data.md` and
-    `docs/spec-compiler-part-3-dfg.md` §5.4.6); the walk peels each
+    `docs/spec-compiler-part-3-dfg.md` Section 5.4.6); the walk peels each
     into its source operand. The recognized terminal roots are
     `memref.alloca`, `memref.alloc`, `memref.get_global`, and
     function-block arguments. Entry-block arguments of
@@ -444,7 +444,7 @@ documentation never refers to the numeric position.
     launch-side operand in the enclosing scope (resolved via the
     callee symbol when crossing a `dataflow.thread.launch` or
     `dataflow.graph.launch`) per
-    `docs/spec-compiler-part-3-mem.md` §3.1, so that storage
+    `docs/spec-compiler-part-3-mem.md` Section 3.1, so that storage
     identity is preserved across the boundary. Other memref
     producers, including
     `bufferization.to_memref`, `unrealized_conversion_cast`, and
@@ -469,7 +469,7 @@ documentation never refers to the numeric position.
     producer drops out of the leaf-pair conflict set. Effect-summary
     lift across compound `scf.*` atoms uses `BasicSsaOracle`'s
     classification only and does not benefit from this refinement
-    (see `docs/spec-compiler-part-3-mem.md` §3.3). When upstream AA
+    (see `docs/spec-compiler-part-3-mem.md` Section 3.3). When upstream AA
     cannot prove anything stronger, the oracle behaves exactly like
     the basic oracle.
 * Runs a `MemoryDependenceBuilder` after alias queries are available.
@@ -478,15 +478,15 @@ documentation never refers to the numeric position.
   themselves; direction always comes from program order plus the
   enclosing structured-control-flow path. The builder constructs dep
   edges per partition, where the partition is the alias bucket key
-  defined by `docs/spec-compiler-part-3-mem.md` §3 (a known root
-  storage identity from the §3.1 walk, or the conservative bucket
+  defined by `docs/spec-compiler-part-3-mem.md` Section 3 (a known root
+  storage identity from the Section 3.1 walk, or the conservative bucket
   `U`). Two atoms in the same chain scope and same partition are the
   only direct candidates for a dep edge; cross-partition and
   cross-scope ordering is carried by per-partition frontiers and by
   per-`scf.*` boundary translation, never by an edge.
 * Compound `scf.*` ops still inside a `dataflow.graph` definition's
   body at this point in the pipeline participate as compound atoms
-  via the §3.3 effect-summary lift. The builder queries the alias oracle on inner leaves
+  via the Section 3.3 effect-summary lift. The builder queries the alias oracle on inner leaves
   as the unit of conflict: a compound conflicts with a leaf in
   partition `P` iff at least one inner leaf the compound contributes
   to `P` conflicts with the outer leaf, and two compounds conflict
@@ -496,7 +496,7 @@ documentation never refers to the numeric position.
   propagate into the lift. Path-sensitive pruning, the parallel-
   provenance exception, the loop-carried real-edge rule, and the
   optional transitive reduction follow
-  `docs/spec-compiler-part-3-mem.md` §4.3.
+  `docs/spec-compiler-part-3-mem.md` Section 4.3.
 * The builder consumes parallel provenance from generated loops. For
   accesses in different logical iterations or different chunks of the
   same original `scf.parallel`, it must not create a dependence edge
@@ -514,11 +514,11 @@ documentation never refers to the numeric position.
   Each partition record has a kind: `carried` for partitions
   requiring cross-iteration ordering (lowered to one hidden `none`
   state-ring carry in `loom-lower-scf-to-dfg-bodies`, per
-  `docs/spec-compiler-part-3-mem.md` §5.2 abstract pattern), or
+  `docs/spec-compiler-part-3-mem.md` Section 5.2 abstract pattern), or
   `completion` for partitions touched in the body but not requiring
   cross-iteration ordering (lowered to one hidden completion-only
   carry that aggregates per-iteration body-tail tokens into the
-  loop's `outgoing_P`, per `docs/spec-compiler-part-3-mem.md` §5.2
+  loop's `outgoing_P`, per `docs/spec-compiler-part-3-mem.md` Section 5.2
   touched-but-not-carried case). Both record kinds are pinned in
   the snapshot so `loom-lower-scf-to-dfg-bodies` does not need to
   re-analyze.
@@ -530,9 +530,9 @@ documentation never refers to the numeric position.
   rewrite, `dataflow.load` / `dataflow.store` after rewrite) carry
   `loom.mem_dep_id` in this milestone; compound `scf.*` atoms still
   in the graph definition's body do not get their own id, and their
-  parent-chain behavior is reconstructed by §2.5 / §2.6 of
+  parent-chain behavior is reconstructed by Section 2.5 / Section 2.6 of
   `docs/spec-compiler-part-3-mem.md` applied to the boundary
-  translation rules in `docs/spec-compiler-part-3-dfg.md` §6. Each
+  translation rules in `docs/spec-compiler-part-3-dfg.md` Section 6. Each
   loop with hidden memory state gets `loom.mem_loop_id = L` and
   `loom.mem_loop_states = [...]`, a loop-local memory-state plan
   whose fields are deterministic integer ids, never operation
@@ -557,22 +557,22 @@ documentation never refers to the numeric position.
   graph definition bodies and are preserved as ScalarCore calls.
 * Memory ops (`memref.load`, `memref.store`) are rewritten in place
   as `dataflow.load` / `dataflow.store`. The pass implements the
-  per-plane wiring rules in `docs/spec-compiler-part-3-mem.md` §6:
+  per-plane wiring rules in `docs/spec-compiler-part-3-mem.md` Section 6:
   every leaf op's `ctrl` operand is materialized as
   `dataflow.sync(S.struct_at_L, incoming_L_P)`, where the structural
   permission token comes from the per-`scf.*` boundary translation in
-  `docs/spec-compiler-part-3-dfg.md` §6 and the memory-plane
+  `docs/spec-compiler-part-3-dfg.md` Section 6 and the memory-plane
   predecessor token comes from the partition-`P` chain (immediate dep
   predecessors at the same scope contribute their `done`; a sibling
   compound atom contributes its `outgoing_P` per the cross-scope
-  resolution in mem.md §4.4; loop-carried predecessors contribute
-  `%mem_iter_P` or `%mem_after_P` per mem.md §5). Multiple
+  resolution in mem.md Section 4.4; loop-carried predecessors contribute
+  `%mem_iter_P` or `%mem_after_P` per mem.md Section 5). Multiple
   same-path predecessors join through `dataflow.sync`; multiple
   mutually exclusive predecessors join through selector-matched
   `dataflow.mux`; mixed sets compose hierarchically. The graph's
   `done_out` yield operand is the boundary `dataflow.sync` over the
   per-partition root `outgoing_P` tails computed at the root scope
-  (mem.md §6.5); when the graph touches no partition, `done_out`
+  (mem.md Section 6.5); when the graph touches no partition, `done_out`
   forwards `ctrl_in` directly.
 
 ### 1.10 `loom-finalize-dfg`
@@ -636,7 +636,7 @@ The lit-test layout grows three new directories:
     naming both ops).
   - `thread/` includes mapping-attribute fixtures for the
     `#loom.thread_axis<kind, axis, domain?>` form
-    (per `docs/spec-compiler-part-3-dfg.md` §5.2 and §9):
+    (per `docs/spec-compiler-part-3-dfg.md` Section 5.2 and Section 9):
     - valid: `#loom.thread_axis<parallel, 0>` and
       `#loom.thread_axis<multiplexed, 1>` entries with no domain
       qualifier.
@@ -650,7 +650,7 @@ The lit-test layout grows three new directories:
     - invalid: an axis value outside `[0, domain_rank)` for a
       domain-qualified entry.
     - invalid: a foreign (non-Loom) `DeviceMappingAttrInterface`
-      attribute mixed with Loom-recognized entries (per Part 3 §3
+      attribute mixed with Loom-recognized entries (per Part 3 Section 3
       Mapping attribute rules, retained from earlier milestone).
   - `graph/` includes invalid cases for `func.call` and
     `func.func` inside a graph definition's body, and invalid
@@ -676,7 +676,7 @@ The lit-test layout grows three new directories:
     `loom.mem_dep_preds` / `loom.mem_loop_*` attributes are
     observable on the final IR they FileCheck against; without the
     flag the snapshot would have been stripped by `loom-finalize-dfg`
-    (per §1.10). The differential subset is intentionally small in
+    (per Section 1.10). The differential subset is intentionally small in
     milestone 1 with two minimum-coverage floors: one case per loop
     family (`for/`, `while/`, `forall/`-effect-form normalized to
     `parallel/`, plus straight-line `if/` and `index_switch/`) that
@@ -762,14 +762,14 @@ following hold simultaneously:
   discarded.
 * Every promoted mapped `scf.forall` preserves the source
   operation's implicit synchronization point by following the
-  mechanical rule in §1.5: either the immediately structurally
+  mechanical rule in Section 1.5: either the immediately structurally
   following op is a `LoomAsyncOpInterface` op whose
   `asyncDependencies` operand list includes the produced token (the
   SSA use itself is the synchronization, no extra op needed), or a
   `dataflow.thread.wait` consuming the token is present before any
   continuation op (the conservative fallback). Acceptance verifies
   both conditions independently; the wait's effect-visibility
-  barrier from `docs/spec-compiler-part-3-dfg.md` §3 Constitutional
+  barrier from `docs/spec-compiler-part-3-dfg.md` Section 3 Constitutional
   Rule 8 prevents subsequent ops from being reordered to before
   the synchronization.
 * Root graph launch `ctrl_in` wiring is mechanical: graph launches
@@ -826,7 +826,7 @@ following hold simultaneously:
   effect on a custom `LoomAsyncResource` resource so generic
   CSE / DCE never removes a launch even when its callee body has
   no host-visible memory effects (per
-  `docs/spec-compiler-part-3-dfg.md` §3 Constitutional Rule 8).
+  `docs/spec-compiler-part-3-dfg.md` Section 3 Constitutional Rule 8).
   `dataflow.graph.launch` reports external memory effects by
   resolving its `callee` and walking the callee body. No acceptance
   test depends on `RecursiveMemoryEffects` to discover host-
@@ -874,7 +874,7 @@ following hold simultaneously:
   baseline source-order greedy policy remains the default reference
   policy.
 * `Dataflow_GraphOp::build(...)` constructs a function-like
-  definition (per `docs/spec-compiler-part-3-dfg.md` §5.5.1). The
+  definition (per `docs/spec-compiler-part-3-dfg.md` Section 5.5.1). The
   builder accepts `(StringRef sym_name, FunctionType functionType,
   ArrayRef<NamedAttribute> attrs)` plus optional `arg_attrs` /
   `res_attrs` arrays. The body is added through the standard
@@ -884,7 +884,7 @@ following hold simultaneously:
   Construction of per-launch sites uses the separate
   `Dataflow_GraphLaunchOp` builders.
 * `Dataflow_ThreadOp::build(...)` constructs a function-like
-  definition (per `docs/spec-compiler-part-3-dfg.md` §5.4.1). The
+  definition (per `docs/spec-compiler-part-3-dfg.md` Section 5.4.1). The
   builder is analogous to the graph builder above, with additional
   grid attributes (`staticGrid*`, `mapping`) and entry-block layout
   `(args_*, thread_ctrl, iv_*)`. Per-launch sites use the separate

@@ -46,14 +46,14 @@ unrelated storage is not serialized. Both roles use the same
 `none` token type at the SSA level; the distinction is what each
 edge encodes at a given lowering point.
 
-The remainder of this document is organized as follows. §2
-specifies the compositional model. §3 specifies the
+The remainder of this document is organized as follows. Section 2
+specifies the compositional model. Section 3 specifies the
 `MemAliasOracle` contract and the two milestone implementations.
-§4 specifies the dependence builder, including the snapshot it
-plants on the IR. §5 specifies loop-carried memory state. §6
+Section 4 specifies the dependence builder, including the snapshot it
+plants on the IR. Section 5 specifies loop-carried memory state. Section 6
 specifies the SSA-level wiring that turns the model and the
 snapshot into actual `ctrl` and `done` edges. Per-`scf.*` boundary
-translation is owned by `docs/spec-compiler-part-3-dfg.md` §6.
+translation is owned by `docs/spec-compiler-part-3-dfg.md` Section 6.
 
 ## 2. Compositional Chain Model
 
@@ -77,13 +77,13 @@ A Part 3 `none` token at any SSA edge encodes one of two roles:
 
 A leaf memory op's `ctrl` operand is the rendezvous of one
 structural permission token with one or more memory-order
-predecessor tokens (see §2.5 and §6). The two roles meet only at
+predecessor tokens (see Section 2.5 and Section 6). The two roles meet only at
 that rendezvous; the rest of the lowering keeps them separate.
 
 This is a conceptual split, not a new IR type or a separate token
 network. Both roles use `dataflow` primitive ops on `none` values.
 The split exists so the rest of this section, and per-`scf.*`
-boundary translation in `docs/spec-compiler-part-3-dfg.md` §6, can
+boundary translation in `docs/spec-compiler-part-3-dfg.md` Section 6, can
 reason about them independently.
 
 ### 2.2 Chain Scope, Atom, Effect Summary
@@ -102,7 +102,7 @@ The model uses the following terms:
     memory access. `dataflow.thread.fence` is not a leaf event in
     this model: it must appear directly in a `dataflow.thread`
     definition's body per the front-end verifier in
-    `docs/spec-compiler-part-3-dfg.md` §9, and a thread
+    `docs/spec-compiler-part-3-dfg.md` Section 9, and a thread
     definition's body is not a chain scope as defined here.
   - **Compound `scf.*` atom.** Any `scf.*` op whose transitive
     body content has memory effects. The compound is opaque to
@@ -129,7 +129,7 @@ role builds its per-partition frontier.
 * A **known root** is the SSA value at the end of the
   `MemAliasOracle` walk through view-like memref ops. Distinct
   known roots default to disjoint, following the
-  `BasicSsaOracle` assumption stated in §3.
+  `BasicSsaOracle` assumption stated in Section 3.
 * An **unknown-root effect** is one whose root walk encounters an
   op the active oracle does not recognize. Such effects enter a
   conservative bucket. The first milestone uses a single bucket
@@ -151,10 +151,10 @@ role builds its per-partition frontier.
   every ancestor scope's chain.
 
 Partition identity is graph-local. Numeric partition ids in the
-dependence snapshot (see §4) are chosen per `dataflow.graph`
+dependence snapshot (see Section 4) are chosen per `dataflow.graph`
 definition and need not match across graphs (or across launches
 of the same graph definition; per-launch frontier wiring is the
-caller-side concern, see §6.5).
+caller-side concern, see Section 6.5).
 
 ### 2.4 Per-Partition Memory Frontier
 
@@ -172,7 +172,7 @@ incoming nor an outgoing frontier for it, and the parent scope's
 frontier flows through unchanged. The single exception is the
 unknown bucket `U`: a scope whose effect summary contains `U`
 also participates in every known partition `P` in any enclosing
-scope, per the lift rule in §2.3. Operationally, the parent
+scope, per the lift rule in Section 2.3. Operationally, the parent
 scope wires the compound into both `U` and every known
 partition's per-`P` chain, so a `U` effect inside the compound
 serializes against every conflicting known-partition effect
@@ -184,7 +184,7 @@ leading `ctrl_in` block argument (the per-launch start signal at
 `dataflow.graph.launch` time) and any pre-launch dependence tail
 visible at the launch site. The def's leading `done_out` yield
 operand is the rendezvous of all final per-partition outgoing
-frontiers (see §6.5). Per-launch caller-side wiring is materialized
+frontiers (see Section 6.5). Per-launch caller-side wiring is materialized
 at each `dataflow.graph.launch` site: the launch's `ctrl_in`
 operand carries the structural start, and its `done_out` result
 is what the surrounding ScalarCore code observes as the launch's
@@ -257,7 +257,7 @@ for each atom A in A_P:
                                   dataflow.mux(alt_tails)).
   loop-carried-from-S, if any:
     additionally include the loop-carried P-state token
-    (see §5)
+    (see Section 5)
 
   outgoing_A_P = the P-tail produced by A at S.
 ```
@@ -269,7 +269,7 @@ position. Its `done` result becomes the source of `outgoing_A_P`
 (no further wrapping).
 
 When `A` is a compound `scf.*` atom, the boundary translation rule
-in `docs/spec-compiler-part-3-dfg.md` §6 specifies how
+in `docs/spec-compiler-part-3-dfg.md` Section 6 specifies how
 `(A.struct_in, {incoming_A_P}_{P touched by A})` flow into `A`'s
 inner regions and how `(A.struct_done, {outgoing_A_P})` are
 collected from those regions.
@@ -307,7 +307,7 @@ build_chain(scope S):
       summaries
       record C as a compound atom of S
 
-  apply the single-level chain rule of §2.5 at S, using the
+  apply the single-level chain rule of Section 2.5 at S, using the
   recorded atoms and their effect summaries
 
   for each compound atom C of S:
@@ -316,7 +316,7 @@ build_chain(scope S):
     (struct_done, {outgoing_C_P}) into concrete dataflow
     primitives that drive C's inner regions and gather their
     tails. The translation is specified per scf op in
-    docs/spec-compiler-part-3-dfg.md §6.
+    docs/spec-compiler-part-3-dfg.md Section 6.
 ```
 
 Post-order is required because the enclosing scope's chain
@@ -325,15 +325,15 @@ partitions it touches) before placing it in the per-`P` chains.
 
 **Parallel-provenance compound atoms.** A compound atom carrying
 parallel-provenance metadata (the temporary attributes planted
-by the dependence builder; see §4) follows fork-join boundary
+by the dependence builder; see Section 4) follows fork-join boundary
 semantics. Each chunk's body is its own chain scope; chunks
 share the compound's `incoming_P` for every touched partition
 `P`; the compound's `outgoing_P` is the `dataflow.sync`
 rendezvous of all chunk tails for `P`. No cross-iteration or
 cross-chunk dependence edges are introduced inside the compound,
-and no loop-carried memory state of §5 is created for partitions
+and no loop-carried memory state of Section 5 is created for partitions
 inside it. Source-ordered loops without parallel provenance use
-the loop-state ring of §5 instead.
+the loop-state ring of Section 5 instead.
 
 ### 2.7 Join Rules
 
@@ -380,12 +380,12 @@ boundary with the enclosing scope.
 * **Memory plane.** For every partition `P` transitively touched
   by the compound, the compound takes one `incoming_C_P` and
   produces one `outgoing_C_P`. Internal path-sensitive forwarding
-  follows §2.5 and §2.7 rules. A partition not touched anywhere
+  follows Section 2.5 and Section 2.7 rules. A partition not touched anywhere
   in the compound is not part of the compound's interface; the
   enclosing scope simply does not connect to it.
 
 The shape that each `scf.*` op uses to satisfy this contract is
-specified per op in `docs/spec-compiler-part-3-dfg.md` §6. The
+specified per op in `docs/spec-compiler-part-3-dfg.md` Section 6. The
 following table summarizes the shape only; the per-op section
 is the source of truth for SSA-level wiring.
 
@@ -401,12 +401,12 @@ is the source of truth for SSA-level wiring.
 A mapped `scf.forall` is promoted to a `dataflow.thread`
 definition + `dataflow.thread.launch` pair by
 `loom-build-thread-skeleton` before the chain model applies (see
-`docs/spec-compiler-part-3-impl.md` §1.5 and
-`docs/spec-compiler-part-3-dfg.md` §6.4); only an empty-mapping
+`docs/spec-compiler-part-3-impl.md` Section 1.5 and
+`docs/spec-compiler-part-3-dfg.md` Section 6.4); only an empty-mapping
 `scf.forall` reaches the chain scope and is normalized to
 `scf.parallel`, so the table groups it with the parallel-provenance
 compound. The per-op SSA wiring is specified in
-`docs/spec-compiler-part-3-dfg.md` §6, with structural and
+`docs/spec-compiler-part-3-dfg.md` Section 6, with structural and
 memory-plane wiring spelled out per template; the table here is
 the contract each template instantiates.
 
@@ -418,11 +418,11 @@ milestone:
 
 * Define `!dataflow.thread_token` semantics or
   `LoomAsyncOpInterface` participation. Those are launch-side
-  protocols specified by `docs/spec-compiler-part-3-dfg.md` §3
-  and §5.4.1.
+  protocols specified by `docs/spec-compiler-part-3-dfg.md` Section 3
+  and Section 5.4.1.
 * Define `dataflow.map_info` direction enforcement or HostCore
   visibility. That is the boundary memory-effect summary
-  specified by `docs/spec-compiler-part-3-dfg.md` §3 rule 4 and
+  specified by `docs/spec-compiler-part-3-dfg.md` Section 3 rule 4 and
   rule 7.
 * Define `DeviceMappingAttrInterface` or thread-grid mapping
   semantics. Those are placement-side concerns.
@@ -434,7 +434,7 @@ milestone:
 * Cross-graph partition identity. `dataflow.graph` is a leaf in
   the first milestone and partition ids are graph-local (scoped
   to the def's body, with caller-side per-launch frontier wiring
-  materialized at each `dataflow.graph.launch` site, per §6.5).
+  materialized at each `dataflow.graph.launch` site, per Section 6.5).
   Future graph-in-graph or split-graph designs would need an
   explicit child-block-arg to parent-operand alias-root mapping
   at the graph boundary; numeric ids alone are not enough. This
@@ -447,11 +447,11 @@ their respective sections.
 
 The alias oracle answers a single question: do two memory effects
 conflict? Conflict is symmetric and direction-free. The dependence
-builder in §4 turns those answers into directed edges using program
+builder in Section 4 turns those answers into directed edges using program
 order and structured-control-flow nesting. Effect-summary lift
 across compound `scf.*` atoms is also driven from the oracle: per
-§2.2 a compound's summary is the recursive union of its leaves'
-summaries, and per §2.3 the unknown bucket `U` is what the oracle
+Section 2.2 a compound's summary is the recursive union of its leaves'
+summaries, and per Section 2.3 the unknown bucket `U` is what the oracle
 reports for any leaf whose root walk leaves the recognized set. The
 two interchangeable implementations below share the `MemAliasOracle`
 interface; the C++ class signature and the pass that materializes
@@ -475,7 +475,7 @@ conditions:
   in `docs/spec-compiler-part-4-partitioned-data.md`, which is a
   same-type view of its source memref), and `dataflow.map_info`
   (the boundary metadata op defined in
-  `docs/spec-compiler-part-3-dfg.md` §5.4.6, which is also a pure
+  `docs/spec-compiler-part-3-dfg.md` Section 5.4.6, which is also a pure
   view-like alias of its source). Each of these produces a memref
   that shares storage with its source by construction, so the
   walk peels them off without breaking aliasing. Peeling
@@ -502,7 +502,7 @@ conditions:
   (so user data block-arg `i` corresponds to graph launch operand
   `i + 1`); for a `dataflow.thread` definition the user data
   block-args are the leading `N` block args (per
-  `docs/spec-compiler-part-3-dfg.md` §5.4.1's
+  `docs/spec-compiler-part-3-dfg.md` Section 5.4.1's
   `(args_*, thread_ctrl, iv_*)` order), so the walk excludes
   `thread_ctrl` and the grid induction-variable args automatically.
 
@@ -522,7 +522,7 @@ conditions:
   block arg" invariant so a single per-def chain remains sound.
   v1 takes the simpler path (1:1 def + launch) and defers the
   multi-launch composition to a follow-up. The
-  direction/body-effect compatibility check in §3.7 of
+  direction/body-effect compatibility check in Section 3.7 of
   `docs/spec-compiler-part-3-dfg.md` already provides part of the
   per-launch sanity envelope; the multi-launch alias-identity
   invariant is the missing piece for that future generalization.
@@ -542,7 +542,7 @@ conditions:
   a memref-typed result terminates the walk without yielding a known
   root. The walk does not invent a new root from such an op; instead
   the access enters the conservative unknown bucket `U` defined in
-  §2.3. This includes ops whose freshness or aliasing relationship
+  Section 2.3. This includes ops whose freshness or aliasing relationship
   is not statically guaranteed by the oracle, for example
   `bufferization.to_memref` (whose resulting memref may share
   storage with an existing buffer depending on the active
@@ -568,7 +568,7 @@ Conflict is decided as follows. For two accesses `a` and `b`:
 * If at least one of `a` or `b` is in `U`, they may-alias every
   other access of any compatible memref kind in scope, regardless
   of root, with the single exception that two loads still do not
-  conflict. This realizes the rule from §2.3 that a `U` effect
+  conflict. This realizes the rule from Section 2.3 that a `U` effect
   may-aliases every known partition.
 
 The first milestone uses any-memref same bucket as the
@@ -601,7 +601,7 @@ holds uniformly, including pairs where one or both sides come from
 `U`: a specific unknown-producer op proven disjoint from a specific
 known root drops out of the leaf-pair conflict set.
 
-Effect-summary lift across compound `scf.*` atoms (§3.3) does not
+Effect-summary lift across compound `scf.*` atoms (Section 3.3) does not
 benefit from this refinement. The summary records partition
 identity by `BasicSsaOracle`'s classification: a compound's summary
 contains `U` whenever any inner leaf is in `U`, regardless of
@@ -613,24 +613,24 @@ support that is out of scope here.
 ### 3.3 Effect Summary Lift Rule
 
 Per-leaf alias answers compose into compound atoms through the
-effect-summary lift defined in §2.2 and §2.3:
+effect-summary lift defined in Section 2.2 and Section 2.3:
 
 * A compound atom's effect summary is the recursive union of its
   inner leaves' effect summaries. Membership in the summary is by
   partition identity: each known root the inner leaves touch
   contributes one entry, and any inner leaf that is in `U`
   contributes `U`. Read-only leaves still contribute their
-  partition to the summary; the read-read suppression of §4 only
+  partition to the summary; the read-read suppression of Section 4 only
   prevents dependence edges, not summary membership.
 * If any inner leaf is in `U`, the compound's summary contains `U`.
   The compound participates in `U`'s own per-partition chain at
-  every scope that exposes `U`, plus, by the lift rule of §2.3,
+  every scope that exposes `U`, plus, by the lift rule of Section 2.3,
   every known partition's per-`P` chain at every enclosing scope,
   until either the enclosing scope itself has no known partitions
   visible or the `dataflow.graph` definition's body is reached.
 * Frontier membership at the compound boundary uses
   `BasicSsaOracle`'s classification, not pair-level MlirAaOracle
-  refinement (§3.2). If any leaf inside the compound is in `U`,
+  refinement (Section 3.2). If any leaf inside the compound is in `U`,
   the compound is wired into every enclosing known partition's
   chain, regardless of whether MlirAaOracle would have demoted a
   specific inner-vs-outer leaf pair to `MustNotAlias`. Pair-level
@@ -640,14 +640,14 @@ effect-summary lift defined in §2.2 and §2.3:
   boundary.
 * Within a single scope, `U` participates in its own per-partition
   chain like any other partition: two writes in `U` (or a read and
-  a write in `U`) form a same-partition dependence pair under §4
+  a write in `U`) form a same-partition dependence pair under Section 4
   and chain through `U`'s frontier. Read-read pairs in `U` still
-  do not create dependence edges, consistent with §3.1's
+  do not create dependence edges, consistent with Section 3.1's
   load-load rule.
 
-The per-partition memory frontier of §2.4 then wires the compound
+The per-partition memory frontier of Section 2.4 then wires the compound
 into the appropriate per-`P` chains using this summary; the
-single-level chain rule of §2.5 and the join rules of §2.7 take
+single-level chain rule of Section 2.5 and the join rules of Section 2.7 take
 over once each scope's atom set is known.
 
 `BasicSsaOracle` is the milestone 1 default and drives the full lit
@@ -667,39 +667,39 @@ described.
 ## 4. Dependence Builder
 
 `MemoryDependenceBuilder` produces the directed dep edge set that
-the single-level chain rule of §2.5 consumes, structured around the
-per-partition frontier of §2.4. Edges live inside one partition at
+the single-level chain rule of Section 2.5 consumes, structured around the
+per-partition frontier of Section 2.4. Edges live inside one partition at
 one chain scope.
 
 ### 4.1 Inputs and Outputs
 
 The builder operates on one `dataflow.graph` definition's body at
 a time. Its inputs are the def body's IR after parallel-SCF
-normalization (so the leaf set is the same set §6 will see), a
-configured `MemAliasOracle` per §3, and the partition assignment
-derived from the §3.1 walk on each leaf's memref operand and
-lifted to compound atoms by §3.3. Its outputs are the per-graph
+normalization (so the leaf set is the same set Section 6 will see), a
+configured `MemAliasOracle` per Section 3, and the partition assignment
+derived from the Section 3.1 walk on each leaf's memref operand and
+lifted to compound atoms by Section 3.3. Its outputs are the per-graph
 snapshot consumed by
-§5 and §6: `loom.mem_dep_id` and `loom.mem_dep_preds` on each leaf
+Section 5 and Section 6: `loom.mem_dep_id` and `loom.mem_dep_preds` on each leaf
 memory op, `loom.mem_loop_id` and `loom.mem_loop_states` on each
-loop op carrying memory state (consumed only by §5), and the
+loop op carrying memory state (consumed only by Section 5), and the
 parallel-provenance side data on cloned leaves and generated loops
 (`loom.parallel_group`, `loom.parallel_chunk`,
 `loom.parallel_chunks`, or an equivalent analysis side table).
 
 ### 4.2 Partition Assignment
 
-Partition identity is graph-local and follows the §3 alias-oracle
-contract. The §3.1 walk on each leaf's memref operand assigns a
+Partition identity is graph-local and follows the Section 3 alias-oracle
+contract. The Section 3.1 walk on each leaf's memref operand assigns a
 **primary partition**: either a known root storage identity, or
 the conservative bucket `U` when the walk leaves the recognized
 set. A leaf in `U` also **participates** in every known partition
-visible at the leaf's chain scope, by the §2.3 / §3.3 lift rule;
+visible at the leaf's chain scope, by the Section 2.3 / Section 3.3 lift rule;
 the participation is what realizes "U may-aliases every known
 partition" at the dep-edge-candidate level. A leaf with a known
 primary partition `P` only participates in `P`. Each compound
 `scf.*` atom inherits the union of its inner leaves' partition
-participations by the §3.3 effect-summary lift, including the
+participations by the Section 3.3 effect-summary lift, including the
 implicit lift of any inner `U` leaf into every known partition
 visible at the compound's scope and at every enclosing scope.
 Numeric partition ids are graph-local.
@@ -708,18 +708,18 @@ Two atoms in the same chain scope that participate in the same
 partition are the only direct candidates for a same-partition dep
 edge in that scope. A `U` leaf and a known-`P` leaf in the same
 scope therefore share `P` (through the `U` lift) and are valid
-edge candidates in `P`'s chain; the conflict gate of §4.3 then
+edge candidates in `P`'s chain; the conflict gate of Section 4.3 then
 decides whether the pair conflicts. Cross-partition pairs and
 cross-scope pairs are never direct edge candidates:
 cross-partition ordering is carried by independent frontiers, and
 cross-scope ordering is carried by the
-boundary translation of §2.8.
+boundary translation of Section 2.8.
 
 ### 4.3 Per-Partition Edge Construction
 
 For each chain scope `S` and each partition `P` in `S`'s transitive
 partition set, the builder constructs the dep edge set over the
-atom set `A_P(S)` defined in §2.5. Direction comes only from
+atom set `A_P(S)` defined in Section 2.5. Direction comes only from
 program order and structured-control-flow nesting at `S`; alias is
 symmetric and never defines a direction by itself.
 
@@ -728,21 +728,21 @@ symmetric and never defines a direction by itself.
   non-`MustNotAlias` answer for the pair restricted to `P` AND the
   pair is not load-load. The query takes one of two forms:
   - **Leaf-vs-leaf, same chain scope `S`.** This is the direct
-    leaf-pair query. `MlirAaOracle`'s refinement (§3.2) applies
+    leaf-pair query. `MlirAaOracle`'s refinement (Section 3.2) applies
     here; a basic-conflict pair may be demoted to non-conflicting
     if upstream AA proves `MustNotAlias`.
   - **Compound-involving (leaf-vs-compound or compound-vs-compound).**
     The pair conflicts in `P` iff at least one inner-leaf pair
     drawn from the contributing inner leaves on each side
     conflicts. Compound-boundary lift uses `BasicSsaOracle`'s
-    classification per §3.3 only; `MlirAaOracle`'s leaf-pair
+    classification per Section 3.3 only; `MlirAaOracle`'s leaf-pair
     refinement does not propagate into compound boundaries in
     this milestone, regardless of whether some inner-vs-outer
     leaf pair would have been demoted as a direct query.
 * **Path-sensitive pruning.** Atoms in mutually exclusive branches
   do not need an edge between each other solely because they
   conflict; each branch's tail participates in the parent merge
-  through a selector-matched `dataflow.mux` per §2.7. A
+  through a selector-matched `dataflow.mux` per Section 2.7. A
   conservative implementation may serialize more when it cannot
   prove path exclusivity, but it must not omit a dep edge that
   preserves an observable read/write or write/write order.
@@ -754,11 +754,11 @@ symmetric and never defines a direction by itself.
   still records intra-iteration dep edges and dep edges between
   the parallel-provenance compound and surrounding atoms in its
   enclosing scope. The compound's `outgoing_P` frontier remains
-  the chunk-tail rendezvous of §2.6.
+  the chunk-tail rendezvous of Section 2.6.
 * **Loop-carried dep edges are real.** If an access in a later
   iteration of a source-ordered loop can conflict with an access
   in an earlier iteration, the loop's per-partition frontier must
-  carry that ordering; §5 materializes the state ring from the
+  carry that ordering; Section 5 materializes the state ring from the
   partition membership and dep edges recorded here.
 * **Transitive reduction.** The builder may remove transitively
   implied edges intra-partition and intra-scope, provided the
@@ -779,16 +779,16 @@ start at zero) and are all graph-local.
 * `loom.mem_dep_id = N` on each leaf memory op (`dataflow.load`
   and `dataflow.store`), in deterministic traversal order.
   `dataflow.thread.fence` is not part of the snapshot because it
-  cannot appear in a graph body; see §2.2 and the verifier rule
-  in `docs/spec-compiler-part-3-dfg.md` §9.
+  cannot appear in a graph body; see Section 2.2 and the verifier rule
+  in `docs/spec-compiler-part-3-dfg.md` Section 9.
 * `loom.mem_dep_preds = [P0, P1, ...]` on each leaf, listing the
   immediate dep predecessors in the leaf's partition after the
-  transitive reduction of §4.3. Each entry references another
+  transitive reduction of Section 4.3. Each entry references another
   leaf's `loom.mem_dep_id`; entries may name leaves at the same
   chain scope or leaves nested inside a sibling compound atom
   (see "Cross-scope predecessor resolution" below).
 * `loom.mem_loop_id = L` on each loop op carrying memory state
-  (consumed only by §5). `L` is a graph-local loop id, drawn from
+  (consumed only by Section 5). `L` is a graph-local loop id, drawn from
   a per-graph numbering policy independent of the `mem_dep_id`
   namespace.
 * `loom.mem_loop_states = [...]` on each such loop, referencing
@@ -808,13 +808,13 @@ edge predecessor in `P_L` from the same chain scope (or, via the
 cross-scope rule below, from a deeper scope inside a sibling
 compound atom). For a leaf `L` whose primary partition is the
 unknown bucket `U`, `L` participates in every known partition
-visible at its chain scope per §2.3 lift; its
+visible at its chain scope per Section 2.3 lift; its
 `loom.mem_dep_preds` entries cover every such partition's edges
 in one combined list, so a known-`P` predecessor of a `U` leaf
 appears in the same list as any `U` predecessor or any known-`Q`
 predecessor (different partitions are not split into separate
-lists). The §6 wiring uses each predecessor leaf's primary
-partition (recovered by re-running the §3.1 walk on the
+lists). The Section 6 wiring uses each predecessor leaf's primary
+partition (recovered by re-running the Section 3.1 walk on the
 predecessor's memref operand) to route the edge into the right
 per-`P` chain. Compound `scf.*` atoms still present in the graph
 do not get their own `loom.mem_dep_id` in this milestone, only
@@ -824,8 +824,8 @@ parsing, and in-place memory-op rewrites.
 **Cross-scope predecessor resolution.** When a `loom.mem_dep_preds`
 entry on leaf `L` at chain scope `S` names a leaf `L'` that lives
 in a deeper chain scope `S'` (typically inside a sibling compound
-atom `C ∈ A_P(S)`), §6 wiring resolves the predecessor through
-`C`'s `outgoing_P` frontier per §2.5 and §2.6, not by using `L'`'s
+atom `C in A_P(S)`), Section 6 wiring resolves the predecessor through
+`C`'s `outgoing_P` frontier per Section 2.5 and Section 2.6, not by using `L'`'s
 `done` directly. The wiring walks each predecessor id back to its
 defining leaf in the IR; if that leaf is at `L`'s own scope `S`,
 the wiring uses the leaf's `done`; otherwise it walks up the IR
@@ -834,10 +834,10 @@ in `S` (such an ancestor is necessarily a compound atom `C` that
 touches `P`), and uses that compound's `outgoing_P` frontier.
 Multiple predecessor entries that resolve to the same compound's
 `outgoing_P` deduplicate. This keeps the snapshot leaf-only while
-preserving the §2.5 chain rule that a leaf's incoming frontier in
+preserving the Section 2.5 chain rule that a leaf's incoming frontier in
 `P` includes the per-`P` tail of every sibling compound it depends
 on, materialized through the boundary translation rules in
-`docs/spec-compiler-part-3-dfg.md` §6.
+`docs/spec-compiler-part-3-dfg.md` Section 6.
 
 ## 5. Loop-Carried Memory State
 
@@ -845,21 +845,21 @@ on, materialized through the boundary translation rules in
 
 A loop-carried memory dependence is represented as hidden loop state,
 not as an implicit property of the loop op. This section is the
-loop-boundary instance of the per-partition memory frontier of §2.4:
+loop-boundary instance of the per-partition memory frontier of Section 2.4:
 a source-ordered loop compound atom carries its per-partition
 incoming frontier across iterations through a hidden
 `dataflow.carry`-driven state ring, exposes path-sensitive tails
-through §2.7, and projects the loop-exit memory state out of the
+through Section 2.7, and projects the loop-exit memory state out of the
 loop through the loop's structural reset. The state must be visible
 in dataflow primitives so graph scheduling and verification see the
 same ordering as later hardware lowering.
 
-This section applies to source-ordered loops only. Per §2.6 and §4.3,
+This section applies to source-ordered loops only. Per Section 2.6 and Section 4.3,
 parallel-provenance compound atoms (`scf.parallel`, or `scf.forall`
 normalized to parallel-provenance `scf.for`) follow fork-join
 semantics with no cross-iteration ordering and therefore have no
 loop-carried memory state; their per-partition `outgoing_P` is the
-chunk-tail rendezvous of §2.6.
+chunk-tail rendezvous of Section 2.6.
 
 ### 5.2 Abstract Pattern
 
@@ -869,26 +869,26 @@ per-partition state ring parameterized by:
 * a **structural selector token** for `L` -- a control bit produced
   by `L`'s structural lowering that distinguishes continuing
   iterations from the exit cycle. Each loop op supplies its own
-  selector; §5.3 and §5.4 give the concrete choices.
-* the partition set `Π_L` -- the partitions for which `L` carries
-  loop-state. Per §4.3, `P ∈ Π_L` iff some access in one dynamic
+  selector; Section 5.3 and Section 5.4 give the concrete choices.
+* the partition set `Pi_L` -- the partitions for which `L` carries
+  loop-state. Per Section 4.3, `P in Pi_L` iff some access in one dynamic
   iteration of `L` may conflict with some access in a later
   iteration of `L` in `P`. Read-read pairs alone never force a
-  partition into `Π_L`. Partitions outside `Π_L` fall in two
+  partition into `Pi_L`. Partitions outside `Pi_L` fall in two
   cases:
   - `P` is **not touched** anywhere in `L`'s body: the loop's
     `incoming_P` flows through unchanged to the enclosing scope
     as `outgoing_P`, with no per-iteration interaction
-    (§2.4 absence-from-interface rule).
+    (Section 2.4 absence-from-interface rule).
   - `P` is **touched but not carried**: at least one body access
     touches `P`, but no cross-iteration ordering is required
     (typically because every body access in `P` is read-only).
     The loop must still produce a completion tail for `P` so that
     the enclosing scope's `outgoing_P` (and ultimately the graph
-    `done_out` of §6.5) waits for those body accesses to retire.
+    `done_out` of Section 6.5) waits for those body accesses to retire.
     The lowering implements the completion tail as a
     completion-aggregation carry, distinct from the loop-state
-    ring of §5.2 used for `Π_L`. The carry has the same
+    ring of Section 5.2 used for `Pi_L`. The carry has the same
     well-formedness as the structural carry (one feedback token
     per selector token, including the false-cycle reset token):
     on each true selector cycle, `iter_tail =
@@ -899,7 +899,7 @@ per-partition state ring parameterized by:
     `%body_tail_P` for `P`, so the feedback is the previous
     iteration's `iter_tail` forwarded through `%body_tail_P
     = %prev_tail` (analogous to a no-access path forwarding rule
-    in §2.7). The selector is the loop's structural selector
+    in Section 2.7). The selector is the loop's structural selector
     (`%loop_rwc` for `scf.for`, `%cond` for `scf.while`). The
     compound's `outgoing_P` is the false-lane projection of this
     completion carry on the loop's exit cycle. The `prev_tail`
@@ -907,7 +907,7 @@ per-partition state ring parameterized by:
     serializes only the *completion* aggregation, never the
     issue-time ordering of leaf accesses. Body leaf accesses in
     `P` get their `ctrl` operand from
-    `dataflow.sync(struct_at_L, incoming_P)` per §6.4 with
+    `dataflow.sync(struct_at_L, incoming_P)` per Section 6.4 with
     `incoming_P = %incoming_P` (the loop's incoming frontier),
     not from `%prev_tail` or any other carried token. As a result,
     leaf accesses in different iterations are issue-time
@@ -916,7 +916,7 @@ per-partition state ring parameterized by:
     The zero-trip path forwards the loop's `incoming_P` exactly
     as in the not-touched case.
 
-For each `P ∈ Π_L`, the lowering introduces a hidden `none`-typed
+For each `P in Pi_L`, the lowering introduces a hidden `none`-typed
 carry with four canonical tokens (names are descriptive;
 implementations may choose different SSA names):
 
@@ -924,22 +924,22 @@ implementations may choose different SSA names):
 %mem_iter_P = carry %selector, %mem_init_P, %mem_next_P : none
 ```
 
-* `%mem_init_P` is `L`'s `incoming_P` per §2.4: the memory-order
+* `%mem_init_P` is `L`'s `incoming_P` per Section 2.4: the memory-order
   frontier flowing into `L` for `P`, derived from the graph's
   `ctrl_in`, a pre-loop dependence tail, or an enclosing loop's
   per-`P` state.
 * `%mem_iter_P` is the start-of-current-iteration memory state for
   `P`. Body-region accesses in `P` use `%mem_iter_P` as their
-  scope's `incoming_P` and chain through it per §2.5.
+  scope's `incoming_P` and chain through it per Section 2.5.
 * `%mem_next_P` is the end-of-current-iteration memory state for `P`,
   the input that feeds `%mem_iter_P` on the next iteration. It is
-  the §2.5 / §2.7 join of the per-path body tails for `P`: a path
+  the Section 2.5 / Section 2.7 join of the per-path body tails for `P`: a path
   that performs no access in `P` forwards `%mem_iter_P` unchanged;
   mutually exclusive paths are joined with a selector-matched
   `dataflow.mux` (never `sync`); same-path required tails are joined
   with `dataflow.sync` (never `mux`).
 * `%mem_after_P` is the memory-order frontier flowing out of `L` for
-  `P` -- equivalently, `L`'s `outgoing_P` per §2.4. It is the
+  `P` -- equivalently, `L`'s `outgoing_P` per Section 2.4. It is the
   loop-exit projection of the final carried state, taken from the
   cycle that produces `L`'s structural reset; the zero-trip path
   forwards `%mem_init_P`. Post-loop accesses in `P` that may conflict
@@ -950,13 +950,13 @@ structural selector, so unrelated memrefs are not serialized.
 
 ### 5.3 scf.for Instantiation
 
-`scf.for` parameterizes §5.2 with:
+`scf.for` parameterizes Section 5.2 with:
 
 * selector = the loop-level rwc bit produced by the loop's
   `dataflow.stream`. The same rwc drives the structural carry, the
-  iter-arg carries, and every per-`P` memory carry in `Π_L`.
-* body region count = 1. The body is a single chain scope; §2.5
-  applies inside it for each `P ∈ Π_L` with `%mem_iter_P` as
+  iter-arg carries, and every per-`P` memory carry in `Pi_L`.
+* body region count = 1. The body is a single chain scope; Section 2.5
+  applies inside it for each `P in Pi_L` with `%mem_iter_P` as
   `incoming_P`.
 * phase rule: rwc=true on body iterations, rwc=false on the sentinel
   reset cycle that marks loop exit. The body's per-`P` tail feeds
@@ -966,16 +966,16 @@ structural selector, so unrelated memrefs are not serialized.
 
 The structural rwc and the per-`P` memory carry are independent
 state rings over the same selector; the structural plane never
-aggregates the memory tails (§2.5 plane orthogonality).
+aggregates the memory tails (Section 2.5 plane orthogonality).
 
 ### 5.4 scf.while Instantiation
 
-`scf.while` parameterizes §5.2 with:
+`scf.while` parameterizes Section 5.2 with:
 
 * selector = `%cond`, the `i1` value produced by `scf.condition` at
   the before-region terminator. The same `%cond` drives the
   structural carry, the structural `gate` into the after-region, and
-  every per-`P` memory carry in `Π_L`.
+  every per-`P` memory carry in `Pi_L`.
 * body region count = 2. The before-region and after-region are each
   their own chain scope. For K iterations the before-region executes
   K+1 times (the final false check still runs it) and the
@@ -990,7 +990,7 @@ aggregates the memory tails (§2.5 plane orthogonality).
     after-region performs no `P` access.
   - `%mem_feedback_P = mux %cond, %before_tail_P, %after_tail_P`
     feeds `%mem_iter_P` on the next iteration. The operand order
-    follows the §6 selector convention (lane 0 = false-lane =
+    follows the Section 6 selector convention (lane 0 = false-lane =
     `%before_tail_P`, lane 1 = true-lane = `%after_tail_P`): on a
     true iteration the after-region tail is carried, and on the
     final false iteration the before-region tail is carried
@@ -1001,7 +1001,7 @@ aggregates the memory tails (§2.5 plane orthogonality).
   same projection over the single before-region run.
 
 The after-region's structural rwc-style token (`%after_rwc`, if
-exposed) is not on the memory critical path. Per §2.5 plane
+exposed) is not on the memory critical path. Per Section 2.5 plane
 orthogonality, after-region memory ops use `sync(struct_after,
 %after_in_P)` for `ctrl`; the structural token provides only phase
 permission, while `%after_in_P` carries the alias-aware ordering.
@@ -1009,27 +1009,27 @@ permission, while `%after_in_P` carries the alias-aware ordering.
 ### 5.5 Nested Loops
 
 Nested loops compose. From the enclosing loop's point of view, an
-inner loop is an ordinary compound atom in the §2.5 chain: its
+inner loop is an ordinary compound atom in the Section 2.5 chain: its
 `%mem_after_P` is one event in the outer loop's per-`P` chain, and
 its `%mem_init_P` is the outer loop's per-`P` frontier at the inner
-loop's position. Each loop applies §5.2 to its own `Π`. For a
+loop's position. Each loop applies Section 5.2 to its own `Pi`. For a
 partition `P`:
 
 * `P` is not touched anywhere inside the inner loop: the inner
   loop is not part of `P`'s chain, and the outer scope's frontier
-  for `P` flows past the inner loop unchanged per §2.4.
-* `P` is touched inside the inner loop but is not in `Π_inner`
+  for `P` flows past the inner loop unchanged per Section 2.4.
+* `P` is touched inside the inner loop but is not in `Pi_inner`
   (no cross-iteration ordering is required, e.g. read-only body
   accesses): the inner loop applies the touched-but-not-carried
-  rule of §5.2 to `P`. It introduces a completion-aggregation
+  rule of Section 5.2 to `P`. It introduces a completion-aggregation
   carry, not a state ring; the inner loop's `outgoing_P` is the
   false-lane projection of that completion carry on the inner
   loop's exit cycle, exposing exactly one frontier event in the
   outer loop's per-`P` chain. Body leaf accesses inside the inner
   loop still get their `ctrl` from `dataflow.sync(struct_at_L,
-  incoming_P)` per §6.4, so cross-iteration leaf ordering is not
+  incoming_P)` per Section 6.4, so cross-iteration leaf ordering is not
   introduced.
-* `P ∈ Π_inner`: the inner loop applies §5.2 to `P` with its own
+* `P in Pi_inner`: the inner loop applies Section 5.2 to `P` with its own
   state ring; `%mem_init_P` is the outer-loop frontier at the
   inner loop's position, and `%mem_after_P` is one event in the
   outer-loop chain.
@@ -1038,9 +1038,9 @@ partition `P`:
 
 A parallel-provenance compound atom nested inside a source-ordered
 loop participates in the outer loop's per-`P` chain like any other
-compound, per §2.6. The outer loop's per-`P` state at the group's
+compound, per Section 2.6. The outer loop's per-`P` state at the group's
 position is the group's `incoming_P`; the group's `outgoing_P` is
-the chunk-tail rendezvous of §2.6 and feeds the outer loop's per-`P`
+the chunk-tail rendezvous of Section 2.6 and feeds the outer loop's per-`P`
 body tail. Chunks remain unordered, and no loop-carried state is
 created for partitions internal to the parallel compound.
 
@@ -1048,11 +1048,11 @@ created for partitions internal to the parallel compound.
 
 The dependence builder records a per-loop plan in the
 `loom.mem_loop_states` attribute on the source loop op. Each plan
-parameterizes §5.2 for one loop and uses only deterministic
+parameterizes Section 5.2 for one loop and uses only deterministic
 graph-local integer ids:
 
 * graph-local loop id (also written as `loom.mem_loop_id`),
-* per-partition records for every `P ∈ Π_L` (carried), each
+* per-partition records for every `P in Pi_L` (carried), each
   containing:
   - partition id (graph-local),
   - record kind = `carried`,
@@ -1063,19 +1063,19 @@ graph-local integer ids:
   - `%mem_after_P` consumers (the access ids that read
     `%mem_after_P` as a predecessor after the loop).
 * per-partition records for every partition `P` that the loop
-  body touches but that is not in `Π_L` (touched but not
+  body touches but that is not in `Pi_L` (touched but not
   carried), each containing:
   - partition id (graph-local),
   - record kind = `completion`,
   - member access ids (the leaves in `P` inside the loop body),
   - body-tail contributor access ids (same role as in the
     carried case, but feeding the completion-aggregation carry
-    of §5.2 rather than a state ring),
+    of Section 5.2 rather than a state ring),
   - completion-tail consumers (the access ids that read the
     loop's `outgoing_P` after the loop).
 
 Path identity is not stored as separate snapshot fields. The
-wiring in §6 reconstructs each dynamic path through the loop body
+wiring in Section 6 reconstructs each dynamic path through the loop body
 from the IR's structured-control-flow ancestry of every member
 access: the path of a contributor leaf is the sequence of
 `scf.if` / `scf.index_switch` branches and `scf.for` / `scf.while`
@@ -1084,19 +1084,19 @@ forks by record kind:
 
 * For a `carried` record, paths whose IR ancestry contains no
   member access in `P` carry no contributor and forward
-  `%mem_iter_P` per §5.2; paths with one or more contributors
-  join their tails by §2.7 (`dataflow.sync` for same-path
+  `%mem_iter_P` per Section 5.2; paths with one or more contributors
+  join their tails by Section 2.7 (`dataflow.sync` for same-path
   required tails, selector-matched `dataflow.mux` for mutually
   exclusive tails).
 * For a `completion` record, paths whose IR ancestry contains no
   member access in `P` forward the completion carry's
   `%prev_tail` (so the no-access path adds nothing to the
   completion-aggregation chain on that iteration); paths with one
-  or more contributors join their tails by §2.7 to produce
+  or more contributors join their tails by Section 2.7 to produce
   `%body_tail_P` as input to the completion-aggregation carry's
-  `iter_tail` of §5.2.
+  `iter_tail` of Section 5.2.
 
-Access ids reference `loom.mem_dep_id` values from §4.4. The loop-id
+Access ids reference `loom.mem_dep_id` values from Section 4.4. The loop-id
 namespace is per-graph and separate from the `mem_dep_id` namespace;
 both are graph-local and chosen deterministically. The plan does not
 duplicate the type contract of `carry`, `mux`, `demux`, or `sync`;
@@ -1112,16 +1112,16 @@ omission because the resulting circuit is still well-typed.
 Adding an extra conservative state ring is legal; it only
 over-serializes. Tests should catch unnecessary serialization when
 the active alias oracle proves partitions independent, so that
-`Π_L` matches §4.3 rather than a coarser upper bound.
+`Pi_L` matches Section 4.3 rather than a coarser upper bound.
 
 ## 6. Token Wiring
 
-This section turns the compositional model of §2 and the snapshot
-of §4 into explicit `ctrl` and `done` SSA edges inside each
+This section turns the compositional model of Section 2 and the snapshot
+of Section 4 into explicit `ctrl` and `done` SSA edges inside each
 `dataflow.graph` definition's body. The structural-permission
-token (§6.2) and the per-partition memory frontier (§6.3) stay
-SSA-distinct except at the per-leaf rendezvous (§6.4), per §2.5
-plane orthogonality; §6.5 projects the root per-partition tails
+token (Section 6.2) and the per-partition memory frontier (Section 6.3) stay
+SSA-distinct except at the per-leaf rendezvous (Section 6.4), per Section 2.5
+plane orthogonality; Section 6.5 projects the root per-partition tails
 through the def's `done_out` boundary into each
 `dataflow.graph.launch` site.
 
@@ -1138,7 +1138,7 @@ spelling. At each `dataflow.graph.launch` use site, the
 per-launch ctrl_in is supplied as the launch's leading operand
 and the per-launch done_out is the launch's leading result. The
 op definitions are owned by `docs/spec-compiler-part-3-dfg.md`
-§5.5; this document uses the def's leading block argument as the
+Section 5.5; this document uses the def's leading block argument as the
 root chain scope's structural-permission and memory-incoming
 source, and the def's leading yield operand as its combined
 completion sink. Per-launch caller-side wiring (which SSA values
@@ -1149,19 +1149,19 @@ at each launch site.
 
 The structural plane carries the dynamic execution permission
 token from the graph boundary down to every leaf and compound
-atom inside the graph. Per §2.5 plane orthogonality it never
+atom inside the graph. Per Section 2.5 plane orthogonality it never
 aggregates memory completion; it expresses only "execution has
 reached this position on this dynamic path".
 
 * The graph's `ctrl_in` block argument is the root structural-
-  permission token, equivalently `S.struct_at_A` in §2.5 when `S`
+  permission token, equivalently `S.struct_at_A` in Section 2.5 when `S`
   is the root scope and `A` is any atom directly nested in the
   graph body.
 * For every compound `scf.*` atom traversed on the way to a leaf,
   the compound's per-op boundary translation in
-  `docs/spec-compiler-part-3-dfg.md` §6 specifies how the token
+  `docs/spec-compiler-part-3-dfg.md` Section 6 specifies how the token
   splits, mux-joins, or carries through the compound's inner
-  regions; the §2.8 table summarizes the shape per op.
+  regions; the Section 2.8 table summarizes the shape per op.
 * At each leaf op `L` whose chain scope is `S`, `S.struct_at_L`
   is the value produced by the innermost boundary translation
   step on the dynamic path from the graph entry to `L`. Its
@@ -1173,39 +1173,39 @@ reached this position on this dynamic path".
 ### 6.3 Memory Plane Wiring
 
 The memory plane carries one independent frontier per partition
-through each chain scope, per §2.4. At each leaf `L` at chain
+through each chain scope, per Section 2.4. At each leaf `L` at chain
 scope `S` in partition `P`, the wiring constructs an
-`incoming_L_P` token by the single-level chain rule of §2.5 and
-the join rules of §2.7. The predecessor set is the immediate dep
-predecessors of `L` in `P` at `S`, encoded by §4.4 as
+`incoming_L_P` token by the single-level chain rule of Section 2.5 and
+the join rules of Section 2.7. The predecessor set is the immediate dep
+predecessors of `L` in `P` at `S`, encoded by Section 4.4 as
 `loom.mem_dep_preds`. Each entry resolves to a source token
 through one of:
 
 * a. Same-scope sibling leaf `L'`: the source token is `L'.done`.
-* b. Sibling compound atom `C ∈ A_P(S)` containing the predecessor
+* b. Sibling compound atom `C in A_P(S)` containing the predecessor
   leaf: the source token is `C.outgoing_P` per the cross-scope
-  resolution rule of §4.4; entries resolving to the same
+  resolution rule of Section 4.4; entries resolving to the same
   `C.outgoing_P` deduplicate. The same case applies when `C`
   carries parallel-provenance metadata, where `C.outgoing_P` is
-  the chunk-tail rendezvous of §2.6.
+  the chunk-tail rendezvous of Section 2.6.
 * c. Loop-carried predecessor: when `L` participates in the loop
-  state of an enclosing or sibling source-ordered loop, §5.2's
+  state of an enclosing or sibling source-ordered loop, Section 5.2's
   loop-state ring contributes a frontier source in addition to
   the dep predecessors above. Two distinct subcases:
-  - c1. `L` is inside the loop body and `P ∈ Π_L`. The loop's
-    `%mem_iter_P` (the start-of-current-iteration token of §5.2)
+  - c1. `L` is inside the loop body and `P in Pi_L`. The loop's
+    `%mem_iter_P` (the start-of-current-iteration token of Section 5.2)
     contributes as one of `L`'s incoming sources, in addition to
     any same-iteration predecessors at `L`'s scope.
   - c2. `L` is in the parent scope of a loop compound `C` and
     depends on `C`'s loop-exit memory state. Then the source
-    token is `C.outgoing_P`, which §5.3 / §5.4 materialize from
+    token is `C.outgoing_P`, which Section 5.3 / Section 5.4 materialize from
     `%mem_after_P` (the false-lane projection for `scf.for`, or
     the final-false-iteration before-tail projection for
     `scf.while`). This subcase is structurally an instance of
     case b: the compound's `outgoing_P` is the boundary endpoint;
-    §5 only specifies how that endpoint is built internally.
+    Section 5 only specifies how that endpoint is built internally.
 
-The resolved source set is joined per §2.5 / §2.7: an empty set
+The resolved source set is joined per Section 2.5 / Section 2.7: an empty set
 yields `incoming_L_P = S.incoming_P` (which is `ctrl_in` at the
 root scope); a single same-path source is forwarded directly;
 multiple same-path sources join via `dataflow.sync`; multiple
@@ -1223,31 +1223,31 @@ the two planes meet at exactly one point:
 L.ctrl = dataflow.sync(S.struct_at_L, incoming_L_P)
 ```
 
-where `S.struct_at_L` comes from §6.2 and `incoming_L_P` from
-§6.3. This is the only place in the wiring where the planes are
-joined; everywhere else they stay SSA-distinct per §2.5.
+where `S.struct_at_L` comes from Section 6.2 and `incoming_L_P` from
+Section 6.3. This is the only place in the wiring where the planes are
+joined; everywhere else they stay SSA-distinct per Section 2.5.
 
 Two reductions apply by SSA value reuse. When `L` has no dep
-predecessors at `S` and no loop-carried contribution, §6.3 sets
+predecessors at `S` and no loop-carried contribution, Section 6.3 sets
 `incoming_L_P = S.incoming_P` (which is `ctrl_in` at the root
 scope), so the formula applies directly with no special case.
 When the two arguments are the same SSA value (for example a
 leaf at the root scope where both are literally `ctrl_in`),
-§2.7's rule that a single predecessor needs no primitive op
+Section 2.7's rule that a single predecessor needs no primitive op
 extends here: the `sync` collapses and `L.ctrl` is wired directly
 to that shared value. `L.done` feeds back only into the memory
-plane via §6.3; it is never a structural-completion source.
+plane via Section 6.3; it is never a structural-completion source.
 
 ### 6.5 Graph done_out
 
 The graph's `done_out` yield operand is the boundary projection
 of the root chain scope's per-partition completion tails. For
 each partition `P` in the graph's transitive partition set, the
-wiring computes `root.outgoing_P` by applying §2.5 at the root
+wiring computes `root.outgoing_P` by applying Section 2.5 at the root
 scope: the `sync` / selector-matched `mux` join of `outgoing_*_P`
 tails of root-scope atoms with no `P`-successor, where a path
 contributing no atoms in `P` forwards `ctrl_in` (the root's
-`incoming_P`) through the join per §2.7.
+`incoming_P`) through the join per Section 2.7.
 
 `done_out` is then output zero of `dataflow.sync` over the set
 `{ root.outgoing_P | P in transitive partition set of the graph }`.
@@ -1258,7 +1258,7 @@ is the only completion event the graph produces in that case,
 and no cross-partition rendezvous is needed. When the set is
 non-empty, every per-partition tail is itself a join of leaf
 `done` tokens with `ctrl_in` forwarded along no-access paths
-(per §2.5 / §2.7), so structural completion is already implicit
+(per Section 2.5 / Section 2.7), so structural completion is already implicit
 in each `root.outgoing_P` and no separate structural-completion
 operand is added at the boundary `sync`. This per-partition
 formulation replaces the prior single "`sync` over all leaves
@@ -1275,10 +1275,10 @@ Two cross-cutting rules close the wiring specification.
   `incoming_*_P` constructions or by a `root.outgoing_P` join
   appears as one SSA value with multiple uses.
 * Read-read pairs have no dependence edge, even when they alias,
-  per §3 and §4.3. Independent reads can be reordered freely;
+  per Section 3 and Section 4.3. Independent reads can be reordered freely;
   their `ctrl` operands still rendezvous with the structural-
   permission token and any same-partition write predecessor or
-  loop-carried state per §6.4, but they neither appear as
+  loop-carried state per Section 6.4, but they neither appear as
   predecessors in `loom.mem_dep_preds` nor contribute to each
   other's `incoming_L_P`.
 
@@ -1286,8 +1286,8 @@ Two cross-cutting rules close the wiring specification.
 
 * `docs/spec-compiler-part-3-dfg.md` -- IR boundary contracts, SCF
   flattening templates, and verifier invariants. The per-`scf.*`
-  boundary translation rules that instantiate the contract in §2.8
-  live in §6 of that document.
+  boundary translation rules that instantiate the contract in Section 2.8
+  live in Section 6 of that document.
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
   layout, milestone acceptance checklist, and maintenance plan.
   The `MemAliasOracle` C++ interface signature and the pass that

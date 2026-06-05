@@ -67,9 +67,9 @@ In order:
 
 1. `memref_mgr : memref<?x!fabric.bits<W_mgr>>`
 2. For each load port `i in [0, load_group_size)`:
-   `(addr_i, ctrl_i)` — two SSA operands.
+   `(addr_i, ctrl_i)` -- two SSA operands.
 3. For each store port `j in [0, store_group_size)`:
-   `(addr_j, data_j, ctrl_j)` — three SSA operands.
+   `(addr_j, data_j, ctrl_j)` -- three SSA operands.
 
 Total operand count: `1 + 2 * load_group_size + 3 * store_group_size`.
 
@@ -80,8 +80,8 @@ In order:
 1. Optional `memref_sub : memref<?x!fabric.bits<W_sub>>` (when present
    it is the first result; presence is detected from the result type
    alone; no syntactic marker is needed).
-2. For each load port `i`: `(data_i, done_i)` — two SSA results.
-3. For each store port `j`: `done_j` — one SSA result.
+2. For each load port `i`: `(data_i, done_i)` -- two SSA results.
+3. For each store port `j`: `done_j` -- one SSA result.
 
 Total result count: `(0 or 1) + 2 * load_group_size + store_group_size`.
 
@@ -330,15 +330,15 @@ The verifier exercises the following rejections (see
 
 ## Cross-references
 
-* `spec-fabric-module.md` — top-level container and the body
+* `spec-fabric-module.md` -- top-level container and the body
   whitelist.
-* `spec-fabric-pe.md` — schedule predicate `[spatial] | [temporal]`.
-* `spec-fabric-pe-temporal.md` — temporal-domain background and
+* `spec-fabric-pe.md` -- schedule predicate `[spatial] | [temporal]`.
+* `spec-fabric-pe-temporal.md` -- temporal-domain background and
   tag-stream handshake.
-* `spec-fabric-switch.md` — sibling leaf op with the same
+* `spec-fabric-switch.md` -- sibling leaf op with the same
   schedule-predicate / hw-params / sw-configs / function-type
   pattern.
-* `spec-fabric-instantiate.md` — instantiation of a named
+* `spec-fabric-instantiate.md` -- instantiation of a named
   `fabric.mem` template into a host scope.
 
 ## Maintenance
