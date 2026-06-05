@@ -49,6 +49,7 @@ EXPECTED_CASES = {
     "merge",
     "moving_avg",
     "normalize_vec3",
+    "newton_iter",
     "outer",
     "pack_bits",
     "partition",
