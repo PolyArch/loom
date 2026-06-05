@@ -1,0 +1,2 @@
+xor_block checksum: 0xffe05ce0
+PASSED

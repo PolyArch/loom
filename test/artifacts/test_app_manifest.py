@@ -42,6 +42,7 @@ EXPECTED_CASES = {
     "vecnorm_l2",
     "vecscale",
     "vecsum",
+    "xor_block",
 }
 
 
