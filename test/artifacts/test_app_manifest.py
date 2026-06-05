@@ -52,6 +52,7 @@ EXPECTED_CASES = {
     "interpolate_linear",
     "lower_bound",
     "mean",
+    "mat3x3_mult",
     "matvec",
     "merge",
     "moving_avg",
