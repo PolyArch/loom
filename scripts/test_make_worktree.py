@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).with_name("make-worktree.py")
+REPO_TEMP_ROOT = SCRIPT.parents[1] / "temp" / "test-runs"
 
 
 def load_dispatcher():
@@ -88,7 +89,8 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 1)
 
     def test_build_llvm_reconfigures_stale_clang_cache(self):
-        with tempfile.TemporaryDirectory() as td:
+        REPO_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="loom-worktree-test-", dir=REPO_TEMP_ROOT) as td:
             temp = Path(td)
             paths = FakePaths()
             paths.llvm_root = temp

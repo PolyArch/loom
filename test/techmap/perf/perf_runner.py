@@ -42,6 +42,7 @@ except ImportError:
 
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
 
 
 def find_loom() -> str:
@@ -77,12 +78,19 @@ def find_python() -> str:
     return sys.executable or "python3"
 
 
+def repo_temp_dir(name: str) -> Path:
+    root = Path(os.environ.get("LOOM_TEMP_DIR", ROOT / "temp"))
+    path = root / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def cache_dir() -> Path:
     base = os.environ.get("LOOM_PERF_CACHE")
     if base:
         d = Path(base)
     else:
-        d = Path(tempfile.gettempdir()) / "loom_perf_cache"
+        d = repo_temp_dir("techmap-perf-cache")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -119,7 +127,7 @@ def is_root() -> bool:
 def perf_lock_dir() -> Path:
     """Per-machine directory holding one lockfile per claimable core."""
     base = os.environ.get("LOOM_PERF_LOCK_DIR")
-    d = Path(base) if base else Path(tempfile.gettempdir()) / "loom_perf_locks"
+    d = Path(base) if base else repo_temp_dir("techmap-perf-locks")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -287,7 +295,7 @@ def main(argv=None) -> int:
     loom = find_loom()
     src = ensure_synth(args.n, args.seed)
 
-    with tempfile.TemporaryDirectory() as td, claim_exclusive_core() as core:
+    with tempfile.TemporaryDirectory(prefix="loom-perf-run-", dir=repo_temp_dir("test-runs")) as td, claim_exclusive_core() as core:
         cfg = Path(td) / "perf.yaml"
         write_config(args.algo, args.threads, cfg)
         cmd = build_pinned_cmd(loom, src, cfg, core)

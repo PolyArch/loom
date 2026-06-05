@@ -1,0 +1,2 @@
+// RUN: %python %S/test_repo_tempdir_policy.py %S/../..
+
