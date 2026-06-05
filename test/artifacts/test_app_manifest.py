@@ -19,6 +19,7 @@ EXPECTED_CASES = {
     "compare_swap",
     "conv1d",
     "ctz",
+    "delta_encode",
     "dot_product_3d",
     "dotproduct",
     "downsample",

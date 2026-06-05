@@ -66,6 +66,14 @@
       "feature_tags": ["stencil", "signal"]
     },
     {
+      "case": "delta_encode",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["encoding", "integer", "stencil"]
+    },
+    {
       "case": "dotproduct",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],

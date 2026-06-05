@@ -1,0 +1,2 @@
+delta_encode checksum: 439
+PASSED
