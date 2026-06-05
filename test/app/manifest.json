@@ -426,6 +426,14 @@
       "feature_tags": ["bit", "integer", "vector"]
     },
     {
+      "case": "runge_kutta_step",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["numeric", "float", "ode", "per-element"]
+    },
+    {
       "case": "scatter_add",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
