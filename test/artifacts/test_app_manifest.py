@@ -20,6 +20,7 @@ EXPECTED_CASES = {
     "binary_search",
     "clz",
     "compare_swap",
+    "convolve_1d",
     "conv1d",
     "crc32",
     "cross_product",
