@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -27,13 +29,58 @@ def workloads_from_primitive_coverage(path: Path) -> list[str]:
         return sorted({row["workload"] for row in csv.DictReader(handle) if row.get("workload")})
 
 
+def tool_candidates() -> list[Path]:
+    env_tool = os.environ.get("LOOM_SIM_CYCLE_SUMMARY")
+    candidates = []
+    if env_tool:
+        candidates.append(Path(env_tool))
+    candidates.extend(
+        [
+            ROOT / "build/tools/loom-sim-cycle-summary/loom-sim-cycle-summary",
+            ROOT / "build/bin/loom-sim-cycle-summary",
+        ]
+    )
+    return candidates
+
+
+def find_tool() -> Path | None:
+    for candidate in tool_candidates():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
-    primitive_path = Path(args.primitive_coverage) if args.primitive_coverage else ROOT / "temp/dataflow-primitive-coverage.csv"
+    if not args.primitive_coverage:
+        intermediate_artifacts.write_csv("sim_cycle", intermediate_artifacts.output_path(args.output))
+        return 0
+    primitive_path = Path(args.primitive_coverage)
     if not primitive_path.is_file():
         intermediate_artifacts.write_csv("sim_cycle", intermediate_artifacts.output_path(args.output))
         return 0
+
+    tool = find_tool()
+    if tool is not None:
+        result = subprocess.run(
+            [
+                str(tool),
+                "--primitive-coverage",
+                str(primitive_path),
+                "--output",
+                str(output),
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            sys.stderr.write(result.stdout)
+            sys.stderr.write(result.stderr)
+        return result.returncode
 
     rows = [
         {

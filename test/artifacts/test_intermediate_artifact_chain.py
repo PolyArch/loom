@@ -71,8 +71,12 @@ def main() -> int:
         vecadd_rows = [row for row in sim_rows if row["kernel"] == "vecadd"]
         if len(vecadd_rows) != 1:
             raise AssertionError(f"expected one vecadd sim row, got {sim_rows}")
-        if vecadd_rows[0]["dfg_sim_cycles"] != "" or vecadd_rows[0]["cgra_sim_cycles"] != "":
-            raise AssertionError(f"blocked sim row must not fake cycles: {vecadd_rows[0]}")
+        if (
+            vecadd_rows[0]["dfg_sim_cycles"] != ""
+            or vecadd_rows[0]["cgra_sim_cycles"] != ""
+            or vecadd_rows[0].get("status") != "blocked"
+        ):
+            raise AssertionError(f"sim row must not fake simulator cycle evidence: {vecadd_rows[0]}")
 
         import_rows = read_csv_rows(out_dir / "app-corpus-import-status.csv")
         states = {row["case"]: row["import_state"] for row in import_rows}

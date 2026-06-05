@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -381,6 +382,8 @@ def discover_artifact_paths(
     explicit_paths = [Path(value) for value in explicit]
     if explicit_paths:
         return explicit_paths
+    if os.environ.get("LOOM_IGNORE_STANDARD_ARTIFACTS") == "1":
+        return []
     return [
         root / relative
         for kind, relative in STANDARD_ARTIFACT_PATHS
@@ -504,6 +507,10 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
         dfg_cycles = numeric_value(row, "dfg_sim_cycles")
         cgra_cycles = numeric_value(row, "cgra_sim_cycles")
+        if dfg_cycles is None:
+            diagnostics.append(f"row {row_index}: sim pass row has no DFG-sim cycles")
+        if cgra_cycles is None:
+            diagnostics.append(f"row {row_index}: sim pass row has no CGRA-sim cycles")
         if dfg_cycles is not None and cgra_cycles is not None and cgra_cycles < dfg_cycles:
             diagnostics.append(
                 f"row {row_index}: CGRA-sim cycles are more optimistic than DFG-sim cycles"
@@ -647,6 +654,10 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         if valid_identity(row.get("workload")) and valid_identity(row.get("hardware"))
     ]
     pnr_pairs = {(row["workload"], row["hardware"]) for row in pnr_rows}
+    pass_mappings_by_workload: dict[str, list[dict[str, str]]] = {}
+    for row in pnr_rows:
+        if row.get("status") == "pass" and row.get("mapping_id"):
+            pass_mappings_by_workload.setdefault(row["workload"], []).append(row)
 
     inventory_rows = grouped.get("old_app_corpus_inventory", [])
     import_rows = grouped.get("app_import_status", [])
@@ -754,16 +765,84 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         row,
                     )
                 )
-        for row in grouped.get("sim_cycle", []):
-            kernel = row.get("kernel")
-            if valid_identity(kernel) and kernel not in workloads:
+    for row in grouped.get("sim_cycle", []):
+        kernel = row.get("kernel")
+        if not valid_identity(kernel):
+            continue
+        if workloads and kernel not in workloads:
+            findings.append(
+                cross_finding(
+                    "sim_workload_resolves",
+                    f"sim kernel {kernel!r} is absent from dataflow primitive coverage",
+                    row,
+                )
+            )
+        if row.get("dfg_sim_cycles", ""):
+            primitive_rows = [
+                primitive
+                for primitive in grouped.get("dataflow_primitive_coverage", [])
+                if primitive.get("workload") == kernel
+            ]
+            if not primitive_rows:
                 findings.append(
                     cross_finding(
-                        "sim_workload_resolves",
-                        f"sim kernel {kernel!r} is absent from dataflow primitive coverage",
+                        "sim_dfg_cycle_requires_dfg_evidence",
+                        (
+                            f"sim kernel {kernel!r} has DFG-sim cycles "
+                            "but no DFG-sim evidence artifact was provided"
+                        ),
                         row,
                     )
                 )
+            elif not any(
+                primitive.get("dfg_sim_status") == "pass"
+                for primitive in primitive_rows
+            ):
+                findings.append(
+                    cross_finding(
+                        "sim_dfg_cycle_requires_dfg_evidence",
+                        (
+                            f"sim kernel {kernel!r} has DFG-sim cycles "
+                            "but primitive coverage does not contain DFG-sim pass evidence"
+                        ),
+                        row,
+                    )
+                )
+        if row.get("cgra_sim_cycles", ""):
+            if not row.get("dfg_sim_cycles", ""):
+                findings.append(
+                    cross_finding(
+                        "sim_cgra_cycle_requires_dfg_cycle",
+                        f"sim kernel {kernel!r} has CGRA-sim cycles without comparable DFG-sim cycles",
+                        row,
+                    )
+                )
+            pass_mappings = pass_mappings_by_workload.get(kernel, [])
+            if not pass_mappings:
+                findings.append(
+                    cross_finding(
+                        "sim_cgra_cycle_requires_mapping",
+                        (
+                            f"sim kernel {kernel!r} has CGRA-sim cycles "
+                            "but no pass PnR mapping with mapping_id was provided"
+                        ),
+                        row,
+                    )
+                )
+            elif hardware and not any(
+                mapping.get("hardware") in hardware for mapping in pass_mappings
+            ):
+                findings.append(
+                    cross_finding(
+                        "sim_cgra_cycle_requires_hardware",
+                        (
+                            f"sim kernel {kernel!r} has CGRA-sim cycles "
+                            "but no pass mapping references verified ADG hardware"
+                        ),
+                        row,
+                    )
+                )
+    if workloads:
         for row in grouped.get("rtl_fpa", []):
             workload = row.get("workload")
             if valid_identity(workload) and workload not in workloads:

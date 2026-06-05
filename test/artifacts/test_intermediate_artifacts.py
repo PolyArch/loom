@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -122,9 +123,12 @@ JSON_COMMANDS = [
 
 
 def run_command(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["LOOM_IGNORE_STANDARD_ARTIFACTS"] = "1"
     return subprocess.run(
         argv,
         cwd=repo,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -207,7 +211,12 @@ def main() -> int:
 
         for script, filename, required_keys in JSON_COMMANDS:
             output = out_dir / filename
-            result = run_command(repo, ["bash", script, "--output", str(output)])
+            command = ["bash", script]
+            if filename == "full-stack-artifact-manifest.json":
+                for artifact in produced:
+                    command.extend(["--artifact", str(artifact)])
+            command.extend(["--output", str(output)])
+            result = run_command(repo, command)
             if result.returncode != 0:
                 raise AssertionError(
                     f"{script} failed with {result.returncode}\n"
@@ -315,6 +324,66 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("CGRA-sim cycles below DFG-sim cycles unexpectedly passed audit")
+
+        standalone_dfg_cycle = out_dir / "standalone-dfg-sim-cycle-summary.csv"
+        standalone_dfg_cycle.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,,blocked,synthetic standalone DFG cycle\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-standalone-dfg.json"),
+                str(standalone_dfg_cycle),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("standalone DFG cycle without evidence unexpectedly passed audit")
+
+        primitive_blocked = out_dir / "blocked-dataflow-primitive-coverage.csv"
+        primitive_blocked.write_text(
+            "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
+            "vecadd,stream,1,blocked,primitive-count proxy only\n"
+        )
+        dfg_from_blocked_proxy = out_dir / "dfg-from-blocked-proxy-sim-cycle-summary.csv"
+        dfg_from_blocked_proxy.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,,blocked,synthetic DFG cycle from blocked primitive coverage\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-dfg-proxy.json"),
+                str(primitive_blocked),
+                str(dfg_from_blocked_proxy),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DFG cycle derived from blocked primitive coverage unexpectedly passed audit")
+
+        cgra_without_mapping = out_dir / "cgra-without-mapping-sim-cycle-summary.csv"
+        cgra_without_mapping.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,12,pass,synthetic CGRA cycle without mapping evidence\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-cgra-no-mapping.json"),
+                str(cgra_without_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA cycle without mapping evidence unexpectedly passed audit")
 
         invalid_mapping = out_dir / "invalid-pnr-mapping-summary.csv"
         invalid_mapping.write_text(

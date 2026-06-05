@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression test for simulator cycle summary blocked workload rows."""
+"""Regression test for simulator cycle summary workload rows."""
 
 from __future__ import annotations
 
@@ -47,11 +47,13 @@ def main() -> int:
         if len(vecadd_rows) != 1:
             raise AssertionError(f"expected one vecadd row, got {rows}")
         row = vecadd_rows[0]
-        if row["dfg_sim_cycles"] != "" or row["cgra_sim_cycles"] != "":
-            raise AssertionError(f"missing simulator evidence must stay empty, not numeric: {row}")
+        if row["dfg_sim_cycles"] != "":
+            raise AssertionError(f"DFG-sim cycles require a DFG-sim report: {row}")
+        if row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"CGRA-sim cycles require mapping and Fabric evidence: {row}")
         if row.get("status") != "blocked":
-            raise AssertionError(f"sim cycle row should be blocked: {row}")
-        if "DFG-sim and CGRA-sim cycle evidence is not available yet" not in row.get("diagnostic", ""):
+            raise AssertionError(f"sim cycle row should stay blocked until simulator reports exist: {row}")
+        if "primitive-count proxy only; DFG-sim report unavailable" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
 
     return 0
