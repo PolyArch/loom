@@ -38,7 +38,7 @@ raise_one() {
         echo "[${KERNEL}/${variant}] no arith.addf in ${mlir}" >&2
         return 1
     fi
-    if ! grep -E -q 'arith\.(divf|divsi|divui|mulf)' "${mlir}"; then
+    if ! grep -E -q 'arith\.(divf|mulf)' "${mlir}"; then
         echo "[${KERNEL}/${variant}] no mean scaling op in ${mlir}" >&2
         return 1
     fi
