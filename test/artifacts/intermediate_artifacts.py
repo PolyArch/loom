@@ -489,6 +489,46 @@ def validate_identity(schema: CsvSchema, row: dict[str, str], diagnostics: list[
             diagnostics.append(f"row {row_index}: pass row has blank identity column {column}")
 
 
+def numeric_value(row: dict[str, str], column: str) -> float | None:
+    value = row.get(column, "")
+    if value == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics: list[str], row_index: int) -> None:
+    statuses = dict(row_statuses(schema, row))
+    if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
+        dfg_cycles = numeric_value(row, "dfg_sim_cycles")
+        cgra_cycles = numeric_value(row, "cgra_sim_cycles")
+        if dfg_cycles is not None and cgra_cycles is not None and cgra_cycles < dfg_cycles:
+            diagnostics.append(
+                f"row {row_index}: CGRA-sim cycles are more optimistic than DFG-sim cycles"
+            )
+    if schema.kind == "pnr_mapping" and statuses.get("status") == "pass":
+        placed_records = numeric_value(row, "placed_records")
+        unrouted_edges = numeric_value(row, "unrouted_edges")
+        if placed_records is not None and placed_records <= 0:
+            diagnostics.append(f"row {row_index}: PnR pass row has no placed records")
+        if unrouted_edges is not None and unrouted_edges != 0:
+            diagnostics.append(f"row {row_index}: PnR pass row has unrouted edges")
+    if schema.kind == "adg_hardware" and statuses.get("verify_status") == "pass":
+        node_count = numeric_value(row, "node_count")
+        link_count = numeric_value(row, "link_count")
+        topology_class = row.get("topology_class", "")
+        if node_count is not None and node_count <= 0:
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has no nodes")
+        if (
+            topology_class != "fabric_module_template"
+            and link_count is not None
+            and link_count <= 0
+        ):
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has no links")
+
+
 def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
     diagnostics: list[str] = []
     with path.open(newline="") as handle:
@@ -506,6 +546,7 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
         validate_statuses(schema, row, diagnostics, index)
         validate_numeric(schema, row, diagnostics, index)
         validate_identity(schema, row, diagnostics, index)
+        validate_kind_invariants(schema, row, diagnostics, index)
         if any(value == "pass" for _, value in row_statuses(schema, row)):
             diagnostic = row.get("diagnostic", "")
             if diagnostic == "" and schema.kind not in {"sim_cycle", "pnr_mapping"}:

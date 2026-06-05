@@ -7,8 +7,9 @@ import csv
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+import artifact_test_common
 
 
 CSV_COMMANDS = [
@@ -180,7 +181,7 @@ def assert_json_artifact(path: Path, required_keys: set[str]) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-artifacts-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-artifacts-") as tmp:
         out_dir = Path(tmp)
         produced: list[Path] = []
 
@@ -296,6 +297,60 @@ def main() -> int:
         messages = " ".join(str(finding) for finding in findings)
         if "ghost" not in messages or "missing_hw" not in messages:
             raise AssertionError(f"cross findings should identify stale refs: {findings}")
+
+        invalid_optimistic_sim = out_dir / "optimistic-sim-cycle-summary.csv"
+        invalid_optimistic_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,9,pass,\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-optimistic-sim.json"),
+                str(invalid_optimistic_sim),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA-sim cycles below DFG-sim cycles unexpectedly passed audit")
+
+        invalid_mapping = out_dir / "invalid-pnr-mapping-summary.csv"
+        invalid_mapping.write_text(
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
+            "vecadd,fabric0,map0,1,0,1,pass,\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-invalid-mapping.json"),
+                str(invalid_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("PnR pass row with unrouted edges unexpectedly passed audit")
+
+        invalid_hardware = out_dir / "invalid-adg-hardware-summary.csv"
+        invalid_hardware.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
+            "fabric0,arbitrary_graph,0,1,pass,\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-invalid-hardware.json"),
+                str(invalid_hardware),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("ADG hardware pass row with zero nodes unexpectedly passed audit")
 
     return 0
 
