@@ -21,6 +21,8 @@ def prepare_case(repo: Path, case_dir: Path, tmp_root: Path) -> Path:
     app_root.mkdir(parents=True, exist_ok=True)
     shared = repo / "test" / "app" / "dfg_common.sh"
     shutil.copy2(shared, app_root / "dfg_common.sh")
+    shared = repo / "test" / "app" / "run_c_variants_common.sh"
+    shutil.copy2(shared, app_root / "run_c_variants_common.sh")
     copied = app_root / case_dir.name
     shutil.copytree(case_dir, copied, ignore=shutil.ignore_patterns("build"))
     return copied
@@ -34,6 +36,7 @@ def prepare_app_tree(repo: Path, tmp_root: Path) -> Path:
         "app_manifest.py",
         "manifest.json",
         "dfg_common.sh",
+        "run_c_variants_common.sh",
         "run_all.sh",
         "run_raise_all.sh",
         "run_dfg_all.sh",

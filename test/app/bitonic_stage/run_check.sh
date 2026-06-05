@@ -8,22 +8,7 @@ KERNEL="bitonic_stage"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${REPO}/temp/test-runs/${KERNEL}-run}"
-CC="${CC:-gcc}"
+SHARED="${REPO}/test/app/run_c_variants_common.sh"
 
-mkdir -p "${BUILD_DIR}"
-
-run_one() {
-    local variant="$1"
-    local src="${HERE}/${variant}.c"
-    local exe="${BUILD_DIR}/${variant}"
-    local out="${BUILD_DIR}/${variant}.out"
-
-    "${CC}" -std=c11 -O2 -Wall -Wextra -Werror "${src}" -o "${exe}"
-    "${exe}" > "${out}"
-    diff -u "${HERE}/expected.txt" "${out}"
-}
-
-run_one "main_func"
-run_one "main_inline"
-
-echo "[${KERNEL}] PASS"
+. "${SHARED}"
+run_c_variants "${KERNEL}" "${HERE}" "${BUILD_DIR}"
