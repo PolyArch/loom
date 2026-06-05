@@ -1,0 +1,99 @@
+// Binary-search function variant migrated from the legacy app corpus.
+
+#include <array>
+#include <cstdint>
+#include <cstdio>
+
+namespace {
+
+constexpr uint32_t kInputSize = 10;
+constexpr uint32_t kTargetCount = 5;
+constexpr uint32_t kNotFound = 0xffffffffu;
+
+void binary_search_ref(const float *sorted, const float *targets,
+                       uint32_t *indices, uint32_t input_size,
+                       uint32_t target_count) {
+    for (uint32_t t = 0; t < target_count; ++t) {
+        float target = targets[t];
+        int32_t left = 0;
+        int32_t right = static_cast<int32_t>(input_size) - 1;
+        int32_t found = -1;
+        while (left <= right) {
+            int32_t mid = left + (right - left) / 2;
+            if (sorted[mid] == target) {
+                found = mid;
+                break;
+            }
+            if (sorted[mid] < target) {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        indices[t] = found < 0 ? kNotFound : static_cast<uint32_t>(found);
+    }
+}
+
+__attribute__((noinline))
+void binary_search_candidate(const float *sorted, const float *targets,
+                             uint32_t *indices, uint32_t input_size,
+                             uint32_t target_count) {
+    for (uint32_t t = 0; t < target_count; ++t) {
+        float target = targets[t];
+        int32_t left = 0;
+        int32_t right = static_cast<int32_t>(input_size) - 1;
+        int32_t found = -1;
+        while (left <= right) {
+            int32_t mid = left + (right - left) / 2;
+            if (sorted[mid] == target) {
+                found = mid;
+                break;
+            }
+            if (sorted[mid] < target) {
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+        indices[t] = found < 0 ? kNotFound : static_cast<uint32_t>(found);
+    }
+}
+
+uint64_t checksum(const std::array<uint32_t, kTargetCount> &values) {
+    uint64_t sum = 0;
+    for (uint32_t value : values) {
+        sum += value;
+    }
+    return sum;
+}
+
+} // namespace
+
+int main() {
+    const std::array<float, kInputSize> sorted = {
+        1.0f, 3.0f, 5.0f, 7.0f, 9.0f, 11.0f, 13.0f, 15.0f, 17.0f, 19.0f,
+    };
+    const std::array<float, kTargetCount> targets = {
+        7.0f, 2.0f, 15.0f, 20.0f, 1.0f,
+    };
+    std::array<uint32_t, kTargetCount> reference = {};
+    std::array<uint32_t, kTargetCount> candidate = {};
+
+    binary_search_ref(sorted.data(), targets.data(), reference.data(),
+                      kInputSize, kTargetCount);
+    binary_search_candidate(sorted.data(), targets.data(), candidate.data(),
+                            kInputSize, kTargetCount);
+
+    for (uint32_t i = 0; i < kTargetCount; ++i) {
+        if (reference[i] != candidate[i]) {
+            std::puts("FAILED");
+            return 1;
+        }
+    }
+
+    std::printf("binary_search checksum: %llu\n",
+                static_cast<unsigned long long>(checksum(candidate)));
+    std::puts("PASSED");
+    return 0;
+}
+
