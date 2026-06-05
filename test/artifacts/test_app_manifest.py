@@ -46,6 +46,7 @@ EXPECTED_CASES = {
     "hash_mix",
     "hist_bin",
     "histogram",
+    "histogram_strided",
     "integrate_trapz",
     "interpolate_linear",
     "lower_bound",

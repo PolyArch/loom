@@ -282,6 +282,14 @@
       "feature_tags": ["histogram", "integer", "indirect", "stateful"]
     },
     {
+      "case": "histogram_strided",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["histogram", "integer", "indirect", "division"]
+    },
+    {
       "case": "integrate_trapz",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
