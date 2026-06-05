@@ -62,6 +62,7 @@ EXPECTED_CASES = {
     "matvec",
     "merge",
     "moving_avg",
+    "modexp",
     "modmul",
     "normalize_vec3",
     "newton_iter",
