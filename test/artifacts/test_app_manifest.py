@@ -38,6 +38,7 @@ EXPECTED_CASES = {
     "matvec",
     "merge",
     "moving_avg",
+    "normalize_vec3",
     "outer",
     "pack_bits",
     "partition",
