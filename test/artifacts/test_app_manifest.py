@@ -32,6 +32,7 @@ EXPECTED_CASES = {
     "merge",
     "moving_avg",
     "outer",
+    "partition",
     "parity",
     "prefix_sum",
     "popcount",
