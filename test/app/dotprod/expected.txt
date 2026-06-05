@@ -1,0 +1,2 @@
+dotprod result: 102.000 products: 648.000
+PASSED

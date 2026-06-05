@@ -40,6 +40,7 @@ EXPECTED_CASES = {
     "delta_decode",
     "delta_encode",
     "dot_product_3d",
+    "dotprod",
     "dotproduct",
     "downsample",
     "downsample_avg",
