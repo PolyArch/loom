@@ -21,6 +21,7 @@ EXPECTED_CASES = {
     "dotproduct",
     "gemm",
     "prefix_sum",
+    "popcount",
     "reduction",
     "vecadd",
 }
