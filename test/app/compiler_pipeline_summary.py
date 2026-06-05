@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,16 +40,6 @@ def tool_path(env_name: str, fallback: str) -> str:
     return str(ROOT / "build" / "bin" / fallback)
 
 
-def prepare_temp_app(source_dir: Path, tmp: str) -> Path:
-    tmp_root = Path(tmp)
-    app_root = tmp_root / "test" / "app"
-    app_root.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "test" / "app" / "dfg_common.sh", app_root / "dfg_common.sh")
-    work_dir = app_root / source_dir.name
-    shutil.copytree(source_dir, work_dir, ignore=shutil.ignore_patterns("build"))
-    return work_dir
-
-
 def run_script(script: Path, env: dict[str, str]) -> tuple[str, str]:
     result = subprocess.run(
         ["bash", str(script)],
@@ -69,7 +58,6 @@ def run_script(script: Path, env: dict[str, str]) -> tuple[str, str]:
 
 def run_case(source_dir: Path) -> tuple[str, str, str, str]:
     with tempfile.TemporaryDirectory(prefix=f"loom-pipeline-{source_dir.name}-") as tmp:
-        work_dir = prepare_temp_app(source_dir, tmp)
         env = os.environ.copy()
         env["LOOM_CC"] = tool_path("LOOM_CC", "loom-cc")
         env["LOOM_CXX"] = tool_path("LOOM_CXX", "loom-c++")
@@ -77,10 +65,12 @@ def run_case(source_dir: Path) -> tuple[str, str, str, str]:
         env["LOOM_LOWER"] = tool_path("LOOM_LOWER", "loom-lower")
         env["LOOM_RAISE_OPT"] = tool_path("LOOM_RAISE_OPT", "loom-raise-opt")
 
-        raise_status, raise_diag = run_script(work_dir / "raise_check.sh", env)
+        env["BUILD_DIR"] = str(Path(tmp) / "raise")
+        raise_status, raise_diag = run_script(source_dir / "raise_check.sh", env)
         if raise_status != "pass":
             return "fail", "fail", "blocked", raise_diag
-        dfg_status, dfg_diag = run_script(work_dir / "dfg_check.sh", env)
+        env["BUILD_DIR"] = str(Path(tmp) / "dfg")
+        dfg_status, dfg_diag = run_script(source_dir / "dfg_check.sh", env)
         if dfg_status != "pass":
             return "pass", "pass", "fail", dfg_diag
     return "pass", "pass", "pass", "LLVM IR, raise, and dataflow checks passed"

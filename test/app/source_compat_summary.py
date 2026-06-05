@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,16 +40,14 @@ def compiler_path(env_name: str, fallback: Path) -> str:
     return str(fallback)
 
 
-def run_case(source_dir: Path, cc: str, cxx: str) -> tuple[str, str]:
+def run_case(source_dir: Path, cc: str, cxx: str, label: str) -> tuple[str, str]:
     with tempfile.TemporaryDirectory(prefix=f"loom-app-{source_dir.name}-") as tmp:
-        work_dir = Path(tmp) / source_dir.name
-        shutil.copytree(source_dir, work_dir, ignore=shutil.ignore_patterns("build"))
-        script = work_dir / "run_check.sh"
         env = os.environ.copy()
         env["CC"] = cc
         env["CXX"] = cxx
+        env["BUILD_DIR"] = str(Path(tmp) / label)
         result = subprocess.run(
-            ["bash", str(script)],
+            ["bash", str(source_dir / "run_check.sh")],
             cwd=ROOT,
             env=env,
             text=True,
@@ -100,8 +97,8 @@ def main(argv: list[str]) -> int:
             failed = True
             continue
 
-        native_status, native_diag = run_case(source_dir, native_cc, native_cxx)
-        loom_status, loom_diag = run_case(source_dir, loom_cc, loom_cxx)
+        native_status, native_diag = run_case(source_dir, native_cc, native_cxx, "native")
+        loom_status, loom_diag = run_case(source_dir, loom_cc, loom_cxx, "loom")
         if native_status == "pass" and loom_status == "pass":
             diagnostic = "native and loom drop-in runs passed"
         else:
