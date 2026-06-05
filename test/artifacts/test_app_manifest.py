@@ -34,6 +34,7 @@ EXPECTED_CASES = {
     "popcount",
     "relu",
     "reduction",
+    "rotate_bits",
     "upper_bound",
     "variance",
     "vecadd",
