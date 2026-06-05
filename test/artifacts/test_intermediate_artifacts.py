@@ -325,6 +325,48 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("CGRA-sim cycles below DFG-sim cycles unexpectedly passed audit")
 
+        duplicate_sim = out_dir / "duplicate-sim-cycle-summary.csv"
+        duplicate_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,64,80,pass,synthetic vecadd report\n"
+            "conv1d,64,80,pass,synthetic conv1d report\n"
+        )
+        duplicate_audit = out_dir / "artifact-audit-summary-duplicate-sim.json"
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(duplicate_audit),
+                str(duplicate_sim),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("duplicate simulator cycle values unexpectedly passed audit")
+        audit_data = json.loads(duplicate_audit.read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "DFG-sim cycles 64" not in messages or "CGRA-sim cycles 80" not in messages:
+            raise AssertionError(f"duplicate simulator diagnostics missing: {audit_data}")
+
+        decimal_sim = out_dir / "decimal-sim-cycle-summary.csv"
+        decimal_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10.5,12,pass,synthetic decimal cycle\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-decimal-sim.json"),
+                str(decimal_sim),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("decimal simulator cycle values unexpectedly passed audit")
+
         standalone_dfg_cycle = out_dir / "standalone-dfg-sim-cycle-summary.csv"
         standalone_dfg_cycle.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
@@ -377,6 +419,7 @@ def main() -> int:
                     "graph": "g_vecadd",
                     "status": "pass",
                     "metric_definition": "optimistic_event_steps",
+                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
                     "optimistic_cycles": 10,
                     "event_count": 42,
                     "final_outputs": ["none", "f32:1"],
@@ -423,6 +466,182 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("CGRA cycle without mapping evidence unexpectedly passed audit")
+
+        valid_mapping = out_dir / "valid-pnr-mapping-summary.csv"
+        valid_mapping.write_text(
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
+            "vecadd,fabric0,map0,1,1,0,pass,verified mapping\n"
+        )
+        cgra_without_report = out_dir / "cgra-without-report-sim-cycle-summary.csv"
+        cgra_without_report.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,12,pass,synthetic CGRA cycle without CGRA report\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-cgra-no-report.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_dfg_report),
+                str(cgra_without_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA cycle without CGRA report unexpectedly passed audit")
+
+        valid_cgra_report = out_dir / "valid-cgra-sim-report.json"
+        valid_cgra_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cgra_sim_report",
+                    "workload": "vecadd",
+                    "hardware": "fabric0",
+                    "mapping_id": "map0",
+                    "status": "pass",
+                    "fidelity_level": "mapping_constraint_estimate",
+                    "metric_definition": "mapping_constraint_estimate",
+                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                    "difference_classification": "expected_hardware_constraint",
+                    "hardware_bound_classification": "within_modeled_bounds",
+                    "dfg_cycles": 10,
+                    "modeled_lower_bound_cycles": 12,
+                    "performance_delta_cycles": 2,
+                    "route_latency_cycles": 1,
+                    "memory_latency_cycles": 1,
+                    "temporal_penalty_cycles": 0,
+                    "hardware_aware_cycles": 12,
+                    "cycle_breakdown": [
+                        {
+                            "category": "route_latency",
+                            "cycles": 1,
+                            "evidence": "mapping.routed_edges",
+                        },
+                        {
+                            "category": "memory_latency",
+                            "cycles": 1,
+                            "evidence": "fabric.mem placement",
+                        },
+                    ],
+                    "unmodeled_constraints": ["cache_behavior"],
+                    "first_principles_checks": [
+                        {
+                            "name": "cgra_not_more_optimistic_than_dfg",
+                            "status": "pass",
+                            "evidence": "hardware_aware_cycles >= dfg_cycles",
+                        },
+                        {
+                            "name": "delta_explained_by_modeled_constraints",
+                            "status": "pass",
+                            "evidence": "performance_delta_cycles = modeled penalties",
+                        },
+                    ],
+                    "diagnostics": ["synthetic checked CGRA report"],
+                }
+            )
+        )
+        invalid_delta_cgra_report = out_dir / "invalid-delta-cgra-sim-report.json"
+        invalid_delta_cgra_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cgra_sim_report",
+                    "workload": "vecadd",
+                    "hardware": "fabric0",
+                    "mapping_id": "map0",
+                    "status": "pass",
+                    "fidelity_level": "mapping_constraint_estimate",
+                    "metric_definition": "mapping_constraint_estimate",
+                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                    "difference_classification": "expected_hardware_constraint",
+                    "hardware_bound_classification": "within_modeled_bounds",
+                    "dfg_cycles": 10,
+                    "modeled_lower_bound_cycles": 12,
+                    "performance_delta_cycles": 2,
+                    "route_latency_cycles": 1,
+                    "memory_latency_cycles": 0,
+                    "temporal_penalty_cycles": 0,
+                    "hardware_aware_cycles": 12,
+                    "cycle_breakdown": [
+                        {
+                            "category": "route_latency",
+                            "cycles": 1,
+                            "evidence": "mapping.routed_edges",
+                        }
+                    ],
+                    "unmodeled_constraints": ["cache_behavior"],
+                    "first_principles_checks": [
+                        {
+                            "name": "delta_explained_by_modeled_constraints",
+                            "status": "pass",
+                            "evidence": "synthetic invalid report",
+                        }
+                    ],
+                    "diagnostics": ["synthetic invalid delta report"],
+                }
+            )
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-invalid-cgra-delta.json"),
+                str(invalid_delta_cgra_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA report with unexplained delta unexpectedly passed audit")
+
+        truncating_cgra_summary = out_dir / "truncating-cgra-sim-cycle-summary.csv"
+        truncating_cgra_summary.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,12.9,pass,synthetic truncating CGRA cycle\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-truncating-cgra.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(truncating_cgra_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("fractional CGRA summary cycle unexpectedly matched integer CGRA report")
+
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-cgra-report.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"CGRA cycle backed by CGRA report unexpectedly failed audit\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
 
         invalid_mapping = out_dir / "invalid-pnr-mapping-summary.csv"
         invalid_mapping.write_text(

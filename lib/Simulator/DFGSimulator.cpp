@@ -878,6 +878,7 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["graph"] = report.graph;
   root["status"] = report.status;
   root["metric_definition"] = report.metricDefinition;
+  root["operation_semantics_source"] = report.operationSemanticsSource;
   root["optimistic_cycles"] = report.optimisticCycles;
   root["event_count"] = report.eventCount;
 

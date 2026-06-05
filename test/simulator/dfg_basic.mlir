@@ -7,6 +7,7 @@
 // CHECK-DAG: "graph": "sum4"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "optimistic_event_steps"
+// CHECK-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
 // CHECK-DAG: "optimistic_cycles": 12
 // CHECK-DAG: "event_count": 23
 // CHECK-DAG: "final_outputs":

@@ -1,6 +1,8 @@
 #ifndef LOOM_SIMULATOR_DFG_SIMULATOR_H
 #define LOOM_SIMULATOR_DFG_SIMULATOR_H
 
+#include "Simulator/OperationSemantics.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -38,6 +40,7 @@ struct DFGSimulationReport {
   std::string graph;
   std::string status;
   std::string metricDefinition = "optimistic_event_steps";
+  std::string operationSemanticsSource = kOperationSemanticsSource;
   std::uint64_t optimisticCycles = 0;
   std::uint64_t eventCount = 0;
   llvm::SmallVector<std::string> finalOutputs;

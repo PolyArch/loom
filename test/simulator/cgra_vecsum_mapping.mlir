@@ -17,12 +17,34 @@
 // CGRA-DAG: "workload": "vecsum"
 // CGRA-DAG: "mapping_id": "vecsum__shared_reduction_adg"
 // CGRA-DAG: "status": "pass"
+// CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
+// CGRA-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
+// CGRA-DAG: "difference_classification": "expected_hardware_constraint"
 // CGRA-DAG: "dfg_cycles": 131
+// CGRA-DAG: "modeled_lower_bound_cycles": 143
+// CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
+// CGRA-DAG: "performance_delta_cycles": 12
 // CGRA-DAG: "route_latency_cycles": 8
 // CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
 // CGRA-DAG: "hardware_aware_cycles": 143
 // CGRA-DAG: "config_records": 43
+// CGRA-DAG: "cycle_breakdown"
+// CGRA-DAG: "category": "route_latency"
+// CGRA-DAG: "evidence": "mapping.routed_edges"
+// CGRA-DAG: "category": "memory_latency"
+// CGRA-DAG: "evidence": "fabric.mem placement"
+// CGRA-DAG: "category": "temporal_conflict"
+// CGRA-DAG: "evidence": "placement schedule"
+// CGRA-DAG: "unmodeled_constraints"
+// CGRA-DAG: "explicit_fabric_route_paths"
+// CGRA-DAG: "fifo_latency"
+// CGRA-DAG: "cache_behavior"
+// CGRA-DAG: "scratchpad_bank_conflicts"
+// CGRA-DAG: "coherence_consistency"
+// CGRA-DAG: "first_principles_checks"
+// CGRA-DAG: "cgra_not_more_optimistic_than_dfg"
+// CGRA-DAG: "delta_explained_by_modeled_constraints"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-NEXT: vecsum,131,143,pass

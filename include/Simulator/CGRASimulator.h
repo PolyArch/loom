@@ -21,10 +21,13 @@ struct CGRASimReport {
   std::string mappingId;
   std::string status;
   std::string diagnostic;
+  std::string operationSemanticsSource;
   std::uint64_t dfgCycles = 0;
   std::uint64_t routeLatencyCycles = 0;
   std::uint64_t memoryLatencyCycles = 0;
   std::uint64_t temporalPenaltyCycles = 0;
+  std::uint64_t performanceDeltaCycles = 0;
+  std::uint64_t modeledLowerBoundCycles = 0;
   std::uint64_t hardwareAwareCycles = 0;
   std::uint64_t placedRecords = 0;
   std::uint64_t routedEdges = 0;

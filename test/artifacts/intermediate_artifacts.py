@@ -345,9 +345,37 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "graph",
             "status",
             "metric_definition",
+            "operation_semantics_source",
             "optimistic_cycles",
             "event_count",
             "final_outputs",
+            "diagnostics",
+        },
+    },
+    "cgra_sim_report": {
+        "filename": "cgra-sim-report.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "workload",
+            "hardware",
+            "mapping_id",
+            "status",
+            "fidelity_level",
+            "metric_definition",
+            "operation_semantics_source",
+            "difference_classification",
+            "hardware_bound_classification",
+            "dfg_cycles",
+            "modeled_lower_bound_cycles",
+            "performance_delta_cycles",
+            "route_latency_cycles",
+            "memory_latency_cycles",
+            "temporal_penalty_cycles",
+            "hardware_aware_cycles",
+            "cycle_breakdown",
+            "unmodeled_constraints",
+            "first_principles_checks",
             "diagnostics",
         },
     },
@@ -517,11 +545,23 @@ def numeric_value(row: dict[str, str], column: str) -> float | None:
         return None
 
 
+def nonnegative_int_cell(row: dict[str, str], column: str) -> int | None:
+    value = row.get(column, "")
+    if value == "":
+        return None
+    if not value.isdecimal():
+        return None
+    return int(value)
+
+
 def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics: list[str], row_index: int) -> None:
     statuses = dict(row_statuses(schema, row))
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
-        dfg_cycles = numeric_value(row, "dfg_sim_cycles")
-        cgra_cycles = numeric_value(row, "cgra_sim_cycles")
+        for column in ("dfg_sim_cycles", "cgra_sim_cycles"):
+            if row.get(column, "") and nonnegative_int_cell(row, column) is None:
+                diagnostics.append(f"row {row_index}: {column} must be a non-negative integer cycle count")
+        dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
+        cgra_cycles = nonnegative_int_cell(row, "cgra_sim_cycles")
         if dfg_cycles is None:
             diagnostics.append(f"row {row_index}: sim pass row has no DFG-sim cycles")
         if cgra_cycles is None:
@@ -551,6 +591,37 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             diagnostics.append(f"row {row_index}: ADG hardware pass row has no links")
 
 
+def validate_sim_cycle_uniqueness(rows: list[dict[str, str]], diagnostics: list[str]) -> None:
+    dfg_cycles: dict[int, list[str]] = {}
+    cgra_cycles: dict[int, list[str]] = {}
+    for row in rows:
+        if row.get("status") != "pass":
+            continue
+        kernel = row.get("kernel", "")
+        if not valid_identity(kernel):
+            continue
+        dfg = nonnegative_int_cell(row, "dfg_sim_cycles")
+        cgra = nonnegative_int_cell(row, "cgra_sim_cycles")
+        if dfg is not None:
+            dfg_cycles.setdefault(dfg, []).append(kernel)
+        if cgra is not None:
+            cgra_cycles.setdefault(cgra, []).append(kernel)
+    for cycle, kernels in sorted(dfg_cycles.items(), key=lambda item: item[0]):
+        unique_kernels = sorted(set(kernels))
+        if len(unique_kernels) > 1:
+            diagnostics.append(
+                f"DFG-sim cycles {cycle} are shared by multiple kernels "
+                f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
+            )
+    for cycle, kernels in sorted(cgra_cycles.items(), key=lambda item: item[0]):
+        unique_kernels = sorted(set(kernels))
+        if len(unique_kernels) > 1:
+            diagnostics.append(
+                f"CGRA-sim cycles {cycle} are shared by multiple kernels "
+                f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
+            )
+
+
 def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
     diagnostics: list[str] = []
     with path.open(newline="") as handle:
@@ -573,6 +644,8 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
             diagnostic = row.get("diagnostic", "")
             if diagnostic == "" and schema.kind not in {"sim_cycle", "pnr_mapping"}:
                 diagnostics.append(f"row {index}: pass row has no diagnostic or evidence note")
+    if schema.kind == "sim_cycle":
+        validate_sim_cycle_uniqueness(rows, diagnostics)
     return {
         "artifact": str(path),
         "schema": schema.kind,
@@ -614,12 +687,78 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DFG simulator report status must be a known status")
         if data.get("metric_definition") != "optimistic_event_steps":
             diagnostics.append("DFG simulator report has unknown metric definition")
+        if data.get("operation_semantics_source") != "loom.sim.operation_semantics.v1":
+            diagnostics.append("DFG simulator report has unknown operation semantics source")
         cycles = data.get("optimistic_cycles")
         if not isinstance(cycles, int) or cycles < 0:
             diagnostics.append("DFG simulator report optimistic_cycles must be non-negative integer")
         event_count = data.get("event_count")
         if not isinstance(event_count, int) or event_count < 0:
             diagnostics.append("DFG simulator report event_count must be non-negative integer")
+    if kind == "cgra_sim_report":
+        if data.get("kind") != "cgra_sim_report":
+            diagnostics.append("CGRA simulator report kind must be cgra_sim_report")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("CGRA simulator report status must be a known status")
+        if data.get("fidelity_level") != "mapping_constraint_estimate":
+            diagnostics.append("CGRA simulator report has unknown fidelity level")
+        if data.get("metric_definition") != "mapping_constraint_estimate":
+            diagnostics.append("CGRA simulator report has unknown metric definition")
+        if data.get("operation_semantics_source") != "loom.sim.operation_semantics.v1":
+            diagnostics.append("CGRA simulator report has unknown operation semantics source")
+        if data.get("hardware_bound_classification") != "within_modeled_bounds":
+            diagnostics.append("CGRA simulator report has unknown hardware bound classification")
+        difference = data.get("difference_classification")
+        dfg_cycles = data.get("dfg_cycles")
+        hardware_cycles = data.get("hardware_aware_cycles")
+        lower_bound = data.get("modeled_lower_bound_cycles")
+        delta = data.get("performance_delta_cycles")
+        route_cycles = data.get("route_latency_cycles")
+        memory_cycles = data.get("memory_latency_cycles")
+        temporal_cycles = data.get("temporal_penalty_cycles")
+        if not isinstance(dfg_cycles, int) or dfg_cycles < 0:
+            diagnostics.append("CGRA simulator report dfg_cycles must be non-negative integer")
+        if not isinstance(hardware_cycles, int) or hardware_cycles < 0:
+            diagnostics.append("CGRA simulator report hardware_aware_cycles must be non-negative integer")
+        if not isinstance(lower_bound, int) or lower_bound < 0:
+            diagnostics.append("CGRA simulator report modeled_lower_bound_cycles must be non-negative integer")
+        if not isinstance(delta, int) or delta < 0:
+            diagnostics.append("CGRA simulator report performance_delta_cycles must be non-negative integer")
+        if not isinstance(route_cycles, int) or route_cycles < 0:
+            diagnostics.append("CGRA simulator report route_latency_cycles must be non-negative integer")
+        if not isinstance(memory_cycles, int) or memory_cycles < 0:
+            diagnostics.append("CGRA simulator report memory_latency_cycles must be non-negative integer")
+        if not isinstance(temporal_cycles, int) or temporal_cycles < 0:
+            diagnostics.append("CGRA simulator report temporal_penalty_cycles must be non-negative integer")
+        if isinstance(dfg_cycles, int) and isinstance(hardware_cycles, int) and hardware_cycles < dfg_cycles:
+            diagnostics.append("CGRA simulator report is more optimistic than DFG-sim")
+        if isinstance(lower_bound, int) and isinstance(hardware_cycles, int) and hardware_cycles < lower_bound:
+            diagnostics.append("CGRA simulator report violates modeled lower bound")
+        if isinstance(dfg_cycles, int) and isinstance(hardware_cycles, int) and isinstance(delta, int):
+            if hardware_cycles - dfg_cycles != delta:
+                diagnostics.append("CGRA simulator report delta does not match hardware minus DFG cycles")
+        if isinstance(delta, int):
+            if delta == 0 and difference != "no_modeled_hardware_constraints":
+                diagnostics.append("CGRA simulator zero-delta report needs no-constraint classification")
+            if delta > 0 and difference != "expected_hardware_constraint":
+                diagnostics.append("CGRA simulator positive-delta report needs hardware-constraint classification")
+        if all(
+            isinstance(value, int)
+            for value in (route_cycles, memory_cycles, temporal_cycles, delta)
+        ):
+            if route_cycles + memory_cycles + temporal_cycles != delta:
+                diagnostics.append("CGRA simulator report delta is not explained by route, memory, and temporal cycles")
+        breakdown = data.get("cycle_breakdown")
+        if not isinstance(breakdown, list) or not breakdown:
+            diagnostics.append("CGRA simulator report needs non-empty cycle_breakdown")
+        constraints = data.get("unmodeled_constraints")
+        if not isinstance(constraints, list):
+            diagnostics.append("CGRA simulator report needs unmodeled_constraints list")
+        checks = data.get("first_principles_checks")
+        if not isinstance(checks, list) or not checks:
+            diagnostics.append("CGRA simulator report needs first_principles_checks")
+        elif any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
+            diagnostics.append("CGRA simulator report has failing first-principles check")
     return {
         "artifact": str(path),
         "schema": kind,
@@ -704,9 +843,11 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         if row.get("status") == "pass" and row.get("mapping_id"):
             pass_mappings_by_workload.setdefault(row["workload"], []).append(row)
     dfg_report_cycles_by_workload: dict[str, int] = {}
+    dfg_report_semantics_by_workload: dict[str, str] = {}
     for report in json_grouped.get("dfg_sim_report", []):
         workload = report.get("workload")
         cycles = report.get("optimistic_cycles")
+        semantics = report.get("operation_semantics_source")
         if (
             isinstance(workload, str)
             and valid_identity(workload)
@@ -715,6 +856,17 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             and cycles >= 0
         ):
             dfg_report_cycles_by_workload[workload] = cycles
+            if isinstance(semantics, str):
+                dfg_report_semantics_by_workload[workload] = semantics
+    cgra_reports_by_workload: dict[str, list[dict[str, object]]] = {}
+    for report in json_grouped.get("cgra_sim_report", []):
+        workload = report.get("workload")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and report.get("status") == "pass"
+        ):
+            cgra_reports_by_workload.setdefault(workload, []).append(report)
 
     inventory_rows = grouped.get("old_app_corpus_inventory", [])
     import_rows = grouped.get("app_import_status", [])
@@ -835,51 +987,51 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                 )
             )
         if row.get("dfg_sim_cycles", ""):
-            dfg_cycles = numeric_value(row, "dfg_sim_cycles")
+            dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
             report_cycles = dfg_report_cycles_by_workload.get(kernel)
             if report_cycles is not None:
-                if dfg_cycles is not None and int(dfg_cycles) != report_cycles:
+                if dfg_cycles is not None and dfg_cycles != report_cycles:
                     findings.append(
                         cross_finding(
                             "sim_dfg_cycle_matches_dfg_report",
                             (
                                 f"sim kernel {kernel!r} DFG-sim cycles "
-                                f"{int(dfg_cycles)} do not match DFG report cycles {report_cycles}"
+                                f"{dfg_cycles} do not match DFG report cycles {report_cycles}"
                             ),
                             row,
                         )
                     )
-                continue
-            primitive_rows = [
-                primitive
-                for primitive in grouped.get("dataflow_primitive_coverage", [])
-                if primitive.get("workload") == kernel
-            ]
-            if not primitive_rows:
-                findings.append(
-                    cross_finding(
-                        "sim_dfg_cycle_requires_dfg_evidence",
-                        (
-                            f"sim kernel {kernel!r} has DFG-sim cycles "
-                            "but no DFG-sim evidence artifact was provided"
-                        ),
-                        row,
+            else:
+                primitive_rows = [
+                    primitive
+                    for primitive in grouped.get("dataflow_primitive_coverage", [])
+                    if primitive.get("workload") == kernel
+                ]
+                if not primitive_rows:
+                    findings.append(
+                        cross_finding(
+                            "sim_dfg_cycle_requires_dfg_evidence",
+                            (
+                                f"sim kernel {kernel!r} has DFG-sim cycles "
+                                "but no DFG-sim evidence artifact was provided"
+                            ),
+                            row,
+                        )
                     )
-                )
-            elif not any(
-                primitive.get("dfg_sim_status") == "pass"
-                for primitive in primitive_rows
-            ):
-                findings.append(
-                    cross_finding(
-                        "sim_dfg_cycle_requires_dfg_evidence",
-                        (
-                            f"sim kernel {kernel!r} has DFG-sim cycles "
-                            "but primitive coverage does not contain DFG-sim pass evidence"
-                        ),
-                        row,
+                elif not any(
+                    primitive.get("dfg_sim_status") == "pass"
+                    for primitive in primitive_rows
+                ):
+                    findings.append(
+                        cross_finding(
+                            "sim_dfg_cycle_requires_dfg_evidence",
+                            (
+                                f"sim kernel {kernel!r} has DFG-sim cycles "
+                                "but primitive coverage does not contain DFG-sim pass evidence"
+                            ),
+                            row,
+                        )
                     )
-                )
         if row.get("cgra_sim_cycles", ""):
             if not row.get("dfg_sim_cycles", ""):
                 findings.append(
@@ -889,6 +1041,68 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         row,
                     )
                 )
+            cgra_cycles = nonnegative_int_cell(row, "cgra_sim_cycles")
+            cgra_reports = cgra_reports_by_workload.get(kernel, [])
+            if not cgra_reports:
+                findings.append(
+                    cross_finding(
+                        "sim_cgra_cycle_requires_cgra_report",
+                        (
+                            f"sim kernel {kernel!r} has CGRA-sim cycles "
+                            "but no CGRA-sim report evidence was provided"
+                        ),
+                        row,
+                    )
+                )
+            elif cgra_cycles is not None:
+                matching_reports = [
+                    report
+                    for report in cgra_reports
+                    if isinstance(report.get("hardware_aware_cycles"), int)
+                    and report.get("hardware_aware_cycles") == cgra_cycles
+                ]
+                if not matching_reports:
+                    findings.append(
+                        cross_finding(
+                            "sim_cgra_cycle_matches_cgra_report",
+                            (
+                                f"sim kernel {kernel!r} CGRA-sim cycles "
+                                f"{cgra_cycles} do not match any CGRA report"
+                            ),
+                            row,
+                        )
+                    )
+                elif row.get("dfg_sim_cycles", ""):
+                    dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
+                    if dfg_cycles is not None and not any(
+                        report.get("dfg_cycles") == dfg_cycles
+                        for report in matching_reports
+                    ):
+                        findings.append(
+                            cross_finding(
+                                "sim_cgra_report_matches_dfg_cycle",
+                                (
+                                    f"sim kernel {kernel!r} CGRA report DFG cycles "
+                                    "do not match summary DFG cycles"
+                                ),
+                                row,
+                            )
+                        )
+                    dfg_semantics = dfg_report_semantics_by_workload.get(kernel)
+                    if dfg_semantics is not None and not any(
+                        report.get("operation_semantics_source") == dfg_semantics
+                        for report in matching_reports
+                    ):
+                        findings.append(
+                            cross_finding(
+                                "sim_cgra_report_uses_dfg_operation_semantics",
+                                (
+                                    f"sim kernel {kernel!r} CGRA report does not "
+                                    "use the DFG-sim operation semantics source"
+                                ),
+                                row,
+                            )
+                        )
             pass_mappings = pass_mappings_by_workload.get(kernel, [])
             if not pass_mappings:
                 findings.append(
