@@ -19,6 +19,7 @@ SHARED_APP_SCRIPTS = (
     "raise_scope_common.sh",
     "run_c_variants_common.sh",
     "run_cxx_variants_common.sh",
+    "window_raise_common.sh",
 )
 
 
