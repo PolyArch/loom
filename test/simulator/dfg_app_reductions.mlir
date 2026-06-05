@@ -1,5 +1,7 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir/bit_reverse LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/bit_reverse/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/conv1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/conv1d/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/cumsum LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/cumsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
@@ -11,6 +13,8 @@
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh bit_reverse %t.dir/bit_reverse/main_func.dfg.mlir %t.dir/reports/bit_reverse.report.json %t.dir/summary.csv
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh conv1d %t.dir/conv1d/main_func.dfg.mlir %t.dir/reports/conv1d.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh cumsum %t.dir/cumsum/main_func.dfg.mlir %t.dir/reports/cumsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reports/reduction.report.json %t.dir/summary.csv --append
@@ -21,6 +25,8 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum %t.dir/prefix_sum/main_func.dfg.mlir %t.dir/reports/prefix_sum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=BIT-REVERSE < %t.dir/reports/bit_reverse.report.json
+// RUN: FileCheck %s --check-prefix=CONV1D < %t.dir/reports/conv1d.report.json
+// RUN: FileCheck %s --check-prefix=CUMSUM < %t.dir/reports/cumsum.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reports/reduction.report.json
@@ -40,6 +46,24 @@
 // BIT-REVERSE-DAG: "event_count": 267
 // BIT-REVERSE-DAG: "i32:510274632"
 // BIT-REVERSE-DAG: "i32:0"
+
+// CONV1D-DAG: "kind": "dfg_sim_report"
+// CONV1D-DAG: "workload": "conv1d"
+// CONV1D-DAG: "graph": "g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
+// CONV1D-DAG: "status": "pass"
+// CONV1D-DAG: "optimistic_cycles": 38
+// CONV1D-DAG: "wavefront_steps": 13
+// CONV1D-DAG: "event_count": 38
+// CONV1D-DAG: "f32:5"
+
+// CUMSUM-DAG: "kind": "dfg_sim_report"
+// CUMSUM-DAG: "workload": "cumsum"
+// CUMSUM-DAG: "graph": "g_t_cumsum_kernel_red_0_0"
+// CUMSUM-DAG: "status": "pass"
+// CUMSUM-DAG: "optimistic_cycles": 7171
+// CUMSUM-DAG: "wavefront_steps": 2052
+// CUMSUM-DAG: "event_count": 7171
+// CUMSUM-DAG: "f32:5620"
 
 // VECADD-DAG: "kind": "dfg_sim_report"
 // VECADD-DAG: "workload": "vecadd"
@@ -125,6 +149,8 @@
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: bit_reverse,267,,blocked,DFG-sim report available
+// SUMMARY-DAG: conv1d,38,,blocked,DFG-sim report available
+// SUMMARY-DAG: cumsum,7171,,blocked,DFG-sim report available
 // SUMMARY-DAG: dotproduct,451,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,147,,blocked,DFG-sim report available
 // SUMMARY-DAG: mean,387,,blocked,DFG-sim report available

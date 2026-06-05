@@ -120,6 +120,32 @@ case "${CASE}" in
             --arg 5=305419896
         )
         ;;
+    conv1d)
+        append_ctrl_tokens 5
+        append_constant_memref 4 5 "1.000000e+00"
+        append_constant_memref 5 5 "1.000000e+00"
+        sim_args+=(
+            --graph g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0
+            --workload conv1d
+            --arg 1=0
+            --arg 2=5
+            --arg 3=1
+            --arg 6=0.000000e+00
+        )
+        ;;
+    cumsum)
+        append_ctrl_tokens 1024
+        append_mod_shift_memref 4 1024 10 1
+        append_constant_memref 5 1024 "0.000000e+00"
+        sim_args+=(
+            --graph g_t_cumsum_kernel_red_0_0
+            --workload cumsum
+            --arg 1=0
+            --arg 2=1024
+            --arg 3=1
+            --arg 6=0.000000e+00
+        )
+        ;;
     vecadd)
         append_ctrl_tokens 64
         append_linear_memref 4 64 1.5 "%.6e"
