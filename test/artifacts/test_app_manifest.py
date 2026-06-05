@@ -36,6 +36,7 @@ EXPECTED_CASES = {
     "merge",
     "moving_avg",
     "outer",
+    "pack_bits",
     "partition",
     "parity",
     "prefix_sum",
