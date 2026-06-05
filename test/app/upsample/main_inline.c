@@ -14,7 +14,11 @@ int main(void) {
     float output[OUTPUT_SIZE];
 
     for (unsigned i = 0; i < OUTPUT_SIZE; ++i) {
-        output[i] = (i % FACTOR) == 0u ? input[i / FACTOR] : 0.0f;
+        output[i] = 0.0f;
+    }
+
+    for (unsigned i = 0; i < INPUT_SIZE; ++i) {
+        output[i * FACTOR] = input[i];
     }
 
     uint32_t checksum = 0;

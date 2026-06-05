@@ -35,14 +35,24 @@ raise_one() {
             in_kernel = 1
             next
         }
-        has_call == "yes" && in_kernel && /func\.func/ {
+        in_kernel && /func\.func/ {
             in_kernel = 0
+            in_candidate = 0
         }
         has_call == "no" && /func\.func @main/ {
             in_kernel = 1
             next
         }
-        in_kernel {
+        in_kernel && /^[[:space:]]{4}scf\.(forall|for) / {
+            in_candidate = 1
+            loops = 1
+            has_sum = 0
+            has_scale = 0
+            has_load = 0
+            has_store = 0
+            next
+        }
+        in_candidate {
             if ($0 ~ /scf\.(forall|for) /) {
                 loops += 1
             }

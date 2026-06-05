@@ -35,17 +35,22 @@ raise_one() {
             in_kernel = 1
             next
         }
-        has_call == "yes" && in_kernel && /func\.func/ {
+        in_kernel && /func\.func/ {
             in_kernel = 0
+            in_loop = 0
         }
         has_call == "no" && /func\.func @main/ {
             in_kernel = 1
             next
         }
-        in_kernel {
-            if ($0 ~ /scf\.(forall|for) /) {
-                has_loop = 1
-            }
+        in_kernel && /^[[:space:]]{4}scf\.(forall|for) / {
+            in_loop = 1
+            has_stride = 0
+            has_load = 0
+            has_store = 0
+            next
+        }
+        in_loop {
             if ($0 ~ /arith\.(muli|shli)|llvm\.getelementptr/) {
                 has_stride = 1
             }
@@ -55,7 +60,7 @@ raise_one() {
             if ($0 ~ /llvm\.store/) {
                 has_store = 1
             }
-            if (has_loop && has_stride && has_load && has_store) {
+            if (has_stride && has_load && has_store) {
                 found = 1
             }
         }

@@ -35,33 +35,61 @@ raise_one() {
             in_kernel = 1
             next
         }
-        has_call == "yes" && in_kernel && /func\.func/ {
+        in_kernel && /func\.func/ {
             in_kernel = 0
+            in_loop = 0
         }
         has_call == "no" && /func\.func @main/ {
             in_kernel = 1
             next
         }
-        in_kernel {
-            if ($0 ~ /scf\.(forall|for) /) {
-                has_loop = 1
+        in_kernel && /llvm\.intr\.memset/ {
+            zero_fill_seen = 1
+        }
+        in_kernel && /^[[:space:]]{4}scf\.(forall|for) / {
+            in_loop = 1
+            loop_has_load = 0
+            loop_has_store = 0
+            loop_has_stride = 0
+            loop_has_zero = 0
+            loop_has_select = 0
+            next
+        }
+        in_loop {
+            if ($0 ~ /arith\.constant 0\.000000e\+00|scf\.yield %cst/) {
+                loop_has_zero = 1
             }
-            if ($0 ~ /arith\.(remui|divui|andi|shrui|cmpi)|llvm\.select|arith\.select/) {
-                has_zero_insert = 1
+            if ($0 ~ /arith\.(muli|shli|shrui|andi|cmpi)|llvm\.getelementptr/) {
+                loop_has_stride = 1
+            }
+            if ($0 ~ /scf\.if|llvm\.select|arith\.select/) {
+                loop_has_select = 1
             }
             if ($0 ~ /llvm\.load/) {
-                has_load = 1
+                loop_has_load = 1
             }
             if ($0 ~ /llvm\.store/) {
-                has_store = 1
+                loop_has_store = 1
             }
-            if (has_loop && has_zero_insert && has_load && has_store) {
+            if (loop_has_store && loop_has_zero && !loop_has_load) {
+                zero_fill_loop = 1
+            }
+            if (loop_has_load && loop_has_store && loop_has_stride) {
+                strided_write_loop = 1
+            }
+            if (loop_has_load && loop_has_store && loop_has_stride && loop_has_zero && loop_has_select) {
+                conditional_zero_insert_loop = 1
+            }
+            if (has_call == "yes" && zero_fill_seen && strided_write_loop) {
+                found = 1
+            }
+            if (has_call == "no" && (conditional_zero_insert_loop || (zero_fill_seen && strided_write_loop) || (zero_fill_loop && strided_write_loop))) {
                 found = 1
             }
         }
         END { exit found ? 0 : 1 }
     ' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no zero-insertion upsample loop in ${mlir}" >&2
+        echo "[${KERNEL}/${variant}] no zero-fill plus strided-write upsample loops in ${mlir}" >&2
         return 1
     fi
     if ! grep -q 'func\.func @main' "${mlir}"; then
