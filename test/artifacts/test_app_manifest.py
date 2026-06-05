@@ -19,6 +19,7 @@ EXPECTED_CASES = {
     "conv1d",
     "ctz",
     "dotproduct",
+    "find_first_set",
     "gemm",
     "lower_bound",
     "prefix_sum",
