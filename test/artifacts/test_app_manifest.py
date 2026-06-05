@@ -18,6 +18,7 @@ EXPECTED_CASES = {
     "compare_swap",
     "conv1d",
     "ctz",
+    "dot_product_3d",
     "dotproduct",
     "find_first_set",
     "fir_filter",

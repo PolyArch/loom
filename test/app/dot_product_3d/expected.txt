@@ -1,0 +1,2 @@
+dot_product_3d checksum: 402.0
+PASSED

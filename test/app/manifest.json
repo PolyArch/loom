@@ -66,6 +66,14 @@
       "feature_tags": ["reduction", "vector"]
     },
     {
+      "case": "dot_product_3d",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["vector", "geometry", "float"]
+    },
+    {
       "case": "find_first_set",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
