@@ -1,0 +1,2 @@
+outer checksum: 96
+PASSED

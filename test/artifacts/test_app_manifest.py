@@ -27,6 +27,7 @@ EXPECTED_CASES = {
     "mean",
     "matvec",
     "moving_avg",
+    "outer",
     "prefix_sum",
     "popcount",
     "reduction",
