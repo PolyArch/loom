@@ -1,0 +1,2 @@
+mean result: 4.312500
+PASSED

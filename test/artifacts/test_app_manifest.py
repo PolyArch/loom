@@ -22,6 +22,7 @@ EXPECTED_CASES = {
     "find_first_set",
     "gemm",
     "lower_bound",
+    "mean",
     "prefix_sum",
     "popcount",
     "reduction",

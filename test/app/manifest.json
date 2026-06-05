@@ -90,6 +90,14 @@
       "feature_tags": ["search", "control"]
     },
     {
+      "case": "mean",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["reduction", "statistics", "float"]
+    },
+    {
       "case": "prefix_sum",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
