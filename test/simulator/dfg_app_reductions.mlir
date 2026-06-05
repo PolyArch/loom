@@ -4,6 +4,7 @@
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/mean LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/mean/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/vecnorm_l1 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l1/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/prefix_sum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
@@ -13,6 +14,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reports/reduction.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh mean %t.dir/mean/main_func.dfg.mlir %t.dir/reports/mean.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh dotproduct %t.dir/dotproduct/main_func.dfg.mlir %t.dir/reports/dotproduct.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l1 %t.dir/vecnorm_l1/main_func.dfg.mlir %t.dir/reports/vecnorm_l1.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l2 %t.dir/vecnorm_l2/main_func.dfg.mlir %t.dir/reports/vecnorm_l2.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum %t.dir/prefix_sum/main_func.dfg.mlir %t.dir/reports/prefix_sum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
@@ -21,6 +23,7 @@
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reports/reduction.report.json
 // RUN: FileCheck %s --check-prefix=MEAN < %t.dir/reports/mean.report.json
 // RUN: FileCheck %s --check-prefix=DOTPRODUCT < %t.dir/reports/dotproduct.report.json
+// RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/reports/vecnorm_l1.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/reports/vecnorm_l2.report.json
 // RUN: FileCheck %s --check-prefix=PREFIX-SUM < %t.dir/reports/prefix_sum.report.json
 // RUN: FileCheck %s --check-prefix=INTEGRATE-TRAPZ < %t.dir/reports/integrate_trapz.report.json
@@ -72,6 +75,14 @@
 // DOTPRODUCT-DAG: "event_count": 517
 // DOTPRODUCT-DAG: "f32:2016"
 
+// VECNORM-L1-DAG: "kind": "dfg_sim_report"
+// VECNORM-L1-DAG: "workload": "vecnorm_l1"
+// VECNORM-L1-DAG: "graph": "g_t_vecnorm_l1_red_0_0"
+// VECNORM-L1-DAG: "status": "pass"
+// VECNORM-L1-DAG: "optimistic_cycles": 517
+// VECNORM-L1-DAG: "event_count": 517
+// VECNORM-L1-DAG: "i32:171"
+
 // VECNORM-L2-DAG: "kind": "dfg_sim_report"
 // VECNORM-L2-DAG: "workload": "vecnorm_l2"
 // VECNORM-L2-DAG: "graph": "g_t_vecnorm_l2_red_0_0"
@@ -107,5 +118,6 @@
 // SUMMARY-DAG: prefix_sum,517,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,453,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,453,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l1,517,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l2,517,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,453,,blocked,DFG-sim report available

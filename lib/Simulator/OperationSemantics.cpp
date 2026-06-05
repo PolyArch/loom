@@ -1,5 +1,6 @@
 #include "Simulator/OperationSemantics.h"
 
+#include <limits>
 #include <system_error>
 #include <utility>
 
@@ -58,7 +59,7 @@ bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {
   return opName == "arith.addf" || opName == "arith.subf" ||
          opName == "arith.mulf" || opName == "arith.addi" ||
          opName == "arith.muli" || opName == "arith.index_cast" ||
-         opName == "llvm.intr.fmuladd";
+         opName == "llvm.intr.fmuladd" || opName == "llvm.intr.abs";
 }
 
 bool loom::sim::isSupportedMappedOperation(llvm::StringRef opName) {
@@ -107,6 +108,17 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return PrimitiveValue::integer(asInteger(operands[0]));
+  }
+  if (opName == "llvm.intr.abs") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    std::int64_t value = asInteger(operands[0]);
+    if (value == std::numeric_limits<std::int64_t>::min())
+      return llvm::createStringError(
+          std::errc::result_out_of_range,
+          "%s cannot represent absolute value of int64 minimum",
+          opName.str().c_str());
+    return PrimitiveValue::integer(value < 0 ? -value : value);
   }
   if (opName == "llvm.intr.fmuladd") {
     if (llvm::Error arity = requireArity(opName, operands, 3))

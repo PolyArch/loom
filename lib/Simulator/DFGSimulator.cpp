@@ -522,6 +522,13 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
   return true;
 }
 
+bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
+  if (!isSupportedPrimitiveOperation(op->getName().getStringRef()) ||
+      op->getNumResults() != 1)
+    return false;
+  return firePrimitiveOperation(op, op->getResult(0), state);
+}
+
 bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp, mlir::UnrealizedConversionCastOp>(
       op);
@@ -568,11 +575,16 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireIndexCast(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
-      .Default([&](mlir::Operation *) { return false; });
+      .Default([&](mlir::Operation *genericOp) {
+        return fireGenericPrimitive(genericOp, state);
+      });
 }
 
 std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (isSupportedNonEvent(op))
+    return std::nullopt;
+  if (isSupportedPrimitiveOperation(op->getName().getStringRef()) &&
+      op->getNumResults() == 1)
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,

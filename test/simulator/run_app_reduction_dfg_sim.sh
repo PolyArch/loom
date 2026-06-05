@@ -181,6 +181,18 @@ case "${CASE}" in
             --arg 5=0
         )
         ;;
+    vecnorm_l1)
+        append_ctrl_tokens 64
+        append_mod_shift_memref 4 64 11 -5
+        sim_args+=(
+            --graph g_t_vecnorm_l1_red_0_0
+            --workload vecnorm_l1
+            --arg 1=0
+            --arg 2=64
+            --arg 3=1
+            --arg 5=0
+        )
+        ;;
     prefix_sum)
         append_ctrl_tokens 64
         append_linear_memref 4 64 1 "%d"
