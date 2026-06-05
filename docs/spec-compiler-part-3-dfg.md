@@ -2,22 +2,19 @@
 
 This document specifies the third compiler part of the Loom front-end:
 lowering SCF-shaped accelerator regions into Loom's native dataflow
-representation, ready for the existing `fabric` lowering tool-chain.
+representation, ready for fabric mapping and lowering.
 It starts after source integration and LLVM-to-SCF raising have already
 selected explicit accelerator regions. It does not decide which source
 program regions should run on AccCores.
 
-The canonical IR sources of the existing `dataflow` and `fabric` dialects
-are `include/Dataflow/IR/*.td` and `include/Fabric/IR/*.td`; the verifier
-implementations live in `lib/Dataflow/IR/*.cpp` and `lib/Fabric/IR/*.cpp`
-respectively. The target Part 3 dataflow surface uses module-scope,
-Symbol-bearing, function-like definitions for both `dataflow.thread`
-and `dataflow.graph`. Execution is materialized only by
+The target Part 3 dataflow surface uses module-scope, Symbol-bearing,
+function-like definitions for both `dataflow.thread` and
+`dataflow.graph`. Execution is materialized only by
 `dataflow.thread.launch` and `dataflow.graph.launch`. Graph control
 ports are explicit: `ctrl_in` and `done_out` are part of the
 `dataflow.graph` definition's `function_type` and of every launch
-site. Part 3 consumes the temporary `loom.acc_region` op produced by
-Part 2, and introduces a new pass library under `lib/Frontend/`.
+site. Part 3 consumes the transient `loom.acc_region` op produced by
+Part 2.
 The precise timing semantics of `dataflow.stream`, `dataflow.carry`,
 `dataflow.invariant`, and `dataflow.gate` are specified separately in
 `docs/spec-dataflow-part-1-streaming.md`. The precise firing semantics
@@ -26,7 +23,7 @@ of `dataflow.constant`, `dataflow.sync`, `dataflow.mux`, and
 `docs/spec-dataflow-part-2-control.md`.
 
 Implementation engineering -- the pass pipeline that produces this IR
-shape, the lit-test layout, the milestone acceptance checklist, and the
+shape, the lit-test layout, the acceptance checklist, and the
 maintenance plan -- is documented in
 `docs/spec-compiler-part-3-impl.md`. The main body of this document
 keeps only the first-principles content: IR boundary contracts, SCF
@@ -64,7 +61,7 @@ The compiler front-end is documented in four parts:
   the common placement framework in
   `docs/spec-compiler-part-3-placement-framework.md`.
 * **Part 4, partitioned data.** Annotation and in-thread queries for
-  tile-and-domain memrefs, plus future work on neighborhood
+  tile-and-domain memrefs, plus the extension point for neighborhood
   communication / distributed-buffer protocols (see
   `docs/spec-compiler-part-4-partitioned-data.md`).
 
@@ -161,9 +158,9 @@ collapse adjacent independent levels, or tile and split a level when the
 transform preserves the logical instance set, each instance's scalar
 values, memory-order constraints, async launch and fence ordering, and
 the strict layering rule between child thread launches and graph
-launches. A conservative implementation may initially perform only
-annotation and canonicalization; it must not silently change hierarchy
-shape as a verifier or parsing side effect.
+launches. The deterministic baseline policy performs only annotation
+and canonicalization; it must not silently change hierarchy shape as a
+verifier or parsing side effect.
 
 ### 2.1 IR Carrier Responsibilities
 
@@ -171,7 +168,7 @@ shape as a verifier or parsing side effect.
   choose HostCore or AccCore placement. A function may be HostCore-only,
   ScalarCore-callable, or legal in both contexts depending on the
   Part 2 call-context classification.
-* `loom.acc_region` is a temporary Part 2 to Part 3 marker for a
+* `loom.acc_region` is a transient Part 2 to Part 3 marker for a
   structured region selected for AccCore execution. This part consumes
   it and erases it.
 * `dataflow.thread` is the logical accelerator execution-domain
@@ -239,7 +236,7 @@ each rule lands in IR.
    `func.func`, `func.call`, `dataflow.thread.launch`,
    `dataflow.graph.launch`, or another `dataflow.graph` definition.
    The graph body is a single graph-kind region; it already permits
-   feedback edges (existing semantics). Additionally, from the
+   feedback edges (accepted semantics). Additionally, from the
    parent side: a `dataflow.thread` definition's body must not
    directly contain both a `dataflow.graph.launch` and a
    `dataflow.thread.launch` at the same thread-body placement level.
@@ -290,9 +287,10 @@ each rule lands in IR.
    implementations ship in the same library and are interchangeable
    through that interface: a simple SSA-source-of-memref oracle and a
    stronger oracle based on `mlir::AliasAnalysis`. The basic oracle
-   is the milestone 1 default and drives the full lit suite; the
-   stronger oracle is exercised on a representative differential
-   subset that pins oracle-pair equivalence modulo refinement. The
+   is the baseline default. The stronger oracle is a refinement policy
+   whose output must remain structurally compatible with the basic
+   oracle while allowing fewer dependence predecessors where MLIR AA
+   proves `MustNotAlias`. The
    compositional chain model and the oracle / builder / loop-state /
    wiring details are specified in
    `docs/spec-compiler-part-3-mem.md`.
@@ -338,12 +336,12 @@ each rule lands in IR.
    declare its effects through MLIR's `MemoryEffectOpInterface` (or
    an equivalent recursive trait) accurately enough that generic
    optimizers (CSE, LICM, scheduling, code motion) preserve the
-   intended observable behavior. The first milestone uses MLIR's
+   intended observable behavior. The baseline policy uses MLIR's
    default-resource barrier pattern -- broad, conservative
    `MemRead + MemWrite` declarations -- where a precise per-resource
-   binding would require op-side machinery beyond this milestone's
-   scope. Tighter per-resource bindings (for example, load/store
-   keyed on the `$mem` operand) are explicit follow-up work. In
+   binding would require op-side machinery outside this contract.
+   Tighter per-resource bindings (for example, load/store keyed on
+   the `$mem` operand) are explicit extensions. In
    addition, `dataflow.thread.launch` declares a conservative
    side effect on a custom `LoomAsyncResource` resource so that
    generic CSE / DCE never removes a launch even when its callee
@@ -475,8 +473,8 @@ each rule lands in IR.
 ## 5. IR Additions
 
 This section enumerates every new dialect element the front-end
-introduces. All additions are local to the existing `dataflow` and
-new `loom` namespaces; nothing outside this list is added.
+introduces. All additions are local to the `dataflow` and `loom`
+namespaces; nothing outside this list is added.
 
 ### 5.1 New Types
 
@@ -486,10 +484,10 @@ new `loom` namespaces; nothing outside this list is added.
   - Belongs only to the inter-thread asynchronous-completion domain.
     It is not a `none`-typed graph-control token, and there is no
     implicit cast between the two domains.
-  - Refcounted by a future runtime ABI; first milestone only manipulates
-    the type as an SSA value.
+  - Runtime ABI ownership and refcounting are specified by the runtime
+    ABI; Part 3 manipulates the type as an SSA value.
 
-This milestone introduces no other types. The host-to-AccCore data
+This spec introduces no other types. The host-to-AccCore data
 plane uses `dataflow.map_info` (see Section 5.4.6), whose result preserves
 the source type. The "this value crossed the boundary through
 `dataflow.map_info`" provenance is enforced by the verifier on
@@ -531,9 +529,10 @@ One new attribute class implements the upstream
   - Shape mirrors upstream `GPU_AsyncOpInterface`: the op accepts a
     variadic operand prefix of `!dataflow.thread_token` dependencies
     and optionally produces a `!dataflow.thread_token` result.
-  - First milestone has only `dataflow.thread.launch` and
-    `dataflow.thread.wait` implementing it; future memory
-    ops at the host scope (alloc, memcpy) can adopt it later.
+  - The baseline participants are `dataflow.thread.launch` and
+    `dataflow.thread.wait`. Host-scope async memory ops such as
+    alloc or memcpy may adopt the same interface through an explicit
+    runtime / ABI extension.
 
 ### 5.4 New Operations (signatures only)
 
@@ -589,9 +588,9 @@ traits:
   expressed at the launch op via `LoomAsyncOpInterface`, not via
   the function type.
 * `sym_name` is required and module-unique. `sym_visibility` is
-  required and must equal `"private"` in the first milestone; the
-  verifier rejects `"public"` and `"nested"` until cross-module
-  linkage has a separate spec round.
+  required and must equal `"private"` under the baseline visibility
+  policy. The verifier rejects `"public"` and `"nested"` unless
+  cross-module linkage is enabled by a separate spec.
 * `mapping` is a `DeviceMappingArrayAttr` (an `ArrayAttr` whose
   every entry implements `DeviceMappingAttrInterface`), one per
   grid dim. The target Loom mapping entries are
@@ -685,8 +684,8 @@ custom Loom analyses can introspect the callable through
   `!dataflow.thread_token` dependencies (this op's
   `LoomAsyncOpInterface` slot). The op produces an
   `Optional<!dataflow.thread_token>` `asyncToken` result. The
-  first milestone always produces it (pure async style); the
-  optional shape leaves room for a later non-async lowering.
+  baseline policy always produces it (pure async style); any
+  non-async lowering policy must be specified separately.
 * The op has no data results. Values produced by AccCore execution
   cross the HostCore-to-AccCore boundary through mapped memory
   effects; the token is the readiness signal for those effects.
@@ -694,10 +693,8 @@ custom Loom analyses can introspect the callable through
   SSA result of a `dataflow.map_info` op in the launch's enclosing
   context. The verifier enforces this provenance; the in-thread
   block argument bound to the operand is the same memref type as
-  the source memref. This is the rule that lived on `dataflow.thread`
-  before this milestone; with the def + launch split it moves
-  unchanged in spirit to the launch site, where `dataflow.map_info`
-  is reachable.
+  the source memref. With the def + launch split, provenance belongs
+  to the launch site, where `dataflow.map_info` is reachable.
 * `dataflow.thread.launch` implements `MemoryEffectsOpInterface`
   directly. The interface reports host-visible effects by walking
   each memref-like operand in `bodyOperands` back through its
@@ -890,8 +887,8 @@ traits:
   AllTypesMatch<["source", "result"]>.
 ```
 
-* `source` is a `memref<...>` (or a partitioned-data-annotated memref
-  in a later milestone).
+* `source` is a `memref<...>` or a partitioned-data-annotated memref
+  accepted by the Part 4 partitioned-data contract.
 * `result` has the same type as `source`. The op is a pure,
   view-like alias of its source: alias analysis must treat the
   result as may-alias of the source, and bufferization must treat
@@ -900,9 +897,9 @@ traits:
   single canonical producer for `dataflow.thread.launch` body
   operands.
 * `direction` is the closed enum `to | from | tofrom | alloc |
-  release`. The first milestone defaults every front-end-injected
-  `map_info` to `tofrom`; an optional optimizer can later refine to
-  the narrowest direction.
+  release`. The baseline policy defaults every front-end-injected
+  `map_info` to `tofrom`; an optimizer may refine to the narrowest
+  direction when it can prove the narrower contract.
 * `staticBounds` / `dynamicBounds` together describe the per-dim
   half-open `[lo, hi)` ranges that the thread will touch. The
   encoding pairs static and dynamic entries by dimension: for a
@@ -977,9 +974,9 @@ traits:
   same innermost thread body can be checked at the symbol-ref type
   level rather than by walking graph bodies.
 * `sym_name` is required and module-unique. `sym_visibility` is
-  required and must equal `"private"` in the first milestone; the
-  verifier rejects `"public"` and `"nested"` until cross-module
-  linkage has a separate spec round.
+  required and must equal `"private"` under the baseline visibility
+  policy. The verifier rejects `"public"` and `"nested"` unless
+  cross-module linkage is enabled by a separate spec.
 * The body is `IsolatedFromAbove`. All values used inside the
   graph definition's body must enter through the entry block.
 * The entry block has the layout `(%ctrl_in : none, %arg_0 : T0,
@@ -1077,24 +1074,22 @@ traits:
     `function_type.results`).
 
 * `dataflow.load` and `dataflow.store`.
-  - The first milestone tightens these existing dataflow primitives
-    with explicit memory-effect traits so that
+  - These dataflow primitives carry explicit memory-effect traits so that
     `dataflow.graph.launch`'s manual effect projection correctly
     aggregates body effects:
     - `dataflow.load`  declares `MemoryEffects<[MemRead]>`.
     - `dataflow.store` declares `MemoryEffects<[MemWrite]>`.
   - These use MLIR's default memory resource. They are deliberately
-    coarse for the first milestone: any load may-read all memory,
+    coarse in the baseline policy: any load may-read all memory,
     any store may-write all memory. This is sufficient for graph
     body effects to roll up correctly through the launch's manual
     projection and for surrounding optimizers to keep ScalarCore
     memory ops correctly ordered relative to graph launches.
   - Tightening these effects to a per-`$mem`-operand declaration
     (so two loads on disjoint memrefs become reorderable) is
-    explicit follow-up work on the dataflow dialect, not part of
-    this milestone.
+    an explicit dataflow dialect extension.
 
-* No other existing op is modified by this milestone.
+* No other dataflow op is modified by this spec.
 
 ## 6. Per-scf Lowering Templates
 
@@ -1103,7 +1098,7 @@ This section gives the canonical pseudocode template for each
 "Scope and Contract" maps these templates: implement and lit-test the
 simpler ops first.
 
-The dataflow primitive set is the existing one
+The dataflow primitive set is
 (`stream`, `carry`, `invariant`, `gate`, `mux`, `demux`, `sync`,
 `constant`, `load`, `store`, `yield`). This section describes how SCF
 ops are mechanically rewritten with those primitives. The precise
@@ -1498,11 +1493,11 @@ structural carry `%iter_ctrl = carry %cond, %entry_ctrl,
 %ctrl_feedback`. The before-region is its own chain scope and uses
 `%iter_ctrl` as its `S.struct_at_*` source. The after-region is a
 separate chain scope; its structural-permission source is
-`%after_ctrl` from `gate %cond, %before_done` per the existing
-template. The compound's `struct_done` is the false-cycle exit
+`%after_ctrl` from `gate %cond, %before_done` per the while
+structural template. The compound's `struct_done` is the false-cycle exit
 projection of the carry, equivalently the false-lane of `demux %cond,
 %before_done` reused at the boundary. The before-region executes
-`K + 1` times for `K` after-region executions, matching the existing
+`K + 1` times for `K` after-region executions, matching the structural
 template.
 
 **Memory plane (per touched partition `P`).** The compound applies
@@ -1550,7 +1545,7 @@ per-iteration ring:
   and preserves any memory effect performed by the final
   condition-checking iteration.
 
-The structural `%after_rwc` from the existing template is on the
+The structural `%after_rwc` from the structural template is on the
 structural plane only and is not on the memory critical path. Per
 `docs/spec-compiler-part-3-mem.md` Section 2.5 plane orthogonality and
 `docs/spec-compiler-part-3-mem.md` Section 5.4, after-region memory ops use
@@ -2152,7 +2147,7 @@ the already specified `scf.for` template. No new `dataflow.parallel`,
 `dataflow.reduce`, or reduction enum is introduced.
 
 A user-written `scf.parallel` with a non-empty `mapping` attribute is
-rejected in the first milestone. Mapping has Loom semantics only on
+rejected by Part 3. Mapping has Loom semantics only on
 `scf.forall`, because mapped forall is the construct that establishes a
 `dataflow.thread` boundary.
 
@@ -2168,15 +2163,14 @@ different logical iterations or chunks of the same original
 
 The normalization has a tunable split factor `K`. The pipeline option
 `--parallel-split-factor=<K>` controls this value; the default is
-`K = 1`, and `K` must be positive. The first milestone applies one
+`K = 1`, and `K` must be positive. The baseline policy applies one
 global split factor to every `scf.parallel` that reaches this
-normalization. There is no per-loop override in the required
-implementation. The N-Dim Parallel With M Reductions subsection
-below assumes the per-dim chunk count `K_d` may differ across dims
-in a future implementation while still using the global factor in
-milestone 1; the carry-placement and merge contract specified
-there is independent of the K choice, so a future cost-model-driven
-per-dim K can land without changing the IR contract.
+normalization. There is no per-loop override in the baseline policy.
+The N-Dim Parallel With M Reductions subsection below permits the
+per-dim chunk count `K_d` to differ across dims under a cost-model-
+driven policy; the carry-placement and merge contract specified there
+is independent of the K choice, so per-dim K does not change the IR
+contract.
 
 * `K = 1` is the required baseline. The whole iteration domain becomes
   one lexicographic `scf.for` loop nest.
@@ -2219,7 +2213,7 @@ per-dim K can land without changing the IR contract.
   group tail token. Any later memory access that must observe the
   parallel's memory effects depends on this group tail.
 * The provenance marker must be mechanically available to Part 3
-  lowering. It may be a temporary `DictionaryAttr` on the generated
+  lowering. It may be a transient `DictionaryAttr` on the generated
   loops or an analysis side table, but it is consumed before final
   `dataflow.graph` verification. It is not a final dataflow IR feature.
 * Different `K` values may produce different reduction results when the
@@ -2587,7 +2581,7 @@ results.
 
 The K choice (chunks per parallel dim) is implementation-defined;
 this section pins the carry placement and merge structure
-regardless of K, so a future implementation may pick K based on
+regardless of K, so an implementation policy may pick K based on
 cost-model decisions without changing the IR contract. In
 particular, switching any dim from `K_d = 1` to `K_d > 1` only
 adds one K-chunk `scf.for` for that dim into the K-chunk nest and
@@ -2596,7 +2590,7 @@ the per-chunk-tuple body and the per-reduction `%iter_arg`
 placement on the innermost per-chunk loop are unchanged.
 
 After normalization, all generated `scf.for` and `scf.if` operations
-use the existing templates in this section. Their stream, carry, gate,
+use the templates in this section. Their stream, carry, gate,
 demux, mux, and memory-order behavior is inherited from those templates.
 
 #### Boundary Translation
@@ -2746,7 +2740,7 @@ firing and leaves no residue.
   unused lanes are dead outputs and are discarded by target lowering.
 * The zero-case form is spliced during scf body lowering, before the
   surrounding graph body is finalized. Memory-dependence snapshots
-  continue to identify memory ops by their existing deterministic
+  continue to identify memory ops by their assigned deterministic
   ids; the splice does not create a selector-dependent memory path.
 
 For cases `[2, 5]` and argument stream `[2, 7, 5]`, the normalized
@@ -2777,7 +2771,7 @@ This template instantiates the boundary translation contract of
 
 **Structural plane.** The compound's `struct_in` enters an `(N + 1)`
 way `dataflow.demux` keyed on the normalized lane id `%lane` per the
-existing template (lane 0 = default region, lane `i + 1` = case
+structural template (lane 0 = default region, lane `i + 1` = case
 region `i`). Each selected region is its own chain scope per
 `docs/spec-compiler-part-3-mem.md` Section 2.2 and uses its lane's structural-
 permission token as its `S.struct_at_*` source per
@@ -2858,15 +2852,15 @@ memory-plane wiring.
 ## 8. Partitioned Data
 
 Partitioned-data layout and in-thread queries are specified in
-`docs/spec-compiler-part-4-partitioned-data.md`, along with future work
-on neighborhood communication / distributed-buffer protocols. They are
+`docs/spec-compiler-part-4-partitioned-data.md`, along with the extension
+point for neighborhood communication / distributed-buffer protocols. They are
 not required for SCF-to-DFG flattening; this
 document references them only at the boundary points (see Section 5.4 and
 Section 9).
 
 ## 9. Verifier Rules (Front-End Specific)
 
-In addition to the existing dataflow / fabric verifier set:
+In addition to the dataflow / fabric verifier set:
 
 * `dataflow.thread` (definition, Section 5.4.1)
   - The op is a Symbol-bearing, function-like callable; it must
@@ -2874,11 +2868,11 @@ In addition to the existing dataflow / fabric verifier set:
   - `sym_name` is required and module-unique among
     `dataflow.thread` definitions and other Symbol-bearing ops in
     the same module.
-  - `sym_visibility` is required and must equal `"private"` in the
-    first milestone. `"public"` and `"nested"` are rejected.
+  - `sym_visibility` is required and must equal `"private"` under the
+    baseline visibility policy. `"public"` and `"nested"` are rejected
+    unless cross-module linkage is enabled by a separate spec.
   - `function_type` inputs are the user body operand types
-    `(T0..TN)`; `function_type` results are empty. The first
-    milestone keeps the result list empty regardless of the
+    `(T0..TN)`; `function_type` results are empty regardless of the
     callable's grid shape.
   - `mapping` array length equals grid dim count.
   - Every `mapping` entry implements
@@ -2957,7 +2951,7 @@ In addition to the existing dataflow / fabric verifier set:
     `callee.staticGrid*`. Per-axis static / dynamic mixing
     follows the def's static-bounds pattern.
   - The op produces an `Optional<!dataflow.thread_token>` result.
-    In the first milestone the result is always present.
+    Under the baseline policy the result is always present.
   - Each memref-like operand in `bodyOperands` is the direct SSA
     result of a `dataflow.map_info` op in the launch's enclosing
     context. The launch's `MemoryEffectsOpInterface` walks back
@@ -3068,7 +3062,8 @@ Verifier rules for `dataflow.partition_layout`,
     `dataflow.graph` definitions and other Symbol-bearing ops in
     the same module.
   - `sym_visibility` is required and must equal `"private"` in the
-    first milestone. `"public"` and `"nested"` are rejected.
+    baseline visibility policy. `"public"` and `"nested"` are rejected
+    unless cross-module linkage is enabled by a separate spec.
   - `function_type` inputs are `(none, T0..TN)` where the leading
     `none` is the `ctrl_in` start port and the remaining types
     are the kernel's user-data inputs. `function_type` results are
@@ -3084,7 +3079,7 @@ Verifier rules for `dataflow.partition_layout`,
     `(%done_out : none, %r_0 : R0, ..., %r_M : RM)`.
   - Body may contain `dataflow.{stream, carry, invariant, gate,
     mux, demux, sync, constant, load, store, yield}` plus ordinary
-    pure ops permitted in the existing graph body whitelist.
+    pure ops permitted in the graph body whitelist.
   - Body must not contain `scf.*`, `func.func`, `func.call`,
     `dataflow.thread.launch`, `dataflow.graph.launch`,
     `dataflow.thread.fence`, `dataflow.map_info`, any partitioned-data
@@ -3131,12 +3126,12 @@ Verifier rules for `dataflow.partition_layout`,
 ## 10. Non-Goals (First Milestone)
 
 The following are explicitly out of scope for the scf-to-dfg
-milestone and have placeholders only:
+contract:
 
 * Outlining `dataflow.thread` to a `fabric.module` symbol with
-  a symbol reference. The thread op stays inline in this milestone,
-  but it is already isolated and has an explicit boundary operand
-  list.
+  a symbol reference. The thread op remains front-end software IR;
+  fabric binding is a mapping and lowering concern. The thread op is
+  already isolated and has an explicit boundary operand list.
 * Native `dataflow.thread` data results, async value types, thread
   groups, and thread-level aggregation regions. Tensor-result
   aggregation is handled by materializing it into mapped-memory
@@ -3145,25 +3140,25 @@ milestone and have placeholders only:
   embedding. Those concerns belong to Part 1 and Part 2.
 * Optimization of `dataflow.map_info` direction. Default `tofrom`.
 * Strong-typed partitioned-data carriers, logical-domain-point to
-  fabric-resource binding, and any future neighborhood communication /
+  fabric-resource binding, and neighborhood communication /
   distributed-buffer protocol for tile-and-domain memrefs. These are
-  not required for this milestone. In particular, the first milestone
-  does not commit to any stencil-specific op signature for neighbor
-  exchange, nor to a default mapping from a
+  not part of this contract. In particular, this spec does not commit
+  to any stencil-specific op signature for neighbor exchange, nor to a
+  default mapping from a
   `dataflow.partition_domain @D` point to any `fabric.pe` /
   `fabric.mem` instance.
 
 ## 11. References
 
 * `docs/spec-fabric-module.md`, `docs/spec-fabric-pe.md`,
-  `docs/spec-fabric-fu.md` -- the existing fabric-side IR that the
-  front-end output eventually targets.
+  `docs/spec-fabric-fu.md` -- the fabric-side IR that the front-end
+  output eventually targets.
 * `docs/spec-compiler-part-1-source.md` -- high-level source
   integration and metadata emission.
 * `docs/spec-compiler-part-2-scf.md` -- LLVM-to-SCF raising,
   accelerator-region selection, and `loom.acc_region`.
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
-  layout, milestone acceptance checklist, and maintenance plan
+  layout, acceptance checklist, and maintenance plan
   for the SCF-to-DFG front-end.
 * `docs/spec-compiler-part-3-mem.md` -- compositional chain model,
   alias oracle, dependence builder, loop-carried memory state, and
@@ -3174,7 +3169,7 @@ milestone and have placeholders only:
   placement-partition framework; Part 3 owns the L2 graph-placement
   instance.
 * `docs/spec-compiler-part-4-partitioned-data.md` -- partitioned-data
-  annotation, in-thread queries, and future work on neighborhood
+  annotation, in-thread queries, and the extension point for neighborhood
   communication / distributed-buffer protocols.
 * `docs/spec-dataflow-part-1-streaming.md` -- precise timing
   semantics for `dataflow.stream`, `dataflow.carry`,
