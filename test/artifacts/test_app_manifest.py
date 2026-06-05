@@ -46,6 +46,7 @@ EXPECTED_CASES = {
     "reduction",
     "rotate_bits",
     "scatter_add",
+    "sbox_lookup",
     "transpose",
     "unpack_bits",
     "upsample",

@@ -282,6 +282,14 @@
       "feature_tags": ["memory", "indirect", "integer"]
     },
     {
+      "case": "sbox_lookup",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["lookup", "memory", "indirect", "integer"]
+    },
+    {
       "case": "transpose",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
