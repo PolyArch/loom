@@ -40,6 +40,7 @@ EXPECTED_CASES = {
     "downsample_avg",
     "find_first_set",
     "fir_filter",
+    "fir_filter_stateful",
     "gemm",
     "gemv",
     "gather",
