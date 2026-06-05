@@ -87,6 +87,26 @@ append_mod_shift_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+append_trapz_memrefs() {
+    local count=9
+    local denom=8
+    local x_values=""
+    local y_values=""
+    local x_value=""
+    local y_value=""
+    for i in $(seq 0 $((count - 1))); do
+        x_value="$(awk -v i="${i}" -v denom="${denom}" 'BEGIN { printf "%.6e", i / denom }')"
+        y_value="$(awk -v i="${i}" -v denom="${denom}" 'BEGIN { v = i / denom; printf "%.6e", v * v }')"
+        if [[ -n "${x_values}" ]]; then
+            x_values+=","
+            y_values+=","
+        fi
+        x_values+="${x_value}"
+        y_values+="${y_value}"
+    done
+    sim_args+=(--memref "4=${x_values}" --memref "5=${y_values}")
+}
+
 case "${CASE}" in
     vecadd)
         append_ctrl_tokens 64
@@ -135,6 +155,20 @@ case "${CASE}" in
             --arg 2=64
             --arg 3=1
             --arg 5=0
+        )
+        ;;
+    integrate_trapz)
+        append_ctrl_tokens 8
+        append_trapz_memrefs
+        sim_args+=(
+            --graph g_t_integrate_trapz_red_0_0
+            --workload integrate_trapz
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 6=5.000000e-01
+            --arg 7=1
+            --arg 8=0.000000e+00
         )
         ;;
     *)

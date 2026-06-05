@@ -12,22 +12,22 @@
 //          (b) has NOT been bridged to a memref (i.e., is not the
 //              source of an `unrealized_conversion_cast` produced by
 //              `loom-lower-graph-memory`),
-//          (c) is NOT one of the three integer operands feeding any
-//              `dataflow.stream` (those are loop-bound ports, not
-//              user-loop-invariant data),
+//          (c) may feed a `dataflow.stream`, but also has at least one
+//              non-stream use in the graph body,
 //          (d) IS used somewhere else inside the graph body,
 //          (e) has a type that the dataflow.invariant verifier
 //              admits without further bridging (numeric / index /
 //              none),
 //        materialize `%inv = dataflow.invariant %rwc, %BA : T` once
 //        and rewrite all in-body uses of BA (other than the new
-//        invariant op itself, the stream operands, and the bridge
+//        invariant op itself, each stream operand, and the bridge
 //        cast) to read %inv.
 //
 // Bail conditions (graph left unchanged):
 //   * No `dataflow.stream` in the body (the loop is not yet streamed,
 //     so there is no rwc to drive the invariant).
-//   * Every block arg is already either bridged or feeding a stream.
+//   * Every block arg is already bridged, unused outside stream
+//     operands, or non-carriable.
 //   * The block arg has a non-numeric type that the invariant op
 //     cannot carry.
 //
@@ -71,20 +71,6 @@ bool isInvariantCarriable(::mlir::Type t) {
   return {};
 }
 
-// Mark every operand of every `dataflow.stream` op in the body as a
-// stream-bound port. Block arguments feeding a stream's lb / ub /
-// step must NOT be wrapped in an invariant.
-void collectStreamOperands(::mlir::Block &entry,
-                           ::llvm::DenseSet<::mlir::Value> &out) {
-  for (::mlir::Operation &op : entry.without_terminator()) {
-    if (auto s = ::llvm::dyn_cast<::dataflow::StreamOp>(op)) {
-      out.insert(s.getLb());
-      out.insert(s.getUb());
-      out.insert(s.getStep());
-    }
-  }
-}
-
 // Mark every block arg consumed by a `unrealized_conversion_cast` as
 // already-bridged (the memory pass owns its conversion).
 void collectBridgedArgs(::mlir::Block &entry,
@@ -108,8 +94,6 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     return 0;
   ::mlir::Value rwc = stream.getRwc();
 
-  ::llvm::DenseSet<::mlir::Value> streamPorts;
-  collectStreamOperands(entry, streamPorts);
   ::llvm::DenseSet<::mlir::Value> bridgedPorts;
   collectBridgedArgs(entry, bridgedPorts);
 
@@ -123,11 +107,20 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     //     bridged into a memref.
     if (bridgedPorts.contains(ba))
       continue;
-    // (c) Skip stream lb / ub / step ports.
-    if (streamPorts.contains(ba))
-      continue;
-    // (d) Skip args with no in-body uses.
-    if (ba.use_empty())
+    // (c, d) Skip args with no non-stream in-body uses.
+    bool hasNonStreamUse = false;
+    for (::mlir::OpOperand &use : ba.getUses()) {
+      auto streamUser = ::llvm::dyn_cast<::dataflow::StreamOp>(use.getOwner());
+      if (streamUser) {
+        ::mlir::Value v = use.get();
+        if (v == streamUser.getLb() || v == streamUser.getUb() ||
+            v == streamUser.getStep())
+          continue;
+      }
+      hasNonStreamUse = true;
+      break;
+    }
+    if (!hasNonStreamUse)
       continue;
     // (e) Skip non-carriable types (e.g. !llvm.ptr passed through).
     if (!isInvariantCarriable(ba.getType()))
@@ -144,9 +137,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     // Replace every use of `ba` except (i) the just-created invariant
     // op (which must keep reading the raw block arg), (ii) any
     // unrealized_conversion_cast (the bridge consumes the raw arg),
-    // and (iii) any dataflow.stream operand (lb / ub / step). The
-    // (iii) check is a backstop: streamPorts.contains(ba) would have
-    // already short-circuited eligibility for this BA.
+    // and (iii) any dataflow.stream operand (lb / ub / step), because
+    // the stream op owns the raw loop-bound contract.
     ba.replaceUsesWithIf(newVal, [&](::mlir::OpOperand &use) {
       ::mlir::Operation *owner = use.getOwner();
       if (owner == inv.getOperation())

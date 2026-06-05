@@ -3,15 +3,18 @@
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh dotproduct %t.dir/dotproduct/main_func.dfg.mlir %t.dir/reports/dotproduct.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l2 %t.dir/vecnorm_l2/main_func.dfg.mlir %t.dir/reports/vecnorm_l2.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
 // RUN: FileCheck %s --check-prefix=DOTPRODUCT < %t.dir/reports/dotproduct.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/reports/vecnorm_l2.report.json
+// RUN: FileCheck %s --check-prefix=INTEGRATE-TRAPZ < %t.dir/reports/integrate_trapz.report.json
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/summary.csv
 
 // VECADD-DAG: "kind": "dfg_sim_report"
@@ -46,8 +49,17 @@
 // VECNORM-L2-DAG: "event_count": 517
 // VECNORM-L2-DAG: "i32:619"
 
+// INTEGRATE-TRAPZ-DAG: "kind": "dfg_sim_report"
+// INTEGRATE-TRAPZ-DAG: "workload": "integrate_trapz"
+// INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
+// INTEGRATE-TRAPZ-DAG: "status": "pass"
+// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 22
+// INTEGRATE-TRAPZ-DAG: "event_count": 169
+// INTEGRATE-TRAPZ-DAG: "f32:0.335938"
+
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: dotproduct,131,,blocked,DFG-sim report available
+// SUMMARY-DAG: integrate_trapz,22,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,131,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l2,132,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,131,,blocked,DFG-sim report available
