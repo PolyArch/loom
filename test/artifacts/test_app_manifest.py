@@ -48,6 +48,7 @@ EXPECTED_CASES = {
     "fir_filter_stateful",
     "gemm",
     "gemv",
+    "gf_mul",
     "gather",
     "hash_mix",
     "hist_bin",
