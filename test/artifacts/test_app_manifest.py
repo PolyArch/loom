@@ -69,6 +69,7 @@ EXPECTED_CASES = {
     "sbox_lookup",
     "sigmoid",
     "softmax",
+    "string_compare",
     "transpose",
     "transform_point",
     "unpack_bits",
