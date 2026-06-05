@@ -106,6 +106,14 @@
       "feature_tags": ["reduction", "statistics", "float"]
     },
     {
+      "case": "matvec",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["matrix", "vector", "integer"]
+    },
+    {
       "case": "moving_avg",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
