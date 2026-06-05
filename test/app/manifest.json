@@ -314,6 +314,14 @@
       "feature_tags": ["matrix", "memory", "integer"]
     },
     {
+      "case": "transform_point",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["geometry", "matrix", "float", "strided"]
+    },
+    {
       "case": "unpack_bits",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

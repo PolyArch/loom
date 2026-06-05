@@ -1,0 +1,2 @@
+transform_point checksum: 424435.250
+PASSED

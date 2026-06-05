@@ -50,6 +50,7 @@ EXPECTED_CASES = {
     "scatter_add",
     "sbox_lookup",
     "transpose",
+    "transform_point",
     "unpack_bits",
     "upsample",
     "upper_bound",
