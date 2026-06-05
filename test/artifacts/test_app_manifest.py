@@ -29,6 +29,7 @@ EXPECTED_CASES = {
     "gemm",
     "gemv",
     "gather",
+    "hash_mix",
     "integrate_trapz",
     "lower_bound",
     "mean",
