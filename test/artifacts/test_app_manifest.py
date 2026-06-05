@@ -84,6 +84,7 @@ EXPECTED_CASES = {
     "sort_bubble",
     "sort_insertion",
     "sort_merge",
+    "sort_quick",
     "string_compare",
     "string_hash",
     "stream_update",
