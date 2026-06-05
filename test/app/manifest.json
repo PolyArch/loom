@@ -338,6 +338,14 @@
       "feature_tags": ["scan", "prefix", "integer", "store"]
     },
     {
+      "case": "prefix_sum_inclusive",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["scan", "prefix", "integer", "store"]
+    },
+    {
       "case": "popcount",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
