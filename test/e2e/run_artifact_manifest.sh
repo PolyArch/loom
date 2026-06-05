@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 "${ROOT}/test/artifacts/intermediate_artifacts.py" write-json artifact_manifest "$@"
+python3 "${ROOT}/test/e2e/artifact_manifest.py" "$@"
