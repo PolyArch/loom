@@ -13,6 +13,7 @@ import artifact_test_common
 EXPECTED_CASES = {
     "autocorrelation",
     "axpy",
+    "batchnorm",
     "bit_reverse",
     "bitrev",
     "bitrev_complex",

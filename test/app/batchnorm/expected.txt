@@ -1,0 +1,2 @@
+batchnorm checksum: -2371.159912
+PASSED

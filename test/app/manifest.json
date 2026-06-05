@@ -18,6 +18,14 @@
       "feature_tags": ["vector", "numeric"]
     },
     {
+      "case": "batchnorm",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["activation", "float", "transcendental", "nested-loop"]
+    },
+    {
       "case": "bit_reverse",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
