@@ -13,6 +13,7 @@ import artifact_test_common
 
 
 RUNNERS = ("run_check.sh", "raise_check.sh", "dfg_check.sh")
+AGGREGATE_RUNNERS = ("run_all.sh", "run_raise_all.sh", "run_dfg_all.sh")
 
 
 def prepare_case(repo: Path, case_dir: Path, tmp_root: Path) -> Path:
@@ -23,6 +24,24 @@ def prepare_case(repo: Path, case_dir: Path, tmp_root: Path) -> Path:
     copied = app_root / case_dir.name
     shutil.copytree(case_dir, copied, ignore=shutil.ignore_patterns("build"))
     return copied
+
+
+def prepare_app_tree(repo: Path, tmp_root: Path) -> Path:
+    app_root = repo / "test" / "app"
+    copied_root = tmp_root / "test" / "app"
+    copied_root.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "app_manifest.py",
+        "manifest.json",
+        "dfg_common.sh",
+        "run_all.sh",
+        "run_raise_all.sh",
+        "run_dfg_all.sh",
+    ):
+        shutil.copy2(app_root / name, copied_root / name)
+    for case_dir in sorted(path for path in app_root.iterdir() if path.is_dir()):
+        shutil.copytree(case_dir, copied_root / case_dir.name, ignore=shutil.ignore_patterns("build"))
+    return copied_root
 
 
 def run_runner(repo: Path, case_dir: Path, runner: str, build_dir: Path) -> None:
@@ -51,6 +70,30 @@ def run_runner(repo: Path, case_dir: Path, runner: str, build_dir: Path) -> None
         raise AssertionError(f"{case_dir.name}/{runner} did not create BUILD_DIR={build_dir}")
 
 
+def run_aggregate(repo: Path, app_root: Path, runner: str) -> None:
+    env = os.environ.copy()
+    env.pop("BUILD_DIR", None)
+    env["LOOM_CC"] = str(repo / "build" / "bin" / "loom-cc")
+    env["LOOM_CXX"] = str(repo / "build" / "bin" / "loom-c++")
+    env["LOOM_RAISE"] = str(repo / "build" / "bin" / "loom-raise")
+    env["LOOM_LOWER"] = str(repo / "build" / "bin" / "loom-lower")
+    env["LOOM_RAISE_OPT"] = str(repo / "build" / "bin" / "loom-raise-opt")
+    result = subprocess.run(
+        ["bash", str(app_root / runner)],
+        cwd=app_root,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"{runner} failed with {result.returncode}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     app_root = repo / "test" / "app"
@@ -69,6 +112,17 @@ def main() -> int:
                     raise AssertionError(
                         f"{case_dir.name}/{runner} ignored BUILD_DIR and touched {default_build}"
                     )
+
+        copied_app = prepare_app_tree(repo, tmp_root / "aggregate")
+        for runner in AGGREGATE_RUNNERS:
+            run_aggregate(repo, copied_app, runner)
+        touched_defaults = sorted(
+            str(path.relative_to(copied_app))
+            for path in copied_app.iterdir()
+            if path.is_dir() and (path / "build").exists()
+        )
+        if touched_defaults:
+            raise AssertionError(f"aggregate runners touched case-local build dirs: {touched_defaults}")
 
     return 0
 

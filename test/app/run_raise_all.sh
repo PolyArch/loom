@@ -18,6 +18,13 @@ if ! KERNELS_TEXT="$(python3 "${HERE}/app_manifest.py" list --tier raise)"; then
     exit 1
 fi
 mapfile -t KERNELS <<< "${KERNELS_TEXT}"
+TEMP_ROOT="$(cd "${HERE}/../.." && pwd)/temp/test-runs"
+mkdir -p "${TEMP_ROOT}"
+if [[ -n "${BUILD_DIR:-}" ]]; then
+    BUILD_ROOT="${BUILD_DIR}"
+else
+    BUILD_ROOT="$(mktemp -d -p "${TEMP_ROOT}" "loom-app-raise-all.XXXXXX")"
+fi
 
 declare -a passed=()
 declare -a failed=()
@@ -29,7 +36,7 @@ for k in "${KERNELS[@]}"; do
         failed+=("${k}")
         continue
     fi
-    if "${script}"; then
+    if BUILD_DIR="${BUILD_ROOT}/${k}" "${script}"; then
         passed+=("${k}")
     else
         failed+=("${k}")
