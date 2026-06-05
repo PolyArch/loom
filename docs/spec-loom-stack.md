@@ -17,7 +17,8 @@ Loom's near-term product target is a drop-in CMSIS compiler path. For
 CMSIS-DSP and CMSIS-NN, Loom should eventually be usable where a user
 would otherwise use `gcc` or `g++`, while still producing Loom's internal
 dataflow representation, hardware mapping artifacts, and performance
-reports when acceleration is enabled.
+reports when acceleration is enabled. The target drop-in compiler
+contract is specified in `docs/spec-cmsis-dropin-compiler.md`.
 
 ## Design Principles
 

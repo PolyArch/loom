@@ -99,6 +99,10 @@ prefer library integration over invoking an external compiler binary so
 that it can insert metadata, preserve diagnostics, and control the LLVM
 pipeline.
 
+For the CMSIS drop-in compiler target, this provider must also satisfy
+the source-facing compatibility contract in
+`docs/spec-cmsis-dropin-compiler.md`.
+
 The clang provider is expected to preserve:
 
 * Loop metadata relevant to parallelism and memory dependence.
