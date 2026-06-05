@@ -345,6 +345,10 @@ Rules:
 * Each route segment must identify its segment id, segment kind, source
   endpoint, and sink endpoint. Optional hardware references may point to
   a Fabric link, module path, resource path, adapter, or buffer.
+* Route configuration records must be keyed by the route `record_id`.
+  Producer/consumer software ids alone are not unique enough when two
+  SSA values or token edges connect the same producer and consumer
+  records.
 * A pass mapping artifact with routes lacking segment records is
   invalid, even if `routed_edges` matches the route list size.
 * The config bitstream must cover placement configuration and route

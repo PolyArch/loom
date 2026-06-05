@@ -36,6 +36,10 @@ Optional fields:
 * `metrics`: route length, congestion estimate, hop count, or activity
   estimate.
 
+`record_id` is the stable identity for route configuration records.
+`edge_ref` must distinguish parallel software edges between the same
+producer and consumer, such as separate SSA result-to-operand uses.
+
 ## Route Segment
 
 Each route segment records one directed hardware connectivity use.

@@ -522,7 +522,7 @@ def main() -> int:
                         {
                             "category": "route_latency",
                             "cycles": 1,
-                            "evidence": "mapping.routed_edges",
+                            "evidence": "mapping.route_segments",
                         },
                         {
                             "category": "memory_latency",
@@ -573,7 +573,7 @@ def main() -> int:
                         {
                             "category": "route_latency",
                             "cycles": 1,
-                            "evidence": "mapping.routed_edges",
+                            "evidence": "mapping.route_segments",
                         }
                     ],
                     "unmodeled_constraints": ["cache_behavior"],

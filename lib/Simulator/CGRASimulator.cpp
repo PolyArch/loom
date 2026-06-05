@@ -25,7 +25,7 @@ using namespace loom::sim;
 
 namespace {
 
-constexpr std::uint64_t kRouteLatencyPerEdge = 1;
+constexpr std::uint64_t kRouteLatencyPerSegment = 1;
 constexpr std::uint64_t kMemoryLatencyPerAccess = 4;
 
 struct RouteStats {
@@ -418,14 +418,18 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
     if (!route)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "mapping route is not an object");
+    auto recordOrErr =
+        requireObjectString(*route, "record_id", "mapping route");
+    if (!recordOrErr)
+      return recordOrErr.takeError();
     auto fromOrErr = requireObjectString(*route, "from", "mapping route");
     if (!fromOrErr)
       return fromOrErr.takeError();
     auto toOrErr = requireObjectString(*route, "to", "mapping route");
     if (!toOrErr)
       return toOrErr.takeError();
-    std::string source = "route:" + *fromOrErr + "->" + *toOrErr;
-    std::string target = report.mappingId + "::route#" + std::to_string(i);
+    std::string source = "route:" + *recordOrErr;
+    std::string target = report.mappingId + "::" + *recordOrErr;
     if (llvm::Error err = expectConfig(configEntries, target,
                                        "from_software_id", source, *fromOrErr))
       return err;
@@ -452,8 +456,7 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
       for (auto [jsonKey, registerName] :
            {std::pair<llvm::StringRef, llvm::StringRef>{"segment_kind", "kind"},
             {"source_endpoint", "source_endpoint"},
-            {"sink_endpoint", "sink_endpoint"},
-            {"hardware_ref", "hardware_ref"}}) {
+            {"sink_endpoint", "sink_endpoint"}}) {
         std::optional<llvm::StringRef> value = segment->getString(jsonKey);
         if (!value)
           return llvm::createStringError(
@@ -461,6 +464,13 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
               "mapping route segment lacks string field %s",
               jsonKey.str().c_str());
         std::string segmentRegister = prefix + registerName.str();
+        if (llvm::Error err = expectConfig(configEntries, target,
+                                           segmentRegister, source, *value))
+          return err;
+      }
+      if (std::optional<llvm::StringRef> value =
+              segment->getString("hardware_ref")) {
+        std::string segmentRegister = prefix + "hardware_ref";
         if (llvm::Error err = expectConfig(configEntries, target,
                                            segmentRegister, source, *value))
           return err;
@@ -541,7 +551,7 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     return routeStatsOrErr.takeError();
   report.routedEdges = routeStatsOrErr->routeCount;
   report.routeSegments = routeStatsOrErr->segmentCount;
-  report.routeLatencyCycles = report.routeSegments * kRouteLatencyPerEdge;
+  report.routeLatencyCycles = report.routeSegments * kRouteLatencyPerSegment;
 
   ConfigEntries configEntries;
   if (llvm::Error err = collectConfigEntries(
@@ -576,11 +586,11 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
   cycleBreakdown.push_back(llvm::json::Object{
       {"category", "route_latency"},
       {"cycles", static_cast<int64_t>(report.routeLatencyCycles)},
-      {"evidence", "mapping.routed_edges"},
+      {"evidence", "mapping.route_segments"},
       {"modeled", true},
       {"explanation",
-       "one first-order route cost per routed software edge; explicit Fabric "
-       "path and FIFO timing are listed as unmodeled constraints"},
+       "one first-order route cost per consumed route segment; explicit Fabric "
+       "FIFO timing is listed as an unmodeled constraint"},
   });
   cycleBreakdown.push_back(llvm::json::Object{
       {"category", "memory_latency"},

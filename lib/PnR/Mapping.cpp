@@ -315,17 +315,36 @@ indexNodeIds(llvm::ArrayRef<SoftwareNode> nodes) {
 }
 
 struct RouteBuilder {
-  llvm::DenseMap<mlir::Value, std::string> producer;
-  llvm::DenseMap<mlir::Value, mlir::Value> adapterForward;
-  std::map<std::pair<std::string, std::string>, std::string> payloadKindByEdge;
+  struct ProducerRef {
+    std::string softwareId;
+    unsigned resultIndex = 0;
+  };
 
-  std::string resolve(mlir::Value value) {
+  struct EdgeKey {
+    std::string producerSoftwareId;
+    unsigned producerResultIndex = 0;
+    std::string consumerSoftwareId;
+    unsigned consumerOperandIndex = 0;
+
+    bool operator<(const EdgeKey &other) const {
+      return std::tie(producerSoftwareId, producerResultIndex,
+                      consumerSoftwareId, consumerOperandIndex) <
+             std::tie(other.producerSoftwareId, other.producerResultIndex,
+                      other.consumerSoftwareId, other.consumerOperandIndex);
+    }
+  };
+
+  llvm::DenseMap<mlir::Value, ProducerRef> producer;
+  llvm::DenseMap<mlir::Value, mlir::Value> adapterForward;
+  std::map<EdgeKey, std::string> payloadKindByEdge;
+
+  std::optional<ProducerRef> resolve(mlir::Value value) {
     auto direct = producer.find(value);
     if (direct != producer.end())
       return direct->second;
     auto adapter = adapterForward.find(value);
     if (adapter == adapterForward.end())
-      return "";
+      return std::nullopt;
     return resolve(adapter->second);
   }
 };
@@ -343,8 +362,10 @@ void collectValueProducers(
   for (mlir::Operation &op : graph->getRegion(0).front()) {
     auto nodeIt = nodeIds.find(&op);
     if (nodeIt != nodeIds.end()) {
+      unsigned resultIndex = 0;
       for (mlir::Value result : op.getResults())
-        builder.producer.try_emplace(result, nodeIt->second);
+        builder.producer.try_emplace(
+            result, RouteBuilder::ProducerRef{nodeIt->second, resultIndex++});
       continue;
     }
     if (!isAdapterOp(&op) || op.getNumOperands() == 0)
@@ -368,11 +389,16 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
     hardwareBySoftware.try_emplace(placement.softwareId, placement.hardwareId);
 
   for (const SoftwareNode &node : nodes) {
+    unsigned operandIndex = 0;
     for (mlir::Value operand : node.op->getOperands()) {
-      std::string source = builder.resolve(operand);
-      if (source.empty() || source == node.id)
+      std::optional<RouteBuilder::ProducerRef> source =
+          builder.resolve(operand);
+      if (!source || source->softwareId == node.id) {
+        ++operandIndex;
         continue;
-      auto key = std::make_pair(std::move(source), node.id);
+      }
+      RouteBuilder::EdgeKey key{source->softwareId, source->resultIndex,
+                                node.id, operandIndex++};
       builder.payloadKindByEdge.try_emplace(std::move(key),
                                             payloadKind(operand));
     }
@@ -381,14 +407,16 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
   llvm::SmallVector<RouteRecord, 0> routes;
   std::size_t index = 0;
   for (const auto &[edge, kind] : builder.payloadKindByEdge) {
-    const std::string &from = edge.first;
-    const std::string &to = edge.second;
+    const std::string &from = edge.producerSoftwareId;
+    const std::string &to = edge.consumerSoftwareId;
     auto fromHw = hardwareBySoftware.find(from);
     auto toHw = hardwareBySoftware.find(to);
     if (fromHw == hardwareBySoftware.end() || toHw == hardwareBySoftware.end())
       continue;
     std::string recordId = "route#" + std::to_string(index++);
-    std::string edgeRef = from + "->" + to;
+    std::string edgeRef =
+        from + ".result" + std::to_string(edge.producerResultIndex) + "->" +
+        to + ".operand" + std::to_string(edge.consumerOperandIndex);
     RouteSegment segment;
     segment.segmentId = "seg0";
     segment.segmentKind = "module_path";
@@ -422,13 +450,15 @@ llvm::json::Object placementJson(const PlacementRecord &placement) {
 llvm::json::Object routeJson(const RouteRecord &route) {
   llvm::json::Array segments;
   for (const RouteSegment &segment : route.segments) {
-    segments.push_back(llvm::json::Object{
+    llvm::json::Object segmentObject{
         {"segment_id", segment.segmentId},
         {"segment_kind", segment.segmentKind},
         {"source_endpoint", segment.sourceEndpoint},
         {"sink_endpoint", segment.sinkEndpoint},
-        {"hardware_ref", segment.hardwareRef},
-    });
+    };
+    if (!segment.hardwareRef.empty())
+      segmentObject.try_emplace("hardware_ref", segment.hardwareRef);
+    segments.push_back(std::move(segmentObject));
   }
   return llvm::json::Object{
       {"record_id", route.recordId},
@@ -484,16 +514,19 @@ llvm::Error appendPlacementConfig(MappingSummary &summary,
   return llvm::Error::success();
 }
 
-std::string routeTarget(const MappingSummary &summary, std::size_t index) {
-  return summary.mappingId + "::route#" + std::to_string(index);
+std::string routeTarget(const MappingSummary &summary,
+                        llvm::StringRef recordId) {
+  return summary.mappingId + "::" + recordId.str();
+}
+
+std::string routeSource(const RouteRecord &route) {
+  return "route:" + route.recordId;
 }
 
 void appendRouteConfig(MappingSummary &summary) {
-  for (std::size_t i = 0; i < summary.routes.size(); ++i) {
-    const RouteRecord &route = summary.routes[i];
-    std::string source =
-        "route:" + route.fromSoftwareId + "->" + route.toSoftwareId;
-    std::string target = routeTarget(summary, i);
+  for (const RouteRecord &route : summary.routes) {
+    std::string source = routeSource(route);
+    std::string target = routeTarget(summary, route.recordId);
     addConfig(summary.configEntries, target, "from_software_id",
               route.fromSoftwareId, source);
     addConfig(summary.configEntries, target, "to_software_id",
@@ -510,8 +543,9 @@ void appendRouteConfig(MappingSummary &summary) {
                 segment.sourceEndpoint, source);
       addConfig(summary.configEntries, target, prefix + "sink_endpoint",
                 segment.sinkEndpoint, source);
-      addConfig(summary.configEntries, target, prefix + "hardware_ref",
-                segment.hardwareRef, source);
+      if (!segment.hardwareRef.empty())
+        addConfig(summary.configEntries, target, prefix + "hardware_ref",
+                  segment.hardwareRef, source);
     }
   }
 }
@@ -575,11 +609,9 @@ llvm::Error validateConfigBitstream(const MappingSummary &summary) {
     }
   }
 
-  for (std::size_t i = 0; i < summary.routes.size(); ++i) {
-    const RouteRecord &route = summary.routes[i];
-    std::string source =
-        "route:" + route.fromSoftwareId + "->" + route.toSoftwareId;
-    std::string target = routeTarget(summary, i);
+  for (const RouteRecord &route : summary.routes) {
+    std::string source = routeSource(route);
+    std::string target = routeTarget(summary, route.recordId);
     if (!seen.contains(configKey(target, "from_software_id", source)) ||
         !seen.contains(configKey(target, "to_software_id", source)) ||
         !seen.contains(configKey(target, "segment_count", source)))
@@ -590,9 +622,16 @@ llvm::Error validateConfigBitstream(const MappingSummary &summary) {
     for (std::size_t segmentIndex = 0; segmentIndex < route.segments.size();
          ++segmentIndex) {
       std::string prefix = "segment." + std::to_string(segmentIndex) + ".";
-      for (llvm::StringRef reg :
-           {"kind", "source_endpoint", "sink_endpoint", "hardware_ref"}) {
+      for (llvm::StringRef reg : {"kind", "source_endpoint", "sink_endpoint"}) {
         std::string registerName = prefix + reg.str();
+        if (!seen.contains(configKey(target, registerName, source)))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "config bitstream is missing route segment register %s for %s",
+              registerName.c_str(), target.c_str());
+      }
+      if (!route.segments[segmentIndex].hardwareRef.empty()) {
+        std::string registerName = prefix + "hardware_ref";
         if (!seen.contains(configKey(target, registerName, source)))
           return llvm::createStringError(
               std::errc::invalid_argument,

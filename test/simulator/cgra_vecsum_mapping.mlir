@@ -33,7 +33,7 @@
 // CGRA-DAG: "config_records": 83
 // CGRA-DAG: "cycle_breakdown"
 // CGRA-DAG: "category": "route_latency"
-// CGRA-DAG: "evidence": "mapping.routed_edges"
+// CGRA-DAG: "evidence": "mapping.route_segments"
 // CGRA-DAG: "category": "memory_latency"
 // CGRA-DAG: "evidence": "fabric.mem placement"
 // CGRA-DAG: "category": "temporal_conflict"
