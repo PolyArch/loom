@@ -20,6 +20,7 @@ EXPECTED_CASES = {
     "ctz",
     "dotproduct",
     "gemm",
+    "lower_bound",
     "prefix_sum",
     "popcount",
     "reduction",
