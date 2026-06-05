@@ -196,7 +196,11 @@ def main() -> int:
                 output,
                 required_columns,
                 allow_pass_rows=filename
-                in {"source-compat-summary.csv", "compiler-pipeline-summary.csv"},
+                in {
+                    "source-compat-summary.csv",
+                    "compiler-pipeline-summary.csv",
+                    "adg-hardware-summary.csv",
+                },
             )
             produced.append(output)
 
