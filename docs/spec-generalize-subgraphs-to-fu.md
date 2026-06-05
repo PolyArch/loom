@@ -1,11 +1,12 @@
-# Generalize Subgraphs to FU
+# Subgraph-to-FU Generalization
 
-This document specifies the design of `loom-generalize-subgraphs-to-fu`, a
-new MLIR pass that performs the **inverse** of the existing FU enumeration
-pipeline. Given a set of `dataflow.subgraph` instances from
+This document specifies `loom-generalize-subgraphs-to-fu`, the Fabric
+technology pass that generalizes a group of software
+`dataflow.subgraph` partition units into one reconfigurable `fabric.fu`
+hardware template. Given a set of `dataflow.subgraph` instances from
 `dataflow.graph` definitions, the pass synthesizes a single `fabric.fu`
-(a "hardware template") whose materialization, under
-`loom-enumerate-fu-subgraphs`, is a **superset** of the input set.
+whose materialization under `loom-enumerate-fu-subgraphs` is a
+**superset** of the input set.
 
 The output `fabric.fu` represents a reconfigurable hardware block that can
 be programmed (via `sw_configs`) to realize every input subgraph, plus
@@ -14,47 +15,49 @@ The input `dataflow.subgraph` operations remain software partition units:
 they do not carry schedule slots, temporal tags, PE identity, routes, or
 resource-sharing decisions.
 
-The canonical source for the inverse pipeline is:
+The pass follows the Loom RISC/Occam rule: it does not create a meta
+hardware instruction or encode placement decisions. It composes the
+atomic Fabric configuration primitives already defined by the Fabric
+dialect: `fabric.op`, `fabric.mux`, `fabric.demux`, and
+`fabric.yield`. The partitioning compiler owns which software regions
+become subgraphs; this pass owns only the derivation of an FU template
+that can realize those subgraphs.
 
-* `lib/Fabric/Tech/EnumerateFuSubgraphsPass.cpp` (forward direction)
-* `lib/Fabric/Tech/SubgraphEnumerator.cpp` (forward direction)
-* `lib/Fabric/IR/FabricOps.cpp::hwShareGroups()` (sharing rules)
-* `docs/spec-fabric-reconfigurable-op.md` (configuration axes)
-* `docs/spec-fabric-hw-share-group.md` (sharing rules narrative)
+The target semantics are defined together with:
 
-## Background
+* `docs/spec-fabric-reconfigurable-op.md` for `fabric.op`
+  configuration axes.
+* `docs/spec-fabric-hw-share-group.md` for legal hardware sharing.
+* `docs/spec-core-dialect-boundary.md` for the boundary between
+  software dataflow, hardware Fabric, and mapping artifacts.
 
-Today the toolflow is:
+## System Contract
 
 ```
 dataflow.graph
-   |  loom-partition-graph
+   |  graph partitioning
    v
 dataflow.subgraph  (many)
-   |  loom-map-subgraph-to-fus
+   |  loom-generalize-subgraphs-to-fu
    v
-matched against fabric.fu library  <-- library produced manually
+fabric.fu templates
    |  loom-enumerate-fu-subgraphs
    v
 materialized dataflow.subgraph candidates per fabric.fu
-```
-
-Today the `fabric.fu` library is produced **manually**: an architect writes
-each FU template by hand, listing what its `fabric.op`s can do, what
-`fabric.mux`/`fabric.demux` ports look like, and what `hw_params` are
-allowed. The proposed pass closes the loop in the opposite direction:
-
-```
-dataflow.subgraph (many)
-   |  loom-generalize-subgraphs-to-fu     <-- this spec
+   |  subgraph matching / mapping artifact construction
    v
-fabric.fu  (synthesized; covers every input subgraph)
+software-to-hardware binding
 ```
 
-The synthesized FU then re-enters the existing flow. Re-running
-`loom-enumerate-fu-subgraphs` on the synthesized FU must produce a set
-that contains every input subgraph (this is the correctness invariant,
-verified at synthesis time).
+Architect-authored FUs and synthesized FUs share the same Fabric
+semantics. A synthesized FU is not a placement result and does not name
+PEs, routes, time slots, or AccCore instances. It is a reusable hardware
+template that may later be selected by mapping, PnR, simulation, or RTL
+generation flows.
+
+Re-running `loom-enumerate-fu-subgraphs` on the synthesized FU must
+produce a set that contains every input subgraph in the synth group.
+This is the correctness invariant and is verified at synthesis time.
 
 ## Goals and non-goals
 
@@ -73,13 +76,13 @@ verified at synthesis time).
      feedback edges (`dataflow.carry`, `dataflow.gate`,
      `dataflow.invariant`).
 4. **Configurable strategy**: Four interchangeable algorithms (anchor,
-   mcs, incremental, incremental_random) selectable by config; mirrors
-   the existing `Partitioner/` plug-in family.
+   mcs, incremental, incremental_random) selectable by config and
+   implementing one common synthesizer interface.
 5. **Parallelism as a first-class concern**: cross-group, intra-strategy,
    and verification parallelism enabled by default with safe defaults.
-6. **End-to-end self-verification**: Default-on coverage check using the
-   existing `SubgraphEnumerator` + `SubgraphMatcher` (no separate
-   coverage prover).
+6. **End-to-end self-verification**: Default-on coverage check using
+   `SubgraphEnumerator` and `SubgraphMatcher` as the coverage oracle
+   (no separate coverage prover).
 
 ### Non-goals
 
@@ -113,9 +116,9 @@ verified at synthesis time).
   feeding `dataflow.yield`, or a `dataflow.carry` head) used as a fixed
   pivot for alignment.
 * **share group**: a multi-member hardware-share group as defined by
-  `hwShareGroups()` in `lib/Fabric/IR/FabricOps.cpp`. Two ops can occupy
-  the same `fabric.op.op_list` only if they belong to the same share
-  group **and** their data-path bit-widths match.
+  `docs/spec-fabric-hw-share-group.md`. Two ops can occupy the same
+  `fabric.op.op_list` only if they belong to the same share group
+  **and** their data-path bit-widths match.
 
 ## End-to-end interface
 
@@ -146,11 +149,10 @@ Options:  config=<path>            -- YAML or TOML SynthConfig file;
                                        lit tests (default: false)
 ```
 
-The pass is registered alongside the existing tech-mapping passes in the
-`loom` driver (`tools/loom/`). No new top-level binary is added; the test
-helper `tools/loom-synth-fu-dump/` (parallel in spirit to
-`tools/loom-template-dump/`) exists only to print synthesized FUs in a
-stable format for lit tests, and is not part of the production pipeline.
+The pass is part of the Fabric technology pass set exposed by the
+`loom` driver. No new production top-level binary is added. The helper
+`tools/loom-synth-fu-dump/` exists only to print synthesized FUs in a
+stable format for lit tests and is not part of the production pipeline.
 
 ### Acceptance criteria for the pass
 
@@ -291,9 +293,10 @@ body.
 * `resource_exhausted` -- a strategy generated more candidates than its
   `candidate_cap`.
 * `unsupported_op` -- an input subgraph contains a software op not
-  supported by `fabric.op` (per `opSchemas()` in
-  `lib/Fabric/IR/FabricOps.cpp`); for example `dataflow.load`,
-  `dataflow.store`, `dataflow.graph`, `arith.constant`, `ub.poison`.
+  supported by `fabric.op` according to
+  `docs/spec-fabric-reconfigurable-op.md`; for example
+  `dataflow.load`, `dataflow.store`, `dataflow.graph`,
+  `arith.constant`, `ub.poison`.
 * `invalid_input` -- an input `dataflow.subgraph` violates the
   subgraph verifier contract, such as an ill-typed boundary or an
   unsupported body operation.
@@ -306,9 +309,9 @@ body.
 * `config_parse_failed` -- the `--config=<path>` file failed to load.
 
 These failure reasons are stored verbatim as the `loom.synth_failed`
-attribute on the offending input function. Implementations must keep
-this list in lockstep with a `SynthFailureReason` C++ enum to enable
-exhaustive `switch` checks.
+attribute on the offending input `dataflow.subgraph` operations.
+Implementations must keep this list in lockstep with a
+`SynthFailureReason` C++ enum to enable exhaustive `switch` checks.
 
 ## Module architecture
 
@@ -355,13 +358,11 @@ tools/loom-synth-fu-dump/             -- test-only helper binary
 test/techmap/synth/                   -- lit tests, see Test plan
 ```
 
-### HwShareGroup public API extraction
+### HwShareGroup public API
 
-`hwShareGroups()` and `findShareGroup()` currently live as
-file-`static` helpers in `lib/Fabric/IR/FabricOps.cpp`. They are
-single-source for sharing decisions and `OpOp::verify` already
-enforces them on hand-written FUs. Extract them to a public header
-without changing semantics:
+Hardware-share-group decisions have one public API used by
+`fabric.op` verification, FU synthesis, subgraph enumeration, and
+mapping. The API is intentionally small:
 
 ```cpp
 // include/Common/HwShareGroup.h
@@ -382,10 +383,9 @@ bool sameShareGroup(llvm::StringRef a, llvm::StringRef b);
 } // namespace loom::common
 ```
 
-`FabricOps.cpp` rewrites its file-local helpers as one-liners forwarding
-to `loom::common::*`. Behavior identical, no PDK YAML, no override
-mechanism: there is one canonical table; future PDK overrides are out of
-scope.
+There is one canonical share-group table for this pass. PDK-specific
+overrides, YAML-defined share groups, or per-run sharing-table edits are
+out of scope.
 
 ### SynthConfig schema
 
@@ -429,10 +429,8 @@ synth:
   subgraph_share_recurse: false     # tier B recursive sharing mode
 ```
 
-The schema is loaded into a `SynthConfig` C++ struct that mirrors
-`TechMapConfig` in `include/Common/Config.h`. The pass exposes it via
-the standard MLIR pass-option mechanism as `config=<path>`, identical
-to the existing `loom-partition-graph-into-subgraphs` convention. An
+The schema is loaded into a `SynthConfig` C++ struct and exposed through
+the standard MLIR pass-option mechanism as `config=<path>`. An
 unsupplied or empty path uses built-in defaults equivalent to the YAML
 above. A failure to parse the file is reported as
 `config_parse_failed` and aborts the pass.
@@ -632,8 +630,8 @@ This problem is NP-hard. Mitigations:
 The implementation generates concrete local candidate families before
 falling back to an explicit outer strategy chain: a lock-step candidate
 for isomorphic inputs, exact graph-region MCES candidates, bounded
-graph-region MCES candidates, and the older shared-prefix candidate. The
-graph-region path supports cycles through temporary placeholder values,
+graph-region MCES candidates, and a shared-prefix candidate. The
+graph-region path supports cycles through transient placeholder values,
 commutative operand normalization, non-positional block-argument
 mappings, multi-yield outputs, and strict-superset enumeration.
 `candidate_cap` limits admitted materialized candidates; exact search
@@ -714,7 +712,7 @@ return fu_N
 candidate extensions of three kinds and ranks **all candidates** by
 `CostModel::evaluate` on the resulting FU; it returns the lowest-cost
 legal candidate. (First-success is **not** used: it can permanently
-foreclose lower-cost future sharing.)
+foreclose lower-cost later sharing candidates.)
 
 1. **op-list widen**: widen some `fabric.op.op_list` (within share
    group + width) so input_i's op identity at that position becomes a
@@ -820,9 +818,9 @@ function synthesize_incremental_random(inputs):
 
 ### Alignment
 
-`Alignment.h` is a thin facade over the existing
-`SubgraphMatcher::GraphView` data model so that synthesis and matching
-agree on what "the same Source position" means across DAG fanout,
+`Alignment.h` shares the `SubgraphMatcher::GraphView` data semantics so
+that synthesis and matching agree on what "the same Source position"
+means across DAG fanout,
 multi-result ops, block arguments, commutative operands, graph-region
 back-edges, and yield wiring. Synthesis re-uses GraphView's SCC
 pre-pass and source descriptors verbatim; this avoids inventing a
@@ -902,10 +900,9 @@ public:
 } // namespace loom::fabric::tech
 ```
 
-The verifier is implemented in terms of the existing
-`SubgraphEnumerator` and `SubgraphMatcher`. It does not embed a
-hand-written coverage proof; the enumerator is treated as the
-authoritative oracle for "what an FU can become."
+The verifier uses `SubgraphEnumerator` and `SubgraphMatcher`. It does
+not embed a hand-written coverage proof; the enumerator is treated as
+the authoritative oracle for "what an FU can become."
 
 For each input subgraph we evaluate isomorphism against materialized
 candidates. Per `parallel_match=true`, we shard inputs across workers
@@ -1113,8 +1110,8 @@ The pass uses best-effort synthesis with an optional fallback chain:
 ```
 function generalize_pass(module, config):
     valid, invalid = validate_input_subgraphs(module)
-        // invalid: verifier or schema violations -> annotated immediately
-        // with loom.synth_failed = "invalid_input"; not enqueued for synth.
+    // invalid: verifier or schema violations -> annotated immediately
+    // with loom.synth_failed = "invalid_input"; not enqueued for synth.
     annotate_invalid(invalid)
     groups = collect_groups(valid)              // by loom.synth_group
     sorted = sort(groups, by=name)              // determinism
@@ -1141,7 +1138,7 @@ function generalize_pass(module, config):
             tag(result.wrapper, loom.synthesized_for = group.name)
         else:
             for sg in group.subgraphs:
-                annotate(sg.parent_func,
+                annotate(sg,
                          loom.synth_failed = result.failureReason)
             emit_diagnostic(group, result.failureReason,
                             severity=config.fail_as_error ? Error : Warning)
@@ -1164,7 +1161,7 @@ function run_with_fallback(group, config):
 ```
 
 All emitted failures are MLIR `Diagnostic`s: `warning` by default,
-`error` when `--synth-fail-as-error` flag is passed.
+`error` when `fail-as-error=true` is passed.
 
 ## Examples
 
@@ -1459,8 +1456,7 @@ test/techmap/synth/
     synth_n100_incremental_random.mlir
     synth_n1000_incremental_random.mlir
     synth_n5000_incremental_random.mlir
-                                    # mirrors test/techmap/perf/
-                                    # synth_n5000 partition perf test
+                                    # large-input timing gate
 ```
 
 ### Test conventions
@@ -1478,8 +1474,7 @@ test/techmap/synth/
   acceptance criteria. The synthesized FU IR is also printed for
   structural assertions.
 * perf tests use `loom-synth-fu-dump` to print timing measurements;
-  pass/fail criterion is wall-time below a per-test budget. Mirrors
-  the existing `synth_n5000` partition perf test gating.
+  pass/fail criterion is wall-time below a per-test budget.
 * Cross-strategy equivalence test: parameterized by strategy name; its
   invariant is `covered=<m>/<m>` (full coverage) rather than identical
   FU text (different strategies legitimately produce different FUs).
@@ -1495,7 +1490,7 @@ test/techmap/synth/
 4. The integration test `enumerate_then_match_round_trip.mlir` is the
    end-to-end gate: it never xfails.
 
-## Open questions / known limits
+## Policy Choices and Limits
 
 * `hw_params` policy: the synthesizer emits an **observed-value union**
   for every configurable axis required by the enumerator. Concretely:
@@ -1518,29 +1513,23 @@ test/techmap/synth/
 * The `baseArea` weight table is encoded in C++ source. PDK-specific
   override, or a YAML data file, is explicitly out of scope for this
   pass.
-* `IncrementalRandom` cost ranking with ties: the current spec picks
-  the lowest permutation index. This is deterministic but arbitrary;
-  no semantic preference is implied.
+* `IncrementalRandom` cost ranking with ties picks the lowest
+  permutation index. This is deterministic but arbitrary; no semantic
+  preference is implied.
 * MCS over highly heterogeneous workloads (many small groups, no shared
   skeleton) will hit `timeout` or `resource_exhausted` before producing
   a useful result. Best practice in such cases is to refine
   `loom.synth_group` so each group is structurally cohesive.
 * `dataflow.load` / `dataflow.store` are out of scope for this spec; they
   introduce memory-port reasoning that is orthogonal to op-graph
-  alignment. The pass emits a `topology_mismatch` failure with a note
+  alignment. The pass emits an `unsupported_op` failure with a note
   instructing callers to remove load/store-bearing inputs from synth
   groups.
 
-## References
+## Related Specifications
 
-* `lib/Fabric/Tech/EnumerateFuSubgraphsPass.cpp`
-* `lib/Fabric/Tech/SubgraphEnumerator.cpp`
-* `lib/Fabric/Tech/SubgraphMatcher.cpp`
-* `lib/Fabric/Tech/Partitioner/` (architectural template for
-  `Synthesizer/`)
-* `lib/Fabric/IR/FabricOps.cpp::hwShareGroups()`
+* `docs/spec-core-dialect-boundary.md`
 * `docs/spec-fabric-reconfigurable-op.md`
 * `docs/spec-fabric-hw-share-group.md`
-* `include/Common/Config.h` (template for `SynthConfig`)
-* `test/techmap/unit/` and `test/techmap/perf/` (template for
-  `test/techmap/synth/`)
+* `docs/spec-compiler-part-3-dfg.md`
+* `docs/spec-compiler-part-3-placement-framework.md`
