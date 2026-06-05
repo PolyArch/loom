@@ -1,0 +1,2 @@
+hist_bin checksum: 5542
+PASSED

@@ -44,6 +44,7 @@ EXPECTED_CASES = {
     "gemv",
     "gather",
     "hash_mix",
+    "hist_bin",
     "integrate_trapz",
     "interpolate_linear",
     "lower_bound",
