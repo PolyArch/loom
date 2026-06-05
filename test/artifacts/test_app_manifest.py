@@ -13,6 +13,7 @@ import artifact_test_common
 EXPECTED_CASES = {
     "axpy",
     "byte_swap",
+    "compare_swap",
     "conv1d",
     "dotproduct",
     "gemm",
