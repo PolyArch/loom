@@ -49,4 +49,3 @@ run_one "${KERNEL}_func"
 run_one "${KERNEL}_inline"
 
 echo "[${KERNEL}] PASS"
-

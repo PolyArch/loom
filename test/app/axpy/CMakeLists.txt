@@ -7,4 +7,3 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(axpy_func main_func.cpp)
 add_executable(axpy_inline main_inline.cpp)
-

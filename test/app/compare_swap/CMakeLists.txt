@@ -7,4 +7,3 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(compare_swap_func main_func.cpp)
 add_executable(compare_swap_inline main_inline.cpp)
-
