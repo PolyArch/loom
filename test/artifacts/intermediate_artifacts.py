@@ -1214,7 +1214,8 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                     )
                 )
             elif hardware and not any(
-                mapping.get("hardware") in hardware for mapping in pass_mappings
+                mapping.get("hardware") in hardware or mapping.get("hardware") in hardware_symbols
+                for mapping in pass_mappings
             ):
                 findings.append(
                     cross_finding(

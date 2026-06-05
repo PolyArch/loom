@@ -55,6 +55,8 @@ primitive="${OUT_DIR}/dataflow-primitive-coverage.csv"
 hardware="${OUT_DIR}/adg-hardware-summary.csv"
 mapping="${OUT_DIR}/pnr-mapping-summary.csv"
 mapping_artifact="${OUT_DIR}/pnr-mapping.json"
+dfg_report="${OUT_DIR}/vecsum-dfg-sim-report.json"
+cgra_report="${OUT_DIR}/vecsum-cgra-sim-report.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
 rtl_fpa="${OUT_DIR}/rtl-fpa-summary.csv"
 manifest="${OUT_DIR}/full-stack-artifact-manifest.json"
@@ -91,6 +93,12 @@ env BUILD_DIR="${vecsum_dfg_dir}" \
   LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
   LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
   bash "${ROOT}/test/app/vecsum/dfg_check.sh"
+env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+  bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+  vecsum \
+  "${vecsum_dfg_dir}/main_func.dfg.mlir" \
+  "${dfg_report}" \
+  "${OUT_DIR}/vecsum-dfg-sim-cycle-summary.csv"
 bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
   --dfg-mlir "${vecsum_dfg_dir}/main_func.dfg.mlir" \
   --graph g_t_vecsum_red_0_0 \
@@ -99,8 +107,14 @@ bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
   --workload vecsum \
   --artifact "${mapping_artifact}" \
   --output "${mapping}"
+${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+  --dfg-report "${dfg_report}" \
+  --mapping-artifact "${mapping_artifact}" \
+  --hardware-mlir "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
+  --output "${cgra_report}"
 bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
-  --primitive-coverage "${primitive}" \
+  --dfg-report "${dfg_report}" \
+  --cgra-report "${cgra_report}" \
   --output "${sim_cycle}"
 bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --primitive-coverage "${primitive}" \
@@ -115,6 +129,9 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${primitive}" \
   --artifact "${hardware}" \
   --artifact "${mapping}" \
+  --artifact "${mapping_artifact}" \
+  --artifact "${dfg_report}" \
+  --artifact "${cgra_report}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
   --output "${manifest}"
@@ -147,6 +164,9 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${primitive}" \
   --artifact "${hardware}" \
   --artifact "${mapping}" \
+  --artifact "${mapping_artifact}" \
+  --artifact "${dfg_report}" \
+  --artifact "${cgra_report}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
   --artifact "${demonstrator}" \
@@ -163,6 +183,9 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${primitive}" \
   "${hardware}" \
   "${mapping}" \
+  "${mapping_artifact}" \
+  "${dfg_report}" \
+  "${cgra_report}" \
   "${sim_cycle}" \
   "${rtl_fpa}" \
   "${manifest}" \

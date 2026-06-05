@@ -20,6 +20,9 @@ EXPECTED_FILES = [
     "dataflow-primitive-coverage.csv",
     "adg-hardware-summary.csv",
     "pnr-mapping-summary.csv",
+    "pnr-mapping.json",
+    "vecsum-dfg-sim-report.json",
+    "vecsum-cgra-sim-report.json",
     "sim-cycle-summary.csv",
     "rtl-fpa-summary.csv",
     "full-stack-artifact-manifest.json",
@@ -84,11 +87,13 @@ def main() -> int:
         if len(vecsum_rows) != 1:
             raise AssertionError(f"expected one vecsum sim row, got {sim_rows}")
         if (
-            vecsum_rows[0]["dfg_sim_cycles"] != ""
-            or vecsum_rows[0]["cgra_sim_cycles"] != ""
-            or vecsum_rows[0].get("status") != "blocked"
+            vecsum_rows[0]["dfg_sim_cycles"] == ""
+            or vecsum_rows[0]["cgra_sim_cycles"] == ""
+            or vecsum_rows[0].get("status") != "pass"
         ):
-            raise AssertionError(f"sim row must not fake simulator cycle evidence: {vecsum_rows[0]}")
+            raise AssertionError(f"expected real vecsum simulator cycle evidence: {vecsum_rows[0]}")
+        if int(vecsum_rows[0]["cgra_sim_cycles"]) < int(vecsum_rows[0]["dfg_sim_cycles"]):
+            raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {vecsum_rows[0]}")
 
         import_rows = read_csv_rows(out_dir / "app-corpus-import-status.csv")
         states = {row["case"]: row["import_state"] for row in import_rows}
