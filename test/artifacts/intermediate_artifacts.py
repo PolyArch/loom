@@ -14,6 +14,7 @@ from typing import Iterable
 
 BASE_STATUSES = {"pass", "fail", "unsupported", "skipped", "blocked", "not_run"}
 SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
+IGNORED_IDENTITIES = {"", "scaffold", "none", None}
 
 
 @dataclass(frozen=True)
@@ -497,10 +498,130 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
     }
 
 
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def rows_by_kind(paths: Iterable[Path]) -> dict[str, list[dict[str, str]]]:
+    grouped: dict[str, list[dict[str, str]]] = {}
+    for path in paths:
+        schema = schema_for_path(path)
+        if schema is None or not path.is_file():
+            continue
+        grouped.setdefault(schema.kind, []).extend(read_csv_rows(path))
+    return grouped
+
+
+def cross_finding(rule: str, message: str, row: dict[str, str]) -> dict[str, object]:
+    return {
+        "finding": "fail",
+        "rule": rule,
+        "message": message,
+        "row_identity": {key: value for key, value in row.items() if key in {"workload", "kernel", "hardware", "candidate"}},
+    }
+
+
+def valid_identity(value: str | None) -> bool:
+    return value not in IGNORED_IDENTITIES
+
+
+def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
+    grouped = rows_by_kind(paths)
+    findings: list[dict[str, object]] = []
+
+    workloads = {
+        row["workload"]
+        for row in grouped.get("dataflow_primitive_coverage", [])
+        if valid_identity(row.get("workload"))
+    }
+    hardware = {
+        row["hardware"]
+        for row in grouped.get("adg_hardware", [])
+        if row.get("verify_status") == "pass" and valid_identity(row.get("hardware"))
+    }
+    pnr_rows = [
+        row
+        for row in grouped.get("pnr_mapping", [])
+        if valid_identity(row.get("workload")) and valid_identity(row.get("hardware"))
+    ]
+    pnr_pairs = {(row["workload"], row["hardware"]) for row in pnr_rows}
+
+    if workloads:
+        for row in pnr_rows:
+            if row["workload"] not in workloads:
+                findings.append(
+                    cross_finding(
+                        "pnr_workload_resolves",
+                        f"PnR workload {row['workload']!r} is absent from dataflow primitive coverage",
+                        row,
+                    )
+                )
+        for row in grouped.get("sim_cycle", []):
+            kernel = row.get("kernel")
+            if valid_identity(kernel) and kernel not in workloads:
+                findings.append(
+                    cross_finding(
+                        "sim_workload_resolves",
+                        f"sim kernel {kernel!r} is absent from dataflow primitive coverage",
+                        row,
+                    )
+                )
+        for row in grouped.get("rtl_fpa", []):
+            workload = row.get("workload")
+            if valid_identity(workload) and workload not in workloads:
+                findings.append(
+                    cross_finding(
+                        "rtl_fpa_workload_resolves",
+                        f"RTL/FPA workload {workload!r} is absent from dataflow primitive coverage",
+                        row,
+                    )
+                )
+
+    if hardware:
+        for row in pnr_rows:
+            if row["hardware"] not in hardware:
+                findings.append(
+                    cross_finding(
+                        "pnr_hardware_resolves",
+                        f"PnR hardware {row['hardware']!r} is absent from verified ADG hardware summary",
+                        row,
+                    )
+                )
+        for row in grouped.get("rtl_fpa", []):
+            candidate = row.get("hardware")
+            if valid_identity(candidate) and candidate not in hardware:
+                findings.append(
+                    cross_finding(
+                        "rtl_fpa_hardware_resolves",
+                        f"RTL/FPA hardware {candidate!r} is absent from verified ADG hardware summary",
+                        row,
+                    )
+                )
+
+    if pnr_pairs:
+        for row in grouped.get("dse_candidate", []):
+            workload = row.get("workload")
+            candidate = row.get("hardware")
+            if not valid_identity(workload) or not valid_identity(candidate):
+                continue
+            if (workload, candidate) not in pnr_pairs:
+                findings.append(
+                    cross_finding(
+                        "dse_candidate_resolves_to_pnr",
+                        f"DSE candidate ({workload!r}, {candidate!r}) is absent from PnR mapping summary",
+                        row,
+                    )
+                )
+
+    return findings
+
+
 def audit(paths: Iterable[Path]) -> dict[str, object]:
+    path_list = list(paths)
     reviews: list[dict[str, object]] = []
     diagnostics: list[str] = []
-    for path in paths:
+    for path in path_list:
         csv_schema = schema_for_path(path)
         if csv_schema is not None:
             review = audit_csv(path, csv_schema)
@@ -520,11 +641,13 @@ def audit(paths: Iterable[Path]) -> dict[str, object]:
         reviews.append(review)
         if review["finding"] != "pass":
             diagnostics.extend(str(item) for item in review.get("diagnostics", []))
+    cross_findings = cross_artifact_findings(path_list)
+    diagnostics.extend(str(item["message"]) for item in cross_findings)
     return {
         "schema_version": 1,
         "run_id": "scaffold-audit",
         "artifact_reviews": reviews,
-        "cross_artifact_findings": [],
+        "cross_artifact_findings": cross_findings,
         "diagnostics": diagnostics,
         "verdict": "pass" if not diagnostics else "fail",
     }

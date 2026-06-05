@@ -257,6 +257,46 @@ def main() -> int:
         if audit_data.get("verdict") != "fail":
             raise AssertionError(f"expected fail audit, got {audit_data}")
 
+        valid_primitive = out_dir / "valid-dataflow-primitive-coverage.csv"
+        valid_primitive.write_text(
+            "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
+            "vecadd,stream,1,blocked,DFG-sim is not implemented\n"
+        )
+        valid_hardware = out_dir / "valid-adg-hardware-summary.csv"
+        valid_hardware.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
+            "fabric0,fabric_module_template,1,0,pass,verified\n"
+        )
+        stale_mapping = out_dir / "stale-pnr-mapping-summary.csv"
+        stale_mapping.write_text(
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,status,diagnostic\n"
+            "ghost,missing_hw,,,,,blocked,stale candidate references\n"
+        )
+        audit_cross = out_dir / "artifact-audit-summary-cross-fail.json"
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(audit_cross),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(stale_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("stale cross-artifact audit unexpectedly exited zero")
+        audit_data = json.loads(audit_cross.read_text())
+        if audit_data.get("verdict") != "fail":
+            raise AssertionError(f"expected cross-artifact fail audit, got {audit_data}")
+        findings = audit_data.get("cross_artifact_findings", [])
+        if not findings:
+            raise AssertionError(f"expected cross-artifact findings, got {audit_data}")
+        messages = " ".join(str(finding) for finding in findings)
+        if "ghost" not in messages or "missing_hw" not in messages:
+            raise AssertionError(f"cross findings should identify stale refs: {findings}")
+
     return 0
 
 
