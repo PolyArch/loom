@@ -52,6 +52,7 @@ EXPECTED_CASES = {
     "partition",
     "parity",
     "prefix_sum",
+    "prefix_sum_exclusive",
     "popcount",
     "relu",
     "reduction",
