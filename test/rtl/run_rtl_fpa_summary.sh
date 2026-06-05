@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-python3 "${ROOT}/test/artifacts/intermediate_artifacts.py" write-csv rtl_fpa "$@"
+python3 "${ROOT}/test/rtl/fpa_summary.py" "$@"
