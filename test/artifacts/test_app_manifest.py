@@ -14,6 +14,7 @@ EXPECTED_CASES = {
     "axpy",
     "byte_swap",
     "binary_search",
+    "clz",
     "compare_swap",
     "conv1d",
     "dotproduct",
