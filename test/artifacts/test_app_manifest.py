@@ -31,6 +31,7 @@ EXPECTED_CASES = {
     "outer",
     "prefix_sum",
     "popcount",
+    "relu",
     "reduction",
     "upper_bound",
     "vecadd",

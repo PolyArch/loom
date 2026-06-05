@@ -1,0 +1,2 @@
+relu checksum: 42.0
+PASSED
