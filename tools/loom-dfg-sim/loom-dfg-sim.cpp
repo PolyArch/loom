@@ -1,0 +1,116 @@
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Simulator/DFGSimulator.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/AsmState.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <memory>
+#include <string>
+
+static llvm::cl::opt<std::string> inputPath(llvm::cl::Positional,
+                                            llvm::cl::desc("<input mlir>"),
+                                            llvm::cl::Required);
+
+static llvm::cl::opt<std::string>
+    graphName("graph", llvm::cl::desc("dataflow.graph.func symbol to run"),
+              llvm::cl::Required);
+
+static llvm::cl::opt<std::string>
+    workloadName("workload",
+                 llvm::cl::desc("workload name recorded in the report"));
+
+static llvm::cl::list<std::string>
+    runtimeArgs("arg", llvm::cl::desc("runtime argument as index=value"),
+                llvm::cl::ZeroOrMore);
+
+static llvm::cl::opt<std::string>
+    outputPath("output", llvm::cl::desc("DFG simulation report JSON"),
+               llvm::cl::Required);
+
+static llvm::cl::opt<std::uint64_t>
+    maxEventSteps("max-event-steps",
+                  llvm::cl::desc("maximum optimistic event steps"),
+                  llvm::cl::init(100000));
+
+static llvm::Expected<llvm::SmallVector<loom::sim::DFGRuntimeArg>>
+parseRuntimeArgs() {
+  llvm::SmallVector<loom::sim::DFGRuntimeArg> parsed;
+  for (llvm::StringRef raw : runtimeArgs) {
+    std::pair<llvm::StringRef, llvm::StringRef> split = raw.split('=');
+    if (split.second.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "--arg expects index=value");
+    unsigned index = 0;
+    if (split.first.getAsInteger(10, index))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "--arg index must be unsigned");
+    parsed.push_back({index, split.second.str()});
+  }
+  return parsed;
+}
+
+int main(int argc, char **argv) {
+  llvm::InitLLVM init(argc, argv);
+  llvm::cl::ParseCommandLineOptions(
+      argc, argv,
+      "loom-dfg-sim: execute a pure dataflow.graph.func token model\n");
+
+  mlir::DialectRegistry registry;
+  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect>();
+
+  mlir::MLIRContext context(registry);
+  context.allowUnregisteredDialects();
+  context.loadAllAvailableDialects();
+
+  llvm::SourceMgr sourceMgr;
+  auto fileOrErr = llvm::MemoryBuffer::getFileOrSTDIN(inputPath);
+  if (std::error_code ec = fileOrErr.getError()) {
+    llvm::errs() << "error: could not read " << inputPath << ": "
+                 << ec.message() << "\n";
+    return 1;
+  }
+  sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
+
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceFile<mlir::ModuleOp>(sourceMgr, &context);
+  if (!module) {
+    llvm::errs() << "error: could not parse input MLIR\n";
+    return 1;
+  }
+
+  auto argsOrErr = parseRuntimeArgs();
+  if (!argsOrErr) {
+    llvm::errs() << "error: " << llvm::toString(argsOrErr.takeError()) << "\n";
+    return 1;
+  }
+
+  loom::sim::DFGSimulationOptions options;
+  options.graphName = graphName;
+  options.workloadName = workloadName;
+  options.args = std::move(*argsOrErr);
+  options.maxEventSteps = maxEventSteps;
+
+  auto reportOrErr = loom::sim::simulateDataflowGraph(*module, options);
+  if (!reportOrErr) {
+    llvm::errs() << "error: " << llvm::toString(reportOrErr.takeError())
+                 << "\n";
+    return 1;
+  }
+
+  if (llvm::Error err =
+          loom::sim::writeDFGSimulationReportJson(outputPath, *reportOrErr)) {
+    llvm::errs() << "error: " << llvm::toString(std::move(err)) << "\n";
+    return 1;
+  }
+  return 0;
+}

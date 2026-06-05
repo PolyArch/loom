@@ -18,6 +18,8 @@ def main() -> int:
         out_dir = Path(tmp)
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         sim = out_dir / "sim-cycle-summary.csv"
+        dfg_report = out_dir / "dfg-sim-report.json"
+        sim_from_dfg = out_dir / "sim-cycle-summary-from-dfg.csv"
         artifact_test_common.require_success(
             repo,
             [
@@ -55,6 +57,57 @@ def main() -> int:
             raise AssertionError(f"sim cycle row should stay blocked until simulator reports exist: {row}")
         if "primitive-count proxy only; DFG-sim report unavailable" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
+
+        dfg_tool = repo / "build/tools/loom-dfg-sim/loom-dfg-sim"
+        if not dfg_tool.is_file():
+            dfg_tool = repo / "build/bin/loom-dfg-sim"
+        artifact_test_common.require_success(
+            repo,
+            [
+                str(dfg_tool),
+                "test/simulator/dfg_basic.mlir",
+                "--graph",
+                "sum4",
+                "--arg",
+                "0=none",
+                "--arg",
+                "1=0",
+                "--arg",
+                "2=4",
+                "--arg",
+                "3=1",
+                "--arg",
+                "4=0.000000e+00",
+                "--output",
+                str(dfg_report),
+            ],
+            "DFG simulation report",
+        )
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--dfg-report",
+                str(dfg_report),
+                "--output",
+                str(sim_from_dfg),
+            ],
+            "sim cycle summary from DFG report",
+        )
+        dfg_rows = artifact_test_common.read_csv_rows(sim_from_dfg, HEADER)
+        sum4_rows = [row for row in dfg_rows if row["kernel"] == "sum4"]
+        if len(sum4_rows) != 1:
+            raise AssertionError(f"expected one sum4 row, got {dfg_rows}")
+        dfg_row = sum4_rows[0]
+        if dfg_row["dfg_sim_cycles"] != "12":
+            raise AssertionError(f"DFG report should fill DFG cycles: {dfg_row}")
+        if dfg_row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"CGRA-sim cycles require mapping and Fabric evidence: {dfg_row}")
+        if dfg_row.get("status") != "blocked":
+            raise AssertionError(f"row should stay blocked until CGRA-sim exists: {dfg_row}")
+        if "CGRA-sim requires Fabric ADG and mapping artifact evidence" not in dfg_row.get("diagnostic", ""):
+            raise AssertionError(f"unexpected DFG diagnostic: {dfg_row}")
 
     return 0
 

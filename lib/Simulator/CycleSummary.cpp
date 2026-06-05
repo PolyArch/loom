@@ -2,8 +2,10 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -94,11 +96,7 @@ llvm::StringRef cellAt(llvm::ArrayRef<std::string> row, unsigned index) {
 
 CycleSummaryRow blockedRow(llvm::StringRef kernel, llvm::StringRef diagnostic) {
   return CycleSummaryRow{
-      kernel.str(),
-      std::nullopt,
-      std::nullopt,
-      "blocked",
-      diagnostic.str(),
+      kernel.str(), std::nullopt, std::nullopt, "blocked", diagnostic.str(),
   };
 }
 
@@ -110,20 +108,89 @@ CycleSummaryRow proxyOnlyRow(llvm::StringRef kernel,
       "primitive_op_count=" +
       std::to_string(stats.totalOps);
   return CycleSummaryRow{
-      kernel.str(),
-      std::nullopt,
-      std::nullopt,
-      "blocked",
-      std::move(diagnostic),
+      kernel.str(), std::nullopt,          std::nullopt,
+      "blocked",    std::move(diagnostic),
   };
+}
+
+std::string diagnosticFromJsonArray(const llvm::json::Object &object) {
+  const llvm::json::Array *array = object.getArray("diagnostics");
+  if (!array || array->empty())
+    return "";
+  std::string diagnostic;
+  for (const llvm::json::Value &value : *array) {
+    std::optional<llvm::StringRef> text = value.getAsString();
+    if (!text)
+      continue;
+    if (!diagnostic.empty())
+      diagnostic += "; ";
+    diagnostic += text->str();
+  }
+  return diagnostic;
+}
+
+llvm::Expected<CycleSummaryRow> summarizeOneDFGReport(llvm::StringRef path) {
+  auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
+  if (std::error_code ec = bufferOrErr.getError())
+    return llvm::createStringError(ec, "could not read %s", path.str().c_str());
+  auto parsedOrErr = llvm::json::parse((*bufferOrErr)->getBuffer());
+  if (!parsedOrErr)
+    return parsedOrErr.takeError();
+  const llvm::json::Object *object = parsedOrErr->getAsObject();
+  if (!object)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG report %s is not a JSON object",
+                                   path.str().c_str());
+
+  std::optional<llvm::StringRef> kind = object->getString("kind");
+  if (!kind || *kind != "dfg_sim_report")
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG report %s has wrong kind",
+                                   path.str().c_str());
+
+  std::optional<llvm::StringRef> workload = object->getString("workload");
+  std::optional<llvm::StringRef> graph = object->getString("graph");
+  std::string kernel;
+  if (workload && !workload->empty())
+    kernel = workload->str();
+  else if (graph && !graph->empty())
+    kernel = graph->str();
+  else
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG report %s has no workload or graph",
+                                   path.str().c_str());
+
+  std::optional<llvm::StringRef> status = object->getString("status");
+  std::string reportStatus = status ? status->str() : "blocked";
+  std::string diagnostic = diagnosticFromJsonArray(*object);
+
+  if (reportStatus != "pass") {
+    if (diagnostic.empty())
+      diagnostic = "DFG-sim report did not pass";
+    return CycleSummaryRow{std::move(kernel), std::nullopt, std::nullopt,
+                           reportStatus, std::move(diagnostic)};
+  }
+
+  std::optional<int64_t> cycles = object->getInteger("optimistic_cycles");
+  if (!cycles || *cycles < 0)
+    return CycleSummaryRow{
+        std::move(kernel), std::nullopt, std::nullopt, "blocked",
+        "DFG-sim report passed but lacks non-negative optimistic_cycles"};
+
+  if (!diagnostic.empty())
+    diagnostic += "; ";
+  diagnostic +=
+      "DFG-sim report available; CGRA-sim requires Fabric ADG and mapping "
+      "artifact evidence";
+  return CycleSummaryRow{std::move(kernel), static_cast<std::uint64_t>(*cycles),
+                         std::nullopt, "blocked", std::move(diagnostic)};
 }
 
 } // namespace
 
 llvm::SmallVector<CycleSummaryRow> loom::sim::scaffoldCycleSummaryRows() {
   return {blockedRow(
-      "scaffold",
-      "DFG-sim and CGRA-sim cycle evidence is not available yet")};
+      "scaffold", "DFG-sim and CGRA-sim cycle evidence is not available yet")};
 }
 
 llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
@@ -167,10 +234,9 @@ loom::sim::summarizePrimitiveCoverage(llvm::StringRef csvPath,
     std::uint64_t opCount = 0;
     llvm::StringRef rawCount = cellAt(row, opCountColumn);
     if (rawCount.getAsInteger(10, opCount))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "invalid op_count %s for workload %s",
-                                     rawCount.str().c_str(),
-                                     workload.str().c_str());
+      return llvm::createStringError(
+          std::errc::invalid_argument, "invalid op_count %s for workload %s",
+          rawCount.str().c_str(), workload.str().c_str());
     PrimitiveStats &stats = byWorkload[workload.str()];
     stats.totalOps += opCount;
   }
@@ -190,14 +256,34 @@ loom::sim::summarizePrimitiveCoverage(llvm::StringRef csvPath,
   return rows;
 }
 
-llvm::Error loom::sim::writeCycleSummaryCsv(
-    llvm::StringRef outputPath, llvm::ArrayRef<CycleSummaryRow> rows) {
+llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
+loom::sim::summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths) {
+  if (reportPaths.empty())
+    return scaffoldCycleSummaryRows();
+
+  llvm::SmallVector<CycleSummaryRow> rows;
+  llvm::StringSet<> seen;
+  for (const std::string &path : reportPaths) {
+    auto rowOrErr = summarizeOneDFGReport(path);
+    if (!rowOrErr)
+      return rowOrErr.takeError();
+    if (!seen.insert(rowOrErr->kernel).second)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "duplicate DFG report workload %s",
+                                     rowOrErr->kernel.c_str());
+    rows.push_back(std::move(*rowOrErr));
+  }
+  return rows;
+}
+
+llvm::Error
+loom::sim::writeCycleSummaryCsv(llvm::StringRef outputPath,
+                                llvm::ArrayRef<CycleSummaryRow> rows) {
   llvm::SmallString<256> parent(outputPath);
   llvm::sys::path::remove_filename(parent);
   if (!parent.empty()) {
     if (std::error_code ec = llvm::sys::fs::create_directories(parent))
-      return llvm::createStringError(ec, "could not create %s",
-                                     parent.c_str());
+      return llvm::createStringError(ec, "could not create %s", parent.c_str());
   }
 
   std::error_code ec;
@@ -214,8 +300,8 @@ llvm::Error loom::sim::writeCycleSummaryCsv(
     out << ',';
     if (row.cgraSimCycles)
       out << *row.cgraSimCycles;
-    out << ',' << csvEscape(row.status) << ','
-        << csvEscape(row.diagnostic) << '\n';
+    out << ',' << csvEscape(row.status) << ',' << csvEscape(row.diagnostic)
+        << '\n';
   }
   return llvm::Error::success();
 }

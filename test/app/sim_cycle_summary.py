@@ -21,6 +21,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--primitive-coverage")
+    parser.add_argument("--dfg-report", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -53,8 +54,31 @@ def find_tool() -> Path | None:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
-    if not args.primitive_coverage:
+    dfg_reports = [Path(path) for path in args.dfg_report]
+    valid_dfg_reports = [path for path in dfg_reports if path.is_file()]
+    if not args.primitive_coverage and not valid_dfg_reports:
         intermediate_artifacts.write_csv("sim_cycle", intermediate_artifacts.output_path(args.output))
+        return 0
+    if valid_dfg_reports:
+        tool = find_tool()
+        if tool is not None:
+            command = [str(tool)]
+            for report in valid_dfg_reports:
+                command.extend(["--dfg-report", str(report)])
+            command.extend(["--output", str(output)])
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if result.returncode != 0:
+                sys.stderr.write(result.stdout)
+                sys.stderr.write(result.stderr)
+            return result.returncode
+        intermediate_artifacts.write_csv("sim_cycle", output)
         return 0
     primitive_path = Path(args.primitive_coverage)
     if not primitive_path.is_file():

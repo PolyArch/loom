@@ -19,6 +19,7 @@ set(LOOM_TEST_DEPENDS
   loom-candidate-dump
   loom-config-test
   loom-cost-test
+  loom-dfg-sim
   loom-hwsg-test
   loom-parallel-test
   loom-sim-cycle-summary

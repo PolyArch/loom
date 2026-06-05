@@ -8,8 +8,11 @@
 
 static llvm::cl::opt<std::string>
     primitiveCoveragePath("primitive-coverage",
-                          llvm::cl::desc("dataflow primitive coverage CSV"),
-                          llvm::cl::Required);
+                          llvm::cl::desc("dataflow primitive coverage CSV"));
+
+static llvm::cl::list<std::string>
+    dfgReportPaths("dfg-report", llvm::cl::desc("DFG simulation report JSON"),
+                   llvm::cl::ZeroOrMore);
 
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("sim cycle summary CSV"),
@@ -22,11 +25,17 @@ int main(int argc, char **argv) {
 
   loom::sim::CycleSummaryOptions options;
 
-  auto rowsOrErr =
-      loom::sim::summarizePrimitiveCoverage(primitiveCoveragePath, options);
+  llvm::Expected<llvm::SmallVector<loom::sim::CycleSummaryRow>> rowsOrErr =
+      dfgReportPaths.empty()
+          ? (primitiveCoveragePath.empty()
+                 ? llvm::Expected<
+                       llvm::SmallVector<loom::sim::CycleSummaryRow>>(
+                       loom::sim::scaffoldCycleSummaryRows())
+                 : loom::sim::summarizePrimitiveCoverage(primitiveCoveragePath,
+                                                         options))
+          : loom::sim::summarizeDFGReports(dfgReportPaths);
   if (!rowsOrErr) {
-    llvm::errs() << "error: " << llvm::toString(rowsOrErr.takeError())
-                 << "\n";
+    llvm::errs() << "error: " << llvm::toString(rowsOrErr.takeError()) << "\n";
     return 1;
   }
   if (llvm::Error err =

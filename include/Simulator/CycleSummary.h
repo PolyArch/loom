@@ -31,6 +31,9 @@ llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
 summarizePrimitiveCoverage(llvm::StringRef csvPath,
                            const CycleSummaryOptions &options);
 
+llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
+summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths);
+
 llvm::Error writeCycleSummaryCsv(llvm::StringRef outputPath,
                                  llvm::ArrayRef<CycleSummaryRow> rows);
 

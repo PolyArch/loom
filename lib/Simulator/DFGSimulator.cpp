@@ -1,0 +1,605 @@
+#include "Simulator/DFGSimulator.h"
+
+#include "Dataflow/IR/DataflowOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Operation.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cmath>
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <optional>
+#include <string>
+#include <system_error>
+
+using namespace loom::sim;
+
+namespace {
+
+enum class TokenKind { None, Integer, Float, Bool };
+
+struct Token {
+  TokenKind kind = TokenKind::None;
+  std::int64_t intValue = 0;
+  double floatValue = 0.0;
+  bool boolValue = false;
+};
+
+using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
+using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
+
+struct StreamState {
+  bool initialized = false;
+  bool done = false;
+  std::int64_t current = 0;
+  std::int64_t ub = 0;
+  std::int64_t step = 0;
+};
+
+struct LoopState {
+  bool initialized = false;
+  std::optional<Token> latched;
+};
+
+struct SimulatorState {
+  ChannelMap channels;
+  ChannelMap pendingChannels;
+  OutputMap observedOutputs;
+  OutputMap pendingObservedOutputs;
+  llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
+  llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
+  llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
+  llvm::DenseSet<mlir::Operation *> oneShotOps;
+  llvm::SmallVector<std::string> diagnostics;
+  std::uint64_t eventCount = 0;
+};
+
+std::string typePrefix(mlir::Type type) {
+  if (mlir::isa<mlir::NoneType>(type))
+    return "none";
+  if (mlir::isa<mlir::IndexType>(type))
+    return "index";
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return llvm::formatv("i{0}", intType.getWidth()).str();
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+    if (floatType.isF16())
+      return "f16";
+    if (floatType.isF32())
+      return "f32";
+    if (floatType.isF64())
+      return "f64";
+  }
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  type.print(os);
+  return storage;
+}
+
+std::string tokenToString(const Token &token, mlir::Type type) {
+  if (token.kind == TokenKind::None)
+    return "none";
+  if (token.kind == TokenKind::Bool)
+    return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
+  if (token.kind == TokenKind::Integer)
+    return typePrefix(type) + ":" + std::to_string(token.intValue);
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  os << typePrefix(type) << ':';
+  if (std::floor(token.floatValue) == token.floatValue)
+    os << static_cast<std::int64_t>(token.floatValue);
+  else
+    os << llvm::formatv("{0:f6}", token.floatValue);
+  return os.str();
+}
+
+llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
+  if (mlir::isa<mlir::NoneType>(attr.getType()))
+    return Token{TokenKind::None};
+  if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
+    if (intAttr.getType().isInteger(1))
+      return Token{TokenKind::Bool, 0, 0.0, intAttr.getValue().isOne()};
+    return Token{TokenKind::Integer, intAttr.getValue().getSExtValue()};
+  }
+  if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
+    return Token{TokenKind::Float, 0, floatAttr.getValueAsDouble()};
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported dataflow.constant attribute");
+}
+
+llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
+  raw = raw.trim();
+  if (mlir::isa<mlir::NoneType>(type)) {
+    if (raw == "none")
+      return Token{TokenKind::None};
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "none argument expects value 'none'");
+  }
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    if (intType.getWidth() == 1) {
+      if (raw == "true" || raw == "1")
+        return Token{TokenKind::Bool, 0, 0.0, true};
+      if (raw == "false" || raw == "0")
+        return Token{TokenKind::Bool, 0, 0.0, false};
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "i1 argument expects true/false/0/1");
+    }
+    std::int64_t value = 0;
+    if (raw.getAsInteger(10, value))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "integer argument is not base-10");
+    return Token{TokenKind::Integer, value};
+  }
+  if (mlir::isa<mlir::IndexType>(type)) {
+    std::int64_t value = 0;
+    if (raw.getAsInteger(10, value))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "index argument is not base-10");
+    return Token{TokenKind::Integer, value};
+  }
+  if (mlir::isa<mlir::FloatType>(type)) {
+    double value = 0.0;
+    if (raw.getAsDouble(value))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "float argument is not parseable");
+    return Token{TokenKind::Float, 0, value};
+  }
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported runtime argument type");
+}
+
+bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
+  auto it = channels.find(&operand);
+  return it != channels.end() && !it->second.empty();
+}
+
+Token popToken(ChannelMap &channels, mlir::OpOperand &operand) {
+  auto &queue = channels[&operand];
+  Token token = queue.front();
+  queue.pop_front();
+  return token;
+}
+
+void emitToken(SimulatorState &state, mlir::Value value, Token token) {
+  for (mlir::OpOperand &use : value.getUses())
+    state.pendingChannels[&use].push_back(token);
+  state.pendingObservedOutputs[value].push_back(token);
+}
+
+void flushPendingTokens(SimulatorState &state) {
+  for (auto &entry : state.pendingChannels) {
+    auto &target = state.channels[entry.first];
+    while (!entry.second.empty()) {
+      target.push_back(entry.second.front());
+      entry.second.pop_front();
+    }
+  }
+  state.pendingChannels.clear();
+  for (auto &entry : state.pendingObservedOutputs) {
+    auto &target = state.observedOutputs[entry.first];
+    target.append(entry.second.begin(), entry.second.end());
+  }
+  state.pendingObservedOutputs.clear();
+}
+
+std::int64_t integerToken(const Token &token) { return token.intValue; }
+
+bool boolToken(const Token &token) {
+  if (token.kind == TokenKind::Bool)
+    return token.boolValue;
+  return token.intValue != 0;
+}
+
+double floatToken(const Token &token) {
+  if (token.kind == TokenKind::Float)
+    return token.floatValue;
+  return static_cast<double>(token.intValue);
+}
+
+bool evaluateCont(std::int64_t current, std::int64_t ub, llvm::StringRef pred) {
+  if (pred == "<")
+    return current < ub;
+  if (pred == "<=")
+    return current <= ub;
+  if (pred == ">")
+    return current > ub;
+  if (pred == ">=")
+    return current >= ub;
+  if (pred == "!=")
+    return current != ub;
+  return false;
+}
+
+std::int64_t stepIndex(std::int64_t current, std::int64_t step,
+                       llvm::StringRef stepOp) {
+  if (stepOp == "+=")
+    return current + step;
+  if (stepOp == "-=")
+    return current - step;
+  if (stepOp == "*=")
+    return current * step;
+  if (stepOp == "/=")
+    return step == 0 ? current : current / step;
+  if (stepOp == "<<=")
+    return current << step;
+  if (stepOp == ">>=")
+    return current >> step;
+  return current;
+}
+
+bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
+  StreamState &stream = state.streamStates[op.getOperation()];
+  if (stream.done)
+    return false;
+
+  if (!stream.initialized) {
+    if (!hasToken(state.channels, op->getOpOperand(0)) ||
+        !hasToken(state.channels, op->getOpOperand(1)) ||
+        !hasToken(state.channels, op->getOpOperand(2)))
+      return false;
+    stream.current =
+        integerToken(popToken(state.channels, op->getOpOperand(0)));
+    stream.ub = integerToken(popToken(state.channels, op->getOpOperand(1)));
+    stream.step = integerToken(popToken(state.channels, op->getOpOperand(2)));
+    stream.initialized = true;
+  }
+
+  const bool cont = evaluateCont(stream.current, stream.ub, op.getContCond());
+  emitToken(state, op.getIndex(), Token{TokenKind::Integer, stream.current});
+  emitToken(state, op.getRwc(), Token{TokenKind::Bool, 0, 0.0, cont});
+  if (cont)
+    stream.current = stepIndex(stream.current, stream.step, op.getStepOp());
+  else
+    stream.done = true;
+  ++state.eventCount;
+  return true;
+}
+
+bool fireConstant(dataflow::ConstantOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)))
+    return false;
+  auto attr = mlir::dyn_cast<mlir::TypedAttr>(op.getConstValue());
+  if (!attr) {
+    state.diagnostics.push_back("dataflow.constant has untyped const_value");
+    return false;
+  }
+  auto tokenOrErr = tokenFromTypedAttr(attr);
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  popToken(state.channels, op->getOpOperand(0));
+  emitToken(state, op.getValue(), *tokenOrErr);
+  ++state.eventCount;
+  return true;
+}
+
+bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
+  LoopState &carry = state.carryStates[op.getOperation()];
+  if (!carry.initialized) {
+    if (!hasToken(state.channels, op->getOpOperand(1)))
+      return false;
+    Token init = popToken(state.channels, op->getOpOperand(1));
+    emitToken(state, op.getOutput(), init);
+    carry.initialized = true;
+    ++state.eventCount;
+    return true;
+  }
+
+  if (!hasToken(state.channels, op->getOpOperand(0)) ||
+      !hasToken(state.channels, op->getOpOperand(2)))
+    return false;
+  Token cond = popToken(state.channels, op->getOpOperand(0));
+  Token value = popToken(state.channels, op->getOpOperand(2));
+  if (boolToken(cond)) {
+    emitToken(state, op.getOutput(), value);
+  } else {
+    carry.initialized = false;
+  }
+  ++state.eventCount;
+  return true;
+}
+
+bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
+  LoopState &invariant = state.invariantStates[op.getOperation()];
+  if (!invariant.initialized) {
+    if (!hasToken(state.channels, op->getOpOperand(1)))
+      return false;
+    Token init = popToken(state.channels, op->getOpOperand(1));
+    invariant.latched = init;
+    invariant.initialized = true;
+    emitToken(state, op.getOutput(), init);
+    ++state.eventCount;
+    return true;
+  }
+
+  if (!hasToken(state.channels, op->getOpOperand(0)))
+    return false;
+  Token cond = popToken(state.channels, op->getOpOperand(0));
+  if (boolToken(cond)) {
+    emitToken(state, op.getOutput(), *invariant.latched);
+  } else {
+    invariant.initialized = false;
+    invariant.latched.reset();
+  }
+  ++state.eventCount;
+  return true;
+}
+
+bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
+  for (mlir::OpOperand &operand : op->getOpOperands()) {
+    if (!hasToken(state.channels, operand))
+      return false;
+  }
+  llvm::SmallVector<Token> tokens;
+  for (mlir::OpOperand &operand : op->getOpOperands())
+    tokens.push_back(popToken(state.channels, operand));
+  for (auto [result, token] : llvm::zip(op->getResults(), tokens))
+    emitToken(state, result, token);
+  ++state.eventCount;
+  return true;
+}
+
+bool fireAddF(mlir::arith::AddFOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)) ||
+      !hasToken(state.channels, op->getOpOperand(1)))
+    return false;
+  Token lhs = popToken(state.channels, op->getOpOperand(0));
+  Token rhs = popToken(state.channels, op->getOpOperand(1));
+  emitToken(state, op.getResult(),
+            Token{TokenKind::Float, 0, floatToken(lhs) + floatToken(rhs)});
+  ++state.eventCount;
+  return true;
+}
+
+bool fireAddI(mlir::arith::AddIOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)) ||
+      !hasToken(state.channels, op->getOpOperand(1)))
+    return false;
+  Token lhs = popToken(state.channels, op->getOpOperand(0));
+  Token rhs = popToken(state.channels, op->getOpOperand(1));
+  emitToken(state, op.getResult(),
+            Token{TokenKind::Integer, integerToken(lhs) + integerToken(rhs)});
+  ++state.eventCount;
+  return true;
+}
+
+bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
+  if (state.oneShotOps.contains(op.getOperation()))
+    return false;
+  auto attr = mlir::dyn_cast<mlir::TypedAttr>(op.getValue());
+  if (!attr) {
+    state.diagnostics.push_back("arith.constant has untyped value");
+    return false;
+  }
+  auto tokenOrErr = tokenFromTypedAttr(attr);
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  emitToken(state, op.getResult(), *tokenOrErr);
+  state.oneShotOps.insert(op.getOperation());
+  ++state.eventCount;
+  return true;
+}
+
+bool isSupportedNonEvent(mlir::Operation *op) {
+  return mlir::isa<dataflow::GraphReturnOp>(op);
+}
+
+bool fireOperation(mlir::Operation *op, SimulatorState &state) {
+  return llvm::TypeSwitch<mlir::Operation *, bool>(op)
+      .Case<dataflow::StreamOp>(
+          [&](auto typedOp) { return fireStream(typedOp, state); })
+      .Case<dataflow::ConstantOp>(
+          [&](auto typedOp) { return fireConstant(typedOp, state); })
+      .Case<dataflow::CarryOp>(
+          [&](auto typedOp) { return fireCarry(typedOp, state); })
+      .Case<dataflow::InvariantOp>(
+          [&](auto typedOp) { return fireInvariant(typedOp, state); })
+      .Case<dataflow::SyncOp>(
+          [&](auto typedOp) { return fireSync(typedOp, state); })
+      .Case<mlir::arith::AddFOp>(
+          [&](auto typedOp) { return fireAddF(typedOp, state); })
+      .Case<mlir::arith::AddIOp>(
+          [&](auto typedOp) { return fireAddI(typedOp, state); })
+      .Case<mlir::arith::ConstantOp>(
+          [&](auto typedOp) { return fireArithConstant(typedOp, state); })
+      .Default([&](mlir::Operation *) { return false; });
+}
+
+std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
+  if (isSupportedNonEvent(op))
+    return std::nullopt;
+  if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
+                dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,
+                mlir::arith::AddIOp, mlir::arith::ConstantOp>(op))
+    return std::nullopt;
+  return op->getName().getStringRef().str();
+}
+
+dataflow::GraphFuncOp findGraph(mlir::ModuleOp module, llvm::StringRef name) {
+  if (name.starts_with("@"))
+    name = name.drop_front();
+  dataflow::GraphFuncOp match;
+  module.walk([&](dataflow::GraphFuncOp graph) {
+    if (!match && graph.getSymName() == name)
+      match = graph;
+  });
+  return match;
+}
+
+llvm::Expected<llvm::StringMap<std::string>>
+indexRuntimeArgs(llvm::ArrayRef<DFGRuntimeArg> args, unsigned argCount) {
+  llvm::StringMap<std::string> byIndex;
+  for (const DFGRuntimeArg &arg : args) {
+    if (arg.index >= argCount)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "argument index %u is out of range",
+                                     arg.index);
+    std::string key = std::to_string(arg.index);
+    if (byIndex.contains(key))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "argument index %u is repeated",
+                                     arg.index);
+    byIndex.try_emplace(key, arg.value);
+  }
+  return byIndex;
+}
+
+void observeReturnOperands(dataflow::GraphFuncOp graph,
+                           llvm::SmallVectorImpl<mlir::Value> &returns) {
+  auto ret = mlir::dyn_cast_or_null<dataflow::GraphReturnOp>(
+      graph.getBody().front().getTerminator());
+  if (!ret)
+    return;
+  returns.append(ret.getValues().begin(), ret.getValues().end());
+}
+
+void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
+                       const Token &token) {
+  for (mlir::OpOperand &use : arg.getUses())
+    state.channels[&use].push_back(token);
+  state.observedOutputs[arg].push_back(token);
+}
+
+} // namespace
+
+llvm::Expected<DFGSimulationReport>
+loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
+                                 const DFGSimulationOptions &options) {
+  DFGSimulationReport report;
+  report.graph = options.graphName;
+  report.workload =
+      options.workloadName.empty() ? options.graphName : options.workloadName;
+  report.status = "pass";
+
+  dataflow::GraphFuncOp graph = findGraph(module, options.graphName);
+  if (!graph)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "dataflow.graph.func '%s' was not found",
+                                   options.graphName.c_str());
+  if (graph.isExternal())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "dataflow.graph.func '%s' is external",
+                                   options.graphName.c_str());
+
+  mlir::Block &entry = graph.getBody().front();
+  auto argsOrErr = indexRuntimeArgs(options.args, entry.getNumArguments());
+  if (!argsOrErr)
+    return argsOrErr.takeError();
+  llvm::StringMap<std::string> args = std::move(*argsOrErr);
+
+  if (args.size() != entry.getNumArguments())
+    return llvm::createStringError(
+        std::errc::invalid_argument, "expected %u runtime arguments, got %u",
+        entry.getNumArguments(), static_cast<unsigned>(args.size()));
+
+  SimulatorState state;
+  llvm::SmallVector<mlir::Value> returnValues;
+  observeReturnOperands(graph, returnValues);
+
+  for (auto [index, arg] : llvm::enumerate(entry.getArguments())) {
+    std::string key = std::to_string(index);
+    auto tokenOrErr = parseRuntimeToken(args.lookup(key), arg.getType());
+    if (!tokenOrErr)
+      return llvm::joinErrors(
+          llvm::createStringError(std::errc::invalid_argument,
+                                  "invalid argument %u", unsigned(index)),
+          tokenOrErr.takeError());
+    seedBlockArgument(state, arg, *tokenOrErr);
+  }
+
+  llvm::StringSet<> unsupported;
+  for (mlir::Operation &op : entry.getOperations()) {
+    if (auto name = unsupportedOperation(&op))
+      unsupported.insert(*name);
+  }
+  if (!unsupported.empty()) {
+    report.status = "unsupported";
+    for (const auto &entry : unsupported)
+      report.diagnostics.push_back("unsupported op: " + entry.getKey().str());
+    return report;
+  }
+
+  for (std::uint64_t step = 0; step < options.maxEventSteps; ++step) {
+    bool fired = false;
+    for (mlir::Operation &op : entry.getOperations()) {
+      if (isSupportedNonEvent(&op))
+        continue;
+      fired |= fireOperation(&op, state);
+    }
+    if (!fired)
+      break;
+    flushPendingTokens(state);
+    ++report.optimisticCycles;
+  }
+  if (report.optimisticCycles == options.maxEventSteps) {
+    report.status = "blocked";
+    report.diagnostics.push_back("maximum optimistic event steps reached");
+  }
+
+  report.eventCount = state.eventCount;
+  report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
+  for (mlir::Value value : returnValues) {
+    auto it = state.observedOutputs.find(value);
+    if (it == state.observedOutputs.end() || it->second.empty()) {
+      report.finalOutputs.push_back("missing");
+      continue;
+    }
+    report.finalOutputs.push_back(
+        tokenToString(it->second.back(), value.getType()));
+  }
+  return report;
+}
+
+llvm::Error
+loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
+                                        const DFGSimulationReport &report) {
+  llvm::SmallString<256> parent(outputPath);
+  llvm::sys::path::remove_filename(parent);
+  if (!parent.empty()) {
+    if (std::error_code ec = llvm::sys::fs::create_directories(parent))
+      return llvm::createStringError(ec, "could not create %s", parent.c_str());
+  }
+
+  llvm::json::Object root;
+  root["schema_version"] = report.schemaVersion;
+  root["kind"] = report.kind;
+  root["workload"] = report.workload;
+  root["graph"] = report.graph;
+  root["status"] = report.status;
+  root["metric_definition"] = report.metricDefinition;
+  root["optimistic_cycles"] = report.optimisticCycles;
+  root["event_count"] = report.eventCount;
+
+  llvm::json::Array outputs;
+  for (const std::string &value : report.finalOutputs)
+    outputs.push_back(value);
+  root["final_outputs"] = std::move(outputs);
+
+  llvm::json::Array diagnostics;
+  for (const std::string &diagnostic : report.diagnostics)
+    diagnostics.push_back(diagnostic);
+  root["diagnostics"] = std::move(diagnostics);
+
+  std::error_code ec;
+  llvm::raw_fd_ostream out(outputPath, ec, llvm::sys::fs::OF_Text);
+  if (ec)
+    return llvm::createStringError(ec, "could not open %s",
+                                   outputPath.str().c_str());
+  out << llvm::formatv("{0:2}", llvm::json::Value(std::move(root))) << "\n";
+  return llvm::Error::success();
+}
