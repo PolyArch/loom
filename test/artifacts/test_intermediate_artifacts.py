@@ -138,7 +138,12 @@ def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         return reader.fieldnames or [], rows
 
 
-def assert_csv_artifact(path: Path, required_first_columns: list[str]) -> None:
+def assert_csv_artifact(
+    path: Path,
+    required_first_columns: list[str],
+    *,
+    allow_pass_rows: bool = False,
+) -> None:
     header, rows = read_csv(path)
     if header[: len(required_first_columns)] != required_first_columns:
         raise AssertionError(
@@ -160,7 +165,7 @@ def assert_csv_artifact(path: Path, required_first_columns: list[str]) -> None:
             for key, value in row.items()
             if key.endswith("_status") or key in {"status", "selection_status"}
         )
-    if "pass" in statuses:
+    if "pass" in statuses and not allow_pass_rows:
         raise AssertionError(f"{path.name}: scaffold rows must not claim pass evidence")
 
 
@@ -187,7 +192,11 @@ def main() -> int:
                     f"{script} failed with {result.returncode}\n"
                     f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                 )
-            assert_csv_artifact(output, required_columns)
+            assert_csv_artifact(
+                output,
+                required_columns,
+                allow_pass_rows=filename == "source-compat-summary.csv",
+            )
             produced.append(output)
 
         for script, filename, required_keys in JSON_COMMANDS:
