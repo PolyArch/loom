@@ -18,6 +18,7 @@ HEADER = [
     "headers",
     "source_count",
     "header_count",
+    "feature_tags",
     "status",
     "diagnostic",
 ]
@@ -68,17 +69,33 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def validate_synthetic_inventory(repo: Path) -> None:
     with artifact_test_common.repo_temp_dir(repo, "loom-old-app-inventory-") as tmp:
         source_root = Path(tmp) / "old-app"
-        write_case(source_root, "alpha")
+        write_case(source_root, "matmul")
+        write_case(source_root, "popcount")
+        write_case(source_root, "sort_quick")
+        write_case(source_root, "spmv")
+        write_case(source_root, "string_hash")
         write_case(source_root, "beta", with_header=False)
         output = Path(tmp) / "inventory.csv"
         rows = run_inventory(repo, source_root, output)
 
-        if [row["case"] for row in rows] != ["alpha", "beta"]:
+        if [row["case"] for row in rows] != ["beta", "matmul", "popcount", "sort_quick", "spmv", "string_hash"]:
             raise AssertionError(f"inventory rows are not sorted by case: {rows}")
-        alpha = rows[0]
-        if alpha["status"] != "ready" or alpha["source_count"] != "2" or alpha["header_count"] != "1":
-            raise AssertionError(f"alpha should be a ready two-source case: {alpha}")
-        beta = rows[1]
+        by_case = {row["case"]: row for row in rows}
+        matmul = by_case["matmul"]
+        if matmul["status"] != "ready" or matmul["source_count"] != "2" or matmul["header_count"] != "1":
+            raise AssertionError(f"matmul should be a ready two-source case: {matmul}")
+        expected_tags = {
+            "matmul": {"matrix", "numeric"},
+            "popcount": {"bit", "integer"},
+            "sort_quick": {"sort", "integer"},
+            "spmv": {"sparse", "matrix"},
+            "string_hash": {"string", "hash"},
+        }
+        for case, tags in expected_tags.items():
+            actual = set(filter(None, by_case[case]["feature_tags"].split(";")))
+            if not tags.issubset(actual):
+                raise AssertionError(f"{case} tags {actual} do not include {tags}")
+        beta = by_case["beta"]
         if beta["status"] != "blocked" or "missing header" not in beta["diagnostic"]:
             raise AssertionError(f"beta should report its missing header: {beta}")
 

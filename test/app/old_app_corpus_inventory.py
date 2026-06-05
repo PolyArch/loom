@@ -16,9 +16,32 @@ HEADER = [
     "headers",
     "source_count",
     "header_count",
+    "feature_tags",
     "status",
     "diagnostic",
 ]
+
+
+TAG_RULES = (
+    ("sparse", ("spm", "spv", "sparse")),
+    ("matrix", ("mat", "gemv", "gemm", "mmtile", "spm", "spv", "trsv", "tridiag", "transpose")),
+    ("graph", ("graph", "breadth_first_search", "edge_update")),
+    ("sort", ("sort", "bitonic", "merge", "partition", "compare_swap")),
+    ("scan", ("prefix", "cumsum")),
+    ("stencil", ("stencil", "jacobi", "gauss", "convolve", "filter")),
+    ("signal", ("fft", "ifft", "fir", "correlation", "cdma")),
+    ("neural", ("batchnorm", "relu", "sigmoid", "softmax", "pool", "im2col", "col2im", "conv")),
+    ("bit", ("bit", "popcount", "clz", "ctz", "parity", "rotate", "byte_swap", "pack", "unpack", "sbox")),
+    ("string", ("string", "kmp", "edit_distance")),
+    ("geometry", ("point", "line", "quat", "cross_product", "transform")),
+    ("hash", ("hash", "crc")),
+    ("search", ("search", "bound", "find_first")),
+    ("memory", ("gather", "scatter", "compact")),
+    ("encode", ("encode", "decode", "rle", "delta")),
+    ("reduction", ("dot", "mean", "variance", "norm", "histogram")),
+    ("integer", ("bit", "count", "sort", "search", "crc", "mod", "gcd")),
+    ("numeric", ("axpy", "vec", "mat", "mul", "avg", "mean", "variance", "normalize", "interpolate")),
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -30,6 +53,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def case_directories(source_root: Path) -> list[Path]:
     return sorted(path for path in source_root.iterdir() if path.is_dir())
+
+
+def feature_tags(case: str) -> list[str]:
+    tags = {
+        tag
+        for tag, needles in TAG_RULES
+        if any(needle in case for needle in needles)
+    }
+    if not tags:
+        tags.add("general")
+    return sorted(tags)
 
 
 def inventory_row(case_dir: Path) -> dict[str, str]:
@@ -55,6 +89,7 @@ def inventory_row(case_dir: Path) -> dict[str, str]:
         "headers": ";".join(headers),
         "source_count": str(len(sources)),
         "header_count": str(len(headers)),
+        "feature_tags": ";".join(feature_tags(case_dir.name)),
         "status": status,
         "diagnostic": diagnostic,
     }
