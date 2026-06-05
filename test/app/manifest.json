@@ -74,6 +74,14 @@
       "feature_tags": ["checksum", "bit", "integer", "serial"]
     },
     {
+      "case": "cross_product",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["geometry", "vector", "float", "strided"]
+    },
+    {
       "case": "delta_encode",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
