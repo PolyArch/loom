@@ -447,7 +447,7 @@ struct OpSchema {
 
 // All ops listed below are accepted in `op_list`. Anything outside is
 // rejected. The dataflow-graph allowlist's exclusions are applied here too:
-// llvm.alloca, dataflow.{load,store,graph,yield}, ub.poison, arith.constant
+// LLVM memory, dataflow.{load,store,graph,yield}, ub.poison, arith.constant
 // are NOT in this table.
 static const llvm::StringMap<OpSchema> &opSchemas() {
   static const llvm::StringMap<OpSchema> table = []() {
@@ -491,6 +491,8 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
                         "arith.fptosi", "arith.fptoui"}) {
       add(n, {pT(0)}, {pT(1)});
     }
+    add("llvm.zext", {pT(0)}, {pT(1)});
+    add("llvm.intr.abs", {pT(0)}, {pT(0)});
 
     // --- math unary ops: 1 in, 1 out, same width ---
     for (StringRef n : {"math.sin", "math.cos", "math.tan",
