@@ -39,9 +39,10 @@ struct DFGSimulationReport {
   std::string workload;
   std::string graph;
   std::string status;
-  std::string metricDefinition = "optimistic_event_steps";
+  std::string metricDefinition = "optimistic_event_count";
   std::string operationSemanticsSource = kOperationSemanticsSource;
   std::uint64_t optimisticCycles = 0;
+  std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
   llvm::SmallVector<std::string> finalOutputs;
   llvm::SmallVector<std::string> diagnostics;

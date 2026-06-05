@@ -100,7 +100,7 @@ def main() -> int:
         if len(sum4_rows) != 1:
             raise AssertionError(f"expected one sum4 row, got {dfg_rows}")
         dfg_row = sum4_rows[0]
-        if dfg_row["dfg_sim_cycles"] != "12":
+        if dfg_row["dfg_sim_cycles"] != "23":
             raise AssertionError(f"DFG report should fill DFG cycles: {dfg_row}")
         if dfg_row["cgra_sim_cycles"] != "":
             raise AssertionError(f"CGRA-sim cycles require mapping and Fabric evidence: {dfg_row}")

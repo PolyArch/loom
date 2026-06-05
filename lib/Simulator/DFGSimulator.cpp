@@ -230,10 +230,32 @@ bool boolToken(const Token &token) {
   return token.intValue != 0;
 }
 
-double floatToken(const Token &token) {
-  if (token.kind == TokenKind::Float)
-    return token.floatValue;
-  return static_cast<double>(token.intValue);
+PrimitiveValue primitiveValueFromToken(const Token &token) {
+  switch (token.kind) {
+  case TokenKind::None:
+    return PrimitiveValue::none();
+  case TokenKind::Integer:
+    return PrimitiveValue::integer(token.intValue);
+  case TokenKind::Float:
+    return PrimitiveValue::floating(token.floatValue);
+  case TokenKind::Bool:
+    return PrimitiveValue::boolean(token.boolValue);
+  }
+  return PrimitiveValue::none();
+}
+
+Token tokenFromPrimitiveValue(const PrimitiveValue &value) {
+  switch (value.kind) {
+  case PrimitiveValueKind::None:
+    return Token{TokenKind::None};
+  case PrimitiveValueKind::Integer:
+    return Token{TokenKind::Integer, value.intValue};
+  case PrimitiveValueKind::Float:
+    return Token{TokenKind::Float, 0, value.floatValue};
+  case PrimitiveValueKind::Bool:
+    return Token{TokenKind::Bool, 0, 0.0, value.boolValue};
+  }
+  return Token{TokenKind::None};
 }
 
 bool evaluateCont(std::int64_t current, std::int64_t ub, llvm::StringRef pred) {
@@ -432,88 +454,53 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   return true;
 }
 
-bool fireAddF(mlir::arith::AddFOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)) ||
-      !hasToken(state.channels, op->getOpOperand(1)))
+bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
+                            SimulatorState &state) {
+  for (mlir::OpOperand &operand : op->getOpOperands()) {
+    if (!hasToken(state.channels, operand))
+      return false;
+  }
+  llvm::SmallVector<PrimitiveValue> operands;
+  for (mlir::OpOperand &operand : op->getOpOperands())
+    operands.push_back(
+        primitiveValueFromToken(popToken(state.channels, operand)));
+  auto valueOrErr =
+      evaluatePrimitiveOperation(op->getName().getStringRef(), operands);
+  if (!valueOrErr) {
+    state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
     return false;
-  Token lhs = popToken(state.channels, op->getOpOperand(0));
-  Token rhs = popToken(state.channels, op->getOpOperand(1));
-  emitToken(state, op.getResult(),
-            Token{TokenKind::Float, 0, floatToken(lhs) + floatToken(rhs)});
+  }
+  emitToken(state, result, tokenFromPrimitiveValue(*valueOrErr));
   ++state.eventCount;
   return true;
+}
+
+bool fireAddF(mlir::arith::AddFOp op, SimulatorState &state) {
+  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
 }
 
 bool fireSubF(mlir::arith::SubFOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)) ||
-      !hasToken(state.channels, op->getOpOperand(1)))
-    return false;
-  Token lhs = popToken(state.channels, op->getOpOperand(0));
-  Token rhs = popToken(state.channels, op->getOpOperand(1));
-  emitToken(state, op.getResult(),
-            Token{TokenKind::Float, 0, floatToken(lhs) - floatToken(rhs)});
-  ++state.eventCount;
-  return true;
+  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
 }
 
 bool fireMulF(mlir::arith::MulFOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)) ||
-      !hasToken(state.channels, op->getOpOperand(1)))
-    return false;
-  Token lhs = popToken(state.channels, op->getOpOperand(0));
-  Token rhs = popToken(state.channels, op->getOpOperand(1));
-  emitToken(state, op.getResult(),
-            Token{TokenKind::Float, 0, floatToken(lhs) * floatToken(rhs)});
-  ++state.eventCount;
-  return true;
+  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
 }
 
 bool fireAddI(mlir::arith::AddIOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)) ||
-      !hasToken(state.channels, op->getOpOperand(1)))
-    return false;
-  Token lhs = popToken(state.channels, op->getOpOperand(0));
-  Token rhs = popToken(state.channels, op->getOpOperand(1));
-  emitToken(state, op.getResult(),
-            Token{TokenKind::Integer, integerToken(lhs) + integerToken(rhs)});
-  ++state.eventCount;
-  return true;
+  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
 }
 
 bool fireMulI(mlir::arith::MulIOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)) ||
-      !hasToken(state.channels, op->getOpOperand(1)))
-    return false;
-  Token lhs = popToken(state.channels, op->getOpOperand(0));
-  Token rhs = popToken(state.channels, op->getOpOperand(1));
-  emitToken(state, op.getResult(),
-            Token{TokenKind::Integer, integerToken(lhs) * integerToken(rhs)});
-  ++state.eventCount;
-  return true;
+  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
 }
 
 bool fireFMulAdd(mlir::LLVM::FMulAddOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)) ||
-      !hasToken(state.channels, op->getOpOperand(1)) ||
-      !hasToken(state.channels, op->getOpOperand(2)))
-    return false;
-  Token lhs = popToken(state.channels, op->getOpOperand(0));
-  Token rhs = popToken(state.channels, op->getOpOperand(1));
-  Token acc = popToken(state.channels, op->getOpOperand(2));
-  emitToken(state, op.getRes(),
-            Token{TokenKind::Float, 0,
-                  floatToken(lhs) * floatToken(rhs) + floatToken(acc)});
-  ++state.eventCount;
-  return true;
+  return firePrimitiveOperation(op.getOperation(), op.getRes(), state);
 }
 
 bool fireIndexCast(mlir::arith::IndexCastOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(0)))
-    return false;
-  Token input = popToken(state.channels, op->getOpOperand(0));
-  emitToken(state, op.getOut(), Token{TokenKind::Integer, integerToken(input)});
-  ++state.eventCount;
-  return true;
+  return firePrimitiveOperation(op.getOperation(), op.getOut(), state);
 }
 
 bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
@@ -825,9 +812,9 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     if (!fired)
       break;
     flushPendingTokens(state);
-    ++report.optimisticCycles;
+    ++report.wavefrontSteps;
   }
-  if (report.optimisticCycles == options.maxEventSteps) {
+  if (report.wavefrontSteps == options.maxEventSteps) {
     report.status = "blocked";
     report.diagnostics.push_back("maximum optimistic event steps reached");
   }
@@ -857,6 +844,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         "DFG-sim stopped before all returned values produced complete outputs");
   }
   report.eventCount = state.eventCount;
+  report.optimisticCycles = state.eventCount;
   report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
@@ -880,6 +868,7 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["metric_definition"] = report.metricDefinition;
   root["operation_semantics_source"] = report.operationSemanticsSource;
   root["optimistic_cycles"] = report.optimisticCycles;
+  root["wavefront_steps"] = report.wavefrontSteps;
   root["event_count"] = report.eventCount;
 
   llvm::json::Array outputs;

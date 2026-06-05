@@ -21,7 +21,9 @@
 // VECADD-DAG: "workload": "vecadd"
 // VECADD-DAG: "graph": "g_t_main_red_0_0"
 // VECADD-DAG: "status": "pass"
-// VECADD-DAG: "optimistic_cycles": 131
+// VECADD-DAG: "metric_definition": "optimistic_event_count"
+// VECADD-DAG: "optimistic_cycles": 453
+// VECADD-DAG: "wavefront_steps": 131
 // VECADD-DAG: "event_count": 453
 // VECADD-DAG: "f32:3024"
 
@@ -29,7 +31,9 @@
 // VECSUM-DAG: "workload": "vecsum"
 // VECSUM-DAG: "graph": "g_t_vecsum_red_0_0"
 // VECSUM-DAG: "status": "pass"
-// VECSUM-DAG: "optimistic_cycles": 131
+// VECSUM-DAG: "metric_definition": "optimistic_event_count"
+// VECSUM-DAG: "optimistic_cycles": 453
+// VECSUM-DAG: "wavefront_steps": 131
 // VECSUM-DAG: "event_count": 453
 // VECSUM-DAG: "i32:2116"
 
@@ -37,7 +41,9 @@
 // DOTPRODUCT-DAG: "workload": "dotproduct"
 // DOTPRODUCT-DAG: "graph": "g_t_dotproduct_red_0_0"
 // DOTPRODUCT-DAG: "status": "pass"
-// DOTPRODUCT-DAG: "optimistic_cycles": 131
+// DOTPRODUCT-DAG: "metric_definition": "optimistic_event_count"
+// DOTPRODUCT-DAG: "optimistic_cycles": 517
+// DOTPRODUCT-DAG: "wavefront_steps": 131
 // DOTPRODUCT-DAG: "event_count": 517
 // DOTPRODUCT-DAG: "f32:2016"
 
@@ -45,7 +51,9 @@
 // VECNORM-L2-DAG: "workload": "vecnorm_l2"
 // VECNORM-L2-DAG: "graph": "g_t_vecnorm_l2_red_0_0"
 // VECNORM-L2-DAG: "status": "pass"
-// VECNORM-L2-DAG: "optimistic_cycles": 132
+// VECNORM-L2-DAG: "metric_definition": "optimistic_event_count"
+// VECNORM-L2-DAG: "optimistic_cycles": 517
+// VECNORM-L2-DAG: "wavefront_steps": 132
 // VECNORM-L2-DAG: "event_count": 517
 // VECNORM-L2-DAG: "i32:619"
 
@@ -53,13 +61,15 @@
 // INTEGRATE-TRAPZ-DAG: "workload": "integrate_trapz"
 // INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
 // INTEGRATE-TRAPZ-DAG: "status": "pass"
-// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 22
+// INTEGRATE-TRAPZ-DAG: "metric_definition": "optimistic_event_count"
+// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 169
+// INTEGRATE-TRAPZ-DAG: "wavefront_steps": 22
 // INTEGRATE-TRAPZ-DAG: "event_count": 169
 // INTEGRATE-TRAPZ-DAG: "f32:0.335938"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-DAG: dotproduct,131,,blocked,DFG-sim report available
-// SUMMARY-DAG: integrate_trapz,22,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecadd,131,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecnorm_l2,132,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecsum,131,,blocked,DFG-sim report available
+// SUMMARY-DAG: dotproduct,517,,blocked,DFG-sim report available
+// SUMMARY-DAG: integrate_trapz,169,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecadd,453,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l2,517,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecsum,453,,blocked,DFG-sim report available

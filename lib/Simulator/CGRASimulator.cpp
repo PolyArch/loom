@@ -53,9 +53,9 @@ llvm::Expected<llvm::json::Object> parseJsonObject(llvm::StringRef path) {
   return *object;
 }
 
-llvm::Expected<std::uint64_t> requireNonNegativeInteger(
-    const llvm::json::Object &object, llvm::StringRef key,
-    llvm::StringRef path) {
+llvm::Expected<std::uint64_t>
+requireNonNegativeInteger(const llvm::json::Object &object, llvm::StringRef key,
+                          llvm::StringRef path) {
   std::optional<int64_t> value = object.getInteger(key);
   if (!value || *value < 0)
     return llvm::createStringError(std::errc::invalid_argument,
@@ -75,15 +75,14 @@ llvm::Expected<std::string> requireString(const llvm::json::Object &object,
   return value->str();
 }
 
-llvm::Expected<std::string> requireObjectString(
-    const llvm::json::Object &object, llvm::StringRef key,
-    llvm::StringRef diagnosticContext) {
+llvm::Expected<std::string>
+requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
+                    llvm::StringRef diagnosticContext) {
   std::optional<llvm::StringRef> value = object.getString(key);
   if (!value || value->empty())
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s lacks string field %s",
-                                   diagnosticContext.str().c_str(),
-                                   key.str().c_str());
+    return llvm::createStringError(
+        std::errc::invalid_argument, "%s lacks string field %s",
+        diagnosticContext.str().c_str(), key.str().c_str());
   return value->str();
 }
 
@@ -103,7 +102,8 @@ llvm::Error requireKindAndPass(const llvm::json::Object &object,
 }
 
 bool isMemPlacement(llvm::StringRef resourceKind) {
-  return resourceKind == "fabric.mem.load" || resourceKind == "fabric.mem.store";
+  return resourceKind == "fabric.mem.load" ||
+         resourceKind == "fabric.mem.store";
 }
 
 bool isSupportedResourceKind(llvm::StringRef resourceKind) {
@@ -169,7 +169,8 @@ llvm::Error collectConfigEntries(const llvm::json::Object &mapping,
   if (*declaredRecordsOrErr != configArray->size())
     return llvm::createStringError(
         std::errc::invalid_argument,
-        "mapping config_records field %llu does not match config_bitstream size %llu",
+        "mapping config_records field %llu does not match config_bitstream "
+        "size %llu",
         static_cast<unsigned long long>(*declaredRecordsOrErr),
         static_cast<unsigned long long>(configArray->size()));
   report.configRecords = configArray->size();
@@ -242,6 +243,15 @@ llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
           std::errc::invalid_argument,
           "mapping placement resource_kind %s is not supported",
           resourceKind ? resourceKind->str().c_str() : "<missing>");
+    std::optional<llvm::StringRef> operation =
+        placement->getString("operation");
+    if (*resourceKind == "fabric.op" &&
+        (!operation || !isSupportedMappedOperation(*operation)))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping placement operation %s is not "
+                                     "supported by operation semantics",
+                                     operation ? operation->str().c_str()
+                                               : "<missing>");
     if (isMemPlacement(*resourceKind))
       ++memPlacements;
   }
@@ -314,8 +324,8 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
                                        "operation", source, *operationOrErr))
       return err;
     if (llvm::Error err =
-            expectConfig(configEntries, *hardwareOrErr, "resource_kind",
-                         source, *resourceKindOrErr))
+            expectConfig(configEntries, *hardwareOrErr, "resource_kind", source,
+                         *resourceKindOrErr))
       return err;
     if (llvm::Error err = expectConfig(configEntries, *hardwareOrErr,
                                        "schedule", source, *scheduleOrErr))
@@ -338,15 +348,12 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
     if (!toOrErr)
       return toOrErr.takeError();
     std::string source = "route:" + *fromOrErr + "->" + *toOrErr;
-    std::string target =
-        report.mappingId + "::route#" + std::to_string(i);
-    if (llvm::Error err =
-            expectConfig(configEntries, target, "from_software_id", source,
-                         *fromOrErr))
+    std::string target = report.mappingId + "::route#" + std::to_string(i);
+    if (llvm::Error err = expectConfig(configEntries, target,
+                                       "from_software_id", source, *fromOrErr))
       return err;
-    if (llvm::Error err =
-            expectConfig(configEntries, target, "to_software_id", source,
-                         *toOrErr))
+    if (llvm::Error err = expectConfig(configEntries, target, "to_software_id",
+                                       source, *toOrErr))
       return err;
   }
   return llvm::Error::success();
@@ -363,8 +370,8 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (!mappingOrErr)
     return mappingOrErr.takeError();
 
-  if (llvm::Error err =
-          requireKindAndPass(*dfgOrErr, "dfg_sim_report", options.dfgReportPath))
+  if (llvm::Error err = requireKindAndPass(*dfgOrErr, "dfg_sim_report",
+                                           options.dfgReportPath))
     return std::move(err);
   if (llvm::Error err = requireKindAndPass(*mappingOrErr, "pnr_mapping",
                                            options.mappingArtifactPath))
@@ -398,15 +405,13 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     return mappingIdOrErr.takeError();
   report.mappingId = *mappingIdOrErr;
 
-  auto dfgCyclesOrErr =
-      requireNonNegativeInteger(*dfgOrErr, "optimistic_cycles",
-                                options.dfgReportPath);
+  auto dfgCyclesOrErr = requireNonNegativeInteger(
+      *dfgOrErr, "optimistic_cycles", options.dfgReportPath);
   if (!dfgCyclesOrErr)
     return dfgCyclesOrErr.takeError();
   report.dfgCycles = *dfgCyclesOrErr;
-  auto semanticsOrErr =
-      requireString(*dfgOrErr, "operation_semantics_source",
-                    options.dfgReportPath);
+  auto semanticsOrErr = requireString(*dfgOrErr, "operation_semantics_source",
+                                      options.dfgReportPath);
   if (!semanticsOrErr)
     return semanticsOrErr.takeError();
   if (*semanticsOrErr != kOperationSemanticsSource)
@@ -423,9 +428,8 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   report.routeLatencyCycles = report.routedEdges * kRouteLatencyPerEdge;
 
   ConfigEntries configEntries;
-  if (llvm::Error err =
-          collectConfigEntries(*mappingOrErr, options.mappingArtifactPath,
-                               report, configEntries))
+  if (llvm::Error err = collectConfigEntries(
+          *mappingOrErr, options.mappingArtifactPath, report, configEntries))
     return std::move(err);
   if (llvm::Error err =
           validateConfigCoverage(*mappingOrErr, report, configEntries))
@@ -501,9 +505,8 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
   firstPrinciplesChecks.push_back(llvm::json::Object{
       {"name", "delta_explained_by_modeled_constraints"},
       {"status", "pass"},
-      {"evidence",
-       "performance_delta_cycles = route_latency_cycles + "
-       "memory_latency_cycles + temporal_penalty_cycles"},
+      {"evidence", "performance_delta_cycles = route_latency_cycles + "
+                   "memory_latency_cycles + temporal_penalty_cycles"},
   });
 
   llvm::json::Object root{
@@ -523,8 +526,7 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
        static_cast<int64_t>(report.modeledLowerBoundCycles)},
       {"performance_delta_cycles",
        static_cast<int64_t>(report.performanceDeltaCycles)},
-      {"route_latency_cycles",
-       static_cast<int64_t>(report.routeLatencyCycles)},
+      {"route_latency_cycles", static_cast<int64_t>(report.routeLatencyCycles)},
       {"memory_latency_cycles",
        static_cast<int64_t>(report.memoryLatencyCycles)},
       {"temporal_penalty_cycles",

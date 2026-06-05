@@ -5,7 +5,9 @@
 // CHECK-DAG: "workload": "fmuladd"
 // CHECK-DAG: "graph": "fmuladd"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "optimistic_cycles": 2
+// CHECK-DAG: "metric_definition": "optimistic_event_count"
+// CHECK-DAG: "optimistic_cycles": 4
+// CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "f32:10"
 

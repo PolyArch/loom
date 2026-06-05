@@ -5,8 +5,9 @@
 // CHECK-DAG: "workload": "sum_load"
 // CHECK-DAG: "graph": "sum_load"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_event_steps"
-// CHECK-DAG: "optimistic_cycles": 11
+// CHECK-DAG: "metric_definition": "optimistic_event_count"
+// CHECK-DAG: "optimistic_cycles": 25
+// CHECK-DAG: "wavefront_steps": 11
 // CHECK-DAG: "event_count": 25
 // CHECK-DAG: "f32:6"
 

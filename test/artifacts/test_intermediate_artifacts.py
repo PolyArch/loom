@@ -419,10 +419,11 @@ def main() -> int:
                     "workload": "vecadd",
                     "graph": "g_vecadd",
                     "status": "pass",
-                    "metric_definition": "optimistic_event_steps",
+                    "metric_definition": "optimistic_event_count",
                     "operation_semantics_source": "loom.sim.operation_semantics.v1",
                     "optimistic_cycles": 10,
-                    "event_count": 42,
+                    "wavefront_steps": 4,
+                    "event_count": 10,
                     "final_outputs": ["none", "f32:1"],
                     "diagnostics": [],
                 }

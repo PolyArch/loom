@@ -349,6 +349,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "metric_definition",
             "operation_semantics_source",
             "optimistic_cycles",
+            "wavefront_steps",
             "event_count",
             "final_outputs",
             "diagnostics",
@@ -710,7 +711,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DFG simulator report kind must be dfg_sim_report")
         if data.get("status") not in BASE_STATUSES:
             diagnostics.append("DFG simulator report status must be a known status")
-        if data.get("metric_definition") != "optimistic_event_steps":
+        if data.get("metric_definition") != "optimistic_event_count":
             diagnostics.append("DFG simulator report has unknown metric definition")
         if data.get("operation_semantics_source") != "loom.sim.operation_semantics.v1":
             diagnostics.append("DFG simulator report has unknown operation semantics source")
@@ -720,6 +721,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         event_count = data.get("event_count")
         if not isinstance(event_count, int) or event_count < 0:
             diagnostics.append("DFG simulator report event_count must be non-negative integer")
+        wavefront_steps = data.get("wavefront_steps")
+        if not isinstance(wavefront_steps, int) or wavefront_steps < 0:
+            diagnostics.append("DFG simulator report wavefront_steps must be non-negative integer")
+        if isinstance(cycles, int) and isinstance(event_count, int) and cycles != event_count:
+            diagnostics.append("DFG simulator optimistic_cycles must match event_count")
     if kind == "cgra_sim_report":
         if data.get("kind") != "cgra_sim_report":
             diagnostics.append("CGRA simulator report kind must be cgra_sim_report")
