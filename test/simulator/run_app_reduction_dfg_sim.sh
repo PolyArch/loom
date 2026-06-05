@@ -57,6 +57,20 @@ append_linear_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+append_constant_memref() {
+    local index="$1"
+    local count="$2"
+    local value="$3"
+    local values=""
+    for _ in $(seq 1 "${count}"); do
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    sim_args+=(--memref "${index}=${values}")
+}
+
 case "${CASE}" in
     vecadd)
         append_ctrl_tokens 64
@@ -80,6 +94,19 @@ case "${CASE}" in
             --arg 2=64
             --arg 3=1
             --arg 5=100
+        )
+        ;;
+    dotproduct)
+        append_ctrl_tokens 64
+        append_linear_memref 4 64 1 "%.6e"
+        append_constant_memref 5 64 "1.000000e+00"
+        sim_args+=(
+            --graph g_t_dotproduct_red_0_0
+            --workload dotproduct
+            --arg 1=0
+            --arg 2=64
+            --arg 3=1
+            --arg 6=0.000000e+00
         )
         ;;
     *)

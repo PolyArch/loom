@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -455,6 +456,21 @@ bool fireAddI(mlir::arith::AddIOp op, SimulatorState &state) {
   return true;
 }
 
+bool fireFMulAdd(mlir::LLVM::FMulAddOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)) ||
+      !hasToken(state.channels, op->getOpOperand(1)) ||
+      !hasToken(state.channels, op->getOpOperand(2)))
+    return false;
+  Token lhs = popToken(state.channels, op->getOpOperand(0));
+  Token rhs = popToken(state.channels, op->getOpOperand(1));
+  Token acc = popToken(state.channels, op->getOpOperand(2));
+  emitToken(state, op.getRes(),
+            Token{TokenKind::Float, 0,
+                  floatToken(lhs) * floatToken(rhs) + floatToken(acc)});
+  ++state.eventCount;
+  return true;
+}
+
 bool fireIndexCast(mlir::arith::IndexCastOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op->getOpOperand(0)))
     return false;
@@ -517,6 +533,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireAddF(typedOp, state); })
       .Case<mlir::arith::AddIOp>(
           [&](auto typedOp) { return fireAddI(typedOp, state); })
+      .Case<mlir::LLVM::FMulAddOp>(
+          [&](auto typedOp) { return fireFMulAdd(typedOp, state); })
       .Case<mlir::arith::IndexCastOp>(
           [&](auto typedOp) { return fireIndexCast(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
@@ -530,7 +548,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,
                 dataflow::LoadOp, dataflow::StoreOp, mlir::arith::AddIOp,
-                mlir::arith::IndexCastOp, mlir::arith::ConstantOp>(op))
+                mlir::LLVM::FMulAddOp, mlir::arith::IndexCastOp,
+                mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }
