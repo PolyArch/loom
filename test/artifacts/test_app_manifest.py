@@ -18,6 +18,7 @@ EXPECTED_CASES = {
     "clz",
     "compare_swap",
     "conv1d",
+    "crc32",
     "ctz",
     "delta_encode",
     "dot_product_3d",
