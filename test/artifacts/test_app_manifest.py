@@ -64,6 +64,7 @@ EXPECTED_CASES = {
     "mean",
     "mat3x3_mult",
     "matmul",
+    "mmtile",
     "matvec",
     "merge",
     "moving_avg",
