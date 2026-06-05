@@ -305,9 +305,21 @@ def output_path(raw: str) -> Path:
     return path
 
 
+def csv_header(kind: str) -> list[str]:
+    schema = CSV_SCHEMAS[kind]
+    return list(schema.first_columns) + list(schema.extra_columns)
+
+
+def write_csv_rows(kind: str, output: Path, rows: Iterable[dict[str, str]]) -> None:
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=csv_header(kind))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def write_csv(kind: str, output: Path) -> None:
     schema = CSV_SCHEMAS[kind]
-    header = list(schema.first_columns) + list(schema.extra_columns)
+    header = csv_header(kind)
     if len(schema.scaffold_row) != len(header):
         raise ValueError(
             f"{kind} scaffold row has {len(schema.scaffold_row)} cells "

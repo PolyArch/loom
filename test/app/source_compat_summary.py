@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import shutil
 import subprocess
@@ -17,9 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
-
-
-HEADER = ["case", "suite", "native_status", "loom_status", "mode", "diagnostic"]
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -70,10 +66,7 @@ def run_case(source_dir: Path, cc: str, cxx: str) -> tuple[str, str]:
 
 def write_rows(output: Path, rows: list[dict[str, str]]) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=HEADER)
-        writer.writeheader()
-        writer.writerows(rows)
+    intermediate_artifacts.write_csv_rows("source_compat", output, rows)
 
 
 def main(argv: list[str]) -> int:
