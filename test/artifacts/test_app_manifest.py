@@ -22,6 +22,7 @@ EXPECTED_CASES = {
     "compare_swap",
     "convolve_1d",
     "convolve_1d_same",
+    "correlation",
     "conv1d",
     "crc32",
     "cross_product",
