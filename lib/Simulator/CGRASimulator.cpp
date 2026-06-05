@@ -1,6 +1,7 @@
 #include "Simulator/CGRASimulator.h"
 
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Simulator/OperationSemantics.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -38,6 +39,11 @@ struct ConfigEntries {
   llvm::StringSet<> writtenRegisters;
 };
 
+struct HardwareArtifactResource {
+  std::string resourceKind;
+  llvm::StringSet<> supportedOps;
+};
+
 llvm::Error createParentDirectories(llvm::StringRef outputPath) {
   llvm::SmallString<256> parent(outputPath);
   llvm::sys::path::remove_filename(parent);
@@ -54,20 +60,96 @@ std::optional<std::string> symbolName(mlir::Operation *op) {
   return std::nullopt;
 }
 
-bool containsFabricModule(mlir::ModuleOp module, llvm::StringRef symbol) {
-  bool found = false;
+mlir::Operation *findFabricModule(mlir::ModuleOp module,
+                                  llvm::StringRef symbol) {
+  mlir::Operation *found = nullptr;
   module.walk([&](mlir::Operation *op) {
     if (found || op->getName().getStringRef() != "fabric.module")
       return;
     std::optional<std::string> name = symbolName(op);
     if (name && *name == symbol)
-      found = true;
+      found = op;
   });
   return found;
 }
 
+std::uint64_t integerAttrValue(mlir::Attribute attr) {
+  if (auto intAttr = llvm::dyn_cast_if_present<mlir::IntegerAttr>(attr))
+    return static_cast<std::uint64_t>(intAttr.getInt());
+  return 0;
+}
+
+void addHardwareResource(llvm::StringMap<HardwareArtifactResource> &resources,
+                         llvm::StringRef resourceId,
+                         llvm::StringRef resourceKind) {
+  HardwareArtifactResource resource;
+  resource.resourceKind = resourceKind.str();
+  resources.try_emplace(resourceId, std::move(resource));
+}
+
+void appendHardwareMemResources(
+    mlir::Operation *op, llvm::StringRef hardwareName,
+    llvm::StringMap<HardwareArtifactResource> &resources) {
+  std::uint64_t loadPorts = 0;
+  std::uint64_t storePorts = 0;
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (hwParams && !hwParams.empty()) {
+    if (auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0])) {
+      loadPorts = integerAttrValue(dict.get("load_group_size"));
+      storePorts = integerAttrValue(dict.get("store_group_size"));
+    }
+  }
+  for (std::uint64_t i = 0; i < loadPorts; ++i)
+    addHardwareResource(resources,
+                        (hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
+                        "fabric.mem.load");
+  for (std::uint64_t i = 0; i < storePorts; ++i)
+    addHardwareResource(resources,
+                        (hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
+                        "fabric.mem.store");
+}
+
+void appendHardwareOpResource(
+    mlir::Operation *op, llvm::StringRef hardwareName, unsigned index,
+    llvm::StringMap<HardwareArtifactResource> &resources) {
+  auto opList = op->getAttrOfType<mlir::ArrayAttr>("op_list");
+  if (!opList)
+    return;
+  HardwareArtifactResource resource;
+  resource.resourceKind = "fabric.op";
+  for (mlir::Attribute attr : opList) {
+    if (auto sym = llvm::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
+      resource.supportedOps.insert(sym.getValue());
+  }
+  resources.try_emplace(
+      (hardwareName + "::fabric.op#" + llvm::Twine(index)).str(),
+      std::move(resource));
+}
+
+llvm::StringMap<HardwareArtifactResource>
+collectHardwareArtifactResources(mlir::Operation *hardware,
+                                 llvm::StringRef hardwareName) {
+  llvm::StringMap<HardwareArtifactResource> resources;
+  unsigned fabricOpIndex = 0;
+  hardware->walk([&](mlir::Operation *op) {
+    llvm::StringRef opName = op->getName().getStringRef();
+    if (opName == "fabric.op") {
+      appendHardwareOpResource(op, hardwareName, fabricOpIndex++, resources);
+      return;
+    }
+    if (opName == "fabric.mem")
+      appendHardwareMemResources(op, hardwareName, resources);
+  });
+  return resources;
+}
+
+llvm::Expected<std::string>
+requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
+                    llvm::StringRef diagnosticContext);
+
 llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
-                                     llvm::StringRef hardwareName) {
+                                     llvm::StringRef hardwareName,
+                                     const llvm::json::Object &mapping) {
   if (hardwareMlirPath.empty())
     return llvm::Error::success();
 
@@ -81,11 +163,55 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
     return llvm::createStringError(std::errc::invalid_argument,
                                    "could not parse hardware artifact %s",
                                    hardwareMlirPath.str().c_str());
-  if (!containsFabricModule(*module, hardwareName))
+  mlir::Operation *hardware = findFabricModule(*module, hardwareName);
+  if (!hardware)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "hardware artifact does not contain fabric.module %s",
         hardwareName.str().c_str());
+  llvm::StringMap<HardwareArtifactResource> resources =
+      collectHardwareArtifactResources(hardware, hardwareName);
+  const llvm::json::Array *placements = mapping.getArray("placements");
+  if (!placements)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping artifact lacks placements");
+  for (const llvm::json::Value &value : *placements) {
+    const llvm::json::Object *placement = value.getAsObject();
+    if (!placement)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping placement is not an object");
+    auto hardwareOrErr =
+        requireObjectString(*placement, "hardware", "mapping placement");
+    if (!hardwareOrErr)
+      return hardwareOrErr.takeError();
+    auto resourceKindOrErr =
+        requireObjectString(*placement, "resource_kind", "mapping placement");
+    if (!resourceKindOrErr)
+      return resourceKindOrErr.takeError();
+    auto operationOrErr =
+        requireObjectString(*placement, "operation", "mapping placement");
+    if (!operationOrErr)
+      return operationOrErr.takeError();
+
+    auto resourceIt = resources.find(*hardwareOrErr);
+    if (resourceIt == resources.end())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware artifact does not contain resource %s",
+          hardwareOrErr->c_str());
+    if (resourceIt->second.resourceKind != *resourceKindOrErr)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware resource %s has kind %s but mapping requires %s",
+          hardwareOrErr->c_str(), resourceIt->second.resourceKind.c_str(),
+          resourceKindOrErr->c_str());
+    if (*resourceKindOrErr == "fabric.op" &&
+        !resourceIt->second.supportedOps.contains(*operationOrErr))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware resource %s does not support operation %s",
+          hardwareOrErr->c_str(), operationOrErr->c_str());
+  }
   return llvm::Error::success();
 }
 
@@ -521,14 +647,14 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     return hardwareOrErr.takeError();
   report.hardware = *hardwareOrErr;
   report.hardwareArtifact = options.hardwareMlirPath;
-  if (llvm::Error err =
-          validateHardwareArtifact(options.hardwareMlirPath, report.hardware))
-    return std::move(err);
   auto mappingIdOrErr =
       requireString(*mappingOrErr, "mapping_id", options.mappingArtifactPath);
   if (!mappingIdOrErr)
     return mappingIdOrErr.takeError();
   report.mappingId = *mappingIdOrErr;
+  if (llvm::Error err = validateHardwareArtifact(
+          options.hardwareMlirPath, report.hardware, *mappingOrErr))
+    return std::move(err);
 
   auto dfgCyclesOrErr = requireNonNegativeInteger(
       *dfgOrErr, "optimistic_cycles", options.dfgReportPath);

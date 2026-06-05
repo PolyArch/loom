@@ -155,6 +155,12 @@ A CGRA-sim report must identify:
 * trace location or inline trace summary;
 * diagnostics.
 
+When invoked with an explicit Fabric ADG artifact, CGRA-sim must reject
+a mapping whose placement records reference hardware resources that do
+not exist in that artifact. For `fabric.op` placements, the referenced
+hardware resource must support the mapped software operation through its
+declared `op_list`.
+
 ## Non-Goals
 
 CGRA-sim is not PnR. It does not choose mappings.
