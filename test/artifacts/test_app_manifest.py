@@ -63,6 +63,7 @@ EXPECTED_CASES = {
     "scatter_add",
     "sbox_lookup",
     "sigmoid",
+    "softmax",
     "transpose",
     "transform_point",
     "unpack_bits",

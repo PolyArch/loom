@@ -1,0 +1,2 @@
+softmax checksum: 1.000000
+PASSED
