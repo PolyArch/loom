@@ -9,8 +9,12 @@ target_link_libraries(loom-dfg-sim
   LoomSimulator
   MLIRArithDialect
   MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRParser
+  MLIRSCFDialect
   MLIRSupport
   MLIRTransforms
 )

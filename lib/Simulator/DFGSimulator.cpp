@@ -66,6 +66,7 @@ struct SimulatorState {
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
   llvm::DenseMap<mlir::Value, MemoryValue> memories;
+  llvm::DenseMap<mlir::Value, std::string> rawMemoryFixtures;
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
@@ -457,7 +458,8 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
 }
 
 bool isSupportedNonEvent(mlir::Operation *op) {
-  return mlir::isa<dataflow::GraphReturnOp>(op);
+  return mlir::isa<dataflow::GraphReturnOp, mlir::UnrealizedConversionCastOp>(
+      op);
 }
 
 dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
@@ -563,6 +565,41 @@ void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
   state.observedOutputs[arg].push_back(token);
 }
 
+llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (mlir::Operation &op : entry.getOperations()) {
+      if (!mlir::isa<mlir::UnrealizedConversionCastOp>(op) ||
+          op.getNumOperands() != 1 || op.getNumResults() != 1)
+        continue;
+      mlir::Value source = op.getOperand(0);
+      mlir::Value target = op.getResult(0);
+      if (state.memories.contains(target))
+        continue;
+      auto memoryIt = state.memories.find(source);
+      if (memoryIt != state.memories.end()) {
+        state.memories[target] = memoryIt->second;
+        changed = true;
+        continue;
+      }
+      auto rawIt = state.rawMemoryFixtures.find(source);
+      auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
+      if (rawIt == state.rawMemoryFixtures.end() || !targetMemref)
+        continue;
+      auto tokensOrErr =
+          parseMemoryTokens(rawIt->second, targetMemref.getElementType());
+      if (!tokensOrErr)
+        return tokensOrErr.takeError();
+      state.memories[target] =
+          MemoryValue{targetMemref.getElementType(), std::move(*tokensOrErr)};
+      state.rawMemoryFixtures[target] = rawIt->second;
+      changed = true;
+    }
+  }
+  return llvm::Error::success();
+}
+
 bool hasIncompleteStreamLoads(mlir::Block &entry, SimulatorState &state) {
   bool incomplete = false;
   for (mlir::Operation &op : entry.getOperations()) {
@@ -646,10 +683,15 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       continue;
     }
 
-    if (memories.contains(key))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "non-memref argument %u must use --arg",
-                                     unsigned(index));
+    if (memories.contains(key)) {
+      if (args.contains(key))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "memory fixture argument %u must not also use --arg",
+            unsigned(index));
+      state.rawMemoryFixtures[arg] = memories.lookup(key);
+      continue;
+    }
     auto argIt = args.find(key);
     if (argIt == args.end())
       return llvm::createStringError(std::errc::invalid_argument,
@@ -665,6 +707,9 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       seedBlockArgument(state, arg, *tokenOrErr);
     }
   }
+
+  if (llvm::Error err = propagateMemoryAliases(entry, state))
+    return std::move(err);
 
   llvm::StringSet<> unsupported;
   for (mlir::Operation &op : entry.getOperations()) {

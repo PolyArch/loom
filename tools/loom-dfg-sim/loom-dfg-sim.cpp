@@ -2,6 +2,10 @@
 #include "Simulator/DFGSimulator.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -88,7 +92,9 @@ int main(int argc, char **argv) {
       "loom-dfg-sim: execute a pure dataflow.graph.func token model\n");
 
   mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect>();
+  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+                  mlir::DLTIDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect>();
 
   mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects();
