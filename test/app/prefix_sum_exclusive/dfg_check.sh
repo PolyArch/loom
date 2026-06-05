@@ -24,4 +24,20 @@ dfg_one "main_func" "cpp"
 require_kernel_graph "main_func" "prefix_sum_exclusive_kernel"
 dfg_one "main_inline" "cpp"
 
+if ! awk '
+    /dataflow\.graph\.func private @g_t_prefix_sum_exclusive_kernel_/ {
+        in_graph = 1
+    }
+    in_graph && /llvm\.load/ {
+        found = 1
+    }
+    in_graph && /dataflow\.graph\.return/ {
+        in_graph = 0
+    }
+    END { exit found ? 0 : 1 }
+' "${BUILD_DIR}/main_func.dfg.mlir"; then
+    echo "[${KERNEL}/main_func] no residual llvm.load in prefix_sum_exclusive_kernel graph" >&2
+    exit 1
+fi
+
 echo "[${KERNEL}] PASS"

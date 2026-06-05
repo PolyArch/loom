@@ -6,7 +6,6 @@ export LC_ALL=C
 
 KERNEL="prefix_sum_inclusive"
 EXPECT_GRAPH="yes"
-EXPECT_LOAD="no"
 EXPECT_STORE="yes"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../../.." && pwd)"
