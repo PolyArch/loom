@@ -18,6 +18,7 @@ EXPECTED_CASES = {
     "bitrev",
     "bitrev_complex",
     "bitonic_stage",
+    "bitonic_stage-modified",
     "byte_swap",
     "bisection_step",
     "binary_search",
