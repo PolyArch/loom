@@ -154,6 +154,11 @@ DFG-sim is not CGRA-sim. It does not model hardware resource limits.
 
 DFG-sim is not RTL simulation. It does not execute generated hardware.
 
+DFG-sim may be selected through the runtime ABI specified in
+`docs/spec-runtime-abi.md`, but runtime dispatch does not change the
+DFG-sim input boundary: DFG-sim consumes dataflow IR and software
+runtime data, not Fabric ADG or mapping artifacts.
+
 ## Acceptance Criteria
 
 DFG-sim is complete at the target-spec level when:

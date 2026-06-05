@@ -201,6 +201,8 @@ runtime support for:
 * generated configuration data;
 * simulator or profiling hooks.
 
+The target runtime ABI is specified in `docs/spec-runtime-abi.md`.
+
 Runtime requirements must be explicit. If an invocation requests an
 accelerated binary but the required runtime is unavailable, the driver
 must diagnose the missing runtime rather than silently producing a

@@ -125,6 +125,12 @@ CGRA-sim reports may be consumed by DSE and later PnR runs as feedback.
 They do not modify the original mapping artifact unless a separate tool
 explicitly creates a new artifact or mapping-set manifest.
 
+Runtime simulator routing is specified in `docs/spec-runtime-abi.md`.
+If the runtime dispatches a launch to CGRA-sim, it must provide the
+dataflow IR, Fabric ADG, mapping artifact, runtime input data, and
+simulator configuration required by this spec. CGRA-sim must not infer
+missing mapping facts from runtime state.
+
 ## Determinism
 
 Given the same dataflow IR, Fabric ADG, mapping artifact, runtime input,

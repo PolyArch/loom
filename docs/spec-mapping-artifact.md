@@ -32,6 +32,11 @@ Fabric ADG remains the source of truth for hardware architecture.
 Dataflow IR remains the source of truth for software semantics. The
 mapping artifact records one chosen relation between them.
 
+The runtime ABI specified in `docs/spec-runtime-abi.md` may consume a
+mapping artifact, but it must not mutate the artifact or use runtime
+state as a substitute for missing placement, route, schedule, buffer,
+memory, or resource-sharing records.
+
 ## Core Rule
 
 A mapping artifact must not mutate the software or hardware IR it

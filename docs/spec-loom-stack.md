@@ -220,6 +220,18 @@ input data. Differences are acceptable only when they are explained by
 hardware constraints that DFG-sim intentionally ignores. The comparison
 contract is specified in `docs/spec-sim-comparison.md`.
 
+## Runtime ABI
+
+The runtime ABI connects compiled host code, accelerator work packages,
+mapping artifacts, memory descriptors, simulator hooks, and hardware
+targets. It does not redefine dataflow or fabric semantics. Runtime
+launch handles are host-visible dynamic execution handles; they are not
+`!dataflow.thread_token` values and are not `none`-typed dataflow
+control tokens.
+
+The target runtime contract is specified in
+`docs/spec-runtime-abi.md`.
+
 ## RTL and Estimation
 
 Fabric hardware descriptions must eventually lower to synthesizable and
