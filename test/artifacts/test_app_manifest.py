@@ -21,6 +21,7 @@ EXPECTED_CASES = {
     "ctz",
     "dot_product_3d",
     "dotproduct",
+    "downsample",
     "find_first_set",
     "fir_filter",
     "gemm",

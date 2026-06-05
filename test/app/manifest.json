@@ -74,6 +74,14 @@
       "feature_tags": ["reduction", "vector"]
     },
     {
+      "case": "downsample",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["signal", "resampling", "strided-read"]
+    },
+    {
       "case": "dot_product_3d",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
