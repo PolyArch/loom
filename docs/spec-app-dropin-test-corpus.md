@@ -197,22 +197,42 @@ stable, and justified by the test contract.
 
 When importing app cases from a prior corpus:
 
+* first create a complete import inventory that lists every source case
+  from the prior corpus;
 * preserve each case as a standalone source package;
 * preserve the reference-oracle behavior;
 * normalize build and runner metadata to the target manifest format;
 * classify each case by validation tiers and feature tags;
-* record unsupported-scope reasons instead of deleting difficult cases;
+* record unsupported-scope or excluded-case reasons instead of silently
+  deleting difficult cases;
 * add representative negative tests for the manifest and runner
   machinery before depending on the full corpus.
 
 Importing the corpus is a test-suite migration. It must not mutate
 dataflow, fabric, PnR, simulator, or runtime semantics by itself.
 
+Every case in the import inventory must end in exactly one state:
+
+* accepted into `test/app` with a manifest entry;
+* deferred with a structured unsupported-scope record and owner
+  category;
+* excluded with a stable reason, such as duplicate coverage,
+  nondeterministic behavior, external dependency, or invalid oracle.
+
+Silent omission from the imported corpus is illegal.
+
 ## Acceptance Criteria
 
 The app drop-in corpus target is complete when:
 
+* the import inventory covers every source case from the approved prior
+  corpus snapshot;
+* every inventoried case is accepted, deferred, or excluded with a
+  structured reason;
 * every accepted case under `test/app` is described by the manifest;
+* committed `test/app` case directories do not contain generated build
+  outputs unless they are small checked-in golden artifacts justified by
+  the test contract;
 * all cases pass the baseline native build-and-run tier;
 * all required cases pass the Loom drop-in build-and-run tier;
 * supported cases can proceed through LLVM IR, raise, and dataflow
