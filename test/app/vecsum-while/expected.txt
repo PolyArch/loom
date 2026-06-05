@@ -1,0 +1,2 @@
+vecsum-while result: 120
+PASSED
