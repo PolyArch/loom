@@ -176,6 +176,8 @@ Rules:
 
 * `placed_records`, `routed_edges`, and `unrouted_edges` are
   non-negative integers.
+* Blocked or unsupported rows must include a diagnostic column explaining
+  the missing upstream artifact, profile, or mapping implementation.
 * `status = pass` requires a non-empty `mapping_id`, positive placed
   records, and no unrouted edges unless the mapping profile explicitly
   permits partial mappings.
