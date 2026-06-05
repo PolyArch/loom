@@ -79,7 +79,7 @@ SKIP_FILE="${HERE}/cmsis_nn_dfg_skip.txt"
 NN_ROOT="${REPO_ROOT}/externals/cmsis-nn"
 SRC_ROOT="${NN_ROOT}/Source"
 NN_INC="${NN_ROOT}/Include"
-OUT_ROOT="${OUT_OVERRIDE:-${HERE}/out/dfg}"
+OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-nn" "dfg")}"
 
 LABEL="cmsis-nn-dfg"
 

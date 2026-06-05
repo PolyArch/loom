@@ -41,6 +41,9 @@ export LC_ALL=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 
+# shellcheck source=../cmsis-common.sh
+source "${HERE}/../cmsis-common.sh"
+
 LOOM_CC_DEFAULT="${REPO_ROOT}/build/bin/loom-cc"
 LOOM_CC="${LOOM_CC:-${LOOM_CC_DEFAULT}}"
 
@@ -48,7 +51,7 @@ TARGETS_FILE="${TARGETS_OVERRIDE:-${HERE}/cmsis_nn_targets.txt}"
 NN_ROOT="${REPO_ROOT}/externals/cmsis-nn"
 SRC_ROOT="${NN_ROOT}/Source"
 NN_INC="${NN_ROOT}/Include"
-OUT_ROOT="${OUT_OVERRIDE:-${HERE}/out/ir}"
+OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-nn" "ir")}"
 
 if [[ ! -x "${LOOM_CC}" ]]; then
     echo "[cmsis-nn-smoke] loom-cc not found or not executable at: ${LOOM_CC}" >&2

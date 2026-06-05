@@ -34,6 +34,17 @@ def run(repo: Path, argv: list[str]) -> None:
         )
 
 
+def run_raw(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     temp_root = repo / "temp" / "test-runs"
@@ -102,6 +113,47 @@ def main() -> int:
             raise AssertionError(f"unexpected edges: {edge_pairs}")
         if data["diagnostics"]:
             raise AssertionError(f"unexpected diagnostics: {data['diagnostics']}")
+
+        left_dir = out_dir / "left"
+        right_dir = out_dir / "right"
+        left_dir.mkdir()
+        right_dir.mkdir()
+        duplicate_left = left_dir / "compiler-pipeline-summary.csv"
+        duplicate_right = right_dir / "compiler-pipeline-summary.csv"
+        duplicate_left.write_text(pipeline.read_text())
+        duplicate_right.write_text(pipeline.read_text())
+        duplicate_manifest = out_dir / "duplicate-full-stack-artifact-manifest.json"
+        result = run_raw(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                "--artifact",
+                str(duplicate_left),
+                "--artifact",
+                str(duplicate_right),
+                "--output",
+                str(duplicate_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("duplicate artifact id unexpectedly produced a passing manifest")
+        duplicate_data = json.loads(duplicate_manifest.read_text())
+        if not duplicate_data.get("diagnostics"):
+            raise AssertionError(f"duplicate manifest should record diagnostics: {duplicate_data}")
+        audit = out_dir / "duplicate-artifact-audit-summary.json"
+        result = run_raw(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(audit),
+                str(duplicate_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("manifest with blocked diagnostics unexpectedly passed audit")
 
     return 0
 

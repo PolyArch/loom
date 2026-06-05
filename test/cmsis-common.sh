@@ -47,6 +47,15 @@ cmsis_common_make_temp_dir() {
     mktemp -d -p "${temp_root}" "${prefix}.XXXXXX"
 }
 
+cmsis_common_default_out_dir() {
+    local repo_root="$1"
+    local corpus="$2"
+    local stage="$3"
+    local out_root="${repo_root}/temp/test-runs/${corpus}/${stage}"
+    mkdir -p "${out_root}"
+    printf '%s\n' "${out_root}"
+}
+
 cmsis_common_libc_defines() {
     local -n _arr=$1
     _arr=(

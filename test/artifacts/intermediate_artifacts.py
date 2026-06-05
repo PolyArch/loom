@@ -540,6 +540,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         diagnostics.append(f"missing keys {missing}")
     if data.get("schema_version") != 1:
         diagnostics.append("schema_version must be 1")
+    if kind == "artifact_manifest" and data.get("diagnostics"):
+        diagnostics.append("artifact manifest contains blocked diagnostics")
     if kind == "artifact_audit" and data.get("verdict") not in {"pass", "fail"}:
         diagnostics.append("artifact audit verdict must be pass or fail")
     return {

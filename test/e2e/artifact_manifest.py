@@ -119,8 +119,9 @@ def main(argv: list[str]) -> int:
         intermediate_artifacts.write_json("artifact_manifest", intermediate_artifacts.output_path(args.output))
         return 0
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(build_manifest(paths), indent=2, sort_keys=True) + "\n")
-    return 0
+    manifest = build_manifest(paths)
+    output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return 1 if manifest["diagnostics"] else 0
 
 
 if __name__ == "__main__":

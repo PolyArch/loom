@@ -81,7 +81,7 @@ SRC_ROOT="${DSP_ROOT}/Source"
 DSP_INC="${DSP_ROOT}/Include"
 DSP_PRIV_INC="${DSP_ROOT}/PrivateInclude"
 CORE_INC="${REPO_ROOT}/externals/cmsis-core/CMSIS/Core/Include"
-OUT_ROOT="${OUT_OVERRIDE:-${HERE}/out/dfg}"
+OUT_ROOT="${OUT_OVERRIDE:-$(cmsis_common_default_out_dir "${REPO_ROOT}" "cmsis-dsp" "dfg")}"
 
 LABEL="cmsis-dsp-dfg"
 
