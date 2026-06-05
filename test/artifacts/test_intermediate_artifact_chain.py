@@ -67,16 +67,28 @@ def main() -> int:
         if missing:
             raise AssertionError(f"missing chain artifacts: {missing}")
 
-        sim_rows = read_csv_rows(out_dir / "sim-cycle-summary.csv")
-        vecadd_rows = [row for row in sim_rows if row["kernel"] == "vecadd"]
-        if len(vecadd_rows) != 1:
-            raise AssertionError(f"expected one vecadd sim row, got {sim_rows}")
+        mapping_rows = read_csv_rows(out_dir / "pnr-mapping-summary.csv")
+        vecsum_mapping_rows = [row for row in mapping_rows if row["workload"] == "vecsum"]
+        if len(vecsum_mapping_rows) != 1:
+            raise AssertionError(f"expected one vecsum mapping row, got {mapping_rows}")
         if (
-            vecadd_rows[0]["dfg_sim_cycles"] != ""
-            or vecadd_rows[0]["cgra_sim_cycles"] != ""
-            or vecadd_rows[0].get("status") != "blocked"
+            vecsum_mapping_rows[0]["mapping_id"] != "vecsum__shared_reduction_adg"
+            or vecsum_mapping_rows[0]["placed_records"] != "6"
+            or vecsum_mapping_rows[0]["routed_edges"] != "8"
+            or vecsum_mapping_rows[0].get("status") != "pass"
         ):
-            raise AssertionError(f"sim row must not fake simulator cycle evidence: {vecadd_rows[0]}")
+            raise AssertionError(f"expected real vecsum mapping evidence: {vecsum_mapping_rows[0]}")
+
+        sim_rows = read_csv_rows(out_dir / "sim-cycle-summary.csv")
+        vecsum_rows = [row for row in sim_rows if row["kernel"] == "vecsum"]
+        if len(vecsum_rows) != 1:
+            raise AssertionError(f"expected one vecsum sim row, got {sim_rows}")
+        if (
+            vecsum_rows[0]["dfg_sim_cycles"] != ""
+            or vecsum_rows[0]["cgra_sim_cycles"] != ""
+            or vecsum_rows[0].get("status") != "blocked"
+        ):
+            raise AssertionError(f"sim row must not fake simulator cycle evidence: {vecsum_rows[0]}")
 
         import_rows = read_csv_rows(out_dir / "app-corpus-import-status.csv")
         states = {row["case"]: row["import_state"] for row in import_rows}

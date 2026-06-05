@@ -52,7 +52,7 @@ def main() -> int:
                 raise AssertionError(f"blocked row must not fake {column}: {row}")
         if row["status"] != "blocked":
             raise AssertionError(f"mapping row should be blocked: {row}")
-        if "PnR mapping artifact producer is not implemented yet" not in row.get("diagnostic", ""):
+        if "explicit mapper inputs are required" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
 
         dfg_dir = out_dir / "vecsum-dfg"

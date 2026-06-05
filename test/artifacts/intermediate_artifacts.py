@@ -929,6 +929,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         for row in grouped.get("adg_hardware", [])
         if row.get("verify_status") == "pass" and valid_identity(row.get("hardware"))
     }
+    hardware_symbols = {candidate.rsplit("::", 1)[-1] for candidate in hardware}
     pnr_rows = [
         row
         for row in grouped.get("pnr_mapping", [])
@@ -1239,7 +1240,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
 
     if hardware:
         for row in pnr_rows:
-            if row["hardware"] not in hardware:
+            if row["hardware"] not in hardware and row["hardware"] not in hardware_symbols:
                 findings.append(
                     cross_finding(
                         "pnr_hardware_resolves",

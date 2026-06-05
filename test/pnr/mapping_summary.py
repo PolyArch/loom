@@ -41,7 +41,7 @@ def mapping_row(workload: str, hardware: str) -> dict[str, str]:
         "unrouted_edges": "",
         "unplaced_records": "",
         "status": "blocked",
-        "diagnostic": "PnR mapping artifact producer is not implemented yet; software and hardware candidates were discovered",
+        "diagnostic": "explicit mapper inputs are required for real PnR mapping; software and hardware candidates were discovered",
     }
 
 

@@ -10,7 +10,7 @@ USAGE
 }
 
 OUT_DIR=""
-CASE="vecadd"
+CASE="vecsum"
 LEGACY_APP_ROOT="${ROOT}/temp/old_implementation_loom/loom/tests/app"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +54,7 @@ cmsis_compiler_pipeline="${OUT_DIR}/cmsis-compiler-pipeline-summary.csv"
 primitive="${OUT_DIR}/dataflow-primitive-coverage.csv"
 hardware="${OUT_DIR}/adg-hardware-summary.csv"
 mapping="${OUT_DIR}/pnr-mapping-summary.csv"
+mapping_artifact="${OUT_DIR}/pnr-mapping.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
 rtl_fpa="${OUT_DIR}/rtl-fpa-summary.csv"
 manifest="${OUT_DIR}/full-stack-artifact-manifest.json"
@@ -81,11 +82,22 @@ bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
   --case "${CASE}" \
   --output "${primitive}"
 bash "${ROOT}/test/fabric/run_adg_hardware_summary.sh" \
-  --input "${ROOT}/test/fabric/unit/pe/valid.mlir" \
+  --input "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
   --output "${hardware}"
+vecsum_dfg_dir="${OUT_DIR}/vecsum-dfg"
+env BUILD_DIR="${vecsum_dfg_dir}" \
+  LOOM_CC="${ROOT}/build/bin/loom-cc" \
+  LOOM_RAISE="${ROOT}/build/bin/loom-raise" \
+  LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
+  LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
+  bash "${ROOT}/test/app/vecsum/dfg_check.sh"
 bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
-  --primitive-coverage "${primitive}" \
-  --hardware-summary "${hardware}" \
+  --dfg-mlir "${vecsum_dfg_dir}/main_func.dfg.mlir" \
+  --graph g_t_vecsum_red_0_0 \
+  --hardware-mlir "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
+  --hardware shared_reduction_adg \
+  --workload vecsum \
+  --artifact "${mapping_artifact}" \
   --output "${mapping}"
 bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
   --primitive-coverage "${primitive}" \
