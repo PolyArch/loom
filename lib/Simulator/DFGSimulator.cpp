@@ -44,6 +44,7 @@ using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
 struct StreamState {
   bool initialized = false;
   bool done = false;
+  std::uint64_t trueEmissions = 0;
   std::int64_t current = 0;
   std::int64_t ub = 0;
   std::int64_t step = 0;
@@ -68,6 +69,7 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::SmallVector<std::string> diagnostics;
   std::uint64_t eventCount = 0;
@@ -282,10 +284,12 @@ bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   const bool cont = evaluateCont(stream.current, stream.ub, op.getContCond());
   emitToken(state, op.getIndex(), Token{TokenKind::Integer, stream.current});
   emitToken(state, op.getRwc(), Token{TokenKind::Bool, 0, 0.0, cont});
-  if (cont)
+  if (cont) {
+    ++stream.trueEmissions;
     stream.current = stepIndex(stream.current, stream.step, op.getStepOp());
-  else
+  } else {
     stream.done = true;
+  }
   ++state.eventCount;
   return true;
 }
@@ -376,25 +380,26 @@ bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
 }
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op->getOpOperand(1)) ||
-      !hasToken(state.channels, op->getOpOperand(2)))
+  if (!hasToken(state.channels, op.getAddrMutable()) ||
+      !hasToken(state.channels, op.getCtrlMutable()))
     return false;
-  auto memIt = state.memories.find(op->getOperand(0));
+  auto memIt = state.memories.find(op.getMem());
   if (memIt == state.memories.end()) {
     state.diagnostics.push_back("dataflow.load has no memref fixture");
     return false;
   }
-  Token addr = popToken(state.channels, op->getOpOperand(1));
-  popToken(state.channels, op->getOpOperand(2));
+  Token addr = popToken(state.channels, op.getAddrMutable());
+  popToken(state.channels, op.getCtrlMutable());
   const std::int64_t index = integerToken(addr);
   if (index < 0 ||
       static_cast<std::size_t>(index) >= memIt->second.elements.size()) {
     state.diagnostics.push_back("dataflow.load address is out of range");
     return false;
   }
-  emitToken(state, op->getResult(0),
+  emitToken(state, op.getData(),
             memIt->second.elements[static_cast<std::size_t>(index)]);
-  emitToken(state, op->getResult(1), Token{TokenKind::None});
+  emitToken(state, op.getDone(), Token{TokenKind::None});
+  ++state.loadFireCounts[op.getOperation()];
   ++state.eventCount;
   return true;
 }
@@ -453,6 +458,15 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
 
 bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp>(op);
+}
+
+dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
+  if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
+    value = cast.getIn();
+  auto stream = value.getDefiningOp<dataflow::StreamOp>();
+  if (!stream || stream.getIndex() != value)
+    return {};
+  return stream;
 }
 
 bool fireOperation(mlir::Operation *op, SimulatorState &state) {
@@ -547,6 +561,29 @@ void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
   for (mlir::OpOperand &use : arg.getUses())
     state.channels[&use].push_back(token);
   state.observedOutputs[arg].push_back(token);
+}
+
+bool hasIncompleteStreamLoads(mlir::Block &entry, SimulatorState &state) {
+  bool incomplete = false;
+  for (mlir::Operation &op : entry.getOperations()) {
+    auto load = mlir::dyn_cast<dataflow::LoadOp>(op);
+    if (!load)
+      continue;
+    dataflow::StreamOp stream = findStreamIndexSource(load.getAddr());
+    if (!stream)
+      continue;
+    const std::uint64_t required =
+        state.streamStates[stream.getOperation()].trueEmissions;
+    const std::uint64_t actual = state.loadFireCounts[load.getOperation()];
+    if (actual >= required)
+      continue;
+    incomplete = true;
+    state.diagnostics.push_back(
+        llvm::formatv("dataflow.load consumed {0} of {1} true stream indices",
+                      actual, required)
+            .str());
+  }
+  return incomplete;
 }
 
 } // namespace
@@ -658,17 +695,32 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     report.diagnostics.push_back("maximum optimistic event steps reached");
   }
 
-  report.eventCount = state.eventCount;
-  report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
+  bool missingReturn = false;
   for (mlir::Value value : returnValues) {
     auto it = state.observedOutputs.find(value);
     if (it == state.observedOutputs.end() || it->second.empty()) {
       report.finalOutputs.push_back("missing");
+      missingReturn = true;
       continue;
     }
     report.finalOutputs.push_back(
         tokenToString(it->second.back(), value.getType()));
   }
+  const bool incompleteLoads = hasIncompleteStreamLoads(entry, state);
+  if (report.status == "pass" && !state.diagnostics.empty()) {
+    report.status = "blocked";
+    report.diagnostics.push_back("DFG-sim stopped with runtime diagnostics");
+  }
+  if (report.status == "pass" && (missingReturn || incompleteLoads)) {
+    report.status = "blocked";
+    report.diagnostics.push_back(
+        "DFG-sim stopped before all returned values produced complete outputs");
+  } else if (report.status == "blocked" && (missingReturn || incompleteLoads)) {
+    report.diagnostics.push_back(
+        "DFG-sim stopped before all returned values produced complete outputs");
+  }
+  report.eventCount = state.eventCount;
+  report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
 

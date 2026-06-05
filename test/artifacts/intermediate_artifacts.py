@@ -336,6 +336,21 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "verdict",
         },
     },
+    "dfg_sim_report": {
+        "filename": "dfg-sim-report.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "workload",
+            "graph",
+            "status",
+            "metric_definition",
+            "optimistic_cycles",
+            "event_count",
+            "final_outputs",
+            "diagnostics",
+        },
+    },
 }
 
 
@@ -592,6 +607,19 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         diagnostics.append("artifact manifest contains blocked diagnostics")
     if kind == "artifact_audit" and data.get("verdict") not in {"pass", "fail"}:
         diagnostics.append("artifact audit verdict must be pass or fail")
+    if kind == "dfg_sim_report":
+        if data.get("kind") != "dfg_sim_report":
+            diagnostics.append("DFG simulator report kind must be dfg_sim_report")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("DFG simulator report status must be a known status")
+        if data.get("metric_definition") != "optimistic_event_steps":
+            diagnostics.append("DFG simulator report has unknown metric definition")
+        cycles = data.get("optimistic_cycles")
+        if not isinstance(cycles, int) or cycles < 0:
+            diagnostics.append("DFG simulator report optimistic_cycles must be non-negative integer")
+        event_count = data.get("event_count")
+        if not isinstance(event_count, int) or event_count < 0:
+            diagnostics.append("DFG simulator report event_count must be non-negative integer")
     return {
         "artifact": str(path),
         "schema": kind,
@@ -617,6 +645,21 @@ def rows_by_kind(paths: Iterable[Path]) -> dict[str, list[dict[str, str]]]:
     return grouped
 
 
+def json_objects_by_kind(paths: Iterable[Path]) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for path in paths:
+        kind = json_kind_for_path(path)
+        if kind is None or not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            grouped.setdefault(kind, []).append(data)
+    return grouped
+
+
 def cross_finding(rule: str, message: str, row: dict[str, str]) -> dict[str, object]:
     return {
         "finding": "fail",
@@ -635,7 +678,9 @@ def valid_identity(value: str | None) -> bool:
 
 
 def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
-    grouped = rows_by_kind(paths)
+    path_list = list(paths)
+    grouped = rows_by_kind(path_list)
+    json_grouped = json_objects_by_kind(path_list)
     findings: list[dict[str, object]] = []
 
     workloads = {
@@ -658,6 +703,18 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
     for row in pnr_rows:
         if row.get("status") == "pass" and row.get("mapping_id"):
             pass_mappings_by_workload.setdefault(row["workload"], []).append(row)
+    dfg_report_cycles_by_workload: dict[str, int] = {}
+    for report in json_grouped.get("dfg_sim_report", []):
+        workload = report.get("workload")
+        cycles = report.get("optimistic_cycles")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and report.get("status") == "pass"
+            and isinstance(cycles, int)
+            and cycles >= 0
+        ):
+            dfg_report_cycles_by_workload[workload] = cycles
 
     inventory_rows = grouped.get("old_app_corpus_inventory", [])
     import_rows = grouped.get("app_import_status", [])
@@ -778,6 +835,21 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                 )
             )
         if row.get("dfg_sim_cycles", ""):
+            dfg_cycles = numeric_value(row, "dfg_sim_cycles")
+            report_cycles = dfg_report_cycles_by_workload.get(kernel)
+            if report_cycles is not None:
+                if dfg_cycles is not None and int(dfg_cycles) != report_cycles:
+                    findings.append(
+                        cross_finding(
+                            "sim_dfg_cycle_matches_dfg_report",
+                            (
+                                f"sim kernel {kernel!r} DFG-sim cycles "
+                                f"{int(dfg_cycles)} do not match DFG report cycles {report_cycles}"
+                            ),
+                            row,
+                        )
+                    )
+                continue
             primitive_rows = [
                 primitive
                 for primitive in grouped.get("dataflow_primitive_coverage", [])

@@ -367,6 +367,45 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DFG cycle derived from blocked primitive coverage unexpectedly passed audit")
 
+        valid_dfg_report = out_dir / "valid-dfg-sim-report.json"
+        valid_dfg_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "dfg_sim_report",
+                    "workload": "vecadd",
+                    "graph": "g_vecadd",
+                    "status": "pass",
+                    "metric_definition": "optimistic_event_steps",
+                    "optimistic_cycles": 10,
+                    "event_count": 42,
+                    "final_outputs": ["none", "f32:1"],
+                    "diagnostics": [],
+                }
+            )
+        )
+        dfg_from_report = out_dir / "dfg-from-report-sim-cycle-summary.csv"
+        dfg_from_report.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,,blocked,DFG-sim report available\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-dfg-report.json"),
+                str(valid_dfg_report),
+                str(dfg_from_report),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"DFG cycle backed by DFG report unexpectedly failed audit\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
         cgra_without_mapping = out_dir / "cgra-without-mapping-sim-cycle-summary.csv"
         cgra_without_mapping.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
