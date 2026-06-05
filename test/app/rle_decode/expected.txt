@@ -1,0 +1,2 @@
+rle_decode checksum: 76
+PASSED

@@ -64,6 +64,7 @@ EXPECTED_CASES = {
     "relu",
     "reduction",
     "rotate_bits",
+    "rle_decode",
     "runge_kutta_step",
     "scatter_add",
     "sbox_lookup",
