@@ -16,6 +16,11 @@ with Loom and keep the build working, while gaining access to Loom's
 dataflow, mapping, simulation, and estimation flow?
 ```
 
+The repository-owned app drop-in corpus is specified separately in
+`docs/spec-app-dropin-test-corpus.md`. It validates the same drop-in
+compiler principle on self-contained C/C++ programs, while this
+document owns the external CMSIS source-tree contract.
+
 The compiler consumes:
 
 * C or C++ source files;

@@ -20,6 +20,12 @@ dataflow representation, hardware mapping artifacts, and performance
 reports when acceleration is enabled. The target drop-in compiler
 contract is specified in `docs/spec-cmsis-dropin-compiler.md`.
 
+Loom also has a self-contained application test corpus under
+`test/app`. These apps are repository-owned C/C++ programs that validate
+the same drop-in compiler principle without depending on external CMSIS
+source trees. The target corpus contract is specified in
+`docs/spec-app-dropin-test-corpus.md`.
+
 ## Design Principles
 
 The IR design follows a RISC-style principle. Prefer simple, atomic
