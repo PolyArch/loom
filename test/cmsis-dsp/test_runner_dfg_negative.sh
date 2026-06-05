@@ -23,13 +23,14 @@ export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
+source "${HERE}/../cmsis-common.sh"
 
 LOOM_CC="${LOOM_CC:-${REPO_ROOT}/build/bin/loom-cc}"
 LOOM_RAISE="${LOOM_RAISE:-${REPO_ROOT}/build/bin/loom-raise}"
 LOOM_LOWER="${LOOM_LOWER:-${REPO_ROOT}/build/bin/loom-lower}"
 LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO_ROOT}/build/bin/loom-raise-opt}"
 
-TMP="$(mktemp -d -t cmsis-dsp-dfg-negative.XXXXXX)"
+TMP="$(cmsis_common_make_temp_dir "${REPO_ROOT}" "cmsis-dsp-dfg-negative")"
 trap 'rm -rf "${TMP}"' EXIT
 
 # Hand-crafted synthetic .c: a function whose only structured-control

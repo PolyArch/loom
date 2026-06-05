@@ -39,6 +39,14 @@ if [[ -n "${_CMSIS_COMMON_SH:-}" ]]; then
 fi
 _CMSIS_COMMON_SH=1
 
+cmsis_common_make_temp_dir() {
+    local repo_root="$1"
+    local prefix="$2"
+    local temp_root="${repo_root}/temp/test-runs"
+    mkdir -p "${temp_root}"
+    mktemp -d -p "${temp_root}" "${prefix}.XXXXXX"
+}
+
 cmsis_common_libc_defines() {
     local -n _arr=$1
     _arr=(

@@ -18,8 +18,10 @@ set -euo pipefail
 export LC_ALL=C
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
+source "${HERE}/../cmsis-common.sh"
 
-TMP="$(mktemp -d -t cmsis-nn-dfg-per-row-gate.XXXXXX)"
+TMP="$(cmsis_common_make_temp_dir "${REPO_ROOT}" "cmsis-nn-dfg-per-row-gate")"
 trap 'rm -rf "${TMP}"' EXIT
 
 # Pick a real cmsis-nn source whose normal expect_thread is 1, then
