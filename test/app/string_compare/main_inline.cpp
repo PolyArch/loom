@@ -38,6 +38,16 @@ uint32_t compare_inline(const std::array<uint32_t, kSize> &a,
     return 0;
 }
 
+uint32_t expected_result(uint32_t kind) {
+    if (kind == 1) {
+        return kLess;
+    }
+    if (kind == 2) {
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace
 
 int main() {
@@ -46,13 +56,13 @@ int main() {
         std::array<uint32_t, kSize> a = {};
         std::array<uint32_t, kSize> b = {};
         fill_case(kind, a, b);
-        uint32_t expected = compare_inline(a, b);
+        uint32_t expected = expected_result(kind);
         uint32_t candidate = compare_inline(a, b);
         if (expected != candidate) {
             std::puts("FAILED");
             return 1;
         }
-        sum += candidate;
+        sum += static_cast<uint64_t>(candidate) * (kind + 1);
     }
 
     std::printf("string_compare checksum: %llu\n",
