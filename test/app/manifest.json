@@ -354,6 +354,14 @@
       "feature_tags": ["scan", "prefix", "integer", "store"]
     },
     {
+      "case": "quantile",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["statistics", "interpolation", "float", "control"]
+    },
+    {
       "case": "popcount",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

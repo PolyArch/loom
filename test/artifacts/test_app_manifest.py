@@ -55,6 +55,7 @@ EXPECTED_CASES = {
     "prefix_sum",
     "prefix_sum_exclusive",
     "prefix_sum_inclusive",
+    "quantile",
     "popcount",
     "relu",
     "reduction",
