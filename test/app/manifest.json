@@ -138,6 +138,14 @@
       "feature_tags": ["signal", "convolution", "float", "control", "reduction"]
     },
     {
+      "case": "conv2d",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["convolution", "image", "float", "nested-loop"]
+    },
+    {
       "case": "correlation",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

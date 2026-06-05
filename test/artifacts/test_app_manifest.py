@@ -28,6 +28,7 @@ EXPECTED_CASES = {
     "compare_swap",
     "convolve_1d",
     "convolve_1d_same",
+    "conv2d",
     "correlation",
     "conv1d",
     "covariance",
