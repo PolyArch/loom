@@ -194,6 +194,14 @@
       "feature_tags": ["vector", "reduction", "integer"]
     },
     {
+      "case": "vecnorm_l2",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["vector", "reduction", "integer"]
+    },
+    {
       "case": "vecscale",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

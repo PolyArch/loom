@@ -1,0 +1,2 @@
+vecnorm_l2 norm_sq: 619
+PASSED

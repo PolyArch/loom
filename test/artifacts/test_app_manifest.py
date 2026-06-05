@@ -35,6 +35,7 @@ EXPECTED_CASES = {
     "vecadd",
     "vecmul",
     "vecnorm_l1",
+    "vecnorm_l2",
     "vecscale",
     "vecsum",
 }
