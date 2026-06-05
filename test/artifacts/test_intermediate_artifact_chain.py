@@ -88,6 +88,28 @@ def main() -> int:
         if audit.get("cross_artifact_findings"):
             raise AssertionError(f"chain should not have cross-artifact findings: {audit}")
 
+        manifest = json.loads((out_dir / "full-stack-artifact-manifest.json").read_text())
+        manifest_artifacts = {Path(artifact["path"]).name for artifact in manifest.get("artifacts", [])}
+        expected_manifest = set(EXPECTED_FILES) - {
+            "artifact-audit-summary.json",
+            "full-stack-artifact-manifest.json",
+        }
+        if manifest_artifacts != expected_manifest:
+            raise AssertionError(f"manifest artifacts {manifest_artifacts} do not match {expected_manifest}")
+        edges = {(edge["from"], edge["to"]) for edge in manifest.get("edges", [])}
+        if ("e2e_demonstrator", "dse_candidate") in edges:
+            raise AssertionError(f"manifest should not imply demonstrator feeds DSE: {edges}")
+        required_edges = {
+            ("old_app_corpus_inventory", "app_import_status"),
+            ("app_import_status", "source_compat"),
+            ("source_compat", "compiler_pipeline"),
+            ("pnr_mapping", "e2e_demonstrator"),
+            ("pnr_mapping", "dse_candidate"),
+            ("dse_candidate", "unsupported_scope"),
+        }
+        if not required_edges.issubset(edges):
+            raise AssertionError(f"manifest edges {edges} missing {required_edges - edges}")
+
     return 0
 
 

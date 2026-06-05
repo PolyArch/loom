@@ -16,18 +16,28 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
-CHAIN = (
-    "old_app_corpus_inventory",
-    "app_import_status",
-    "source_compat",
-    "compiler_pipeline",
-    "dataflow_primitive_coverage",
-    "adg_hardware",
-    "pnr_mapping",
-    "sim_cycle",
-    "rtl_fpa",
-    "e2e_demonstrator",
-    "dse_candidate",
+ARTIFACT_EDGES = (
+    ("old_app_corpus_inventory", "app_import_status"),
+    ("app_import_status", "source_compat"),
+    ("source_compat", "compiler_pipeline"),
+    ("compiler_pipeline", "dataflow_primitive_coverage"),
+    ("dataflow_primitive_coverage", "pnr_mapping"),
+    ("adg_hardware", "pnr_mapping"),
+    ("dataflow_primitive_coverage", "sim_cycle"),
+    ("dataflow_primitive_coverage", "rtl_fpa"),
+    ("adg_hardware", "rtl_fpa"),
+    ("pnr_mapping", "e2e_demonstrator"),
+    ("sim_cycle", "e2e_demonstrator"),
+    ("rtl_fpa", "e2e_demonstrator"),
+    ("pnr_mapping", "dse_candidate"),
+    ("sim_cycle", "dse_candidate"),
+    ("rtl_fpa", "dse_candidate"),
+    ("dataflow_primitive_coverage", "unsupported_scope"),
+    ("pnr_mapping", "unsupported_scope"),
+    ("sim_cycle", "unsupported_scope"),
+    ("rtl_fpa", "unsupported_scope"),
+    ("e2e_demonstrator", "unsupported_scope"),
+    ("dse_candidate", "unsupported_scope"),
 )
 
 
@@ -78,7 +88,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         )
 
     edges = []
-    for left, right in zip(CHAIN, CHAIN[1:]):
+    for left, right in ARTIFACT_EDGES:
         if left in seen_kinds and right in seen_kinds:
             edges.append({"from": left, "to": right, "kind": "producer-consumer"})
 

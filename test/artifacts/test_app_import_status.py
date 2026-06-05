@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import artifact_test_common
+import test_old_app_corpus_inventory
 
 
 HEADER = [
@@ -22,19 +23,7 @@ HEADER = [
 def write_inventory(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "case",
-                "main_source",
-                "implementation_sources",
-                "headers",
-                "source_count",
-                "header_count",
-                "status",
-                "diagnostic",
-            ],
-        )
+        writer = csv.DictWriter(handle, fieldnames=test_old_app_corpus_inventory.HEADER)
         writer.writeheader()
         writer.writerow(
             {
@@ -44,6 +33,7 @@ def write_inventory(path: Path) -> None:
                 "headers": "legacy_missing.h",
                 "source_count": "2",
                 "header_count": "1",
+                "feature_tags": "general",
                 "status": "ready",
                 "diagnostic": "ready for migration",
             }
@@ -56,18 +46,24 @@ def write_inventory(path: Path) -> None:
                 "headers": "vecadd.h",
                 "source_count": "2",
                 "header_count": "1",
+                "feature_tags": "numeric;vector",
                 "status": "ready",
                 "diagnostic": "ready for migration",
             }
         )
-
-
-def read_rows(output: Path) -> list[dict[str, str]]:
-    with output.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames != HEADER:
-            raise AssertionError(f"unexpected app import status header {reader.fieldnames}")
-        return list(reader)
+        writer.writerow(
+            {
+                "case": "blocked_case",
+                "main_source": "main.cpp",
+                "implementation_sources": "blocked_case.cpp",
+                "headers": "",
+                "source_count": "2",
+                "header_count": "0",
+                "feature_tags": "general",
+                "status": "blocked",
+                "diagnostic": "missing header",
+            }
+        )
 
 
 def main() -> int:
@@ -91,8 +87,8 @@ def main() -> int:
             ],
             "app import status",
         )
-        rows = read_rows(output)
-        if [row["case"] for row in rows] != ["legacy_missing", "vecadd"]:
+        rows = artifact_test_common.read_csv_rows(output, HEADER)
+        if [row["case"] for row in rows] != ["legacy_missing", "vecadd", "blocked_case"]:
             raise AssertionError(f"import status must preserve inventory case order: {rows}")
         by_case = {row["case"]: row for row in rows}
         if by_case["vecadd"]["import_state"] != "accepted" or by_case["vecadd"]["manifest_case"] != "vecadd":
@@ -102,6 +98,11 @@ def main() -> int:
             raise AssertionError(f"unimported legacy case should be deferred: {missing}")
         if "not listed in app manifest" not in missing["reason"]:
             raise AssertionError(f"deferred case should explain manifest gap: {missing}")
+        blocked = by_case["blocked_case"]
+        if blocked["import_state"] != "excluded":
+            raise AssertionError(f"blocked inventory case should be excluded: {blocked}")
+        if "missing header" not in blocked["reason"]:
+            raise AssertionError(f"excluded case should preserve inventory diagnostic: {blocked}")
 
         bad_inventory = temp_root / "bad-inventory.csv"
         bad_inventory.write_text("case,status\nvecadd,ready\nvecadd,ready\n")

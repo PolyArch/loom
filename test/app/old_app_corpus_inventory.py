@@ -23,8 +23,8 @@ HEADER = [
 
 
 TAG_RULES = (
-    ("sparse", ("spm", "spv", "sparse")),
-    ("matrix", ("mat", "gemv", "gemm", "mmtile", "spm", "spv", "trsv", "tridiag", "transpose")),
+    ("sparse", ("spm", "spmv", "spmm", "spmspm", "spmspv", "spv", "sparse")),
+    ("matrix", ("mat", "matmul", "matvec", "gemv", "gemm", "mmtile", "spm", "spmv", "spmm", "spmspm", "spmspv", "spv", "trsv", "tridiag", "transpose")),
     ("graph", ("graph", "breadth_first_search", "edge_update")),
     ("sort", ("sort", "bitonic", "merge", "partition", "compare_swap")),
     ("scan", ("prefix", "cumsum")),
@@ -39,8 +39,8 @@ TAG_RULES = (
     ("memory", ("gather", "scatter", "compact")),
     ("encode", ("encode", "decode", "rle", "delta")),
     ("reduction", ("dot", "mean", "variance", "norm", "histogram")),
-    ("integer", ("bit", "count", "sort", "search", "crc", "mod", "gcd")),
-    ("numeric", ("axpy", "vec", "mat", "mul", "avg", "mean", "variance", "normalize", "interpolate")),
+    ("integer", ("bit", "count", "popcount", "sort", "search", "crc", "mod", "gcd")),
+    ("numeric", ("axpy", "vec", "mat", "matmul", "matvec", "mul", "avg", "mean", "variance", "normalize", "interpolate")),
 )
 
 
@@ -56,10 +56,12 @@ def case_directories(source_root: Path) -> list[Path]:
 
 
 def feature_tags(case: str) -> list[str]:
+    normalized = case.replace("-", "_")
+    tokens = set(filter(None, normalized.split("_")))
     tags = {
         tag
         for tag, needles in TAG_RULES
-        if any(needle in case for needle in needles)
+        if any(needle == case or needle == normalized or needle in tokens for needle in needles)
     }
     if not tags:
         tags.add("general")

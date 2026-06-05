@@ -74,11 +74,20 @@ def validate_synthetic_inventory(repo: Path) -> None:
         write_case(source_root, "sort_quick")
         write_case(source_root, "spmv")
         write_case(source_root, "string_hash")
+        write_case(source_root, "bitonic_stage")
         write_case(source_root, "beta", with_header=False)
         output = Path(tmp) / "inventory.csv"
         rows = run_inventory(repo, source_root, output)
 
-        if [row["case"] for row in rows] != ["beta", "matmul", "popcount", "sort_quick", "spmv", "string_hash"]:
+        if [row["case"] for row in rows] != [
+            "beta",
+            "bitonic_stage",
+            "matmul",
+            "popcount",
+            "sort_quick",
+            "spmv",
+            "string_hash",
+        ]:
             raise AssertionError(f"inventory rows are not sorted by case: {rows}")
         by_case = {row["case"]: row for row in rows}
         matmul = by_case["matmul"]
@@ -95,6 +104,9 @@ def validate_synthetic_inventory(repo: Path) -> None:
             actual = set(filter(None, by_case[case]["feature_tags"].split(";")))
             if not tags.issubset(actual):
                 raise AssertionError(f"{case} tags {actual} do not include {tags}")
+        bitonic_tags = set(filter(None, by_case["bitonic_stage"]["feature_tags"].split(";")))
+        if "bit" in bitonic_tags:
+            raise AssertionError(f"bitonic_stage tags should not include bit: {bitonic_tags}")
         beta = by_case["beta"]
         if beta["status"] != "blocked" or "missing header" not in beta["diagnostic"]:
             raise AssertionError(f"beta should report its missing header: {beta}")

@@ -122,6 +122,20 @@ bash "${ROOT}/test/e2e/run_unsupported_scope_ledger.sh" \
   --artifact "${demonstrator}" \
   --artifact "${dse_candidate}" \
   --output "${unsupported}"
+bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
+  --artifact "${old_app_inventory}" \
+  --artifact "${app_import_status}" \
+  --artifact "${source_compat}" \
+  --artifact "${compiler_pipeline}" \
+  --artifact "${primitive}" \
+  --artifact "${hardware}" \
+  --artifact "${mapping}" \
+  --artifact "${sim_cycle}" \
+  --artifact "${rtl_fpa}" \
+  --artifact "${demonstrator}" \
+  --artifact "${dse_candidate}" \
+  --artifact "${unsupported}" \
+  --output "${manifest}"
 python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   --output "${audit}" \
   "${old_app_inventory}" \

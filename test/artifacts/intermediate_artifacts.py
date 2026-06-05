@@ -572,7 +572,11 @@ def cross_finding(rule: str, message: str, row: dict[str, str]) -> dict[str, obj
         "finding": "fail",
         "rule": rule,
         "message": message,
-        "row_identity": {key: value for key, value in row.items() if key in {"workload", "kernel", "hardware", "candidate"}},
+        "row_identity": {
+            key: value
+            for key, value in row.items()
+            if key in {"candidate", "case", "hardware", "import_state", "kernel", "manifest_case", "workload"}
+        },
     }
 
 
@@ -600,6 +604,102 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         if valid_identity(row.get("workload")) and valid_identity(row.get("hardware"))
     ]
     pnr_pairs = {(row["workload"], row["hardware"]) for row in pnr_rows}
+
+    inventory_rows = grouped.get("old_app_corpus_inventory", [])
+    import_rows = grouped.get("app_import_status", [])
+    if inventory_rows or import_rows:
+        inventory_by_case = {row.get("case", ""): row for row in inventory_rows if valid_identity(row.get("case"))}
+        imports_by_case: dict[str, list[dict[str, str]]] = {}
+        for row in import_rows:
+            case = row.get("case", "")
+            if valid_identity(case):
+                imports_by_case.setdefault(case, []).append(row)
+
+        for case, rows in imports_by_case.items():
+            if len(rows) > 1:
+                findings.append(
+                    cross_finding(
+                        "app_import_unique_case",
+                        f"app import status has duplicate rows for {case!r}",
+                        rows[0],
+                    )
+                )
+
+        for case in sorted(set(inventory_by_case) - set(imports_by_case)):
+            findings.append(
+                cross_finding(
+                    "app_import_covers_inventory",
+                    f"inventory case {case!r} has no import status row",
+                    inventory_by_case[case],
+                )
+            )
+
+        for row in import_rows:
+            case = row.get("case", "")
+            inventory = inventory_by_case.get(case)
+            if inventory is None:
+                findings.append(
+                    cross_finding(
+                        "app_import_case_resolves",
+                        f"app import case {case!r} is absent from old app corpus inventory",
+                        row,
+                    )
+                )
+                continue
+            state = row.get("import_state", "")
+            manifest_case = row.get("manifest_case", "")
+            inventory_status = inventory.get("status", "")
+            if state == "accepted":
+                if manifest_case != case:
+                    findings.append(
+                        cross_finding(
+                            "app_import_accepted_manifest_case",
+                            f"accepted app import case {case!r} must name the matching manifest case",
+                            row,
+                        )
+                    )
+                if inventory_status != "ready":
+                    findings.append(
+                        cross_finding(
+                            "app_import_accepted_requires_ready_inventory",
+                            f"accepted app import case {case!r} has inventory status {inventory_status!r}",
+                            row,
+                        )
+                    )
+            elif state == "deferred":
+                if manifest_case:
+                    findings.append(
+                        cross_finding(
+                            "app_import_deferred_has_no_manifest_case",
+                            f"deferred app import case {case!r} must not name a manifest case",
+                            row,
+                        )
+                    )
+                if inventory_status != "ready":
+                    findings.append(
+                        cross_finding(
+                            "app_import_deferred_requires_ready_inventory",
+                            f"deferred app import case {case!r} has inventory status {inventory_status!r}",
+                            row,
+                        )
+                    )
+            elif state == "excluded":
+                if inventory_status != "blocked":
+                    findings.append(
+                        cross_finding(
+                            "app_import_excluded_requires_blocked_inventory",
+                            f"excluded app import case {case!r} has inventory status {inventory_status!r}",
+                            row,
+                        )
+                    )
+                if not row.get("reason", ""):
+                    findings.append(
+                        cross_finding(
+                            "app_import_excluded_has_reason",
+                            f"excluded app import case {case!r} has no reason",
+                            row,
+                        )
+                    )
 
     if workloads:
         for row in pnr_rows:

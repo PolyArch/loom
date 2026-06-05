@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "app"))
 
 import app_manifest  # noqa: E402
+import old_app_corpus_inventory  # noqa: E402
 
 
 HEADER = [
@@ -22,6 +23,7 @@ HEADER = [
     "reason",
     "owner",
 ]
+VALID_INVENTORY_STATUSES = {"ready", "blocked"}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -39,6 +41,8 @@ def read_inventory(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle)
         rows = list(reader)
+    if reader.fieldnames != old_app_corpus_inventory.HEADER:
+        diagnostics.append(f"unexpected inventory header: {reader.fieldnames}")
     if not rows:
         diagnostics.append("inventory is empty")
     seen: set[str] = set()
@@ -50,6 +54,9 @@ def read_inventory(path: Path) -> tuple[list[dict[str, str]], list[str]]:
         if case in seen:
             diagnostics.append(f"duplicate inventory case: {case}")
         seen.add(case)
+        status = row.get("status", "")
+        if status not in VALID_INVENTORY_STATUSES:
+            diagnostics.append(f"{case}: invalid inventory status {status!r}")
     return rows, diagnostics
 
 
@@ -66,7 +73,18 @@ def import_rows(inventory: list[dict[str, str]], accepted_cases: set[str]) -> li
     rows: list[dict[str, str]] = []
     for row in inventory:
         case = row["case"]
-        if case in accepted_cases:
+        status = row["status"]
+        if status == "blocked":
+            rows.append(
+                {
+                    "case": case,
+                    "import_state": "excluded",
+                    "manifest_case": "",
+                    "reason": row.get("diagnostic", "") or "inventory case is blocked",
+                    "owner": "test_migration",
+                }
+            )
+        elif case in accepted_cases:
             rows.append(
                 {
                     "case": case,
