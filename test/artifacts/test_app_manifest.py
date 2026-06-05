@@ -28,6 +28,7 @@ EXPECTED_CASES = {
     "crc32",
     "cross_product",
     "ctz",
+    "cumsum",
     "delta_encode",
     "dot_product_3d",
     "dotproduct",
