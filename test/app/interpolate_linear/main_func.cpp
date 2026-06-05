@@ -8,7 +8,7 @@
 namespace {
 
 constexpr uint32_t kDataCount = 32;
-constexpr uint32_t kQueryCount = 64;
+constexpr uint32_t kQueryCount = 63;
 constexpr float kTolerance = 1.0e-4f;
 
 void initialize_inputs(std::array<float, kDataCount> &input_x,
