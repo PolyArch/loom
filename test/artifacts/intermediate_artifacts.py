@@ -954,10 +954,6 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         if valid_identity(row.get("workload")) and valid_identity(row.get("hardware"))
     ]
     pnr_pairs = {(row["workload"], row["hardware"]) for row in pnr_rows}
-    pass_mappings_by_workload: dict[str, list[dict[str, str]]] = {}
-    for row in pnr_rows:
-        if row.get("status") == "pass" and row.get("mapping_id"):
-            pass_mappings_by_workload.setdefault(row["workload"], []).append(row)
     pass_mapping_artifacts_by_workload: dict[str, list[dict[str, object]]] = {}
     for artifact in json_grouped.get("pnr_mapping_artifact", []):
         workload = artifact.get("workload")
