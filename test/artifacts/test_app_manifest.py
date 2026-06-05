@@ -20,6 +20,7 @@ EXPECTED_CASES = {
     "ctz",
     "dotproduct",
     "find_first_set",
+    "fir_filter",
     "gemm",
     "lower_bound",
     "mean",
