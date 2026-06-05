@@ -12,6 +12,7 @@ import artifact_test_common
 
 EXPECTED_CASES = {
     "axpy",
+    "bit_reverse",
     "bitonic_stage",
     "byte_swap",
     "binary_search",
