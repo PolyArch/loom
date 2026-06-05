@@ -38,6 +38,7 @@ EXPECTED_CASES = {
     "reduction",
     "rotate_bits",
     "scatter_add",
+    "transpose",
     "upper_bound",
     "variance",
     "vecadd",

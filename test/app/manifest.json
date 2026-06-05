@@ -218,6 +218,14 @@
       "feature_tags": ["memory", "indirect", "integer"]
     },
     {
+      "case": "transpose",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["matrix", "memory", "integer"]
+    },
+    {
       "case": "upper_bound",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

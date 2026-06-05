@@ -1,0 +1,2 @@
+transpose weighted_checksum: 2080
+PASSED
