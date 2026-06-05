@@ -106,6 +106,14 @@
       "feature_tags": ["bit", "integer", "control"]
     },
     {
+      "case": "col2im",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["convolution", "layout", "float", "accumulation"]
+    },
+    {
       "case": "compare_swap",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

@@ -24,6 +24,7 @@ EXPECTED_CASES = {
     "bisection_step",
     "binary_search",
     "clz",
+    "col2im",
     "compare_swap",
     "convolve_1d",
     "convolve_1d_same",
