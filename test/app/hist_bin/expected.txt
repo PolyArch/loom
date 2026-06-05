@@ -1,2 +1,2 @@
-hist_bin checksum: 5542
+hist_bin checksum: 385
 PASSED

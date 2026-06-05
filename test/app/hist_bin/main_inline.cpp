@@ -6,12 +6,12 @@
 
 namespace {
 
-constexpr uint32_t kSize = 1024;
+constexpr uint32_t kSize = 55;
 constexpr uint32_t kBins = 10;
 constexpr float kMin = 0.0f;
 constexpr float kMax = 100.0f;
-constexpr std::array<uint32_t, kBins> kExpected = {
-    110, 110, 104, 100, 100, 100, 100, 100, 100, 100};
+constexpr std::array<uint32_t, kBins> kExpected = {1, 2, 3, 4, 5,
+                                                   6, 7, 8, 9, 10};
 
 uint64_t checksum(const std::array<uint32_t, kBins> &bins) {
     uint64_t sum = 0;
@@ -27,8 +27,12 @@ int main() {
     std::array<float, kSize> input = {};
     std::array<uint32_t, kBins> output = {};
 
-    for (uint32_t i = 0; i < kSize; ++i) {
-        input[i] = static_cast<float>(i % 100u);
+    uint32_t write = 0;
+    for (uint32_t bin = 0; bin < kBins; ++bin) {
+        for (uint32_t count = 0; count <= bin; ++count) {
+            input[write] = static_cast<float>(bin * 10u + 1u);
+            ++write;
+        }
     }
     for (uint32_t i = 0; i < kBins; ++i) {
         output[i] = 0;

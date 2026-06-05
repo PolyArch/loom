@@ -6,14 +6,18 @@
 
 namespace {
 
-constexpr uint32_t kSize = 1024;
+constexpr uint32_t kSize = 55;
 constexpr uint32_t kBins = 10;
 constexpr float kMin = 0.0f;
 constexpr float kMax = 100.0f;
 
 void initialize_input(std::array<float, kSize> &input) {
-    for (uint32_t i = 0; i < kSize; ++i) {
-        input[i] = static_cast<float>(i % 100u);
+    uint32_t write = 0;
+    for (uint32_t bin = 0; bin < kBins; ++bin) {
+        for (uint32_t count = 0; count <= bin; ++count) {
+            input[write] = static_cast<float>(bin * 10u + 1u);
+            ++write;
+        }
     }
 }
 

@@ -58,14 +58,25 @@ raise_one() {
             }
             if ($0 ~ /arith\.fptoui|llvm\.fptoui/) {
                 has_cast = 1
+                in_update = 1
             }
             if ($0 ~ /llvm\.load/) {
                 has_load = 1
             }
+            if (in_update && $0 ~ /llvm\.load/) {
+                update_load = 1
+            }
+            if (in_update && $0 ~ /arith\.addi|llvm\.add/) {
+                update_add = 1
+            }
             if ($0 ~ /llvm\.store/) {
                 has_store = 1
             }
-            if (loops >= 1 && has_branch && has_div && has_cast && has_load && has_store) {
+            if (in_update && $0 ~ /llvm\.store/) {
+                update_store = 1
+            }
+            if (loops >= 1 && has_branch && has_div && has_cast && has_load &&
+                has_store && update_load && update_add && update_store) {
                 found = 1
             }
         }
