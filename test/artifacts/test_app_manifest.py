@@ -30,6 +30,7 @@ EXPECTED_CASES = {
     "matvec",
     "moving_avg",
     "outer",
+    "parity",
     "prefix_sum",
     "popcount",
     "relu",

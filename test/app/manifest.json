@@ -154,6 +154,14 @@
       "feature_tags": ["matrix", "vector", "integer"]
     },
     {
+      "case": "parity",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["bit", "integer", "control"]
+    },
+    {
       "case": "prefix_sum",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
