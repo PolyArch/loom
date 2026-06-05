@@ -1,0 +1,389 @@
+#include "ADG/Builder.h"
+
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <optional>
+#include <system_error>
+
+using namespace loom::adg;
+
+namespace {
+
+llvm::StringRef scheduleName(Schedule schedule) {
+  switch (schedule) {
+  case Schedule::Spatial:
+    return "spatial";
+  case Schedule::Temporal:
+    return "temporal";
+  }
+  llvm_unreachable("unknown ADG schedule");
+}
+
+std::string valueName(llvm::StringRef name) {
+  if (name.consume_front("%"))
+    return ("%" + name).str();
+  return ("%" + name).str();
+}
+
+void printTypeList(llvm::raw_ostream &os, llvm::ArrayRef<std::string> types) {
+  os << '(';
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << types[i];
+  }
+  os << ')';
+}
+
+void printResultTypes(llvm::raw_ostream &os,
+                      llvm::ArrayRef<std::string> types) {
+  if (types.empty()) {
+    os << "()";
+    return;
+  }
+  if (types.size() == 1) {
+    os << types.front();
+    return;
+  }
+  printTypeList(os, types);
+}
+
+void printBindings(llvm::raw_ostream &os, llvm::ArrayRef<PortBinding> bindings,
+                   llvm::StringRef indent) {
+  for (std::size_t i = 0; i < bindings.size(); ++i) {
+    const PortBinding &binding = bindings[i];
+    if (i)
+      os << ",\n" << indent;
+    os << valueName(binding.localName) << " = "
+       << valueName(binding.sourceName) << " : " << binding.type;
+    if (!binding.castType.empty())
+      os << " to " << binding.castType;
+  }
+}
+
+void printStringArray(llvm::raw_ostream &os,
+                      llvm::ArrayRef<std::string> values) {
+  os << '[';
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << '"' << values[i] << '"';
+  }
+  os << ']';
+}
+
+void printHwParams(llvm::raw_ostream &os,
+                   const std::map<std::string, std::vector<std::string>>
+                       &hwParams) {
+  if (hwParams.empty())
+    return;
+  os << "hw_params = [{";
+  bool first = true;
+  for (const auto &[key, values] : hwParams) {
+    if (!first)
+      os << ", ";
+    first = false;
+    os << key << " = ";
+    printStringArray(os, values);
+  }
+  os << "}]";
+}
+
+void printSwConfigs(llvm::raw_ostream &os,
+                    const std::map<std::string, std::string> &swConfigs) {
+  if (swConfigs.empty())
+    return;
+  os << "sw_configs = {";
+  bool first = true;
+  for (const auto &[key, value] : swConfigs) {
+    if (!first)
+      os << ", ";
+    first = false;
+    os << key << " = " << '"' << value << '"';
+  }
+  os << '}';
+}
+
+void printOpAttrs(llvm::raw_ostream &os, const FabricOpSpec &op) {
+  if (op.hwParams.empty() && op.swConfigs.empty())
+    return;
+  os << " {";
+  if (!op.hwParams.empty())
+    printHwParams(os, op.hwParams);
+  if (!op.hwParams.empty() && !op.swConfigs.empty())
+    os << ", ";
+  if (!op.swConfigs.empty())
+    printSwConfigs(os, op.swConfigs);
+  os << '}';
+}
+
+void printFabricOp(llvm::raw_ostream &os, const FabricOpSpec &op) {
+  os << "      ";
+  for (std::size_t i = 0; i < op.results.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << valueName(op.results[i]);
+  }
+  if (!op.results.empty())
+    os << " = ";
+  os << "fabric.op [";
+  for (std::size_t i = 0; i < op.opList.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << '@' << op.opList[i];
+  }
+  os << "] (";
+  for (std::size_t i = 0; i < op.operands.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << valueName(op.operands[i]);
+  }
+  os << ')';
+  printOpAttrs(os, op);
+  os << " : ";
+  printTypeList(os, op.operandTypes);
+  os << " -> ";
+  printResultTypes(os, op.resultTypes);
+  os << '\n';
+}
+
+void printFu(llvm::raw_ostream &os, const FuSpec &fu) {
+  os << "    fabric.fu(";
+  printBindings(os, fu.inputs, "              ");
+  os << ") -> ";
+  printResultTypes(os, fu.resultTypes);
+  os << " {\n";
+  for (const FabricOpSpec &op : fu.operations)
+    printFabricOp(os, op);
+  os << "      fabric.yield";
+  if (!fu.yieldValues.empty()) {
+    os << ' ';
+    for (std::size_t i = 0; i < fu.yieldValues.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << valueName(fu.yieldValues[i]);
+    }
+    os << " : ";
+    printTypeList(os, fu.resultTypes);
+  }
+  os << "\n";
+  os << "    }\n";
+}
+
+void printPe(llvm::raw_ostream &os, const PeSpec &pe) {
+  os << "  fabric.pe [" << scheduleName(pe.schedule) << "] (";
+  printBindings(os, pe.inputs, "                    ");
+  os << ") -> ";
+  printResultTypes(os, pe.resultTypes);
+  os << " {\n";
+  for (const FuSpec &fu : pe.fus)
+    printFu(os, fu);
+  os << "  }\n";
+}
+
+} // namespace
+
+ModuleBuilder::ModuleBuilder(std::string name) : name(std::move(name)) {}
+
+ModuleBuilder &ModuleBuilder::addInput(std::string inputName,
+                                       std::string type) {
+  inputs.push_back(Input{std::move(inputName), std::move(type)});
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addPe(PeSpec pe) {
+  pes.push_back(std::move(pe));
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addMem(MemSpec mem) {
+  mems.push_back(std::move(mem));
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addExactBodyLine(std::string line) {
+  exactBodyLines.push_back(std::move(line));
+  return *this;
+}
+
+llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
+  if (name.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG module name is empty");
+  llvm::StringSet<> seenInputs;
+  llvm::StringMap<std::string> inputTypes;
+  for (const Input &input : inputs) {
+    if (input.name.empty() || input.type.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG module input is incomplete");
+    if (!seenInputs.insert(input.name).second)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "duplicate ADG module input %s",
+                                     input.name.c_str());
+    inputTypes[input.name] = input.type;
+  }
+
+  os << "fabric.module @" << name << '(';
+  for (std::size_t i = 0; i < inputs.size(); ++i) {
+    if (i)
+      os << ",\n                                    ";
+    os << valueName(inputs[i].name) << " : " << inputs[i].type;
+  }
+  os << ") {\n";
+  for (const PeSpec &pe : pes)
+    printPe(os, pe);
+  for (std::size_t memIndex = 0; memIndex < mems.size(); ++memIndex) {
+    const MemSpec &mem = mems[memIndex];
+    if (!inputTypes.contains(mem.manager))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG mem manager input %s is unknown",
+                                     mem.manager.c_str());
+    for (const MemLoadPort &load : mem.loads) {
+      if (!inputTypes.contains(load.address))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem load address input %s is "
+                                       "unknown",
+                                       load.address.c_str());
+      if (!inputTypes.contains(load.control))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem load control input %s is "
+                                       "unknown",
+                                       load.control.c_str());
+    }
+    os << "  %mem" << memIndex << "_data, %mem" << memIndex
+       << "_done = fabric.mem [" << scheduleName(mem.schedule)
+       << "] mgr(" << valueName(mem.manager) << ')';
+    for (const MemLoadPort &load : mem.loads) {
+      os << " load(" << valueName(load.address) << ", "
+         << valueName(load.control) << ')';
+    }
+    os << "\n        [{load_group_size = "
+       << static_cast<unsigned>(mem.loads.size())
+       << " : i32, store_group_size = " << mem.storePorts << " : i32}]\n";
+
+    llvm::SmallVector<std::string> operandTypes;
+    operandTypes.push_back(inputTypes.lookup(mem.manager));
+    for (const MemLoadPort &load : mem.loads) {
+      operandTypes.push_back(inputTypes.lookup(load.address));
+      operandTypes.push_back(inputTypes.lookup(load.control));
+    }
+    llvm::SmallVector<std::string> resultTypes;
+    for (const MemLoadPort &load : mem.loads) {
+      resultTypes.push_back(inputTypes.lookup(load.address));
+      resultTypes.push_back(inputTypes.lookup(load.control));
+    }
+    os << "        : ";
+    printTypeList(os, operandTypes);
+    os << "\n        -> ";
+    printResultTypes(os, resultTypes);
+    os << '\n';
+  }
+  for (const std::string &line : exactBodyLines)
+    os << "  " << line << '\n';
+  os << "  fabric.yield\n";
+  os << "}\n";
+  return llvm::Error::success();
+}
+
+ModuleBuilder loom::adg::buildSharedReductionAdg() {
+  ModuleBuilder module("shared_reduction_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("i64a", "!fabric.bits<64>")
+      .addInput("i64b", "!fabric.bits<64>")
+      .addInput("i64c", "!fabric.bits<64>")
+      .addInput("i32a", "!fabric.bits<32>")
+      .addInput("i32b", "!fabric.bits<32>")
+      .addInput("i32c", "!fabric.bits<32>")
+      .addInput("ctrl", "!fabric.bits<0>");
+
+  PeSpec streamPe;
+  streamPe.inputs = {{"pa", "i64a", "!fabric.bits<64>", ""},
+                     {"pb", "i64b", "!fabric.bits<64>", ""},
+                     {"pc", "i64c", "!fabric.bits<64>", ""}};
+  streamPe.resultTypes = {"!fabric.bits<64>"};
+  FuSpec streamFu;
+  streamFu.inputs = {{"fa", "pa", "!fabric.bits<64>", ""},
+                     {"fb", "pb", "!fabric.bits<64>", ""},
+                     {"fc", "pc", "!fabric.bits<64>", ""}};
+  streamFu.operations.push_back(FabricOpSpec{
+      {"idx", "rwc"},
+      {"dataflow.stream"},
+      {"fa", "fb", "fc"},
+      {"!fabric.bits<64>", "!fabric.bits<64>", "!fabric.bits<64>"},
+      {"!fabric.bits<64>", "!fabric.bits<1>"},
+      {{"cont_cond", {"<"}}, {"step_op", {"+="}}},
+      {{"cont_cond", "<"}, {"step_op", "+="}}});
+  streamPe.fus.push_back(std::move(streamFu));
+  module.addPe(std::move(streamPe));
+
+  PeSpec reductionPe;
+  reductionPe.inputs = {{"pa", "i32a", "!fabric.bits<32>", ""},
+                        {"pb", "i32b", "!fabric.bits<32>", ""},
+                        {"pc", "i32c", "!fabric.bits<32>", ""}};
+  reductionPe.resultTypes = {"!fabric.bits<32>"};
+  reductionPe.fus.push_back(FuSpec{
+      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+       {"init", "pb", "!fabric.bits<32>", ""},
+       {"next", "pc", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"carried"},
+                    {"dataflow.carry"},
+                    {"cond", "init", "next"},
+                    {"!fabric.bits<1>", "!fabric.bits<32>",
+                     "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+       {"value", "pb", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"stable"},
+                    {"dataflow.invariant"},
+                    {"cond", "value"},
+                    {"!fabric.bits<1>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"lhs", "pa", "!fabric.bits<32>", ""},
+       {"rhs", "pb", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"sum"},
+                    {"arith.addi"},
+                    {"lhs", "rhs"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  module.addPe(std::move(reductionPe));
+
+  PeSpec syncPe;
+  syncPe.inputs = {{"pc", "ctrl", "!fabric.bits<0>", ""}};
+  syncPe.resultTypes = {"!fabric.bits<0>"};
+  syncPe.fus.push_back(FuSpec{
+      {{"fc", "pc", "!fabric.bits<0>", ""}},
+      {},
+      {FabricOpSpec{{"done"},
+                    {"dataflow.sync"},
+                    {"fc"},
+                    {"!fabric.bits<0>"},
+                    {"!fabric.bits<0>"},
+                    {},
+                    {{"bitmask", "1"}}}},
+      {}});
+  module.addPe(std::move(syncPe));
+
+  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"i32a", "ctrl"}}, 0});
+  return module;
+}
+
+llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
+  return buildSharedReductionAdg().print(os);
+}

@@ -57,6 +57,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),
     os.path.join(config.loom_obj_root, "tools", "loom-cc"),
     os.path.join(config.loom_obj_root, "tools", "loom-raise-opt"),
+    os.path.join(config.loom_obj_root, "tools", "loom-adg-builder-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-alignment-test"),
     os.path.join(config.loom_obj_root, "tools", "loom-candidate-dump"),
     os.path.join(config.loom_obj_root, "tools", "loom-config-test"),
@@ -78,6 +79,7 @@ tool_dirs = [
 ]
 tools = [
     "loom",
+    "loom-adg-builder-test",
     "loom-alignment-test",
     "loom-candidate-dump",
     "loom-config-test",

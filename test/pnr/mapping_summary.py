@@ -131,8 +131,21 @@ def main(argv: list[str]) -> int:
         return run_explicit_mapper(args)
 
     output = Path(args.output)
-    primitive_path = Path(args.primitive_coverage) if args.primitive_coverage else ROOT / "temp/dataflow-primitive-coverage.csv"
-    hardware_path = Path(args.hardware_summary) if args.hardware_summary else ROOT / "temp/adg-hardware-summary.csv"
+    ignore_standard = os.environ.get("LOOM_IGNORE_STANDARD_ARTIFACTS") == "1"
+    primitive_path = (
+        Path(args.primitive_coverage)
+        if args.primitive_coverage
+        else Path()
+        if ignore_standard
+        else ROOT / "temp/dataflow-primitive-coverage.csv"
+    )
+    hardware_path = (
+        Path(args.hardware_summary)
+        if args.hardware_summary
+        else Path()
+        if ignore_standard
+        else ROOT / "temp/adg-hardware-summary.csv"
+    )
 
     workloads = candidate_summary_common.workloads_from_primitive_coverage(primitive_path)
     hardware = candidate_summary_common.hardware_from_summary(hardware_path)
