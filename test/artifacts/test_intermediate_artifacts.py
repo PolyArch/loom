@@ -410,6 +410,30 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DFG cycle derived from blocked primitive coverage unexpectedly passed audit")
 
+        primitive_pass = out_dir / "pass-dataflow-primitive-coverage.csv"
+        primitive_pass.write_text(
+            "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
+            "vecadd,stream,1,pass,primitive covered by simulator\n"
+        )
+        dfg_from_primitive_pass = out_dir / "dfg-from-pass-primitive-sim-cycle-summary.csv"
+        dfg_from_primitive_pass.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,,blocked,synthetic DFG cycle from primitive coverage\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-dfg-pass-primitive.json"),
+                str(primitive_pass),
+                str(dfg_from_primitive_pass),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DFG cycle backed only by primitive coverage unexpectedly passed audit")
+
         valid_dfg_report = out_dir / "valid-dfg-sim-report.json"
         valid_dfg_report.write_text(
             json.dumps(
@@ -474,6 +498,55 @@ def main() -> int:
             "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"
             "vecadd,fabric0,map0,1,1,0,0,pass,verified mapping\n"
         )
+        valid_mapping_artifact = out_dir / "valid-pnr-mapping.json"
+        valid_mapping_artifact.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "pnr_mapping",
+                    "workload": "vecadd",
+                    "hardware": "fabric0",
+                    "graph": "g_vecadd",
+                    "mapping_id": "map0",
+                    "status": "pass",
+                    "placed_records": 1,
+                    "routed_edges": 1,
+                    "unrouted_edges": 0,
+                    "unplaced_records": 0,
+                    "config_records": 0,
+                    "placements": [
+                        {
+                            "software": "arith.addi#0",
+                            "operation": "arith.addi",
+                            "resource_kind": "fabric.op",
+                            "hardware": "fabric0::fabric.op#0",
+                            "schedule": "spatial",
+                        }
+                    ],
+                    "routes": [
+                        {
+                            "record_id": "route#0",
+                            "edge_ref": "arith.addi#0.result0->arith.muli#0.operand0",
+                            "producer_binding": "placement:arith.addi#0",
+                            "consumer_binding": "placement:arith.muli#0",
+                            "payload_kind": "data",
+                            "from": "arith.addi#0",
+                            "to": "arith.muli#0",
+                            "status": "routed",
+                            "segments": [
+                                {
+                                    "segment_id": "seg0",
+                                    "segment_kind": "module_path",
+                                    "source_endpoint": "fabric0::fabric.op#0.out",
+                                    "sink_endpoint": "fabric0::fabric.op#1.in",
+                                }
+                            ],
+                        }
+                    ],
+                    "config_bitstream": [],
+                }
+            )
+        )
         cgra_without_report = out_dir / "cgra-without-report-sim-cycle-summary.csv"
         cgra_without_report.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
@@ -489,6 +562,7 @@ def main() -> int:
                 str(valid_primitive),
                 str(valid_hardware),
                 str(valid_mapping),
+                str(valid_mapping_artifact),
                 str(valid_dfg_report),
                 str(cgra_without_report),
             ],
@@ -649,6 +723,7 @@ def main() -> int:
                 str(valid_primitive),
                 str(valid_hardware),
                 str(valid_mapping),
+                str(valid_mapping_artifact),
                 str(valid_dfg_report),
                 str(wrong_mapping_cgra_report),
                 str(cgra_without_report),
@@ -673,6 +748,7 @@ def main() -> int:
                 str(valid_primitive),
                 str(ambiguous_hardware),
                 str(valid_mapping),
+                str(valid_mapping_artifact),
                 str(valid_dfg_report),
                 str(valid_cgra_report),
                 str(cgra_without_report),
@@ -723,10 +799,29 @@ def main() -> int:
                 sys.executable,
                 "test/e2e/audit_intermediate_artifacts.py",
                 "--output",
+                str(out_dir / "artifact-audit-summary-cgra-summary-only.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA cycle backed only by mapping summary unexpectedly passed audit")
+
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
                 str(out_dir / "artifact-audit-summary-cgra-report.json"),
                 str(valid_primitive),
                 str(valid_hardware),
                 str(valid_mapping),
+                str(valid_mapping_artifact),
                 str(valid_dfg_report),
                 str(valid_cgra_report),
                 str(cgra_without_report),

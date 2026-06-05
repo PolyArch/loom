@@ -958,6 +958,17 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
     for row in pnr_rows:
         if row.get("status") == "pass" and row.get("mapping_id"):
             pass_mappings_by_workload.setdefault(row["workload"], []).append(row)
+    pass_mapping_artifacts_by_workload: dict[str, list[dict[str, object]]] = {}
+    for artifact in json_grouped.get("pnr_mapping_artifact", []):
+        workload = artifact.get("workload")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and artifact.get("status") == "pass"
+            and isinstance(artifact.get("mapping_id"), str)
+            and isinstance(artifact.get("hardware"), str)
+        ):
+            pass_mapping_artifacts_by_workload.setdefault(workload, []).append(artifact)
     dfg_report_cycles_by_workload: dict[str, int] = {}
     dfg_report_semantics_by_workload: dict[str, str] = {}
     for report in json_grouped.get("dfg_sim_report", []):
@@ -1118,36 +1129,16 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         )
                     )
             else:
-                primitive_rows = [
-                    primitive
-                    for primitive in grouped.get("dataflow_primitive_coverage", [])
-                    if primitive.get("workload") == kernel
-                ]
-                if not primitive_rows:
-                    findings.append(
-                        cross_finding(
-                            "sim_dfg_cycle_requires_dfg_evidence",
-                            (
-                                f"sim kernel {kernel!r} has DFG-sim cycles "
-                                "but no DFG-sim evidence artifact was provided"
-                            ),
-                            row,
-                        )
+                findings.append(
+                    cross_finding(
+                        "sim_dfg_cycle_requires_dfg_report",
+                        (
+                            f"sim kernel {kernel!r} has DFG-sim cycles "
+                            "but no matching DFG-sim report artifact was provided"
+                        ),
+                        row,
                     )
-                elif not any(
-                    primitive.get("dfg_sim_status") == "pass"
-                    for primitive in primitive_rows
-                ):
-                    findings.append(
-                        cross_finding(
-                            "sim_dfg_cycle_requires_dfg_evidence",
-                            (
-                                f"sim kernel {kernel!r} has DFG-sim cycles "
-                                "but primitive coverage does not contain DFG-sim pass evidence"
-                            ),
-                            row,
-                        )
-                    )
+                )
         if row.get("cgra_sim_cycles", ""):
             if not row.get("dfg_sim_cycles", ""):
                 findings.append(
@@ -1189,7 +1180,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         )
                     )
                 else:
-                    pass_mappings = pass_mappings_by_workload.get(kernel, [])
+                    pass_mapping_artifacts = pass_mapping_artifacts_by_workload.get(kernel, [])
                     matching_mapping_reports = []
                     for report in matching_reports:
                         report_mapping_id = report.get("mapping_id")
@@ -1198,12 +1189,30 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         )
                         if not isinstance(report_mapping_id, str) or report_hardware is None:
                             continue
-                        for mapping in pass_mappings:
-                            mapping_hardware = canonical_hardware_ref(mapping.get("hardware"))
+                        for mapping in pass_mapping_artifacts:
+                            mapping_hardware = canonical_hardware_ref(
+                                mapping.get("hardware") if isinstance(mapping.get("hardware"), str) else None
+                            )
                             if (
                                 mapping.get("mapping_id") == report_mapping_id
                                 and mapping_hardware == report_hardware
                             ):
+                                route_segments = report.get("route_segments")
+                                if isinstance(route_segments, int):
+                                    routes = mapping.get("routes")
+                                    if isinstance(routes, list):
+                                        mapped_segments = 0
+                                        for route in routes:
+                                            if isinstance(route, dict) and isinstance(route.get("segments"), list):
+                                                mapped_segments += len(route["segments"])
+                                        if mapped_segments != route_segments:
+                                            continue
+                                config_records = report.get("config_records")
+                                if (
+                                    isinstance(config_records, int)
+                                    and mapping.get("config_records") != config_records
+                                ):
+                                    continue
                                 matching_mapping_reports.append(report)
                                 break
                     if not matching_mapping_reports:
@@ -1212,7 +1221,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                                 "sim_cgra_report_matches_mapping",
                                 (
                                     f"sim kernel {kernel!r} CGRA report does not "
-                                    "match a pass PnR mapping by hardware and mapping_id"
+                                    "match a pass PnR mapping artifact by hardware and mapping_id"
                                 ),
                                 row,
                             )
@@ -1250,25 +1259,30 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                                 row,
                             )
                         )
-            pass_mappings = pass_mappings_by_workload.get(kernel, [])
-            if not pass_mappings:
+            pass_mapping_artifacts = pass_mapping_artifacts_by_workload.get(kernel, [])
+            if not pass_mapping_artifacts:
                 findings.append(
                     cross_finding(
                         "sim_cgra_cycle_requires_mapping",
                         (
                             f"sim kernel {kernel!r} has CGRA-sim cycles "
-                            "but no pass PnR mapping with mapping_id was provided"
+                            "but no pass PnR mapping artifact with mapping_id was provided"
                         ),
                         row,
                     )
                 )
-            elif hardware and not any(canonical_hardware_ref(mapping.get("hardware")) for mapping in pass_mappings):
+            elif hardware and not any(
+                canonical_hardware_ref(
+                    mapping.get("hardware") if isinstance(mapping.get("hardware"), str) else None
+                )
+                for mapping in pass_mapping_artifacts
+            ):
                 findings.append(
                     cross_finding(
                         "sim_cgra_cycle_requires_hardware",
                         (
                             f"sim kernel {kernel!r} has CGRA-sim cycles "
-                            "but no pass mapping references verified ADG hardware"
+                            "but no pass mapping artifact references verified ADG hardware"
                         ),
                         row,
                     )

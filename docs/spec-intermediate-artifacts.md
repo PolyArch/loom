@@ -387,10 +387,12 @@ Rules:
 * `kind` must be `cgra_sim_report`.
 * `hardware_artifact`, when present, identifies the Fabric ADG input
   artifact used by CGRA-sim and must agree with `hardware`.
-* `workload`, `hardware`, and `mapping_id` must resolve to a passing PnR
-  mapping artifact or mapping-summary row for the same candidate. A
-  report for one mapping candidate cannot validate cycle evidence for a
-  different mapping of the same workload.
+* `workload`, `hardware`, and `mapping_id` must resolve to a passing
+  PnR mapping artifact for the same candidate. A mapping-summary CSV row
+  is not sufficient CGRA-sim provenance because the mapping artifact is
+  the SSOT for placements, routes, configuration, and resource sharing.
+  A report for one mapping candidate cannot validate cycle evidence for
+  a different mapping of the same workload.
 * A short hardware symbol is legal only when it resolves to exactly one
   verified hardware artifact. If two Fabric artifacts expose the same
   module symbol, consumers must use an unambiguous artifact-qualified
