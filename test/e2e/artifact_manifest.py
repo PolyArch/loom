@@ -16,19 +16,6 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
-DISCOVERY_PATHS = (
-    "temp/source-compat-summary.csv",
-    "temp/compiler-pipeline-summary.csv",
-    "temp/dataflow-primitive-coverage.csv",
-    "temp/adg-hardware-summary.csv",
-    "temp/pnr-mapping-summary.csv",
-    "temp/sim-cycle-summary.csv",
-    "temp/rtl-fpa-summary.csv",
-    "temp/e2e-demonstrator-summary.csv",
-    "temp/dse-candidate-summary.csv",
-    "temp/unsupported-scope-ledger.csv",
-)
-
 CHAIN = (
     "source_compat",
     "compiler_pipeline",
@@ -57,20 +44,12 @@ def fingerprint(path: Path) -> str:
     return digest.hexdigest()
 
 
-def artifact_kind(path: Path) -> str:
-    schema = intermediate_artifacts.schema_for_path(path)
-    if schema is not None:
-        return schema.kind
-    kind = intermediate_artifacts.json_kind_for_path(path)
-    if kind is not None:
-        return kind
-    return "unknown"
-
-
 def discover_artifacts(explicit: list[str]) -> list[Path]:
-    if explicit:
-        return [Path(value) for value in explicit]
-    return [ROOT / value for value in DISCOVERY_PATHS if (ROOT / value).is_file()]
+    return intermediate_artifacts.discover_artifact_paths(
+        ROOT,
+        explicit,
+        include_unsupported_scope=True,
+    )
 
 
 def build_manifest(paths: list[Path]) -> dict[str, object]:
@@ -78,7 +57,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     diagnostics = []
     seen_kinds = set()
     for path in paths:
-        kind = artifact_kind(path)
+        kind = intermediate_artifacts.artifact_kind_for_path(path)
         if not path.is_file():
             diagnostics.append({"status": "blocked", "message": f"missing artifact: {path}"})
             continue

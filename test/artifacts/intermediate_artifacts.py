@@ -282,12 +282,53 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
 }
 
 
+STANDARD_ARTIFACT_PATHS = (
+    ("source_compat", "temp/source-compat-summary.csv"),
+    ("compiler_pipeline", "temp/compiler-pipeline-summary.csv"),
+    ("dataflow_primitive_coverage", "temp/dataflow-primitive-coverage.csv"),
+    ("adg_hardware", "temp/adg-hardware-summary.csv"),
+    ("pnr_mapping", "temp/pnr-mapping-summary.csv"),
+    ("sim_cycle", "temp/sim-cycle-summary.csv"),
+    ("rtl_fpa", "temp/rtl-fpa-summary.csv"),
+    ("e2e_demonstrator", "temp/e2e-demonstrator-summary.csv"),
+    ("dse_candidate", "temp/dse-candidate-summary.csv"),
+    ("unsupported_scope", "temp/unsupported-scope-ledger.csv"),
+)
+
+
 def schema_for_path(path: Path) -> CsvSchema | None:
     name = path.name
     for schema in CSV_SCHEMAS.values():
         if name == schema.filename or name.endswith("-" + schema.filename):
             return schema
     return None
+
+
+def artifact_kind_for_path(path: Path) -> str:
+    schema = schema_for_path(path)
+    if schema is not None:
+        return schema.kind
+    kind = json_kind_for_path(path)
+    if kind is not None:
+        return kind
+    return "unknown"
+
+
+def discover_artifact_paths(
+    root: Path,
+    explicit: Iterable[str],
+    *,
+    include_unsupported_scope: bool,
+) -> list[Path]:
+    explicit_paths = [Path(value) for value in explicit]
+    if explicit_paths:
+        return explicit_paths
+    return [
+        root / relative
+        for kind, relative in STANDARD_ARTIFACT_PATHS
+        if include_unsupported_scope or kind != "unsupported_scope"
+        if (root / relative).is_file()
+    ]
 
 
 def json_kind_for_path(path: Path) -> str | None:

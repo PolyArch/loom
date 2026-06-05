@@ -15,18 +15,6 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
-DISCOVERY_PATHS = (
-    "temp/source-compat-summary.csv",
-    "temp/compiler-pipeline-summary.csv",
-    "temp/dataflow-primitive-coverage.csv",
-    "temp/adg-hardware-summary.csv",
-    "temp/pnr-mapping-summary.csv",
-    "temp/sim-cycle-summary.csv",
-    "temp/rtl-fpa-summary.csv",
-    "temp/e2e-demonstrator-summary.csv",
-    "temp/dse-candidate-summary.csv",
-)
-
 GAP_STATUSES = {"blocked", "unsupported", "skipped"}
 
 
@@ -38,9 +26,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def discover_artifacts(explicit: list[str]) -> list[Path]:
-    if explicit:
-        return [Path(value) for value in explicit]
-    return [ROOT / value for value in DISCOVERY_PATHS if (ROOT / value).is_file()]
+    return intermediate_artifacts.discover_artifact_paths(
+        ROOT,
+        explicit,
+        include_unsupported_scope=False,
+    )
 
 
 def case_identity(schema: intermediate_artifacts.CsvSchema, row: dict[str, str]) -> str:
