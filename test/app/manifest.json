@@ -106,6 +106,14 @@
       "feature_tags": ["matrix", "vector", "integer"]
     },
     {
+      "case": "gather",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["memory", "indirect", "integer"]
+    },
+    {
       "case": "integrate_trapz",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
