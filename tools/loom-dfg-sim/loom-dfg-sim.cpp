@@ -33,6 +33,11 @@ static llvm::cl::list<std::string>
     runtimeArgs("arg", llvm::cl::desc("runtime argument as index=value"),
                 llvm::cl::ZeroOrMore);
 
+static llvm::cl::list<std::string>
+    memrefArgs("memref",
+               llvm::cl::desc("memref fixture as index=value0,value1,..."),
+               llvm::cl::ZeroOrMore);
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("DFG simulation report JSON"),
                llvm::cl::Required);
@@ -54,6 +59,23 @@ parseRuntimeArgs() {
     if (split.first.getAsInteger(10, index))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "--arg index must be unsigned");
+    parsed.push_back({index, split.second.str()});
+  }
+  return parsed;
+}
+
+static llvm::Expected<llvm::SmallVector<loom::sim::DFGMemoryArg>>
+parseMemoryArgs() {
+  llvm::SmallVector<loom::sim::DFGMemoryArg> parsed;
+  for (llvm::StringRef raw : memrefArgs) {
+    std::pair<llvm::StringRef, llvm::StringRef> split = raw.split('=');
+    if (split.second.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "--memref expects index=values");
+    unsigned index = 0;
+    if (split.first.getAsInteger(10, index))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "--memref index must be unsigned");
     parsed.push_back({index, split.second.str()});
   }
   return parsed;
@@ -93,11 +115,18 @@ int main(int argc, char **argv) {
     llvm::errs() << "error: " << llvm::toString(argsOrErr.takeError()) << "\n";
     return 1;
   }
+  auto memoriesOrErr = parseMemoryArgs();
+  if (!memoriesOrErr) {
+    llvm::errs() << "error: " << llvm::toString(memoriesOrErr.takeError())
+                 << "\n";
+    return 1;
+  }
 
   loom::sim::DFGSimulationOptions options;
   options.graphName = graphName;
   options.workloadName = workloadName;
   options.args = std::move(*argsOrErr);
+  options.memories = std::move(*memoriesOrErr);
   options.maxEventSteps = maxEventSteps;
 
   auto reportOrErr = loom::sim::simulateDataflowGraph(*module, options);

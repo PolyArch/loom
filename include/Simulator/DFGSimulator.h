@@ -18,10 +18,16 @@ struct DFGRuntimeArg {
   std::string value;
 };
 
+struct DFGMemoryArg {
+  unsigned index = 0;
+  std::string values;
+};
+
 struct DFGSimulationOptions {
   std::string graphName;
   std::string workloadName;
   llvm::SmallVector<DFGRuntimeArg> args;
+  llvm::SmallVector<DFGMemoryArg> memories;
   std::uint64_t maxEventSteps = 100000;
 };
 

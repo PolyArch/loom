@@ -54,11 +54,17 @@ struct LoopState {
   std::optional<Token> latched;
 };
 
+struct MemoryValue {
+  mlir::Type elementType;
+  llvm::SmallVector<Token> elements;
+};
+
 struct SimulatorState {
   ChannelMap channels;
   ChannelMap pendingChannels;
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
+  llvm::DenseMap<mlir::Value, MemoryValue> memories;
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
@@ -158,6 +164,23 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported runtime argument type");
+}
+
+llvm::Expected<llvm::SmallVector<Token>> parseMemoryTokens(llvm::StringRef raw,
+                                                           mlir::Type type) {
+  llvm::SmallVector<Token> tokens;
+  llvm::SmallVector<llvm::StringRef> parts;
+  raw.split(parts, ',', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  if (parts.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memref fixture must contain values");
+  for (llvm::StringRef part : parts) {
+    auto tokenOrErr = parseRuntimeToken(part, type);
+    if (!tokenOrErr)
+      return tokenOrErr.takeError();
+    tokens.push_back(*tokenOrErr);
+  }
+  return tokens;
 }
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
@@ -352,6 +375,30 @@ bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
   return true;
 }
 
+bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(1)) ||
+      !hasToken(state.channels, op->getOpOperand(2)))
+    return false;
+  auto memIt = state.memories.find(op->getOperand(0));
+  if (memIt == state.memories.end()) {
+    state.diagnostics.push_back("dataflow.load has no memref fixture");
+    return false;
+  }
+  Token addr = popToken(state.channels, op->getOpOperand(1));
+  popToken(state.channels, op->getOpOperand(2));
+  const std::int64_t index = integerToken(addr);
+  if (index < 0 ||
+      static_cast<std::size_t>(index) >= memIt->second.elements.size()) {
+    state.diagnostics.push_back("dataflow.load address is out of range");
+    return false;
+  }
+  emitToken(state, op->getResult(0),
+            memIt->second.elements[static_cast<std::size_t>(index)]);
+  emitToken(state, op->getResult(1), Token{TokenKind::None});
+  ++state.eventCount;
+  return true;
+}
+
 bool fireAddF(mlir::arith::AddFOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op->getOpOperand(0)) ||
       !hasToken(state.channels, op->getOpOperand(1)))
@@ -372,6 +419,15 @@ bool fireAddI(mlir::arith::AddIOp op, SimulatorState &state) {
   Token rhs = popToken(state.channels, op->getOpOperand(1));
   emitToken(state, op.getResult(),
             Token{TokenKind::Integer, integerToken(lhs) + integerToken(rhs)});
+  ++state.eventCount;
+  return true;
+}
+
+bool fireIndexCast(mlir::arith::IndexCastOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)))
+    return false;
+  Token input = popToken(state.channels, op->getOpOperand(0));
+  emitToken(state, op.getOut(), Token{TokenKind::Integer, integerToken(input)});
   ++state.eventCount;
   return true;
 }
@@ -411,10 +467,14 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireInvariant(typedOp, state); })
       .Case<dataflow::SyncOp>(
           [&](auto typedOp) { return fireSync(typedOp, state); })
+      .Case<dataflow::LoadOp>(
+          [&](auto typedOp) { return fireLoad(typedOp, state); })
       .Case<mlir::arith::AddFOp>(
           [&](auto typedOp) { return fireAddF(typedOp, state); })
       .Case<mlir::arith::AddIOp>(
           [&](auto typedOp) { return fireAddI(typedOp, state); })
+      .Case<mlir::arith::IndexCastOp>(
+          [&](auto typedOp) { return fireIndexCast(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Default([&](mlir::Operation *) { return false; });
@@ -425,7 +485,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,
-                mlir::arith::AddIOp, mlir::arith::ConstantOp>(op))
+                dataflow::LoadOp, mlir::arith::AddIOp, mlir::arith::IndexCastOp,
+                mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }
@@ -441,20 +502,33 @@ dataflow::GraphFuncOp findGraph(mlir::ModuleOp module, llvm::StringRef name) {
   return match;
 }
 
-llvm::Expected<llvm::StringMap<std::string>>
+llvm::Expected<llvm::StringMap<llvm::SmallVector<std::string>>>
 indexRuntimeArgs(llvm::ArrayRef<DFGRuntimeArg> args, unsigned argCount) {
-  llvm::StringMap<std::string> byIndex;
+  llvm::StringMap<llvm::SmallVector<std::string>> byIndex;
   for (const DFGRuntimeArg &arg : args) {
     if (arg.index >= argCount)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "argument index %u is out of range",
                                      arg.index);
     std::string key = std::to_string(arg.index);
+    byIndex[key].push_back(arg.value);
+  }
+  return byIndex;
+}
+
+llvm::Expected<llvm::StringMap<std::string>>
+indexMemoryArgs(llvm::ArrayRef<DFGMemoryArg> args, unsigned argCount) {
+  llvm::StringMap<std::string> byIndex;
+  for (const DFGMemoryArg &arg : args) {
+    if (arg.index >= argCount)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "memref index %u is out of range",
+                                     arg.index);
+    std::string key = std::to_string(arg.index);
     if (byIndex.contains(key))
       return llvm::createStringError(std::errc::invalid_argument,
-                                     "argument index %u is repeated",
-                                     arg.index);
-    byIndex.try_emplace(key, arg.value);
+                                     "memref index %u is repeated", arg.index);
+    byIndex.try_emplace(key, arg.values);
   }
   return byIndex;
 }
@@ -500,12 +574,12 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   auto argsOrErr = indexRuntimeArgs(options.args, entry.getNumArguments());
   if (!argsOrErr)
     return argsOrErr.takeError();
-  llvm::StringMap<std::string> args = std::move(*argsOrErr);
-
-  if (args.size() != entry.getNumArguments())
-    return llvm::createStringError(
-        std::errc::invalid_argument, "expected %u runtime arguments, got %u",
-        entry.getNumArguments(), static_cast<unsigned>(args.size()));
+  llvm::StringMap<llvm::SmallVector<std::string>> args = std::move(*argsOrErr);
+  auto memoriesOrErr =
+      indexMemoryArgs(options.memories, entry.getNumArguments());
+  if (!memoriesOrErr)
+    return memoriesOrErr.takeError();
+  llvm::StringMap<std::string> memories = std::move(*memoriesOrErr);
 
   SimulatorState state;
   llvm::SmallVector<mlir::Value> returnValues;
@@ -513,13 +587,46 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   for (auto [index, arg] : llvm::enumerate(entry.getArguments())) {
     std::string key = std::to_string(index);
-    auto tokenOrErr = parseRuntimeToken(args.lookup(key), arg.getType());
-    if (!tokenOrErr)
-      return llvm::joinErrors(
-          llvm::createStringError(std::errc::invalid_argument,
-                                  "invalid argument %u", unsigned(index)),
-          tokenOrErr.takeError());
-    seedBlockArgument(state, arg, *tokenOrErr);
+    if (auto memrefType = mlir::dyn_cast<mlir::MemRefType>(arg.getType())) {
+      if (!memories.contains(key))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "missing memref fixture for argument %u",
+                                       unsigned(index));
+      if (args.contains(key))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "memref argument %u must use --memref",
+                                       unsigned(index));
+      auto tokensOrErr =
+          parseMemoryTokens(memories.lookup(key), memrefType.getElementType());
+      if (!tokensOrErr)
+        return llvm::joinErrors(
+            llvm::createStringError(std::errc::invalid_argument,
+                                    "invalid memref argument %u",
+                                    unsigned(index)),
+            tokensOrErr.takeError());
+      state.memories[arg] =
+          MemoryValue{memrefType.getElementType(), std::move(*tokensOrErr)};
+      continue;
+    }
+
+    if (memories.contains(key))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "non-memref argument %u must use --arg",
+                                     unsigned(index));
+    auto argIt = args.find(key);
+    if (argIt == args.end())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "missing runtime argument %u",
+                                     unsigned(index));
+    for (llvm::StringRef rawToken : argIt->second) {
+      auto tokenOrErr = parseRuntimeToken(rawToken, arg.getType());
+      if (!tokenOrErr)
+        return llvm::joinErrors(
+            llvm::createStringError(std::errc::invalid_argument,
+                                    "invalid argument %u", unsigned(index)),
+            tokenOrErr.takeError());
+      seedBlockArgument(state, arg, *tokenOrErr);
+    }
   }
 
   llvm::StringSet<> unsupported;
