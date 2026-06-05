@@ -87,6 +87,7 @@ EXPECTED_CASES = {
     "sigmoid",
     "softmax",
     "spmv",
+    "spmspv",
     "sort_bubble",
     "sort_insertion",
     "sort_merge",
