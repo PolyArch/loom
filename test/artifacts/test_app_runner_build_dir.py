@@ -16,6 +16,7 @@ RUNNERS = ("run_check.sh", "raise_check.sh", "dfg_check.sh")
 AGGREGATE_RUNNERS = ("run_all.sh", "run_raise_all.sh", "run_dfg_all.sh")
 SHARED_APP_SCRIPTS = (
     "dfg_common.sh",
+    "raise_scope_common.sh",
     "run_c_variants_common.sh",
     "run_cxx_variants_common.sh",
 )

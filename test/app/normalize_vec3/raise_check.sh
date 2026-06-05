@@ -9,11 +9,13 @@ KERNEL_FN="normalize_vec3_kernel"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${REPO}/temp/test-runs/${KERNEL}-raise}"
+SHARED="${REPO}/test/app/raise_scope_common.sh"
 
 LOOM_CXX="${LOOM_CXX:-${REPO}/build/bin/loom-c++}"
 LOOM_RAISE="${LOOM_RAISE:-${REPO}/build/bin/loom-raise}"
 
 mkdir -p "${BUILD_DIR}"
+. "${SHARED}"
 
 raise_one() {
     local variant="$1"
@@ -30,8 +32,16 @@ raise_one() {
         echo "[${KERNEL}/${variant}] raised MLIR is empty" >&2
         return 1
     fi
-    if ! awk '
-        /scf\.(forall|for) / {
+    local scope_name
+    if [[ "${has_call}" == "yes" ]]; then
+        scope_name="${KERNEL_FN}"
+    else
+        scope_name="main"
+    fi
+    local scope_pattern
+    scope_pattern="$(awk_function_scope_pattern "${scope_name}")"
+    if ! awk "${scope_pattern}"'
+        in_func && /scf\.(forall|for) / {
             in_loop = 1
             loads = 0
             stores = 0
@@ -40,7 +50,7 @@ raise_one() {
             has_if = 0
             next
         }
-        in_loop {
+        in_func && in_loop {
             if ($0 ~ /llvm\.load/) {
                 loads += 1
             }
@@ -62,7 +72,7 @@ raise_one() {
         }
         END { exit found ? 0 : 1 }
     ' "${mlir}"; then
-        echo "[${KERNEL}/${variant}] no normalize-vec3 loop in ${mlir}" >&2
+        echo "[${KERNEL}/${variant}] no normalize-vec3 loop in @${scope_name}: ${mlir}" >&2
         return 1
     fi
     if ! grep -q 'func\.func @main' "${mlir}"; then
