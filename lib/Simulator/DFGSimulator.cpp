@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -65,7 +66,7 @@ struct SimulatorState {
   ChannelMap pendingChannels;
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
-  llvm::DenseMap<mlir::Value, MemoryValue> memories;
+  llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
   llvm::DenseMap<mlir::Value, std::string> rawMemoryFixtures;
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
@@ -393,14 +394,39 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   popToken(state.channels, op.getCtrlMutable());
   const std::int64_t index = integerToken(addr);
   if (index < 0 ||
-      static_cast<std::size_t>(index) >= memIt->second.elements.size()) {
+      static_cast<std::size_t>(index) >= memIt->second->elements.size()) {
     state.diagnostics.push_back("dataflow.load address is out of range");
     return false;
   }
   emitToken(state, op.getData(),
-            memIt->second.elements[static_cast<std::size_t>(index)]);
+            memIt->second->elements[static_cast<std::size_t>(index)]);
   emitToken(state, op.getDone(), Token{TokenKind::None});
   ++state.loadFireCounts[op.getOperation()];
+  ++state.eventCount;
+  return true;
+}
+
+bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op.getAddrMutable()) ||
+      !hasToken(state.channels, op.getDataMutable()) ||
+      !hasToken(state.channels, op.getCtrlMutable()))
+    return false;
+  auto memIt = state.memories.find(op.getMem());
+  if (memIt == state.memories.end()) {
+    state.diagnostics.push_back("dataflow.store has no memref fixture");
+    return false;
+  }
+  Token addr = popToken(state.channels, op.getAddrMutable());
+  Token data = popToken(state.channels, op.getDataMutable());
+  popToken(state.channels, op.getCtrlMutable());
+  const std::int64_t index = integerToken(addr);
+  if (index < 0 ||
+      static_cast<std::size_t>(index) >= memIt->second->elements.size()) {
+    state.diagnostics.push_back("dataflow.store address is out of range");
+    return false;
+  }
+  memIt->second->elements[static_cast<std::size_t>(index)] = data;
+  emitToken(state, op.getDone(), Token{TokenKind::None});
   ++state.eventCount;
   return true;
 }
@@ -485,6 +511,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireSync(typedOp, state); })
       .Case<dataflow::LoadOp>(
           [&](auto typedOp) { return fireLoad(typedOp, state); })
+      .Case<dataflow::StoreOp>(
+          [&](auto typedOp) { return fireStore(typedOp, state); })
       .Case<mlir::arith::AddFOp>(
           [&](auto typedOp) { return fireAddF(typedOp, state); })
       .Case<mlir::arith::AddIOp>(
@@ -501,8 +529,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,
-                dataflow::LoadOp, mlir::arith::AddIOp, mlir::arith::IndexCastOp,
-                mlir::arith::ConstantOp>(op))
+                dataflow::LoadOp, dataflow::StoreOp, mlir::arith::AddIOp,
+                mlir::arith::IndexCastOp, mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }
@@ -591,8 +619,10 @@ llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
           parseMemoryTokens(rawIt->second, targetMemref.getElementType());
       if (!tokensOrErr)
         return tokensOrErr.takeError();
-      state.memories[target] =
-          MemoryValue{targetMemref.getElementType(), std::move(*tokensOrErr)};
+      auto memory = std::make_shared<MemoryValue>(
+          MemoryValue{targetMemref.getElementType(), std::move(*tokensOrErr)});
+      state.memories[source] = memory;
+      state.memories[target] = memory;
       state.rawMemoryFixtures[target] = rawIt->second;
       changed = true;
     }
@@ -678,8 +708,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                     "invalid memref argument %u",
                                     unsigned(index)),
             tokensOrErr.takeError());
-      state.memories[arg] =
-          MemoryValue{memrefType.getElementType(), std::move(*tokensOrErr)};
+      state.memories[arg] = std::make_shared<MemoryValue>(
+          MemoryValue{memrefType.getElementType(), std::move(*tokensOrErr)});
       continue;
     }
 
