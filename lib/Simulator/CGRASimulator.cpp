@@ -147,6 +147,13 @@ llvm::Expected<std::string>
 requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
                     llvm::StringRef diagnosticContext);
 
+std::string endpointResourceId(llvm::StringRef endpoint) {
+  std::size_t dot = endpoint.rfind('.');
+  if (dot == llvm::StringRef::npos)
+    return endpoint.str();
+  return endpoint.take_front(dot).str();
+}
+
 llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
                                      llvm::StringRef hardwareName,
                                      const llvm::json::Object &mapping) {
@@ -208,9 +215,50 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
     if (*resourceKindOrErr == "fabric.op" &&
         !resourceIt->second.supportedOps.contains(*operationOrErr))
       return llvm::createStringError(
-          std::errc::invalid_argument,
-          "hardware resource %s does not support operation %s",
-          hardwareOrErr->c_str(), operationOrErr->c_str());
+        std::errc::invalid_argument,
+        "hardware resource %s does not support operation %s",
+        hardwareOrErr->c_str(), operationOrErr->c_str());
+  }
+  const llvm::json::Array *routes = mapping.getArray("routes");
+  if (!routes)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping artifact lacks routes");
+  for (const llvm::json::Value &routeValue : *routes) {
+    const llvm::json::Object *route = routeValue.getAsObject();
+    if (!route)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route is not an object");
+    const llvm::json::Array *segments = route->getArray("segments");
+    if (!segments || segments->empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route lacks non-empty segments");
+    for (const llvm::json::Value &segmentValue : *segments) {
+      const llvm::json::Object *segment = segmentValue.getAsObject();
+      if (!segment)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment is not an object");
+      for (llvm::StringRef key : {"source_endpoint", "sink_endpoint"}) {
+        auto endpointOrErr =
+            requireObjectString(*segment, key, "mapping route segment");
+        if (!endpointOrErr)
+          return endpointOrErr.takeError();
+        std::string resourceId = endpointResourceId(*endpointOrErr);
+        if (!resources.contains(resourceId))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "hardware artifact does not contain route endpoint resource %s",
+              resourceId.c_str());
+      }
+      if (std::optional<llvm::StringRef> hardwareRef =
+              segment->getString("hardware_ref")) {
+        if (*hardwareRef != hardwareName && !resources.contains(*hardwareRef))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "hardware artifact does not contain route segment hardware_ref %s",
+              hardwareRef->str().c_str());
+      }
+    }
   }
   return llvm::Error::success();
 }
