@@ -475,34 +475,6 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   return true;
 }
 
-bool fireAddF(mlir::arith::AddFOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
-}
-
-bool fireSubF(mlir::arith::SubFOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
-}
-
-bool fireMulF(mlir::arith::MulFOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
-}
-
-bool fireAddI(mlir::arith::AddIOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
-}
-
-bool fireMulI(mlir::arith::MulIOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getResult(), state);
-}
-
-bool fireFMulAdd(mlir::LLVM::FMulAddOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getRes(), state);
-}
-
-bool fireIndexCast(mlir::arith::IndexCastOp op, SimulatorState &state) {
-  return firePrimitiveOperation(op.getOperation(), op.getOut(), state);
-}
-
 bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
   if (state.oneShotOps.contains(op.getOperation()))
     return false;
@@ -559,20 +531,6 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireLoad(typedOp, state); })
       .Case<dataflow::StoreOp>(
           [&](auto typedOp) { return fireStore(typedOp, state); })
-      .Case<mlir::arith::AddFOp>(
-          [&](auto typedOp) { return fireAddF(typedOp, state); })
-      .Case<mlir::arith::SubFOp>(
-          [&](auto typedOp) { return fireSubF(typedOp, state); })
-      .Case<mlir::arith::MulFOp>(
-          [&](auto typedOp) { return fireMulF(typedOp, state); })
-      .Case<mlir::arith::AddIOp>(
-          [&](auto typedOp) { return fireAddI(typedOp, state); })
-      .Case<mlir::arith::MulIOp>(
-          [&](auto typedOp) { return fireMulI(typedOp, state); })
-      .Case<mlir::LLVM::FMulAddOp>(
-          [&](auto typedOp) { return fireFMulAdd(typedOp, state); })
-      .Case<mlir::arith::IndexCastOp>(
-          [&](auto typedOp) { return fireIndexCast(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
