@@ -38,26 +38,31 @@ Outer i-loop is parallel, so `total_cycles` is the per-outer-iter critical
 path.
 
 Per outer iter:
-- **Prologue** — `load i → load input_data[i] → store value`, 3 cycles. The
-  subscript `input_data[i]` is a bare `[i]` (no inline arithmetic in the
-  brackets), so it charges no address-add and adds no cycle of its own. In
+- **Prologue** — `load input_data[i] → store value`, 2 cycles. The subscript
+  `input_data[i]` is a bare `[i]` on the fully-unrolled (parallel) iterator
+  `i`, which is a per-lane compile-time constant available at cycle 1, so the
+  load is **rooted** and the `i` induction read (load/incr/store/compare) is
+  counted overhead that stays off the output-reachable path. There is no
+  inline arithmetic in the brackets either, so no address-add is charged. In
   parallel: `store result = 0` (1 cycle, the literal 0 is anonymous). The
-  value-path dominates → 3 cycles before inner iter 0's `load value` fires.
+  value-path dominates → 2 cycles before inner iter 0's `load value` fires.
 - **bit-loop** — `BITS · II_bit = 32 · 4 = 128` cycles.
 - **Epilogue** — `load result → store output_reversed[i]`, 2 cycles. The
   output-address add overlaps with the inner loop.
 
-`total_cycles = 3 + 128 + 2 = 133`.
+`total_cycles = 2 + 128 + 2 = 132`.
 
-`critical_path = 3 (prologue) + 32 · 4 (bit recurrence) + 2 (epilogue) = 133`
+`critical_path = 2 (prologue) + 32 · 4 (bit recurrence) + 2 (epilogue) = 132`
 
 Note: the bit-loop `II` is set by the `result` recurrence
 (`load result → << 1 → | → store result`, 4 cycles). Collapsing the two
 `value` reads into a single load shortens the *value* recurrence's load
 count but not `II_bit`, because that load sits on the slack `value`
-recurrence (3 cycles), not on the dominating `result` recurrence. The only
-critical-path change comes from fix A (dropping the prologue address-add
-cycle), so `total_cycles` falls from 134 to 133.
+recurrence (3 cycles), not on the dominating `result` recurrence. The
+prologue carries no address-add (`input_data[i]` is a bare `[i]`), and the
+fully-unrolled parallel iterator `i` is a per-lane constant whose induction
+read is off the output path — so the prologue is `load input_data[i] → store
+value` = 2 cycles and `total_cycles = 132`.
 
 ## Loop dimensions
 | dim  | trip   | kind       | II  |
@@ -164,7 +169,7 @@ cycles  = max(CP, compute, load, store)
 ```
 
 **Counts (from the op-count totals above, N = 256, BITS = 32).**
-- `CP = 133`
+- `CP = 132`
 - `A  = bitops (32,768) + adds (8,448) + address_adds (0) + compares (8,448) = 49,664`
 - `LD = 25,345`
 - `ST = 25,600`
@@ -174,7 +179,30 @@ cycles  = max(CP, compute, load, store)
 compute = ceil(49,664 / 36) = 1,380
 load    = ceil(25,345 / 12) = 2,113
 store   = ceil(25,600 / 12) = 2,134
-cycles  = max(133, 1,380, 2,113, 2,134) = 2,134
+cycles  = max(132, 1,380, 2,113, 2,134) = 2,134
 ```
 
-**Bottleneck: store-bound.** This is the sharpest gap between the two models. ASAP reports `CP = 133` because the 256 outer lanes are parallel and overlap fully — but that requires issuing all 256 lanes' work at once. With only 12 store lanes, the 25,600 scalar+array+induction stores alone need `store = 2,134` cycles (a 16× stretch over ASAP), just edging out `load = 2,113`. The per-bit `result`/`value`/`bit` store round-trips dominate `ST`, so this model exposes that the kernel is memory-issue-throughput limited, not latency limited. Even raising `P` to thousands leaves `cycles` pinned at the store bound until `S` is widened.
+**Bottleneck: store-bound.** This is the sharpest gap between the two models. ASAP reports `CP = 132` because the 256 outer lanes are parallel and overlap fully — but that requires issuing all 256 lanes' work at once. With only 12 store lanes, the 25,600 scalar+array+induction stores alone need `store = 2,134` cycles (a 16× stretch over ASAP), just edging out `load = 2,113`. The per-bit `result`/`value`/`bit` store round-trips dominate `ST`, so this model exposes that the kernel is memory-issue-throughput limited, not latency limited. Even raising `P` to thousands leaves `cycles` pinned at the store bound until `S` is widened.
+
+<!-- BEGIN CGRA-SCHED:bit_reverse -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| bit_reverse | 132 | 49664 | 25345 | 25600 | 2134 | 2134 |
+
+- **scheduled_cycles** = 2134  (sum of ordered-region makespans)
+- **aggregate_cycles** = 2134  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 7 / 7 / 220
+- `L`: 2112 / 2112 / 1013
+- `S`: 2133 / 2133 / 244
+
+<!-- END CGRA-SCHED:bit_reverse -->

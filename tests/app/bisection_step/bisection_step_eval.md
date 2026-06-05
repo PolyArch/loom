@@ -137,3 +137,26 @@ cycles  = max(4, 11, 27, 16) = 27
 ```
 
 **Bottleneck: load-bound.** Each of the 64 parallel lanes issues four input loads plus an induction read, so `LD = 321` dominates: with only 12 load lanes, `load = 27` sets the floor — far above the 4-cycle ASAP chain and above both `compute = 11` and `store = 16`. The 4-loads-to-2-stores asymmetry of the kernel is what makes loads, not stores, the binding memory resource.
+
+<!-- BEGIN CGRA-SCHED:bisection_step -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| bisection_step | 4 | 384 | 321 | 192 | 27 | 29 |
+
+- **scheduled_cycles** = 29  (sum of ordered-region makespans)
+- **aggregate_cycles** = 27  (the lower bound above, unchanged)
+- **gap_cycles** = 2  (scheduled − aggregate)
+- **gap_ratio** = 1.0741  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 1 / 1 / 28
+- `L`: 26 / 26 / 309
+- `S`: 6 / 6 / 4
+
+<!-- END CGRA-SCHED:bisection_step -->

@@ -206,3 +206,26 @@ cycles  = max(11, 3, 2, 1) = 11
 ```
 
 **Bottleneck: dependency-bound.** The four serialized compare→body gates give a deep 11-cycle chain on very little total work (87 ops, 19 loads, 12 stores for `N = 8`), so every resource term stays at or below 3 and `CP = 11` binds. This kernel's depth comes from control-flow serialization, not resource pressure; widening the fabric does not help until `N` grows enough that the unrolled per-lane work saturates a memory or PE lane.
+
+<!-- BEGIN CGRA-SCHED:bitonic_stage -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| bitonic_stage | 11 | 87 | 19 | 12 | 11 | 11 |
+
+- **scheduled_cycles** = 11  (sum of ordered-region makespans)
+- **aggregate_cycles** = 11  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 0 / 0 / 0
+- `S`: 0 / 0 / 0
+
+<!-- END CGRA-SCHED:bitonic_stage -->

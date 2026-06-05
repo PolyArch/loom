@@ -824,11 +824,459 @@ def build_conv2d(C_in=3, C_out=4, H=8, W=8, KH=3, KW=3, stride=1):
     return dag, contract
 
 
+def build_batchnorm(C=4, H=8, W=8):
+    """Batch normalization, single region, all three dims (c,h,w) parallel.
+
+    output[c,h,w] = gamma[c]*(input[idx]-mean[c])*inv_std[c] + beta[c], with
+    inv_std[c] = 1.0/sqrt(variance[c]+eps) and idx = c*(H*W) + h*W + w. All
+    C*H*W pixel lanes fully unroll and overlap (no carried dependence). The
+    per-channel inv_std/mean/gamma/beta and H*W are loop-invariant across (h,w):
+    each channel loads variance/mean/gamma/beta once, and H*W is a hoisted
+    cycle-1 root (the precomputed product).
+
+    The binding chain (CP=10) is the per-pixel index/normalize path:
+    H*W hoist -> c*HW -> +h*W -> +w (idx) -> load input -> sub mean ->
+    *inv_std -> *gamma -> +beta -> store. The index multiplies are *regular*
+    arithmetic producing the named scalar idx (address_adds = 0, since the
+    access is the bare subscript input[idx]). c/h/w are fully-unrolled parallel
+    iterators -> per-lane compile-time constants whose induction reads lie off
+    the output-reachable path (dead w.r.t. CP, per the spec's "fully-unrolled
+    iterators are per-lane constants" rule); the index arithmetic therefore does
+    not depend on those reads. The chain's cycle-1 root is the loop-invariant
+    H*W product (a precomputed mul), so c*HW sits at depth 2 -- the same depth
+    the iterator read previously gave, leaving CP=10 unchanged while moving the
+    iterator reads off the path. Reproduces the eval golden numbers (C=4,H=W=8):
+    CP=10, A=2645, LD=568, ST=548, aggregate 6x6 = 74.
+    """
+    dag = Dag()
+    r = dag.region("batchnorm")
+    # Global hoisted scalar loads (eps,C,H,W) + the loop-invariant H*W product,
+    # rooted as a precomputed constant available at cycle 1.
+    ld_eps = r.load(kind="eps")
+    r.load(kind="C")
+    r.load(kind="H")
+    ld_W = r.load(kind="W")
+    hw = r.arith(kind="HW_hoist")  # H*W hoist -> cycle-1 root
+    for _ in range(C):
+        c_iv = r.induction(kind="c", compare_depends_on_read=False)
+        ld_var = r.load(kind="variance")
+        ld_mean = r.load(kind="mean")
+        ld_gamma = r.load(kind="gamma")
+        ld_beta = r.load(kind="beta")
+        # Per-channel inv_std = 1.0 / sqrt(variance + eps); finishes by depth 4
+        # and overlaps the longer per-pixel address chain.
+        add_ve = r.arith(ld_var, ld_eps, kind="var_plus_eps")
+        sq = r.arith(add_ve, kind="sqrt")
+        inv_std = r.arith(sq, kind="inv_std_div")  # 1.0 / sqrt (const numerator)
+        for _ in range(H):
+            h_iv = r.induction(kind="h", compare_depends_on_read=False)
+            for _ in range(W):
+                w_iv = r.induction(kind="w", compare_depends_on_read=False)
+                # idx = c*HW + h*W + w. c/h/w are fully-unrolled *parallel*
+                # iterators, hence per-lane compile-time constants; their
+                # induction reads are counted overhead that must lie off the
+                # output-reachable path (dead w.r.t. CP). So the index arithmetic
+                # does NOT take edges from c_iv/h_iv/w_iv["read"]; it depends only
+                # on the loop-invariant H*W product (hoisted, depth-1 root) and W
+                # load. The binding chain therefore runs through the H*W hoist ->
+                # c*HW (depth 2) -> ... keeping CP=10, with the parallel iterator
+                # reads off the path per docs/spec-kernel-performance.md.
+                m_chw = r.arith(hw, kind="c_mul_HW")        # c (const) * HW
+                m_hw = r.arith(ld_W, kind="h_mul_W")        # h (const) * W
+                a1 = r.arith(m_chw, m_hw, kind="cHW_plus_hW")
+                idx = r.arith(a1, kind="idx_plus_w")        # + w (const)
+                ld_in = r.load(idx, kind="input")          # input[idx]
+                sub = r.arith(ld_in, ld_mean, kind="input_minus_mean")
+                norm = r.arith(sub, inv_std, kind="mul_inv_std")
+                mg = r.arith(norm, ld_gamma, kind="mul_gamma")
+                ab = r.arith(mg, ld_beta, kind="add_beta")
+                r.store(ab, output=True, kind="output")  # output[idx]
+    contract = [RegionContract("batchnorm", A=2645, LD=568, ST=548, CP=10,
+                               aggregate=74)]
+    return dag, contract
+
+
+def build_bit_reverse(N=256, BITS=32):
+    """Per-element 32-bit reversal. Outer i-loop is parallel (each lane writes a
+    distinct output_reversed[i], no cross-lane carry) and fully unrolled; the
+    inner bit-loop is sequential, carrying two scalar recurrences:
+      result = (result << 1) | (value & 1);  value >>= 1;
+    The `result` recurrence (load result -> <<1 -> | -> store result) is the
+    II=4 chain that sets the per-iter critical path; `value` (load -> >>1 ->
+    store) and the `bit` induction are II=3 and slack. `value` is read twice per
+    iter with no intervening write, so it is loaded once and fanned to `&1` and
+    `>>1`. `result` and `bit` are initialized to the constant 0, so their first
+    reads are rooted (constant-init carry); `value` is initialized to the loaded
+    input_data[i], so its first read depends on the prologue store.
+
+    Single region (no in-place RAW across lanes). Reproduces the eval golden
+    numbers (N=256, BITS=32): CP=132, A=49664, LD=25345, ST=25600,
+    aggregate 6x6 = 2134.
+    """
+    dag = Dag()
+    r = dag.region("bit_reverse")
+    r.load(kind="N")  # hoisted N-param load, charged once
+    for _ in range(N):
+        # Outer induction (i): parallel dim. The bound compare is rooted and the
+        # whole i induction (read, increment, store, compare) is counted overhead
+        # that lies off the output-reachable path -- a fully-unrolled parallel
+        # iterator is a per-lane compile-time constant (see the "fully-unrolled
+        # iterators are per-lane constants" rule in docs/spec-kernel-performance.md),
+        # so it must be dead with respect to CP.
+        ld_i = r.load(kind="i_load")
+        i_add = r.arith(ld_i, kind="i_add")
+        r.store(i_add, kind="i_store")
+        r.arith(kind="i_cmp")  # i < N, rooted
+        # Prologue: value = input_data[i]; result = 0 (constant store).
+        ld_in = r.load(kind="input_data")  # bare [i] on a per-lane const i: rooted,
+                                           # no edge from the induction read
+        st_value = r.store(ld_in, kind="value_init")
+        r.store(kind="result_init")  # result = 0 (literal; rooted store)
+        # Sequential bit-loop: result (II=4) and value (II=3) carries.
+        prev_r = None       # result init = const 0 -> first read rooted
+        prev_v = st_value   # value init = input_data[i] -> first read RAW
+        prev_bit = None     # bit init = const 0 -> first read rooted
+        for _ in range(BITS):
+            ld_r = r.load(prev_r, kind="result") if prev_r is not None \
+                else r.load(kind="result")
+            ld_v = r.load(prev_v, kind="value")  # one load fanned to &1 and >>1
+            ld_bit = r.load(prev_bit, kind="bit") if prev_bit is not None \
+                else r.load(kind="bit")
+            shl = r.arith(ld_r, kind="shl")          # result << 1
+            band = r.arith(ld_v, kind="band")        # value & 1
+            bor = r.arith(shl, band, kind="bor")     # |
+            shr = r.arith(ld_v, kind="shr")          # value >> 1
+            prev_r = r.store(bor, kind="result_store")
+            prev_v = r.store(shr, kind="value_store")
+            add_bit = r.arith(ld_bit, kind="bit_add")
+            prev_bit = r.store(add_bit, kind="bit_store")
+            r.arith(ld_bit, kind="bit_cmp")          # bit < 32 (seq -> read dep)
+        # Epilogue: output_reversed[i] = result.
+        ld_res = r.load(prev_r, kind="result_final")
+        r.store(ld_res, output=True, kind="output")
+    contract = [RegionContract("bit_reverse", A=49664, LD=25345, ST=25600,
+                               CP=132, aggregate=2134)]
+    return dag, contract
+
+
+def build_bisection_step(N=64):
+    """Bisection midpoint selection, parallel over i (fully unrolled, single
+    region). Per lane:
+        c = (input_a[i] + input_b[i]) * 0.5;
+        if (input_fa[i]*input_fc[i] < 0) { output_a = input_a[i]; output_b = c; }
+        else                             { output_a = c; output_b = input_b[i]; }
+    Under strict no-predication, the gating compare must retire before any op
+    inside the if/else body, so both conditional output stores take an edge from
+    the compare (giving CP=4). Only the taken arm is counted; both arms write the
+    same two addresses, so the store count is identical either way -- the model
+    wires the T arm (output_a = a, output_b = c). All subscripts are bare [i]:
+    no address-add, and (like axpy) the input loads are rooted -- the
+    fully-unrolled iterator is a per-lane constant, so the loads have no parent
+    and the induction work stays off the output path. Reproduces the eval golden
+    numbers (N=64): CP=4, A=384, LD=321, ST=192, aggregate 6x6 = 27.
+    """
+    dag = Dag()
+    r = dag.region("bisection_step")
+    r.load(kind="N")  # hoisted param load, charged once
+    for _ in range(N):
+        ld_a = r.load(kind="input_a")
+        ld_b = r.load(kind="input_b")
+        ld_fa = r.load(kind="input_fa")
+        ld_fc = r.load(kind="input_fc")
+        add = r.arith(ld_a, ld_b, kind="a_plus_b")
+        c = r.arith(add, kind="mul_half")          # (a + b) * 0.5
+        mul_p = r.arith(ld_fa, ld_fc, kind="fa_mul_fc")
+        cmp = r.arith(mul_p, kind="cmp_lt0")        # fa*fc < 0
+        # No-predication gate: the taken arm's stores wait for the compare.
+        r.store(ld_a, cmp, output=True, kind="output_a")  # T arm: output_a = a
+        r.store(c, cmp, output=True, kind="output_b")     # T arm: output_b = c
+        r.induction(kind="i", compare_depends_on_read=False)
+    contract = [RegionContract("bisection_step", A=384, LD=321, ST=192, CP=4,
+                               aggregate=27)]
+    return dag, contract
+
+
+def build_bitonic_stage(N=8):
+    """One bitonic compare-exchange stage, parallel over i (fully unrolled,
+    single region). For the documented test vector (N=8, stage=1, pass=0 ->
+    distance=1, block_size=4, input [3,1,4,2,8,6,7,5]) the four nested
+    no-predication gates split the lanes into three types:
+      - skipped (i in {1,3,5,7}): outer_pred = F, body never entered -- chain
+        ends at the outer compare (depth 6);
+      - active non-swap (i in {4,6}): outer_pred = T, partner < N = T,
+        should_swap = F -- partner add, bound check, two inplace loads, one
+        value compare (cmp_lt, the taken arm of `if (ascending)`), no stores
+        (depth 10);
+      - swap (i in {0,2}): as active, plus the two inplace swap stores (depth 11).
+    Each gating compare takes an edge into every op of the body it guards, and
+    only the taken arm is counted. The dead `half_block = block_size >> 1` is
+    counted on every lane but stays off the output path. Loop-invariant
+    distance/block_size are prologue dataflow broadcast to all lanes; inplace
+    subscripts are bare scalars (no address_add); inplace[i]/inplace[partner]
+    are each loaded once and fanned to the value compare and the swap store.
+    Reproduces the eval golden numbers (N=8, distance=1): CP=11, A=87, LD=19,
+    ST=12, aggregate 6x6 = 11.
+    """
+    dag = Dag()
+    r = dag.region("bitonic_stage")
+    # Prologue (loop-invariant, broadcast): distance = 1<<pass, block_size =
+    # 1<<(stage+1); stage/pass/N are hoisted param loads.
+    ld_stage = r.load(kind="stage")
+    ld_pass = r.load(kind="pass")
+    ld_N = r.load(kind="N")
+    stage_p1 = r.arith(ld_stage, kind="stage_plus_1")      # add
+    distance = r.arith(ld_pass, kind="distance_shl")        # 1 << pass (bitop)
+    block_size = r.arith(stage_p1, kind="block_size_shl")   # 1 << (stage+1) (bitop)
+
+    # Lane composition for the documented inputs: 4 skipped, 2 active non-swap,
+    # 2 swap. (active, swap) flags select the taken-arm-only op set per lane.
+    lanes = ([(False, False)] * 4    # i in {1,3,5,7}: outer_pred = F
+             + [(True, False)] * 2   # i in {4,6}: active, should_swap = F
+             + [(True, True)] * 2)   # i in {0,2}: active swap
+    for active, swap in lanes:
+        iv = r.induction(kind="i", compare_depends_on_read=False)
+        i_rd = iv["read"]
+        # Unconditional per-lane compute (before the gates, every lane).
+        block_idx = r.arith(i_rd, block_size, kind="block_idx_div")        # i / bs
+        idx_in_block = r.arith(i_rd, block_size, kind="idx_in_block_mod")  # i % bs
+        r.arith(block_size, kind="half_block_shr")           # bs>>1 (dead bitop)
+        band_asc = r.arith(block_idx, kind="block_idx_and_1")  # block_idx & 1
+        ascending = r.arith(band_asc, kind="ascending_cmp")    # == 0 (compare)
+        band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
+        outer_pred = r.arith(band_pred, kind="outer_pred_cmp")  # == 0 (compare)
+        if active:
+            # Inside outer body: partner = i + distance (gated by outer_pred).
+            partner = r.arith(i_rd, distance, outer_pred, kind="partner_add")
+            in_bounds = r.arith(partner, ld_N, kind="partner_lt_N")  # compare
+            # Inside partner<N body: two inplace loads (bare-scalar subscripts).
+            ld_ip_i = r.load(in_bounds, kind="inplace_i")
+            ld_ip_p = r.load(in_bounds, partner, kind="inplace_partner")
+            # Inside if(ascending): only the taken-arm value compare fires.
+            should_swap = r.arith(ascending, ld_ip_i, ld_ip_p, kind="value_cmp")
+            if swap:
+                # Inside if(should_swap): swap stores reuse the C9 loads.
+                r.store(ld_ip_p, should_swap, output=True, kind="store_inplace_i")
+                r.store(ld_ip_i, should_swap, output=True,
+                        kind="store_inplace_partner")
+    contract = [RegionContract("bitonic_stage", A=87, LD=19, ST=12, CP=11,
+                               aggregate=11)]
+    return dag, contract
+
+
+def build_bitonic_stage_modified(N=8):
+    """Modified bitonic stage: the active (if) branch appends an in-place
+    `for j in [N/2, N): inplace[j] *= 2` loop and the else branch does
+    `inplace[i] -= 1`. The outer `i` loop is therefore SEQUENTIAL -- a
+    read-modify-write recurrence aliases through inplace[N/2..N-1] across
+    successive if-iters (and the i in {5,7} else writes). Single region; the
+    in-place carry is modeled as RAW memory edges (each writer's load depends on
+    the previous committing writer's store to that slot).
+
+    Because the dim is sequential, its iterator is NOT a per-lane constant: per
+    docs/spec-kernel-performance.md ("fully-unrolled iterators are per-lane
+    constants" and its deliberate sequential contrast), a sequential-dim
+    iterator read is part of the carried chain, so each iter's `load i` chains
+    from the prior iter's `store i` (the same treatment the FFT butterfly `j`
+    gets in build_fft_butterfly). The induction link load i -> i+1 -> store i is
+    II=3, and 8 iters chain as 7 links -- this is the loop's carried recurrence.
+
+    For the documented inputs (N=8, stage=1, pass=0 -> distance=1,
+    block_size=4, input [3,1,4,2,8,6,7,5]):
+      - i in {0,2,4,6} take the if branch; i in {1,3,5,7} the else.
+      - should_swap = 1 only on i in {0,2} (commit swap of inplace[0,1]/[2,3],
+        disjoint from the carried slice); i in {4,6} load+compare but do not
+        store.
+    The binding chain is the sequential-iterator induction chain: block_size at
+    depth 3 -> iter0 load i at depth 4 -> ... -> iter7 load i at depth 25 (seven
+    II=3 links), then iter7's predicate (i%bs -> & distance -> ==0 outer_pred at
+    depth 28) feeds its else write inplace[7] (load 29 -> sub 30 -> store 31).
+    This 8-deep iterator chain dwarfs the 5-link inplace memory recurrence, so it
+    sets CP=31. The first iter's `load i` takes block_size as its depth floor;
+    later iters chain from the prior committing `store i`.
+
+    Reproduces the eval golden numbers (N=8, distance=1): CP=31, A=140, LD=55,
+    ST=48, aggregate 6x6 = 31.
+    """
+    dag = Dag()
+    r = dag.region("bitonic_stage-modified")
+    # Prologue (loop-invariant, broadcast): distance=1<<pass, stage+1,
+    # N/2=N>>1 (j-loop init), block_size=1<<(stage+1).
+    ld_pass = r.load(kind="pass")
+    ld_stage = r.load(kind="stage")
+    ld_N = r.load(kind="N")
+    distance = r.arith(ld_pass, kind="distance_shl")       # 1 << pass (bitop)
+    stage_p1 = r.arith(ld_stage, kind="stage_plus_1")       # add
+    r.arith(ld_N, kind="n_half_shr")                        # N >> 1 (bitop)
+    block_size = r.arith(stage_p1, kind="block_size_shl")   # 1<<(stage+1) (bitop)
+
+    half = N // 2
+    last_writer = {}  # inplace slot -> last committing store node (None = init)
+    prev_i_store = None  # sequential iterator carry: prior iter's `store i`
+
+    for i in range(N):
+        active = (i % 2 == 0)
+        # Sequential-dim iterator carry: iter k's `load i` chains from iter
+        # k-1's `store i` (read-after-write on the loop counter). The induction
+        # link load i -> i+1 -> store i is II=3 and is the recurrence that sets
+        # the critical path; the first iter's read takes block_size as its depth
+        # floor (loop-invariant prologue). The bound compare is rooted overhead.
+        if prev_i_store is not None:
+            ld_i = r.load(prev_i_store, kind="i_load")
+        else:
+            ld_i = r.load(block_size, kind="i_load")
+        i_add = r.arith(ld_i, kind="i_add")
+        prev_i_store = r.store(i_add, kind="i_store")
+        r.arith(kind="i_cmp")  # i < N, rooted
+        # Unconditional predicate (every lane).
+        block_idx = r.arith(ld_i, block_size, kind="block_idx_div")       # i / bs
+        idx_in_block = r.arith(ld_i, block_size, kind="idx_in_block_mod")  # i % bs
+        r.arith(block_size, kind="half_block_shr")           # bs>>1 (dead bitop)
+        band_asc = r.arith(block_idx, kind="block_idx_and_1")
+        ascending = r.arith(band_asc, kind="ascending_cmp")  # == 0 (compare)
+        band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
+        outer_pred = r.arith(band_pred, kind="outer_pred_cmp")  # == 0 (compare)
+        if active:
+            # --- outer-if body, gated by outer_pred ---
+            partner = r.arith(ld_i, distance, outer_pred, kind="partner_add")
+            in_bounds = r.arith(partner, ld_N, kind="partner_lt_N")  # compare
+            # Compare-swap loads (bare-scalar subscripts), gated by partner<N;
+            # they read the carried slots i and partner=i+1.
+            pre_i = last_writer.get(i)
+            pre_p = last_writer.get(i + 1)
+            ld_cs_i = r.load(in_bounds, *( [pre_i] if pre_i is not None else [] ),
+                             kind="cs_inplace_i")
+            ld_cs_p = r.load(in_bounds, partner,
+                             *( [pre_p] if pre_p is not None else [] ),
+                             kind="cs_inplace_partner")
+            should_swap = r.arith(ascending, ld_cs_i, ld_cs_p, kind="value_cmp")
+            if i in (0, 2):  # should_swap = 1 -> commit (off the carried slice)
+                st_i = r.store(ld_cs_p, should_swap, output=True, kind="swap_i")
+                st_p = r.store(ld_cs_i, should_swap, output=True,
+                               kind="swap_partner")
+                last_writer[i] = st_i
+                last_writer[i + 1] = st_p
+            # --- j-loop: for j in [half, N): inplace[j] *= 2 (parallel within
+            # the if-iter; serialized across if-iters via the memory carry). ---
+            for j in range(half, N):
+                r.induction(kind="j", compare_depends_on_read=False)
+                prev = last_writer.get(j)
+                ld_j = r.load(outer_pred, *( [prev] if prev is not None else [] ),
+                              kind="jloop_inplace")
+                mul = r.arith(ld_j, kind="jloop_mul")       # *= 2
+                last_writer[j] = r.store(mul, output=True, kind="jloop_store")
+        else:
+            # --- else body, gated by ~outer_pred (same compare retires at 7);
+            # inplace[i] -= 1 carries through the slice for i in {5,7}. ---
+            prev = last_writer.get(i)
+            ld_e = r.load(outer_pred, *( [prev] if prev is not None else [] ),
+                          kind="else_inplace")
+            sub = r.arith(ld_e, kind="else_sub")            # -= 1
+            last_writer[i] = r.store(sub, output=True, kind="else_store")
+    contract = [RegionContract("bitonic_stage-modified", A=140, LD=55, ST=48,
+                               CP=31, aggregate=31)]
+    return dag, contract
+
+
+def build_binary_search(N=10, M=5):
+    """Binary search of M targets over a sorted array of N (data-dependent
+    termination). Outer t is parallel (each target privatizes left/right/result
+    and writes a distinct output_indices[t]); the inner while is sequential with
+    an input-dependent trip count, carrying left/right (and result on break) via
+    scalar. Single region.
+
+    For the documented inputs (sorted=[1,3,..,19], targets=[7,2,15,20,1]) the
+    per-target probe paths are fixed: trips {4,3,2,4,3} with exits
+    {break, fail, break, fail, break} and the update sequences traced below.
+    Each non-break inner iter is a 10-cycle no-predication recurrence
+    (load left/right -> bound compare -> right-left -> >>1 -> +left = mid ->
+    load sorted[mid] -> cmp_eq -> cmp_lt -> update -> store), gated by three
+    nested compares; the carry advances 10 per iter regardless of which of
+    left/right is updated. A break iter stops at the cmp_eq result store (8
+    cycles); a non-break exit pays a final failing bound compare. The post-loop
+    `(result == -1) ? ... ` read of result waits on the loop-termination compare
+    (data-dependent-termination: the exit compare is on the critical path), so
+    the binding target is the deepest exit, t=3 (target=20, trip 4, non-break):
+    depth 10*4 + 8 = 48. Reproduces the eval golden numbers (N=10, M=5):
+    CP=48, A=124, LD=69, ST=41, aggregate 6x6 = 48.
+    """
+    dag = Dag()
+    r = dag.region("binary_search")
+    # Hoisted loop-invariants: N, M loads; right-init = N - 1 (charged once).
+    ld_N = r.load(kind="N")
+    r.load(kind="M")
+    n_minus_1 = r.arith(ld_N, kind="N_minus_1")  # sub, hoisted
+
+    # (update sequence for the full iters, is_break). 'add' = left = mid+1
+    # (cmp_lt true), 'sub' = right = mid-1 (cmp_lt false). Break targets append
+    # one terminal cmp_eq iter; non-break targets append a failing bound check.
+    targets = [
+        (["sub", "add", "add"], True),          # t0 target 7,  trip 4, break
+        (["sub", "sub", "add"], False),         # t1 target 2,  trip 3, fail
+        (["add"], True),                        # t2 target 15, trip 2, break
+        (["add", "add", "add", "add"], False),  # t3 target 20, trip 4, fail
+        (["sub", "sub"], True),                 # t4 target 1,  trip 3, break
+    ]
+
+    def inner_iter(target, last_left, last_right):
+        """Emit the shared head of one inner iter; returns (cmp_eq, mid, ld_l,
+        ld_r). The bound compare gates the body; cmp_eq gates the else."""
+        ld_l = r.load(last_left, kind="left")
+        ld_r = r.load(last_right, kind="right")
+        cmp_le = r.arith(ld_l, ld_r, kind="bound_le")            # left <= right
+        sub_rl = r.arith(ld_r, ld_l, cmp_le, kind="right_minus_left")
+        shift = r.arith(sub_rl, kind="half_shift")               # >> 1
+        mid = r.arith(shift, ld_l, kind="mid_add")               # left + (..)
+        ld_s = r.load(mid, kind="sorted_mid")                    # sorted[mid]
+        cmp_eq = r.arith(ld_s, target, kind="eq_target")         # == target
+        return cmp_eq, mid, ld_s
+
+    for updates, is_break in targets:
+        r.induction(kind="t", compare_depends_on_read=False)  # parallel, off path
+        target = r.load(kind="input_targets")    # bare [t], anonymous; rooted
+        last_left = r.store(kind="left_init")     # left = 0 (const)
+        last_right = r.store(n_minus_1, kind="right_init")  # right = N - 1
+        r.store(kind="result_init")               # result = -1 (const)
+        for upd in updates:  # full iters (cmp_eq false -> cmp_lt -> update)
+            cmp_eq, mid, ld_s = inner_iter(target, last_left, last_right)
+            cmp_lt = r.arith(cmp_eq, ld_s, target, kind="lt_target")  # < target
+            update = r.arith(cmp_lt, mid,
+                             kind="upd_add" if upd == "add" else "upd_sub")
+            st = r.store(update,
+                         kind="left_store" if upd == "add" else "right_store")
+            if upd == "add":
+                last_left = st
+            else:
+                last_right = st
+        if is_break:
+            # Terminal iter: cmp_eq true -> result = mid, break.
+            cmp_eq, mid, _ = inner_iter(target, last_left, last_right)
+            exit_node = r.store(mid, cmp_eq, kind="result_store")
+        else:
+            # Failing bound check: left <= right is false (termination compare).
+            ld_l = r.load(last_left, kind="left")
+            ld_r = r.load(last_right, kind="right")
+            exit_node = r.arith(ld_l, ld_r, kind="bound_le_fail")
+        # Post-loop: output_indices[t] = (result == -1) ? 0xFFFFFFFF : result.
+        # The result read waits for the loop to terminate (exit_node on the CP).
+        ld_res = r.load(exit_node, kind="result_final")
+        cmp_res = r.arith(ld_res, kind="result_eq_neg1")
+        r.store(cmp_res, output=True, kind="output_indices")
+    contract = [RegionContract("binary_search", A=124, LD=69, ST=41, CP=48,
+                               aggregate=48)]
+    return dag, contract
+
+
 BUILDERS = {
     "axpy": build_axpy,
     "autocorrelation": build_autocorrelation,
     "fft_butterfly": build_fft_butterfly,
     "conv2d": build_conv2d,
+    "batchnorm": build_batchnorm,
+    "bit_reverse": build_bit_reverse,
+    "bisection_step": build_bisection_step,
+    "bitonic_stage": build_bitonic_stage,
+    "bitonic_stage-modified": build_bitonic_stage_modified,
+    "binary_search": build_binary_search,
 }
 
 PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
@@ -836,7 +1284,9 @@ PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
 # Kernels with a committed CGRA-SCHED eval block: the default set for the
 # `write`/`check` commands and the self-test eval-check, so the read-only drift
 # guard covers every checked-in block (including conv2d).
-WRITTEN_KERNELS = PILOTS + ("conv2d",)
+WRITTEN_KERNELS = PILOTS + ("conv2d", "batchnorm", "bit_reverse",
+                            "bisection_step", "bitonic_stage",
+                            "bitonic_stage-modified", "binary_search")
 
 EVAL_PATHS = {
     name: Path(__file__).resolve().parents[1] / "app" / name / f"{name}_eval.md"
@@ -1106,6 +1556,21 @@ def _run_golden_tests(errors):
                                       ("s=4", 33, 169, 58, 62, 33)]},
         "conv2d": {"aggregate": 2070,
                    "regions": [("conv2d", 17, 74515, 13716, 6220, 2070)]},
+        "batchnorm": {"aggregate": 74,
+                      "regions": [("batchnorm", 10, 2645, 568, 548, 74)]},
+        "bit_reverse": {"aggregate": 2134,
+                        "regions": [("bit_reverse", 132, 49664, 25345, 25600,
+                                     2134)]},
+        "bisection_step": {"aggregate": 27,
+                           "regions": [("bisection_step", 4, 384, 321, 192,
+                                        27)]},
+        "bitonic_stage": {"aggregate": 11,
+                          "regions": [("bitonic_stage", 11, 87, 19, 12, 11)]},
+        "bitonic_stage-modified": {
+            "aggregate": 31,
+            "regions": [("bitonic_stage-modified", 31, 140, 55, 48, 31)]},
+        "binary_search": {"aggregate": 48,
+                          "regions": [("binary_search", 48, 124, 69, 41, 48)]},
     }
     for kernel in WRITTEN_KERNELS:
         dag, contract = build_kernel(kernel)

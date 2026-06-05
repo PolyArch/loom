@@ -1,12 +1,8 @@
 # ASAP Model Notes
-- Outer `i` is **sequential**, not parallel — the j-loop's read-modify-write on `inplace[N/2..N-1]` carries through every if-iter, `i ∈ {5,7}` else stores also alias that slice, and `i ∈ {4,6}` compare-swap *would* write into it when `should_swap = 1`. This is the "in-place updates that alias across iterations" exception under the carried-memory convention.
+- Outer `i` is **sequential**, not parallel — the loop-counter induction chain dominates.
 - Inner `j` is **parallel** within one if-iter (distinct addresses `inplace[N/2 + k]`). Under full unroll the j-loop body contributes its per-iter critical path *once* (`load → mul → store = 3 cycles`), not `trip × II`. Cross-iter serialization is between *successive if-iters' j-loops*, not between j-iters of one j-loop.
 - Under no-predication, four nested gates serialize the if-branch: outer `(idx_in_block & distance) == 0`, `partner < N`, `if (ascending)`, and `if (should_swap)`. The else-branch is gated by `¬outer_pred`. Every op inside an arm — loads, value compute, store — waits for its gating compare(s) to retire. No mux or AND-enable bitop is charged; only the taken arm's ops fire.
-- Per-iter chain link latencies through `inplace[N/2..N-1]`:
-  - j-loop → next link: 3 cycles (load → mul → store)
-  - else → next link: 3 cycles (load → sub → store)
-  - compare-swap → next link: 3 cycles (load → cmp → store) **only when `should_swap = 1`**; otherwise the store never fires and the chain skips this writer entirely.
-- iter 0's j-loop pays a multi-cycle stall while outer_pred resolves: under strict no-pred, the j-loop's load, and store *all* wait for outer_pred, not just the store. Subsequent if-iters' j-loops see outer_pred already settled (in parallel across lanes), so they pay only the 3-cycle chain link.
+- Predicates cannot settle in parallel: the chained loop counter (store i → next iter's load i) serializes each iter's load i, so iter k's predicate retires at C(7+3k) even under unlimited hardware.
 
 # Bitonic Stage (Modified) Performance
 Parameters: `N = 8`, `stage = 1`, `pass = 0` ⇒ `distance = 1`, `block_size = 4`.
@@ -34,12 +30,12 @@ For `N=8, distance=1`, `idx_in_block & distance = i & 1`, so `i ∈ {0,2,4,6}` t
 
 | dim   | trip_count | kind | II | notes |
 |-------|------------|------|----|-------|
-| `i`   | `N` = 8    | sequential | 3 per chain link (uniform under strict no-pred) | Carried recurrence through memory on `inplace[N/2..N-1]`. Every if-iter's j-loop reads-then-writes the slice; `i ∈ {5,7}` else writes the slice; `i ∈ {4,6}` compare-swap would write the slice if `should_swap = 1` (for the test inputs, it's 0, so those writers drop out and the chain skips them). Memory-aliasing carry, not register. |
+| `i`   | `N` = 8    | sequential | 3 (`load i → i+1 → store i`) | Sequential dim with two carries present: the loop-counter induction (`II = 3`) and a memory-aliasing carry through `inplace[N/2..N-1]` (every if-iter's j-loop reads-then-writes the slice; `i ∈ {5,7}` else writes the slice; `i ∈ {4,6}` compare-swap would write it if `should_swap = 1`, but it is 0 for these inputs, so those writers drop out). A sequential-dim iterator is **not** a per-lane constant, so its read chains across iters; the resulting 8-link counter chain dominates the 5-link memory chain and sets the critical path. |
 | inner `j` | `N/2` = 4 | parallel | n/a | Each j-iter writes a distinct `inplace[N/2 + k]`. Within one if-iter the j-loop fully unrolls and contributes its per-iter depth once (`load → mul → store = 3 cycles`). `trip × II` does **not** apply. Serialization is between *successive if-iters' j-loops*, not between j-iters of a single j-loop. |
 
 ## Critical path (`total_cycles`)
 
-Two phases: (a) a prologue plus per-iter predicate compute that runs in parallel across all 8 outer iters under unbounded fan-out, and (b) the cross-iter memory chain through `inplace[N/2..N-1]` in source order.
+Because `i` is **sequential**, its iterator is not a per-lane constant: each iter's `load i` chains from the prior iter's `store i` (a read-after-write on the loop counter), the same way the FFT butterfly's sequential `j` is modeled. The induction link `load i → i + 1 → store i` is `II = 3`, so the 8 outer iters form a 7-link chain that serializes every iter's predicate compute. **That iterator chain — not the in-place memory recurrence — is the longest path:** the 8-deep counter chain dwarfs the 5-link `inplace[N/2..N-1]` recurrence.
 
 ```
 Prologue (loop-invariant compute, broadcast via dataflow):
@@ -47,64 +43,36 @@ Prologue (loop-invariant compute, broadcast via dataflow):
   C2: 1 << pass = distance  ‖ stage + 1     ‖ N >> 1 = N/2
   C3: 1 << (stage + 1) = block_size
 
-Per-iter predicate (parallel across all 8 outer lanes):
-  C4: load i
-  C5: i / block_size = block_idx  ‖ i % block_size = idx_in_block  ‖ block_size >> 1 = half_block (dead)
-  C6: block_idx & 1     ‖ idx_in_block & distance
-  C7: == 0 → ascending  ‖ == 0 → outer_pred       [outer_pred / ¬outer_pred retire]
+Sequential-iterator induction chain (II = 3 per link; iter k's `load i`
+waits on iter k-1's `store i`; the first read floors on block_size at C3):
+  C4  load i (iter 0)   C5  i+1   C6  store i
+  C7  load i (iter 1)   C8  i+1   C9  store i
+  C10 load i (iter 2)   C11 i+1   C12 store i
+  C13 load i (iter 3)   C14 i+1   C15 store i
+  C16 load i (iter 4)   C17 i+1   C18 store i
+  C19 load i (iter 5)   C20 i+1   C21 store i
+  C22 load i (iter 6)   C23 i+1   C24 store i
+  C25 load i (iter 7)                       ← deepest iterator read
+
+iter 7 is an else lane (i = 7 odd); its predicate then its in-place write:
+  C26 i % block_size = idx_in_block
+  C27 idx_in_block & distance
+  C28 == 0 → outer_pred           [¬outer_pred selects the else arm]
+  C29 load inplace[7]             ← else body; bare subscript, gated by outer_pred (C28)
+  C30 inplace[7] − 1
+  C31 store inplace[7]
+
+total_cycles = 31
 ```
 
-Under strict no-pred, every op inside the outer arm waits for outer_pred to retire (C7). The subscripts are bare scalars (`inplace[i]`, `inplace[partner]`, `inplace[j]`), so no address-gen cycle is charged; the j-loop's first loads fire at C8 (first chain link reads initial memory) once outer_pred has retired. Subsequent if-iters' j-loops see outer_pred already settled and their chain links cost 3 cycles each. Compare-swap stores fire only on lanes where `should_swap = 1` (`i ∈ {0, 2}`, touching `inplace[0..3]`); the `inplace[N/2..N-1]` chain therefore runs through j-loops and the `i ∈ {5,7}` else writes without picking up any compare-swap commits.
+The binding path is the counter walking `i = 0 → 7` (`C4 → C25`, seven `II = 3` links), then iter 7's predicate (`C26 → C28`) feeding its else write to `inplace[7]` (`C29 → C31`). Each iter's predicate is gated on its own `load i`, and because the counter is a serial recurrence those reads cannot all fire at once — iter `k`'s read lands at `C(4 + 3k)`, so `outer_pred` for iter `k` retires at `C(7 + 3k)` (iter 7 at C28).
 
-The longest chain runs through `inplace[5]`:
+**The in-place memory recurrence is now slack.** With every predicate serialized behind the counter, the cross-iter `inplace` chains finish no later than the iterator chain that gates them:
+- `inplace[5]` (`iter 0/2/4 j-loop → iter 5 else → iter 6 j-loop`) closes at **C28** — three cycles below the bound.
+- `inplace[7]` (`iter 0/2/4/6 j-loop → iter 7 else`) closes at **C31**, but its final else write is reached through iter 7's `outer_pred` (C28, set by the iterator chain); the memory carry from iter 6's j-loop also lands at C28, so the two coincide rather than stack — the iterator chain, not the aliasing, is what set C28.
+- Compare-swap commits (`i ∈ {0, 2}`, touching `inplace[0..3]`) and the non-committing loads on `i ∈ {4, 6}` sit well off this path.
 
-```
-  C8  load inplace[5]   (iter 0 j-loop, j=5)        ← initial memory; bare subscript, no addr-gen; gated by outer_pred (C7)
-  C9  mul × 2
-  C10 store inplace[5]  (iter 0 j-loop commits)
-
-  C11 load inplace[5]   (iter 2 j-loop, j=5)
-  C12 mul × 2
-  C13 store inplace[5]
-
-  C14 load inplace[5]   (iter 4 j-loop, j=5)        ← iter 4 compare-swap loads inplace[5] at C14 in parallel; cmp_lt at C15 returns 0 (8<6 false) → no store
-  C15 mul × 2
-  C16 store inplace[5]
-
-  C17 load inplace[5]   (iter 5 else)               ← else body gated by ¬outer_pred (C7); load waits for prior writer (C16)
-  C18 sub 1
-  C19 store inplace[5]
-
-  C20 load inplace[5]   (iter 6 j-loop, j=5)        ← iter 6 compare-swap touches inplace[6,7], not [5]
-  C21 mul × 2
-  C22 store inplace[5]
-
-total_cycles = 22
-```
-
-The `inplace[7]` chain (`iter 0 j-loop → iter 2 j-loop → iter 4 j-loop → iter 6 j-loop → iter 7 else`) also lands at C22 and ties for the bound — same structure, with iter 6 compare-swap dropped (`should_swap = 0`, 7<5 false) and iter 7 else as the terminal writer.
-
-Other slots retire earlier and stay off the critical path:
-- `inplace[0,1]`: iter 0 compare-swap commits at C12 (load C10, cmp_gt C11, store C12 — `should_swap = 1`); iter 1 else writes at C15 (load C13 waits on C12, sub C14, store C15). No further writers.
-- `inplace[2,3]`: iter 2 compare-swap commits at C12; iter 3 else at C15.
-- `inplace[4]`: only j-loops touch it (iter 4 compare-swap `should_swap = 0`). 4 j-loop links — last store at C19.
-- `inplace[6]`: only j-loops touch it (iter 6 compare-swap `should_swap = 0`). 4 j-loop links — last store at C19.
-
-Under unbounded fan-out, the per-iter predicate compute for all 8 lanes runs in parallel through C8. Subscripts are bare, so no address-gen cycle is charged; only the loads on the carried memory chain serialize. iter 4's compare-swap loads `inplace[5]` at C14 in parallel with iter 4's j-loop load of `inplace[5]` — both are reads, no conflict — then iter 4's cmp_lt at C15 produces `should_swap = 0` and no store fires. Iter 6 behaves symmetrically for `inplace[7]`.
-
-Under fully unbound hardware (infinite throughput model), each update to a slot only has to wait for the previous *committing* writer to finish. For example, iter 6's sub-operations wait for:
-
-| iter 6 sub-op | what it reads | who last wrote that | so it waits for |
-|---|---|---|---|
-| predicate for `i=6` | `i=6` + loop-invariants | nobody | nothing — fires at C4–C8 in parallel with every other iter's predicate |
-| compare-swap loads (`inplace[6,7]`) | `inplace[6]`, `inplace[7]` | iter 4's j-loop (j=6,7 sub-chain, done at C16) | iter 4's j-loop — produces `should_swap = 0`, no store |
-| j-loop, j=4 | `inplace[4]` | iter 4's j-loop j=4 (C16) | iter 4's j-loop |
-| j-loop, j=5 | `inplace[5]` | iter 5's else (C19) | iter 5's else commit only, not all of iter 5 |
-| j-loop, j=6 / j=7 | `inplace[6,7]` | iter 4's j-loop (C16) | iter 4's j-loop (iter 6's own compare-swap doesn't commit, so no within-iter wait) |
-
-The "sequential" classification of `i` only means a loop-carried dep exists somewhere — it does **not** mean each iter must finish before the next can start. iter 6's compare-swap (load C17, cmp C18, no store) overlaps with iter 5's else (C17–C19) since they touch disjoint slots; only the iter 6 j-loop's `j=5` sub-chain waits on iter 5's else commit.
-
-For comparison, baseline `bitonic_stage` (`i` parallel-unrolled) is 12 cycles under strict no-pred; the modification's memory recurrence inflates that to **22 cycles, ≈ 1.8×**, with the j-loop link multiplied across the active-iter sequence providing most of the inflation.
+For comparison, baseline `bitonic_stage` (`i` **parallel** — iterator rooted as a per-lane constant) is `total_cycles = 11`. Making `i` sequential forces the loop counter into a serial recurrence that serializes all 8 outer iters, inflating the depth to **31 cycles, ≈ 2.8×**. Under this model the serial loop counter, not the in-place aliasing, dominates the critical path.
 
 ## Op counts
 
@@ -158,17 +126,21 @@ Compared to the prior soft-predication accounting (`stores = 52, bitops = 35, co
 The j-loop still dominates on both axes: it owns every chain link on the critical path, and contributes 16 of 28 algorithmic loads, 16 of 24 algorithmic stores, all 16 muls, 16 of 25 overhead adds (`j++`), and 16 of 24 overhead compares (`j < N`). No `address_adds` are charged anywhere — every `inplace[...]` subscript is a bare scalar / induction var.
 
 ## Data Dependency Graph
-The compare-swap subgraph mirrors the baseline `bitonic_stage_eval.md` strict layout (compares gate addr-gens, loads, value compares, and the swap stores in sequence) and is collapsed below. Solid edges are within-iter dataflow; dashed edges are loop-carried back-edges through `inplace[N/2..N-1]`. Three writers feed the j-loop's read set: the j-loop itself (RAW recurrence), the compare-swap (commits only when `should_swap = 1` — for these inputs only on iters 0, 2 which touch `inplace[0..3]`, so doesn't intersect the carried-memory chain), and the else (cross-iter for `i ∈ {5,7}`).
+The compare-swap subgraph mirrors the baseline `bitonic_stage_eval.md` strict layout (compares gate addr-gens, loads, value compares, and the swap stores in sequence) and is collapsed below. The **dominant carry is the sequential-iterator induction** (`load i → i+1 → store i`, with each iter's `load i` reading the prior iter's `store i`); it serializes all 8 outer iters and sets the critical path. A second, shorter loop-carried recurrence runs through `inplace[N/2..N-1]` (dashed memory back-edges): three writers feed the j-loop's read set — the j-loop itself (RAW recurrence), the compare-swap (commits only when `should_swap = 1`, for these inputs only on iters 0, 2 which touch `inplace[0..3]`, so it doesn't intersect the carried slice), and the else (cross-iter for `i ∈ {5,7}`) — but that chain is shorter than the iterator chain and stays slack.
 
-Writer examples for the carried-memory chain:
+Writer examples for the (slack) carried-memory chain:
 - j-loop: across outer iterations of the i-loop (e.g. j-loop in `i = 2` depends on the j-loop in `i = 0`).
 - compare-swap: when `should_swap = 1`, `inplace[i] ↔ temp ↔ inplace[partner]` must complete before subsequent j-loop reads of those slots; for the test inputs this only matters within `i ∈ {0, 2}` for `inplace[0..3]`, off the carried chain.
 - else: `inplace[i] -= 1` in `i = 5` must complete before `inplace[5]` is modified again by `i = 6`'s j-loop.
 
 ```mermaid
 graph TD
+  %% Sequential-iterator induction chain (the binding recurrence)
+  i_ld(("load i"))
+  i_inc((" i + 1 "))
+  i_st(("store i"))
+
   %% Shared predicate inputs
-  i(("i"))
   block_size(("block_size"))
   distance(("distance"))
 
@@ -194,9 +166,14 @@ graph TD
   inplace_i_else(("inplace_i<br>(load, else)"))
   sub((" - 1 "))
 
-  %% Predicate dataflow
-  i --> div
-  i --> mod
+  %% Sequential-iterator induction: load i → i+1 → store i, chained across iters
+  i_ld --> i_inc
+  i_inc --> i_st
+  i_st -.->|RAW back-edge<br>iter k store i → iter k+1 load i| i_ld
+
+  %% Predicate dataflow (the loaded counter feeds the predicate)
+  i_ld -->|loaded i| div
+  i_ld -->|loaded i| mod
   block_size --> div
   block_size --> mod
   div -->|block_idx| band_asc
@@ -231,8 +208,10 @@ graph TD
   %% Cross-iter: else stores at i ∈ {5,7} feed later if-iters' j-loop reads
   sub -.->|RAW back-edge<br>cross-iter i ∈ 5,7 → next j-loop| inplace_j_in
 
-  %% Critical path: outer_pred gate → j-loop body → j-loop RAW (×3) → else → j-loop RAW
-  %% linkStyle 13,14,15,16,18,21,23 stroke:#ff0000,stroke-width:3px;
+  %% Critical path: the sequential-iterator induction chain (load i → i+1 →
+  %% store i, chained across all 8 iters) gates each iter's predicate; the
+  %% deepest iter (i=7) then feeds its else write inplace[7]. The dashed memory
+  %% back-edges form a shorter, slack recurrence.
 ```
 
 ## CGRA-Constrained Model
@@ -253,7 +232,7 @@ cycles  = max(CP, compute, load, store)
 ```
 
 **Counts (from the op-count totals above, N = 8, distance = 1).**
-- `CP = 22`
+- `CP = 31`
 - `A  = adds (29) + address_adds (0) + subs (4) + muls (16) + divs (8) + mods (8) + bitops (27) + compares (48) = 140`
 - `LD = 55`
 - `ST = 48`
@@ -263,13 +242,36 @@ cycles  = max(CP, compute, load, store)
 compute = ceil(140 / 36) = 4
 load    = ceil(55 / 12)  = 5
 store   = ceil(48 / 12)  = 4
-cycles  = max(22, 4, 5, 4) = 22
+cycles  = max(31, 4, 5, 4) = 31
 ```
 
-**Per-iteration view (sequential `i`).** The carried dependence is a memory recurrence through `inplace[N/2..N-1]`; each chain link is `load → (mul | sub) → store` with `II_dependency = 3`. Applying resources to one link (`A_iter = 1`, `LD_iter = 1`, `ST_iter = 1`):
+**Per-iteration view (sequential `i`).** The binding carried dependence is the loop-counter induction `load i → i+1 → store i` with `II_dependency = 3` (a memory-aliasing carry through `inplace[N/2..N-1]` also runs at `II = 3` per link, but its chain is shorter and stays slack). Applying resources to one link (`A_iter = 1`, `LD_iter = 1`, `ST_iter = 1`):
 ```
 II_constrained = max(II_dependency, ceil(1/36), ceil(1/12), ceil(1/12)) = max(3, 1, 1, 1) = 3
 ```
-so finite resources do not widen the initiation interval, and the chain of links still sets the depth.
+so finite resources do not widen the initiation interval, and the 8-link iterator chain (plus iter 7's predicate-and-write tail) still sets the depth.
 
-**Bottleneck: dependency-bound.** The cross-iteration memory recurrence (22-cycle chain of 3-cycle links) dwarfs the aggregate resource terms (≤5), so `CP = 22` binds. The recurrence is serial regardless of how many PEs or memory lanes are provisioned — only breaking the in-place aliasing (not adding hardware) would shorten it.
+**Bottleneck: dependency-bound.** The sequential-iterator induction chain — eight `II = 3` links walking `i = 0 → 7`, then iter 7's predicate and its else write — gives the 31-cycle critical path and dwarfs the aggregate resource terms (≤5), so `CP = 31` binds. The recurrence is serial regardless of how many PEs or memory lanes are provisioned — only removing the cross-iteration dependence (not adding hardware) would shorten it.
+
+<!-- BEGIN CGRA-SCHED:bitonic_stage-modified -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| bitonic_stage-modified | 31 | 140 | 55 | 48 | 31 | 31 |
+
+- **scheduled_cycles** = 31  (sum of ordered-region makespans)
+- **aggregate_cycles** = 31  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 1 / 1 / 7
+- `S`: 0 / 0 / 0
+
+<!-- END CGRA-SCHED:bitonic_stage-modified -->

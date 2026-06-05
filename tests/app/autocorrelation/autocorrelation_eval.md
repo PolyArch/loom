@@ -196,11 +196,10 @@ cycles  = max(11, 502, 903, 306) = 903
 - **gap_cycles** = 3  (scheduled − aggregate)
 - **gap_ratio** = 1.0033  (scheduled / aggregate)
 
-Note: if only algorithmic loads are considered (if we do not count loop overhead because of full unrolling), the number of cycles needed is ceil(7200 / 12)  = 600 cycles. 
-
 **Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
 - `P`: 299 / 299 / 7228
 - `L`: 902 / 902 / 9574
 - `S`: 303 / 303 / 15
 
 <!-- END CGRA-SCHED:autocorrelation -->
+Note: if only algorithmic loads are considered (if we do not count loop overhead because of full unrolling), the number of cycles needed is ceil(7200 / 12)  = 600 cycles. 

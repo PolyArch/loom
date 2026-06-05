@@ -202,3 +202,26 @@ cycles  = max(48, 4, 6, 4) = 48
 ```
 
 **Bottleneck: dependency-bound.** The binding constraint is the per-target search recurrence: a 10-cycle sequential body (three nested compare→body gaps) run up to 4 times, with the longest target setting `CP = 48`. The total work across only `M = 5` parallel targets is tiny (124 ops, 69 loads), so every resource term stays ≤ 6 and the latency-bound `CP` dominates. More lanes do not help; only shortening the data-dependent recurrence (e.g. fewer probes) would. This is the data-dependent-termination regime — the floor scales with the worst-case trip count, not with the fabric width.
+
+<!-- BEGIN CGRA-SCHED:binary_search -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| binary_search | 48 | 124 | 69 | 41 | 48 | 48 |
+
+- **scheduled_cycles** = 48  (sum of ordered-region makespans)
+- **aggregate_cycles** = 48  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 1 / 1 / 0
+- `S`: 0 / 0 / 0
+
+<!-- END CGRA-SCHED:binary_search -->
