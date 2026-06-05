@@ -171,14 +171,16 @@ class Region:
             level = nxt
         return level[0]
 
-    def induction(self, kind: str = "iv") -> dict:
+    def induction(self, kind: str = "iv",
+                  compare_depends_on_read: bool = True) -> dict:
         """A loop iterator step: read, increment, write-back, bound compare.
-        Returns the four node ids. The read/compare feed address/bound work;
-        the write-back is off the output path."""
+        Returns the four node ids. Sequential carries compare against the loaded
+        iterator; fully-unrolled iterator compares are rooted counted overhead."""
         rd = self.load(kind=kind + "_load")
         inc = self.arith(rd, kind=kind + "_add")
         wr = self.store(inc, kind=kind + "_store")
-        cmp = self.arith(rd, kind=kind + "_cmp")
+        cmp_preds = [rd] if compare_depends_on_read else []
+        cmp = self.arith(*cmp_preds, kind=kind + "_cmp")
         return {"read": rd, "add": inc, "store": wr, "cmp": cmp}
 
 
@@ -560,7 +562,9 @@ def build_axpy(N: int = 8):
         mul = r.arith(ld_x, ld_alpha, kind="mul")
         add = r.arith(mul, ld_y, kind="add")
         r.store(add, output=True, kind="output_y")
-        r.induction(kind="i")  # i read + i++ + i write + i<N compare
+        # Parallel iterator overhead: compare is counted, but each lane's i is
+        # a rooted constant in the fully-unrolled DAG.
+        r.induction(kind="i", compare_depends_on_read=False)
     contract = [RegionContract("axpy", A=32, LD=26, ST=16, CP=4, aggregate=4)]
     return dag, contract
 
@@ -594,12 +598,12 @@ def build_autocorrelation(x_size: int = 128, max_lag: int = 32):
             products.append(r.arith(ld_a, ld_b, kind="mul"))
             # Inner induction: counted overhead, off the output-reachable path
             # (reduction dim -> i is a per-lane constant, not a carried value).
-            r.induction(kind="i")
+            r.induction(kind="i", compare_depends_on_read=False)
         root = r.balanced_reduction(products, kind="reduce")
         r.store(root, output=True, kind="output_lag")
         # Outer induction: counted overhead, off path (lag is a parallel-dim
         # per-lane constant).
-        r.induction(kind="lag")
+        r.induction(kind="lag", compare_depends_on_read=False)
     contract = [RegionContract("autocorrelation", A=18064, LD=10834, ST=3664,
                                CP=11, aggregate=903)]
     return dag, contract
@@ -661,7 +665,7 @@ def build_fft_butterfly(N: int = 16):
         c.store(ld_ir, output=True, kind="output_real")
         c.store(ld_ii, output=True, kind="output_imag")
     for _ in range(N):
-        c.induction(kind="copy_i")
+        c.induction(kind="copy_i", compare_depends_on_read=False)
     c.store(kind="copy_i_init")  # i=0 init store
     # Three kernel-once residual ops overlap the copy phase.
     ld_N = c.load(kind="N")
@@ -715,8 +719,10 @@ def build_fft_butterfly(N: int = 16):
                 rg.arith(ld_j, kind="j_cmp")
                 prev_wr, prev_wi = _fft_butterfly(
                     rg, ld_wr, ld_wi, cos, sin, ld_j)
-            rg.induction(kind="k")  # one k step per block (parallel; off path)
-        rg.induction(kind="s")  # one s step per stage (init store lives in copy)
+            rg.induction(kind="k", compare_depends_on_read=False)
+        # The stage loop is materialized into explicit stage regions; ordinary
+        # source loop-control work is counted overhead, not the stage RAW carry.
+        rg.induction(kind="s", compare_depends_on_read=False)
 
         b = blocks
         stage_contracts.append(RegionContract(
@@ -811,7 +817,7 @@ def build_conv2d(C_in=3, C_out=4, H=8, W=8, KH=3, KW=3, stride=1):
     I = (n_out + C_out + C_out * OH + C_out * OH * OW
          + n_out * C_in + n_out * C_in * KH + n_out * C_in * KH * KW)
     for _ in range(I):
-        r.induction(kind="iv")
+        r.induction(kind="iv", compare_depends_on_read=False)
 
     contract = [RegionContract("conv2d", A=74515, LD=13716, ST=6220, CP=17,
                                aggregate=2070)]
@@ -1058,14 +1064,24 @@ def _run_synthetic_tests(errors):
     if res.region_aggs[0].LD != 0 or res.region_aggs[0].ST != 0:
         errors.append("noLS: nonzero LD/ST")
 
-    # 11. Empty DAG/region.
+    # 11. Fully-unrolled induction compares are rooted; sequential compares use
+    # the loaded carried iterator.
+    d = Dag(); r = d.region("induction_cmp")
+    seq = r.induction(kind="seq")
+    unrolled = r.induction(kind="unrolled", compare_depends_on_read=False)
+    if r._by_id[seq["cmp"]].preds != [seq["read"]]:
+        errors.append("induction_cmp: sequential compare is not read-dependent")
+    if r._by_id[unrolled["cmp"]].preds:
+        errors.append("induction_cmp: unrolled compare is not rooted")
+
+    # 12. Empty DAG/region.
     d = Dag(); d.region("empty")
     res = evaluate(d, "empty", cfg)
     if not (res.aggregate_cycles == 0 and res.scheduled_cycles == 0
             and res.gap_cycles == 0 and res.gap_ratio == 1.0):
         errors.append("empty: metrics not all-zero / ratio!=1.0")
 
-    # 12. Zero-capacity config rejected.
+    # 13. Zero-capacity config rejected.
     for bad in ("P=0,L=1,S=1", "P=1,L=0,S=1", "P=1,L=1,S=0"):
         try:
             parse_config(bad)

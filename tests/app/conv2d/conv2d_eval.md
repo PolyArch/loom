@@ -186,7 +186,7 @@ cycles  = max(17, 2,070, 1,143, 519) = 2,070
 - **gap_ratio** = 1.0498  (scheduled / aggregate)
 
 **Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
-- `P`: 2069 / 2069 / 33728
+- `P`: 2069 / 2069 / 34220
 - `L`: 1143 / 648 / 5928
 - `S`: 518 / 506 / 3204
 
