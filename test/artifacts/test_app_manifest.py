@@ -45,6 +45,7 @@ EXPECTED_CASES = {
     "gather",
     "hash_mix",
     "hist_bin",
+    "histogram",
     "integrate_trapz",
     "interpolate_linear",
     "lower_bound",
