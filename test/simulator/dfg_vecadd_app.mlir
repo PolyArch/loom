@@ -1,6 +1,6 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
-// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_vecadd_dfg_sim.sh %t.dir/main_func.dfg.mlir %t.report.json %t.summary.csv
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/main_func.dfg.mlir %t.report.json %t.summary.csv
 // RUN: FileCheck %s --check-prefix=REPORT < %t.report.json
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.summary.csv
 
