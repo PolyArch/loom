@@ -24,6 +24,7 @@ EXPECTED_CASES = {
     "fir_filter",
     "gemm",
     "gemv",
+    "integrate_trapz",
     "lower_bound",
     "mean",
     "matvec",

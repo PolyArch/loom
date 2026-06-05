@@ -1,0 +1,2 @@
+integrate_trapz area: 0.335938
+PASSED
