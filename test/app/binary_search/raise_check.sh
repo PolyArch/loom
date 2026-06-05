@@ -54,4 +54,3 @@ raise_one "main_func" "yes"
 raise_one "main_inline" "no"
 
 echo "[${KERNEL}] PASS"
-

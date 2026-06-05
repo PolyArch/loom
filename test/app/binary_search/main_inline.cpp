@@ -72,4 +72,3 @@ int main() {
     std::puts("PASSED");
     return 0;
 }
-

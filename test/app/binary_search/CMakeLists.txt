@@ -7,4 +7,3 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(binary_search_func main_func.cpp)
 add_executable(binary_search_inline main_inline.cpp)
-
