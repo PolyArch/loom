@@ -30,14 +30,31 @@ raise_one() {
         echo "[${KERNEL}/${variant}] raised MLIR is empty" >&2
         return 1
     fi
-    if ! awk '
-        /scf\.forall/ {
-            in_loop = 1
+    local loop_index=1
+    if [[ "${has_call}" == "no" ]]; then
+        loop_index=2
+    fi
+    if ! awk -v has_call="${has_call}" -v required_loop="${loop_index}" '
+        has_call == "yes" && /func\.func private @xor_block/ {
+            in_kernel = 1
+            next
+        }
+        has_call == "yes" && in_kernel && /func\.func/ {
+            in_kernel = 0
+        }
+        has_call == "no" && /scf\.forall/ {
+            seen_loops += 1
+            in_kernel = (seen_loops == required_loop)
             has_xor = 0
             has_store = 0
             next
         }
-        in_loop {
+        has_call == "yes" && in_kernel && /scf\.forall/ {
+            has_xor = 0
+            has_store = 0
+            next
+        }
+        in_kernel {
             if ($0 ~ /arith\.xori/) {
                 has_xor = 1
             }
@@ -48,7 +65,9 @@ raise_one() {
                 if (has_xor && has_store) {
                     found = 1
                 }
-                in_loop = 0
+                if (has_call == "no") {
+                    in_kernel = 0
+                }
             }
         }
         END { exit found ? 0 : 1 }
