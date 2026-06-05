@@ -3,30 +3,14 @@
 
 from __future__ import annotations
 
-import csv
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+import artifact_test_common
+
 
 HEADER = ["kernel", "dfg_sim_cycles", "cgra_sim_cycles"]
-
-
-def run(repo: Path, argv: list[str]) -> None:
-    result = subprocess.run(
-        argv,
-        cwd=repo,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"command failed with {result.returncode}: {' '.join(argv)}\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
 
 
 def main() -> int:
@@ -35,7 +19,7 @@ def main() -> int:
         out_dir = Path(tmp)
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         sim = out_dir / "sim-cycle-summary.csv"
-        run(
+        artifact_test_common.require_success(
             repo,
             [
                 "bash",
@@ -45,8 +29,9 @@ def main() -> int:
                 "--output",
                 str(primitive),
             ],
+            "primitive coverage summary",
         )
-        run(
+        artifact_test_common.require_success(
             repo,
             [
                 "bash",
@@ -56,12 +41,9 @@ def main() -> int:
                 "--output",
                 str(sim),
             ],
+            "sim cycle summary",
         )
-        with sim.open(newline="") as handle:
-            reader = csv.DictReader(handle)
-            rows = list(reader)
-            if reader.fieldnames[: len(HEADER)] != HEADER:
-                raise AssertionError(f"unexpected header: {reader.fieldnames}")
+        rows = artifact_test_common.read_csv_rows(sim, HEADER)
         vecadd_rows = [row for row in rows if row["kernel"] == "vecadd"]
         if len(vecadd_rows) != 1:
             raise AssertionError(f"expected one vecadd row, got {rows}")

@@ -3,47 +3,26 @@
 
 from __future__ import annotations
 
-import csv
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import artifact_test_common
 
 
 HEADER = ["workload", "primitive", "op_count", "dfg_sim_status", "diagnostic"]
 EXPECTED_POSITIVE = {"stream", "carry", "invariant", "load"}
 
 
-def read_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        rows = list(reader)
-        if reader.fieldnames[: len(HEADER)] != HEADER:
-            raise AssertionError(f"unexpected header: {reader.fieldnames}")
-        return rows
-
-
 def run_summary(repo: Path, output: Path, *args: str) -> list[dict[str, str]]:
-    result = subprocess.run(
-        [
-            "bash",
-            "test/dataflow/run_primitive_coverage.sh",
-            *args,
-            "--output",
-            str(output),
-        ],
-        cwd=repo,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    return artifact_test_common.run_csv_summary(
+        repo,
+        "test/dataflow/run_primitive_coverage.sh",
+        output,
+        HEADER,
+        *args,
+        label="primitive coverage summary",
     )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"primitive coverage summary failed with {result.returncode}\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-    return read_rows(output)
 
 
 def assert_vecadd_rows(rows: list[dict[str, str]]) -> None:

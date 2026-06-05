@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
-import csv
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import artifact_test_common
 
 
 HEADER = [
@@ -20,36 +20,15 @@ HEADER = [
 ]
 
 
-def read_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        rows = list(reader)
-        if reader.fieldnames[: len(HEADER)] != HEADER:
-            raise AssertionError(f"unexpected header: {reader.fieldnames}")
-        return rows
-
-
 def run_summary(repo: Path, output: Path, *args: str) -> list[dict[str, str]]:
-    result = subprocess.run(
-        [
-            "bash",
-            "test/app/run_compiler_pipeline_summary.sh",
-            *args,
-            "--output",
-            str(output),
-        ],
-        cwd=repo,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    return artifact_test_common.run_csv_summary(
+        repo,
+        "test/app/run_compiler_pipeline_summary.sh",
+        output,
+        HEADER,
+        *args,
+        label="compiler pipeline summary",
     )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"compiler pipeline summary failed with {result.returncode}\n"
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
-    return read_rows(output)
 
 
 def assert_pass_row(row: dict[str, str], case: str) -> None:

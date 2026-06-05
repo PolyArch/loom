@@ -5,16 +5,15 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "test" / "artifacts"))
+sys.path.insert(0, str(ROOT / "test" / "app"))
 
-import intermediate_artifacts  # noqa: E402
+import app_summary_common  # noqa: E402
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -25,19 +24,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def discover_cases() -> list[str]:
-    app_root = ROOT / "test" / "app"
-    return sorted(
-        path.name
-        for path in app_root.iterdir()
-        if (path / "run_check.sh").is_file()
-    )
+    return app_summary_common.discover_app_cases("run_check.sh")
 
 
 def compiler_path(env_name: str, fallback: Path) -> str:
-    value = os.environ.get(env_name)
-    if value:
-        return value
-    return str(fallback)
+    return app_summary_common.env_path(env_name, fallback)
 
 
 def run_case(source_dir: Path, cc: str, cxx: str, label: str) -> tuple[str, str]:
@@ -46,24 +37,15 @@ def run_case(source_dir: Path, cc: str, cxx: str, label: str) -> tuple[str, str]
         env["CC"] = cc
         env["CXX"] = cxx
         env["BUILD_DIR"] = str(Path(tmp) / label)
-        result = subprocess.run(
-            ["bash", str(source_dir / "run_check.sh")],
-            cwd=ROOT,
+        return app_summary_common.run_bash_script(
+            source_dir / "run_check.sh",
             env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+            cwd=ROOT,
         )
-    if result.returncode == 0:
-        return "pass", result.stdout.strip()
-    detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
-    return "fail", detail[0] if detail else f"run_check exited {result.returncode}"
 
 
 def write_rows(output: Path, rows: list[dict[str, str]]) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    intermediate_artifacts.write_csv_rows("source_compat", output, rows)
+    app_summary_common.write_rows("source_compat", output, rows)
 
 
 def main(argv: list[str]) -> int:
@@ -71,7 +53,7 @@ def main(argv: list[str]) -> int:
     output = Path(args.output)
     cases = args.cases or discover_cases()
     if not cases:
-        intermediate_artifacts.write_csv("source_compat", intermediate_artifacts.output_path(args.output))
+        app_summary_common.write_empty("source_compat", args.output)
         return 0
 
     native_cc = os.environ.get("NATIVE_CC", os.environ.get("CC", "gcc"))
