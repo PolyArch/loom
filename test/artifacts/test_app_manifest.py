@@ -83,6 +83,7 @@ EXPECTED_CASES = {
     "softmax",
     "string_compare",
     "string_hash",
+    "stream_update",
     "transpose",
     "transform_point",
     "unpack_bits",
