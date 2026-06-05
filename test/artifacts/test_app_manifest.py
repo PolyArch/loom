@@ -17,6 +17,7 @@ EXPECTED_CASES = {
     "clz",
     "compare_swap",
     "conv1d",
+    "ctz",
     "dotproduct",
     "gemm",
     "prefix_sum",
