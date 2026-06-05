@@ -14,15 +14,18 @@ import artifact_test_common
 
 RUNNERS = ("run_check.sh", "raise_check.sh", "dfg_check.sh")
 AGGREGATE_RUNNERS = ("run_all.sh", "run_raise_all.sh", "run_dfg_all.sh")
+SHARED_APP_SCRIPTS = (
+    "dfg_common.sh",
+    "run_c_variants_common.sh",
+    "run_cxx_variants_common.sh",
+)
 
 
 def prepare_case(repo: Path, case_dir: Path, tmp_root: Path) -> Path:
     app_root = tmp_root / "test" / "app"
     app_root.mkdir(parents=True, exist_ok=True)
-    shared = repo / "test" / "app" / "dfg_common.sh"
-    shutil.copy2(shared, app_root / "dfg_common.sh")
-    shared = repo / "test" / "app" / "run_c_variants_common.sh"
-    shutil.copy2(shared, app_root / "run_c_variants_common.sh")
+    for name in SHARED_APP_SCRIPTS:
+        shutil.copy2(repo / "test" / "app" / name, app_root / name)
     copied = app_root / case_dir.name
     shutil.copytree(case_dir, copied, ignore=shutil.ignore_patterns("build"))
     return copied
@@ -35,11 +38,10 @@ def prepare_app_tree(repo: Path, tmp_root: Path) -> Path:
     for name in (
         "app_manifest.py",
         "manifest.json",
-        "dfg_common.sh",
-        "run_c_variants_common.sh",
         "run_all.sh",
         "run_raise_all.sh",
         "run_dfg_all.sh",
+        *SHARED_APP_SCRIPTS,
     ):
         shutil.copy2(app_root / name, copied_root / name)
     for case_dir in sorted(path for path in app_root.iterdir() if path.is_dir()):
