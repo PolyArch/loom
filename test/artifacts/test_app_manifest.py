@@ -22,6 +22,7 @@ EXPECTED_CASES = {
     "dot_product_3d",
     "dotproduct",
     "downsample",
+    "downsample_avg",
     "find_first_set",
     "fir_filter",
     "gemm",

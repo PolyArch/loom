@@ -82,6 +82,14 @@
       "feature_tags": ["signal", "resampling", "strided-read"]
     },
     {
+      "case": "downsample_avg",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["signal", "resampling", "window", "reduction"]
+    },
+    {
       "case": "dot_product_3d",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],

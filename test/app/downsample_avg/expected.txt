@@ -1,0 +1,2 @@
+downsample_avg checksum2x: 590
+PASSED
