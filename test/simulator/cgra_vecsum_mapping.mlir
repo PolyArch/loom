@@ -3,7 +3,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/vecsum.dfg.report.json %t.dir/dfg-summary.csv
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecsum/main_func.dfg.mlir --graph g_t_vecsum_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload vecsum --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
-// RUN: loom-cgra-sim --dfg-report %t.dir/vecsum.dfg.report.json --mapping-artifact %t.dir/mapping.json --output %t.dir/vecsum.cgra.report.json
+// RUN: loom-cgra-sim --dfg-report %t.dir/vecsum.dfg.report.json --mapping-artifact %t.dir/mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/vecsum.cgra.report.json
 // RUN: FileCheck %s --check-prefix=CGRA < %t.dir/vecsum.cgra.report.json
 // RUN: loom-sim-cycle-summary --dfg-report %t.dir/vecsum.dfg.report.json --cgra-report %t.dir/vecsum.cgra.report.json --output %t.dir/summary.csv
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/summary.csv
@@ -15,6 +15,7 @@
 
 // CGRA-DAG: "kind": "cgra_sim_report"
 // CGRA-DAG: "workload": "vecsum"
+// CGRA-DAG: "hardware_artifact": "
 // CGRA-DAG: "mapping_id": "vecsum__shared_reduction_adg"
 // CGRA-DAG: "status": "pass"
 // CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"

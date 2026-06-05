@@ -16,6 +16,11 @@ static llvm::cl::opt<std::string>
                         llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
+    hardwareMlirPath("hardware-mlir",
+                     llvm::cl::desc("Fabric ADG or module MLIR input"),
+                     llvm::cl::init(""));
+
+static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("CGRA simulation report JSON"),
                llvm::cl::Required);
 
@@ -28,6 +33,7 @@ int main(int argc, char **argv) {
   loom::sim::CGRASimOptions options;
   options.dfgReportPath = dfgReportPath;
   options.mappingArtifactPath = mappingArtifactPath;
+  options.hardwareMlirPath = hardwareMlirPath;
 
   llvm::Expected<loom::sim::CGRASimReport> reportOrErr =
       loom::sim::runCGRASimulation(options);

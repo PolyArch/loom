@@ -13,11 +13,13 @@ namespace sim {
 struct CGRASimOptions {
   std::string dfgReportPath;
   std::string mappingArtifactPath;
+  std::string hardwareMlirPath;
 };
 
 struct CGRASimReport {
   std::string workload;
   std::string hardware;
+  std::string hardwareArtifact;
   std::string mappingId;
   std::string status;
   std::string diagnostic;

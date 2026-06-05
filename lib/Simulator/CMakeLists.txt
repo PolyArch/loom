@@ -10,8 +10,10 @@ add_mlir_library(LoomSimulator
   LINK_LIBS PUBLIC
   MLIRArithDialect
   MLIRDataflow
+  MLIRFabric
   MLIRIR
   MLIRLLVMDialect
+  MLIRParser
   MLIRSupport
   LLVMSupport
 )

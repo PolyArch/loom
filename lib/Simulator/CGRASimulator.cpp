@@ -1,7 +1,12 @@
 #include "Simulator/CGRASimulator.h"
 
+#include "Fabric/IR/FabricDialect.h"
 #include "Simulator/OperationSemantics.h"
 
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
@@ -40,6 +45,47 @@ llvm::Error createParentDirectories(llvm::StringRef outputPath) {
     return llvm::Error::success();
   if (std::error_code ec = llvm::sys::fs::create_directories(parent))
     return llvm::createStringError(ec, "could not create %s", parent.c_str());
+  return llvm::Error::success();
+}
+
+std::optional<std::string> symbolName(mlir::Operation *op) {
+  if (auto attr = op->getAttrOfType<mlir::StringAttr>("sym_name"))
+    return attr.getValue().str();
+  return std::nullopt;
+}
+
+bool containsFabricModule(mlir::ModuleOp module, llvm::StringRef symbol) {
+  bool found = false;
+  module.walk([&](mlir::Operation *op) {
+    if (found || op->getName().getStringRef() != "fabric.module")
+      return;
+    std::optional<std::string> name = symbolName(op);
+    if (name && *name == symbol)
+      found = true;
+  });
+  return found;
+}
+
+llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
+                                     llvm::StringRef hardwareName) {
+  if (hardwareMlirPath.empty())
+    return llvm::Error::success();
+
+  mlir::DialectRegistry registry;
+  registry.insert<fabric::FabricDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceFile<mlir::ModuleOp>(hardwareMlirPath, &context);
+  if (!module)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "could not parse hardware artifact %s",
+                                   hardwareMlirPath.str().c_str());
+  if (!containsFabricModule(*module, hardwareName))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "hardware artifact does not contain fabric.module %s",
+        hardwareName.str().c_str());
   return llvm::Error::success();
 }
 
@@ -464,6 +510,10 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (!hardwareOrErr)
     return hardwareOrErr.takeError();
   report.hardware = *hardwareOrErr;
+  report.hardwareArtifact = options.hardwareMlirPath;
+  if (llvm::Error err =
+          validateHardwareArtifact(options.hardwareMlirPath, report.hardware))
+    return std::move(err);
   auto mappingIdOrErr =
       requireString(*mappingOrErr, "mapping_id", options.mappingArtifactPath);
   if (!mappingIdOrErr)
@@ -614,6 +664,8 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
     diagnostics.push_back(report.diagnostic);
     root.try_emplace("diagnostics", std::move(diagnostics));
   }
+  if (!report.hardwareArtifact.empty())
+    root.try_emplace("hardware_artifact", report.hardwareArtifact);
 
   std::error_code ec;
   llvm::raw_fd_ostream out(outputPath, ec, llvm::sys::fs::OF_Text);

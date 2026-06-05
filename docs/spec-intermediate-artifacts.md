@@ -378,6 +378,8 @@ Required top-level keys:
 Rules:
 
 * `kind` must be `cgra_sim_report`.
+* `hardware_artifact`, when present, identifies the Fabric ADG input
+  artifact used by CGRA-sim and must agree with `hardware`.
 * `route_segments`, when present, counts consumed route segments from
   the mapping artifact. Route latency must be explainable from route
   records and the selected fidelity model.
