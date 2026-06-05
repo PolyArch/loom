@@ -442,6 +442,14 @@
       "feature_tags": ["statistics", "interpolation", "float", "control"]
     },
     {
+      "case": "quat_mult",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["geometry", "quaternion", "float"]
+    },
+    {
       "case": "popcount",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
