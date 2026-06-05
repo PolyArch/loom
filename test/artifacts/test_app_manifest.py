@@ -10,7 +10,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-EXPECTED_CASES = {"conv1d", "dotproduct", "gemm", "prefix_sum", "reduction", "vecadd"}
+EXPECTED_CASES = {"axpy", "conv1d", "dotproduct", "gemm", "prefix_sum", "reduction", "vecadd"}
 
 
 def main() -> int:

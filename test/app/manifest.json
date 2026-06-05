@@ -2,6 +2,14 @@
   "schema_version": 1,
   "cases": [
     {
+      "case": "axpy",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["vector", "numeric"]
+    },
+    {
       "case": "conv1d",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
