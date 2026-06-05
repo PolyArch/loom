@@ -69,6 +69,7 @@ def run_dfg_check(work_dir: Path) -> tuple[str, str]:
     env["LOOM_RAISE"] = tool_path("LOOM_RAISE", "loom-raise")
     env["LOOM_LOWER"] = tool_path("LOOM_LOWER", "loom-lower")
     env["LOOM_RAISE_OPT"] = tool_path("LOOM_RAISE_OPT", "loom-raise-opt")
+    env["BUILD_DIR"] = str(work_dir / "build")
     result = subprocess.run(
         ["bash", str(work_dir / "dfg_check.sh")],
         cwd=work_dir,
