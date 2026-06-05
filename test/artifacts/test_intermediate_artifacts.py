@@ -195,7 +195,8 @@ def main() -> int:
             assert_csv_artifact(
                 output,
                 required_columns,
-                allow_pass_rows=filename == "source-compat-summary.csv",
+                allow_pass_rows=filename
+                in {"source-compat-summary.csv", "compiler-pipeline-summary.csv"},
             )
             produced.append(output)
 
