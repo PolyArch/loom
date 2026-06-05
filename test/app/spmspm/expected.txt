@@ -1,0 +1,2 @@
+spmspm checksums: 128 24 37
+PASSED
