@@ -11,6 +11,7 @@ import artifact_test_common
 
 
 EXPECTED_CASES = {
+    "autocorrelation",
     "axpy",
     "bit_reverse",
     "bitrev",
