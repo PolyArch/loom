@@ -1,0 +1,2 @@
+distance_point checksum: 401.141
+PASSED

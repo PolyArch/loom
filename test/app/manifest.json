@@ -170,6 +170,14 @@
       "feature_tags": ["scan", "prefix", "float", "store"]
     },
     {
+      "case": "distance_point",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["geometry", "distance", "float", "sqrt"]
+    },
+    {
       "case": "delta_encode",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
