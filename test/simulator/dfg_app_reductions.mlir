@@ -2,13 +2,16 @@
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh dotproduct %t.dir/dotproduct/main_func.dfg.mlir %t.dir/reports/dotproduct.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l2 %t.dir/vecnorm_l2/main_func.dfg.mlir %t.dir/reports/vecnorm_l2.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
 // RUN: FileCheck %s --check-prefix=DOTPRODUCT < %t.dir/reports/dotproduct.report.json
+// RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/reports/vecnorm_l2.report.json
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/summary.csv
 
 // VECADD-DAG: "kind": "dfg_sim_report"
@@ -35,7 +38,16 @@
 // DOTPRODUCT-DAG: "event_count": 517
 // DOTPRODUCT-DAG: "f32:2016"
 
+// VECNORM-L2-DAG: "kind": "dfg_sim_report"
+// VECNORM-L2-DAG: "workload": "vecnorm_l2"
+// VECNORM-L2-DAG: "graph": "g_t_vecnorm_l2_red_0_0"
+// VECNORM-L2-DAG: "status": "pass"
+// VECNORM-L2-DAG: "optimistic_cycles": 132
+// VECNORM-L2-DAG: "event_count": 517
+// VECNORM-L2-DAG: "i32:619"
+
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: dotproduct,131,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,131,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l2,132,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,131,,blocked,DFG-sim report available

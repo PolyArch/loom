@@ -71,6 +71,22 @@ append_constant_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+append_mod_shift_memref() {
+    local index="$1"
+    local count="$2"
+    local modulus="$3"
+    local shift="$4"
+    local values=""
+    for i in $(seq 0 $((count - 1))); do
+        value=$((i % modulus + shift))
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    sim_args+=(--memref "${index}=${values}")
+}
+
 case "${CASE}" in
     vecadd)
         append_ctrl_tokens 64
@@ -107,6 +123,18 @@ case "${CASE}" in
             --arg 2=64
             --arg 3=1
             --arg 6=0.000000e+00
+        )
+        ;;
+    vecnorm_l2)
+        append_ctrl_tokens 64
+        append_mod_shift_memref 4 64 11 -5
+        sim_args+=(
+            --graph g_t_vecnorm_l2_red_0_0
+            --workload vecnorm_l2
+            --arg 1=0
+            --arg 2=64
+            --arg 3=1
+            --arg 5=0
         )
         ;;
     *)
