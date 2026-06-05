@@ -27,6 +27,7 @@ EXPECTED_CASES = {
     "reduction",
     "upper_bound",
     "vecadd",
+    "vecmul",
 }
 
 

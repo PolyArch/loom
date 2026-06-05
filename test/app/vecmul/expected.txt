@@ -1,0 +1,2 @@
+vecmul checksum: 748.000000
+PASSED

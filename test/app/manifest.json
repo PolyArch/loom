@@ -128,6 +128,14 @@
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
       "feature_tags": ["vector", "numeric"]
+    },
+    {
+      "case": "vecmul",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["vector", "numeric"]
     }
   ]
 }
