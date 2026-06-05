@@ -72,7 +72,8 @@ bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {
          opName == "arith.muli" || opName == "arith.andi" ||
          opName == "arith.ori" || opName == "arith.shli" ||
          opName == "arith.shrui" || opName == "arith.index_cast" ||
-         opName == "llvm.intr.fmuladd" || opName == "llvm.intr.abs";
+         opName == "llvm.zext" || opName == "llvm.intr.fmuladd" ||
+         opName == "llvm.intr.abs";
 }
 
 bool loom::sim::isSupportedMappedOperation(llvm::StringRef opName) {
@@ -151,6 +152,16 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return PrimitiveValue::integer(asInteger(operands[0]));
+  }
+  if (opName == "llvm.zext") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    std::int64_t value = asInteger(operands[0]);
+    if (value < 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s requires a non-negative integer token", opName.str().c_str());
+    return PrimitiveValue::integer(value);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

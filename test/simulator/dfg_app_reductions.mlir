@@ -7,6 +7,7 @@
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/mean LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/mean/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l1 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l1/dfg_check.sh
@@ -22,6 +23,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reports/reduction.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh spmv %t.dir/spmv/main_func.dfg.mlir %t.dir/reports/spmv.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh mean %t.dir/mean/main_func.dfg.mlir %t.dir/reports/mean.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh dotproduct %t.dir/dotproduct/main_func.dfg.mlir %t.dir/reports/dotproduct.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l1 %t.dir/vecnorm_l1/main_func.dfg.mlir %t.dir/reports/vecnorm_l1.report.json %t.dir/summary.csv --append
@@ -36,6 +38,7 @@
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reports/reduction.report.json
+// RUN: FileCheck %s --check-prefix=SPMV < %t.dir/reports/spmv.report.json
 // RUN: FileCheck %s --check-prefix=MEAN < %t.dir/reports/mean.report.json
 // RUN: FileCheck %s --check-prefix=DOTPRODUCT < %t.dir/reports/dotproduct.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/reports/vecnorm_l1.report.json
@@ -117,6 +120,15 @@
 // REDUCTION-DAG: "event_count": 387
 // REDUCTION-DAG: "i32:2016"
 
+// SPMV-DAG: "kind": "dfg_sim_report"
+// SPMV-DAG: "workload": "spmv"
+// SPMV-DAG: "graph": "g_t_spmv_kernel_red_0_0"
+// SPMV-DAG: "status": "pass"
+// SPMV-DAG: "optimistic_cycles": 25
+// SPMV-DAG: "wavefront_steps": 11
+// SPMV-DAG: "event_count": 25
+// SPMV-DAG: "i32:12"
+
 // MEAN-DAG: "kind": "dfg_sim_report"
 // MEAN-DAG: "workload": "mean"
 // MEAN-DAG: "graph": "g_t_mean_kernel_red_0_0"
@@ -182,6 +194,7 @@
 // SUMMARY-DAG: mean,387,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,451,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,387,,blocked,DFG-sim report available
+// SUMMARY-DAG: spmv,25,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,387,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l1,451,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l2,451,,blocked,DFG-sim report available

@@ -212,6 +212,20 @@ case "${CASE}" in
             --arg 5=0
         )
         ;;
+    spmv)
+        append_ctrl_tokens 2
+        sim_args+=(
+            --graph g_t_spmv_kernel_red_0_0
+            --workload spmv
+            --arg 1=0
+            --arg 2=2
+            --arg 3=1
+            --memref 4=2,3
+            --memref 5=0,2
+            --memref 6=3,4,2,5,6
+            --arg 7=0
+        )
+        ;;
     mean)
         append_ctrl_tokens 64
         append_linear_memref 4 64 1 "%.6e"
