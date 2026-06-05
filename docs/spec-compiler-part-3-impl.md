@@ -1,8 +1,8 @@
-# Loom Compiler Part 3 Implementation Notes
+# Loom Compiler Part 3 Pipeline Contract
 
 This document collects the engineering details that support the Part 3
 (SCF-to-DFG) front-end design: the pass pipeline, the lit-test layout,
-the milestone acceptance checklist, and the extension points.
+the acceptance checklist, and the extension points.
 
 Part 3 itself (`docs/spec-compiler-part-3-dfg.md`) holds the
 first-principles IR content -- boundary contracts, SCF flattening
@@ -65,10 +65,10 @@ documentation never refers to the numeric position.
   extraction. Its job is to convert aggregation-form `scf.forall` into
   effect-form `scf.forall` using explicit destination buffers.
 * Handles `scf.forall` with `shared_outs`, op results, or non-empty
-  `scf.forall.in_parallel`. The canonical first-milestone combining
-  op is `tensor.parallel_insert_slice`; support for additional
-  `ParallelCombiningOpInterface` implementations may be added later
-  by extending this pass.
+  `scf.forall.in_parallel`. The baseline combining op is
+  `tensor.parallel_insert_slice`; additional
+  `ParallelCombiningOpInterface` implementations are explicit pass
+  extensions.
 * The pass may use upstream one-shot bufferization infrastructure, but
   its output contract is Loom-specific: after it runs, every
   `scf.forall` inside an accelerator region has no `shared_outs`, no
@@ -107,7 +107,7 @@ documentation never refers to the numeric position.
   `docs/spec-compiler-part-3-dfg.md` Section 4 Mapping attribute rules);
   Part 2 or an earlier Part 3 pass must remove or translate the
   foreign entries before promotion can run.
-* Marks each Loom-only mapped forall with a temporary attribute
+* Marks each Loom-only mapped forall with a transient attribute
   `loom.thread_promotion = unit`. Nested mapped foralls are marked
   individually; the relative nesting order is preserved by IR
   traversal order.
@@ -217,7 +217,7 @@ documentation never refers to the numeric position.
   ops cannot be reordered to before the synchronization.
 * Once every marked forall inside a `loom.acc_region` has been
   replaced by a def + launch pair (def at module scope, launch in
-  place), the temporary accelerator-region wrapper is erased and
+  place), the transient accelerator-region wrapper is erased and
   its body is spliced back at the original host program point.
   Because `loom.acc_region` is `IsolatedFromAbove`, its body uses
   entry block arguments rather than the surrounding host SSA values,
@@ -246,8 +246,8 @@ documentation never refers to the numeric position.
   ScalarCore-legal and graph-free after this preparation. Such calls
   are treated as ScalarCore side-effecting operations by later passes.
 * Unsupported calls reachable from a thread definition's body produce
-  a diagnostic. The first implementation may require all non-trivial
-  ScalarCore calls to be inlined.
+  a diagnostic. The baseline ScalarCore-call policy may require all
+  non-trivial ScalarCore calls to be inlined.
 
 ### 1.7 `loom-extract-graph-regions`
 
@@ -277,7 +277,7 @@ documentation never refers to the numeric position.
 * The baseline cost model is deterministic and trivial: it prefers
   the partition produced by the baseline source-order greedy policy,
   with stable tie-breaking by lexical operation order. This cost
-  model is intentionally not a performance model. Future policies
+  model is intentionally not a performance model. Additional policies
   may use graph launch count, reconfiguration estimates, graph-
   result traffic, fabric pressure, or profile data without changing
   the IR contract.
@@ -290,7 +290,7 @@ documentation never refers to the numeric position.
   anchors are memory accesses that will become
   `dataflow.load` / `dataflow.store`, or structured-control ops
   whose nested regions contain such accesses. Pure-only admissible
-  runs may remain ScalarCore code in the baseline policy; a future
+  runs may remain ScalarCore code in the baseline policy; another
   policy may choose to place them in graphs if its cost model
   prefers that.
 * Bridge to the framework vocabulary: a graph run is the L2
@@ -397,11 +397,11 @@ documentation never refers to the numeric position.
   such as trip-count computation and per-chunk lower / upper bounds,
   is materialized inside the same `dataflow.graph` definition's body
   that contained the original `scf.parallel`. These new ops use only
-  graph-local SSA values and must satisfy the existing graph-body
+  graph-local SSA values and must satisfy the graph-body
   whitelist for pure computation ops.
 * A user-written `scf.parallel` with a non-empty `mapping` attribute is
   rejected here. Mapping is honored only on `scf.forall` in this
-  milestone.
+  pipeline contract.
 * Materializes a `MemAliasOracle` instance for each `dataflow.graph`
   definition's body. The oracle is a per-graph conflict oracle; the
   rest of the lowering reads only through it, never directly off
@@ -417,10 +417,10 @@ documentation never refers to the numeric position.
   };
   ```
 * Two implementations ship in the same library and are selectable by
-  the pass option `--mem-alias=basic|mlir-aa`. The default in
-  milestone 1 is `--mem-alias=basic`; it drives the full lit suite.
+  the pass option `--mem-alias=basic|mlir-aa`. The baseline default
+  is `--mem-alias=basic`; it drives the full lit suite.
   `--mem-alias=mlir-aa` is exercised on a representative differential
-  subset (see `Testing Strategy` below). Future front-end passes that
+  subset (see `Testing Strategy` below). Additional front-end passes that
   consume alias information must not implicitly select `mlir-aa`;
   they opt in through an explicit pass option, and they obtain alias
   answers only through the `MemAliasOracle` interface per
@@ -528,7 +528,7 @@ documentation never refers to the numeric position.
   deterministic integer ids inside the graph definition's body.
   Only leaf memory accesses (`memref.load` / `memref.store` before
   rewrite, `dataflow.load` / `dataflow.store` after rewrite) carry
-  `loom.mem_dep_id` in this milestone; compound `scf.*` atoms still
+  `loom.mem_dep_id`; compound `scf.*` atoms still
   in the graph definition's body do not get their own id, and their
   parent-chain behavior is reconstructed by Section 2.5 / Section 2.6 of
   `docs/spec-compiler-part-3-mem.md` applied to the boundary
@@ -537,13 +537,13 @@ documentation never refers to the numeric position.
   `loom.mem_loop_states = [...]`, a loop-local memory-state plan
   whose fields are deterministic integer ids, never operation
   references. Parallel-provenance groups are recorded with
-  deterministic group and chunk ids, as temporary attributes such as
+  deterministic group and chunk ids, as transient attributes such as
   `loom.parallel_group`, `loom.parallel_chunk`, and
   `loom.parallel_chunks`, or an equivalent analysis side table. They
   are implementation details consumed before final verification. The
   lowering transfers per-access attributes from source `memref` ops
   to replacement `dataflow` ops. `loom-finalize-dfg` drops all
-  temporary memory-dependence and parallel-provenance attributes.
+  transient memory-dependence and parallel-provenance attributes.
 
 ### 1.9 `loom-lower-scf-to-dfg-bodies`
 
@@ -577,10 +577,10 @@ documentation never refers to the numeric position.
 
 ### 1.10 `loom-finalize-dfg`
 
-* Runs the existing dataflow-graph verifier in strict mode.
+* Runs the dataflow-graph verifier in strict mode.
 * Strips the `loom.mem_dep_id`, `loom.mem_dep_preds`,
   `loom.mem_loop_id`, and `loom.mem_loop_states` attributes.
-* Strips temporary parallel-provenance attributes such as
+* Strips transient parallel-provenance attributes such as
   `loom.parallel_group`, `loom.parallel_chunk`, and
   `loom.parallel_chunks`.
 * Provides a `--keep-mem-dep` debug option that suppresses the
@@ -590,7 +590,7 @@ documentation never refers to the numeric position.
   production pipelines must run finalize without the option so the
   exit IR matches the documented front-end output. The option does
   not change any other finalize behavior.
-* Asserts that no temporary `loom.acc_region` op remains.
+* Asserts that no `loom.acc_region` op remains.
 * Asserts the front-end exit invariant: no `scf.*` op remains inside
   any `dataflow.graph` definition's body; every
   `dataflow.thread.launch` produces exactly one
@@ -651,7 +651,7 @@ The lit-test layout grows three new directories:
       domain-qualified entry.
     - invalid: a foreign (non-Loom) `DeviceMappingAttrInterface`
       attribute mixed with Loom-recognized entries (per Part 3 Section 3
-      Mapping attribute rules, retained from earlier milestone).
+      Mapping attribute rules).
   - `graph/` includes invalid cases for `func.call` and
     `func.func` inside a graph definition's body, and invalid
     cases for `dataflow.graph.launch` / `dataflow.thread.launch`
@@ -676,8 +676,8 @@ The lit-test layout grows three new directories:
     `loom.mem_dep_preds` / `loom.mem_loop_*` attributes are
     observable on the final IR they FileCheck against; without the
     flag the snapshot would have been stripped by `loom-finalize-dfg`
-    (per Section 1.10). The differential subset is intentionally small in
-    milestone 1 with two minimum-coverage floors: one case per loop
+    (per Section 1.10). The differential subset has two
+    minimum-coverage floors: one case per loop
     family (`for/`, `while/`, `forall/`-effect-form normalized to
     `parallel/`, plus straight-line `if/` and `index_switch/`) that
     exercises mlir-aa refinement on at least one access pair, and at
@@ -740,13 +740,13 @@ ctrl/done plumbing on both the def's `function_type` (leading `none`
 slots) and each launch (per-instance `ctrl_in` / `done_out`).
 
 Baseline L2 placement tests pin only the baseline policy output. A
-future cost-aware graph-placement policy must introduce its own fixtures
+cost-aware graph-placement policy must introduce its own fixtures
 or option-specific checks rather than rewriting the baseline
 expectations.
 
 ## 3. Acceptance Criteria
 
-The first milestone is considered complete when all of the
+The Part 3 pipeline contract is satisfied when all of the
 following hold simultaneously:
 
 * Every `scf.*` operation enumerated under Part 3's
@@ -804,8 +804,7 @@ following hold simultaneously:
   rwc, iter_arg state uses the loop-level rwc plus
   `carry` / `demux` / `mux`, zero-trip loops forward initial iter_arg
   values, and nonzero loop results come from the final body yield.
-* All previously existing tests in `test/dataflow/unit/graph/` and
-  `test/dataflow/unit/subgraph/` continue to pass after the
+* All graph and subgraph unit tests continue to pass after the
   def + launch migration.
 * `loom-finalize-dfg` rejects, with a clear diagnostic, every
   input produced by the lowering pipeline that contains a residual
@@ -834,12 +833,10 @@ following hold simultaneously:
   boundary; the def-side `RecursiveMemoryEffects` trait is for
   module-scope walkers only.
 * Integration tests in `test/frontend/integration/` run under
-  `--mem-alias=basic` only in milestone 1; differential coverage in
-  this directory is reserved for follow-up work if oracle-pair
-  behavior becomes a regression risk for end-to-end kernels.
-* `make test` runtime stays within the existing budget; the test
-  suite is parallel-safe (the existing `lit_top_slowest.py` machinery
-  is kept).
+  `--mem-alias=basic`; any differential coverage in this directory
+  must use explicit oracle-specific fixtures.
+* `make test` runtime stays within the configured budget; the test
+  suite is parallel-safe.
 
 ## 4. Maintenance and Extension Points
 
