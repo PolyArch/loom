@@ -48,7 +48,7 @@ edge encodes at a given lowering point.
 
 The remainder of this document is organized as follows. Section 2
 specifies the compositional model. Section 3 specifies the
-`MemAliasOracle` contract and the two milestone implementations.
+`MemAliasOracle` contract and the supported oracle policies.
 Section 4 specifies the dependence builder, including the snapshot it
 plants on the IR. Section 5 specifies loop-carried memory state. Section 6
 specifies the SSA-level wiring that turns the model and the
@@ -132,10 +132,11 @@ role builds its per-partition frontier.
   `BasicSsaOracle` assumption stated in Section 3.
 * An **unknown-root effect** is one whose root walk encounters an
   op the active oracle does not recognize. Such effects enter a
-  conservative bucket. The first milestone uses a single bucket
+  conservative bucket. The baseline policy uses a single bucket
   `U` regardless of memref element type or rank. Compatible-type
-  filtering is intentionally off in the first milestone; future
-  work may refine the leaf walk and the bucket policy.
+  filtering is not part of the baseline policy; any refinement must
+  be expressed as an explicit oracle policy with its own soundness
+  contract.
 * `U` may-aliases every known partition in scope. A scope that
   contains any unknown-root effect therefore collapses
   same-bucket behavior with all known partitions in scope, in
@@ -324,7 +325,7 @@ construction queries the compound's effect summary (which
 partitions it touches) before placing it in the per-`P` chains.
 
 **Parallel-provenance compound atoms.** A compound atom carrying
-parallel-provenance metadata (the temporary attributes planted
+parallel-provenance metadata (the transient attributes planted
 by the dependence builder; see Section 4) follows fork-join boundary
 semantics. Each chunk's body is its own chain scope; chunks
 share the compound's `incoming_P` for every touched partition
@@ -414,7 +415,7 @@ the contract each template instantiates.
 
 This compositional model is scoped to memory dependence inside
 `dataflow.graph` definition bodies. It does not, in this
-milestone:
+model:
 
 * Define `!dataflow.thread_token` semantics or
   `LoomAsyncOpInterface` participation. Those are launch-side
@@ -426,19 +427,19 @@ milestone:
   rule 7.
 * Define `DeviceMappingAttrInterface` or thread-grid mapping
   semantics. Those are placement-side concerns.
-* Replace the existing dataflow primitive op definitions for
+* Replace the dataflow primitive op definitions for
   `dataflow.{stream, carry, invariant, gate, mux, demux, sync,
   constant}`. Those definitions are owned by
   `docs/spec-dataflow-part-1-streaming.md` and
   `docs/spec-dataflow-part-2-control.md`.
-* Cross-graph partition identity. `dataflow.graph` is a leaf in
-  the first milestone and partition ids are graph-local (scoped
-  to the def's body, with caller-side per-launch frontier wiring
+* Define cross-graph partition identity. `dataflow.graph` is a leaf
+  in this memory model and partition ids are graph-local (scoped to
+  the def's body, with caller-side per-launch frontier wiring
   materialized at each `dataflow.graph.launch` site, per Section 6.5).
-  Future graph-in-graph or split-graph designs would need an
-  explicit child-block-arg to parent-operand alias-root mapping
-  at the graph boundary; numeric ids alone are not enough. This
-  is out of scope here.
+  Any design that composes memory chains across graph definitions
+  must add an explicit child-block-arg to parent-operand alias-root
+  mapping at the graph boundary; numeric ids alone are not enough.
+  That cross-graph composition contract is out of scope here.
 
 The model assumes those other contracts are already enforced by
 their respective sections.
@@ -506,30 +507,28 @@ conditions:
   `(args_*, thread_ctrl, iv_*)` order), so the walk excludes
   `thread_ctrl` and the grid induction-variable args automatically.
 
-  **Multi-launch handling (v1 contract).** The first milestone
-  pipeline (`loom-extract-graph-regions`,
-  `loom-build-thread-skeleton`) emits exactly one launch site per
-  defined symbol; the def + launch is a 1:1 pairing and the chain
-  analysis in this document is built against that pairing. Under
-  this v1 contract, "the matching launch operand" is unambiguous
-  and the walk continues on it.
+  **Multi-launch handling.** The single-launch baseline policy emits
+  exactly one launch site per defined graph symbol; the def + launch
+  is a 1:1 pairing and the chain analysis in this document is built
+  against that pairing. Under this contract, "the matching launch
+  operand" is unambiguous and the walk continues on it.
 
-  If a future pass produces a def reused at multiple launch sites
-  (a graph kernel called from multiple program points), the chain
-  analysis must run per-launch and the resulting frontiers must be
-  joined caller-side, **or** the verifier must additionally
-  enforce an "all launch sites supply the same alias-root for each
-  block arg" invariant so a single per-def chain remains sound.
-  v1 takes the simpler path (1:1 def + launch) and defers the
-  multi-launch composition to a follow-up. The
+  If a graph definition is reused at multiple launch sites (a graph
+  kernel called from multiple program points), the chain analysis
+  must run per-launch and the resulting frontiers must be joined
+  caller-side, **or** the verifier must additionally enforce an "all
+  launch sites supply the same alias-root for each block arg"
+  invariant so a single per-def chain remains sound. The
   direction/body-effect compatibility check in Section 3.7 of
   `docs/spec-compiler-part-3-dfg.md` already provides part of the
   per-launch sanity envelope; the multi-launch alias-identity
-  invariant is the missing piece for that future generalization.
+  invariant is the additional rule required for any per-def
+  multi-launch analysis policy.
 
   The walk therefore continues on the matching launch op operand
   in the enclosing scope. This is what makes storage identity
-  stable across the `IsolatedFromAbove` boundary in v1: two graph
+  stable across the `IsolatedFromAbove` boundary in the baseline:
+  two graph
   block arguments bound to the same parent memref through one
   `dataflow.graph.launch` (two subviews of the same alloc, or the
   same value passed twice) walk
@@ -548,8 +547,8 @@ conditions:
   storage with an existing buffer depending on the active
   bufferization strategy), an SSA value returned from a
   `func.call`, an `unrealized_conversion_cast` to a memref type,
-  custom buffer reshape ops, and any future memref-producing op the
-  oracle has not been taught about. This is the soundness rule
+  custom buffer reshape ops, and any memref-producing op the oracle
+  has not been taught about. This is the soundness rule
   that prevents such ops from being silently treated as fresh
   disjoint roots.
 
@@ -571,13 +570,13 @@ Conflict is decided as follows. For two accesses `a` and `b`:
   conflict. This realizes the rule from Section 2.3 that a `U` effect
   may-aliases every known partition.
 
-The first milestone uses any-memref same bucket as the
+The baseline policy uses any-memref same bucket as the
 "compatible memref kind" predicate. Element type and shape rank are
 intentionally NOT used as disjoint witnesses, because view-like ops
 and bufferization paths can change element type or rank without
 changing underlying storage. This is conservative and matches the
-first-milestone soundness direction; later milestones may refine compatibility
-once the leaf walk and the bucket policy are tightened.
+baseline soundness direction. More precise compatibility policies
+must refine both the leaf walk and the unknown-bucket policy.
 
 Bounds and offsets are not consulted at any point; the oracle is
 intentionally storage-identity only.
@@ -607,8 +606,9 @@ identity by `BasicSsaOracle`'s classification: a compound's summary
 contains `U` whenever any inner leaf is in `U`, regardless of
 whether MlirAaOracle would have demoted some inner leaf-pair
 conflicts. The conservative compound summary is intentional in
-the first milestone; tightening it requires summary-level AA
-support that is out of scope here.
+the baseline policy; any tighter policy requires summary-level AA
+support and must define how refined summaries compose across
+compound atoms.
 
 ### 3.3 Effect Summary Lift Rule
 
@@ -650,19 +650,13 @@ into the appropriate per-`P` chains using this summary; the
 single-level chain rule of Section 2.5 and the join rules of Section 2.7 take
 over once each scope's atom set is known.
 
-`BasicSsaOracle` is the milestone 1 default and drives the full lit
-suite under `test/frontend/`. `MlirAaOracle` ships in the same library
-and is exercised on a representative differential subset of lit cases
-that pins oracle-pair equivalence modulo refinement: structural IR
-identical, `loom.mem_dep_preds` snapshot may differ when upstream MLIR
-AA proves additional `MustNotAlias` pairs. Differential coverage is
-an explicit subset rather than the entire lit suite to keep fixture
-maintenance proportional to the safety net it provides. Extending
-the differential coverage to the full lit suite is reserved for
-follow-up work if the basic oracle's coarseness becomes a quality
-regression; until then, the canonical milestone 1 framing is
-"representative differential subset" everywhere this policy is
-described.
+`BasicSsaOracle` is the baseline default. `MlirAaOracle` is the
+refining policy: it must preserve structural IR shape while allowing
+the `loom.mem_dep_preds` snapshot to differ when upstream MLIR AA
+proves additional `MustNotAlias` pairs. Test coverage for oracle
+policies belongs to `docs/spec-compiler-part-3-impl.md`; this
+document defines only the required semantic relationship between
+the policies.
 
 ## 4. Dependence Builder
 
@@ -737,8 +731,10 @@ symmetric and never defines a direction by itself.
     conflicts. Compound-boundary lift uses `BasicSsaOracle`'s
     classification per Section 3.3 only; `MlirAaOracle`'s leaf-pair
     refinement does not propagate into compound boundaries in
-    this milestone, regardless of whether some inner-vs-outer
-    leaf pair would have been demoted as a direct query.
+    the baseline policy, regardless of whether some inner-vs-outer
+    leaf pair would have been demoted as a direct query. A tighter
+    policy must specify the summary-level AA rule before changing
+    this behavior.
 * **Path-sensitive pruning.** Atoms in mutually exclusive branches
   do not need an edge between each other solely because they
   conflict; each branch's tail participates in the parent merge
@@ -793,7 +789,7 @@ start at zero) and are all graph-local.
   namespace.
 * `loom.mem_loop_states = [...]` on each such loop, referencing
   accesses only by `loom.mem_dep_id`. Internal partition ids and
-  any future non-reference integer fields inside this attribute are
+  all non-reference integer fields inside this attribute are
   graph-local on the same per-graph numbering policy.
 * Parallel-provenance side data: `loom.parallel_group`,
   `loom.parallel_chunk`, `loom.parallel_chunks`, on cloned leaves
@@ -817,8 +813,8 @@ lists). The Section 6 wiring uses each predecessor leaf's primary
 partition (recovered by re-running the Section 3.1 walk on the
 predecessor's memref operand) to route the edge into the right
 per-`P` chain. Compound `scf.*` atoms still present in the graph
-do not get their own `loom.mem_dep_id` in this milestone, only
-leaves do. Integer ids keep the snapshot stable across printing,
+do not get their own `loom.mem_dep_id`; only leaves do. Integer ids
+keep the snapshot stable across printing,
 parsing, and in-place memory-op rewrites.
 
 **Cross-scope predecessor resolution.** When a `loom.mem_dep_preds`
@@ -1289,7 +1285,7 @@ Two cross-cutting rules close the wiring specification.
   boundary translation rules that instantiate the contract in Section 2.8
   live in Section 6 of that document.
 * `docs/spec-compiler-part-3-impl.md` -- pass pipeline, lit-test
-  layout, milestone acceptance checklist, and maintenance plan.
+  layout, acceptance checklist, and maintenance plan.
   The `MemAliasOracle` C++ interface signature and the pass that
   materializes oracle instances per `dataflow.graph` definition's
   body are specified there.
