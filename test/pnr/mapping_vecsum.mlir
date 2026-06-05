@@ -13,3 +13,9 @@
 // JSON-DAG: "status": "pass"
 // JSON-DAG: "placed_records": 6
 // JSON-DAG: "routed_edges": 8
+// JSON-DAG: "config_records": 43
+// JSON-DAG: "config_bitstream"
+// JSON-DAG: "register": "sw_configs.step_op"
+// JSON-DAG: "value": "+="
+// JSON-DAG: "register": "sw_configs.bitmask"
+// JSON-DAG: "register": "from_software_id"

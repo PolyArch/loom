@@ -22,6 +22,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--primitive-coverage")
     parser.add_argument("--dfg-report", action="append", default=[])
+    parser.add_argument("--cgra-report", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -56,6 +57,8 @@ def main(argv: list[str]) -> int:
     output = Path(args.output)
     dfg_reports = [Path(path) for path in args.dfg_report]
     valid_dfg_reports = [path for path in dfg_reports if path.is_file()]
+    cgra_reports = [Path(path) for path in args.cgra_report]
+    valid_cgra_reports = [path for path in cgra_reports if path.is_file()]
     if not args.primitive_coverage and not valid_dfg_reports:
         intermediate_artifacts.write_csv("sim_cycle", intermediate_artifacts.output_path(args.output))
         return 0
@@ -65,6 +68,8 @@ def main(argv: list[str]) -> int:
             command = [str(tool)]
             for report in valid_dfg_reports:
                 command.extend(["--dfg-report", str(report)])
+            for report in valid_cgra_reports:
+                command.extend(["--cgra-report", str(report)])
             command.extend(["--output", str(output)])
             result = subprocess.run(
                 command,

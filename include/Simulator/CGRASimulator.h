@@ -1,0 +1,44 @@
+#ifndef LOOM_SIMULATOR_CGRA_SIMULATOR_H
+#define LOOM_SIMULATOR_CGRA_SIMULATOR_H
+
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <string>
+
+namespace loom {
+namespace sim {
+
+struct CGRASimOptions {
+  std::string dfgReportPath;
+  std::string mappingArtifactPath;
+};
+
+struct CGRASimReport {
+  std::string workload;
+  std::string hardware;
+  std::string mappingId;
+  std::string status;
+  std::string diagnostic;
+  std::uint64_t dfgCycles = 0;
+  std::uint64_t routeLatencyCycles = 0;
+  std::uint64_t memoryLatencyCycles = 0;
+  std::uint64_t temporalPenaltyCycles = 0;
+  std::uint64_t hardwareAwareCycles = 0;
+  std::uint64_t placedRecords = 0;
+  std::uint64_t routedEdges = 0;
+  std::uint64_t configRecords = 0;
+  std::uint64_t spatialPlacements = 0;
+  std::uint64_t temporalPlacements = 0;
+};
+
+llvm::Expected<CGRASimReport> runCGRASimulation(const CGRASimOptions &options);
+
+llvm::Error writeCGRASimReportJson(llvm::StringRef outputPath,
+                                   const CGRASimReport &report);
+
+} // namespace sim
+} // namespace loom
+
+#endif // LOOM_SIMULATOR_CGRA_SIMULATOR_H

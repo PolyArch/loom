@@ -52,6 +52,8 @@ struct SoftwareNode {
 struct HardwareResource {
   std::string id;
   ResourceKind kind;
+  std::string schedule;
+  std::map<std::string, std::string> swConfigs;
   llvm::StringSet<> supportedOps;
   bool used = false;
 };
@@ -186,6 +188,27 @@ std::uint64_t integerAttrValue(mlir::Attribute attr) {
   return 0;
 }
 
+std::string configValue(mlir::Attribute attr) {
+  if (auto stringAttr = llvm::dyn_cast_if_present<mlir::StringAttr>(attr))
+    return stringAttr.getValue().str();
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  attr.print(os);
+  return text;
+}
+
+std::string scheduleName(fabric::Schedule schedule) {
+  return fabric::stringifySchedule(schedule).str();
+}
+
+std::string nearestSchedule(mlir::Operation *op) {
+  for (mlir::Operation *cursor = op; cursor; cursor = cursor->getParentOp()) {
+    if (auto attr = cursor->getAttrOfType<fabric::ScheduleAttr>("schedule"))
+      return scheduleName(attr.getValue());
+  }
+  return "spatial";
+}
+
 void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
                         llvm::SmallVectorImpl<HardwareResource> &resources) {
   std::uint64_t loadPorts = 0;
@@ -197,15 +220,16 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
       storePorts = integerAttrValue(dict.get("store_group_size"));
     }
   }
+  std::string schedule = nearestSchedule(op);
   for (std::uint64_t i = 0; i < loadPorts; ++i) {
     resources.push_back(HardwareResource{
         (hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
-        ResourceKind::MemLoad, {}, false});
+        ResourceKind::MemLoad, schedule, {}, {}, false});
   }
   for (std::uint64_t i = 0; i < storePorts; ++i) {
     resources.push_back(HardwareResource{
         (hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
-        ResourceKind::MemStore, {}, false});
+        ResourceKind::MemStore, schedule, {}, {}, false});
   }
 }
 
@@ -218,6 +242,13 @@ void appendFabricOpResource(mlir::Operation *op, llvm::StringRef hardwareName,
   HardwareResource resource;
   resource.id = (hardwareName + "::fabric.op#" + llvm::Twine(index)).str();
   resource.kind = ResourceKind::FabricOp;
+  resource.schedule = nearestSchedule(op);
+  if (auto swConfigs = op->getAttrOfType<mlir::DictionaryAttr>("sw_configs")) {
+    for (mlir::NamedAttribute namedAttr : swConfigs) {
+      resource.swConfigs[namedAttr.getName().getValue().str()] =
+          configValue(namedAttr.getValue());
+    }
+  }
   for (mlir::Attribute attr : opList) {
     if (auto sym = llvm::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
       resource.supportedOps.insert(sym.getValue());
@@ -256,6 +287,14 @@ HardwareResource *claimResource(SoftwareNode &node,
     return &resource;
   }
   return nullptr;
+}
+
+std::optional<std::string> configFor(const HardwareResource &resource,
+                                     llvm::StringRef key) {
+  auto it = resource.swConfigs.find(key.str());
+  if (it == resource.swConfigs.end())
+    return std::nullopt;
+  return it->second;
 }
 
 llvm::DenseMap<mlir::Operation *, std::string>
@@ -328,6 +367,7 @@ llvm::json::Object placementJson(const PlacementRecord &placement) {
       {"operation", placement.operation},
       {"resource_kind", placement.resourceKind},
       {"hardware", placement.hardwareId},
+      {"schedule", placement.schedule},
   };
 }
 
@@ -336,6 +376,149 @@ llvm::json::Object routeJson(const RouteRecord &route) {
       {"from", route.fromSoftwareId},
       {"to", route.toSoftwareId},
       {"status", "routed"},
+  };
+}
+
+void addConfig(llvm::SmallVectorImpl<ConfigEntry> &entries,
+               llvm::StringRef target, llvm::StringRef registerName,
+               llvm::StringRef value, llvm::StringRef source) {
+  entries.push_back(ConfigEntry{target.str(), registerName.str(), value.str(),
+                                source.str()});
+}
+
+llvm::Error appendPlacementConfig(MappingSummary &summary,
+                                  const SoftwareNode &node,
+                                  const HardwareResource &resource) {
+  if (resource.kind == ResourceKind::FabricOp) {
+    if (std::optional<std::string> opSel = configFor(resource, "op_sel")) {
+      if (*opSel != node.operation)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "hardware resource %s is configured for %s but software op is %s",
+            resource.id.c_str(), opSel->c_str(), node.operation.c_str());
+    }
+  }
+
+  std::string source = "placement:" + node.id;
+  addConfig(summary.configEntries, resource.id, "software_id", node.id,
+            source);
+  addConfig(summary.configEntries, resource.id, "operation", node.operation,
+            source);
+  addConfig(summary.configEntries, resource.id, "resource_kind",
+            resourceKindName(node.resourceKind), source);
+  addConfig(summary.configEntries, resource.id, "schedule", resource.schedule,
+            source);
+
+  if (resource.kind == ResourceKind::FabricOp &&
+      resource.supportedOps.size() > 1 && !configFor(resource, "op_sel")) {
+    addConfig(summary.configEntries, resource.id, "sw_configs.op_sel",
+              node.operation, source);
+  }
+  for (const auto &[key, value] : resource.swConfigs) {
+    addConfig(summary.configEntries, resource.id, "sw_configs." + key, value,
+              source);
+  }
+  return llvm::Error::success();
+}
+
+std::string routeTarget(const MappingSummary &summary, std::size_t index) {
+  return summary.mappingId + "::route#" + std::to_string(index);
+}
+
+void appendRouteConfig(MappingSummary &summary) {
+  for (std::size_t i = 0; i < summary.routes.size(); ++i) {
+    const RouteRecord &route = summary.routes[i];
+    std::string source =
+        "route:" + route.fromSoftwareId + "->" + route.toSoftwareId;
+    std::string target = routeTarget(summary, i);
+    addConfig(summary.configEntries, target, "from_software_id",
+              route.fromSoftwareId, source);
+    addConfig(summary.configEntries, target, "to_software_id",
+              route.toSoftwareId, source);
+  }
+}
+
+std::string configKey(llvm::StringRef target, llvm::StringRef registerName,
+                      llvm::StringRef source) {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  os << target << '\x1f' << registerName << '\x1f' << source;
+  return key;
+}
+
+std::string registerKey(llvm::StringRef target, llvm::StringRef registerName) {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  os << target << '\x1f' << registerName;
+  return key;
+}
+
+llvm::Error validateConfigBitstream(const MappingSummary &summary) {
+  if (summary.status != "pass")
+    return llvm::Error::success();
+
+  llvm::StringSet<> seen;
+  llvm::StringSet<> writtenRegisters;
+  for (const ConfigEntry &entry : summary.configEntries) {
+    if (entry.target.empty() || entry.registerName.empty() ||
+        entry.source.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "config bitstream contains an incomplete "
+                                     "register assignment");
+    if (entry.registerName == "schedule" &&
+        entry.value != "spatial" && entry.value != "temporal")
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "config bitstream contains invalid "
+                                     "schedule value %s",
+                                     entry.value.c_str());
+    std::string key =
+        configKey(entry.target, entry.registerName, entry.source);
+    if (!seen.insert(key).second)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "config bitstream contains duplicate assignment for %s",
+          entry.target.c_str());
+    std::string regKey = registerKey(entry.target, entry.registerName);
+    if (!writtenRegisters.insert(regKey).second)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "config bitstream writes register %s on %s more than once",
+          entry.registerName.c_str(), entry.target.c_str());
+  }
+
+  for (const PlacementRecord &placement : summary.placements) {
+    std::string source = "placement:" + placement.softwareId;
+    for (llvm::StringRef reg :
+         {"software_id", "operation", "resource_kind", "schedule"}) {
+      if (!seen.contains(configKey(placement.hardwareId, reg, source)))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "config bitstream is missing placement register %s for %s",
+            reg.str().c_str(), placement.hardwareId.c_str());
+    }
+  }
+
+  for (std::size_t i = 0; i < summary.routes.size(); ++i) {
+    const RouteRecord &route = summary.routes[i];
+    std::string source =
+        "route:" + route.fromSoftwareId + "->" + route.toSoftwareId;
+    std::string target = routeTarget(summary, i);
+    if (!seen.contains(configKey(target, "from_software_id", source)) ||
+        !seen.contains(configKey(target, "to_software_id", source)))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "config bitstream is missing route endpoint registers for %s",
+          target.c_str());
+  }
+  return llvm::Error::success();
+}
+
+llvm::json::Object configJson(const ConfigEntry &entry) {
+  return llvm::json::Object{
+      {"target", entry.target},
+      {"register", entry.registerName},
+      {"value", entry.value},
+      {"source", entry.source},
   };
 }
 
@@ -397,14 +580,20 @@ loom::pnr::createMapping(const MappingOptions &options) {
     }
     summary.placements.push_back(PlacementRecord{
         node.id, node.operation, resourceKindName(node.resourceKind).str(),
-        resource->id});
+        resource->id, resource->schedule});
+    if (llvm::Error err = appendPlacementConfig(summary, node, *resource))
+      return std::move(err);
   }
 
   summary.routes = collectRoutes(*nodesOrErr, graph);
   if (summary.status == "pass") {
+    appendRouteConfig(summary);
+    if (llvm::Error err = validateConfigBitstream(summary))
+      return std::move(err);
     summary.diagnostic = "mapped software graph to fabric resources";
   } else {
     summary.routes.clear();
+    summary.configEntries.clear();
   }
   return summary;
 }
@@ -445,6 +634,10 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
   for (const RouteRecord &route : summary.routes)
     routes.push_back(routeJson(route));
 
+  llvm::json::Array configEntries;
+  for (const ConfigEntry &entry : summary.configEntries)
+    configEntries.push_back(configJson(entry));
+
   llvm::json::Object root{
       {"schema_version", 1},
       {"kind", "pnr_mapping"},
@@ -456,8 +649,10 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
       {"placed_records", static_cast<int64_t>(summary.placements.size())},
       {"routed_edges", static_cast<int64_t>(summary.routes.size())},
       {"unrouted_edges", static_cast<int64_t>(summary.unroutedEdges)},
+      {"config_records", static_cast<int64_t>(summary.configEntries.size())},
       {"placements", std::move(placements)},
       {"routes", std::move(routes)},
+      {"config_bitstream", std::move(configEntries)},
   };
   if (!summary.diagnostic.empty()) {
     llvm::json::Array diagnostics;

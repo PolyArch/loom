@@ -25,11 +25,19 @@ struct PlacementRecord {
   std::string operation;
   std::string resourceKind;
   std::string hardwareId;
+  std::string schedule;
 };
 
 struct RouteRecord {
   std::string fromSoftwareId;
   std::string toSoftwareId;
+};
+
+struct ConfigEntry {
+  std::string target;
+  std::string registerName;
+  std::string value;
+  std::string source;
 };
 
 struct MappingSummary {
@@ -41,6 +49,7 @@ struct MappingSummary {
   std::string diagnostic;
   llvm::SmallVector<PlacementRecord> placements;
   llvm::SmallVector<RouteRecord> routes;
+  llvm::SmallVector<ConfigEntry> configEntries;
   std::uint64_t unroutedEdges = 0;
 };
 

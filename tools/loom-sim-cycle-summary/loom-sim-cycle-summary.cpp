@@ -14,6 +14,11 @@ static llvm::cl::list<std::string>
     dfgReportPaths("dfg-report", llvm::cl::desc("DFG simulation report JSON"),
                    llvm::cl::ZeroOrMore);
 
+static llvm::cl::list<std::string>
+    cgraReportPaths("cgra-report",
+                    llvm::cl::desc("CGRA simulation report JSON"),
+                    llvm::cl::ZeroOrMore);
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("sim cycle summary CSV"),
                llvm::cl::Required);
@@ -33,7 +38,8 @@ int main(int argc, char **argv) {
                        loom::sim::scaffoldCycleSummaryRows())
                  : loom::sim::summarizePrimitiveCoverage(primitiveCoveragePath,
                                                          options))
-          : loom::sim::summarizeDFGReports(dfgReportPaths);
+          : loom::sim::summarizeSimulationReports(dfgReportPaths,
+                                                  cgraReportPaths);
   if (!rowsOrErr) {
     llvm::errs() << "error: " << llvm::toString(rowsOrErr.takeError()) << "\n";
     return 1;

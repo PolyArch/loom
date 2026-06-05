@@ -23,6 +23,13 @@ struct PrimitiveStats {
   std::uint64_t totalOps = 0;
 };
 
+struct CGRASummary {
+  std::string kernel;
+  std::optional<std::uint64_t> cycles;
+  std::string status;
+  std::string diagnostic;
+};
+
 llvm::SmallVector<std::string> parseCsvLine(llvm::StringRef line) {
   llvm::SmallVector<std::string> cells;
   std::string cell;
@@ -186,6 +193,53 @@ llvm::Expected<CycleSummaryRow> summarizeOneDFGReport(llvm::StringRef path) {
                          std::nullopt, "blocked", std::move(diagnostic)};
 }
 
+llvm::Expected<CGRASummary> summarizeOneCGRAReport(llvm::StringRef path) {
+  auto bufferOrErr = llvm::MemoryBuffer::getFile(path);
+  if (std::error_code ec = bufferOrErr.getError())
+    return llvm::createStringError(ec, "could not read %s", path.str().c_str());
+  auto parsedOrErr = llvm::json::parse((*bufferOrErr)->getBuffer());
+  if (!parsedOrErr)
+    return parsedOrErr.takeError();
+  const llvm::json::Object *object = parsedOrErr->getAsObject();
+  if (!object)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "CGRA report %s is not a JSON object",
+                                   path.str().c_str());
+
+  std::optional<llvm::StringRef> kind = object->getString("kind");
+  if (!kind || *kind != "cgra_sim_report")
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "CGRA report %s has wrong kind",
+                                   path.str().c_str());
+
+  std::optional<llvm::StringRef> workload = object->getString("workload");
+  if (!workload || workload->empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "CGRA report %s has no workload",
+                                   path.str().c_str());
+
+  std::optional<llvm::StringRef> status = object->getString("status");
+  std::string reportStatus = status ? status->str() : "blocked";
+  std::string diagnostic = diagnosticFromJsonArray(*object);
+  if (reportStatus != "pass") {
+    if (diagnostic.empty())
+      diagnostic = "CGRA-sim report did not pass";
+    return CGRASummary{workload->str(), std::nullopt, reportStatus,
+                       std::move(diagnostic)};
+  }
+
+  std::optional<int64_t> cycles = object->getInteger("hardware_aware_cycles");
+  if (!cycles || *cycles < 0)
+    return CGRASummary{workload->str(), std::nullopt, "blocked",
+                       "CGRA-sim report passed but lacks non-negative "
+                       "hardware_aware_cycles"};
+
+  if (diagnostic.empty())
+    diagnostic = "CGRA-sim report available";
+  return CGRASummary{workload->str(), static_cast<std::uint64_t>(*cycles),
+                     "pass", std::move(diagnostic)};
+}
+
 } // namespace
 
 llvm::SmallVector<CycleSummaryRow> loom::sim::scaffoldCycleSummaryRows() {
@@ -274,6 +328,63 @@ loom::sim::summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths) {
     rows.push_back(std::move(*rowOrErr));
   }
   return rows;
+}
+
+llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
+loom::sim::summarizeSimulationReports(
+    llvm::ArrayRef<std::string> dfgReportPaths,
+    llvm::ArrayRef<std::string> cgraReportPaths) {
+  auto dfgRowsOrErr = summarizeDFGReports(dfgReportPaths);
+  if (!dfgRowsOrErr)
+    return dfgRowsOrErr.takeError();
+  if (cgraReportPaths.empty())
+    return *dfgRowsOrErr;
+
+  llvm::StringMap<CGRASummary> cgraByKernel;
+  for (const std::string &path : cgraReportPaths) {
+    auto cgraOrErr = summarizeOneCGRAReport(path);
+    if (!cgraOrErr)
+      return cgraOrErr.takeError();
+    std::string key = cgraOrErr->kernel;
+    if (cgraByKernel.contains(key))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "duplicate CGRA report workload %s",
+                                     key.c_str());
+    cgraByKernel.try_emplace(key, std::move(*cgraOrErr));
+  }
+
+  for (CycleSummaryRow &row : *dfgRowsOrErr) {
+    auto cgraIt = cgraByKernel.find(row.kernel);
+    if (cgraIt == cgraByKernel.end())
+      continue;
+    CGRASummary &cgra = cgraIt->second;
+    if (!row.dfgSimCycles) {
+      row.status = "blocked";
+      if (!row.diagnostic.empty())
+        row.diagnostic += "; ";
+      row.diagnostic +=
+          "CGRA-sim report available but DFG-sim cycles are missing";
+      continue;
+    }
+    if (!cgra.cycles) {
+      row.status = cgra.status;
+      if (!row.diagnostic.empty())
+        row.diagnostic += "; ";
+      row.diagnostic += cgra.diagnostic;
+      continue;
+    }
+    if (*cgra.cycles < *row.dfgSimCycles)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "CGRA-sim cycles for %s are more optimistic than DFG-sim cycles",
+          row.kernel.c_str());
+    row.cgraSimCycles = *cgra.cycles;
+    row.status = "pass";
+    row.diagnostic =
+        "DFG-sim and CGRA-sim reports available; CGRA-sim includes mapping "
+        "route, memory, and temporal penalties";
+  }
+  return *dfgRowsOrErr;
 }
 
 llvm::Error
