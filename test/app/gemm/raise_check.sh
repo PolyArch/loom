@@ -10,7 +10,7 @@ export LC_ALL=C
 KERNEL="gemm"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../../.." && pwd)"
-BUILD_DIR="${HERE}/build"
+BUILD_DIR="${BUILD_DIR:-${HERE}/build}"
 
 LOOM_CC="${LOOM_CC:-${REPO}/build/bin/loom-cc}"
 LOOM_RAISE="${LOOM_RAISE:-${REPO}/build/bin/loom-raise}"

@@ -13,7 +13,7 @@ export LC_ALL=C
 
 KERNEL="vecadd"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${HERE}/build"
+BUILD_DIR="${BUILD_DIR:-${HERE}/build}"
 EXPECTED="${HERE}/expected.txt"
 
 CC="${CC:-gcc}"
