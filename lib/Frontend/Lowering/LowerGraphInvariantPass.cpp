@@ -83,6 +83,15 @@ void collectBridgedArgs(::mlir::Block &entry,
   }
 }
 
+bool isStreamLoopBoundUse(::mlir::OpOperand &use) {
+  auto stream = ::llvm::dyn_cast<::dataflow::StreamOp>(use.getOwner());
+  if (!stream)
+    return false;
+  ::mlir::Value value = use.get();
+  return value == stream.getLb() || value == stream.getUb() ||
+         value == stream.getStep();
+}
+
 // Rewrite eligible block arguments of `graph` with dataflow.invariant
 // carriers driven by the first stream's rwc. Returns the number of
 // invariants emitted.
@@ -110,13 +119,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
     // (c, d) Skip args with no non-stream in-body uses.
     bool hasNonStreamUse = false;
     for (::mlir::OpOperand &use : ba.getUses()) {
-      auto streamUser = ::llvm::dyn_cast<::dataflow::StreamOp>(use.getOwner());
-      if (streamUser) {
-        ::mlir::Value v = use.get();
-        if (v == streamUser.getLb() || v == streamUser.getUb() ||
-            v == streamUser.getStep())
-          continue;
-      }
+      if (isStreamLoopBoundUse(use))
+        continue;
       hasNonStreamUse = true;
       break;
     }
@@ -145,11 +149,8 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
         return false;
       if (::llvm::isa<::mlir::UnrealizedConversionCastOp>(owner))
         return false;
-      if (auto s = ::llvm::dyn_cast<::dataflow::StreamOp>(owner)) {
-        ::mlir::Value v = use.get();
-        if (v == s.getLb() || v == s.getUb() || v == s.getStep())
-          return false;
-      }
+      if (isStreamLoopBoundUse(use))
+        return false;
       return true;
     });
     ++added;
