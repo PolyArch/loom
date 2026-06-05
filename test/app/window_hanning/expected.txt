@@ -1,0 +1,2 @@
+window_hanning checksum: 10.312
+PASSED

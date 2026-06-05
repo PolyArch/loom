@@ -63,6 +63,7 @@ EXPECTED_CASES = {
     "vecscale",
     "vecsum",
     "window_hamming",
+    "window_hanning",
     "xor_block",
 }
 
