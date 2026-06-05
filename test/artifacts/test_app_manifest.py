@@ -34,6 +34,7 @@ EXPECTED_CASES = {
     "upper_bound",
     "vecadd",
     "vecmul",
+    "vecnorm_l1",
     "vecscale",
     "vecsum",
 }

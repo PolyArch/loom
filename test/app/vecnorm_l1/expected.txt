@@ -1,0 +1,2 @@
+vecnorm_l1 norm: 171
+PASSED
