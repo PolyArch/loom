@@ -63,6 +63,7 @@ EXPECTED_CASES = {
     "lower_bound",
     "mean",
     "mat3x3_mult",
+    "matmul",
     "matvec",
     "merge",
     "moving_avg",
