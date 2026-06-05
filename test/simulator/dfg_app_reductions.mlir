@@ -1,19 +1,28 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/mean LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/mean/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/prefix_sum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reports/reduction.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh mean %t.dir/mean/main_func.dfg.mlir %t.dir/reports/mean.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh dotproduct %t.dir/dotproduct/main_func.dfg.mlir %t.dir/reports/dotproduct.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l2 %t.dir/vecnorm_l2/main_func.dfg.mlir %t.dir/reports/vecnorm_l2.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum %t.dir/prefix_sum/main_func.dfg.mlir %t.dir/reports/prefix_sum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
+// RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reports/reduction.report.json
+// RUN: FileCheck %s --check-prefix=MEAN < %t.dir/reports/mean.report.json
 // RUN: FileCheck %s --check-prefix=DOTPRODUCT < %t.dir/reports/dotproduct.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/reports/vecnorm_l2.report.json
+// RUN: FileCheck %s --check-prefix=PREFIX-SUM < %t.dir/reports/prefix_sum.report.json
 // RUN: FileCheck %s --check-prefix=INTEGRATE-TRAPZ < %t.dir/reports/integrate_trapz.report.json
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/summary.csv
 
@@ -37,6 +46,22 @@
 // VECSUM-DAG: "event_count": 453
 // VECSUM-DAG: "i32:2116"
 
+// REDUCTION-DAG: "kind": "dfg_sim_report"
+// REDUCTION-DAG: "workload": "reduction"
+// REDUCTION-DAG: "graph": "g_t_reduce_sum_red_0_0"
+// REDUCTION-DAG: "status": "pass"
+// REDUCTION-DAG: "optimistic_cycles": 453
+// REDUCTION-DAG: "event_count": 453
+// REDUCTION-DAG: "i32:2016"
+
+// MEAN-DAG: "kind": "dfg_sim_report"
+// MEAN-DAG: "workload": "mean"
+// MEAN-DAG: "graph": "g_t_mean_kernel_red_0_0"
+// MEAN-DAG: "status": "pass"
+// MEAN-DAG: "optimistic_cycles": 453
+// MEAN-DAG: "event_count": 453
+// MEAN-DAG: "f32:2016"
+
 // DOTPRODUCT-DAG: "kind": "dfg_sim_report"
 // DOTPRODUCT-DAG: "workload": "dotproduct"
 // DOTPRODUCT-DAG: "graph": "g_t_dotproduct_red_0_0"
@@ -57,6 +82,14 @@
 // VECNORM-L2-DAG: "event_count": 517
 // VECNORM-L2-DAG: "i32:619"
 
+// PREFIX-SUM-DAG: "kind": "dfg_sim_report"
+// PREFIX-SUM-DAG: "workload": "prefix_sum"
+// PREFIX-SUM-DAG: "graph": "g_t_prefix_sum_red_0_0"
+// PREFIX-SUM-DAG: "status": "pass"
+// PREFIX-SUM-DAG: "optimistic_cycles": 517
+// PREFIX-SUM-DAG: "event_count": 517
+// PREFIX-SUM-DAG: "i32:2016"
+
 // INTEGRATE-TRAPZ-DAG: "kind": "dfg_sim_report"
 // INTEGRATE-TRAPZ-DAG: "workload": "integrate_trapz"
 // INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
@@ -70,6 +103,9 @@
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: dotproduct,517,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,169,,blocked,DFG-sim report available
+// SUMMARY-DAG: mean,453,,blocked,DFG-sim report available
+// SUMMARY-DAG: prefix_sum,517,,blocked,DFG-sim report available
+// SUMMARY-DAG: reduction,453,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,453,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l2,517,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,453,,blocked,DFG-sim report available

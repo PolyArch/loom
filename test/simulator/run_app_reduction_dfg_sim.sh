@@ -132,6 +132,30 @@ case "${CASE}" in
             --arg 5=100
         )
         ;;
+    reduction)
+        append_ctrl_tokens 64
+        append_linear_memref 4 64 1 "%d"
+        sim_args+=(
+            --graph g_t_reduce_sum_red_0_0
+            --workload reduction
+            --arg 1=0
+            --arg 2=64
+            --arg 3=1
+            --arg 5=0
+        )
+        ;;
+    mean)
+        append_ctrl_tokens 64
+        append_linear_memref 4 64 1 "%.6e"
+        sim_args+=(
+            --graph g_t_mean_kernel_red_0_0
+            --workload mean
+            --arg 1=0
+            --arg 2=64
+            --arg 3=1
+            --arg 5=0.000000e+00
+        )
+        ;;
     dotproduct)
         append_ctrl_tokens 64
         append_linear_memref 4 64 1 "%.6e"
@@ -155,6 +179,19 @@ case "${CASE}" in
             --arg 2=64
             --arg 3=1
             --arg 5=0
+        )
+        ;;
+    prefix_sum)
+        append_ctrl_tokens 64
+        append_linear_memref 4 64 1 "%d"
+        append_constant_memref 5 64 "0"
+        sim_args+=(
+            --graph g_t_prefix_sum_red_0_0
+            --workload prefix_sum
+            --arg 1=0
+            --arg 2=64
+            --arg 3=1
+            --arg 6=0
         )
         ;;
     integrate_trapz)
