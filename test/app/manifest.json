@@ -226,6 +226,14 @@
       "feature_tags": ["vector", "geometry", "float"]
     },
     {
+      "case": "edge_update",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["graph", "csr", "indirect", "stateful"]
+    },
+    {
       "case": "find_first_set",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

@@ -39,6 +39,7 @@ EXPECTED_CASES = {
     "dotproduct",
     "downsample",
     "downsample_avg",
+    "edge_update",
     "find_first_set",
     "fir_filter",
     "fir_filter_stateful",
