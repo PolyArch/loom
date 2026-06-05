@@ -456,6 +456,18 @@ bool fireSubF(mlir::arith::SubFOp op, SimulatorState &state) {
   return true;
 }
 
+bool fireMulF(mlir::arith::MulFOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)) ||
+      !hasToken(state.channels, op->getOpOperand(1)))
+    return false;
+  Token lhs = popToken(state.channels, op->getOpOperand(0));
+  Token rhs = popToken(state.channels, op->getOpOperand(1));
+  emitToken(state, op.getResult(),
+            Token{TokenKind::Float, 0, floatToken(lhs) * floatToken(rhs)});
+  ++state.eventCount;
+  return true;
+}
+
 bool fireAddI(mlir::arith::AddIOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op->getOpOperand(0)) ||
       !hasToken(state.channels, op->getOpOperand(1)))
@@ -557,6 +569,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireAddF(typedOp, state); })
       .Case<mlir::arith::SubFOp>(
           [&](auto typedOp) { return fireSubF(typedOp, state); })
+      .Case<mlir::arith::MulFOp>(
+          [&](auto typedOp) { return fireMulF(typedOp, state); })
       .Case<mlir::arith::AddIOp>(
           [&](auto typedOp) { return fireAddI(typedOp, state); })
       .Case<mlir::arith::MulIOp>(
@@ -575,8 +589,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,
-                mlir::arith::SubFOp, dataflow::LoadOp, dataflow::StoreOp,
-                mlir::arith::AddIOp, mlir::arith::MulIOp,
+                mlir::arith::SubFOp, mlir::arith::MulFOp, dataflow::LoadOp,
+                dataflow::StoreOp, mlir::arith::AddIOp, mlir::arith::MulIOp,
                 mlir::LLVM::FMulAddOp, mlir::arith::IndexCastOp,
                 mlir::arith::ConstantOp>(op))
     return std::nullopt;
