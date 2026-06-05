@@ -121,7 +121,7 @@ single output (the per-row `'1'` <= 1 rule enforces this).
   values must be distinct. Two valid entries sharing a tag value is a
   configuration error (it would cause runtime ambiguity when a token
   arrives carrying that tag). Total valid entries can be 0 (degenerate
-  switch: no routing currently active).
+  switch: no routing entry is active).
 
 ### Tag-driven trigger semantics
 

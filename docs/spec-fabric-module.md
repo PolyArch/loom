@@ -68,7 +68,7 @@ A module may have zero outputs (`-> ()`) or zero inputs
 
 ## Body whitelist
 
-`fabric.module` body may only contain (today):
+`fabric.module` body may contain only:
 
 * `fabric.pe` (both `[spatial]` and `[temporal]`)
 * `fabric.switch` (both `[spatial]` and `[temporal]`; see
