@@ -43,6 +43,7 @@ EXPECTED_CASES = {
     "gather",
     "hash_mix",
     "integrate_trapz",
+    "interpolate_linear",
     "lower_bound",
     "mean",
     "matvec",
