@@ -32,6 +32,7 @@ EXPECTED_CASES = {
     "cross_product",
     "ctz",
     "cumsum",
+    "delta_decode",
     "delta_encode",
     "dot_product_3d",
     "dotproduct",

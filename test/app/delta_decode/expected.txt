@@ -1,0 +1,2 @@
+delta_decode checksum: 7134
+PASSED
