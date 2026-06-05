@@ -29,6 +29,7 @@ EXPECTED_CASES = {
     "lower_bound",
     "mean",
     "matvec",
+    "merge",
     "moving_avg",
     "outer",
     "parity",
