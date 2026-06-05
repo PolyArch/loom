@@ -274,6 +274,14 @@
       "feature_tags": ["matrix", "memory", "integer"]
     },
     {
+      "case": "unpack_bits",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["bit", "encoding", "integer"]
+    },
+    {
       "case": "upsample",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
