@@ -23,6 +23,7 @@ EXPECTED_CASES = {
     "gemm",
     "lower_bound",
     "mean",
+    "moving_avg",
     "prefix_sum",
     "popcount",
     "reduction",

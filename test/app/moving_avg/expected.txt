@@ -1,0 +1,2 @@
+moving_avg checksum: 53.000000
+PASSED

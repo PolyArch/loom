@@ -98,6 +98,14 @@
       "feature_tags": ["reduction", "statistics", "float"]
     },
     {
+      "case": "moving_avg",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["signal", "sliding-window", "float"]
+    },
+    {
       "case": "prefix_sum",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
