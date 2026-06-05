@@ -17,27 +17,27 @@ import intermediate_artifacts  # noqa: E402
 
 
 ARTIFACT_EDGES = (
-    ("old_app_corpus_inventory", "app_import_status"),
-    ("app_import_status", "source_compat"),
-    ("source_compat", "compiler_pipeline"),
-    ("compiler_pipeline", "dataflow_primitive_coverage"),
-    ("dataflow_primitive_coverage", "pnr_mapping"),
-    ("adg_hardware", "pnr_mapping"),
-    ("dataflow_primitive_coverage", "sim_cycle"),
-    ("dataflow_primitive_coverage", "rtl_fpa"),
-    ("adg_hardware", "rtl_fpa"),
-    ("pnr_mapping", "e2e_demonstrator"),
-    ("sim_cycle", "e2e_demonstrator"),
-    ("rtl_fpa", "e2e_demonstrator"),
-    ("pnr_mapping", "dse_candidate"),
-    ("sim_cycle", "dse_candidate"),
-    ("rtl_fpa", "dse_candidate"),
-    ("dataflow_primitive_coverage", "unsupported_scope"),
-    ("pnr_mapping", "unsupported_scope"),
-    ("sim_cycle", "unsupported_scope"),
-    ("rtl_fpa", "unsupported_scope"),
-    ("e2e_demonstrator", "unsupported_scope"),
-    ("dse_candidate", "unsupported_scope"),
+    ("old-app-corpus-inventory", "app-corpus-import-status"),
+    ("app-corpus-import-status", "source-compat-summary"),
+    ("source-compat-summary", "compiler-pipeline-summary"),
+    ("compiler-pipeline-summary", "dataflow-primitive-coverage"),
+    ("dataflow-primitive-coverage", "pnr-mapping-summary"),
+    ("adg-hardware-summary", "pnr-mapping-summary"),
+    ("dataflow-primitive-coverage", "sim-cycle-summary"),
+    ("dataflow-primitive-coverage", "rtl-fpa-summary"),
+    ("adg-hardware-summary", "rtl-fpa-summary"),
+    ("pnr-mapping-summary", "e2e-demonstrator-summary"),
+    ("sim-cycle-summary", "e2e-demonstrator-summary"),
+    ("rtl-fpa-summary", "e2e-demonstrator-summary"),
+    ("pnr-mapping-summary", "dse-candidate-summary"),
+    ("sim-cycle-summary", "dse-candidate-summary"),
+    ("rtl-fpa-summary", "dse-candidate-summary"),
+    ("dataflow-primitive-coverage", "unsupported-scope-ledger"),
+    ("pnr-mapping-summary", "unsupported-scope-ledger"),
+    ("sim-cycle-summary", "unsupported-scope-ledger"),
+    ("rtl-fpa-summary", "unsupported-scope-ledger"),
+    ("e2e-demonstrator-summary", "unsupported-scope-ledger"),
+    ("dse-candidate-summary", "unsupported-scope-ledger"),
 )
 
 
@@ -56,6 +56,13 @@ def fingerprint(path: Path) -> str:
     return digest.hexdigest()
 
 
+def artifact_id(path: Path) -> str:
+    for suffix in (".csv", ".json"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
+
+
 def discover_artifacts(explicit: list[str]) -> list[Path]:
     return intermediate_artifacts.discover_artifact_paths(
         ROOT,
@@ -67,19 +74,22 @@ def discover_artifacts(explicit: list[str]) -> list[Path]:
 def build_manifest(paths: list[Path]) -> dict[str, object]:
     artifacts = []
     diagnostics = []
-    seen_kinds = set()
+    seen_ids = set()
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
+        identity = artifact_id(path)
         if not path.is_file():
             diagnostics.append({"status": "blocked", "message": f"missing artifact: {path}"})
             continue
         if kind == "unknown":
             diagnostics.append({"status": "blocked", "message": f"unknown artifact schema: {path}"})
-        seen_kinds.add(kind)
+        if identity in seen_ids:
+            diagnostics.append({"status": "blocked", "message": f"duplicate artifact id: {identity}"})
+        seen_ids.add(identity)
         artifacts.append(
             {
                 "kind": kind,
-                "id": kind,
+                "id": identity,
                 "path": str(path),
                 "producer": "artifact summary command",
                 "status": "present",
@@ -89,7 +99,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
 
     edges = []
     for left, right in ARTIFACT_EDGES:
-        if left in seen_kinds and right in seen_kinds:
+        if left in seen_ids and right in seen_ids:
             edges.append({"from": left, "to": right, "kind": "producer-consumer"})
 
     return {

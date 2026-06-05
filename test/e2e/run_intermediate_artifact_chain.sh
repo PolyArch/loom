@@ -50,6 +50,7 @@ old_app_inventory="${OUT_DIR}/old-app-corpus-inventory.csv"
 app_import_status="${OUT_DIR}/app-corpus-import-status.csv"
 source_compat="${OUT_DIR}/source-compat-summary.csv"
 compiler_pipeline="${OUT_DIR}/compiler-pipeline-summary.csv"
+cmsis_compiler_pipeline="${OUT_DIR}/cmsis-compiler-pipeline-summary.csv"
 primitive="${OUT_DIR}/dataflow-primitive-coverage.csv"
 hardware="${OUT_DIR}/adg-hardware-summary.csv"
 mapping="${OUT_DIR}/pnr-mapping-summary.csv"
@@ -74,6 +75,8 @@ bash "${ROOT}/test/app/run_source_compat_summary.sh" \
 bash "${ROOT}/test/app/run_compiler_pipeline_summary.sh" \
   --case "${CASE}" \
   --output "${compiler_pipeline}"
+bash "${ROOT}/test/cmsis/run_compiler_pipeline_summary.sh" \
+  --output "${cmsis_compiler_pipeline}"
 bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
   --case "${CASE}" \
   --output "${primitive}"
@@ -96,6 +99,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${app_import_status}" \
   --artifact "${source_compat}" \
   --artifact "${compiler_pipeline}" \
+  --artifact "${cmsis_compiler_pipeline}" \
   --artifact "${primitive}" \
   --artifact "${hardware}" \
   --artifact "${mapping}" \
@@ -127,6 +131,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${app_import_status}" \
   --artifact "${source_compat}" \
   --artifact "${compiler_pipeline}" \
+  --artifact "${cmsis_compiler_pipeline}" \
   --artifact "${primitive}" \
   --artifact "${hardware}" \
   --artifact "${mapping}" \
@@ -142,6 +147,7 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${app_import_status}" \
   "${source_compat}" \
   "${compiler_pipeline}" \
+  "${cmsis_compiler_pipeline}" \
   "${primitive}" \
   "${hardware}" \
   "${mapping}" \

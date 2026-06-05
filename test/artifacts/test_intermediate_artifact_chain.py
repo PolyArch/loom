@@ -16,6 +16,7 @@ EXPECTED_FILES = [
     "app-corpus-import-status.csv",
     "source-compat-summary.csv",
     "compiler-pipeline-summary.csv",
+    "cmsis-compiler-pipeline-summary.csv",
     "dataflow-primitive-coverage.csv",
     "adg-hardware-summary.csv",
     "pnr-mapping-summary.csv",
@@ -97,18 +98,20 @@ def main() -> int:
         if manifest_artifacts != expected_manifest:
             raise AssertionError(f"manifest artifacts {manifest_artifacts} do not match {expected_manifest}")
         edges = {(edge["from"], edge["to"]) for edge in manifest.get("edges", [])}
-        if ("e2e_demonstrator", "dse_candidate") in edges:
+        if ("e2e-demonstrator-summary", "dse-candidate-summary") in edges:
             raise AssertionError(f"manifest should not imply demonstrator feeds DSE: {edges}")
         required_edges = {
-            ("old_app_corpus_inventory", "app_import_status"),
-            ("app_import_status", "source_compat"),
-            ("source_compat", "compiler_pipeline"),
-            ("pnr_mapping", "e2e_demonstrator"),
-            ("pnr_mapping", "dse_candidate"),
-            ("dse_candidate", "unsupported_scope"),
+            ("old-app-corpus-inventory", "app-corpus-import-status"),
+            ("app-corpus-import-status", "source-compat-summary"),
+            ("source-compat-summary", "compiler-pipeline-summary"),
+            ("pnr-mapping-summary", "e2e-demonstrator-summary"),
+            ("pnr-mapping-summary", "dse-candidate-summary"),
+            ("dse-candidate-summary", "unsupported-scope-ledger"),
         }
         if not required_edges.issubset(edges):
             raise AssertionError(f"manifest edges {edges} missing {required_edges - edges}")
+        if ("cmsis-compiler-pipeline-summary", "dataflow-primitive-coverage") in edges:
+            raise AssertionError(f"CMSIS pipeline summary must not feed app primitive coverage: {edges}")
 
     return 0
 

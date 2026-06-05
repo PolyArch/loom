@@ -36,15 +36,19 @@ def run(repo: Path, argv: list[str]) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-artifact-manifest-") as tmp:
+    temp_root = repo / "temp" / "test-runs"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="loom-artifact-manifest-", dir=temp_root) as tmp:
         out_dir = Path(tmp)
         source = out_dir / "source-compat-summary.csv"
         pipeline = out_dir / "compiler-pipeline-summary.csv"
+        cmsis_pipeline = out_dir / "cmsis-compiler-pipeline-summary.csv"
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         manifest = out_dir / "full-stack-artifact-manifest.json"
 
         run(repo, ["bash", "test/app/run_source_compat_summary.sh", "--case", "vecadd", "--output", str(source)])
         run(repo, ["bash", "test/app/run_compiler_pipeline_summary.sh", "--case", "vecadd", "--output", str(pipeline)])
+        cmsis_pipeline.write_text(pipeline.read_text().replace("vecadd", "cmsis-dsp").replace(",app,", ",CMSIS-DSP,"))
         run(repo, ["bash", "test/dataflow/run_primitive_coverage.sh", "--case", "vecadd", "--output", str(primitive)])
         run(
             repo,
@@ -55,6 +59,8 @@ def main() -> int:
                 str(source),
                 "--artifact",
                 str(pipeline),
+                "--artifact",
+                str(cmsis_pipeline),
                 "--artifact",
                 str(primitive),
                 "--output",
@@ -72,6 +78,16 @@ def main() -> int:
         kinds = {artifact["kind"] for artifact in artifacts}
         if kinds != REQUIRED_KINDS:
             raise AssertionError(f"unexpected artifact kinds: {kinds}")
+        ids = [artifact["id"] for artifact in artifacts]
+        if len(ids) != len(set(ids)):
+            raise AssertionError(f"artifact ids must be unique: {ids}")
+        if ids != [
+            "source-compat-summary",
+            "compiler-pipeline-summary",
+            "cmsis-compiler-pipeline-summary",
+            "dataflow-primitive-coverage",
+        ]:
+            raise AssertionError(f"unexpected artifact ids: {ids}")
         for artifact in artifacts:
             if len(artifact.get("fingerprint", "")) != 64:
                 raise AssertionError(f"missing sha256 fingerprint: {artifact}")
@@ -79,8 +95,8 @@ def main() -> int:
                 raise AssertionError(f"artifact should be present: {artifact}")
         edge_pairs = {(edge["from"], edge["to"]) for edge in data["edges"]}
         expected_edges = {
-            ("source_compat", "compiler_pipeline"),
-            ("compiler_pipeline", "dataflow_primitive_coverage"),
+            ("source-compat-summary", "compiler-pipeline-summary"),
+            ("compiler-pipeline-summary", "dataflow-primitive-coverage"),
         }
         if edge_pairs != expected_edges:
             raise AssertionError(f"unexpected edges: {edge_pairs}")
