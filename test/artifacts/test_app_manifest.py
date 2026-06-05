@@ -62,6 +62,7 @@ EXPECTED_CASES = {
     "rotate_bits",
     "scatter_add",
     "sbox_lookup",
+    "sigmoid",
     "transpose",
     "transform_point",
     "unpack_bits",

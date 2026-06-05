@@ -1,0 +1,2 @@
+sigmoid checksum: 511.506897
+PASSED
