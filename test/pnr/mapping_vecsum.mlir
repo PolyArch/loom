@@ -15,9 +15,19 @@
 // JSON-DAG: "routed_edges": 8
 // JSON-DAG: "unrouted_edges": 0
 // JSON-DAG: "unplaced_records": 0
-// JSON-DAG: "config_records": 43
+// JSON-DAG: "config_records": 83
+// JSON-DAG: "record_id": "route#
+// JSON-DAG: "payload_kind": "data"
+// JSON-DAG: "segments"
+// JSON-DAG: "segment_id": "seg0"
+// JSON-DAG: "segment_kind": "module_path"
+// JSON-DAG: "source_endpoint"
+// JSON-DAG: "sink_endpoint"
+// JSON-DAG: "hardware_ref"
 // JSON-DAG: "config_bitstream"
 // JSON-DAG: "register": "sw_configs.step_op"
 // JSON-DAG: "value": "+="
 // JSON-DAG: "register": "sw_configs.bitmask"
 // JSON-DAG: "register": "from_software_id"
+// JSON-DAG: "register": "segment_count"
+// JSON-DAG: "register": "segment.0.kind"

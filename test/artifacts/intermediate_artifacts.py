@@ -823,6 +823,37 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("PnR mapping artifact placed_records does not match placements size")
         if isinstance(routes, list) and isinstance(routed_edges, int) and routed_edges != len(routes):
             diagnostics.append("PnR mapping artifact routed_edges does not match routes size")
+        if isinstance(routes, list):
+            for index, route in enumerate(routes, start=1):
+                if not isinstance(route, dict):
+                    diagnostics.append(f"PnR mapping artifact route {index} must be an object")
+                    continue
+                for key in (
+                    "record_id",
+                    "edge_ref",
+                    "producer_binding",
+                    "consumer_binding",
+                    "payload_kind",
+                    "from",
+                    "to",
+                ):
+                    if not isinstance(route.get(key), str) or not route.get(key):
+                        diagnostics.append(f"PnR mapping artifact route {index} lacks {key}")
+                segments = route.get("segments")
+                if not isinstance(segments, list) or not segments:
+                    diagnostics.append(f"PnR mapping artifact route {index} lacks non-empty segments")
+                    continue
+                for segment_index, segment in enumerate(segments, start=1):
+                    if not isinstance(segment, dict):
+                        diagnostics.append(
+                            f"PnR mapping artifact route {index} segment {segment_index} must be an object"
+                        )
+                        continue
+                    for key in ("segment_id", "segment_kind", "source_endpoint", "sink_endpoint"):
+                        if not isinstance(segment.get(key), str) or not segment.get(key):
+                            diagnostics.append(
+                                f"PnR mapping artifact route {index} segment {segment_index} lacks {key}"
+                            )
         if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
             diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
     return {

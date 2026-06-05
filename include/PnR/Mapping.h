@@ -28,9 +28,23 @@ struct PlacementRecord {
   std::string schedule;
 };
 
+struct RouteSegment {
+  std::string segmentId;
+  std::string segmentKind;
+  std::string sourceEndpoint;
+  std::string sinkEndpoint;
+  std::string hardwareRef;
+};
+
 struct RouteRecord {
+  std::string recordId;
+  std::string edgeRef;
+  std::string producerBinding;
+  std::string consumerBinding;
+  std::string payloadKind;
   std::string fromSoftwareId;
   std::string toSoftwareId;
+  llvm::SmallVector<RouteSegment, 1> segments;
 };
 
 struct ConfigEntry {
@@ -48,7 +62,7 @@ struct MappingSummary {
   std::string status;
   std::string diagnostic;
   llvm::SmallVector<PlacementRecord> placements;
-  llvm::SmallVector<RouteRecord> routes;
+  llvm::SmallVector<RouteRecord, 0> routes;
   llvm::SmallVector<ConfigEntry> configEntries;
   std::uint64_t unplacedRecords = 0;
   std::uint64_t unroutedEdges = 0;

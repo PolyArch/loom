@@ -311,6 +311,79 @@ Rules:
 
 ## JSON Gate Schemas
 
+### PnR Mapping Artifact
+
+Purpose: record one concrete software-to-hardware mapping candidate.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `workload`;
+* `hardware`;
+* `graph`;
+* `mapping_id`;
+* `status`;
+* `placed_records`;
+* `routed_edges`;
+* `unrouted_edges`;
+* `unplaced_records`;
+* `config_records`;
+* `placements`;
+* `routes`;
+* `config_bitstream`.
+
+Rules:
+
+* `kind` must be `pnr_mapping`.
+* `placed_records`, `routed_edges`, `unrouted_edges`,
+  `unplaced_records`, and `config_records` must match the corresponding
+  list sizes when those lists are present.
+* Each routed edge record must carry stable mapping identity fields,
+  producer and consumer binding references, payload kind, and a
+  non-empty ordered `segments` list.
+* Each route segment must identify its segment id, segment kind, source
+  endpoint, and sink endpoint. Optional hardware references may point to
+  a Fabric link, module path, resource path, adapter, or buffer.
+* A pass mapping artifact with routes lacking segment records is
+  invalid, even if `routed_edges` matches the route list size.
+* The config bitstream must cover placement configuration and route
+  endpoint or segment configuration required by downstream consumers.
+
+### CGRA-Sim Report
+
+Purpose: record hardware-aware simulation evidence for one mapped
+workload.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `workload`;
+* `hardware`;
+* `mapping_id`;
+* `status`;
+* `fidelity_level`;
+* `metric_definition`;
+* `operation_semantics_source`;
+* `dfg_cycles`;
+* `route_latency_cycles`;
+* `memory_latency_cycles`;
+* `temporal_penalty_cycles`;
+* `performance_delta_cycles`;
+* `hardware_aware_cycles`;
+* `cycle_breakdown`;
+* `first_principles_checks`.
+
+Rules:
+
+* `kind` must be `cgra_sim_report`.
+* `route_segments`, when present, counts consumed route segments from
+  the mapping artifact. Route latency must be explainable from route
+  records and the selected fidelity model.
+* `hardware_aware_cycles` must not be smaller than comparable
+  `dfg_cycles`.
+
 ### Full-Stack Artifact Manifest
 
 Purpose: record artifact identities and fingerprints across the full

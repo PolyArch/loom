@@ -23,6 +23,11 @@ namespace {
 constexpr std::uint64_t kRouteLatencyPerEdge = 1;
 constexpr std::uint64_t kMemoryLatencyPerAccess = 4;
 
+struct RouteStats {
+  std::uint64_t routeCount = 0;
+  std::uint64_t segmentCount = 0;
+};
+
 struct ConfigEntries {
   llvm::StringMap<std::string> valuesByFullKey;
   llvm::StringSet<> writtenRegisters;
@@ -263,7 +268,7 @@ llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::uint64_t>
+llvm::Expected<RouteStats>
 collectRouteStats(const llvm::json::Object &mapping,
                   llvm::StringRef mappingArtifactPath) {
   const llvm::json::Array *routes = mapping.getArray("routes");
@@ -274,14 +279,40 @@ collectRouteStats(const llvm::json::Object &mapping,
       requireNonNegativeInteger(mapping, "routed_edges", mappingArtifactPath);
   if (!routedEdgesOrErr)
     return routedEdgesOrErr.takeError();
-  std::uint64_t routeCount = routes->size();
-  if (*routedEdgesOrErr != routeCount)
+  RouteStats stats;
+  stats.routeCount = routes->size();
+  if (*routedEdgesOrErr != stats.routeCount)
     return llvm::createStringError(
         std::errc::invalid_argument,
         "mapping routed_edges field %llu does not match routes array size %llu",
         static_cast<unsigned long long>(*routedEdgesOrErr),
-        static_cast<unsigned long long>(routeCount));
-  return routeCount;
+        static_cast<unsigned long long>(stats.routeCount));
+  for (const llvm::json::Value &value : *routes) {
+    const llvm::json::Object *route = value.getAsObject();
+    if (!route)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route is not an object");
+    const llvm::json::Array *segments = route->getArray("segments");
+    if (!segments || segments->empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route lacks non-empty segments");
+    for (const llvm::json::Value &segmentValue : *segments) {
+      const llvm::json::Object *segment = segmentValue.getAsObject();
+      if (!segment)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment is not an object");
+      for (llvm::StringRef key :
+           {"segment_id", "segment_kind", "source_endpoint", "sink_endpoint"}) {
+        if (!segment->getString(key))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "mapping route segment lacks string field %s", key.str().c_str());
+      }
+      ++stats.segmentCount;
+    }
+  }
+  return stats;
 }
 
 llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
@@ -355,6 +386,40 @@ llvm::Error validateConfigCoverage(const llvm::json::Object &mapping,
     if (llvm::Error err = expectConfig(configEntries, target, "to_software_id",
                                        source, *toOrErr))
       return err;
+    const llvm::json::Array *segments = route->getArray("segments");
+    if (!segments || segments->empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route lacks non-empty segments");
+    if (llvm::Error err =
+            expectConfig(configEntries, target, "segment_count", source,
+                         std::to_string(segments->size())))
+      return err;
+    for (std::size_t segmentIndex = 0; segmentIndex < segments->size();
+         ++segmentIndex) {
+      const llvm::json::Object *segment =
+          (*segments)[segmentIndex].getAsObject();
+      if (!segment)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment is not an object");
+      std::string prefix = "segment." + std::to_string(segmentIndex) + ".";
+      for (auto [jsonKey, registerName] :
+           {std::pair<llvm::StringRef, llvm::StringRef>{"segment_kind", "kind"},
+            {"source_endpoint", "source_endpoint"},
+            {"sink_endpoint", "sink_endpoint"},
+            {"hardware_ref", "hardware_ref"}}) {
+        std::optional<llvm::StringRef> value = segment->getString(jsonKey);
+        if (!value)
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "mapping route segment lacks string field %s",
+              jsonKey.str().c_str());
+        std::string segmentRegister = prefix + registerName.str();
+        if (llvm::Error err = expectConfig(configEntries, target,
+                                           segmentRegister, source, *value))
+          return err;
+      }
+    }
   }
   return llvm::Error::success();
 }
@@ -420,12 +485,13 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
         "DFG report operation semantics source %s is not supported",
         semanticsOrErr->c_str());
   report.operationSemanticsSource = *semanticsOrErr;
-  auto routedEdgesOrErr =
+  auto routeStatsOrErr =
       collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
-  if (!routedEdgesOrErr)
-    return routedEdgesOrErr.takeError();
-  report.routedEdges = *routedEdgesOrErr;
-  report.routeLatencyCycles = report.routedEdges * kRouteLatencyPerEdge;
+  if (!routeStatsOrErr)
+    return routeStatsOrErr.takeError();
+  report.routedEdges = routeStatsOrErr->routeCount;
+  report.routeSegments = routeStatsOrErr->segmentCount;
+  report.routeLatencyCycles = report.routeSegments * kRouteLatencyPerEdge;
 
   ConfigEntries configEntries;
   if (llvm::Error err = collectConfigEntries(
@@ -535,6 +601,7 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
        static_cast<int64_t>(report.hardwareAwareCycles)},
       {"placed_records", static_cast<int64_t>(report.placedRecords)},
       {"routed_edges", static_cast<int64_t>(report.routedEdges)},
+      {"route_segments", static_cast<int64_t>(report.routeSegments)},
       {"config_records", static_cast<int64_t>(report.configRecords)},
       {"spatial_placements", static_cast<int64_t>(report.spatialPlacements)},
       {"temporal_placements", static_cast<int64_t>(report.temporalPlacements)},

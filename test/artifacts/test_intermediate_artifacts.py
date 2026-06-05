@@ -698,6 +698,54 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("PnR mapping JSON with mismatched config_records unexpectedly passed audit")
 
+        weak_route_mapping_artifact = out_dir / "weak-route-pnr-mapping.json"
+        weak_route_mapping_artifact.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "pnr_mapping",
+                    "workload": "vecadd",
+                    "hardware": "fabric0",
+                    "graph": "g_vecadd",
+                    "mapping_id": "map0",
+                    "status": "pass",
+                    "placed_records": 0,
+                    "routed_edges": 1,
+                    "unrouted_edges": 0,
+                    "unplaced_records": 0,
+                    "config_records": 2,
+                    "placements": [],
+                    "routes": [{"from": "arith.addi#0", "to": "arith.muli#0", "status": "routed"}],
+                    "config_bitstream": [
+                        {
+                            "target": "map0::route#0",
+                            "register": "from_software_id",
+                            "value": "arith.addi#0",
+                            "source": "route:arith.addi#0->arith.muli#0",
+                        },
+                        {
+                            "target": "map0::route#0",
+                            "register": "to_software_id",
+                            "value": "arith.muli#0",
+                            "source": "route:arith.addi#0->arith.muli#0",
+                        },
+                    ],
+                }
+            )
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-weak-route-pnr-json.json"),
+                str(weak_route_mapping_artifact),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("PnR mapping JSON with routes lacking segments unexpectedly passed audit")
+
         invalid_hardware = out_dir / "invalid-adg-hardware-summary.csv"
         invalid_hardware.write_text(
             "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"

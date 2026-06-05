@@ -28,9 +28,9 @@
 #include <cstdint>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 
 using namespace loom::pnr;
 
@@ -222,20 +222,28 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
   }
   std::string schedule = nearestSchedule(op);
   for (std::uint64_t i = 0; i < loadPorts; ++i) {
-    resources.push_back(HardwareResource{
-        (hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
-        ResourceKind::MemLoad, schedule, {}, {}, false});
+    resources.push_back(
+        HardwareResource{(hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
+                         ResourceKind::MemLoad,
+                         schedule,
+                         {},
+                         {},
+                         false});
   }
   for (std::uint64_t i = 0; i < storePorts; ++i) {
-    resources.push_back(HardwareResource{
-        (hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
-        ResourceKind::MemStore, schedule, {}, {}, false});
+    resources.push_back(
+        HardwareResource{(hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
+                         ResourceKind::MemStore,
+                         schedule,
+                         {},
+                         {},
+                         false});
   }
 }
 
-void appendFabricOpResource(mlir::Operation *op, llvm::StringRef hardwareName,
-                            unsigned index,
-                            llvm::SmallVectorImpl<HardwareResource> &resources) {
+void appendFabricOpResource(
+    mlir::Operation *op, llvm::StringRef hardwareName, unsigned index,
+    llvm::SmallVectorImpl<HardwareResource> &resources) {
   auto opList = op->getAttrOfType<mlir::ArrayAttr>("op_list");
   if (!opList)
     return;
@@ -275,8 +283,9 @@ collectHardwareResources(mlir::Operation *hardware, llvm::StringRef name) {
   return resources;
 }
 
-HardwareResource *claimResource(SoftwareNode &node,
-                                llvm::MutableArrayRef<HardwareResource> resources) {
+HardwareResource *
+claimResource(SoftwareNode &node,
+              llvm::MutableArrayRef<HardwareResource> resources) {
   for (HardwareResource &resource : resources) {
     if (resource.used || resource.kind != node.resourceKind)
       continue;
@@ -308,7 +317,7 @@ indexNodeIds(llvm::ArrayRef<SoftwareNode> nodes) {
 struct RouteBuilder {
   llvm::DenseMap<mlir::Value, std::string> producer;
   llvm::DenseMap<mlir::Value, mlir::Value> adapterForward;
-  std::set<std::pair<std::string, std::string>> routes;
+  std::map<std::pair<std::string, std::string>, std::string> payloadKindByEdge;
 
   std::string resolve(mlir::Value value) {
     auto direct = producer.find(value);
@@ -321,10 +330,16 @@ struct RouteBuilder {
   }
 };
 
-void collectValueProducers(mlir::Operation *graph,
-                           const llvm::DenseMap<mlir::Operation *, std::string>
-                               &nodeIds,
-                           RouteBuilder &builder) {
+std::string payloadKind(mlir::Value value) {
+  if (mlir::isa<mlir::NoneType>(value.getType()))
+    return "control";
+  return "data";
+}
+
+void collectValueProducers(
+    mlir::Operation *graph,
+    const llvm::DenseMap<mlir::Operation *, std::string> &nodeIds,
+    RouteBuilder &builder) {
   for (mlir::Operation &op : graph->getRegion(0).front()) {
     auto nodeIt = nodeIds.find(&op);
     if (nodeIt != nodeIds.end()) {
@@ -340,24 +355,57 @@ void collectValueProducers(mlir::Operation *graph,
   }
 }
 
-llvm::SmallVector<RouteRecord>
-collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph) {
+llvm::SmallVector<RouteRecord, 0>
+collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
+              llvm::ArrayRef<PlacementRecord> placements,
+              llvm::StringRef hardwareName) {
   RouteBuilder builder;
   llvm::DenseMap<mlir::Operation *, std::string> nodeIds = indexNodeIds(nodes);
   collectValueProducers(graph, nodeIds, builder);
+
+  llvm::StringMap<std::string> hardwareBySoftware;
+  for (const PlacementRecord &placement : placements)
+    hardwareBySoftware.try_emplace(placement.softwareId, placement.hardwareId);
 
   for (const SoftwareNode &node : nodes) {
     for (mlir::Value operand : node.op->getOperands()) {
       std::string source = builder.resolve(operand);
       if (source.empty() || source == node.id)
         continue;
-      builder.routes.insert({std::move(source), node.id});
+      auto key = std::make_pair(std::move(source), node.id);
+      builder.payloadKindByEdge.try_emplace(std::move(key),
+                                            payloadKind(operand));
     }
   }
 
-  llvm::SmallVector<RouteRecord> routes;
-  for (const auto &[from, to] : builder.routes)
-    routes.push_back(RouteRecord{from, to});
+  llvm::SmallVector<RouteRecord, 0> routes;
+  std::size_t index = 0;
+  for (const auto &[edge, kind] : builder.payloadKindByEdge) {
+    const std::string &from = edge.first;
+    const std::string &to = edge.second;
+    auto fromHw = hardwareBySoftware.find(from);
+    auto toHw = hardwareBySoftware.find(to);
+    if (fromHw == hardwareBySoftware.end() || toHw == hardwareBySoftware.end())
+      continue;
+    std::string recordId = "route#" + std::to_string(index++);
+    std::string edgeRef = from + "->" + to;
+    RouteSegment segment;
+    segment.segmentId = "seg0";
+    segment.segmentKind = "module_path";
+    segment.sourceEndpoint = fromHw->second + ".out";
+    segment.sinkEndpoint = toHw->second + ".in";
+    segment.hardwareRef = hardwareName.str();
+    RouteRecord route;
+    route.recordId = recordId;
+    route.edgeRef = edgeRef;
+    route.producerBinding = "placement:" + from;
+    route.consumerBinding = "placement:" + to;
+    route.payloadKind = kind;
+    route.fromSoftwareId = from;
+    route.toSoftwareId = to;
+    route.segments.push_back(std::move(segment));
+    routes.push_back(std::move(route));
+  }
   return routes;
 }
 
@@ -372,18 +420,34 @@ llvm::json::Object placementJson(const PlacementRecord &placement) {
 }
 
 llvm::json::Object routeJson(const RouteRecord &route) {
+  llvm::json::Array segments;
+  for (const RouteSegment &segment : route.segments) {
+    segments.push_back(llvm::json::Object{
+        {"segment_id", segment.segmentId},
+        {"segment_kind", segment.segmentKind},
+        {"source_endpoint", segment.sourceEndpoint},
+        {"sink_endpoint", segment.sinkEndpoint},
+        {"hardware_ref", segment.hardwareRef},
+    });
+  }
   return llvm::json::Object{
+      {"record_id", route.recordId},
+      {"edge_ref", route.edgeRef},
+      {"producer_binding", route.producerBinding},
+      {"consumer_binding", route.consumerBinding},
+      {"payload_kind", route.payloadKind},
       {"from", route.fromSoftwareId},
       {"to", route.toSoftwareId},
       {"status", "routed"},
+      {"segments", std::move(segments)},
   };
 }
 
 void addConfig(llvm::SmallVectorImpl<ConfigEntry> &entries,
                llvm::StringRef target, llvm::StringRef registerName,
                llvm::StringRef value, llvm::StringRef source) {
-  entries.push_back(ConfigEntry{target.str(), registerName.str(), value.str(),
-                                source.str()});
+  entries.push_back(
+      ConfigEntry{target.str(), registerName.str(), value.str(), source.str()});
 }
 
 llvm::Error appendPlacementConfig(MappingSummary &summary,
@@ -400,8 +464,7 @@ llvm::Error appendPlacementConfig(MappingSummary &summary,
   }
 
   std::string source = "placement:" + node.id;
-  addConfig(summary.configEntries, resource.id, "software_id", node.id,
-            source);
+  addConfig(summary.configEntries, resource.id, "software_id", node.id, source);
   addConfig(summary.configEntries, resource.id, "operation", node.operation,
             source);
   addConfig(summary.configEntries, resource.id, "resource_kind",
@@ -435,6 +498,21 @@ void appendRouteConfig(MappingSummary &summary) {
               route.fromSoftwareId, source);
     addConfig(summary.configEntries, target, "to_software_id",
               route.toSoftwareId, source);
+    addConfig(summary.configEntries, target, "segment_count",
+              std::to_string(route.segments.size()), source);
+    for (std::size_t segmentIndex = 0; segmentIndex < route.segments.size();
+         ++segmentIndex) {
+      const RouteSegment &segment = route.segments[segmentIndex];
+      std::string prefix = "segment." + std::to_string(segmentIndex) + ".";
+      addConfig(summary.configEntries, target, prefix + "kind",
+                segment.segmentKind, source);
+      addConfig(summary.configEntries, target, prefix + "source_endpoint",
+                segment.sourceEndpoint, source);
+      addConfig(summary.configEntries, target, prefix + "sink_endpoint",
+                segment.sinkEndpoint, source);
+      addConfig(summary.configEntries, target, prefix + "hardware_ref",
+                segment.hardwareRef, source);
+    }
   }
 }
 
@@ -465,14 +543,13 @@ llvm::Error validateConfigBitstream(const MappingSummary &summary) {
       return llvm::createStringError(std::errc::invalid_argument,
                                      "config bitstream contains an incomplete "
                                      "register assignment");
-    if (entry.registerName == "schedule" &&
-        entry.value != "spatial" && entry.value != "temporal")
+    if (entry.registerName == "schedule" && entry.value != "spatial" &&
+        entry.value != "temporal")
       return llvm::createStringError(std::errc::invalid_argument,
                                      "config bitstream contains invalid "
                                      "schedule value %s",
                                      entry.value.c_str());
-    std::string key =
-        configKey(entry.target, entry.registerName, entry.source);
+    std::string key = configKey(entry.target, entry.registerName, entry.source);
     if (!seen.insert(key).second)
       return llvm::createStringError(
           std::errc::invalid_argument,
@@ -504,11 +581,25 @@ llvm::Error validateConfigBitstream(const MappingSummary &summary) {
         "route:" + route.fromSoftwareId + "->" + route.toSoftwareId;
     std::string target = routeTarget(summary, i);
     if (!seen.contains(configKey(target, "from_software_id", source)) ||
-        !seen.contains(configKey(target, "to_software_id", source)))
+        !seen.contains(configKey(target, "to_software_id", source)) ||
+        !seen.contains(configKey(target, "segment_count", source)))
       return llvm::createStringError(
           std::errc::invalid_argument,
           "config bitstream is missing route endpoint registers for %s",
           target.c_str());
+    for (std::size_t segmentIndex = 0; segmentIndex < route.segments.size();
+         ++segmentIndex) {
+      std::string prefix = "segment." + std::to_string(segmentIndex) + ".";
+      for (llvm::StringRef reg :
+           {"kind", "source_endpoint", "sink_endpoint", "hardware_ref"}) {
+        std::string registerName = prefix + reg.str();
+        if (!seen.contains(configKey(target, registerName, source)))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "config bitstream is missing route segment register %s for %s",
+              registerName.c_str(), target.c_str());
+      }
+    }
   }
   return llvm::Error::success();
 }
@@ -563,7 +654,8 @@ loom::pnr::createMapping(const MappingOptions &options) {
     return resourcesOrErr.takeError();
 
   MappingSummary summary;
-  summary.workload = options.workload.empty() ? options.graphName : options.workload;
+  summary.workload =
+      options.workload.empty() ? options.graphName : options.workload;
   summary.hardware = options.hardwareName;
   summary.graph = options.graphName;
   summary.mappingId = mappingId(summary.workload, summary.hardware);
@@ -585,7 +677,8 @@ loom::pnr::createMapping(const MappingOptions &options) {
       return std::move(err);
   }
 
-  summary.routes = collectRoutes(*nodesOrErr, graph);
+  summary.routes =
+      collectRoutes(*nodesOrErr, graph, summary.placements, summary.hardware);
   if (summary.status == "pass") {
     appendRouteConfig(summary);
     if (llvm::Error err = validateConfigBitstream(summary))
@@ -616,8 +709,8 @@ loom::pnr::writeMappingCsv(llvm::StringRef outputPath,
         << ',' << csvEscape(summary.mappingId) << ','
         << summary.placements.size() << ',' << summary.routes.size() << ','
         << summary.unroutedEdges << ',' << summary.unplacedRecords << ','
-        << csvEscape(summary.status) << ','
-        << csvEscape(summary.diagnostic) << '\n';
+        << csvEscape(summary.status) << ',' << csvEscape(summary.diagnostic)
+        << '\n';
   }
   return llvm::Error::success();
 }

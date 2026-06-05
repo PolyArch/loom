@@ -1,6 +1,8 @@
 // RUN: echo '{"schema_version":1,"kind":"dfg_sim_report","workload":"toy","status":"pass","operation_semantics_source":"loom.sim.operation_semantics.v1","optimistic_cycles":3}' > %t.dfg.json
 // RUN: echo '{"schema_version":1,"kind":"pnr_mapping","workload":"toy","hardware":"toy_adg","mapping_id":"toy__toy_adg","status":"pass","routed_edges":7,"config_records":0,"placements":[],"routes":[],"config_bitstream":[]}' > %t.bad-routes.json
 // RUN: not loom-cgra-sim --dfg-report %t.dfg.json --mapping-artifact %t.bad-routes.json --output %t.bad-routes.cgra.json 2>&1 | FileCheck %s --check-prefix=ROUTES
+// RUN: echo '{"schema_version":1,"kind":"pnr_mapping","workload":"toy","hardware":"toy_adg","mapping_id":"toy__toy_adg","status":"pass","routed_edges":1,"config_records":2,"placements":[],"routes":[{"from":"arith.addi#0","to":"arith.muli#0","status":"routed"}],"config_bitstream":[{"target":"toy__toy_adg::route#0","register":"from_software_id","value":"arith.addi#0","source":"route:arith.addi#0->arith.muli#0"},{"target":"toy__toy_adg::route#0","register":"to_software_id","value":"arith.muli#0","source":"route:arith.addi#0->arith.muli#0"}]}' > %t.bad-route-segments.json
+// RUN: not loom-cgra-sim --dfg-report %t.dfg.json --mapping-artifact %t.bad-route-segments.json --output %t.bad-route-segments.cgra.json 2>&1 | FileCheck %s --check-prefix=SEGMENTS
 // RUN: echo '{"schema_version":1,"kind":"pnr_mapping","workload":"toy","hardware":"toy_adg","mapping_id":"toy__toy_adg","status":"pass","routed_edges":0,"config_records":1,"placements":[],"routes":[],"config_bitstream":[]}' > %t.bad-config-count.json
 // RUN: not loom-cgra-sim --dfg-report %t.dfg.json --mapping-artifact %t.bad-config-count.json --output %t.bad-config-count.cgra.json 2>&1 | FileCheck %s --check-prefix=CONFIG
 // RUN: echo '{"schema_version":1,"kind":"pnr_mapping","workload":"toy","hardware":"toy_adg","mapping_id":"toy__toy_adg","status":"pass","routed_edges":0,"config_records":4,"placements":[{"software":"arith.addi#0","operation":"arith.addi","resource_kind":"fabric.op","hardware":"toy_adg::fabric.op#0","schedule":"dynamic"}],"routes":[],"config_bitstream":[{"target":"toy_adg::fabric.op#0","register":"software_id","value":"arith.addi#0","source":"placement:arith.addi#0"},{"target":"toy_adg::fabric.op#0","register":"operation","value":"arith.addi","source":"placement:arith.addi#0"},{"target":"toy_adg::fabric.op#0","register":"resource_kind","value":"fabric.op","source":"placement:arith.addi#0"},{"target":"toy_adg::fabric.op#0","register":"schedule","value":"dynamic","source":"placement:arith.addi#0"}]}' > %t.bad-schedule.json
@@ -11,6 +13,7 @@
 // RUN: not loom-cgra-sim --dfg-report %t.dfg.json --mapping-artifact %t.bad-operation.json --output %t.bad-operation.cgra.json 2>&1 | FileCheck %s --check-prefix=OPERATION
 
 // ROUTES: mapping routed_edges field 7 does not match routes array size 0
+// SEGMENTS: mapping route lacks non-empty segments
 // CONFIG: mapping config_records field 1 does not match config_bitstream size 0
 // SCHEDULE: mapping placement schedule dynamic is not supported
 // RESOURCE: mapping placement resource_kind fabric.cache is not supported

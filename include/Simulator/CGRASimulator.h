@@ -31,6 +31,7 @@ struct CGRASimReport {
   std::uint64_t hardwareAwareCycles = 0;
   std::uint64_t placedRecords = 0;
   std::uint64_t routedEdges = 0;
+  std::uint64_t routeSegments = 0;
   std::uint64_t configRecords = 0;
   std::uint64_t spatialPlacements = 0;
   std::uint64_t temporalPlacements = 0;

@@ -10,7 +10,7 @@
 
 // MAPPING-DAG: "schedule": "spatial"
 // MAPPING-DAG: "resource_kind": "fabric.mem.load"
-// MAPPING-DAG: "config_records": 43
+// MAPPING-DAG: "config_records": 83
 // MAPPING-DAG: "config_bitstream"
 
 // CGRA-DAG: "kind": "cgra_sim_report"
@@ -25,10 +25,11 @@
 // CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
 // CGRA-DAG: "performance_delta_cycles": 12
 // CGRA-DAG: "route_latency_cycles": 8
+// CGRA-DAG: "route_segments": 8
 // CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
 // CGRA-DAG: "hardware_aware_cycles": 465
-// CGRA-DAG: "config_records": 43
+// CGRA-DAG: "config_records": 83
 // CGRA-DAG: "cycle_breakdown"
 // CGRA-DAG: "category": "route_latency"
 // CGRA-DAG: "evidence": "mapping.routed_edges"

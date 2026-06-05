@@ -111,7 +111,7 @@ Baseline CGRA-sim metrics include:
 * total cycles;
 * per-node and per-resource active cycles;
 * per-resource utilization;
-* route use counts and contention;
+* route use counts, consumed route segment counts, and contention;
 * queue occupancy over time;
 * stall cycles by cause;
 * memory request counts, bandwidth, latency, and coherence activity;
