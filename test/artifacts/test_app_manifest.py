@@ -35,6 +35,7 @@ EXPECTED_CASES = {
     "relu",
     "reduction",
     "upper_bound",
+    "variance",
     "vecadd",
     "vecmul",
     "vecnorm_l1",

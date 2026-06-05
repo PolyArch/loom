@@ -1,0 +1,2 @@
+variance value: 4.214844
+PASSED
