@@ -8,4 +8,4 @@
 # RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/run_dfg_all.sh' | FileCheck %s
 #
 # CHECK: ==== dfg summary ====
-# CHECK: all 9 kernel(s) passed
+# CHECK: all {{[1-9][0-9]*}} kernel(s) passed

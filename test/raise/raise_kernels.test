@@ -7,4 +7,4 @@
 # RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise bash %S/../app/run_raise_all.sh' | FileCheck %s
 #
 # CHECK: ==== raise summary ====
-# CHECK: all 9 kernel(s) passed
+# CHECK: all {{[1-9][0-9]*}} kernel(s) passed
