@@ -929,7 +929,25 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         for row in grouped.get("adg_hardware", [])
         if row.get("verify_status") == "pass" and valid_identity(row.get("hardware"))
     }
-    hardware_symbols = {candidate.rsplit("::", 1)[-1] for candidate in hardware}
+    hardware_symbol_counts: dict[str, int] = {}
+    for candidate in hardware:
+        symbol = candidate.rsplit("::", 1)[-1]
+        hardware_symbol_counts[symbol] = hardware_symbol_counts.get(symbol, 0) + 1
+
+    def canonical_hardware_ref(candidate: str | None) -> str | None:
+        if not valid_identity(candidate):
+            return None
+        assert candidate is not None
+        if not hardware:
+            return candidate
+        if candidate in hardware:
+            return candidate
+        if hardware_symbol_counts.get(candidate, 0) == 1:
+            for full_ref in hardware:
+                if full_ref.rsplit("::", 1)[-1] == candidate:
+                    return full_ref
+        return None
+
     pnr_rows = [
         row
         for row in grouped.get("pnr_mapping", [])
@@ -1170,7 +1188,38 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                             row,
                         )
                     )
-                elif row.get("dfg_sim_cycles", ""):
+                else:
+                    pass_mappings = pass_mappings_by_workload.get(kernel, [])
+                    matching_mapping_reports = []
+                    for report in matching_reports:
+                        report_mapping_id = report.get("mapping_id")
+                        report_hardware = canonical_hardware_ref(
+                            report.get("hardware") if isinstance(report.get("hardware"), str) else None
+                        )
+                        if not isinstance(report_mapping_id, str) or report_hardware is None:
+                            continue
+                        for mapping in pass_mappings:
+                            mapping_hardware = canonical_hardware_ref(mapping.get("hardware"))
+                            if (
+                                mapping.get("mapping_id") == report_mapping_id
+                                and mapping_hardware == report_hardware
+                            ):
+                                matching_mapping_reports.append(report)
+                                break
+                    if not matching_mapping_reports:
+                        findings.append(
+                            cross_finding(
+                                "sim_cgra_report_matches_mapping",
+                                (
+                                    f"sim kernel {kernel!r} CGRA report does not "
+                                    "match a pass PnR mapping by hardware and mapping_id"
+                                ),
+                                row,
+                            )
+                        )
+                    else:
+                        matching_reports = matching_mapping_reports
+                if matching_reports and row.get("dfg_sim_cycles", ""):
                     dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
                     if dfg_cycles is not None and not any(
                         report.get("dfg_cycles") == dfg_cycles
@@ -1213,10 +1262,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         row,
                     )
                 )
-            elif hardware and not any(
-                mapping.get("hardware") in hardware or mapping.get("hardware") in hardware_symbols
-                for mapping in pass_mappings
-            ):
+            elif hardware and not any(canonical_hardware_ref(mapping.get("hardware")) for mapping in pass_mappings):
                 findings.append(
                     cross_finding(
                         "sim_cgra_cycle_requires_hardware",
@@ -1241,7 +1287,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
 
     if hardware:
         for row in pnr_rows:
-            if row["hardware"] not in hardware and row["hardware"] not in hardware_symbols:
+            if canonical_hardware_ref(row.get("hardware")) is None:
                 findings.append(
                     cross_finding(
                         "pnr_hardware_resolves",

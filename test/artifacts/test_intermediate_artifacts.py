@@ -588,6 +588,99 @@ def main() -> int:
                 }
             )
         )
+        wrong_mapping_cgra_report = out_dir / "wrong-mapping-cgra-sim-report.json"
+        wrong_mapping_cgra_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cgra_sim_report",
+                    "workload": "vecadd",
+                    "hardware": "fabric0",
+                    "mapping_id": "map1",
+                    "status": "pass",
+                    "fidelity_level": "mapping_constraint_estimate",
+                    "metric_definition": "mapping_constraint_estimate",
+                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                    "difference_classification": "expected_hardware_constraint",
+                    "hardware_bound_classification": "within_modeled_bounds",
+                    "dfg_cycles": 10,
+                    "modeled_lower_bound_cycles": 12,
+                    "performance_delta_cycles": 2,
+                    "route_latency_cycles": 1,
+                    "memory_latency_cycles": 1,
+                    "temporal_penalty_cycles": 0,
+                    "hardware_aware_cycles": 12,
+                    "cycle_breakdown": [
+                        {
+                            "category": "route_latency",
+                            "cycles": 1,
+                            "evidence": "mapping.route_segments",
+                        },
+                        {
+                            "category": "memory_latency",
+                            "cycles": 1,
+                            "evidence": "fabric.mem placement",
+                        },
+                    ],
+                    "unmodeled_constraints": ["cache_behavior"],
+                    "first_principles_checks": [
+                        {
+                            "name": "cgra_not_more_optimistic_than_dfg",
+                            "status": "pass",
+                            "evidence": "hardware_aware_cycles >= dfg_cycles",
+                        },
+                        {
+                            "name": "delta_explained_by_modeled_constraints",
+                            "status": "pass",
+                            "evidence": "performance_delta_cycles = modeled penalties",
+                        },
+                    ],
+                    "diagnostics": ["synthetic checked CGRA report"],
+                }
+            )
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-wrong-cgra-mapping.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_dfg_report),
+                str(wrong_mapping_cgra_report),
+                str(cgra_without_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA report with unrelated mapping_id unexpectedly passed audit")
+
+        ambiguous_hardware = out_dir / "ambiguous-adg-hardware-summary.csv"
+        ambiguous_hardware.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
+            "test/a.mlir::fabric0,fabric_module_template,1,0,pass,verified\n"
+            "test/b.mlir::fabric0,fabric_module_template,1,0,pass,verified\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-ambiguous-hardware.json"),
+                str(valid_primitive),
+                str(ambiguous_hardware),
+                str(valid_mapping),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("ambiguous hardware suffix unexpectedly passed audit")
+
         result = run_command(
             repo,
             [

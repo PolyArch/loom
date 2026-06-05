@@ -345,6 +345,9 @@ Rules:
 * Each route segment must identify its segment id, segment kind, source
   endpoint, and sink endpoint. Optional hardware references may point to
   a Fabric link, module path, resource path, adapter, or buffer.
+* Route endpoints and hardware references used as CGRA-sim evidence
+  must resolve against the referenced Fabric ADG. String-shaped route
+  records are not sufficient when a hardware artifact is available.
 * Route configuration records must be keyed by the route `record_id`.
   Producer/consumer software ids alone are not unique enough when two
   SSA values or token edges connect the same producer and consumer
@@ -384,6 +387,14 @@ Rules:
 * `kind` must be `cgra_sim_report`.
 * `hardware_artifact`, when present, identifies the Fabric ADG input
   artifact used by CGRA-sim and must agree with `hardware`.
+* `workload`, `hardware`, and `mapping_id` must resolve to a passing PnR
+  mapping artifact or mapping-summary row for the same candidate. A
+  report for one mapping candidate cannot validate cycle evidence for a
+  different mapping of the same workload.
+* A short hardware symbol is legal only when it resolves to exactly one
+  verified hardware artifact. If two Fabric artifacts expose the same
+  module symbol, consumers must use an unambiguous artifact-qualified
+  hardware reference.
 * `route_segments`, when present, counts consumed route segments from
   the mapping artifact. Route latency must be explainable from route
   records and the selected fidelity model.
