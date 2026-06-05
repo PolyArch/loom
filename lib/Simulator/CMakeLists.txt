@@ -9,6 +9,7 @@ add_mlir_library(LoomSimulator
   MLIRArithDialect
   MLIRDataflow
   MLIRIR
+  MLIRLLVMDialect
   MLIRSupport
   LLVMSupport
 )
