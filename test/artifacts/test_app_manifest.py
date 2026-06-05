@@ -54,6 +54,7 @@ EXPECTED_CASES = {
     "hist_bin",
     "histogram",
     "histogram_strided",
+    "im2col",
     "integrate_trapz",
     "interpolate_linear",
     "lower_bound",

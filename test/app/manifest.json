@@ -346,6 +346,14 @@
       "feature_tags": ["histogram", "integer", "indirect", "division"]
     },
     {
+      "case": "im2col",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["convolution", "layout", "float", "nested-loop"]
+    },
+    {
       "case": "integrate_trapz",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
