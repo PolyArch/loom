@@ -18,24 +18,8 @@ LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO}/build/bin/loom-raise-opt}"
 
 . "${SHARED}"
 
-require_kernel_graph() {
-    local dfg="${BUILD_DIR}/main_func.dfg.mlir"
-    if ! grep -E -q 'dataflow\.thread (private )?@t_correlation_kernel_[A-Za-z0-9_]+' "${dfg}"; then
-        echo "[${KERNEL}/main_func] no correlation_kernel dataflow.thread in ${dfg}" >&2
-        return 1
-    fi
-    if ! grep -E -q 'dataflow\.graph\.launch @g_t_correlation_kernel_[A-Za-z0-9_]+' "${dfg}"; then
-        echo "[${KERNEL}/main_func] no correlation_kernel graph launch in ${dfg}" >&2
-        return 1
-    fi
-    if ! grep -E -q 'dataflow\.graph\.func (private )?@g_t_correlation_kernel_[A-Za-z0-9_]+' "${dfg}"; then
-        echo "[${KERNEL}/main_func] no correlation_kernel graph func in ${dfg}" >&2
-        return 1
-    fi
-}
-
 dfg_one "main_func" "cpp"
-require_kernel_graph
+require_kernel_graph "main_func" "correlation_kernel"
 dfg_one "main_inline" "cpp"
 
 echo "[${KERNEL}] PASS"

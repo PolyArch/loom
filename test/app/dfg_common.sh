@@ -8,6 +8,7 @@
 #                      (e.g., kernels with iter_args reductions);
 #                      "no" otherwise.
 #   HERE            -- absolute path of the kernel's directory.
+#   REPO            -- absolute path of the repository root.
 #   LOOM_CC         -- absolute path of loom-cc.
 #   LOOM_RAISE      -- absolute path of loom-raise.
 #   LOOM_LOWER      -- absolute path of loom-lower.
@@ -21,8 +22,27 @@
 # And asserts that .dfg.mlir contains the expected dataflow.thread /
 # dataflow.graph.func / *.launch symbols.
 
-BUILD_DIR="${BUILD_DIR:-${HERE}/build}"
+BUILD_DIR="${BUILD_DIR:-${REPO}/temp/test-runs/${KERNEL}-dfg}"
 mkdir -p "${BUILD_DIR}"
+
+require_kernel_graph() {
+    local variant="$1"
+    local kernel_fn="$2"
+    local dfg="${BUILD_DIR}/${variant}.dfg.mlir"
+
+    if ! grep -E -q "dataflow\\.thread (private )?@t_${kernel_fn}_[A-Za-z0-9_]+" "${dfg}"; then
+        echo "[${KERNEL}/${variant}] no ${kernel_fn} dataflow.thread in ${dfg}" >&2
+        return 1
+    fi
+    if ! grep -E -q "dataflow\\.graph\\.launch @g_t_${kernel_fn}_[A-Za-z0-9_]+" "${dfg}"; then
+        echo "[${KERNEL}/${variant}] no ${kernel_fn} graph launch in ${dfg}" >&2
+        return 1
+    fi
+    if ! grep -E -q "dataflow\\.graph\\.func (private )?@g_t_${kernel_fn}_[A-Za-z0-9_]+" "${dfg}"; then
+        echo "[${KERNEL}/${variant}] no ${kernel_fn} graph func in ${dfg}" >&2
+        return 1
+    fi
+}
 
 dfg_one() {
     local variant="$1"

@@ -20,24 +20,8 @@ LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO}/build/bin/loom-raise-opt}"
 
 . "${SHARED}"
 
-require_kernel_graph() {
-    local dfg="${BUILD_DIR}/main_func.dfg.mlir"
-    if ! grep -E -q 'dataflow\.thread (private )?@t_convolve_1d_same_kernel_[A-Za-z0-9_]+' "${dfg}"; then
-        echo "[${KERNEL}/main_func] no convolve_1d_same_kernel dataflow.thread in ${dfg}" >&2
-        return 1
-    fi
-    if ! grep -E -q 'dataflow\.graph\.launch @g_t_convolve_1d_same_kernel_[A-Za-z0-9_]+' "${dfg}"; then
-        echo "[${KERNEL}/main_func] no convolve_1d_same_kernel graph launch in ${dfg}" >&2
-        return 1
-    fi
-    if ! grep -E -q 'dataflow\.graph\.func (private )?@g_t_convolve_1d_same_kernel_[A-Za-z0-9_]+' "${dfg}"; then
-        echo "[${KERNEL}/main_func] no convolve_1d_same_kernel graph func in ${dfg}" >&2
-        return 1
-    fi
-}
-
 dfg_one "main_func" "cpp"
-require_kernel_graph
+require_kernel_graph "main_func" "convolve_1d_same_kernel"
 dfg_one "main_inline" "cpp"
 
 for dfg in "${BUILD_DIR}/main_func.dfg.mlir" "${BUILD_DIR}/main_inline.dfg.mlir"; do
