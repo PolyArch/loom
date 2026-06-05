@@ -1,0 +1,2 @@
+rle_encode checksum: 26695
+PASSED
