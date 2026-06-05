@@ -9,6 +9,19 @@ PnR is a mapper from software abstractions to hardware abstractions. It
 does not simulate execution, mutate dataflow IR, mutate Fabric ADG, or
 invent missing hardware resources.
 
+PnR is an NP-hard placement and routing problem. The deterministic
+baseline described below is a correctness oracle and debugging policy,
+not the final performance policy. Production-quality policies must be
+designed for large candidate spaces, cache-local data structures,
+incremental legality updates, and bounded-time search.
+
+The central compute mapping relation is `dataflow.subgraph` to
+`fabric.fu`. Operation-level binding is allowed when the software graph
+has not been partitioned or when a consumer explicitly requests that
+granularity, but the SpatialCore CGRA target is the FU-compatible
+software subgraph. PE, switch, memory, and boundary records exist to
+make that subgraph-to-FU mapping executable on the selected hardware.
+
 ## Search Inputs
 
 Required inputs:
@@ -105,6 +118,7 @@ Loom may implement additional PnR policies:
 * simulated annealing;
 * integer or mixed-integer programming;
 * min-cost flow or multi-commodity flow routing;
+* improved A* routing over explicit directed channel endpoints;
 * profile-guided search;
 * feedback-driven DSE using CGRA-sim or FPA reports;
 * user-guided constrained search.
@@ -120,10 +134,14 @@ The PnR cost model ranks legal candidates. Required baseline terms:
 * unmapped required software objects;
 * route length and route resource pressure;
 * exclusive resource pressure;
+* PE-local FU activation pressure;
 * buffer depth and buffer pressure;
 * schedule length or estimated cycles;
 * memory bandwidth and coherence pressure;
+* temporal tag pressure and tag-capacity pressure;
 * reconfiguration count;
+* cache locality of PnR solver data structures and incremental search
+  updates when comparing otherwise equivalent policies;
 * diagnostics severity;
 * optional DFG-sim, CGRA-sim, and FPA feedback references.
 
@@ -175,9 +193,14 @@ Search-policy tests must include:
 
 * deterministic baseline on arbitrary non-mesh topology;
 * deterministic baseline on mesh-like topology using explicit links;
+* subgraph-to-FU binding as the primary compute-placement case;
+* PE with multiple candidate FUs where only one FU can be active for a
+  spatial or temporal resource-use slot;
 * negative no-route case;
 * negative incompatible-resource case;
 * resource-conflict case requiring schedule or tag records;
+* boundary tag assignment that fails because the required tag value
+  cannot be represented by the hardware tag width;
 * memory/coherence negative case;
 * at least one multi-candidate mapping-set manifest;
 * replay test proving the selected candidate is reproducible from the
@@ -196,4 +219,8 @@ Mapping search is complete when:
 * every failed required mapping emits structured diagnostics;
 * DSE can compare multiple candidate artifacts through a mapping-set
   manifest;
+* the default scalable policy includes a simulated-annealing-style
+  placement engine and an improved-A*-style routing engine over
+  explicit topology, while keeping the deterministic baseline as a
+  reference oracle;
 * CGRA-sim can consume selected artifacts without PnR internal state.

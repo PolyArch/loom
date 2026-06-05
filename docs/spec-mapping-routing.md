@@ -86,6 +86,14 @@ A route may cross from system-level Fabric ADG into a `fabric.module`
 template only through explicit boundary resources or module instance
 ports. The mapping artifact must not invent implicit crossings.
 
+`fabric.boundary` is a route resource, similar to an explicit FIFO,
+adapter, or protocol converter. It connects spatial and temporal
+domains but does not by itself assign workload-specific tags. When a
+route uses a boundary that introduces, remaps, or consumes a temporal
+tag, the mapping artifact must also contain the tag assignment and
+configuration records required by
+`docs/spec-mapping-schedule-buffer.md`.
+
 ## Fanout and Broadcast
 
 One software fanout is represented as one route per consumer edge unless
@@ -138,6 +146,8 @@ The routing verifier checks:
   resources;
 * no route assumes topology from visualization coordinates;
 * all required adapters are explicit;
+* every boundary crossing has the required tag, configuration, or
+  schedule records;
 * contended resources have schedule, tag, arbitration, or diagnostics.
 
 ## Acceptance Criteria

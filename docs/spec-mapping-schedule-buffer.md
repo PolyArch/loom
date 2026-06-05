@@ -84,6 +84,12 @@ Tags are mapping facts. Dataflow IR must not carry temporal tags before
 mapping. Fabric ADG may declare tag width and tag-capable resources, but
 it does not assign workload-specific tag values.
 
+Every assigned tag value must be representable by the declared
+`tag_width`. For example, assigning tag value 9 to a 3-bit tag domain is
+illegal. This check applies equally to temporal switches, temporal PEs,
+temporal memory port groups, and `fabric.boundary` records that create
+or remap tagged traffic.
+
 ## Resource Sharing
 
 A resource-sharing record identifies a hardware resource shared by
@@ -171,6 +177,8 @@ The schedule and buffer verifier checks:
 * exclusive resource uses do not conflict;
 * temporal tags fit declared tag widths and do not collide within a
   conflict class;
+* boundary-introduced and boundary-remapped tags fit the destination tag
+  domain and have complete configuration evidence;
 * resource-sharing records cite evidence that makes sharing legal;
 * reconfiguration events do not overlap illegal resource uses;
 * buffer depths are sufficient for the declared route and schedule
