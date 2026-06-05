@@ -62,6 +62,7 @@ EXPECTED_CASES = {
     "vecnorm_l2",
     "vecscale",
     "vecsum",
+    "window_hamming",
     "xor_block",
 }
 
