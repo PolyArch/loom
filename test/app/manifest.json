@@ -210,6 +210,14 @@
       "feature_tags": ["bit", "integer", "vector"]
     },
     {
+      "case": "scatter_add",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["memory", "indirect", "integer"]
+    },
+    {
       "case": "upper_bound",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

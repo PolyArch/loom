@@ -37,6 +37,7 @@ EXPECTED_CASES = {
     "relu",
     "reduction",
     "rotate_bits",
+    "scatter_add",
     "upper_bound",
     "variance",
     "vecadd",

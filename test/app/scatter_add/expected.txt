@@ -1,0 +1,2 @@
+scatter_add weighted_checksum: 360
+PASSED
