@@ -1,0 +1,2 @@
+window_blackman checksum: 3.377
+PASSED
