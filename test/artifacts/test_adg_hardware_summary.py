@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -33,7 +32,7 @@ def assert_pe_two_pes(rows: list[dict[str, str]]) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-adg-hardware-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-adg-hardware-") as tmp:
         output = Path(tmp) / "adg-hardware-summary.csv"
         rows = artifact_test_common.run_csv_summary(
             repo,

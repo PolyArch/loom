@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -42,7 +41,7 @@ def assert_vecadd_rows(rows: list[dict[str, str]]) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-primitive-coverage-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-primitive-coverage-") as tmp:
         output = Path(tmp) / "dataflow-primitive-coverage.csv"
         assert_vecadd_rows(run_summary(repo, output, "--case", "vecadd"))
 

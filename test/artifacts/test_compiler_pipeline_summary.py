@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -48,7 +47,7 @@ def assert_pass_row(row: dict[str, str], case: str) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-compiler-pipeline-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-compiler-pipeline-") as tmp:
         output = Path(tmp) / "compiler-pipeline-summary.csv"
         rows = run_summary(repo, output, "--case", "vecadd")
         vecadd_rows = [row for row in rows if row["case"] == "vecadd"]

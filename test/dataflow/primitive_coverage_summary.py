@@ -107,7 +107,9 @@ def rows_for_case(case: str) -> tuple[bool, list[dict[str, str]]]:
             }
         ]
 
-    with tempfile.TemporaryDirectory(prefix=f"loom-primitive-{case}-") as tmp:
+    temp_root = ROOT / "temp" / "test-runs"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"loom-primitive-{case}-", dir=temp_root) as tmp:
         work_dir = prepare_temp_app(source_dir, tmp)
         status, diagnostic = run_dfg_check(work_dir)
         if status != "pass":

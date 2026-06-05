@@ -6,8 +6,9 @@ from __future__ import annotations
 import csv
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+import artifact_test_common
 
 
 HEADER = ["stage", "case", "artifact", "reason", "owner", "blocking_input"]
@@ -31,7 +32,7 @@ def run(repo: Path, argv: list[str]) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-unsupported-ledger-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-unsupported-ledger-") as tmp:
         out_dir = Path(tmp)
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         ledger = out_dir / "unsupported-scope-ledger.csv"

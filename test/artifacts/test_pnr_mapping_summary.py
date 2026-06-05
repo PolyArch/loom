@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -23,7 +22,7 @@ HEADER = [
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-pnr-mapping-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-pnr-mapping-") as tmp:
         out_dir = Path(tmp)
         mapping = out_dir / "pnr-mapping-summary.csv"
         primitive, hardware = artifact_test_common.prepare_candidate_inputs(repo, out_dir)

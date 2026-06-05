@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -15,7 +14,7 @@ HEADER = ["kernel", "dfg_sim_cycles", "cgra_sim_cycles"]
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-sim-cycle-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-sim-cycle-") as tmp:
         out_dir = Path(tmp)
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         sim = out_dir / "sim-cycle-summary.csv"

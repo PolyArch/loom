@@ -7,8 +7,9 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+import artifact_test_common
 
 
 RUNNERS = ("run_check.sh", "raise_check.sh", "dfg_check.sh")
@@ -54,7 +55,7 @@ def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     app_root = repo / "test" / "app"
     cases = sorted(path for path in app_root.iterdir() if path.is_dir() and (path / "run_check.sh").is_file())
-    with tempfile.TemporaryDirectory(prefix="loom-app-build-dir-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-app-build-dir-") as tmp:
         tmp_root = Path(tmp)
         for case_dir in cases:
             copied_case = prepare_case(repo, case_dir, tmp_root / case_dir.name)

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -22,7 +21,7 @@ HEADER = [
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-source-compat-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-source-compat-") as tmp:
         output = Path(tmp) / "source-compat-summary.csv"
         rows = artifact_test_common.run_csv_summary(
             repo,
