@@ -82,6 +82,7 @@ EXPECTED_CASES = {
     "sigmoid",
     "softmax",
     "sort_bubble",
+    "sort_insertion",
     "string_compare",
     "string_hash",
     "stream_update",

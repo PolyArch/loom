@@ -570,6 +570,14 @@
       "feature_tags": ["sort", "float", "nested-loop", "swap"]
     },
     {
+      "case": "sort_insertion",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise"],
+      "feature_tags": ["sort", "float", "control", "shift"]
+    },
+    {
       "case": "string_compare",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
