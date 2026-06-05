@@ -40,6 +40,17 @@ mapping artifact, but it must not mutate the artifact or use runtime
 state as a substitute for missing placement, route, schedule, buffer,
 memory, or resource-sharing records.
 
+Detailed mapping records are specified by:
+
+* `docs/spec-mapping-identity.md`
+* `docs/spec-mapping-placement.md`
+* `docs/spec-mapping-routing.md`
+* `docs/spec-mapping-schedule-buffer.md`
+* `docs/spec-mapping-memory.md`
+* `docs/spec-mapping-verification.md`
+* `docs/spec-mapping-visualization.md`
+* `docs/spec-mapping-search.md`
+
 ## Core Rule
 
 A mapping artifact must not mutate the software or hardware IR it
@@ -52,6 +63,13 @@ If a mapping requires a hardware structure that does not exist, the
 PnR tool must either reject the mapping or produce a new hardware
 candidate through the hardware DSE flow. It must not silently encode
 that missing hardware inside the mapping artifact.
+
+Hardware topology is always the explicit Fabric graph: nodes, ports,
+directed channel endpoints, links, module resources, boundaries,
+adapters, FIFOs, memories, and declared protocol channels. Coordinates,
+grid labels, physical positions, and visualization layouts are metadata.
+They must not create connectivity, make a route legal, or replace
+explicit placement and routing records.
 
 ## Artifact Granularity
 
@@ -124,9 +142,10 @@ physical `acc_core` nodes and execution batches. It may be explicit for
 small domains or parametric for large domains.
 
 Parametric binding must describe a deterministic relation from logical
-thread coordinates to hardware nodes and optional batch indices. It
-must not assume mesh coordinates unless those coordinates are present as
-optional visualization metadata or explicit hardware metadata.
+thread coordinates to an explicit ordered set of hardware nodes and
+optional batch indices. It must not infer hardware adjacency or
+connectivity from mesh coordinates, x/y coordinates, grid labels, or
+visualization layouts.
 
 ### Graph Binding
 
@@ -235,6 +254,10 @@ Fabric ADG. For example, a hardware system may define a two-dimensional
 grid layout for a mesh-like accelerator array or a three-dimensional
 grid layout for a stacked topology. The mapping artifact may then
 overlay placements and routes onto that layout.
+
+Such overlays remain display metadata. Placement legality still comes
+from placement records. Route legality still comes from explicit route
+segments over Fabric connectivity.
 
 If no visualization metadata is present, a GUI must still be able to
 render the artifact using graph-layout algorithms over the explicit

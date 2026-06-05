@@ -5,6 +5,17 @@ relation between software dataflow abstractions and a concrete hardware
 Fabric ADG. Its persistent output is the independent mapping artifact
 specified in `docs/spec-mapping-artifact.md`.
 
+Detailed mapper contracts are split across:
+
+* `docs/spec-mapping-identity.md`
+* `docs/spec-mapping-placement.md`
+* `docs/spec-mapping-routing.md`
+* `docs/spec-mapping-schedule-buffer.md`
+* `docs/spec-mapping-memory.md`
+* `docs/spec-mapping-verification.md`
+* `docs/spec-mapping-visualization.md`
+* `docs/spec-mapping-search.md`
+
 ## Purpose
 
 PnR maps software onto hardware. It consumes:
@@ -91,6 +102,15 @@ The baseline PnR policy must be deterministic. Given the same software
 IR, hardware IR, mapping options, and workload shape, it must produce
 the same mapping artifact and diagnostics.
 
+PnR treats hardware as an arbitrary directed graph. Coordinates, grid
+metadata, and visualization layouts are display metadata. Placement and
+route legality are derived only from explicit Fabric nodes, resources,
+directed channel endpoints, links, boundaries, adapters, buffers,
+memories, and protocol channels. Cost models may use explicit hardware
+weights such as latency, bandwidth, capacity, or user-declared edge
+weights; they must not derive hardware cost from visualization
+coordinates.
+
 ## Candidate Structure
 
 A complete PnR candidate contains these decisions when relevant:
@@ -163,7 +183,8 @@ Every route must be contiguous from the placed producer to the placed
 consumer. Fanout, arbitration, broadcast, protocol conversion, width
 conversion, and clock conversion must use explicit hardware resources.
 Routes must not assume x/y coordinates, Manhattan distance, or mesh
-adjacency unless those edges exist in Fabric ADG.
+adjacency. Mesh-like hardware is legal only because its links are
+explicit Fabric connectivity.
 
 ### Schedule Legality
 

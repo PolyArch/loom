@@ -150,6 +150,12 @@ artifact. If a consumer needs a selected placement, route, schedule,
 buffer, memory binding, or sharing decision, that fact must be in the
 mapping artifact.
 
+The detailed mapping record families are specified in
+`docs/spec-mapping-artifact.md` and the related
+`docs/spec-mapping-*.md` documents. PnR search policy is specified in
+`docs/spec-mapping-search.md`; verification and consumer profiles are
+specified in `docs/spec-mapping-verification.md`.
+
 ## Runtime Boundary
 
 The runtime launches already compiled and mapped work. It consumes work

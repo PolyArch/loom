@@ -74,7 +74,8 @@ Arbitrary topology is the default. Meshes, arrays, x/y coordinates, and
 Manhattan-distance routing are optional conveniences supplied by an
 architecture builder or by user metadata. They are never the baseline
 semantic assumption. Hardware connectivity is represented as graph
-connectivity, adjacency, or connectivity-table data.
+connectivity through explicit links, directed channel endpoints, and
+connectivity tables or matrices.
 
 ## Software Representation
 
@@ -216,7 +217,14 @@ fabric/ADG IR and emits the independent mapping artifact specified in
 `docs/spec-pnr.md`. The artifact records placed software nodes, routed
 edges, memory bindings, resource sharing, buffers, schedule slots,
 temporal tags, diagnostics, and metrics required by the selected
-hardware mapping.
+hardware mapping. Detailed mapping identity, placement, routing,
+schedule/buffer, memory, verification, visualization, and search
+contracts are specified by `docs/spec-mapping-identity.md`,
+`docs/spec-mapping-placement.md`, `docs/spec-mapping-routing.md`,
+`docs/spec-mapping-schedule-buffer.md`, `docs/spec-mapping-memory.md`,
+`docs/spec-mapping-verification.md`,
+`docs/spec-mapping-visualization.md`, and
+`docs/spec-mapping-search.md`.
 
 PnR chooses and records a mapping. CGRA-sim consumes that mapping plus
 runtime inputs and reports hardware-aware behavior. CGRA-sim may reject
