@@ -14,6 +14,7 @@ EXPECTED_CASES = {
     "axpy",
     "bit_reverse",
     "bitrev",
+    "bitrev_complex",
     "bitonic_stage",
     "byte_swap",
     "binary_search",
