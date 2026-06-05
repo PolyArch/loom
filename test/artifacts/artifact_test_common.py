@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -28,6 +29,12 @@ def require_success(repo: Path, argv: list[str], label: str) -> subprocess.Compl
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     return result
+
+
+def repo_temp_dir(repo: Path, prefix: str) -> tempfile.TemporaryDirectory[str]:
+    temp_root = repo / "temp" / "test-runs"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=temp_root)
 
 
 def read_csv_rows(path: Path, expected_header: list[str]) -> list[dict[str, str]]:

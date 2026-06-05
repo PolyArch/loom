@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -38,7 +37,7 @@ def run_script(script: Path, env: dict[str, str]) -> tuple[str, str]:
 
 
 def run_case(source_dir: Path) -> tuple[str, str, str, str]:
-    with tempfile.TemporaryDirectory(prefix=f"loom-pipeline-{source_dir.name}-") as tmp:
+    with app_summary_common.repo_temp_dir(f"loom-pipeline-{source_dir.name}-") as tmp:
         env = os.environ.copy()
         env["LOOM_CC"] = tool_path("LOOM_CC", "loom-cc")
         env["LOOM_CXX"] = tool_path("LOOM_CXX", "loom-c++")

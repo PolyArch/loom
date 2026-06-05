@@ -6,7 +6,6 @@ from __future__ import annotations
 import csv
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -35,7 +34,7 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-artifact-chain-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-artifact-chain-") as tmp:
         out_dir = Path(tmp)
         artifact_test_common.require_success(
             repo,

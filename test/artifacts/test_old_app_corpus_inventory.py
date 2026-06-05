@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import csv
+import argparse
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -56,9 +56,17 @@ def run_inventory(repo: Path, source_root: Path, output: Path) -> list[dict[str,
     return read_rows(output)
 
 
-def main() -> int:
-    repo = Path(sys.argv[1]).resolve()
-    with tempfile.TemporaryDirectory(prefix="loom-old-app-inventory-") as tmp:
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("repo")
+    parser.add_argument("--legacy-root")
+    parser.add_argument("--expect-count", type=int)
+    parser.add_argument("--expect-case", action="append", default=[])
+    return parser.parse_args(argv)
+
+
+def validate_synthetic_inventory(repo: Path) -> None:
+    with artifact_test_common.repo_temp_dir(repo, "loom-old-app-inventory-") as tmp:
         source_root = Path(tmp) / "old-app"
         write_case(source_root, "alpha")
         write_case(source_root, "beta", with_header=False)
@@ -74,19 +82,34 @@ def main() -> int:
         if beta["status"] != "blocked" or "missing header" not in beta["diagnostic"]:
             raise AssertionError(f"beta should report its missing header: {beta}")
 
-    local_old = repo / "temp" / "old_implementation_loom" / "loom" / "tests" / "app"
-    if local_old.is_dir():
-        with tempfile.TemporaryDirectory(prefix="loom-old-app-local-") as tmp:
-            output = Path(tmp) / "inventory.csv"
-            rows = run_inventory(repo, local_old, output)
-            if len(rows) != 127:
-                raise AssertionError(f"expected 127 local old app cases, got {len(rows)}")
-            cases = {row["case"] for row in rows}
-            for required in ("axpy", "matmul", "spmv", "vecadd"):
-                if required not in cases:
-                    raise AssertionError(f"missing expected local old app case {required}")
-            if any(row["status"] != "ready" for row in rows):
-                raise AssertionError(f"local old app inventory contains blocked rows: {rows}")
+
+def validate_legacy_inventory(
+    repo: Path,
+    legacy_root: Path,
+    expected_count: int | None,
+    expected_cases: list[str],
+) -> None:
+    if not legacy_root.is_dir():
+        raise AssertionError(f"legacy app corpus root does not exist: {legacy_root}")
+    with artifact_test_common.repo_temp_dir(repo, "loom-old-app-local-") as tmp:
+        output = Path(tmp) / "inventory.csv"
+        rows = run_inventory(repo, legacy_root, output)
+        if expected_count is not None and len(rows) != expected_count:
+            raise AssertionError(f"expected {expected_count} legacy app cases, got {len(rows)}")
+        cases = {row["case"] for row in rows}
+        for required in expected_cases:
+            if required not in cases:
+                raise AssertionError(f"missing expected legacy app case {required}")
+        if any(row["status"] != "ready" for row in rows):
+            raise AssertionError(f"legacy app inventory contains blocked rows: {rows}")
+
+
+def main() -> int:
+    args = parse_args(sys.argv[1:])
+    repo = Path(args.repo).resolve()
+    validate_synthetic_inventory(repo)
+    if args.legacy_root:
+        validate_legacy_inventory(repo, Path(args.legacy_root), args.expect_count, args.expect_case)
 
     return 0
 

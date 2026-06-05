@@ -46,6 +46,36 @@ def require(condition: bool, message: str, diagnostics: list[str]) -> None:
         diagnostics.append(message)
 
 
+def non_empty_string_field(entry: dict[object, object], field: str, context: str, diagnostics: list[str]) -> str | None:
+    value = entry.get(field)
+    if not isinstance(value, str) or value == "":
+        diagnostics.append(f"{context}: {field} must be a non-empty string")
+        return None
+    return value
+
+
+def non_empty_string_list_field(
+    entry: dict[object, object],
+    field: str,
+    context: str,
+    diagnostics: list[str],
+) -> list[str]:
+    value = entry.get(field)
+    if not isinstance(value, list) or not value:
+        diagnostics.append(f"{context}: {field} must be a non-empty list")
+        return []
+    strings: list[str] = []
+    has_invalid = False
+    for item in value:
+        if isinstance(item, str) and item != "":
+            strings.append(item)
+        else:
+            has_invalid = True
+    if has_invalid:
+        diagnostics.append(f"{context}: {field} must contain non-empty strings")
+    return strings
+
+
 def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
     diagnostics: list[str] = []
     if not path.is_file():
@@ -67,40 +97,36 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
         if not isinstance(entry, dict):
             diagnostics.append(f"case entry {index} must be an object")
             continue
-        case = str(entry.get("case", ""))
-        require(case != "", f"case entry {index} has blank case name", diagnostics)
-        require(case not in seen, f"duplicate case: {case}", diagnostics)
-        seen.add(case)
-        case_dir = APP_ROOT / case
-        require(case_dir.is_dir(), f"{case}: missing case directory", diagnostics)
+        case = non_empty_string_field(entry, "case", f"case entry {index}", diagnostics)
+        context = case if case else f"case entry {index}"
+        if case:
+            require(case not in seen, f"duplicate case: {case}", diagnostics)
+            seen.add(case)
+        case_dir = APP_ROOT / context
+        if case:
+            require(case_dir.is_dir(), f"{case}: missing case directory", diagnostics)
 
         language = entry.get("language")
-        require(language in VALID_LANGUAGES, f"{case}: invalid language {language!r}", diagnostics)
+        require(language in VALID_LANGUAGES, f"{context}: invalid language {language!r}", diagnostics)
 
-        sources = entry.get("sources")
-        require(isinstance(sources, list) and bool(sources), f"{case}: sources must be a non-empty list", diagnostics)
-        if isinstance(sources, list):
-            for source in sources:
-                source_path = case_dir / str(source)
-                require(source_path.is_file(), f"{case}: missing source {source}", diagnostics)
+        sources = non_empty_string_list_field(entry, "sources", context, diagnostics)
+        for source in sources:
+            source_path = case_dir / source
+            require(source_path.is_file(), f"{context}: missing source {source}", diagnostics)
 
-        expected = entry.get("expected_stdout")
-        require(isinstance(expected, str) and expected != "", f"{case}: expected_stdout is required", diagnostics)
-        if isinstance(expected, str) and expected:
-            require((case_dir / expected).is_file(), f"{case}: missing expected stdout {expected}", diagnostics)
+        expected = non_empty_string_field(entry, "expected_stdout", context, diagnostics)
+        if expected:
+            require((case_dir / expected).is_file(), f"{context}: missing expected stdout {expected}", diagnostics)
 
-        tiers = entry.get("tiers")
-        require(isinstance(tiers, list) and bool(tiers), f"{case}: tiers must be a non-empty list", diagnostics)
-        if isinstance(tiers, list):
-            invalid = sorted(set(str(tier) for tier in tiers) - VALID_TIERS)
-            require(not invalid, f"{case}: invalid tiers {invalid}", diagnostics)
-            for tier in tiers:
-                script = {"run": "run_check.sh", "raise": "raise_check.sh", "dfg": "dfg_check.sh"}.get(str(tier))
-                if script:
-                    require((case_dir / script).is_file(), f"{case}: missing {script}", diagnostics)
+        tiers = non_empty_string_list_field(entry, "tiers", context, diagnostics)
+        invalid = sorted(set(tiers) - VALID_TIERS)
+        require(not invalid, f"{context}: invalid tiers {invalid}", diagnostics)
+        for tier in tiers:
+            script = {"run": "run_check.sh", "raise": "raise_check.sh", "dfg": "dfg_check.sh"}.get(tier)
+            if script:
+                require((case_dir / script).is_file(), f"{context}: missing {script}", diagnostics)
 
-        tags = entry.get("feature_tags")
-        require(isinstance(tags, list) and bool(tags), f"{case}: feature_tags must be a non-empty list", diagnostics)
+        non_empty_string_list_field(entry, "feature_tags", context, diagnostics)
 
     omitted = sorted(existing_app_cases() - seen)
     for case in omitted:

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -32,7 +31,7 @@ def compiler_path(env_name: str, fallback: Path) -> str:
 
 
 def run_case(source_dir: Path, cc: str, cxx: str, label: str) -> tuple[str, str]:
-    with tempfile.TemporaryDirectory(prefix=f"loom-app-{source_dir.name}-") as tmp:
+    with app_summary_common.repo_temp_dir(f"loom-app-{source_dir.name}-") as tmp:
         env = os.environ.copy()
         env["CC"] = cc
         env["CXX"] = cxx

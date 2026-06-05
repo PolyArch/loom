@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 import artifact_test_common
@@ -36,7 +35,7 @@ def main() -> int:
     if {entry["case"] for entry in data["cases"]} != EXPECTED_CASES:
         raise AssertionError(f"manifest cases do not match expected seed set: {data}")
 
-    with tempfile.TemporaryDirectory(prefix="loom-bad-app-manifest-") as tmp:
+    with artifact_test_common.repo_temp_dir(repo, "loom-bad-app-manifest-") as tmp:
         bad_manifest = Path(tmp) / "manifest.json"
         bad_manifest.write_text(
             json.dumps(
@@ -64,6 +63,33 @@ def main() -> int:
             raise AssertionError("bad manifest with missing source unexpectedly passed")
         if "missing source" not in result.stderr:
             raise AssertionError(f"bad manifest diagnostic should name missing source: {result.stderr}")
+
+        bad_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cases": [
+                        {
+                            "case": "vecadd",
+                            "language": "c",
+                            "sources": ["main_func.c"],
+                            "expected_stdout": "expected.txt",
+                            "tiers": ["run"],
+                            "feature_tags": [1],
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
+        )
+        if result.returncode == 0:
+            raise AssertionError("bad manifest with non-string tag unexpectedly passed")
+        if "feature_tags must contain non-empty strings" not in result.stderr:
+            raise AssertionError(f"bad manifest diagnostic should name non-string tag: {result.stderr}")
 
     return 0
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -38,6 +39,12 @@ def env_path(env_name: str, fallback: Path | str) -> str:
 
 def build_tool_path(env_name: str, fallback_name: str) -> str:
     return env_path(env_name, ROOT / "build" / "bin" / fallback_name)
+
+
+def repo_temp_dir(prefix: str) -> tempfile.TemporaryDirectory[str]:
+    temp_root = ROOT / "temp" / "test-runs"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=temp_root)
 
 
 def run_bash_script(
