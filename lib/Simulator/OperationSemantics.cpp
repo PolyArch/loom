@@ -13,41 +13,50 @@ struct OperationCostEntry {
   const char *name;
   std::uint64_t latencyCycles;
   std::uint64_t reciprocalThroughput;
+  bool isPrimitive;
+  bool isMapped;
 };
 
 constexpr OperationCostEntry kOperationCosts[] = {
-    {"arith.constant", 1, 1},
-    {"arith.addf", 2, 2},
-    {"arith.subf", 2, 2},
-    {"arith.mulf", 3, 3},
-    {"arith.addi", 1, 1},
-    {"arith.muli", 3, 3},
-    {"arith.andi", 1, 1},
-    {"arith.ori", 1, 1},
-    {"arith.shli", 1, 1},
-    {"arith.shrui", 1, 1},
-    {"arith.index_cast", 1, 1},
-    {"llvm.zext", 1, 1},
-    {"llvm.intr.fmuladd", 4, 4},
-    {"llvm.intr.abs", 1, 1},
-    {"dataflow.stream", 1, 1},
-    {"dataflow.carry", 1, 1},
-    {"dataflow.invariant", 1, 1},
-    {"dataflow.constant", 1, 1},
-    {"dataflow.sync", 1, 1},
-    {"dataflow.load", 4, 4},
-    {"dataflow.store", 4, 4},
-    {"dataflow.mux", 1, 1},
-    {"dataflow.demux", 1, 1},
-    {"dataflow.gate", 1, 1},
+    {"arith.constant", 1, 1, false, false},
+    {"arith.addf", 2, 2, true, true},
+    {"arith.subf", 2, 2, true, true},
+    {"arith.mulf", 3, 3, true, true},
+    {"arith.addi", 1, 1, true, true},
+    {"arith.muli", 3, 3, true, true},
+    {"arith.andi", 1, 1, true, true},
+    {"arith.ori", 1, 1, true, true},
+    {"arith.shli", 1, 1, true, true},
+    {"arith.shrui", 1, 1, true, true},
+    {"arith.index_cast", 1, 1, true, true},
+    {"llvm.zext", 1, 1, true, true},
+    {"llvm.intr.fmuladd", 4, 4, true, true},
+    {"llvm.intr.abs", 1, 1, true, true},
+    {"dataflow.stream", 1, 1, false, true},
+    {"dataflow.carry", 1, 1, false, true},
+    {"dataflow.invariant", 1, 1, false, true},
+    {"dataflow.constant", 1, 1, false, true},
+    {"dataflow.sync", 1, 1, false, true},
+    {"dataflow.load", 4, 4, false, true},
+    {"dataflow.store", 4, 4, false, true},
+    {"dataflow.mux", 1, 1, false, true},
+    {"dataflow.demux", 1, 1, false, true},
+    {"dataflow.gate", 1, 1, false, true},
 };
 
-std::optional<OperationCost> lookupOperationCost(llvm::StringRef opName) {
+const OperationCostEntry *lookupOperationCostEntry(llvm::StringRef opName) {
   for (const OperationCostEntry &entry : kOperationCosts) {
     if (opName == entry.name)
-      return OperationCost{entry.latencyCycles, entry.reciprocalThroughput};
+      return &entry;
   }
-  return std::nullopt;
+  return nullptr;
+}
+
+std::optional<OperationCost> lookupOperationCost(llvm::StringRef opName) {
+  const OperationCostEntry *entry = lookupOperationCostEntry(opName);
+  if (!entry)
+    return std::nullopt;
+  return OperationCost{entry->latencyCycles, entry->reciprocalThroughput};
 }
 
 llvm::Error requireArity(llvm::StringRef opName,
@@ -109,22 +118,13 @@ PrimitiveValue PrimitiveValue::boolean(bool value) {
 }
 
 bool loom::sim::isSupportedPrimitiveOperation(llvm::StringRef opName) {
-  return opName == "arith.addf" || opName == "arith.subf" ||
-         opName == "arith.mulf" || opName == "arith.addi" ||
-         opName == "arith.muli" || opName == "arith.andi" ||
-         opName == "arith.ori" || opName == "arith.shli" ||
-         opName == "arith.shrui" || opName == "arith.index_cast" ||
-         opName == "llvm.zext" || opName == "llvm.intr.fmuladd" ||
-         opName == "llvm.intr.abs";
+  const OperationCostEntry *entry = lookupOperationCostEntry(opName);
+  return entry && entry->isPrimitive;
 }
 
 bool loom::sim::isSupportedMappedOperation(llvm::StringRef opName) {
-  return isSupportedPrimitiveOperation(opName) || opName == "dataflow.stream" ||
-         opName == "dataflow.carry" || opName == "dataflow.invariant" ||
-         opName == "dataflow.constant" || opName == "dataflow.sync" ||
-         opName == "dataflow.load" || opName == "dataflow.store" ||
-         opName == "dataflow.mux" || opName == "dataflow.demux" ||
-         opName == "dataflow.gate";
+  const OperationCostEntry *entry = lookupOperationCostEntry(opName);
+  return entry && entry->isMapped;
 }
 
 bool loom::sim::hasOperationCost(llvm::StringRef opName) {

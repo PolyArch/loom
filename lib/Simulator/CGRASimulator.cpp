@@ -301,6 +301,20 @@ llvm::Expected<std::string> requireString(const llvm::json::Object &object,
 }
 
 llvm::Expected<std::string>
+requireSupportedReportSource(const llvm::json::Object &object,
+                             llvm::StringRef key, llvm::StringRef expected,
+                             llvm::StringRef label, llvm::StringRef path) {
+  auto valueOrErr = requireString(object, key, path);
+  if (!valueOrErr)
+    return valueOrErr.takeError();
+  if (*valueOrErr == expected)
+    return *valueOrErr;
+  return llvm::createStringError(
+      std::errc::invalid_argument, "DFG report %s source %s is not supported",
+      label.str().c_str(), valueOrErr->c_str());
+}
+
+llvm::Expected<std::string>
 requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
                     llvm::StringRef diagnosticContext) {
   std::optional<llvm::StringRef> value = object.getString(key);
@@ -709,25 +723,17 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (!dfgCyclesOrErr)
     return dfgCyclesOrErr.takeError();
   report.dfgCycles = *dfgCyclesOrErr;
-  auto semanticsOrErr = requireString(*dfgOrErr, "operation_semantics_source",
-                                      options.dfgReportPath);
+  auto semanticsOrErr = requireSupportedReportSource(
+      *dfgOrErr, "operation_semantics_source", kOperationSemanticsSource,
+      "operation semantics", options.dfgReportPath);
   if (!semanticsOrErr)
     return semanticsOrErr.takeError();
-  if (*semanticsOrErr != kOperationSemanticsSource)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "DFG report operation semantics source %s is not supported",
-        semanticsOrErr->c_str());
   report.operationSemanticsSource = *semanticsOrErr;
-  auto costModelOrErr = requireString(*dfgOrErr, "operation_cost_model_source",
-                                      options.dfgReportPath);
+  auto costModelOrErr = requireSupportedReportSource(
+      *dfgOrErr, "operation_cost_model_source", kOperationCostModelSource,
+      "operation cost model", options.dfgReportPath);
   if (!costModelOrErr)
     return costModelOrErr.takeError();
-  if (*costModelOrErr != kOperationCostModelSource)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "DFG report operation cost model source %s is not supported",
-        costModelOrErr->c_str());
   report.operationCostModelSource = *costModelOrErr;
   auto routeStatsOrErr =
       collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
