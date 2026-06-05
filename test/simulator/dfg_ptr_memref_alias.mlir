@@ -5,8 +5,8 @@
 // CHECK-DAG: "workload": "sum_ptr_load"
 // CHECK-DAG: "graph": "sum_ptr_load"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_event_count"
-// CHECK-DAG: "optimistic_cycles": 21
+// CHECK-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// CHECK-DAG: "optimistic_cycles": 33
 // CHECK-DAG: "wavefront_steps": 9
 // CHECK-DAG: "event_count": 21
 // CHECK-DAG: "f32:14"

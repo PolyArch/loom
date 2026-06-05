@@ -24,6 +24,7 @@ struct CGRASimReport {
   std::string status;
   std::string diagnostic;
   std::string operationSemanticsSource;
+  std::string operationCostModelSource;
   std::uint64_t dfgCycles = 0;
   std::uint64_t routeLatencyCycles = 0;
   std::uint64_t memoryLatencyCycles = 0;

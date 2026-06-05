@@ -6,9 +6,10 @@
 // CHECK-DAG: "workload": "sum4"
 // CHECK-DAG: "graph": "sum4"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_event_count"
+// CHECK-DAG: "metric_definition": "optimistic_operation_latency_sum"
 // CHECK-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
-// CHECK-DAG: "optimistic_cycles": 23
+// CHECK-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
+// CHECK-DAG: "optimistic_cycles": 28
 // CHECK-DAG: "wavefront_steps": 12
 // CHECK-DAG: "event_count": 23
 // CHECK-DAG: "final_outputs":

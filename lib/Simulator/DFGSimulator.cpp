@@ -76,6 +76,7 @@ struct SimulatorState {
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::SmallVector<std::string> diagnostics;
   std::uint64_t eventCount = 0;
+  std::uint64_t cycleCount = 0;
 };
 
 std::string typePrefix(mlir::Type type) {
@@ -206,6 +207,17 @@ void emitToken(SimulatorState &state, mlir::Value value, Token token) {
   state.pendingObservedOutputs[value].push_back(token);
 }
 
+bool recordEvent(SimulatorState &state, llvm::StringRef opName) {
+  auto costOrErr = estimateOperationCost(opName);
+  if (!costOrErr) {
+    state.diagnostics.push_back(llvm::toString(costOrErr.takeError()));
+    return false;
+  }
+  ++state.eventCount;
+  state.cycleCount += costOrErr->latencyCycles;
+  return true;
+}
+
 void flushPendingTokens(SimulatorState &state) {
   for (auto &entry : state.pendingChannels) {
     auto &target = state.channels[entry.first];
@@ -315,8 +327,7 @@ bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   } else {
     stream.done = true;
   }
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireConstant(dataflow::ConstantOp op, SimulatorState &state) {
@@ -334,8 +345,7 @@ bool fireConstant(dataflow::ConstantOp op, SimulatorState &state) {
   }
   popToken(state.channels, op->getOpOperand(0));
   emitToken(state, op.getValue(), *tokenOrErr);
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
@@ -346,8 +356,7 @@ bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
     Token init = popToken(state.channels, op->getOpOperand(1));
     emitToken(state, op.getOutput(), init);
     carry.initialized = true;
-    ++state.eventCount;
-    return true;
+    return recordEvent(state, op->getName().getStringRef());
   }
 
   if (!hasToken(state.channels, op->getOpOperand(0)) ||
@@ -360,8 +369,7 @@ bool fireCarry(dataflow::CarryOp op, SimulatorState &state) {
   } else {
     carry.initialized = false;
   }
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
@@ -373,8 +381,7 @@ bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
     invariant.latched = init;
     invariant.initialized = true;
     emitToken(state, op.getOutput(), init);
-    ++state.eventCount;
-    return true;
+    return recordEvent(state, op->getName().getStringRef());
   }
 
   if (!hasToken(state.channels, op->getOpOperand(0)))
@@ -386,8 +393,7 @@ bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
     invariant.initialized = false;
     invariant.latched.reset();
   }
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
@@ -400,8 +406,7 @@ bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
     tokens.push_back(popToken(state.channels, operand));
   for (auto [result, token] : llvm::zip(op->getResults(), tokens))
     emitToken(state, result, token);
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
@@ -425,8 +430,7 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
             memIt->second->elements[static_cast<std::size_t>(index)]);
   emitToken(state, op.getDone(), Token{TokenKind::None});
   ++state.loadFireCounts[op.getOperation()];
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
@@ -450,8 +454,7 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   }
   memIt->second->elements[static_cast<std::size_t>(index)] = data;
   emitToken(state, op.getDone(), Token{TokenKind::None});
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
@@ -471,8 +474,7 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
     return false;
   }
   emitToken(state, result, tokenFromPrimitiveValue(*valueOrErr));
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
@@ -490,8 +492,7 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
   }
   emitToken(state, op.getResult(), *tokenOrErr);
   state.oneShotOps.insert(op.getOperation());
-  ++state.eventCount;
-  return true;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
@@ -814,7 +815,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         "DFG-sim stopped before all returned values produced complete outputs");
   }
   report.eventCount = state.eventCount;
-  report.optimisticCycles = state.eventCount;
+  report.optimisticCycles = state.cycleCount;
   report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
@@ -837,6 +838,7 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["status"] = report.status;
   root["metric_definition"] = report.metricDefinition;
   root["operation_semantics_source"] = report.operationSemanticsSource;
+  root["operation_cost_model_source"] = report.operationCostModelSource;
   root["optimistic_cycles"] = report.optimisticCycles;
   root["wavefront_steps"] = report.wavefrontSteps;
   root["event_count"] = report.eventCount;

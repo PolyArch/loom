@@ -719,6 +719,16 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
         "DFG report operation semantics source %s is not supported",
         semanticsOrErr->c_str());
   report.operationSemanticsSource = *semanticsOrErr;
+  auto costModelOrErr = requireString(*dfgOrErr, "operation_cost_model_source",
+                                      options.dfgReportPath);
+  if (!costModelOrErr)
+    return costModelOrErr.takeError();
+  if (*costModelOrErr != kOperationCostModelSource)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "DFG report operation cost model source %s is not supported",
+        costModelOrErr->c_str());
+  report.operationCostModelSource = *costModelOrErr;
   auto routeStatsOrErr =
       collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
   if (!routeStatsOrErr)
@@ -819,6 +829,7 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"fidelity_level", "mapping_constraint_estimate"},
       {"metric_definition", "mapping_constraint_estimate"},
       {"operation_semantics_source", report.operationSemanticsSource},
+      {"operation_cost_model_source", report.operationCostModelSource},
       {"difference_classification", differenceClassification(report)},
       {"hardware_bound_classification", "within_modeled_bounds"},
       {"dfg_cycles", static_cast<int64_t>(report.dfgCycles)},

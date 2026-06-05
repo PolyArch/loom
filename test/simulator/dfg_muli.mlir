@@ -5,8 +5,9 @@
 // CHECK-DAG: "workload": "muli"
 // CHECK-DAG: "graph": "muli"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_event_count"
-// CHECK-DAG: "optimistic_cycles": 3
+// CHECK-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// CHECK-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
+// CHECK-DAG: "optimistic_cycles": 5
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 3
 // CHECK-DAG: "i32:42"

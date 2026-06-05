@@ -60,7 +60,7 @@
 // CONV1D-DAG: "workload": "conv1d"
 // CONV1D-DAG: "graph": "g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
 // CONV1D-DAG: "status": "pass"
-// CONV1D-DAG: "optimistic_cycles": 38
+// CONV1D-DAG: "optimistic_cycles": 83
 // CONV1D-DAG: "wavefront_steps": 13
 // CONV1D-DAG: "event_count": 38
 // CONV1D-DAG: "f32:5"
@@ -69,7 +69,7 @@
 // CONVOLVE-1D-DAG: "workload": "convolve_1d"
 // CONVOLVE-1D-DAG: "graph": "g_t_convolve_1d_kernel_0_0"
 // CONVOLVE-1D-DAG: "status": "pass"
-// CONVOLVE-1D-DAG: "optimistic_cycles": 94
+// CONVOLVE-1D-DAG: "optimistic_cycles": 157
 // CONVOLVE-1D-DAG: "wavefront_steps": 19
 // CONVOLVE-1D-DAG: "event_count": 94
 // CONVOLVE-1D-DAG: "f32:1.000000"
@@ -78,7 +78,7 @@
 // CORRELATION-DAG: "workload": "correlation"
 // CORRELATION-DAG: "graph": "g_t_correlation_kernel_0_0"
 // CORRELATION-DAG: "status": "pass"
-// CORRELATION-DAG: "optimistic_cycles": 202
+// CORRELATION-DAG: "optimistic_cycles": 346
 // CORRELATION-DAG: "wavefront_steps": 37
 // CORRELATION-DAG: "event_count": 202
 // CORRELATION-DAG: "f32:16"
@@ -87,7 +87,7 @@
 // CUMSUM-DAG: "workload": "cumsum"
 // CUMSUM-DAG: "graph": "g_t_cumsum_kernel_red_0_0"
 // CUMSUM-DAG: "status": "pass"
-// CUMSUM-DAG: "optimistic_cycles": 7171
+// CUMSUM-DAG: "optimistic_cycles": 14339
 // CUMSUM-DAG: "wavefront_steps": 2052
 // CUMSUM-DAG: "event_count": 7171
 // CUMSUM-DAG: "f32:5620"
@@ -96,8 +96,8 @@
 // VECADD-DAG: "workload": "vecadd"
 // VECADD-DAG: "graph": "g_t_main_red_0_0"
 // VECADD-DAG: "status": "pass"
-// VECADD-DAG: "metric_definition": "optimistic_event_count"
-// VECADD-DAG: "optimistic_cycles": 387
+// VECADD-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// VECADD-DAG: "optimistic_cycles": 643
 // VECADD-DAG: "wavefront_steps": 131
 // VECADD-DAG: "event_count": 387
 // VECADD-DAG: "f32:3024"
@@ -106,8 +106,8 @@
 // VECSUM-DAG: "workload": "vecsum"
 // VECSUM-DAG: "graph": "g_t_vecsum_red_0_0"
 // VECSUM-DAG: "status": "pass"
-// VECSUM-DAG: "metric_definition": "optimistic_event_count"
-// VECSUM-DAG: "optimistic_cycles": 387
+// VECSUM-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// VECSUM-DAG: "optimistic_cycles": 579
 // VECSUM-DAG: "wavefront_steps": 131
 // VECSUM-DAG: "event_count": 387
 // VECSUM-DAG: "i32:2116"
@@ -116,7 +116,7 @@
 // REDUCTION-DAG: "workload": "reduction"
 // REDUCTION-DAG: "graph": "g_t_reduce_sum_red_0_0"
 // REDUCTION-DAG: "status": "pass"
-// REDUCTION-DAG: "optimistic_cycles": 387
+// REDUCTION-DAG: "optimistic_cycles": 579
 // REDUCTION-DAG: "event_count": 387
 // REDUCTION-DAG: "i32:2016"
 
@@ -124,7 +124,7 @@
 // SPMV-DAG: "workload": "spmv"
 // SPMV-DAG: "graph": "g_t_spmv_kernel_red_0_0"
 // SPMV-DAG: "status": "pass"
-// SPMV-DAG: "optimistic_cycles": 25
+// SPMV-DAG: "optimistic_cycles": 47
 // SPMV-DAG: "wavefront_steps": 11
 // SPMV-DAG: "event_count": 25
 // SPMV-DAG: "i32:12"
@@ -133,7 +133,7 @@
 // MEAN-DAG: "workload": "mean"
 // MEAN-DAG: "graph": "g_t_mean_kernel_red_0_0"
 // MEAN-DAG: "status": "pass"
-// MEAN-DAG: "optimistic_cycles": 387
+// MEAN-DAG: "optimistic_cycles": 643
 // MEAN-DAG: "event_count": 387
 // MEAN-DAG: "f32:2016"
 
@@ -141,8 +141,8 @@
 // DOTPRODUCT-DAG: "workload": "dotproduct"
 // DOTPRODUCT-DAG: "graph": "g_t_dotproduct_red_0_0"
 // DOTPRODUCT-DAG: "status": "pass"
-// DOTPRODUCT-DAG: "metric_definition": "optimistic_event_count"
-// DOTPRODUCT-DAG: "optimistic_cycles": 451
+// DOTPRODUCT-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// DOTPRODUCT-DAG: "optimistic_cycles": 1027
 // DOTPRODUCT-DAG: "wavefront_steps": 131
 // DOTPRODUCT-DAG: "event_count": 451
 // DOTPRODUCT-DAG: "f32:2016"
@@ -151,7 +151,7 @@
 // VECNORM-L1-DAG: "workload": "vecnorm_l1"
 // VECNORM-L1-DAG: "graph": "g_t_vecnorm_l1_red_0_0"
 // VECNORM-L1-DAG: "status": "pass"
-// VECNORM-L1-DAG: "optimistic_cycles": 451
+// VECNORM-L1-DAG: "optimistic_cycles": 643
 // VECNORM-L1-DAG: "event_count": 451
 // VECNORM-L1-DAG: "i32:171"
 
@@ -159,8 +159,8 @@
 // VECNORM-L2-DAG: "workload": "vecnorm_l2"
 // VECNORM-L2-DAG: "graph": "g_t_vecnorm_l2_red_0_0"
 // VECNORM-L2-DAG: "status": "pass"
-// VECNORM-L2-DAG: "metric_definition": "optimistic_event_count"
-// VECNORM-L2-DAG: "optimistic_cycles": 451
+// VECNORM-L2-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// VECNORM-L2-DAG: "optimistic_cycles": 771
 // VECNORM-L2-DAG: "wavefront_steps": 132
 // VECNORM-L2-DAG: "event_count": 451
 // VECNORM-L2-DAG: "i32:619"
@@ -169,7 +169,7 @@
 // PREFIX-SUM-DAG: "workload": "prefix_sum"
 // PREFIX-SUM-DAG: "graph": "g_t_prefix_sum_red_0_0"
 // PREFIX-SUM-DAG: "status": "pass"
-// PREFIX-SUM-DAG: "optimistic_cycles": 451
+// PREFIX-SUM-DAG: "optimistic_cycles": 835
 // PREFIX-SUM-DAG: "event_count": 451
 // PREFIX-SUM-DAG: "i32:2016"
 
@@ -177,25 +177,25 @@
 // INTEGRATE-TRAPZ-DAG: "workload": "integrate_trapz"
 // INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
 // INTEGRATE-TRAPZ-DAG: "status": "pass"
-// INTEGRATE-TRAPZ-DAG: "metric_definition": "optimistic_event_count"
-// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 147
+// INTEGRATE-TRAPZ-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 299
 // INTEGRATE-TRAPZ-DAG: "wavefront_steps": 21
 // INTEGRATE-TRAPZ-DAG: "event_count": 147
 // INTEGRATE-TRAPZ-DAG: "f32:0.335938"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: bit_reverse,267,,blocked,DFG-sim report available
-// SUMMARY-DAG: conv1d,38,,blocked,DFG-sim report available
-// SUMMARY-DAG: convolve_1d,94,,blocked,DFG-sim report available
-// SUMMARY-DAG: correlation,202,,blocked,DFG-sim report available
-// SUMMARY-DAG: cumsum,7171,,blocked,DFG-sim report available
-// SUMMARY-DAG: dotproduct,451,,blocked,DFG-sim report available
-// SUMMARY-DAG: integrate_trapz,147,,blocked,DFG-sim report available
-// SUMMARY-DAG: mean,387,,blocked,DFG-sim report available
-// SUMMARY-DAG: prefix_sum,451,,blocked,DFG-sim report available
-// SUMMARY-DAG: reduction,387,,blocked,DFG-sim report available
-// SUMMARY-DAG: spmv,25,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecadd,387,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecnorm_l1,451,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecnorm_l2,451,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecsum,387,,blocked,DFG-sim report available
+// SUMMARY-DAG: conv1d,83,,blocked,DFG-sim report available
+// SUMMARY-DAG: convolve_1d,157,,blocked,DFG-sim report available
+// SUMMARY-DAG: correlation,346,,blocked,DFG-sim report available
+// SUMMARY-DAG: cumsum,14339,,blocked,DFG-sim report available
+// SUMMARY-DAG: dotproduct,1027,,blocked,DFG-sim report available
+// SUMMARY-DAG: integrate_trapz,299,,blocked,DFG-sim report available
+// SUMMARY-DAG: mean,643,,blocked,DFG-sim report available
+// SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
+// SUMMARY-DAG: reduction,579,,blocked,DFG-sim report available
+// SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecadd,643,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l1,643,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l2,771,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecsum,579,,blocked,DFG-sim report available

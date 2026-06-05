@@ -39,8 +39,9 @@ struct DFGSimulationReport {
   std::string workload;
   std::string graph;
   std::string status;
-  std::string metricDefinition = "optimistic_event_count";
+  std::string metricDefinition = "optimistic_operation_latency_sum";
   std::string operationSemanticsSource = kOperationSemanticsSource;
+  std::string operationCostModelSource = kOperationCostModelSource;
   std::uint64_t optimisticCycles = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;

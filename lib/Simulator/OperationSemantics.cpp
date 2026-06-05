@@ -1,12 +1,54 @@
 #include "Simulator/OperationSemantics.h"
 
 #include <limits>
+#include <optional>
 #include <system_error>
 #include <utility>
 
 using namespace loom::sim;
 
 namespace {
+
+struct OperationCostEntry {
+  const char *name;
+  std::uint64_t latencyCycles;
+  std::uint64_t reciprocalThroughput;
+};
+
+constexpr OperationCostEntry kOperationCosts[] = {
+    {"arith.constant", 1, 1},
+    {"arith.addf", 2, 2},
+    {"arith.subf", 2, 2},
+    {"arith.mulf", 3, 3},
+    {"arith.addi", 1, 1},
+    {"arith.muli", 3, 3},
+    {"arith.andi", 1, 1},
+    {"arith.ori", 1, 1},
+    {"arith.shli", 1, 1},
+    {"arith.shrui", 1, 1},
+    {"arith.index_cast", 1, 1},
+    {"llvm.zext", 1, 1},
+    {"llvm.intr.fmuladd", 4, 4},
+    {"llvm.intr.abs", 1, 1},
+    {"dataflow.stream", 1, 1},
+    {"dataflow.carry", 1, 1},
+    {"dataflow.invariant", 1, 1},
+    {"dataflow.constant", 1, 1},
+    {"dataflow.sync", 1, 1},
+    {"dataflow.load", 4, 4},
+    {"dataflow.store", 4, 4},
+    {"dataflow.mux", 1, 1},
+    {"dataflow.demux", 1, 1},
+    {"dataflow.gate", 1, 1},
+};
+
+std::optional<OperationCost> lookupOperationCost(llvm::StringRef opName) {
+  for (const OperationCostEntry &entry : kOperationCosts) {
+    if (opName == entry.name)
+      return OperationCost{entry.latencyCycles, entry.reciprocalThroughput};
+  }
+  return std::nullopt;
+}
 
 llvm::Error requireArity(llvm::StringRef opName,
                          llvm::ArrayRef<PrimitiveValue> operands,
@@ -83,6 +125,20 @@ bool loom::sim::isSupportedMappedOperation(llvm::StringRef opName) {
          opName == "dataflow.load" || opName == "dataflow.store" ||
          opName == "dataflow.mux" || opName == "dataflow.demux" ||
          opName == "dataflow.gate";
+}
+
+bool loom::sim::hasOperationCost(llvm::StringRef opName) {
+  return lookupOperationCost(opName).has_value();
+}
+
+llvm::Expected<OperationCost>
+loom::sim::estimateOperationCost(llvm::StringRef opName) {
+  std::optional<OperationCost> cost = lookupOperationCost(opName);
+  if (cost)
+    return *cost;
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "%s has no operation cost model entry",
+                                 opName.str().c_str());
 }
 
 llvm::Expected<PrimitiveValue>

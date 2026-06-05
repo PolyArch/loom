@@ -348,6 +348,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "status",
             "metric_definition",
             "operation_semantics_source",
+            "operation_cost_model_source",
             "optimistic_cycles",
             "wavefront_steps",
             "event_count",
@@ -367,6 +368,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "fidelity_level",
             "metric_definition",
             "operation_semantics_source",
+            "operation_cost_model_source",
             "difference_classification",
             "hardware_bound_classification",
             "dfg_cycles",
@@ -711,10 +713,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DFG simulator report kind must be dfg_sim_report")
         if data.get("status") not in BASE_STATUSES:
             diagnostics.append("DFG simulator report status must be a known status")
-        if data.get("metric_definition") != "optimistic_event_count":
+        if data.get("metric_definition") != "optimistic_operation_latency_sum":
             diagnostics.append("DFG simulator report has unknown metric definition")
         if data.get("operation_semantics_source") != "loom.sim.operation_semantics.v1":
             diagnostics.append("DFG simulator report has unknown operation semantics source")
+        if data.get("operation_cost_model_source") != "loom.sim.operation_cost.v1":
+            diagnostics.append("DFG simulator report has unknown operation cost model source")
         cycles = data.get("optimistic_cycles")
         if not isinstance(cycles, int) or cycles < 0:
             diagnostics.append("DFG simulator report optimistic_cycles must be non-negative integer")
@@ -724,8 +728,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         wavefront_steps = data.get("wavefront_steps")
         if not isinstance(wavefront_steps, int) or wavefront_steps < 0:
             diagnostics.append("DFG simulator report wavefront_steps must be non-negative integer")
-        if isinstance(cycles, int) and isinstance(event_count, int) and cycles != event_count:
-            diagnostics.append("DFG simulator optimistic_cycles must match event_count")
+        if isinstance(cycles, int) and isinstance(event_count, int) and cycles < event_count:
+            diagnostics.append("DFG simulator optimistic_cycles must not be below event_count")
     if kind == "cgra_sim_report":
         if data.get("kind") != "cgra_sim_report":
             diagnostics.append("CGRA simulator report kind must be cgra_sim_report")
@@ -737,6 +741,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report has unknown metric definition")
         if data.get("operation_semantics_source") != "loom.sim.operation_semantics.v1":
             diagnostics.append("CGRA simulator report has unknown operation semantics source")
+        if data.get("operation_cost_model_source") != "loom.sim.operation_cost.v1":
+            diagnostics.append("CGRA simulator report has unknown operation cost model source")
         if data.get("hardware_bound_classification") != "within_modeled_bounds":
             diagnostics.append("CGRA simulator report has unknown hardware bound classification")
         difference = data.get("difference_classification")

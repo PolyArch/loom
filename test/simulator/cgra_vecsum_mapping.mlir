@@ -20,16 +20,17 @@
 // CGRA-DAG: "status": "pass"
 // CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 // CGRA-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
+// CGRA-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
 // CGRA-DAG: "difference_classification": "expected_hardware_constraint"
-// CGRA-DAG: "dfg_cycles": 387
-// CGRA-DAG: "modeled_lower_bound_cycles": 397
+// CGRA-DAG: "dfg_cycles": 579
+// CGRA-DAG: "modeled_lower_bound_cycles": 589
 // CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
 // CGRA-DAG: "performance_delta_cycles": 10
 // CGRA-DAG: "route_latency_cycles": 6
 // CGRA-DAG: "route_segments": 6
 // CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
-// CGRA-DAG: "hardware_aware_cycles": 397
+// CGRA-DAG: "hardware_aware_cycles": 589
 // CGRA-DAG: "config_records": 65
 // CGRA-DAG: "cycle_breakdown"
 // CGRA-DAG: "category": "route_latency"
@@ -49,4 +50,4 @@
 // CGRA-DAG: "delta_explained_by_modeled_constraints"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-NEXT: vecsum,387,397,pass
+// SUMMARY-NEXT: vecsum,579,589,pass

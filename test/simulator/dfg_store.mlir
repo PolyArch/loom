@@ -5,8 +5,8 @@
 // CHECK-DAG: "workload": "store_then_load"
 // CHECK-DAG: "graph": "store_then_load"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_event_count"
-// CHECK-DAG: "optimistic_cycles": 2
+// CHECK-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// CHECK-DAG: "optimistic_cycles": 8
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 2
 // CHECK-DAG: "f32:7"

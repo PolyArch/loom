@@ -5,8 +5,8 @@
 // CHECK-DAG: "workload": "mulf"
 // CHECK-DAG: "graph": "mulf"
 // CHECK-DAG: "status": "pass"
-// CHECK-DAG: "metric_definition": "optimistic_event_count"
-// CHECK-DAG: "optimistic_cycles": 3
+// CHECK-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// CHECK-DAG: "optimistic_cycles": 5
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 3
 // CHECK-DAG: "f32:3"
