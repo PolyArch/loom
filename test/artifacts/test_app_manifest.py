@@ -21,6 +21,7 @@ EXPECTED_CASES = {
     "clz",
     "compare_swap",
     "convolve_1d",
+    "convolve_1d_same",
     "conv1d",
     "crc32",
     "cross_product",

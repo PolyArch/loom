@@ -1,0 +1,2 @@
+convolve_1d_same checksum: -614.506
+PASSED
