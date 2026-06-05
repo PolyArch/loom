@@ -22,6 +22,7 @@ EXPECTED_CASES = {
     "find_first_set",
     "fir_filter",
     "gemm",
+    "gemv",
     "lower_bound",
     "mean",
     "matvec",
