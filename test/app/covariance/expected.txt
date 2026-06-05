@@ -1,0 +1,2 @@
+covariance result: 431.598
+PASSED

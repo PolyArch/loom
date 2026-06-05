@@ -25,6 +25,7 @@ EXPECTED_CASES = {
     "convolve_1d_same",
     "correlation",
     "conv1d",
+    "covariance",
     "crc32",
     "cross_product",
     "ctz",
