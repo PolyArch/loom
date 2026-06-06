@@ -176,6 +176,9 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         edge["consumer_component"] = component_for_kind(edge["consumer_artifact_kind"])
         edge["public_spec_owner"] = "docs/spec-full-stack-traceability.md"
         edge["schema_or_verifier"] = "intermediate_artifact_audit"
+        edge["validation_command_role"] = "artifact content audit"
+        edge["negative_diagnostic_classes"] = ["missing_edge", "stale_fingerprint"]
+        edge["minimal_positive_demonstrator_requirement"] = "intermediate artifact chain"
         edge["required_input_fingerprints"] = {
             edge["from"]: fingerprint_by_id.get(edge["from"], "")
         }

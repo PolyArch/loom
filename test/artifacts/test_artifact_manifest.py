@@ -152,6 +152,12 @@ def main() -> int:
                 raise AssertionError(f"edge missed spec owner: {edge}")
             if edge.get("schema_or_verifier") != "intermediate_artifact_audit":
                 raise AssertionError(f"edge missed verifier name: {edge}")
+            if edge.get("validation_command_role") != "artifact content audit":
+                raise AssertionError(f"edge missed validation command role: {edge}")
+            if edge.get("negative_diagnostic_classes") != ["missing_edge", "stale_fingerprint"]:
+                raise AssertionError(f"edge missed negative diagnostics: {edge}")
+            if edge.get("minimal_positive_demonstrator_requirement") != "intermediate artifact chain":
+                raise AssertionError(f"edge missed demonstrator requirement: {edge}")
             left, right = key
             if edge.get("required_input_fingerprints") != {left: fingerprints[left]}:
                 raise AssertionError(f"edge missed input fingerprint: {edge}")

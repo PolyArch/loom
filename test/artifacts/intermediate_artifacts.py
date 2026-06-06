@@ -1190,6 +1190,14 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} public_spec_owner is invalid")
         if edge.get("schema_or_verifier") != "intermediate_artifact_audit":
             diagnostics.append(f"artifact manifest edge {index} schema_or_verifier is invalid")
+        if edge.get("validation_command_role") != "artifact content audit":
+            diagnostics.append(f"artifact manifest edge {index} validation_command_role is invalid")
+        if edge.get("negative_diagnostic_classes") != ["missing_edge", "stale_fingerprint"]:
+            diagnostics.append(f"artifact manifest edge {index} negative_diagnostic_classes is invalid")
+        if edge.get("minimal_positive_demonstrator_requirement") != "intermediate artifact chain":
+            diagnostics.append(
+                f"artifact manifest edge {index} minimal_positive_demonstrator_requirement is invalid"
+            )
         input_fingerprints = edge.get("required_input_fingerprints")
         if not isinstance(input_fingerprints, dict):
             diagnostics.append(f"artifact manifest edge {index} required_input_fingerprints must be an object")
