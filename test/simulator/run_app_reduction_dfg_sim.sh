@@ -284,6 +284,19 @@ relu_output_values() {
     printf "%s" "${values}"
 }
 
+variance_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 15); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", (i % 7) - 3 + 0.25 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
 configure_relu_core_args() {
     append_ctrl_tokens 32
     append_raw_memref 1 "$(relu_input_values)"
@@ -306,6 +319,35 @@ configure_relu_checksum_args() {
         --arg 2=32
         --arg 3=1
         --arg 5=0.000000e+00
+    )
+}
+
+configure_variance_mean_args() {
+    append_ctrl_tokens 16
+    append_raw_memref 4 "$(variance_input_values)"
+    sim_args+=(
+        --graph g_t_variance_red_0_0
+        --workload variance
+        --arg 1=0
+        --arg 2=16
+        --arg 3=1
+        --arg 5=6.250000e-02
+        --arg 6=0.000000e+00
+    )
+}
+
+configure_variance_var_args() {
+    append_ctrl_tokens 16
+    append_raw_memref 4 "$(variance_input_values)"
+    sim_args+=(
+        --graph g_t_variance_red_1_0
+        --workload variance
+        --arg 1=0
+        --arg 2=16
+        --arg 3=1
+        --arg 5=-6.250000e-02
+        --arg 6=6.250000e-02
+        --arg 7=0.000000e+00
     )
 }
 
@@ -583,6 +625,9 @@ case "${CASE}" in
     relu)
         configure_relu_core_args
         ;;
+    variance)
+        configure_variance_mean_args
+        ;;
     *)
         echo "unsupported app reduction case: ${CASE}" >&2
         exit 2
@@ -639,6 +684,14 @@ if [[ "${CASE}" == "relu" ]]; then
     configure_relu_checksum_args
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${checksum_report}"
     extra_reports+=("${checksum_report}")
+fi
+
+if [[ "${CASE}" == "variance" ]]; then
+    variance_report="${REPORT_JSON%.report.json}.var.report.json"
+    sim_args=()
+    configure_variance_var_args
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${variance_report}"
+    extra_reports+=("${variance_report}")
 fi
 
 declare -a summary_reports=()

@@ -10,6 +10,7 @@
 // RUN: env BUILD_DIR=%t.dir/axpy LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/axpy/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/relu LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/relu/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/rotate_bits LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/rotate_bits/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/variance LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/variance/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
@@ -35,6 +36,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh axpy %t.dir/axpy/main_func.dfg.mlir %t.dir/reports/axpy.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh relu %t.dir/relu/main_func.dfg.mlir %t.dir/reports/relu.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh rotate_bits %t.dir/rotate_bits/main_func.dfg.mlir %t.dir/reports/rotate_bits.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh variance %t.dir/variance/main_func.dfg.mlir %t.dir/reports/variance.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh matvec %t.dir/matvec/main_func.dfg.mlir %t.dir/reports/matvec.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
@@ -60,6 +62,8 @@
 // RUN: FileCheck %s --check-prefix=RELU < %t.dir/reports/relu.report.json
 // RUN: FileCheck %s --check-prefix=RELU-CHECKSUM < %t.dir/reports/relu.checksum.report.json
 // RUN: FileCheck %s --check-prefix=ROTATE-BITS < %t.dir/reports/rotate_bits.report.json
+// RUN: FileCheck %s --check-prefix=VARIANCE-MEAN < %t.dir/reports/variance.report.json
+// RUN: FileCheck %s --check-prefix=VARIANCE-VAR < %t.dir/reports/variance.var.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/reports/matvec.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-ROW1 < %t.dir/reports/matvec.row1.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-CHECKSUM < %t.dir/reports/matvec.checksum.report.json
@@ -205,6 +209,32 @@
 // ROTATE-BITS-DAG: "arith.select": 32
 // ROTATE-BITS-DAG: "dataflow.load": 64
 // ROTATE-BITS-DAG: "dataflow.store": 32
+
+// VARIANCE-MEAN-DAG: "kind": "dfg_sim_report"
+// VARIANCE-MEAN-DAG: "workload": "variance"
+// VARIANCE-MEAN-DAG: "graph": "g_t_variance_red_0_0"
+// VARIANCE-MEAN-DAG: "status": "pass"
+// VARIANCE-MEAN-DAG: "optimistic_cycles": 232
+// VARIANCE-MEAN-DAG: "wavefront_steps": 36
+// VARIANCE-MEAN-DAG: "event_count": 134
+// VARIANCE-MEAN-DAG: "dynamic_work_items": 16
+// VARIANCE-MEAN-DAG: "dataflow.load": 16
+// VARIANCE-MEAN-DAG: "arith.addf": 16
+// VARIANCE-MEAN-DAG: "arith.mulf": 17
+// VARIANCE-MEAN-DAG: "f32:-0.062500"
+
+// VARIANCE-VAR-DAG: "kind": "dfg_sim_report"
+// VARIANCE-VAR-DAG: "workload": "variance"
+// VARIANCE-VAR-DAG: "graph": "g_t_variance_red_1_0"
+// VARIANCE-VAR-DAG: "status": "pass"
+// VARIANCE-VAR-DAG: "optimistic_cycles": 314
+// VARIANCE-VAR-DAG: "wavefront_steps": 37
+// VARIANCE-VAR-DAG: "event_count": 168
+// VARIANCE-VAR-DAG: "dynamic_work_items": 16
+// VARIANCE-VAR-DAG: "dataflow.load": 16
+// VARIANCE-VAR-DAG: "arith.subf": 16
+// VARIANCE-VAR-DAG: "llvm.intr.fmuladd": 16
+// VARIANCE-VAR-DAG: "f32:4.214844"
 
 // MATVEC-DAG: "kind": "dfg_sim_report"
 // MATVEC-DAG: "workload": "matvec"
@@ -372,6 +402,7 @@
 // SUMMARY-DAG: relu,707,,blocked,DFG-sim report available
 // SUMMARY-DAG: rotate_bits,544,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
+// SUMMARY-DAG: variance,546,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecmul,256,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l1,643,,blocked,DFG-sim report available
