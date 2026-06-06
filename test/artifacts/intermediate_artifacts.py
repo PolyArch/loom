@@ -1675,6 +1675,7 @@ def validate_runtime_evidence(
 
 
 def validate_runtime_evidence_summaries(
+    path: Path,
     value: object,
     diagnostics: list[str],
     require_complete: bool,
@@ -1768,6 +1769,13 @@ def validate_runtime_evidence_summaries(
                     diagnostics.append(
                         f"DSE report bundle runtime evidence summary {index} "
                         f"input_artifact_fingerprints has invalid fingerprint for {identity}"
+                    )
+                    continue
+                resolved = resolve_json_identity_reference(path, identity)
+                if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+                    diagnostics.append(
+                        f"DSE report bundle runtime evidence summary {index} "
+                        f"input_artifact_fingerprints stale for {identity!r}"
                     )
         if require_complete and not input_fingerprints:
             diagnostics.append(
@@ -2619,6 +2627,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 if not data.get(key):
                     diagnostics.append(f"DSE report bundle pass needs {key}")
         validate_runtime_evidence_summaries(
+            path,
             data.get("runtime_evidence_summaries"),
             diagnostics,
             data.get("report_status") == "pass",
