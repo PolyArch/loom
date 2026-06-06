@@ -26,6 +26,7 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-e2e-demonstrator-") as tmp:
         out_dir = Path(tmp)
         source = out_dir / "source-compat-summary.csv"
+        cmsis_pipeline = out_dir / "cmsis-compiler-pipeline-summary.csv"
         primitive, hardware = artifact_test_common.prepare_candidate_inputs(repo, out_dir)
         mapping = out_dir / "pnr-mapping-summary.csv"
         sim = out_dir / "sim-cycle-summary.csv"
@@ -44,6 +45,16 @@ def main() -> int:
                 str(source),
             ],
             "source compatibility summary",
+        )
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/cmsis/run_compiler_pipeline_summary.sh",
+                "--output",
+                str(cmsis_pipeline),
+            ],
+            "CMSIS compiler pipeline summary",
         )
         artifact_test_common.require_success(
             repo,
@@ -111,6 +122,10 @@ def main() -> int:
             "--artifact",
             str(source),
             "--artifact",
+            str(cmsis_pipeline),
+            "--artifact",
+            str(hardware),
+            "--artifact",
             str(mapping),
             "--artifact",
             str(sim),
@@ -139,6 +154,47 @@ def main() -> int:
                 raise AssertionError(f"{key}={row[key]!r}, expected {value!r}: {row}")
         if "workload report bundle is not available yet" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
+
+        hardware_matches = [
+            row for row in rows
+            if row["demonstrator"] == "hardware::test/fabric/unit/pe/valid.mlir::pe_two_pes"
+        ]
+        if len(hardware_matches) != 1:
+            raise AssertionError(f"expected one hardware pe_two_pes demonstrator row, got {rows}")
+        hardware_row = hardware_matches[0]
+        expected_hardware = {
+            "compat_status": "skipped",
+            "artifact_status": "pass",
+            "mapping_status": "skipped",
+            "sim_status": "skipped",
+            "rtl_status": "skipped",
+            "fpa_status": "skipped",
+            "report_status": "blocked",
+        }
+        for key, value in expected_hardware.items():
+            if hardware_row[key] != value:
+                raise AssertionError(f"{key}={hardware_row[key]!r}, expected {value!r}: {hardware_row}")
+        if "hardware candidate verified" not in hardware_row.get("diagnostic", ""):
+            raise AssertionError(f"unexpected hardware diagnostic: {hardware_row}")
+
+        cmsis_matches = [row for row in rows if row["demonstrator"] == "cmsis::cmsis-dsp"]
+        if len(cmsis_matches) != 1:
+            raise AssertionError(f"expected one CMSIS-DSP demonstrator row, got {rows}")
+        cmsis_row = cmsis_matches[0]
+        expected_cmsis = {
+            "compat_status": "pass",
+            "artifact_status": "pass",
+            "mapping_status": "skipped",
+            "sim_status": "skipped",
+            "rtl_status": "skipped",
+            "fpa_status": "skipped",
+            "report_status": "skipped",
+        }
+        for key, value in expected_cmsis.items():
+            if cmsis_row[key] != value:
+                raise AssertionError(f"{key}={cmsis_row[key]!r}, expected {value!r}: {cmsis_row}")
+        if "CMSIS drop-in pipeline reached dataflow" not in cmsis_row.get("diagnostic", ""):
+            raise AssertionError(f"unexpected CMSIS diagnostic: {cmsis_row}")
 
         statusless_sim = out_dir / "statusless-sim-cycle-summary.csv"
         statusless_sim.write_text(

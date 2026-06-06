@@ -40,41 +40,58 @@ def case_identity(schema: intermediate_artifacts.CsvSchema, row: dict[str, str])
     return ":".join(value for value in values if value) or "unknown"
 
 
-def rows_for_artifact(path: Path) -> list[dict[str, str]]:
+GapKey = tuple[str, str, str]
+StatusEvent = tuple[GapKey, str, dict[str, str] | None]
+
+
+def status_events_for_artifact(path: Path) -> list[StatusEvent]:
     schema = intermediate_artifacts.schema_for_path(path)
     if schema is None or not path.is_file():
         return []
-    rows: list[dict[str, str]] = []
+    events: list[StatusEvent] = []
     with path.open(newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             diagnostic = row.get("diagnostic", "")
             for column in schema.status_columns:
                 status = row.get(column, "")
+                key = (column, case_identity(schema, row), schema.kind)
+                if status == "pass":
+                    events.append((key, "pass", None))
+                    continue
                 if status not in GAP_STATUSES:
                     continue
                 reason = f"{column}={status}"
                 if diagnostic:
                     reason = f"{reason}; {diagnostic}"
-                rows.append(
-                    {
-                        "stage": column,
-                        "case": case_identity(schema, row),
-                        "artifact": schema.kind,
-                        "reason": reason,
-                        "owner": "implementation",
-                        "blocking_input": str(path),
-                    }
+                events.append(
+                    (
+                        key,
+                        "gap",
+                        {
+                            "stage": column,
+                            "case": key[1],
+                            "artifact": schema.kind,
+                            "reason": reason,
+                            "owner": "implementation",
+                            "blocking_input": str(path),
+                        },
+                    )
                 )
-    return rows
+    return events
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     paths = discover_artifacts(args.artifact)
-    rows: list[dict[str, str]] = []
+    gaps: list[tuple[GapKey, dict[str, str]]] = []
     for path in paths:
-        rows.extend(rows_for_artifact(path))
+        for key, event, row in status_events_for_artifact(path):
+            if event == "pass":
+                gaps = [(gap_key, gap_row) for gap_key, gap_row in gaps if gap_key != key]
+            elif row is not None:
+                gaps.append((key, row))
+    rows = [row for _, row in gaps]
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

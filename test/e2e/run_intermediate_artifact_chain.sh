@@ -58,8 +58,13 @@ mapping_artifact="${OUT_DIR}/pnr-mapping.json"
 dfg_report="${OUT_DIR}/vecsum-dfg-sim-report.json"
 dfg_cycle="${OUT_DIR}/vecsum-dfg-sim-cycle-summary.csv"
 cgra_report="${OUT_DIR}/vecsum-cgra-sim-report.json"
+sim_comparison="${OUT_DIR}/sim-comparison-report.json"
+runtime_package="${OUT_DIR}/runtime-package.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
 rtl_fpa="${OUT_DIR}/rtl-fpa-summary.csv"
+report_bundle="${OUT_DIR}/workload-report-bundle.json"
+hardware_bundle="${OUT_DIR}/hardware-report-bundle.json"
+dse_bundle="${OUT_DIR}/dse-report-bundle.json"
 manifest="${OUT_DIR}/full-stack-artifact-manifest.json"
 demonstrator="${OUT_DIR}/e2e-demonstrator-summary.csv"
 dse_candidate="${OUT_DIR}/dse-candidate-summary.csv"
@@ -113,6 +118,16 @@ ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
   --mapping-artifact "${mapping_artifact}" \
   --hardware-mlir "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
   --output "${cgra_report}"
+bash "${ROOT}/test/simulator/run_sim_comparison_report.sh" \
+  --dfg-report "${dfg_report}" \
+  --cgra-report "${cgra_report}" \
+  --mapping-artifact "${mapping_artifact}" \
+  --output "${sim_comparison}"
+bash "${ROOT}/test/e2e/run_runtime_package.sh" \
+  --artifact "${mapping_artifact}" \
+  --artifact "${cgra_report}" \
+  --artifact "${sim_comparison}" \
+  --output "${runtime_package}"
 bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
   --dfg-report "${dfg_report}" \
   --cgra-report "${cgra_report}" \
@@ -121,6 +136,36 @@ bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --primitive-coverage "${primitive}" \
   --hardware-summary "${hardware}" \
   --output "${rtl_fpa}"
+bash "${ROOT}/test/e2e/run_hardware_report_bundle.sh" \
+  --artifact "${hardware}" \
+  --artifact "${rtl_fpa}" \
+  --output "${hardware_bundle}"
+bash "${ROOT}/test/dse/run_candidate_summary.sh" \
+  --artifact "${mapping}" \
+  --artifact "${mapping_artifact}" \
+  --artifact "${sim_cycle}" \
+  --artifact "${cgra_report}" \
+  --artifact "${rtl_fpa}" \
+  --output "${dse_candidate}"
+bash "${ROOT}/test/e2e/run_report_bundle.sh" \
+  --artifact "${source_compat}" \
+  --artifact "${compiler_pipeline}" \
+  --artifact "${primitive}" \
+  --artifact "${hardware}" \
+  --artifact "${mapping_artifact}" \
+  --artifact "${dfg_report}" \
+  --artifact "${cgra_report}" \
+  --artifact "${sim_comparison}" \
+  --artifact "${runtime_package}" \
+  --artifact "${sim_cycle}" \
+  --artifact "${rtl_fpa}" \
+  --artifact "${dse_candidate}" \
+  --output "${report_bundle}"
+bash "${ROOT}/test/e2e/run_dse_report_bundle.sh" \
+  --artifact "${dse_candidate}" \
+  --artifact "${report_bundle}" \
+  --artifact "${hardware_bundle}" \
+  --output "${dse_bundle}"
 bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${old_app_inventory}" \
   --artifact "${app_import_status}" \
@@ -134,21 +179,26 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${dfg_report}" \
   --artifact "${dfg_cycle}" \
   --artifact "${cgra_report}" \
+  --artifact "${sim_comparison}" \
+  --artifact "${runtime_package}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
+  --artifact "${dse_candidate}" \
+  --artifact "${report_bundle}" \
+  --artifact "${hardware_bundle}" \
+  --artifact "${dse_bundle}" \
   --output "${manifest}"
 bash "${ROOT}/test/e2e/run_demonstrator_summary.sh" \
   --artifact "${source_compat}" \
+  --artifact "${cmsis_compiler_pipeline}" \
+  --artifact "${hardware}" \
   --artifact "${mapping}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
+  --artifact "${report_bundle}" \
+  --artifact "${hardware_bundle}" \
   --artifact "${manifest}" \
   --output "${demonstrator}"
-bash "${ROOT}/test/dse/run_candidate_summary.sh" \
-  --artifact "${mapping}" \
-  --artifact "${sim_cycle}" \
-  --artifact "${rtl_fpa}" \
-  --output "${dse_candidate}"
 bash "${ROOT}/test/e2e/run_unsupported_scope_ledger.sh" \
   --artifact "${primitive}" \
   --artifact "${mapping}" \
@@ -170,8 +220,13 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${dfg_report}" \
   --artifact "${dfg_cycle}" \
   --artifact "${cgra_report}" \
+  --artifact "${sim_comparison}" \
+  --artifact "${runtime_package}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
+  --artifact "${report_bundle}" \
+  --artifact "${hardware_bundle}" \
+  --artifact "${dse_bundle}" \
   --artifact "${demonstrator}" \
   --artifact "${dse_candidate}" \
   --artifact "${unsupported}" \
@@ -190,8 +245,13 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${dfg_report}" \
   "${dfg_cycle}" \
   "${cgra_report}" \
+  "${sim_comparison}" \
+  "${runtime_package}" \
   "${sim_cycle}" \
   "${rtl_fpa}" \
+  "${report_bundle}" \
+  "${hardware_bundle}" \
+  "${dse_bundle}" \
   "${manifest}" \
   "${demonstrator}" \
   "${dse_candidate}" \

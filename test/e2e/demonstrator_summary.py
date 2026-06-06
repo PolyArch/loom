@@ -16,6 +16,9 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
+CMSIS_SUITES = {"CMSIS-DSP", "CMSIS-NN"}
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
@@ -138,6 +141,77 @@ def fpa_status(rtl_paths: list[Path], workload: str, hardware: str) -> str:
     return aggregate_statuses(statuses)
 
 
+def matching_report_bundle(
+    report_paths: list[Path],
+    workload: str,
+    hardware: str,
+    mapping_id: str,
+) -> dict[str, object] | None:
+    expected_suffix = f"::{mapping_id}" if mapping_id else ""
+    for path in report_paths:
+        data = read_json(path)
+        if data.get("kind") != "workload_report_bundle":
+            continue
+        if data.get("workload") != workload:
+            continue
+        if data.get("selected_hardware_candidate_identity") != hardware:
+            continue
+        bundle_id = data.get("bundle_id", "")
+        if expected_suffix and (not isinstance(bundle_id, str) or not bundle_id.endswith(expected_suffix)):
+            continue
+        return data
+    return None
+
+
+def report_bundle_status(
+    grouped: dict[str, list[Path]],
+    workload: str,
+    hardware: str,
+    mapping_id: str,
+) -> tuple[str, str]:
+    bundle = matching_report_bundle(grouped.get("workload_report_bundle", []), workload, hardware, mapping_id)
+    if bundle is None:
+        return "blocked", "workload report bundle is not available yet"
+    status = bundle.get("report_status", "blocked")
+    if not isinstance(status, str) or not status:
+        return "blocked", "workload report bundle has no report status"
+    if status == "pass":
+        return "pass", "workload report bundle available"
+    diagnostics = bundle.get("diagnostics", [])
+    if isinstance(diagnostics, list) and diagnostics:
+        return status, "; ".join(str(item) for item in diagnostics)
+    return status, f"workload report bundle status is {status}"
+
+
+def matching_hardware_report_bundle(
+    report_paths: list[Path],
+    hardware: str,
+) -> dict[str, object] | None:
+    for path in report_paths:
+        data = read_json(path)
+        if data.get("kind") != "hardware_report_bundle":
+            continue
+        if data.get("hardware_candidate_identity") != hardware:
+            continue
+        return data
+    return None
+
+
+def hardware_report_status(grouped: dict[str, list[Path]], hardware: str) -> tuple[str, str]:
+    bundle = matching_hardware_report_bundle(grouped.get("hardware_report_bundle", []), hardware)
+    if bundle is None:
+        return "blocked", "hardware candidate verified; hardware-only report bundle is not available yet"
+    status = bundle.get("report_status", "blocked")
+    if not isinstance(status, str) or not status:
+        return "blocked", "hardware report bundle has no report status"
+    if status == "pass":
+        return "pass", "hardware report bundle available"
+    diagnostics = bundle.get("diagnostics", [])
+    if isinstance(diagnostics, list) and diagnostics:
+        return status, "; ".join(str(item) for item in diagnostics)
+    return status, f"hardware report bundle status is {status}"
+
+
 def mapping_rows(mapping_paths: list[Path]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for path in mapping_paths:
@@ -153,6 +227,8 @@ def mapping_rows(mapping_paths: list[Path]) -> list[dict[str, str]]:
 def demonstrator_row(grouped: dict[str, list[Path]], row: dict[str, str]) -> dict[str, str]:
     workload = row["workload"]
     hardware = row["hardware"]
+    mapping_id = row.get("mapping_id", "")
+    report_status, diagnostic = report_bundle_status(grouped, workload, hardware, mapping_id)
     return {
         "demonstrator": f"app::{workload}::{hardware}",
         "compat_status": source_compat_status(grouped.get("source_compat", []), workload),
@@ -161,9 +237,72 @@ def demonstrator_row(grouped: dict[str, list[Path]], row: dict[str, str]) -> dic
         "sim_status": sim_status(grouped.get("sim_cycle", []), workload),
         "rtl_status": rtl_status(grouped.get("rtl_fpa", []), workload, hardware),
         "fpa_status": fpa_status(grouped.get("rtl_fpa", []), workload, hardware),
-        "report_status": "blocked",
-        "diagnostic": "workload report bundle is not available yet",
+        "report_status": report_status,
+        "diagnostic": diagnostic,
     }
+
+
+def cmsis_demonstrator_rows(grouped: dict[str, list[Path]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for path in grouped.get("compiler_pipeline", []):
+        for row in read_csv(path):
+            suite = row.get("suite", "")
+            case = row.get("case", "")
+            if suite not in CMSIS_SUITES or not case:
+                continue
+            artifact_status = aggregate_statuses(
+                [
+                    row.get("llvm_ir_status", ""),
+                    row.get("raised_mlir_status", ""),
+                    row.get("dataflow_status", ""),
+                ]
+            )
+            compat_status = aggregate_statuses([row.get("llvm_ir_status", "")])
+            downstream_status = "skipped" if artifact_status == "pass" else "blocked"
+            rows.append(
+                {
+                    "demonstrator": f"cmsis::{case}",
+                    "compat_status": compat_status,
+                    "artifact_status": artifact_status,
+                    "mapping_status": downstream_status,
+                    "sim_status": downstream_status,
+                    "rtl_status": downstream_status,
+                    "fpa_status": downstream_status,
+                    "report_status": downstream_status,
+                    "diagnostic": (
+                        "CMSIS drop-in pipeline reached dataflow; mapped reports "
+                        "require a compatible ADG profile"
+                        if artifact_status == "pass"
+                        else row.get("diagnostic", "CMSIS compiler pipeline is incomplete")
+                    ),
+                }
+            )
+    return rows
+
+
+def hardware_demonstrator_rows(grouped: dict[str, list[Path]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for path in grouped.get("adg_hardware", []):
+        for row in read_csv(path):
+            hardware = row.get("hardware", "")
+            if not hardware or hardware == "scaffold":
+                continue
+            verify_status = row.get("verify_status", "blocked")
+            report_status, diagnostic = hardware_report_status(grouped, hardware)
+            rows.append(
+                {
+                    "demonstrator": f"hardware::{hardware}",
+                    "compat_status": "skipped",
+                    "artifact_status": verify_status,
+                    "mapping_status": "skipped",
+                    "sim_status": "skipped",
+                    "rtl_status": "skipped",
+                    "fpa_status": "skipped",
+                    "report_status": report_status if verify_status == "pass" else "blocked",
+                    "diagnostic": diagnostic if verify_status == "pass" else row.get("diagnostic", "hardware candidate did not verify"),
+                }
+            )
+    return rows
 
 
 def main(argv: list[str]) -> int:
@@ -176,6 +315,8 @@ def main(argv: list[str]) -> int:
     )
     grouped = artifacts_by_kind(paths)
     rows = [demonstrator_row(grouped, row) for row in mapping_rows(grouped.get("pnr_mapping", []))]
+    rows.extend(cmsis_demonstrator_rows(grouped))
+    rows.extend(hardware_demonstrator_rows(grouped))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     if rows:

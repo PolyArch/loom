@@ -83,6 +83,41 @@ def main() -> int:
         if not row["blocking_input"].endswith("dataflow-primitive-coverage.csv"):
             raise AssertionError(f"blocking input should name source artifact: {row}")
 
+        blocked = out_dir / "blocked-dataflow-primitive-coverage.csv"
+        blocked.write_text(
+            "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
+            "vecsum,stream,2,blocked,simulator evidence missing\n"
+        )
+        passed = out_dir / "passed-dataflow-primitive-coverage.csv"
+        passed.write_text(
+            "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
+            "vecsum,stream,2,pass,DFG-sim report produced operation fire counts\n"
+        )
+        superseded = out_dir / "superseded-unsupported-scope-ledger.csv"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_unsupported_scope_ledger.sh",
+                "--artifact",
+                str(blocked),
+                "--artifact",
+                str(passed),
+                "--output",
+                str(superseded),
+            ],
+        )
+        with superseded.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        stale_rows = [
+            row for row in rows
+            if row["stage"] == "dfg_sim_status"
+            and row["case"] == "vecsum:stream"
+            and row["artifact"] == "dataflow_primitive_coverage"
+        ]
+        if stale_rows:
+            raise AssertionError(f"later pass evidence should close earlier unsupported rows: {rows}")
+
     return 0
 
 

@@ -24,8 +24,13 @@ EXPECTED_FILES = [
     "vecsum-dfg-sim-report.json",
     "vecsum-dfg-sim-cycle-summary.csv",
     "vecsum-cgra-sim-report.json",
+    "sim-comparison-report.json",
+    "runtime-package.json",
     "sim-cycle-summary.csv",
     "rtl-fpa-summary.csv",
+    "workload-report-bundle.json",
+    "hardware-report-bundle.json",
+    "dse-report-bundle.json",
     "full-stack-artifact-manifest.json",
     "e2e-demonstrator-summary.csv",
     "dse-candidate-summary.csv",
@@ -96,6 +101,35 @@ def main() -> int:
         if int(vecsum_rows[0]["cgra_sim_cycles"]) < int(vecsum_rows[0]["dfg_sim_cycles"]):
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {vecsum_rows[0]}")
 
+        comparison = json.loads((out_dir / "sim-comparison-report.json").read_text())
+        if comparison.get("kind") != "sim_comparison_report":
+            raise AssertionError(f"unexpected simulation comparison report kind: {comparison}")
+        if comparison.get("status") != "pass" or comparison.get("workload") != "vecsum":
+            raise AssertionError(f"unexpected simulation comparison report status: {comparison}")
+        if comparison.get("performance_comparison_status") != "pass":
+            raise AssertionError(f"comparison should preserve performance pass evidence: {comparison}")
+        if comparison.get("difference_classification") != "expected_hardware_constraint":
+            raise AssertionError(f"comparison should classify hardware constraint difference: {comparison}")
+        if comparison.get("dfg_sim_cycles") != 579 or comparison.get("cgra_sim_cycles") != 589:
+            raise AssertionError(f"comparison should preserve simulator cycle values: {comparison}")
+
+        runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
+        if runtime_package.get("kind") != "runtime_package":
+            raise AssertionError(f"unexpected runtime package kind: {runtime_package}")
+        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "vecsum":
+            raise AssertionError(f"unexpected runtime package status: {runtime_package}")
+        if runtime_package.get("work_package_identity") != "work-package::vecsum::vecsum__shared_reduction_adg":
+            raise AssertionError(f"unexpected runtime work package identity: {runtime_package}")
+        expected_launch = "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::default"
+        if runtime_package.get("launch_descriptor_identity") != expected_launch:
+            raise AssertionError(f"unexpected runtime launch descriptor identity: {runtime_package}")
+        if runtime_package.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"unexpected runtime mapping identity: {runtime_package}")
+        if runtime_package.get("fabric_adg_identity") != "shared_reduction_adg":
+            raise AssertionError(f"unexpected runtime fabric ADG identity: {runtime_package}")
+        if runtime_package.get("data_movement_policy") != "simulated":
+            raise AssertionError(f"unexpected runtime data movement policy: {runtime_package}")
+
         dse_rows = read_csv_rows(out_dir / "dse-candidate-summary.csv")
         vecsum_dse_rows = [row for row in dse_rows if row["workload"] == "vecsum"]
         if len(vecsum_dse_rows) != 1:
@@ -113,6 +147,93 @@ def main() -> int:
         for key, value in expected_dse.items():
             if vecsum_dse[key] != value:
                 raise AssertionError(f"unexpected vecsum DSE {key}: {vecsum_dse}")
+        expected_provenance = {
+            "candidate_kind": "combined_full_stack_candidate",
+            "objective_record": "objective::minimize_runtime",
+            "policy_id": "deterministic_minimize_runtime_v1",
+            "ordering_rule": "runtime_score_then_candidate_id",
+        }
+        for key, value in expected_provenance.items():
+            if vecsum_dse.get(key) != value:
+                raise AssertionError(f"unexpected vecsum DSE provenance {key}: {vecsum_dse}")
+        input_artifacts = vecsum_dse.get("input_artifacts", "")
+        for artifact_name in (
+            "pnr-mapping-summary.csv",
+            "pnr-mapping.json",
+            "sim-cycle-summary.csv",
+            "vecsum-cgra-sim-report.json",
+            "rtl-fpa-summary.csv",
+        ):
+            if artifact_name not in input_artifacts:
+                raise AssertionError(f"vecsum DSE input artifacts missed {artifact_name}: {vecsum_dse}")
+        metric_records = vecsum_dse.get("metric_records", "")
+        for metric in (
+            "cgra_sim_cycles=589",
+            "frequency_mhz=250.000",
+            "area_um2=7250.000",
+            "dynamic_power_mw=6.000",
+            "energy_nj=16.080",
+        ):
+            if metric not in metric_records:
+                raise AssertionError(f"vecsum DSE metric records missed {metric}: {vecsum_dse}")
+
+        report_bundle = json.loads((out_dir / "workload-report-bundle.json").read_text())
+        if report_bundle.get("kind") != "workload_report_bundle":
+            raise AssertionError(f"unexpected workload report bundle kind: {report_bundle}")
+        if report_bundle.get("workload") != "vecsum" or report_bundle.get("report_status") != "pass":
+            raise AssertionError(f"unexpected workload report bundle status: {report_bundle}")
+        if report_bundle.get("selected_hardware_candidate_identity") != "shared_reduction_adg":
+            raise AssertionError(f"unexpected workload report bundle hardware: {report_bundle}")
+        if report_bundle.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"unexpected workload report bundle mapping identity: {report_bundle}")
+        optional_identities = report_bundle.get("optional_artifact_identities", {})
+        if not isinstance(optional_identities, dict):
+            raise AssertionError(f"workload report bundle should include optional artifact identities: {report_bundle}")
+        if optional_identities.get("simulation_comparison_report") != "sim-comparison-report":
+            raise AssertionError(f"workload report bundle missed simulation comparison identity: {report_bundle}")
+        if optional_identities.get("runtime_package") != "runtime-package":
+            raise AssertionError(f"workload report bundle missed runtime package identity: {report_bundle}")
+        bundle_metrics = {
+            metric["metric_id"]: metric
+            for metric in report_bundle.get("metric_records", [])
+            if isinstance(metric, dict)
+        }
+        energy_metric = bundle_metrics.get("metric::vecsum::energy_nj")
+        if energy_metric is None or energy_metric.get("value") != 16.08:
+            raise AssertionError(f"missing vecsum energy metric in workload report bundle: {report_bundle}")
+        expected_energy_inputs = {
+            "metric::vecsum::cgra_sim_cycles",
+            "metric::shared_reduction_adg::frequency_mhz",
+            "metric::shared_reduction_adg::dynamic_power_mw",
+            "metric::shared_reduction_adg::leakage_power_mw",
+        }
+        if set(energy_metric.get("input_metric_ids", [])) != expected_energy_inputs:
+            raise AssertionError(f"unexpected vecsum energy provenance: {energy_metric}")
+
+        hardware_bundle = json.loads((out_dir / "hardware-report-bundle.json").read_text())
+        if hardware_bundle.get("kind") != "hardware_report_bundle":
+            raise AssertionError(f"unexpected hardware report bundle kind: {hardware_bundle}")
+        expected_hardware = "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg"
+        if hardware_bundle.get("hardware_candidate_identity") != expected_hardware:
+            raise AssertionError(f"unexpected hardware report bundle identity: {hardware_bundle}")
+        if hardware_bundle.get("report_status") != "pass":
+            raise AssertionError(f"hardware report bundle should pass with ADG and FPA evidence: {hardware_bundle}")
+        if hardware_bundle.get("supported_workload_classes") != ["vecsum"]:
+            raise AssertionError(f"unexpected hardware report supported workloads: {hardware_bundle}")
+
+        dse_bundle = json.loads((out_dir / "dse-report-bundle.json").read_text())
+        if dse_bundle.get("kind") != "dse_report_bundle":
+            raise AssertionError(f"unexpected DSE report bundle kind: {dse_bundle}")
+        if dse_bundle.get("report_status") != "pass":
+            raise AssertionError(f"DSE report bundle should pass with selected candidate evidence: {dse_bundle}")
+        if dse_bundle.get("selected_candidates") != [
+            "candidate::vecsum::shared_reduction_adg::vecsum__shared_reduction_adg"
+        ]:
+            raise AssertionError(f"unexpected DSE selected candidates: {dse_bundle}")
+        if dse_bundle.get("referenced_workload_report_bundle_identities") != ["workload-report-bundle"]:
+            raise AssertionError(f"DSE bundle missed workload report reference: {dse_bundle}")
+        if dse_bundle.get("referenced_hardware_candidate_report_bundle_identities") != ["hardware-report-bundle"]:
+            raise AssertionError(f"DSE bundle missed hardware report reference: {dse_bundle}")
 
         demonstrator_rows = read_csv_rows(out_dir / "e2e-demonstrator-summary.csv")
         vecsum_demo_rows = [row for row in demonstrator_rows if row["demonstrator"] == "app::vecsum::shared_reduction_adg"]
@@ -121,6 +242,30 @@ def main() -> int:
         vecsum_demo = vecsum_demo_rows[0]
         if vecsum_demo["rtl_status"] != "skipped" or vecsum_demo["fpa_status"] != "pass":
             raise AssertionError(f"demonstrator should see analytic FPA evidence: {vecsum_demo}")
+        if vecsum_demo["report_status"] != "pass":
+            raise AssertionError(f"demonstrator should see workload report bundle evidence: {vecsum_demo}")
+        hardware_demo_rows = [row for row in demonstrator_rows if row["demonstrator"] == "hardware::test/pnr/shared_reduction_adg.mlir::shared_reduction_adg"]
+        if len(hardware_demo_rows) != 1:
+            raise AssertionError(f"expected one shared_reduction_adg hardware row, got {demonstrator_rows}")
+        hardware_demo = hardware_demo_rows[0]
+        if hardware_demo["artifact_status"] != "pass" or hardware_demo["report_status"] != "pass":
+            raise AssertionError(f"unexpected shared_reduction_adg hardware demonstrator row: {hardware_demo}")
+        cmsis_demo_rows = [row for row in demonstrator_rows if row["demonstrator"] == "cmsis::cmsis-dsp"]
+        if len(cmsis_demo_rows) != 1:
+            raise AssertionError(f"expected one CMSIS-DSP demonstrator row, got {demonstrator_rows}")
+        cmsis_demo = cmsis_demo_rows[0]
+        expected_cmsis_statuses = {
+            "compat_status": "pass",
+            "artifact_status": "pass",
+            "mapping_status": "skipped",
+            "sim_status": "skipped",
+            "rtl_status": "skipped",
+            "fpa_status": "skipped",
+            "report_status": "skipped",
+        }
+        for key, value in expected_cmsis_statuses.items():
+            if cmsis_demo[key] != value:
+                raise AssertionError(f"unexpected CMSIS demonstrator {key}: {cmsis_demo}")
 
         import_rows = read_csv_rows(out_dir / "app-corpus-import-status.csv")
         states = {row["case"]: row["import_state"] for row in import_rows}
@@ -154,6 +299,25 @@ def main() -> int:
             ("source-compat-summary", "compiler-pipeline-summary"),
             ("pnr-mapping-summary", "e2e-demonstrator-summary"),
             ("pnr-mapping-summary", "dse-candidate-summary"),
+            ("vecsum-dfg-sim-report", "sim-comparison-report"),
+            ("vecsum-cgra-sim-report", "sim-comparison-report"),
+            ("pnr-mapping", "sim-comparison-report"),
+            ("pnr-mapping", "runtime-package"),
+            ("vecsum-cgra-sim-report", "runtime-package"),
+            ("sim-comparison-report", "runtime-package"),
+            ("runtime-package", "workload-report-bundle"),
+            ("pnr-mapping", "workload-report-bundle"),
+            ("sim-comparison-report", "workload-report-bundle"),
+            ("vecsum-cgra-sim-report", "workload-report-bundle"),
+            ("rtl-fpa-summary", "workload-report-bundle"),
+            ("dse-candidate-summary", "workload-report-bundle"),
+            ("adg-hardware-summary", "hardware-report-bundle"),
+            ("rtl-fpa-summary", "hardware-report-bundle"),
+            ("hardware-report-bundle", "e2e-demonstrator-summary"),
+            ("dse-candidate-summary", "dse-report-bundle"),
+            ("workload-report-bundle", "dse-report-bundle"),
+            ("hardware-report-bundle", "dse-report-bundle"),
+            ("workload-report-bundle", "e2e-demonstrator-summary"),
             ("dse-candidate-summary", "unsupported-scope-ledger"),
         }
         if not required_edges.issubset(edges):
