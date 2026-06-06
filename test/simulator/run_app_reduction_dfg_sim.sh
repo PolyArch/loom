@@ -216,21 +216,7 @@ append_rotate_bits_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
-matvec_row_values() {
-    local row="$1"
-    local values=""
-    local value=""
-    for j in $(seq 0 4); do
-        value=$((((row * 5 + j) % 10) + 1))
-        if [[ -n "${values}" ]]; then
-            values+=","
-        fi
-        values+="${value}"
-    done
-    printf "%s" "${values}"
-}
-
-gemv_row_values() {
+matrix_vector_row_values() {
     local row="$1"
     local values=""
     local value=""
@@ -247,7 +233,7 @@ gemv_row_values() {
 configure_matvec_row_args() {
     local row="$1"
     append_ctrl_tokens 5
-    append_raw_memref 4 "$(matvec_row_values "${row}")"
+    append_raw_memref 4 "$(matrix_vector_row_values "${row}")"
     append_raw_memref 5 "1,2,3,4,5"
     sim_args+=(
         --graph g_t_matvec_kernel_0_0
@@ -262,7 +248,7 @@ configure_matvec_row_args() {
 configure_gemv_row_args() {
     local row="$1"
     append_ctrl_tokens 5
-    append_raw_memref 4 "$(gemv_row_values "${row}")"
+    append_raw_memref 4 "$(matrix_vector_row_values "${row}")"
     append_raw_memref 5 "1,2,3,4,5"
     sim_args+=(
         --graph g_t_gemv_kernel_0_0
