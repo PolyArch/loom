@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Emit runtime package descriptors from mapped simulator artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "test" / "artifacts"))
+
+import intermediate_artifacts  # noqa: E402
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", choices=("cgra-sim", "dfg-sim"), default="cgra-sim")
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--artifact", action="append", default=[])
+    return parser.parse_args(argv)
+
+
+def artifact_id(path: Path | None) -> str:
+    if path is None:
+        return ""
+    for suffix in (".csv", ".json"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
+
+
+def read_json(path: Path | None) -> dict[str, object]:
+    if path is None or not path.is_file():
+        return {}
+    return json.loads(path.read_text())
+
+
+def group_paths(paths: list[Path]) -> dict[str, list[Path]]:
+    grouped: dict[str, list[Path]] = {}
+    for path in paths:
+        grouped.setdefault(intermediate_artifacts.artifact_kind_for_path(path), []).append(path)
+    return grouped
+
+
+def first_path(grouped: dict[str, list[Path]], kind: str) -> Path | None:
+    paths = grouped.get(kind, [])
+    return paths[0] if paths else None
+
+
+def string_field(data: dict[str, object], key: str) -> str:
+    value = data.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def runtime_input_identity(workload: str, comparison: dict[str, object], dfg: dict[str, object]) -> str:
+    identity = string_field(comparison, "runtime_input_identity")
+    if identity:
+        return identity
+    identity = string_field(dfg, "runtime_input_identity")
+    if identity:
+        return identity
+    return f"test-app-fixture::{workload}::default"
+
+
+def report_identities(paths: list[Path | None]) -> list[str]:
+    identities = []
+    for path in paths:
+        identity = artifact_id(path)
+        if identity:
+            identities.append(identity)
+    return identities
+
+
+def build_package(paths: list[Path], target: str) -> dict[str, object]:
+    grouped = group_paths(paths)
+    mapping_path = first_path(grouped, "pnr_mapping_artifact")
+    dfg_path = first_path(grouped, "dfg_sim_report")
+    cgra_path = first_path(grouped, "cgra_sim_report")
+    comparison_path = first_path(grouped, "sim_comparison_report")
+
+    mapping = read_json(mapping_path)
+    dfg = read_json(dfg_path)
+    cgra = read_json(cgra_path)
+    comparison = read_json(comparison_path)
+    workload = (
+        string_field(mapping, "workload")
+        or string_field(dfg, "workload")
+        or string_field(cgra, "workload")
+        or "unknown"
+    )
+    hardware = string_field(mapping, "hardware") or string_field(cgra, "hardware")
+    mapping_id = string_field(mapping, "mapping_id") or target.replace("-", "_")
+    runtime_input = runtime_input_identity(workload, comparison, dfg)
+
+    diagnostics: list[str] = []
+    if target == "cgra-sim":
+        if not mapping:
+            diagnostics.append("CGRA-sim target requires mapping artifact")
+        elif string_field(mapping, "status") != "pass":
+            diagnostics.append("PnR mapping artifact is not passing")
+        if cgra_path is None:
+            diagnostics.append("CGRA-sim target requires CGRA-sim report")
+        elif string_field(cgra, "status") != "pass":
+            diagnostics.append("CGRA-sim report is not passing")
+        if mapping and cgra:
+            if string_field(cgra, "workload") and string_field(cgra, "workload") != string_field(mapping, "workload"):
+                diagnostics.append("CGRA-sim report workload identity mismatch")
+            if string_field(cgra, "hardware") and string_field(cgra, "hardware") != string_field(mapping, "hardware"):
+                diagnostics.append("CGRA-sim report hardware identity mismatch")
+            if string_field(cgra, "mapping_id") and string_field(cgra, "mapping_id") != string_field(mapping, "mapping_id"):
+                diagnostics.append("CGRA-sim report mapping identity mismatch")
+        if not hardware:
+            diagnostics.append("fabric ADG identity is missing")
+        if not string_field(mapping, "mapping_id"):
+            diagnostics.append("mapping identity is missing")
+    else:
+        if dfg_path is None:
+            diagnostics.append("DFG-sim target requires DFG-sim report")
+        elif string_field(dfg, "status") != "pass":
+            diagnostics.append("DFG-sim report is not passing")
+        if mapping_path is not None:
+            diagnostics.append("DFG-sim target does not consume mapping artifacts")
+        if cgra_path is not None:
+            diagnostics.append("DFG-sim target does not consume CGRA-sim reports")
+        if comparison_path is not None:
+            diagnostics.append("DFG-sim target does not consume simulation comparison reports")
+    if not workload or workload == "unknown":
+        diagnostics.append("workload identity is missing")
+    if comparison and string_field(comparison, "status") != "pass":
+        diagnostics.append("simulation comparison report is not passing")
+    if target == "cgra-sim" and comparison:
+        comparison_mapping = string_field(comparison, "mapping_artifact_identity")
+        if comparison_mapping and comparison_mapping != artifact_id(mapping_path):
+            diagnostics.append("simulation comparison report references a different mapping artifact")
+
+    package_id = f"runtime-package::{workload}::{mapping_id}" if workload != "unknown" else "runtime-package::blocked"
+    work_package_identity = f"work-package::{workload}::{mapping_id}" if workload != "unknown" else ""
+    launch_descriptor_identity = (
+        f"launch::{workload}::{mapping_id}::{runtime_input}" if workload != "unknown" else ""
+    )
+    memory_descriptors: list[dict[str, str]] = []
+    if workload != "unknown" and runtime_input:
+        memory_descriptors.append(
+            {
+                "logical_argument": f"{workload}.default_input",
+                "direction": "read_write",
+                "policy": "simulated",
+                "runtime_input_identity": runtime_input,
+            }
+        )
+
+    argument_descriptors = []
+    if runtime_input:
+        argument_descriptors.append(
+            {
+                "name": "runtime_input",
+                "identity": runtime_input,
+                "descriptor_kind": "test_fixture",
+            }
+        )
+    if mapping_path is not None:
+        argument_descriptors.append(
+            {
+                "name": "mapping_artifact",
+                "identity": artifact_id(mapping_path),
+                "descriptor_kind": "pnr_mapping_artifact",
+            }
+        )
+    if dfg_path is not None:
+        argument_descriptors.append(
+            {
+                "name": "dfg_sim_report",
+                "identity": artifact_id(dfg_path),
+                "descriptor_kind": "dfg_sim_report",
+            }
+        )
+
+    if target == "cgra-sim":
+        target_profile = {
+            "target_kind": "simulator",
+            "simulator": "cgra_sim",
+            "profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+        }
+        required_runtime_features = [
+            "simulator_dispatch",
+            "explicit_mapping_artifact",
+            "report_only_fallback",
+        ]
+        simulator_report_identities = report_identities([cgra_path, comparison_path])
+        selected_mapping_identity = artifact_id(mapping_path)
+        fabric_adg_identity = hardware
+    else:
+        target_profile = {
+            "target_kind": "simulator",
+            "simulator": "dfg_sim",
+            "profile_id": "simulator::dfg_sim::optimistic_pipeline_latency_throughput_sum",
+        }
+        required_runtime_features = [
+            "dfg_sim_dispatch",
+            "software_dataflow_report",
+            "report_only_fallback",
+        ]
+        simulator_report_identities = report_identities([dfg_path])
+        selected_mapping_identity = ""
+        fabric_adg_identity = ""
+
+    return {
+        "schema_version": 1,
+        "kind": "runtime_package",
+        "package_id": package_id,
+        "workload": workload,
+        "work_package_identity": work_package_identity,
+        "launch_descriptor_identity": launch_descriptor_identity,
+        "selected_mapping_artifact_identity": selected_mapping_identity,
+        "fabric_adg_identity": fabric_adg_identity,
+        "target_profile": target_profile,
+        "fallback_policy": "report_only",
+        "synchronization_mode": "host_wait",
+        "data_movement_policy": "simulated",
+        "memory_descriptors": memory_descriptors,
+        "argument_descriptors": argument_descriptors,
+        "required_runtime_features": required_runtime_features,
+        "simulator_report_identities": simulator_report_identities,
+        "diagnostics": diagnostics,
+        "status": "pass" if not diagnostics else "blocked",
+    }
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    output = Path(args.output)
+    paths = [Path(value) for value in args.artifact]
+    package = build_package(paths, args.target)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
+    return 0 if package["status"] == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
