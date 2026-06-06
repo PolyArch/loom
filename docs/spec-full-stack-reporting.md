@@ -36,6 +36,9 @@ Required fields:
 * runtime input identity;
 * selected hardware candidate identity;
 * selected mapping artifact identity when hardware mapping is used;
+* input artifact identities and fingerprints;
+* runtime evidence summary when runtime packaging is used;
+* structured diagnostic records;
 * report status;
 * diagnostics summary.
 
@@ -69,6 +72,8 @@ Required fields:
 * RTL manifest identity when available;
 * EDA and FPA report identities when available;
 * supported workload classes;
+* input artifact identities and fingerprints;
+* structured diagnostic records;
 * diagnostics summary.
 
 ### DSE Report Bundle
@@ -86,6 +91,9 @@ Required fields:
 * rejected candidate summaries;
 * referenced workload report bundle identities;
 * referenced hardware candidate report bundle identities;
+* referenced DSE candidate artifact identities;
+* input artifact identities and fingerprints;
+* structured diagnostic records;
 * diagnostics summary.
 
 The DSE report bundle references candidate artifacts. It must not
