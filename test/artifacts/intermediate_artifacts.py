@@ -528,6 +528,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "runtime_host_interface",
             "runtime_evidence",
             "runtime_fallback_decision",
+            "input_artifact_fingerprints",
             "report_status",
             "diagnostic_records",
             "diagnostics",
@@ -1651,7 +1652,7 @@ def validate_runtime_evidence(
                     f"input_artifact_fingerprints has invalid fingerprint for {identity}"
                 )
                 continue
-            resolved = resolve_json_identity_reference(path, identity)
+            resolved = resolve_artifact_identity_reference(path, identity)
             if resolved is not None and fingerprint != artifact_fingerprint(resolved):
                 diagnostics.append(
                     "workload report bundle runtime_evidence "
@@ -1771,7 +1772,7 @@ def validate_runtime_evidence_summaries(
                         f"input_artifact_fingerprints has invalid fingerprint for {identity}"
                     )
                     continue
-                resolved = resolve_json_identity_reference(path, identity)
+                resolved = resolve_artifact_identity_reference(path, identity)
                 if resolved is not None and fingerprint != artifact_fingerprint(resolved):
                     diagnostics.append(
                         f"DSE report bundle runtime evidence summary {index} "
@@ -1836,8 +1837,8 @@ def validate_dse_report_candidate_input_fingerprints(
             diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints lacks {reference!r}")
 
 
-def resolve_json_identity_reference(anchor: Path, identity: str) -> Path | None:
-    for reference in (identity, f"{identity}.json"):
+def resolve_artifact_identity_reference(anchor: Path, identity: str) -> Path | None:
+    for reference in (identity, f"{identity}.json", f"{identity}.csv"):
         resolved = resolve_artifact_reference(anchor, reference)
         if resolved.is_file():
             return resolved
@@ -1881,12 +1882,61 @@ def validate_dse_report_input_fingerprints(
                 f"DSE report bundle input_artifact_fingerprints references {identity!r} outside report inputs"
             )
             continue
-        resolved = resolve_json_identity_reference(path, identity)
+        resolved = resolve_artifact_identity_reference(path, identity)
         if resolved is not None and fingerprint != artifact_fingerprint(resolved):
             diagnostics.append(f"DSE report bundle input_artifact_fingerprints stale for {identity!r}")
     for reference in reference_ids:
         if reference not in input_fingerprints:
             diagnostics.append(f"DSE report bundle input_artifact_fingerprints lacks {reference!r}")
+
+
+def validate_workload_report_input_fingerprints(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    reference_ids: set[str] = set()
+    for key in (
+        "source_artifact_identity",
+        "compiler_command_identity",
+        "selected_mapping_artifact_identity",
+    ):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            reference_ids.add(value)
+    optional_identities = data.get("optional_artifact_identities")
+    if isinstance(optional_identities, dict):
+        reference_ids.update(
+            identity
+            for identity in optional_identities.values()
+            if isinstance(identity, str) and identity
+        )
+    input_fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        diagnostics.append("workload report bundle input_artifact_fingerprints must be an object")
+        input_fingerprints = {}
+    if data.get("report_status") == "pass" and not input_fingerprints:
+        diagnostics.append("workload report bundle pass needs input_artifact_fingerprints")
+    for identity, fingerprint in input_fingerprints.items():
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append("workload report bundle input_artifact_fingerprints has invalid identity")
+            continue
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(
+                f"workload report bundle input_artifact_fingerprints has invalid fingerprint for {identity}"
+            )
+            continue
+        if identity not in reference_ids:
+            diagnostics.append(
+                f"workload report bundle input_artifact_fingerprints references {identity!r} outside report inputs"
+            )
+            continue
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"workload report bundle input_artifact_fingerprints stale for {identity!r}")
+    for reference in reference_ids:
+        if reference not in input_fingerprints:
+            diagnostics.append(f"workload report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
 def audit_json(path: Path, kind: str) -> dict[str, object]:
@@ -2275,7 +2325,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         f"runtime package input_artifact_fingerprints has invalid fingerprint for {identity}"
                     )
                     continue
-                resolved = resolve_json_identity_reference(path, identity)
+                resolved = resolve_artifact_identity_reference(path, identity)
                 if resolved is not None and fingerprint != artifact_fingerprint(resolved):
                     diagnostics.append(f"runtime package input_artifact_fingerprints stale for {identity!r}")
         for index, descriptor in enumerate(memory_descriptors, start=1):
@@ -2407,6 +2457,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "workload report bundle runtime",
             require_complete=data.get("report_status") == "pass",
         )
+        validate_workload_report_input_fingerprints(path, data, diagnostics)
         validate_host_interface(
             data.get("runtime_host_interface"),
             {},

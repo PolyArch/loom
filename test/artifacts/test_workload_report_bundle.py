@@ -23,6 +23,7 @@ REQUIRED_KEYS = {
     "runtime_host_interface",
     "runtime_evidence",
     "runtime_fallback_decision",
+    "input_artifact_fingerprints",
     "report_status",
     "diagnostic_records",
     "diagnostics",
@@ -99,6 +100,19 @@ def main() -> int:
             raise AssertionError(f"unexpected hardware identity: {data}")
         if data["selected_mapping_artifact_identity"] != "pnr-mapping":
             raise AssertionError(f"unexpected mapping artifact identity: {data}")
+        expected_input_fingerprints = {
+            "source-compat-summary": artifact_test_common.fingerprint(out_dir / "source-compat-summary.csv"),
+            "compiler-pipeline-summary": artifact_test_common.fingerprint(out_dir / "compiler-pipeline-summary.csv"),
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+            "vecsum-dfg-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-dfg-sim-report.json"),
+            "vecsum-cgra-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
+            "sim-comparison-report": artifact_test_common.fingerprint(out_dir / "sim-comparison-report.json"),
+            "runtime-package": artifact_test_common.fingerprint(out_dir / "runtime-package.json"),
+            "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
+            "dse-candidate-summary": artifact_test_common.fingerprint(out_dir / "dse-candidate-summary.csv"),
+        }
+        if data["input_artifact_fingerprints"] != expected_input_fingerprints:
+            raise AssertionError(f"unexpected report input fingerprints: {data}")
         optional_identities = data.get("optional_artifact_identities", {})
         if not isinstance(optional_identities, dict):
             raise AssertionError(f"report should include optional artifact identities: {data}")
@@ -224,6 +238,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report requiring runtime for compatibility mode unexpectedly passed audit")
+        stale_report_fingerprint = out_dir / "stale-input-fingerprint-workload-report-bundle.json"
+        stale_report_fingerprint_data = json.loads(report.read_text())
+        stale_report_fingerprint_data["input_artifact_fingerprints"]["source-compat-summary"] = "0" * 64
+        stale_report_fingerprint.write_text(
+            json.dumps(stale_report_fingerprint_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_report_fingerprint_audit = out_dir / "stale-input-fingerprint-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_report_fingerprint_audit),
+                str(stale_report_fingerprint),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with stale input fingerprint unexpectedly passed audit")
         bad_runtime_fingerprint_report = out_dir / "bad-runtime-fingerprint-workload-report-bundle.json"
         bad_runtime_fingerprint_data = json.loads(report.read_text())
         bad_runtime_fingerprint_data["runtime_evidence"]["input_artifact_fingerprints"]["runtime-package"] = "bad"

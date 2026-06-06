@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -28,6 +29,23 @@ def artifact_id(path: Path) -> str:
         if path.name.endswith(suffix):
             return path.name[: -len(suffix)]
     return path.stem
+
+
+def artifact_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def input_artifact_fingerprints(paths: list[Path | None]) -> dict[str, str]:
+    fingerprints: dict[str, str] = {}
+    for path in paths:
+        if path is None or not path.is_file():
+            continue
+        fingerprints[artifact_id(path)] = artifact_fingerprint(path)
+    return fingerprints
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -225,6 +243,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "runtime_host_interface": {},
             "runtime_fallback_decision": {},
             "runtime_evidence": {},
+            "input_artifact_fingerprints": {},
             "report_status": "blocked",
             "diagnostic_records": [
                 diagnostic_record(1, "no selected DSE candidate artifact was provided")
@@ -365,6 +384,19 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "runtime_host_interface": runtime_host_interface,
         "runtime_evidence": runtime_evidence(runtime_package, runtime_path),
         "runtime_fallback_decision": runtime_fallback_decision,
+        "input_artifact_fingerprints": input_artifact_fingerprints(
+            [
+                source_path,
+                compiler_path,
+                mapping_path,
+                dfg_path,
+                cgra_path,
+                comparison_path,
+                runtime_path,
+                rtl_path,
+                dse_path,
+            ]
+        ),
         "optional_artifact_identities": {
             "dfg_sim_report": artifact_id(dfg_path) if dfg_path is not None else "",
             "cgra_sim_report": artifact_id(cgra_path) if cgra_path is not None else "",
