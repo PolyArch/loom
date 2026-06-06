@@ -93,6 +93,29 @@ def metric_record(
     }
 
 
+def diagnostic_class(message: str) -> str:
+    if "FPA row" in message:
+        return "fpa_report_missing"
+    if "ADG hardware summary" in message:
+        return "hardware_candidate_missing"
+    return "hardware_report_bundle_failure"
+
+
+def diagnostic_records(diagnostics: list[str]) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for index, message in enumerate(diagnostics, start=1):
+        records.append(
+            {
+                "diagnostic_id": f"hardware-report-bundle::{index}",
+                "diagnostic_class": diagnostic_class(message),
+                "component": "hardware_report_bundle",
+                "severity": "error",
+                "message": message,
+            }
+        )
+    return records
+
+
 def fabric_adg_identity(hardware: str) -> str:
     return hardware.rsplit("::", 1)[0] if "::" in hardware else hardware
 
@@ -114,6 +137,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "supported_workload_classes": [],
             "input_artifact_fingerprints": {},
             "report_status": "blocked",
+            "diagnostic_records": diagnostic_records(["no passing ADG hardware summary row was provided"]),
             "diagnostics": ["no passing ADG hardware summary row was provided"],
             "metric_records": [],
         }
@@ -192,6 +216,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             [hardware_path, *(path for path, _ in fpa_rows)]
         ),
         "report_status": "pass" if not diagnostics else "blocked",
+        "diagnostic_records": diagnostic_records(diagnostics),
         "diagnostics": diagnostics,
         "metric_records": metric_records,
     }

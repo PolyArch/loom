@@ -550,6 +550,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "supported_workload_classes",
             "input_artifact_fingerprints",
             "report_status",
+            "diagnostic_records",
             "diagnostics",
             "metric_records",
         },
@@ -2605,10 +2606,18 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "eda_report_identities",
             "fpa_report_identities",
             "supported_workload_classes",
+            "diagnostic_records",
             "diagnostics",
         ):
             if not isinstance(data.get(key), list):
                 diagnostics.append(f"hardware report bundle {key} must be a list")
+        diagnostic_records = validate_diagnostic_records(
+            data.get("diagnostic_records"),
+            diagnostics,
+            "hardware report bundle",
+        )
+        if data.get("report_status") != "pass" and not diagnostic_records:
+            diagnostics.append("hardware report bundle non-pass status needs diagnostic_records")
         if data.get("report_status") == "pass":
             if not data.get("fpa_report_identities"):
                 diagnostics.append("hardware report bundle pass needs FPA report identity")

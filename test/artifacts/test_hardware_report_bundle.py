@@ -23,6 +23,7 @@ REQUIRED_KEYS = {
     "supported_workload_classes",
     "input_artifact_fingerprints",
     "report_status",
+    "diagnostic_records",
     "diagnostics",
     "metric_records",
 }
@@ -86,6 +87,8 @@ def main() -> int:
         }
         if data["input_artifact_fingerprints"] != expected_input_fingerprints:
             raise AssertionError(f"unexpected hardware report input fingerprints: {data}")
+        if data["diagnostic_records"] != []:
+            raise AssertionError(f"passing hardware report should have no diagnostic records: {data}")
 
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:
@@ -162,6 +165,42 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("hardware report with stale input fingerprint unexpectedly passed audit")
+
+        missing_fpa_report = out_dir / "missing-fpa-hardware-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_hardware_report_bundle.sh",
+                "--output",
+                str(missing_fpa_report),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report without FPA row unexpectedly passed")
+        missing_fpa_data = json.loads(missing_fpa_report.read_text())
+        records = missing_fpa_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "fpa_report_missing"
+            and record.get("component") == "hardware_report_bundle"
+            for record in records
+        ):
+            raise AssertionError(f"missing FPA report needs structured diagnostics: {missing_fpa_data}")
+        missing_fpa_audit = out_dir / "missing-fpa-hardware-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_fpa_audit),
+                str(missing_fpa_report),
+            ],
+            "blocked hardware report bundle audit",
+        )
         reviews = audit_data.get("artifact_reviews", [])
         matching_reviews = [
             review for review in reviews
