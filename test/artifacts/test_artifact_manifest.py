@@ -118,6 +118,26 @@ def main() -> int:
         edge_ids = {edge.get("id") for edge in data["edges"]}
         if edge_ids != expected_edge_ids:
             raise AssertionError(f"unexpected edge ids: {edge_ids}")
+        expected_edge_kinds = {
+            ("source-compat-summary", "compiler-pipeline-summary"): (
+                "source_compat",
+                "compiler_pipeline",
+            ),
+            ("compiler-pipeline-summary", "dataflow-primitive-coverage"): (
+                "compiler_pipeline",
+                "dataflow_primitive_coverage",
+            ),
+        }
+        for edge in data["edges"]:
+            key = (edge.get("from"), edge.get("to"))
+            expected_kinds = expected_edge_kinds.get(key)
+            if expected_kinds is None:
+                raise AssertionError(f"unexpected edge for kind check: {edge}")
+            if (
+                edge.get("producer_artifact_kind"),
+                edge.get("consumer_artifact_kind"),
+            ) != expected_kinds:
+                raise AssertionError(f"edge missed artifact kinds: {edge}")
         if data["diagnostics"]:
             raise AssertionError(f"unexpected diagnostics: {data['diagnostics']}")
 

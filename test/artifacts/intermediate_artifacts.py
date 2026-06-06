@@ -1105,6 +1105,7 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
         edges = []
 
     artifact_ids: set[str] = set()
+    artifact_kinds: dict[str, str] = {}
     ids_by_kind: dict[str, list[str]] = {}
     for index, artifact in enumerate(artifacts, start=1):
         if not isinstance(artifact, dict):
@@ -1121,6 +1122,7 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
         if not isinstance(kind, str) or not kind:
             diagnostics.append(f"artifact manifest artifact {identity} lacks kind")
             continue
+        artifact_kinds[identity] = kind
         ids_by_kind.setdefault(kind, []).append(identity)
 
     edge_pairs: set[tuple[str, str]] = set()
@@ -1151,6 +1153,16 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} has unknown source {left}")
         if right not in artifact_ids:
             diagnostics.append(f"artifact manifest edge {index} has unknown sink {right}")
+        producer_kind = edge.get("producer_artifact_kind")
+        consumer_kind = edge.get("consumer_artifact_kind")
+        if not isinstance(producer_kind, str) or not producer_kind:
+            diagnostics.append(f"artifact manifest edge {index} lacks producer_artifact_kind")
+        elif left in artifact_kinds and producer_kind != artifact_kinds[left]:
+            diagnostics.append(f"artifact manifest edge {index} producer_artifact_kind does not match source")
+        if not isinstance(consumer_kind, str) or not consumer_kind:
+            diagnostics.append(f"artifact manifest edge {index} lacks consumer_artifact_kind")
+        elif right in artifact_kinds and consumer_kind != artifact_kinds[right]:
+            diagnostics.append(f"artifact manifest edge {index} consumer_artifact_kind does not match sink")
         edge_pairs.add((left, right))
 
     for left, right in ARTIFACT_EDGE_PAIRS:

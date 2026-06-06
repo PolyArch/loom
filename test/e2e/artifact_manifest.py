@@ -65,6 +65,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     diagnostics = []
     seen_ids = set()
     ids_by_kind: dict[str, list[str]] = {}
+    kind_by_id: dict[str, str] = {}
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
         identity = artifact_id(path)
@@ -77,6 +78,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
             diagnostics.append({"status": "blocked", "message": f"duplicate artifact id: {identity}"})
         seen_ids.add(identity)
         ids_by_kind.setdefault(kind, []).append(identity)
+        kind_by_id[identity] = kind
         artifacts.append(
             {
                 "kind": kind,
@@ -159,6 +161,10 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
             for source_id in ids_by_kind.get(source_kind, []):
                 add_edge(edges, edge_keys, source_id, dse_report_id)
+
+    for edge in edges:
+        edge["producer_artifact_kind"] = kind_by_id.get(edge["from"], "")
+        edge["consumer_artifact_kind"] = kind_by_id.get(edge["to"], "")
 
     return {
         "schema_version": 1,
