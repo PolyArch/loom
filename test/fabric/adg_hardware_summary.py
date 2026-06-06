@@ -18,7 +18,10 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
-DEFAULT_INPUTS = (ROOT / "test" / "fabric" / "unit" / "pe" / "valid.mlir",)
+DEFAULT_INPUTS = (
+    ROOT / "test" / "fabric" / "unit" / "pe" / "valid.mlir",
+    ROOT / "test" / "pnr" / "shared_reduction_adg.mlir",
+)
 MODULE_RE = re.compile(r"^\s*fabric\.module @([A-Za-z_.$-][A-Za-z0-9_.$-]*)\b")
 NODE_RE = re.compile(r"\bfabric\.(pe|switch|mem|fifo|instantiate)\b")
 LINK_RE = re.compile(r"\bfabric\.link\b")

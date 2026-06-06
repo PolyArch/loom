@@ -12,6 +12,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CALLER_CWD="$(pwd)"
 if ! KERNELS_TEXT="$(python3 "${HERE}/app_manifest.py" list --tier run)"; then
     exit 1
 fi
@@ -24,8 +25,17 @@ else
     BUILD_ROOT="$(mktemp -d -p "${TEMP_ROOT}" "loom-app-run-all.XXXXXX")"
 fi
 
-CC="${CC:-gcc}"
-CXX="${CXX:-g++}"
+resolve_compiler() {
+    local compiler="$1"
+    if [[ "${compiler}" == */* && "${compiler}" != /* ]]; then
+        printf '%s/%s\n' "${CALLER_CWD}" "${compiler}"
+        return
+    fi
+    printf '%s\n' "${compiler}"
+}
+
+CC="$(resolve_compiler "${CC:-gcc}")"
+CXX="$(resolve_compiler "${CXX:-g++}")"
 export CC CXX
 export LC_ALL=C
 

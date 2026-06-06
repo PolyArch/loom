@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 from typing import Callable
@@ -31,6 +32,12 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def attach_path(row: dict[str, str], path: Path) -> dict[str, str]:
+    copied = dict(row)
+    copied["__path"] = str(path)
+    return copied
+
+
 def artifacts_by_kind(paths: list[Path]) -> dict[str, list[Path]]:
     grouped: dict[str, list[Path]] = {}
     for path in paths:
@@ -38,11 +45,98 @@ def artifacts_by_kind(paths: list[Path]) -> dict[str, list[Path]]:
     return grouped
 
 
+def json_artifacts_by_kind(paths: list[Path]) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for path in paths:
+        kind = intermediate_artifacts.json_kind_for_path(path)
+        if kind is None or not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            data["__path"] = str(path)
+            grouped.setdefault(kind, []).append(data)
+    return grouped
+
+
+def mapping_rows_from_artifacts(artifacts: list[dict[str, object]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for artifact in artifacts:
+        workload = artifact.get("workload")
+        hardware = artifact.get("hardware")
+        mapping_id = artifact.get("mapping_id")
+        status = artifact.get("status")
+        if (
+            not isinstance(workload, str)
+            or workload in {"", "scaffold"}
+            or not isinstance(hardware, str)
+            or hardware in {"", "scaffold"}
+            or not isinstance(mapping_id, str)
+        ):
+            continue
+        rows.append(
+            {
+                "workload": workload,
+                "hardware": hardware,
+                "mapping_id": mapping_id,
+                "status": str(status) if status not in {"", None} else "",
+                "__path": artifact_ref(artifact.get("__path")),
+            }
+        )
+    return rows
+
+
+def resolve_manifest_path(manifest_path: Path, raw_path: object) -> Path | None:
+    if not isinstance(raw_path, str) or raw_path == "":
+        return None
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return manifest_path.parent / path
+
+
+def mapping_rows_from_manifests(manifests: list[dict[str, object]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for manifest in manifests:
+        manifest_path_text = manifest.get("__path")
+        if not isinstance(manifest_path_text, str) or manifest_path_text == "":
+            continue
+        manifest_path = Path(manifest_path_text)
+        candidates = manifest.get("candidates")
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            mapping_path = resolve_manifest_path(manifest_path, candidate.get("mapping_artifact"))
+            if mapping_path is None or not mapping_path.is_file():
+                continue
+            try:
+                mapping = json.loads(mapping_path.read_text())
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(mapping, dict) or mapping.get("kind") != "pnr_mapping":
+                continue
+            mapping["__path"] = str(mapping_path)
+            for row in mapping_rows_from_artifacts([mapping]):
+                row["__manifest_path"] = str(manifest_path)
+                policy_id = manifest.get("policy_id")
+                if isinstance(policy_id, str):
+                    row["__policy_id"] = policy_id
+                objective = manifest.get("objective")
+                if isinstance(objective, str):
+                    row["__objective"] = objective
+                rows.append(row)
+    return rows
+
+
 def mapping_rows(paths: list[Path]) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for path in paths:
         rows.extend(
-            row
+            attach_path(row, path)
             for row in read_csv(path)
             if row.get("workload") not in {"", "scaffold", None}
             and row.get("hardware") not in {"", "scaffold", None}
@@ -50,11 +144,23 @@ def mapping_rows(paths: list[Path]) -> list[dict[str, str]]:
     return rows
 
 
+def dedupe_mapping_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    deduped: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for row in rows:
+        key = (row.get("workload", ""), row.get("hardware", ""), row.get("mapping_id", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
 def sim_for_workload(paths: list[Path], workload: str) -> dict[str, str]:
     for path in paths:
         for row in read_csv(path):
             if row.get("kernel") == workload:
-                return row
+                return attach_path(row, path)
     return {}
 
 
@@ -66,11 +172,94 @@ def fpa_for_candidate(paths: list[Path], workload: str, hardware: str) -> dict[s
                 continue
             row_hardware = row.get("hardware", "")
             if row_hardware == hardware:
-                return row
+                return attach_path(row, path)
             if row_hardware.rsplit("::", 1)[-1] == hardware:
-                suffix_matches.append(row)
+                suffix_matches.append(attach_path(row, path))
     if len(suffix_matches) == 1:
         return suffix_matches[0]
+    return {}
+
+
+def hardware_refs_match(candidate: str, evidence: object) -> bool:
+    if not isinstance(evidence, str) or not evidence:
+        return False
+    return evidence == candidate or evidence.rsplit("::", 1)[-1] == candidate
+
+
+def mapping_artifact_for_candidate(
+    artifacts: list[dict[str, object]],
+    workload: str,
+    hardware: str,
+    mapping_id: str,
+) -> dict[str, object]:
+    matches = [
+        artifact
+        for artifact in artifacts
+        if artifact.get("status") == "pass"
+        and artifact.get("workload") == workload
+        and artifact.get("mapping_id") == mapping_id
+        and hardware_refs_match(hardware, artifact.get("hardware"))
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return {}
+
+
+def mapping_artifact_from_row(row: dict[str, str]) -> dict[str, object]:
+    path_text = row.get("__path", "")
+    if path_text == "":
+        return {}
+    path = Path(path_text)
+    if path.suffix != ".json" or not path.is_file():
+        return {}
+    try:
+        artifact = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(artifact, dict) or artifact.get("kind") != "pnr_mapping":
+        return {}
+    if (
+        artifact.get("status") == "pass"
+        and artifact.get("workload") == row.get("workload")
+        and artifact.get("mapping_id") == row.get("mapping_id")
+        and hardware_refs_match(row.get("hardware", ""), artifact.get("hardware"))
+    ):
+        artifact["__path"] = str(path)
+        return artifact
+    return {}
+
+
+def mapping_artifact_evidence(
+    artifacts: list[dict[str, object]],
+    row: dict[str, str],
+) -> dict[str, object]:
+    explicit = mapping_artifact_for_candidate(
+        artifacts,
+        row["workload"],
+        row["hardware"],
+        row.get("mapping_id", ""),
+    )
+    if explicit:
+        return explicit
+    return mapping_artifact_from_row(row)
+
+
+def cgra_report_for_candidate(
+    reports: list[dict[str, object]],
+    workload: str,
+    hardware: str,
+    mapping_id: str,
+) -> dict[str, object]:
+    matches = [
+        report
+        for report in reports
+        if report.get("status") == "pass"
+        and report.get("workload") == workload
+        and report.get("mapping_id") == mapping_id
+        and hardware_refs_match(hardware, report.get("hardware"))
+    ]
+    if len(matches) == 1:
+        return matches[0]
     return {}
 
 
@@ -94,10 +283,32 @@ def parse_positive_float(row: dict[str, str], column: str) -> float | None:
     return parsed
 
 
+def artifact_ref(value: object) -> str:
+    return str(value) if value not in {"", None} else ""
+
+
+def policy_id_for_objective(objective: str, mapping: dict[str, str] | None = None) -> str:
+    if mapping is not None and mapping.get("__policy_id"):
+        return mapping["__policy_id"]
+    return f"deterministic_{objective}_v1"
+
+
+def ordering_rule_for_objective(objective: str) -> str:
+    if objective in {"minimize_energy", "minimize_power"}:
+        return "energy_score_then_candidate_id"
+    return "runtime_score_then_candidate_id"
+
+
+def complete_candidate_id(workload: str, hardware: str, mapping_id: str) -> str:
+    return f"candidate::{workload}::{hardware}::{mapping_id}"
+
+
 def complete_evidence(
     mapping: dict[str, str],
     sim: dict[str, str],
     fpa: dict[str, str],
+    mapping_artifact: dict[str, object],
+    cgra_report: dict[str, object],
 ) -> tuple[float, float] | None:
     if mapping.get("status") != "pass" or not mapping.get("mapping_id"):
         return None
@@ -105,8 +316,15 @@ def complete_evidence(
         return None
     if fpa.get("status") != "pass":
         return None
+    if mapping_artifact.get("status") != "pass":
+        return None
+    if cgra_report.get("status") != "pass":
+        return None
 
-    cycles = parse_positive_float(sim, "cgra_sim_cycles")
+    report_cycles = cgra_report.get("hardware_aware_cycles")
+    if not isinstance(report_cycles, int) or report_cycles <= 0:
+        return None
+    cycles = float(report_cycles)
     frequency_mhz = parse_positive_float(fpa, "frequency_mhz")
     dynamic_power_mw = parse_float(fpa, "dynamic_power_mw")
     leakage_power_mw = parse_float(fpa, "leakage_power_mw")
@@ -128,25 +346,58 @@ def candidate_row(
     mapping: dict[str, str],
     sim: dict[str, str],
     fpa: dict[str, str],
+    mapping_artifact: dict[str, object],
+    cgra_report: dict[str, object],
     objective: str,
+    output_artifact: Path,
 ) -> dict[str, str]:
     workload = mapping["workload"]
     hardware = mapping["hardware"]
-    complete = complete_evidence(mapping, sim, fpa)
+    effective_objective = mapping.get("__objective") or objective
+    complete = complete_evidence(mapping, sim, fpa, mapping_artifact, cgra_report)
     if complete is not None:
-        _cycles, energy_nj = complete
+        cycles, energy_nj = complete
+        cycle_text = str(int(cycles))
+        input_artifacts = ";".join(
+            ref
+            for ref in (
+                artifact_ref(mapping.get("__manifest_path")),
+                artifact_ref(mapping.get("__path")),
+                artifact_ref(mapping_artifact.get("__path")),
+                artifact_ref(sim.get("__path")),
+                artifact_ref(cgra_report.get("__path")),
+                artifact_ref(fpa.get("__path")),
+            )
+            if ref
+        )
+        metric_records = ";".join(
+            (
+                f"cgra_sim_cycles={cycle_text}",
+                f"frequency_mhz={fpa['frequency_mhz']}",
+                f"area_um2={fpa['area_um2']}",
+                f"dynamic_power_mw={fpa['dynamic_power_mw']}",
+                f"energy_nj={energy_nj:.3f}",
+            )
+        )
         return {
-            "candidate": f"candidate::{workload}::{hardware}",
+            "candidate": complete_candidate_id(workload, hardware, mapping["mapping_id"]),
             "workload": workload,
             "hardware": hardware,
             "mapping_id": mapping["mapping_id"],
-            "objective": objective,
-            "cgra_sim_cycles": sim["cgra_sim_cycles"],
+            "objective": effective_objective,
+            "cgra_sim_cycles": cycle_text,
             "frequency_mhz": fpa["frequency_mhz"],
             "area_um2": fpa["area_um2"],
             "dynamic_power_mw": fpa["dynamic_power_mw"],
             "energy_nj": f"{energy_nj:.3f}",
             "selection_status": "selected",
+            "candidate_kind": "combined_full_stack_candidate",
+            "input_artifacts": input_artifacts,
+            "output_artifacts": str(output_artifact),
+            "objective_record": f"objective::{effective_objective}",
+            "metric_records": metric_records,
+            "policy_id": policy_id_for_objective(effective_objective, mapping),
+            "ordering_rule": ordering_rule_for_objective(effective_objective),
             "diagnostic": (
                 "cycle-frequency-power-area energy estimate; "
                 "energy_nj=(dynamic_power_mw+leakage_power_mw)*"
@@ -158,14 +409,24 @@ def candidate_row(
         "workload": workload,
         "hardware": hardware,
         "mapping_id": "",
-        "objective": objective,
+        "objective": effective_objective,
         "cgra_sim_cycles": "",
         "frequency_mhz": "",
         "area_um2": "",
         "dynamic_power_mw": "",
         "energy_nj": "",
         "selection_status": "blocked",
-        "diagnostic": "missing mapping, simulator, or FPA evidence for DSE selection",
+        "candidate_kind": "combined_full_stack_candidate",
+        "input_artifacts": "",
+        "output_artifacts": str(output_artifact),
+        "objective_record": f"objective::{effective_objective}",
+        "metric_records": "",
+        "policy_id": policy_id_for_objective(effective_objective, mapping),
+        "ordering_rule": ordering_rule_for_objective(effective_objective),
+        "diagnostic": (
+            "missing mapping, simulator, or FPA evidence for DSE selection; "
+            "requires matching mapping artifact and CGRA simulator report"
+        ),
     }
 
 
@@ -183,23 +444,30 @@ def energy_score(row: dict[str, str]) -> float:
 
 
 def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
-    complete = [row for row in rows if row.get("selection_status") == "selected"]
-    if len(complete) <= 1:
-        return
     score: Callable[[dict[str, str]], float]
-    if objective in {"minimize_energy", "minimize_power"}:
-        score = energy_score
-    else:
-        score = runtime_score
-    selected = min(complete, key=lambda row: (score(row), row["candidate"]))
-    for row in complete:
-        if row is selected:
+    objectives = sorted({row.get("objective") or objective for row in rows})
+    for effective_objective in objectives:
+        complete = [
+            row
+            for row in rows
+            if row.get("selection_status") == "selected"
+            and (row.get("objective") or objective) == effective_objective
+        ]
+        if len(complete) <= 1:
             continue
-        row["selection_status"] = "rejected"
-        row["diagnostic"] = (
-            "complete cycle-frequency-power-area evidence; rejected by "
-            f"{objective} deterministic ordering"
-        )
+        if effective_objective in {"minimize_energy", "minimize_power"}:
+            score = energy_score
+        else:
+            score = runtime_score
+        selected = min(complete, key=lambda row: (score(row), row["candidate"]))
+        for row in complete:
+            if row is selected:
+                continue
+            row["selection_status"] = "rejected"
+            row["diagnostic"] = (
+                "complete cycle-frequency-power-area evidence; rejected by "
+                f"{effective_objective} deterministic ordering"
+            )
 
 
 def main(argv: list[str]) -> int:
@@ -211,14 +479,30 @@ def main(argv: list[str]) -> int:
         include_unsupported_scope=False,
     )
     grouped = artifacts_by_kind(paths)
+    json_grouped = json_artifacts_by_kind(paths)
+    pnr_mapping_rows = mapping_rows(grouped.get("pnr_mapping", []))
+    pnr_mapping_rows.extend(mapping_rows_from_artifacts(json_grouped.get("pnr_mapping_artifact", [])))
+    pnr_mapping_rows.extend(mapping_rows_from_manifests(json_grouped.get("mapping_set_manifest", [])))
+    pnr_mapping_rows = dedupe_mapping_rows(pnr_mapping_rows)
     rows = [
         candidate_row(
             row,
             sim_for_workload(grouped.get("sim_cycle", []), row["workload"]),
             fpa_for_candidate(grouped.get("rtl_fpa", []), row["workload"], row["hardware"]),
+            mapping_artifact_evidence(
+                json_grouped.get("pnr_mapping_artifact", []),
+                row,
+            ),
+            cgra_report_for_candidate(
+                json_grouped.get("cgra_sim_report", []),
+                row["workload"],
+                row["hardware"],
+                row.get("mapping_id", ""),
+            ),
             args.objective,
+            output,
         )
-        for row in mapping_rows(grouped.get("pnr_mapping", []))
+        for row in pnr_mapping_rows
     ]
     select_candidates(rows, args.objective)
 

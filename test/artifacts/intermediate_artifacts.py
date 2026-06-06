@@ -18,6 +18,29 @@ SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
 IMPORT_STATES = {"accepted", "deferred", "excluded"}
 INVENTORY_STATES = {"ready", "blocked"}
 IGNORED_IDENTITIES = {"", "scaffold", "none", None}
+ARTIFACT_EDGE_PAIRS = (
+    ("old-app-corpus-inventory", "app-corpus-import-status"),
+    ("app-corpus-import-status", "source-compat-summary"),
+    ("source-compat-summary", "compiler-pipeline-summary"),
+    ("compiler-pipeline-summary", "dataflow-primitive-coverage"),
+    ("dataflow-primitive-coverage", "pnr-mapping-summary"),
+    ("adg-hardware-summary", "pnr-mapping-summary"),
+    ("dataflow-primitive-coverage", "sim-cycle-summary"),
+    ("dataflow-primitive-coverage", "rtl-fpa-summary"),
+    ("adg-hardware-summary", "rtl-fpa-summary"),
+    ("pnr-mapping-summary", "e2e-demonstrator-summary"),
+    ("sim-cycle-summary", "e2e-demonstrator-summary"),
+    ("rtl-fpa-summary", "e2e-demonstrator-summary"),
+    ("pnr-mapping-summary", "dse-candidate-summary"),
+    ("sim-cycle-summary", "dse-candidate-summary"),
+    ("rtl-fpa-summary", "dse-candidate-summary"),
+    ("dataflow-primitive-coverage", "unsupported-scope-ledger"),
+    ("pnr-mapping-summary", "unsupported-scope-ledger"),
+    ("sim-cycle-summary", "unsupported-scope-ledger"),
+    ("rtl-fpa-summary", "unsupported-scope-ledger"),
+    ("e2e-demonstrator-summary", "unsupported-scope-ledger"),
+    ("dse-candidate-summary", "unsupported-scope-ledger"),
+)
 
 
 @dataclass(frozen=True)
@@ -274,7 +297,16 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "selection_status",
         ),
         status_columns=("selection_status",),
-        extra_columns=("diagnostic",),
+        extra_columns=(
+            "candidate_kind",
+            "input_artifacts",
+            "output_artifacts",
+            "objective_record",
+            "metric_records",
+            "policy_id",
+            "ordering_rule",
+            "diagnostic",
+        ),
         numeric_columns=("cgra_sim_cycles", "frequency_mhz", "area_um2", "dynamic_power_mw", "energy_nj"),
         identity_columns=("candidate", "workload", "hardware", "mapping_id"),
         scaffold_row=(
@@ -289,6 +321,13 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "",
             "blocked",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
             "DSE candidate evidence is not available yet",
         ),
     ),
@@ -387,6 +426,27 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "diagnostics",
         },
     },
+    "sim_comparison_report": {
+        "filename": "sim-comparison-report.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "comparison_id",
+            "workload",
+            "runtime_input_identity",
+            "dfg_sim_report_identity",
+            "cgra_sim_report_identity",
+            "mapping_artifact_identity",
+            "functional_comparison_status",
+            "memory_comparison_status",
+            "performance_comparison_status",
+            "performance_metric_definitions",
+            "difference_classification",
+            "explanation_categories",
+            "diagnostics",
+            "status",
+        },
+    },
     "pnr_mapping_artifact": {
         "filename": "pnr-mapping.json",
         "required_keys": {
@@ -407,6 +467,84 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "config_bitstream",
         },
     },
+    "runtime_package": {
+        "filename": "runtime-package.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "package_id",
+            "workload",
+            "work_package_identity",
+            "launch_descriptor_identity",
+            "selected_mapping_artifact_identity",
+            "fabric_adg_identity",
+            "target_profile",
+            "fallback_policy",
+            "synchronization_mode",
+            "data_movement_policy",
+            "memory_descriptors",
+            "argument_descriptors",
+            "required_runtime_features",
+            "simulator_report_identities",
+            "diagnostics",
+            "status",
+        },
+    },
+    "workload_report_bundle": {
+        "filename": "workload-report-bundle.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "bundle_id",
+            "workload",
+            "source_artifact_identity",
+            "compiler_command_identity",
+            "runtime_input_identity",
+            "selected_hardware_candidate_identity",
+            "selected_mapping_artifact_identity",
+            "report_status",
+            "diagnostics",
+            "metric_records",
+        },
+    },
+    "hardware_report_bundle": {
+        "filename": "hardware-report-bundle.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "bundle_id",
+            "hardware_candidate_identity",
+            "fabric_adg_identity",
+            "adg_builder_recipe_identity",
+            "rtl_manifest_identity",
+            "eda_report_identities",
+            "fpa_report_identities",
+            "supported_workload_classes",
+            "report_status",
+            "diagnostics",
+            "metric_records",
+        },
+    },
+    "dse_report_bundle": {
+        "filename": "dse-report-bundle.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "dse_run_id",
+            "objective_records",
+            "candidate_list",
+            "selected_candidates",
+            "pareto_set",
+            "rejected_candidate_summaries",
+            "referenced_workload_report_bundle_identities",
+            "referenced_hardware_candidate_report_bundle_identities",
+            "selected_policy_id",
+            "policy_configuration",
+            "candidate_ordering_rule",
+            "report_status",
+            "diagnostics",
+        },
+    },
 }
 
 
@@ -418,8 +556,16 @@ STANDARD_ARTIFACT_PATHS = (
     ("dataflow_primitive_coverage", "temp/dataflow-primitive-coverage.csv"),
     ("adg_hardware", "temp/adg-hardware-summary.csv"),
     ("pnr_mapping", "temp/pnr-mapping-summary.csv"),
+    ("pnr_mapping_artifact", "temp/pnr-mapping.json"),
+    ("dfg_sim_report", "temp/vecsum-dfg-sim-report.json"),
+    ("cgra_sim_report", "temp/vecsum-cgra-sim-report.json"),
+    ("sim_comparison_report", "temp/sim-comparison-report.json"),
+    ("runtime_package", "temp/runtime-package.json"),
     ("sim_cycle", "temp/sim-cycle-summary.csv"),
     ("rtl_fpa", "temp/rtl-fpa-summary.csv"),
+    ("workload_report_bundle", "temp/workload-report-bundle.json"),
+    ("hardware_report_bundle", "temp/hardware-report-bundle.json"),
+    ("dse_report_bundle", "temp/dse-report-bundle.json"),
     ("e2e_demonstrator", "temp/e2e-demonstrator-summary.csv"),
     ("dse_candidate", "temp/dse-candidate-summary.csv"),
     ("unsupported_scope", "temp/unsupported-scope-ledger.csv"),
@@ -482,8 +628,18 @@ def json_kind_for_path(path: Path) -> str | None:
         return "dfg_sim_report"
     if embedded_kind == "cgra_sim_report":
         return "cgra_sim_report"
+    if embedded_kind == "sim_comparison_report":
+        return "sim_comparison_report"
     if embedded_kind == "pnr_mapping":
         return "pnr_mapping_artifact"
+    if embedded_kind == "runtime_package":
+        return "runtime_package"
+    if embedded_kind == "hardware_report_bundle":
+        return "hardware_report_bundle"
+    if embedded_kind == "dse_report_bundle":
+        return "dse_report_bundle"
+    if embedded_kind == "mapping_set_manifest":
+        return "mapping_set_manifest"
     return None
 
 
@@ -597,6 +753,34 @@ def nonnegative_int_cell(row: dict[str, str], column: str) -> int | None:
     return int(value)
 
 
+def dse_ordering_rule_for_objective(objective: str) -> str:
+    if objective in {"minimize_energy", "minimize_power"}:
+        return "energy_score_then_candidate_id"
+    return "runtime_score_then_candidate_id"
+
+
+def parse_dse_metric_records(
+    metric_records: str,
+    diagnostics: list[str],
+    row_index: int,
+) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for entry in metric_records.split(";"):
+        if entry == "":
+            continue
+        if "=" not in entry:
+            diagnostics.append(f"row {row_index}: metric_records entry {entry!r} has no value")
+            continue
+        name, value = entry.split("=", 1)
+        if name == "" or value == "":
+            diagnostics.append(f"row {row_index}: metric_records entry {entry!r} is incomplete")
+            continue
+        if name in parsed:
+            diagnostics.append(f"row {row_index}: metric_records repeats {name}")
+        parsed[name] = value
+    return parsed
+
+
 def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics: list[str], row_index: int) -> None:
     statuses = dict(row_statuses(schema, row))
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
@@ -613,6 +797,52 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             diagnostics.append(
                 f"row {row_index}: CGRA-sim cycles are more optimistic than DFG-sim cycles"
             )
+    if schema.kind == "dse_candidate" and statuses.get("selection_status") in {"selected", "pareto", "rejected"}:
+        required_provenance = (
+            "candidate_kind",
+            "input_artifacts",
+            "output_artifacts",
+            "objective_record",
+            "metric_records",
+            "policy_id",
+            "ordering_rule",
+        )
+        for column in required_provenance:
+            if not row.get(column, ""):
+                diagnostics.append(f"row {row_index}: DSE candidate row has no {column}")
+        candidate_id = row.get("candidate", "")
+        mapping_id = row.get("mapping_id", "")
+        if candidate_id and mapping_id and not candidate_id.endswith(f"::{mapping_id}"):
+            diagnostics.append(f"row {row_index}: DSE candidate id does not include mapping_id")
+        objective_record = row.get("objective_record", "")
+        if objective_record and not objective_record.startswith("objective::"):
+            diagnostics.append(f"row {row_index}: objective_record must use objective:: identity")
+        objective = row.get("objective", "")
+        if objective and objective_record and objective_record != f"objective::{objective}":
+            diagnostics.append(f"row {row_index}: objective_record does not match objective")
+        ordering_rule = row.get("ordering_rule", "")
+        if objective and ordering_rule and ordering_rule != dse_ordering_rule_for_objective(objective):
+            diagnostics.append(f"row {row_index}: ordering_rule does not match objective")
+        metric_records = row.get("metric_records", "")
+        parsed_metrics = parse_dse_metric_records(metric_records, diagnostics, row_index)
+        for metric in (
+            "cgra_sim_cycles",
+            "frequency_mhz",
+            "area_um2",
+            "dynamic_power_mw",
+            "energy_nj",
+        ):
+            if metric_records and metric not in parsed_metrics:
+                diagnostics.append(f"row {row_index}: metric_records missing {metric}")
+            if metric in parsed_metrics:
+                row_value = numeric_value(row, metric)
+                metric_value = numeric_value(parsed_metrics, metric)
+                if (
+                    row_value is None
+                    or metric_value is None
+                    or abs(row_value - metric_value) > 0.001
+                ):
+                    diagnostics.append(f"row {row_index}: metric_records {metric} does not match row value")
     if schema.kind == "pnr_mapping" and statuses.get("status") == "pass":
         placed_records = numeric_value(row, "placed_records")
         unrouted_edges = numeric_value(row, "unrouted_edges")
@@ -668,6 +898,65 @@ def validate_unique_sim_cycles(
             )
 
 
+def validate_dse_candidate_uniqueness(rows: list[dict[str, str]], diagnostics: list[str]) -> None:
+    rows_by_candidate: dict[str, list[int]] = {}
+    for index, row in enumerate(rows, start=1):
+        candidate = row.get("candidate")
+        if not valid_identity(candidate):
+            continue
+        assert candidate is not None
+        rows_by_candidate.setdefault(candidate, []).append(index)
+    for candidate, row_indices in sorted(rows_by_candidate.items()):
+        if len(row_indices) > 1:
+            diagnostics.append(
+                f"DSE candidate identity {candidate!r} appears in rows {row_indices}; "
+                "candidate records must be unique"
+            )
+
+
+def artifact_reference_exists(anchor: Path, reference: str) -> bool:
+    path = Path(reference)
+    if path.is_absolute():
+        return path.is_file()
+    return path.is_file() or (anchor.parent / path).is_file()
+
+
+def resolve_artifact_reference(anchor: Path, reference: str) -> Path:
+    path = Path(reference)
+    if path.is_absolute():
+        return path.resolve()
+    if path.is_file():
+        return path.resolve()
+    return (anchor.parent / path).resolve()
+
+
+def validate_dse_artifact_references(path: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
+    current_artifact = path.resolve()
+    for index, row in enumerate(rows, start=1):
+        if row.get("selection_status") not in {"selected", "pareto", "rejected"}:
+            continue
+        for column in ("input_artifacts", "output_artifacts"):
+            references = row.get(column, "")
+            if references == "":
+                continue
+            for reference in references.split(";"):
+                if reference == "":
+                    diagnostics.append(f"row {index}: {column} contains an empty reference")
+                    continue
+                if not artifact_reference_exists(path, reference):
+                    diagnostics.append(f"row {index}: {column} reference {reference!r} does not exist")
+            if column == "output_artifacts" and references:
+                resolved_outputs = {
+                    resolve_artifact_reference(path, reference)
+                    for reference in references.split(";")
+                    if reference
+                }
+                if current_artifact not in resolved_outputs:
+                    diagnostics.append(
+                        f"row {index}: output_artifacts does not reference this DSE candidate summary"
+                    )
+
+
 def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
     diagnostics: list[str] = []
     with path.open(newline="") as handle:
@@ -692,6 +981,9 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
                 diagnostics.append(f"row {index}: pass row has no diagnostic or evidence note")
     if schema.kind == "sim_cycle":
         validate_sim_cycle_uniqueness(rows, diagnostics)
+    if schema.kind == "dse_candidate":
+        validate_dse_candidate_uniqueness(rows, diagnostics)
+        validate_dse_artifact_references(path, rows, diagnostics)
     return {
         "artifact": str(path),
         "schema": schema.kind,
@@ -700,6 +992,135 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
         "finding": "pass" if not diagnostics else "fail",
         "diagnostics": diagnostics,
     }
+
+
+def require_manifest_edge(
+    edge_pairs: set[tuple[str, str]],
+    diagnostics: list[str],
+    left: str,
+    right: str,
+) -> None:
+    if (left, right) not in edge_pairs:
+        diagnostics.append(f"artifact manifest missing edge {left} -> {right}")
+
+
+def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[str]) -> int:
+    artifacts = data.get("artifacts")
+    edges = data.get("edges")
+    if not isinstance(artifacts, list):
+        diagnostics.append("artifact manifest artifacts must be a list")
+        artifacts = []
+    if not isinstance(edges, list):
+        diagnostics.append("artifact manifest edges must be a list")
+        edges = []
+
+    artifact_ids: set[str] = set()
+    ids_by_kind: dict[str, list[str]] = {}
+    for index, artifact in enumerate(artifacts, start=1):
+        if not isinstance(artifact, dict):
+            diagnostics.append(f"artifact manifest artifact {index} must be an object")
+            continue
+        identity = artifact.get("id")
+        kind = artifact.get("kind")
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append(f"artifact manifest artifact {index} lacks id")
+            continue
+        if identity in artifact_ids:
+            diagnostics.append(f"artifact manifest duplicate artifact id {identity}")
+        artifact_ids.add(identity)
+        if not isinstance(kind, str) or not kind:
+            diagnostics.append(f"artifact manifest artifact {identity} lacks kind")
+            continue
+        ids_by_kind.setdefault(kind, []).append(identity)
+
+    edge_pairs: set[tuple[str, str]] = set()
+    for index, edge in enumerate(edges, start=1):
+        if not isinstance(edge, dict):
+            diagnostics.append(f"artifact manifest edge {index} must be an object")
+            continue
+        left = edge.get("from")
+        right = edge.get("to")
+        if not isinstance(left, str) or not left:
+            diagnostics.append(f"artifact manifest edge {index} lacks from")
+            continue
+        if not isinstance(right, str) or not right:
+            diagnostics.append(f"artifact manifest edge {index} lacks to")
+            continue
+        if left not in artifact_ids:
+            diagnostics.append(f"artifact manifest edge {index} has unknown source {left}")
+        if right not in artifact_ids:
+            diagnostics.append(f"artifact manifest edge {index} has unknown sink {right}")
+        edge_pairs.add((left, right))
+
+    for left, right in ARTIFACT_EDGE_PAIRS:
+        if left in artifact_ids and right in artifact_ids:
+            require_manifest_edge(edge_pairs, diagnostics, left, right)
+
+    for mapping_id in ids_by_kind.get("pnr_mapping_artifact", []):
+        for source_kind in ("dataflow_primitive_coverage", "adg_hardware", "pnr_mapping"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                require_manifest_edge(edge_pairs, diagnostics, source_id, mapping_id)
+        for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+            require_manifest_edge(edge_pairs, diagnostics, mapping_id, cgra_id)
+        for dse_id in ids_by_kind.get("dse_candidate", []):
+            require_manifest_edge(edge_pairs, diagnostics, mapping_id, dse_id)
+
+    for dfg_id in ids_by_kind.get("dfg_sim_report", []):
+        for source_id in ids_by_kind.get("dataflow_primitive_coverage", []):
+            require_manifest_edge(edge_pairs, diagnostics, source_id, dfg_id)
+        for sim_id in ids_by_kind.get("sim_cycle", []):
+            require_manifest_edge(edge_pairs, diagnostics, dfg_id, sim_id)
+
+    for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+        for sim_id in ids_by_kind.get("sim_cycle", []):
+            if sim_id == "sim-cycle-summary":
+                require_manifest_edge(edge_pairs, diagnostics, cgra_id, sim_id)
+        for dse_id in ids_by_kind.get("dse_candidate", []):
+            require_manifest_edge(edge_pairs, diagnostics, cgra_id, dse_id)
+
+    for comparison_id in ids_by_kind.get("sim_comparison_report", []):
+        for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                require_manifest_edge(edge_pairs, diagnostics, source_id, comparison_id)
+
+    for runtime_id in ids_by_kind.get("runtime_package", []):
+        for source_kind in ("pnr_mapping_artifact", "cgra_sim_report", "sim_comparison_report"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                require_manifest_edge(edge_pairs, diagnostics, source_id, runtime_id)
+
+    for report_id in ids_by_kind.get("workload_report_bundle", []):
+        for source_kind in (
+            "source_compat",
+            "compiler_pipeline",
+            "dataflow_primitive_coverage",
+            "adg_hardware",
+            "pnr_mapping_artifact",
+            "dfg_sim_report",
+            "cgra_sim_report",
+            "sim_comparison_report",
+            "runtime_package",
+            "sim_cycle",
+            "rtl_fpa",
+            "dse_candidate",
+        ):
+            for source_id in ids_by_kind.get(source_kind, []):
+                require_manifest_edge(edge_pairs, diagnostics, source_id, report_id)
+        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
+            require_manifest_edge(edge_pairs, diagnostics, report_id, demonstrator_id)
+
+    for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
+        for source_kind in ("adg_hardware", "rtl_fpa"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                require_manifest_edge(edge_pairs, diagnostics, source_id, hardware_report_id)
+        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
+            require_manifest_edge(edge_pairs, diagnostics, hardware_report_id, demonstrator_id)
+
+    for dse_report_id in ids_by_kind.get("dse_report_bundle", []):
+        for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                require_manifest_edge(edge_pairs, diagnostics, source_id, dse_report_id)
+
+    return len(artifacts)
 
 
 def audit_json(path: Path, kind: str) -> dict[str, object]:
@@ -724,6 +1145,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         diagnostics.append("schema_version must be 1")
     if kind == "artifact_manifest" and data.get("diagnostics"):
         diagnostics.append("artifact manifest contains blocked diagnostics")
+    manifest_entries_checked: int | None = None
+    if kind == "artifact_manifest" and isinstance(data, dict):
+        manifest_entries_checked = validate_artifact_manifest_edges(data, diagnostics)
     if kind == "artifact_audit" and data.get("verdict") not in {"pass", "fail"}:
         diagnostics.append("artifact audit verdict must be pass or fail")
     if kind == "dfg_sim_report":
@@ -825,6 +1249,70 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report needs first_principles_checks")
         elif any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
             diagnostics.append("CGRA simulator report has failing first-principles check")
+    if kind == "sim_comparison_report":
+        if data.get("kind") != "sim_comparison_report":
+            diagnostics.append("simulation comparison report kind must be sim_comparison_report")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("simulation comparison report status must be a known status")
+        for key in (
+            "comparison_id",
+            "workload",
+            "runtime_input_identity",
+            "dfg_sim_report_identity",
+            "cgra_sim_report_identity",
+        ):
+            if not isinstance(data.get(key), str) or not data.get(key):
+                diagnostics.append(f"simulation comparison report lacks {key}")
+        for key in (
+            "functional_comparison_status",
+            "memory_comparison_status",
+            "performance_comparison_status",
+        ):
+            if data.get(key) not in BASE_STATUSES:
+                diagnostics.append(f"simulation comparison report {key} must be a known status")
+        allowed_classifications = {
+            "match",
+            "expected_hardware_constraint",
+            "metric_not_comparable",
+            "unsupported_scope",
+            "mapping_invalid",
+            "functional_mismatch",
+            "report_mismatch",
+        }
+        if data.get("difference_classification") not in allowed_classifications:
+            diagnostics.append("simulation comparison report has unknown difference_classification")
+        definitions = data.get("performance_metric_definitions")
+        if not isinstance(definitions, dict):
+            diagnostics.append("simulation comparison report performance_metric_definitions must be an object")
+        else:
+            for key in ("dfg", "cgra"):
+                if not isinstance(definitions.get(key), str) or not definitions.get(key):
+                    diagnostics.append(f"simulation comparison report lacks {key} metric definition")
+        explanation_categories = data.get("explanation_categories")
+        if not isinstance(explanation_categories, list):
+            diagnostics.append("simulation comparison report explanation_categories must be a list")
+        diagnostics_list = data.get("diagnostics")
+        if not isinstance(diagnostics_list, list):
+            diagnostics.append("simulation comparison report diagnostics must be a list")
+        dfg_cycles = data.get("dfg_sim_cycles")
+        cgra_cycles = data.get("cgra_sim_cycles")
+        if dfg_cycles is not None and (not isinstance(dfg_cycles, int) or dfg_cycles < 0):
+            diagnostics.append("simulation comparison report dfg_sim_cycles must be non-negative integer or null")
+        if cgra_cycles is not None and (not isinstance(cgra_cycles, int) or cgra_cycles < 0):
+            diagnostics.append("simulation comparison report cgra_sim_cycles must be non-negative integer or null")
+        if isinstance(dfg_cycles, int) and isinstance(cgra_cycles, int):
+            if cgra_cycles < dfg_cycles and data.get("difference_classification") != "metric_not_comparable":
+                diagnostics.append("simulation comparison report needs non-comparable classification for optimistic CGRA cycles")
+            if (
+                cgra_cycles > dfg_cycles
+                and data.get("difference_classification") == "expected_hardware_constraint"
+                and isinstance(explanation_categories, list)
+                and not explanation_categories
+            ):
+                diagnostics.append("simulation comparison report needs explanation categories for hardware overhead")
+        delta = data.get("performance_delta_cycles")
+        if delta is not None and (not isinstance(delta, int) or delta < 0):
+            diagnostics.append("simulation comparison report performance_delta_cycles must be non-negative integer or null")
     if kind == "pnr_mapping_artifact":
         if data.get("kind") != "pnr_mapping":
             diagnostics.append("PnR mapping artifact kind must be pnr_mapping")
@@ -891,10 +1379,343 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                             )
         if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
             diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
+    if kind == "runtime_package":
+        if data.get("kind") != "runtime_package":
+            diagnostics.append("runtime package kind must be runtime_package")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("runtime package status must be a known status")
+        for key in (
+            "package_id",
+            "workload",
+            "work_package_identity",
+            "launch_descriptor_identity",
+            "synchronization_mode",
+        ):
+            if not isinstance(data.get(key), str) or not data.get(key):
+                diagnostics.append(f"runtime package lacks {key}")
+        for key in ("selected_mapping_artifact_identity", "fabric_adg_identity"):
+            if not isinstance(data.get(key), str):
+                diagnostics.append(f"runtime package {key} must be a string")
+        target_profile = data.get("target_profile")
+        if not isinstance(target_profile, dict):
+            diagnostics.append("runtime package target_profile must be an object")
+            target_profile = {}
+        else:
+            for key in ("target_kind", "profile_id"):
+                if not isinstance(target_profile.get(key), str) or not target_profile.get(key):
+                    diagnostics.append(f"runtime package target_profile lacks {key}")
+            if target_profile.get("target_kind") == "simulator":
+                if not isinstance(target_profile.get("simulator"), str) or not target_profile.get("simulator"):
+                    diagnostics.append("runtime package simulator target lacks simulator")
+                elif target_profile.get("simulator") not in {"cgra_sim", "dfg_sim"}:
+                    diagnostics.append("runtime package has unsupported simulator target")
+        fallback_policy = data.get("fallback_policy")
+        if fallback_policy not in {
+            "require_acceleration",
+            "allow_host_fallback",
+            "allow_scalar_fallback",
+            "report_only",
+        }:
+            diagnostics.append("runtime package has unknown fallback_policy")
+        data_movement_policy = data.get("data_movement_policy")
+        if data_movement_policy not in {
+            "shared_coherent",
+            "shared_noncoherent",
+            "copy_in_copy_out",
+            "device_local",
+            "simulated",
+            "custom",
+        }:
+            diagnostics.append("runtime package has unknown data_movement_policy")
+        diagnostics_list = data.get("diagnostics")
+        if not isinstance(diagnostics_list, list):
+            diagnostics.append("runtime package diagnostics must be a list")
+        memory_descriptors = data.get("memory_descriptors")
+        if not isinstance(memory_descriptors, list):
+            diagnostics.append("runtime package memory_descriptors must be a list")
+            memory_descriptors = []
+        argument_descriptors = data.get("argument_descriptors")
+        if not isinstance(argument_descriptors, list):
+            diagnostics.append("runtime package argument_descriptors must be a list")
+            argument_descriptors = []
+        required_features = data.get("required_runtime_features")
+        if not isinstance(required_features, list):
+            diagnostics.append("runtime package required_runtime_features must be a list")
+            required_features = []
+        elif any(not isinstance(feature, str) or not feature for feature in required_features):
+            diagnostics.append("runtime package required_runtime_features entries must be non-empty strings")
+        simulator_reports = data.get("simulator_report_identities")
+        if not isinstance(simulator_reports, list):
+            diagnostics.append("runtime package simulator_report_identities must be a list")
+            simulator_reports = []
+        elif any(not isinstance(identity, str) or not identity for identity in simulator_reports):
+            diagnostics.append("runtime package simulator_report_identities entries must be non-empty strings")
+        for index, descriptor in enumerate(memory_descriptors, start=1):
+            if not isinstance(descriptor, dict):
+                diagnostics.append(f"runtime package memory descriptor {index} must be an object")
+                continue
+            for key in ("logical_argument", "direction", "policy", "runtime_input_identity"):
+                if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
+                    diagnostics.append(f"runtime package memory descriptor {index} lacks {key}")
+        for index, descriptor in enumerate(argument_descriptors, start=1):
+            if not isinstance(descriptor, dict):
+                diagnostics.append(f"runtime package argument descriptor {index} must be an object")
+                continue
+            for key in ("name", "identity", "descriptor_kind"):
+                if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
+                    diagnostics.append(f"runtime package argument descriptor {index} lacks {key}")
+        if data.get("status") == "pass":
+            if not memory_descriptors:
+                diagnostics.append("runtime package pass needs memory_descriptors")
+            if not argument_descriptors:
+                diagnostics.append("runtime package pass needs argument_descriptors")
+            if not required_features:
+                diagnostics.append("runtime package pass needs required_runtime_features")
+            if not simulator_reports:
+                diagnostics.append("runtime package pass needs simulator_report_identities")
+            if target_profile.get("target_kind") == "simulator" and data_movement_policy != "simulated":
+                diagnostics.append("runtime package simulator target needs simulated data movement policy")
+            argument_names = {
+                descriptor.get("name")
+                for descriptor in argument_descriptors
+                if isinstance(descriptor, dict)
+            }
+            simulator = target_profile.get("simulator")
+            if simulator == "cgra_sim":
+                if not data.get("selected_mapping_artifact_identity"):
+                    diagnostics.append("runtime package CGRA-sim target needs mapping artifact identity")
+                if not data.get("fabric_adg_identity"):
+                    diagnostics.append("runtime package CGRA-sim target needs Fabric ADG identity")
+                if "mapping_artifact" not in argument_names:
+                    diagnostics.append("runtime package CGRA-sim target needs mapping artifact descriptor")
+                if not any(str(identity).endswith("cgra-sim-report") for identity in simulator_reports):
+                    diagnostics.append("runtime package CGRA-sim target needs CGRA-sim report identity")
+            if simulator == "dfg_sim":
+                if data.get("selected_mapping_artifact_identity"):
+                    diagnostics.append("runtime package DFG-sim target must not require mapping artifact identity")
+                if data.get("fabric_adg_identity"):
+                    diagnostics.append("runtime package DFG-sim target must not require Fabric ADG identity")
+                if "mapping_artifact" in argument_names:
+                    diagnostics.append("runtime package DFG-sim target must not include mapping artifact descriptor")
+                if "dfg_sim_report" not in argument_names:
+                    diagnostics.append("runtime package DFG-sim target needs DFG-sim report descriptor")
+                if not any(str(identity).endswith("dfg-sim-report") for identity in simulator_reports):
+                    diagnostics.append("runtime package DFG-sim target needs DFG-sim report identity")
+    if kind == "workload_report_bundle":
+        if data.get("kind") != "workload_report_bundle":
+            diagnostics.append("workload report bundle kind must be workload_report_bundle")
+        if data.get("report_status") not in BASE_STATUSES:
+            diagnostics.append("workload report bundle report_status must be a known status")
+        for key in (
+            "bundle_id",
+            "workload",
+            "source_artifact_identity",
+            "compiler_command_identity",
+            "runtime_input_identity",
+            "selected_hardware_candidate_identity",
+            "selected_mapping_artifact_identity",
+        ):
+            if not isinstance(data.get(key), str) or not data.get(key):
+                diagnostics.append(f"workload report bundle lacks {key}")
+        metrics = data.get("metric_records")
+        metric_ids: set[str] = set()
+        if not isinstance(metrics, list) or not metrics:
+            diagnostics.append("workload report bundle needs non-empty metric_records")
+            metrics = []
+        for index, metric in enumerate(metrics, start=1):
+            if not isinstance(metric, dict):
+                diagnostics.append(f"workload report bundle metric {index} must be an object")
+                continue
+            metric_id = metric.get("metric_id")
+            if not isinstance(metric_id, str) or not metric_id:
+                diagnostics.append(f"workload report bundle metric {index} lacks metric_id")
+            elif metric_id in metric_ids:
+                diagnostics.append(f"workload report bundle repeats metric_id {metric_id}")
+            else:
+                metric_ids.add(metric_id)
+            for key in (
+                "metric_class",
+                "unit",
+                "fidelity_level",
+                "evidence_source_artifact_id",
+                "producer_component",
+                "derivation_kind",
+            ):
+                if not isinstance(metric.get(key), str) or not metric.get(key):
+                    diagnostics.append(f"workload report bundle metric {index} lacks {key}")
+            value = metric.get("value")
+            if not isinstance(value, (int, float)) or value < 0:
+                diagnostics.append(f"workload report bundle metric {index} has invalid value")
+            metric_diagnostics = metric.get("diagnostics")
+            if not isinstance(metric_diagnostics, list):
+                diagnostics.append(f"workload report bundle metric {index} diagnostics must be a list")
+        for metric in metrics:
+            if not isinstance(metric, dict) or metric.get("metric_class") != "energy":
+                continue
+            inputs = metric.get("input_metric_ids")
+            if not isinstance(inputs, list) or not inputs:
+                diagnostics.append("workload report bundle energy metric lacks input_metric_ids")
+                continue
+            missing_inputs = [metric_id for metric_id in inputs if metric_id not in metric_ids]
+            if missing_inputs:
+                diagnostics.append(
+                    f"workload report bundle energy metric references missing inputs {missing_inputs}"
+                )
+    if kind == "hardware_report_bundle":
+        if data.get("kind") != "hardware_report_bundle":
+            diagnostics.append("hardware report bundle kind must be hardware_report_bundle")
+        if data.get("report_status") not in BASE_STATUSES:
+            diagnostics.append("hardware report bundle report_status must be a known status")
+        for key in ("bundle_id", "hardware_candidate_identity", "fabric_adg_identity"):
+            if not isinstance(data.get(key), str) or not data.get(key):
+                diagnostics.append(f"hardware report bundle lacks {key}")
+        for key in (
+            "eda_report_identities",
+            "fpa_report_identities",
+            "supported_workload_classes",
+            "diagnostics",
+        ):
+            if not isinstance(data.get(key), list):
+                diagnostics.append(f"hardware report bundle {key} must be a list")
+        if data.get("report_status") == "pass":
+            if not data.get("fpa_report_identities"):
+                diagnostics.append("hardware report bundle pass needs FPA report identity")
+            if not data.get("supported_workload_classes"):
+                diagnostics.append("hardware report bundle pass needs supported workload classes")
+        metrics = data.get("metric_records")
+        metric_ids: set[str] = set()
+        if not isinstance(metrics, list) or not metrics:
+            diagnostics.append("hardware report bundle needs non-empty metric_records")
+            metrics = []
+        for index, metric in enumerate(metrics, start=1):
+            if not isinstance(metric, dict):
+                diagnostics.append(f"hardware report bundle metric {index} must be an object")
+                continue
+            metric_id = metric.get("metric_id")
+            if not isinstance(metric_id, str) or not metric_id:
+                diagnostics.append(f"hardware report bundle metric {index} lacks metric_id")
+            elif metric_id in metric_ids:
+                diagnostics.append(f"hardware report bundle repeats metric_id {metric_id}")
+            else:
+                metric_ids.add(metric_id)
+            for key in (
+                "metric_class",
+                "unit",
+                "fidelity_level",
+                "evidence_source_artifact_id",
+                "producer_component",
+                "derivation_kind",
+            ):
+                if not isinstance(metric.get(key), str) or not metric.get(key):
+                    diagnostics.append(f"hardware report bundle metric {index} lacks {key}")
+            value = metric.get("value")
+            if not isinstance(value, (int, float)) or value < 0:
+                diagnostics.append(f"hardware report bundle metric {index} has invalid value")
+            metric_diagnostics = metric.get("diagnostics")
+            if not isinstance(metric_diagnostics, list):
+                diagnostics.append(f"hardware report bundle metric {index} diagnostics must be a list")
+    if kind == "dse_report_bundle":
+        if data.get("kind") != "dse_report_bundle":
+            diagnostics.append("DSE report bundle kind must be dse_report_bundle")
+        if data.get("report_status") not in BASE_STATUSES:
+            diagnostics.append("DSE report bundle report_status must be a known status")
+        for key in ("dse_run_id", "selected_policy_id", "candidate_ordering_rule"):
+            if not isinstance(data.get(key), str) or not data.get(key):
+                diagnostics.append(f"DSE report bundle lacks {key}")
+        for key in (
+            "objective_records",
+            "candidate_list",
+            "selected_candidates",
+            "pareto_set",
+            "rejected_candidate_summaries",
+            "referenced_workload_report_bundle_identities",
+            "referenced_hardware_candidate_report_bundle_identities",
+            "diagnostics",
+        ):
+            if not isinstance(data.get(key), list):
+                diagnostics.append(f"DSE report bundle {key} must be a list")
+        if not isinstance(data.get("policy_configuration"), dict):
+            diagnostics.append("DSE report bundle policy_configuration must be an object")
+        objectives = data.get("objective_records")
+        if not isinstance(objectives, list) or not objectives:
+            diagnostics.append("DSE report bundle needs non-empty objective_records")
+            objectives = []
+        for index, objective in enumerate(objectives, start=1):
+            if not isinstance(objective, dict):
+                diagnostics.append(f"DSE report bundle objective {index} must be an object")
+                continue
+            for key in (
+                "objective_id",
+                "objective_kind",
+                "comparison_direction",
+                "units",
+            ):
+                if not isinstance(objective.get(key), str) or not objective.get(key):
+                    diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
+            for key in ("metric_inputs", "validity_conditions"):
+                if not isinstance(objective.get(key), list) or not objective.get(key):
+                    diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
+            priority = objective.get("priority")
+            if not isinstance(priority, (int, float)) or priority <= 0:
+                diagnostics.append(f"DSE report bundle objective {index} has invalid priority")
+        candidates = data.get("candidate_list")
+        candidate_ids: set[str] = set()
+        if not isinstance(candidates, list) or not candidates:
+            diagnostics.append("DSE report bundle needs non-empty candidate_list")
+            candidates = []
+        for index, candidate in enumerate(candidates, start=1):
+            if not isinstance(candidate, dict):
+                diagnostics.append(f"DSE report bundle candidate {index} must be an object")
+                continue
+            candidate_id = candidate.get("candidate_id")
+            if not isinstance(candidate_id, str) or not candidate_id:
+                diagnostics.append(f"DSE report bundle candidate {index} lacks candidate_id")
+            elif candidate_id in candidate_ids:
+                diagnostics.append(f"DSE report bundle repeats candidate_id {candidate_id}")
+            else:
+                candidate_ids.add(candidate_id)
+            for key in ("candidate_kind", "status"):
+                if not isinstance(candidate.get(key), str) or not candidate.get(key):
+                    diagnostics.append(f"DSE report bundle candidate {index} lacks {key}")
+            if candidate.get("status") not in SELECTION_STATUSES:
+                diagnostics.append(f"DSE report bundle candidate {index} has unknown status")
+            for key in (
+                "parent_candidate_ids",
+                "referenced_input_artifacts",
+                "generated_output_artifacts",
+                "objective_records_used",
+                "metric_records_used",
+                "diagnostics",
+            ):
+                if not isinstance(candidate.get(key), list):
+                    diagnostics.append(f"DSE report bundle candidate {index} {key} must be a list")
+        selected_candidates = data.get("selected_candidates")
+        if isinstance(selected_candidates, list):
+            missing_selected = [
+                candidate_id
+                for candidate_id in selected_candidates
+                if candidate_id not in candidate_ids
+            ]
+            if missing_selected:
+                diagnostics.append(f"DSE report bundle selected candidates are missing records {missing_selected}")
+        if data.get("report_status") == "pass":
+            for key in (
+                "selected_candidates",
+                "referenced_workload_report_bundle_identities",
+                "referenced_hardware_candidate_report_bundle_identities",
+            ):
+                if not data.get(key):
+                    diagnostics.append(f"DSE report bundle pass needs {key}")
+    entries_checked = len(data) if isinstance(data, dict) else 0
+    if isinstance(data, dict) and kind == "artifact_manifest":
+        entries_checked = manifest_entries_checked if manifest_entries_checked is not None else 0
+    if isinstance(data, dict) and kind == "artifact_audit":
+        reviews = data.get("artifact_reviews")
+        entries_checked = len(reviews) if isinstance(reviews, list) else 0
     return {
         "artifact": str(path),
         "schema": kind,
-        "entries_checked": len(data) if isinstance(data, dict) else 0,
+        "entries_checked": entries_checked,
         "parser_checks": ["json_parse", "required_keys"],
         "finding": "pass" if not diagnostics else "fail",
         "diagnostics": diagnostics,
@@ -912,7 +1733,10 @@ def rows_by_kind(paths: Iterable[Path]) -> dict[str, list[dict[str, str]]]:
         schema = schema_for_path(path)
         if schema is None or not path.is_file():
             continue
-        grouped.setdefault(schema.kind, []).extend(read_csv_rows(path))
+        for row in read_csv_rows(path):
+            copied = dict(row)
+            copied["__path"] = str(path)
+            grouped.setdefault(schema.kind, []).append(copied)
     return grouped
 
 
@@ -927,6 +1751,7 @@ def json_objects_by_kind(paths: Iterable[Path]) -> dict[str, list[dict[str, obje
         except json.JSONDecodeError:
             continue
         if isinstance(data, dict):
+            data["__path"] = str(path)
             grouped.setdefault(kind, []).append(data)
     return grouped
 
@@ -946,6 +1771,23 @@ def cross_finding(rule: str, message: str, row: dict[str, str]) -> dict[str, obj
 
 def valid_identity(value: str | None) -> bool:
     return value not in IGNORED_IDENTITIES
+
+
+def artifact_path(record: dict[str, object]) -> Path | None:
+    path_text = record.get("__path")
+    if not isinstance(path_text, str) or path_text == "":
+        return None
+    return Path(path_text).resolve()
+
+
+def referenced_artifact_paths(row: dict[str, str], column: str) -> set[Path]:
+    anchor_text = row.get("__path", "")
+    anchor = Path(anchor_text) if anchor_text else Path(".")
+    return {
+        resolve_artifact_reference(anchor, reference)
+        for reference in row.get(column, "").split(";")
+        if reference
+    }
 
 
 def build_pass_mapping_artifacts_by_workload(
@@ -1006,6 +1848,23 @@ def route_segment_count(routes: object) -> int | None:
         if isinstance(route, dict) and isinstance(route.get("segments"), list):
             count += len(route["segments"])
     return count
+
+
+def float_cell(row: dict[str, str], column: str) -> float | None:
+    value = row.get(column, "")
+    if value == "":
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def nearly_equal(lhs: float, rhs: float, *, tolerance: float = 0.001) -> bool:
+    return abs(lhs - rhs) <= tolerance
 
 
 def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
@@ -1102,6 +1961,86 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             previous_extent = extent
             previous_cycles = cycles
     cgra_reports_by_workload = build_pass_cgra_reports_by_workload(json_grouped)
+
+    def matching_pass_pnr_rows(
+        workload: str,
+        hardware_ref: str,
+        mapping_id: str,
+    ) -> list[dict[str, str]]:
+        canonical_target = canonical_hardware_ref(hardware_ref)
+        if canonical_target is None:
+            return []
+        matches: list[dict[str, str]] = []
+        for candidate in pnr_rows:
+            if candidate.get("status") != "pass":
+                continue
+            if candidate.get("workload") != workload:
+                continue
+            if candidate.get("mapping_id") != mapping_id:
+                continue
+            if canonical_hardware_ref(candidate.get("hardware")) == canonical_target:
+                matches.append(candidate)
+        return matches
+
+    def matching_pass_sim_rows(workload: str) -> list[dict[str, str]]:
+        return [
+            row
+            for row in grouped.get("sim_cycle", [])
+            if row.get("status") == "pass" and row.get("kernel") == workload
+        ]
+
+    def matching_pass_fpa_rows(
+        workload: str,
+        hardware_ref: str,
+    ) -> list[dict[str, str]]:
+        canonical_target = canonical_hardware_ref(hardware_ref)
+        if canonical_target is None:
+            return []
+        return [
+            row
+            for row in grouped.get("rtl_fpa", [])
+            if row.get("status") == "pass"
+            and row.get("workload") == workload
+            and canonical_hardware_ref(row.get("hardware")) == canonical_target
+        ]
+
+    def matching_pass_mapping_artifacts(
+        workload: str,
+        hardware_ref: str,
+        mapping_id: str,
+    ) -> list[dict[str, object]]:
+        canonical_target = canonical_hardware_ref(hardware_ref)
+        if canonical_target is None:
+            return []
+        matches: list[dict[str, object]] = []
+        for artifact in pass_mapping_artifacts_by_workload.get(workload, []):
+            artifact_hardware = artifact.get("hardware")
+            if not isinstance(artifact_hardware, str):
+                continue
+            if artifact.get("mapping_id") != mapping_id:
+                continue
+            if canonical_hardware_ref(artifact_hardware) == canonical_target:
+                matches.append(artifact)
+        return matches
+
+    def matching_pass_cgra_reports(
+        workload: str,
+        hardware_ref: str,
+        mapping_id: str,
+    ) -> list[dict[str, object]]:
+        canonical_target = canonical_hardware_ref(hardware_ref)
+        if canonical_target is None:
+            return []
+        matches: list[dict[str, object]] = []
+        for report in cgra_reports_by_workload.get(workload, []):
+            report_hardware = report.get("hardware")
+            if not isinstance(report_hardware, str):
+                continue
+            if report.get("mapping_id") != mapping_id:
+                continue
+            if canonical_hardware_ref(report_hardware) == canonical_target:
+                matches.append(report)
+        return matches
 
     inventory_rows = grouped.get("old_app_corpus_inventory", [])
     import_rows = grouped.get("app_import_status", [])
@@ -1438,14 +2377,202 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             candidate = row.get("hardware")
             if not valid_identity(workload) or not valid_identity(candidate):
                 continue
-            if (workload, candidate) not in pnr_pairs:
+            assert workload is not None
+            assert candidate is not None
+            mapping_id = row.get("mapping_id", "")
+            pnr_matches = matching_pass_pnr_rows(workload, candidate, mapping_id)
+            mapping_artifact_matches = matching_pass_mapping_artifacts(
+                workload, candidate, mapping_id
+            )
+            if (
+                (workload, candidate) not in pnr_pairs
+                and not pnr_matches
+                and not mapping_artifact_matches
+            ):
                 findings.append(
                     cross_finding(
                         "dse_candidate_resolves_to_pnr",
-                        f"DSE candidate ({workload!r}, {candidate!r}) is absent from PnR mapping summary",
+                        (
+                            f"DSE candidate ({workload!r}, {candidate!r}) is absent from "
+                            "PnR mapping summary and mapping artifacts"
+                        ),
                         row,
                     )
                 )
+            if row.get("selection_status") not in {"selected", "pareto"}:
+                continue
+            if not valid_identity(mapping_id):
+                findings.append(
+                    cross_finding(
+                        "dse_selected_requires_mapping_id",
+                        f"DSE selected candidate {row.get('candidate')!r} has no mapping_id",
+                        row,
+                    )
+                )
+                continue
+            if len(pnr_matches) > 1:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_matches_pnr",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            f"matches {len(pnr_matches)} pass PnR rows"
+                        ),
+                        row,
+                    )
+                )
+            if len(mapping_artifact_matches) != 1:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_matches_mapping_artifact",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            f"matches {len(mapping_artifact_matches)} pass PnR mapping artifacts"
+                        ),
+                        row,
+                    )
+                )
+            sim_matches = matching_pass_sim_rows(workload)
+            if len(sim_matches) != 1:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_matches_sim",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            f"matches {len(sim_matches)} pass simulator rows"
+                        ),
+                        row,
+                    )
+                )
+                continue
+            cgra_report_matches = matching_pass_cgra_reports(workload, candidate, mapping_id)
+            if len(cgra_report_matches) != 1:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_matches_cgra_report",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            f"matches {len(cgra_report_matches)} pass CGRA reports"
+                        ),
+                        row,
+                    )
+                )
+                continue
+            fpa_matches = matching_pass_fpa_rows(workload, candidate)
+            if len(fpa_matches) != 1:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_matches_fpa",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            f"matches {len(fpa_matches)} pass RTL/FPA rows"
+                        ),
+                        row,
+                    )
+                )
+                continue
+            sim_row = sim_matches[0]
+            fpa_row = fpa_matches[0]
+            cgra_report = cgra_report_matches[0]
+            input_paths = referenced_artifact_paths(row, "input_artifacts")
+            expected_inputs = (
+                ("PnR summary", artifact_path(pnr_matches[0]) if len(pnr_matches) == 1 else None),
+                (
+                    "PnR mapping artifact",
+                    artifact_path(mapping_artifact_matches[0])
+                    if len(mapping_artifact_matches) == 1
+                    else None,
+                ),
+                ("sim summary", artifact_path(sim_row)),
+                ("CGRA report", artifact_path(cgra_report)),
+                ("RTL/FPA summary", artifact_path(fpa_row)),
+            )
+            for label, expected_path in expected_inputs:
+                if expected_path is not None and expected_path not in input_paths:
+                    findings.append(
+                        cross_finding(
+                            "dse_selected_input_artifacts_match",
+                            (
+                                f"DSE selected candidate {row.get('candidate')!r} "
+                                f"does not cite matched {label}"
+                            ),
+                            row,
+                        )
+                    )
+            cgra_cycles = nonnegative_int_cell(row, "cgra_sim_cycles")
+            sim_cycles = nonnegative_int_cell(sim_row, "cgra_sim_cycles")
+            if cgra_cycles is None or sim_cycles is None or cgra_cycles != sim_cycles:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_cgra_cycle_matches_sim",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            "does not match simulator CGRA cycles"
+                        ),
+                        row,
+                    )
+                )
+            report_cycles = cgra_report.get("hardware_aware_cycles")
+            if not isinstance(report_cycles, int) or cgra_cycles != report_cycles:
+                findings.append(
+                    cross_finding(
+                        "dse_selected_cgra_cycle_matches_cgra_report",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            "does not match CGRA report hardware-aware cycles"
+                        ),
+                        row,
+                    )
+                )
+            for column in ("frequency_mhz", "area_um2", "dynamic_power_mw"):
+                dse_value = float_cell(row, column)
+                fpa_value = float_cell(fpa_row, column)
+                if dse_value is None or fpa_value is None or not nearly_equal(dse_value, fpa_value):
+                    findings.append(
+                        cross_finding(
+                            f"dse_selected_{column}_matches_fpa",
+                            (
+                                f"DSE selected candidate {row.get('candidate')!r} "
+                                f"does not match RTL/FPA {column}"
+                            ),
+                            row,
+                        )
+                    )
+            frequency = float_cell(fpa_row, "frequency_mhz")
+            dynamic_power = float_cell(fpa_row, "dynamic_power_mw")
+            leakage_power = float_cell(fpa_row, "leakage_power_mw")
+            energy = float_cell(row, "energy_nj")
+            if (
+                cgra_cycles is None
+                or frequency is None
+                or frequency <= 0
+                or dynamic_power is None
+                or leakage_power is None
+                or energy is None
+            ):
+                findings.append(
+                    cross_finding(
+                        "dse_selected_energy_inputs_present",
+                        (
+                            f"DSE selected candidate {row.get('candidate')!r} "
+                            "lacks complete cycle/frequency/power inputs"
+                        ),
+                        row,
+                    )
+                )
+            else:
+                expected_energy = (dynamic_power + leakage_power) * cgra_cycles / frequency
+                if not nearly_equal(energy, expected_energy):
+                    findings.append(
+                        cross_finding(
+                            "dse_selected_energy_matches_fpa_formula",
+                            (
+                                f"DSE selected candidate {row.get('candidate')!r} "
+                                f"energy {energy} does not match expected {expected_energy:.3f}"
+                            ),
+                            row,
+                        )
+                    )
 
     return findings
 

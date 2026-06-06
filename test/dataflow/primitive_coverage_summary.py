@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -31,6 +32,7 @@ PRIMITIVES = (
     "mux",
     "demux",
 )
+DFG_SIM_CASES = {"vecsum"}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -95,6 +97,54 @@ def count_primitives(work_dir: Path) -> dict[str, int]:
     return counts
 
 
+def run_dfg_sim(case: str, work_dir: Path) -> tuple[dict[str, int], str]:
+    if case not in DFG_SIM_CASES:
+        return {}, "DFG-sim report is not available for this app fixture"
+    dfg_mlir = work_dir / "build" / "main_func.dfg.mlir"
+    if not dfg_mlir.is_file():
+        return {}, "DFG-sim input dataflow artifact is missing"
+    report = work_dir / "build" / f"{case}.report.json"
+    summary = work_dir / "build" / f"{case}.summary.csv"
+    env = os.environ.copy()
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "test" / "simulator" / "run_app_reduction_dfg_sim.sh"),
+            case,
+            str(dfg_mlir),
+            str(report),
+            str(summary),
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+        return {}, detail[0] if detail else f"DFG-sim exited {result.returncode}"
+    try:
+        data = json.loads(report.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return {}, f"DFG-sim report could not be read: {exc}"
+    if data.get("status") != "pass":
+        diagnostics = data.get("diagnostics")
+        if isinstance(diagnostics, list) and diagnostics:
+            return {}, "; ".join(str(item) for item in diagnostics)
+        return {}, "DFG-sim report did not pass"
+    fire_counts = data.get("operation_fire_counts")
+    if not isinstance(fire_counts, dict):
+        return {}, "DFG-sim report lacks operation fire counts"
+    primitive_fire_counts: dict[str, int] = {}
+    for primitive in PRIMITIVES:
+        value = fire_counts.get(f"dataflow.{primitive}", 0)
+        if isinstance(value, int) and value > 0:
+            primitive_fire_counts[primitive] = value
+    return primitive_fire_counts, f"DFG-sim report {report.name} produced operation fire counts"
+
+
 def rows_for_case(case: str) -> tuple[bool, list[dict[str, str]]]:
     source_dir = ROOT / "test" / "app" / case
     if not (source_dir / "dfg_check.sh").is_file():
@@ -124,20 +174,27 @@ def rows_for_case(case: str) -> tuple[bool, list[dict[str, str]]]:
                 }
             ]
         counts = count_primitives(work_dir)
+        fire_counts, sim_diagnostic = run_dfg_sim(case, work_dir)
 
     rows: list[dict[str, str]] = []
     for primitive in PRIMITIVES:
         count = counts[primitive]
-        if count > 0:
-            diagnostic = "DFG-sim is not implemented; op-count coverage only"
+        fire_count = fire_counts.get(primitive, 0)
+        if fire_count > 0:
+            status = "pass"
+            diagnostic = f"{sim_diagnostic}; fired {fire_count} dynamic operations"
+        elif count > 0:
+            status = "blocked"
+            diagnostic = "DFG-sim report is unavailable for this primitive; op-count coverage only"
         else:
-            diagnostic = "primitive absent in generated dataflow; DFG-sim is not implemented"
+            status = "blocked"
+            diagnostic = "primitive absent in generated dataflow; DFG-sim report has no coverage"
         rows.append(
             {
                 "workload": case,
                 "primitive": primitive,
                 "op_count": str(count),
-                "dfg_sim_status": "blocked",
+                "dfg_sim_status": status,
                 "diagnostic": diagnostic,
             }
         )

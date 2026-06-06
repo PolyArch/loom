@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import subprocess
 import sys
@@ -49,6 +50,40 @@ def prepare_app_tree(repo: Path, tmp_root: Path) -> Path:
     for case_dir in sorted(path for path in app_root.iterdir() if path.is_dir()):
         shutil.copytree(case_dir, copied_root / case_dir.name, ignore=shutil.ignore_patterns("build"))
     return copied_root
+
+
+def prepare_single_case_app_tree(repo: Path, tmp_root: Path, case_name: str) -> Path:
+    app_root = repo / "test" / "app"
+    copied_root = tmp_root / "test" / "app"
+    copied_root.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "app_manifest.py",
+        "run_all.sh",
+        *SHARED_APP_SCRIPTS,
+    ):
+        shutil.copy2(app_root / name, copied_root / name)
+    shutil.copytree(app_root / case_name, copied_root / case_name, ignore=shutil.ignore_patterns("build"))
+    manifest = {
+        "schema_version": 1,
+        "cases": [
+            {
+                "case": case_name,
+                "language": "cxx",
+                "sources": ["main_func.cpp", "main_inline.cpp"],
+                "expected_stdout": "expected.txt",
+                "tiers": ["run"],
+                "feature_tags": ["runner-fixture"],
+            }
+        ],
+    }
+    (copied_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return copied_root
+
+
+def make_compiler_shim(path: Path, compiler: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/usr/bin/env bash\nexec {compiler} \"$@\"\n")
+    path.chmod(0o755)
 
 
 def run_runner(repo: Path, case_dir: Path, runner: str, build_dir: Path) -> None:
@@ -101,12 +136,39 @@ def run_aggregate(repo: Path, app_root: Path, runner: str) -> None:
         )
 
 
+def run_aggregate_with_relative_compilers(app_root: Path, cwd: Path) -> None:
+    env = os.environ.copy()
+    env.pop("BUILD_DIR", None)
+    env["CC"] = "toolchain/loom-cc"
+    env["CXX"] = "toolchain/loom-c++"
+    result = subprocess.run(
+        ["bash", str(app_root / "run_all.sh")],
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"run_all.sh rejected repo-relative compiler paths\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     app_root = repo / "test" / "app"
     cases = sorted(path for path in app_root.iterdir() if path.is_dir() and (path / "run_check.sh").is_file())
     with artifact_test_common.repo_temp_dir(repo, "loom-app-build-dir-") as tmp:
         tmp_root = Path(tmp)
+        relative_tree_root = tmp_root / "relative-compilers"
+        make_compiler_shim(relative_tree_root / "toolchain" / "loom-cc", "gcc")
+        make_compiler_shim(relative_tree_root / "toolchain" / "loom-c++", "g++")
+        copied_single_app = prepare_single_case_app_tree(repo, relative_tree_root, "axpy")
+        run_aggregate_with_relative_compilers(copied_single_app, relative_tree_root)
+
         for case_dir in cases:
             copied_case = prepare_case(repo, case_dir, tmp_root / case_dir.name)
             default_build = copied_case / "build"

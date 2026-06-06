@@ -16,10 +16,33 @@ def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-cycle-") as tmp:
         out_dir = Path(tmp)
+        default_sim = out_dir / "sim-cycle-summary-default.csv"
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         sim = out_dir / "sim-cycle-summary.csv"
         dfg_report = out_dir / "dfg-sim-report.json"
         sim_from_dfg = out_dir / "sim-cycle-summary-from-dfg.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--output",
+                str(default_sim),
+            ],
+            "default sim cycle summary",
+        )
+        default_rows = artifact_test_common.read_csv_rows(default_sim, HEADER)
+        vecsum_default_rows = [row for row in default_rows if row["kernel"] == "vecsum"]
+        if len(vecsum_default_rows) != 1:
+            raise AssertionError(f"expected one default vecsum row, got {default_rows}")
+        default_row = vecsum_default_rows[0]
+        if default_row.get("status") != "pass":
+            raise AssertionError(f"default sim cycle row should be pass evidence: {default_row}")
+        if default_row["dfg_sim_cycles"] == "" or default_row["cgra_sim_cycles"] == "":
+            raise AssertionError(f"default sim cycle row should include both simulators: {default_row}")
+        if int(default_row["cgra_sim_cycles"]) < int(default_row["dfg_sim_cycles"]):
+            raise AssertionError(f"CGRA-sim should not be more optimistic than DFG-sim: {default_row}")
+
         artifact_test_common.require_success(
             repo,
             [

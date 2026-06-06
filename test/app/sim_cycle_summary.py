@@ -45,11 +45,183 @@ def tool_candidates() -> list[Path]:
     return candidates
 
 
-def find_tool() -> Path | None:
-    for candidate in tool_candidates():
+def find_existing_tool(candidates: list[Path]) -> Path | None:
+    for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def find_tool() -> Path | None:
+    return find_existing_tool(tool_candidates())
+
+
+def dfg_sim_candidates() -> list[Path]:
+    env_tool = os.environ.get("LOOM_DFG_SIM")
+    candidates = []
+    if env_tool:
+        candidates.append(Path(env_tool))
+    candidates.extend(
+        [
+            ROOT / "build/tools/loom-dfg-sim/loom-dfg-sim",
+            ROOT / "build/bin/loom-dfg-sim",
+        ]
+    )
+    return candidates
+
+
+def cgra_sim_candidates() -> list[Path]:
+    env_tool = os.environ.get("LOOM_CGRA_SIM")
+    candidates = []
+    if env_tool:
+        candidates.append(Path(env_tool))
+    candidates.extend(
+        [
+            ROOT / "build/tools/loom-cgra-sim/loom-cgra-sim",
+            ROOT / "build/bin/loom-cgra-sim",
+        ]
+    )
+    return candidates
+
+
+def write_blocked_default(output: Path, diagnostic: str) -> None:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    intermediate_artifacts.write_csv_rows(
+        "sim_cycle",
+        output,
+        [
+            {
+                "kernel": "vecsum",
+                "dfg_sim_cycles": "",
+                "cgra_sim_cycles": "",
+                "status": "blocked",
+                "diagnostic": diagnostic,
+            }
+        ],
+    )
+
+
+def run_command(command: list[str], env: dict[str, str] | None = None) -> int:
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stdout)
+        sys.stderr.write(result.stderr)
+    return result.returncode
+
+
+def summarize_reports(output: Path, dfg_reports: list[Path], cgra_reports: list[Path]) -> int:
+    tool = find_tool()
+    if tool is None:
+        write_blocked_default(output, "missing loom-sim-cycle-summary tool")
+        return 0
+    command = [str(tool)]
+    for report in dfg_reports:
+        command.extend(["--dfg-report", str(report)])
+    for report in cgra_reports:
+        command.extend(["--cgra-report", str(report)])
+    command.extend(["--output", str(output)])
+    return run_command(command)
+
+
+def emit_default_vecsum_summary(output: Path) -> int:
+    dfg_tool = find_existing_tool(dfg_sim_candidates())
+    cgra_tool = find_existing_tool(cgra_sim_candidates())
+    if dfg_tool is None:
+        write_blocked_default(output, "missing loom-dfg-sim tool for default vecsum simulator evidence")
+        return 0
+    if cgra_tool is None:
+        write_blocked_default(output, "missing loom-cgra-sim tool for default vecsum simulator evidence")
+        return 0
+
+    work_dir = output.parent / f"{output.stem}-default-evidence"
+    dfg_dir = work_dir / "vecsum-dfg"
+    dfg_report = output.parent / "vecsum-dfg-sim-report.json"
+    dfg_cycle = work_dir / "vecsum-dfg-sim-cycle-summary.csv"
+    mapping_summary = work_dir / "pnr-mapping-summary.csv"
+    mapping_artifact = output.parent / "pnr-mapping.json"
+    cgra_report = output.parent / "vecsum-cgra-sim-report.json"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "BUILD_DIR": str(dfg_dir),
+            "LOOM_CC": str(ROOT / "build/bin/loom-cc"),
+            "LOOM_RAISE": str(ROOT / "build/bin/loom-raise"),
+            "LOOM_LOWER": str(ROOT / "build/bin/loom-lower"),
+            "LOOM_RAISE_OPT": str(ROOT / "build/bin/loom-raise-opt"),
+        }
+    )
+    dfg_check = ROOT / "test/app/vecsum/dfg_check.sh"
+    status = run_command(["bash", str(dfg_check)], env=env)
+    if status != 0:
+        return status
+
+    dfg_mlir = dfg_dir / "main_func.dfg.mlir"
+    env = os.environ.copy()
+    env["LOOM_DFG_SIM"] = str(dfg_tool)
+    status = run_command(
+        [
+            "bash",
+            str(ROOT / "test/simulator/run_app_reduction_dfg_sim.sh"),
+            "vecsum",
+            str(dfg_mlir),
+            str(dfg_report),
+            str(dfg_cycle),
+        ],
+        env=env,
+    )
+    if status != 0:
+        return status
+
+    status = run_command(
+        [
+            "bash",
+            str(ROOT / "test/pnr/run_mapping_summary.sh"),
+            "--dfg-mlir",
+            str(dfg_mlir),
+            "--graph",
+            "g_t_vecsum_red_0_0",
+            "--hardware-mlir",
+            str(ROOT / "test/pnr/shared_reduction_adg.mlir"),
+            "--hardware",
+            "shared_reduction_adg",
+            "--workload",
+            "vecsum",
+            "--artifact",
+            str(mapping_artifact),
+            "--output",
+            str(mapping_summary),
+        ]
+    )
+    if status != 0:
+        return status
+
+    status = run_command(
+        [
+            str(cgra_tool),
+            "--dfg-report",
+            str(dfg_report),
+            "--mapping-artifact",
+            str(mapping_artifact),
+            "--hardware-mlir",
+            str(ROOT / "test/pnr/shared_reduction_adg.mlir"),
+            "--output",
+            str(cgra_report),
+        ]
+    )
+    if status != 0:
+        return status
+
+    return summarize_reports(output, [dfg_report], [cgra_report])
 
 
 def main(argv: list[str]) -> int:
@@ -60,29 +232,11 @@ def main(argv: list[str]) -> int:
     cgra_reports = [Path(path) for path in args.cgra_report]
     valid_cgra_reports = [path for path in cgra_reports if path.is_file()]
     if not args.primitive_coverage and not valid_dfg_reports:
-        intermediate_artifacts.write_csv("sim_cycle", intermediate_artifacts.output_path(args.output))
-        return 0
+        return emit_default_vecsum_summary(output)
     if valid_dfg_reports:
         tool = find_tool()
         if tool is not None:
-            command = [str(tool)]
-            for report in valid_dfg_reports:
-                command.extend(["--dfg-report", str(report)])
-            for report in valid_cgra_reports:
-                command.extend(["--cgra-report", str(report)])
-            command.extend(["--output", str(output)])
-            result = subprocess.run(
-                command,
-                cwd=ROOT,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            if result.returncode != 0:
-                sys.stderr.write(result.stdout)
-                sys.stderr.write(result.stderr)
-            return result.returncode
+            return summarize_reports(output, valid_dfg_reports, valid_cgra_reports)
         intermediate_artifacts.write_csv("sim_cycle", output)
         return 0
     primitive_path = Path(args.primitive_coverage)

@@ -11,6 +11,7 @@ import artifact_test_common
 
 HEADER = ["workload", "primitive", "op_count", "dfg_sim_status", "diagnostic"]
 EXPECTED_POSITIVE = {"stream", "carry", "load"}
+EXPECTED_VECSUM_SIMULATED = {"stream", "carry", "load", "sync"}
 
 
 def run_summary(repo: Path, output: Path, *args: str) -> list[dict[str, str]]:
@@ -35,8 +36,23 @@ def assert_vecadd_rows(rows: list[dict[str, str]]) -> None:
             raise AssertionError(f"vecadd {primitive} count is not positive: {row}")
         if row["dfg_sim_status"] != "blocked":
             raise AssertionError(f"vecadd {primitive} simulator status should be blocked: {row}")
-        if "DFG-sim is not implemented" not in row["diagnostic"]:
+        if "DFG-sim report is unavailable" not in row["diagnostic"]:
             raise AssertionError(f"unexpected diagnostic for {primitive}: {row}")
+
+
+def assert_vecsum_simulated_rows(rows: list[dict[str, str]]) -> None:
+    by_primitive = {row["primitive"]: row for row in rows if row["workload"] == "vecsum"}
+    missing = sorted(EXPECTED_VECSUM_SIMULATED - set(by_primitive))
+    if missing:
+        raise AssertionError(f"missing vecsum primitive rows: {missing}; rows={rows}")
+    for primitive in sorted(EXPECTED_VECSUM_SIMULATED):
+        row = by_primitive[primitive]
+        if int(row["op_count"]) <= 0:
+            raise AssertionError(f"vecsum {primitive} count is not positive: {row}")
+        if row["dfg_sim_status"] != "pass":
+            raise AssertionError(f"vecsum {primitive} should have DFG-sim pass evidence: {row}")
+        if "DFG-sim report" not in row["diagnostic"]:
+            raise AssertionError(f"unexpected vecsum diagnostic for {primitive}: {row}")
 
 
 def main() -> int:
@@ -44,6 +60,9 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-primitive-coverage-") as tmp:
         output = Path(tmp) / "dataflow-primitive-coverage.csv"
         assert_vecadd_rows(run_summary(repo, output, "--case", "vecadd"))
+
+        vecsum_output = Path(tmp) / "dataflow-primitive-coverage-vecsum.csv"
+        assert_vecsum_simulated_rows(run_summary(repo, vecsum_output, "--case", "vecsum"))
 
         default_output = Path(tmp) / "dataflow-primitive-coverage-default.csv"
         rows = run_summary(repo, default_output)
@@ -56,6 +75,7 @@ def main() -> int:
         if expected_cases != actual_cases:
             raise AssertionError(f"default cases {actual_cases} do not match {expected_cases}")
         assert_vecadd_rows(rows)
+        assert_vecsum_simulated_rows(rows)
 
     return 0
 

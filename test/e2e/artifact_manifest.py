@@ -16,29 +16,11 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
-ARTIFACT_EDGES = (
-    ("old-app-corpus-inventory", "app-corpus-import-status"),
-    ("app-corpus-import-status", "source-compat-summary"),
-    ("source-compat-summary", "compiler-pipeline-summary"),
-    ("compiler-pipeline-summary", "dataflow-primitive-coverage"),
-    ("dataflow-primitive-coverage", "pnr-mapping-summary"),
-    ("adg-hardware-summary", "pnr-mapping-summary"),
-    ("dataflow-primitive-coverage", "sim-cycle-summary"),
-    ("dataflow-primitive-coverage", "rtl-fpa-summary"),
-    ("adg-hardware-summary", "rtl-fpa-summary"),
-    ("pnr-mapping-summary", "e2e-demonstrator-summary"),
-    ("sim-cycle-summary", "e2e-demonstrator-summary"),
-    ("rtl-fpa-summary", "e2e-demonstrator-summary"),
-    ("pnr-mapping-summary", "dse-candidate-summary"),
-    ("sim-cycle-summary", "dse-candidate-summary"),
-    ("rtl-fpa-summary", "dse-candidate-summary"),
-    ("dataflow-primitive-coverage", "unsupported-scope-ledger"),
-    ("pnr-mapping-summary", "unsupported-scope-ledger"),
-    ("sim-cycle-summary", "unsupported-scope-ledger"),
-    ("rtl-fpa-summary", "unsupported-scope-ledger"),
-    ("e2e-demonstrator-summary", "unsupported-scope-ledger"),
-    ("dse-candidate-summary", "unsupported-scope-ledger"),
-)
+def add_edge(edges: list[dict[str, str]], edge_keys: set[tuple[str, str]], left: str, right: str) -> None:
+    if (left, right) in edge_keys:
+        return
+    edge_keys.add((left, right))
+    edges.append({"from": left, "to": right, "kind": "producer-consumer"})
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -75,6 +57,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     artifacts = []
     diagnostics = []
     seen_ids = set()
+    ids_by_kind: dict[str, list[str]] = {}
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
         identity = artifact_id(path)
@@ -86,6 +69,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         if identity in seen_ids:
             diagnostics.append({"status": "blocked", "message": f"duplicate artifact id: {identity}"})
         seen_ids.add(identity)
+        ids_by_kind.setdefault(kind, []).append(identity)
         artifacts.append(
             {
                 "kind": kind,
@@ -98,9 +82,76 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         )
 
     edges = []
-    for left, right in ARTIFACT_EDGES:
+    edge_keys: set[tuple[str, str]] = set()
+    for left, right in intermediate_artifacts.ARTIFACT_EDGE_PAIRS:
         if left in seen_ids and right in seen_ids:
-            edges.append({"from": left, "to": right, "kind": "producer-consumer"})
+            add_edge(edges, edge_keys, left, right)
+
+    for mapping_id in ids_by_kind.get("pnr_mapping_artifact", []):
+        for source_kind in ("dataflow_primitive_coverage", "adg_hardware", "pnr_mapping"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                add_edge(edges, edge_keys, source_id, mapping_id)
+        for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+            add_edge(edges, edge_keys, mapping_id, cgra_id)
+        for dse_id in ids_by_kind.get("dse_candidate", []):
+            add_edge(edges, edge_keys, mapping_id, dse_id)
+
+    for sim_id in ids_by_kind.get("sim_cycle", []):
+        for dfg_id in ids_by_kind.get("dfg_sim_report", []):
+            add_edge(edges, edge_keys, dfg_id, sim_id)
+        if sim_id == "sim-cycle-summary":
+            for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+                add_edge(edges, edge_keys, cgra_id, sim_id)
+
+    for dfg_id in ids_by_kind.get("dfg_sim_report", []):
+        for source_id in ids_by_kind.get("dataflow_primitive_coverage", []):
+            add_edge(edges, edge_keys, source_id, dfg_id)
+
+    for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+        for dse_id in ids_by_kind.get("dse_candidate", []):
+            add_edge(edges, edge_keys, cgra_id, dse_id)
+
+    for comparison_id in ids_by_kind.get("sim_comparison_report", []):
+        for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                add_edge(edges, edge_keys, source_id, comparison_id)
+
+    for runtime_id in ids_by_kind.get("runtime_package", []):
+        for source_kind in ("pnr_mapping_artifact", "cgra_sim_report", "sim_comparison_report"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                add_edge(edges, edge_keys, source_id, runtime_id)
+
+    for report_id in ids_by_kind.get("workload_report_bundle", []):
+        for source_kind in (
+            "source_compat",
+            "compiler_pipeline",
+            "dataflow_primitive_coverage",
+            "adg_hardware",
+            "pnr_mapping_artifact",
+            "dfg_sim_report",
+            "cgra_sim_report",
+            "sim_comparison_report",
+            "runtime_package",
+            "sim_cycle",
+            "rtl_fpa",
+            "dse_candidate",
+        ):
+            for source_id in ids_by_kind.get(source_kind, []):
+                add_edge(edges, edge_keys, source_id, report_id)
+        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
+            add_edge(edges, edge_keys, report_id, demonstrator_id)
+
+    for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
+        for source_kind in ("adg_hardware", "rtl_fpa"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                add_edge(edges, edge_keys, source_id, hardware_report_id)
+        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
+            add_edge(edges, edge_keys, hardware_report_id, demonstrator_id)
+
+    for dse_report_id in ids_by_kind.get("dse_report_bundle", []):
+        for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                add_edge(edges, edge_keys, source_id, dse_report_id)
 
     return {
         "schema_version": 1,

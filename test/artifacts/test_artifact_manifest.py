@@ -155,6 +155,129 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("manifest with blocked diagnostics unexpectedly passed audit")
 
+        dangling_manifest = out_dir / "dangling-full-stack-artifact-manifest.json"
+        dangling_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "dangling-edge",
+                    "artifacts": [
+                        {
+                            "kind": "source_compat",
+                            "id": "source-compat-summary",
+                            "path": str(source),
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        }
+                    ],
+                    "edges": [
+                        {
+                            "from": "source-compat-summary",
+                            "to": "missing-artifact",
+                            "kind": "producer-consumer",
+                        }
+                    ],
+                    "diagnostics": [],
+                }
+            )
+        )
+        dangling_audit = out_dir / "dangling-artifact-audit-summary.json"
+        result = run_raw(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(dangling_audit),
+                str(dangling_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("manifest with dangling edge unexpectedly passed audit")
+
+        disconnected_manifest = out_dir / "disconnected-full-stack-artifact-manifest.json"
+        disconnected_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "missing-trace-edges",
+                    "artifacts": [
+                        {
+                            "kind": "dataflow_primitive_coverage",
+                            "id": "dataflow-primitive-coverage",
+                            "path": "dataflow-primitive-coverage.csv",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "adg_hardware",
+                            "id": "adg-hardware-summary",
+                            "path": "adg-hardware-summary.csv",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "pnr_mapping",
+                            "id": "pnr-mapping-summary",
+                            "path": "pnr-mapping-summary.csv",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "pnr_mapping_artifact",
+                            "id": "pnr-mapping",
+                            "path": "pnr-mapping.json",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "dfg_sim_report",
+                            "id": "vecsum-dfg-sim-report",
+                            "path": "vecsum-dfg-sim-report.json",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "cgra_sim_report",
+                            "id": "vecsum-cgra-sim-report",
+                            "path": "vecsum-cgra-sim-report.json",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "sim_cycle",
+                            "id": "sim-cycle-summary",
+                            "path": "sim-cycle-summary.csv",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "dse_candidate",
+                            "id": "dse-candidate-summary",
+                            "path": "dse-candidate-summary.csv",
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                    ],
+                    "edges": [],
+                    "diagnostics": [],
+                }
+            )
+        )
+        disconnected_audit = out_dir / "disconnected-artifact-audit-summary.json"
+        result = run_raw(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(disconnected_audit),
+                str(disconnected_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("manifest with disconnected trace artifacts unexpectedly passed audit")
+
     return 0
 
 

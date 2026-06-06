@@ -184,6 +184,59 @@ def assert_json_artifact(path: Path, required_keys: set[str]) -> None:
         raise AssertionError(f"{path.name}: schema_version must be 1")
 
 
+def assert_manifest_trace_edges(path: Path) -> None:
+    data = json.loads(path.read_text())
+    artifact_ids = {artifact.get("id") for artifact in data.get("artifacts", [])}
+    required_ids = {
+        "dataflow-primitive-coverage",
+        "adg-hardware-summary",
+        "pnr-mapping-summary",
+        "pnr-mapping",
+        "vecsum-dfg-sim-report",
+        "vecsum-cgra-sim-report",
+        "sim-cycle-summary",
+        "dse-candidate-summary",
+    }
+    if not required_ids <= artifact_ids:
+        missing = sorted(required_ids - artifact_ids)
+        raise AssertionError(f"{path.name}: missing trace artifact ids {missing}")
+
+    edge_pairs = {(edge.get("from"), edge.get("to")) for edge in data.get("edges", [])}
+    required_edges = {
+        ("dataflow-primitive-coverage", "pnr-mapping"),
+        ("adg-hardware-summary", "pnr-mapping"),
+        ("pnr-mapping-summary", "pnr-mapping"),
+        ("dataflow-primitive-coverage", "vecsum-dfg-sim-report"),
+        ("pnr-mapping", "vecsum-cgra-sim-report"),
+        ("vecsum-dfg-sim-report", "sim-cycle-summary"),
+        ("vecsum-cgra-sim-report", "sim-cycle-summary"),
+        ("pnr-mapping", "dse-candidate-summary"),
+        ("vecsum-cgra-sim-report", "dse-candidate-summary"),
+    }
+    if not required_edges <= edge_pairs:
+        missing = sorted(required_edges - edge_pairs)
+        raise AssertionError(f"{path.name}: missing trace edges {missing}")
+
+
+def assert_manifest_audit_counts_artifact_records(audit_data: dict[str, object], manifest_path: Path) -> None:
+    manifest_data = json.loads(manifest_path.read_text())
+    expected_count = len(manifest_data.get("artifacts", []))
+    for review in audit_data.get("artifact_reviews", []):
+        if not isinstance(review, dict):
+            continue
+        if review.get("schema") != "artifact_manifest":
+            continue
+        if Path(str(review.get("artifact"))).resolve() != manifest_path.resolve():
+            continue
+        if review.get("entries_checked") != expected_count:
+            raise AssertionError(
+                f"{manifest_path.name}: audit checked {review.get('entries_checked')} "
+                f"entries, expected {expected_count} artifact records"
+            )
+        return
+    raise AssertionError(f"{manifest_path.name}: audit review for manifest was not found")
+
+
 def write_dfg_report(
     path: Path,
     workload: str,
@@ -352,11 +405,23 @@ def main() -> int:
                 in {
                     "source-compat-summary.csv",
                     "compiler-pipeline-summary.csv",
+                    "dataflow-primitive-coverage.csv",
                     "adg-hardware-summary.csv",
+                    "sim-cycle-summary.csv",
                     "rtl-fpa-summary.csv",
+                    "dse-candidate-summary.csv",
                 },
             )
             produced.append(output)
+            if filename == "sim-cycle-summary.csv":
+                for backing_name in (
+                    "pnr-mapping.json",
+                    "vecsum-dfg-sim-report.json",
+                    "vecsum-cgra-sim-report.json",
+                ):
+                    backing = out_dir / backing_name
+                    if backing.is_file():
+                        produced.append(backing)
 
         for script, filename, required_keys in JSON_COMMANDS:
             output = out_dir / filename
@@ -370,8 +435,10 @@ def main() -> int:
                 raise AssertionError(
                     f"{script} failed with {result.returncode}\n"
                     f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-                )
+            )
             assert_json_artifact(output, required_keys)
+            if filename == "full-stack-artifact-manifest.json":
+                assert_manifest_trace_edges(output)
             produced.append(output)
 
         audit_pass = out_dir / "artifact-audit-summary.json"
@@ -393,6 +460,10 @@ def main() -> int:
         audit_data = json.loads(audit_pass.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected pass audit, got {audit_data}")
+        assert_manifest_audit_counts_artifact_records(
+            audit_data,
+            out_dir / "full-stack-artifact-manifest.json",
+        )
 
         invalid = out_dir / "invalid-sim-cycle-summary.csv"
         invalid.write_text(
@@ -455,6 +526,24 @@ def main() -> int:
         messages = " ".join(str(finding) for finding in findings)
         if "ghost" not in messages or "missing_hw" not in messages:
             raise AssertionError(f"cross findings should identify stale refs: {findings}")
+
+        zero_pass_primitive = out_dir / "zero-pass-dataflow-primitive-coverage.csv"
+        zero_pass_primitive.write_text(
+            "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
+            "vecadd,stream,0,pass,simulator evidence without operations\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-zero-pass-primitive.json"),
+                str(zero_pass_primitive),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("primitive pass row with zero op_count unexpectedly passed audit")
 
         invalid_optimistic_sim = out_dir / "optimistic-sim-cycle-summary.csv"
         invalid_optimistic_sim.write_text(
@@ -1047,6 +1136,485 @@ def main() -> int:
             raise AssertionError(f"sim cycle evidence check missed dynamic work items: {check}")
         if check.get("mapping_ids") != ["map0"]:
             raise AssertionError(f"sim cycle evidence check missed mapping id: {check}")
+
+        valid_rtl_fpa = out_dir / "valid-rtl-fpa-summary.csv"
+        valid_rtl_fpa.write_text(
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
+            "fabric0,vecadd,skipped,skipped,skipped,100,200,3,1,pass,analytic FPA evidence\n"
+        )
+        dse_provenance_header = (
+            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"
+            "area_um2,dynamic_power_mw,energy_nj,selection_status,candidate_kind,"
+            "input_artifacts,output_artifacts,objective_record,metric_records,policy_id,"
+            "ordering_rule,diagnostic\n"
+        )
+        valid_dse_input_artifacts = (
+            f"{valid_mapping};{valid_mapping_artifact};{cgra_without_report};"
+            f"{valid_cgra_report};{valid_rtl_fpa}"
+        )
+        valid_dse_metric_records = (
+            "cgra_sim_cycles=12;frequency_mhz=100;area_um2=200;"
+            "dynamic_power_mw=3;energy_nj=0.480"
+        )
+        valid_dse = out_dir / "valid-dse-candidate-summary.csv"
+        valid_dse_provenance = (
+            "combined_full_stack_candidate,"
+            f"{valid_dse_input_artifacts},{valid_dse},"
+            "objective::minimize_runtime,"
+            f"{valid_dse_metric_records},"
+            "deterministic_minimize_runtime_v1,"
+            "runtime_score_then_candidate_id,"
+        )
+        valid_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + valid_dse_provenance
+            + "cycle-frequency-power-area energy estimate\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-valid-dse.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(valid_dse),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                f"DSE selected row with matching mapping/sim/FPA unexpectedly failed audit\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+        duplicate_candidate_dse = out_dir / "duplicate-candidate-dse-candidate-summary.csv"
+        duplicate_candidate_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(duplicate_candidate_dse),
+        )
+        duplicate_candidate_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + duplicate_candidate_dse_provenance
+            + "cycle-frequency-power-area energy estimate\n"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,rejected,"
+            + duplicate_candidate_dse_provenance
+            + "duplicate candidate identity with different selection status\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-duplicate-dse-candidate.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(duplicate_candidate_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("duplicate DSE candidate identity unexpectedly passed audit")
+
+        stale_candidate_dse = out_dir / "stale-candidate-id-dse-candidate-summary.csv"
+        stale_candidate_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(stale_candidate_dse),
+        )
+        stale_candidate_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + stale_candidate_dse_provenance
+            + "candidate identity omits immutable mapping id\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-stale-dse-candidate-id.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(stale_candidate_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with stale candidate id unexpectedly passed audit")
+
+        mismatched_objective_dse = out_dir / "mismatched-objective-dse-candidate-summary.csv"
+        mismatched_objective_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(mismatched_objective_dse),
+        ).replace(
+            "objective::minimize_runtime",
+            "objective::minimize_energy",
+        )
+        mismatched_objective_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + mismatched_objective_dse_provenance
+            + "objective record contradicts row objective\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-dse-objective.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(mismatched_objective_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with mismatched objective record unexpectedly passed audit")
+
+        mismatched_ordering_dse = out_dir / "mismatched-ordering-dse-candidate-summary.csv"
+        mismatched_ordering_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(mismatched_ordering_dse),
+        ).replace(
+            "runtime_score_then_candidate_id",
+            "energy_score_then_candidate_id",
+        )
+        mismatched_ordering_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + mismatched_ordering_dse_provenance
+            + "ordering rule contradicts row objective\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-dse-ordering.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(mismatched_ordering_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with mismatched ordering rule unexpectedly passed audit")
+
+        mismatched_metric_dse = out_dir / "mismatched-metric-dse-candidate-summary.csv"
+        mismatched_metric_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(mismatched_metric_dse),
+        ).replace(
+            "cgra_sim_cycles=12",
+            "cgra_sim_cycles=999",
+        )
+        mismatched_metric_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + mismatched_metric_dse_provenance
+            + "metric records contradict row values\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-dse-metric.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(mismatched_metric_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with mismatched metric_records unexpectedly passed audit")
+
+        bogus_input_dse = out_dir / "bogus-input-dse-candidate-summary.csv"
+        bogus_input_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(bogus_input_dse),
+        ).replace(
+            valid_dse_input_artifacts,
+            "missing-pnr-mapping-summary.csv;missing-pnr-mapping.json;missing-sim-cycle-summary.csv",
+        )
+        bogus_input_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + bogus_input_dse_provenance
+            + "input artifact provenance points at missing files\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-bogus-dse-inputs.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(bogus_input_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with missing input_artifacts unexpectedly passed audit")
+
+        bogus_output_dse = out_dir / "bogus-output-dse-candidate-summary.csv"
+        bogus_output_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            "missing-dse-output.csv",
+        )
+        bogus_output_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + bogus_output_dse_provenance
+            + "output artifact provenance points at a missing file\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-bogus-dse-output.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(bogus_output_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with missing output_artifacts unexpectedly passed audit")
+
+        wrong_output_dse = out_dir / "wrong-output-dse-candidate-summary.csv"
+        wrong_output_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(valid_rtl_fpa),
+        )
+        wrong_output_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + wrong_output_dse_provenance
+            + "output artifact provenance points at an unrelated existing file\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-wrong-dse-output.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(wrong_output_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with unrelated output_artifacts unexpectedly passed audit")
+
+        unrelated_input_dse = out_dir / "unrelated-input-dse-candidate-summary.csv"
+        unrelated_input_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(unrelated_input_dse),
+        ).replace(
+            valid_dse_input_artifacts,
+            f"{valid_primitive};{valid_hardware};{valid_rtl_fpa}",
+        )
+        unrelated_input_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + unrelated_input_dse_provenance
+            + "input artifact provenance points at unrelated existing files\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-unrelated-dse-inputs.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(unrelated_input_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with unrelated input_artifacts unexpectedly passed audit")
+
+        no_provenance_dse = out_dir / "no-provenance-dse-candidate-summary.csv"
+        no_provenance_dse.write_text(
+            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,area_um2,dynamic_power_mw,energy_nj,selection_status,diagnostic\n"
+            "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,metrics without artifact provenance\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-no-dse-provenance.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(no_provenance_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE selected row without provenance unexpectedly passed audit")
+
+        no_provenance_rejected_dse = out_dir / "no-provenance-rejected-dse-candidate-summary.csv"
+        no_provenance_rejected_dse.write_text(
+            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,area_um2,dynamic_power_mw,energy_nj,selection_status,diagnostic\n"
+            "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,rejected,metrics without rejected-candidate provenance\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-no-rejected-dse-provenance.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(no_provenance_rejected_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE rejected row without provenance unexpectedly passed audit")
+
+        wrong_mapping_dse_mapping = out_dir / "wrong-mapping-dse-pnr-mapping-summary.csv"
+        wrong_mapping_dse_mapping.write_text(
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"
+            "vecadd,fabric0,map1,1,1,0,0,pass,stale summary row for a different mapping\n"
+        )
+        wrong_mapping_dse = out_dir / "wrong-mapping-dse-candidate-summary.csv"
+        wrong_mapping_dse_provenance = valid_dse_provenance.replace(str(valid_dse), str(wrong_mapping_dse))
+        wrong_mapping_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0,vecadd,fabric0,map1,minimize_runtime,12,100,200,3,0.480,selected,"
+            + wrong_mapping_dse_provenance
+            + "stale mapping id with borrowed simulator cycles\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-wrong-dse-mapping.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(wrong_mapping_dse_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(wrong_mapping_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE selected row with unrelated mapping artifact unexpectedly passed audit")
+
+        invalid_dse_energy = out_dir / "invalid-energy-dse-candidate-summary.csv"
+        invalid_dse_energy_provenance = valid_dse_provenance.replace(str(valid_dse), str(invalid_dse_energy))
+        invalid_dse_energy.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,99.000,selected,"
+            + invalid_dse_energy_provenance
+            + "wrong synthetic energy\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-invalid-dse-energy.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(invalid_dse_energy),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE selected row with incorrect energy unexpectedly passed audit")
 
         invalid_mapping = out_dir / "invalid-pnr-mapping-summary.csv"
         invalid_mapping.write_text(
