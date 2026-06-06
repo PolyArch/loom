@@ -455,6 +455,107 @@ def main() -> int:
         if dfg_audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected DFG-sim runtime package audit pass: {dfg_audit_data}")
 
+        rtl_package = out_dir / "rtl-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "rtl-sim",
+                "--output",
+                str(rtl_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL-sim runtime package without RTL inputs unexpectedly passed")
+        rtl_data = json.loads(rtl_package.read_text())
+        expected_rtl_target = {
+            "target_kind": "simulator",
+            "simulator": "rtl_sim",
+            "profile_id": "simulator::rtl_sim::generated_hardware",
+        }
+        if rtl_data.get("target_profile") != expected_rtl_target:
+            raise AssertionError(f"unexpected RTL-sim target profile: {rtl_data}")
+        if rtl_data.get("status") != "blocked":
+            raise AssertionError(f"RTL-sim package should be blocked without RTL inputs: {rtl_data}")
+        rtl_records = rtl_data.get("diagnostic_records", [])
+        expected_rtl_classes = {"missing_rtl_artifact", "unavailable_accelerator_target"}
+        actual_rtl_classes = {
+            record.get("diagnostic_class")
+            for record in rtl_records
+            if isinstance(record, dict)
+        }
+        if not expected_rtl_classes <= actual_rtl_classes:
+            raise AssertionError(f"RTL-sim package missed diagnostics: {rtl_data}")
+        rtl_audit = out_dir / "rtl-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(rtl_audit),
+                str(rtl_package),
+            ],
+            "blocked RTL-sim runtime package audit",
+        )
+
+        hardware_package = out_dir / "hardware-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "hardware",
+                "--data-movement-policy",
+                "copy_in_copy_out",
+                "--platform-binding",
+                "platform-binding::host-buffer::vecsum",
+                "--output",
+                str(hardware_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware runtime package without hardware backend unexpectedly passed")
+        hardware_data = json.loads(hardware_package.read_text())
+        expected_hardware_target = {
+            "target_kind": "hardware",
+            "hardware_backend": "physical_accelerator",
+            "profile_id": "hardware::physical_accelerator::explicit_platform_binding",
+        }
+        if hardware_data.get("target_profile") != expected_hardware_target:
+            raise AssertionError(f"unexpected hardware target profile: {hardware_data}")
+        if hardware_data.get("status") != "blocked":
+            raise AssertionError(f"hardware package should be blocked without backend inputs: {hardware_data}")
+        if hardware_data.get("runtime_configuration", {}).get("platform_binding_identity") != "platform-binding::host-buffer::vecsum":
+            raise AssertionError(f"hardware runtime configuration should preserve platform binding: {hardware_data}")
+        hardware_records = hardware_data.get("diagnostic_records", [])
+        actual_hardware_classes = {
+            record.get("diagnostic_class")
+            for record in hardware_records
+            if isinstance(record, dict)
+        }
+        if "unavailable_accelerator_target" not in actual_hardware_classes:
+            raise AssertionError(f"hardware package missed unavailable target diagnostic: {hardware_data}")
+        hardware_audit = out_dir / "hardware-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(hardware_audit),
+                str(hardware_package),
+            ],
+            "blocked hardware runtime package audit",
+        )
+
     return 0
 
 

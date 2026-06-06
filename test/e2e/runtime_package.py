@@ -27,7 +27,7 @@ DATA_MOVEMENT_POLICIES = (
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", choices=("cgra-sim", "dfg-sim"), default="cgra-sim")
+    parser.add_argument("--target", choices=("cgra-sim", "dfg-sim", "rtl-sim", "hardware"), default="cgra-sim")
     parser.add_argument("--data-movement-policy", choices=DATA_MOVEMENT_POLICIES, default="simulated")
     parser.add_argument("--platform-binding", default="")
     parser.add_argument("--output", required=True)
@@ -87,6 +87,10 @@ def report_identities(paths: list[Path | None]) -> list[str]:
 
 
 def diagnostic_class(message: str) -> str:
+    if "requires RTL" in message:
+        return "missing_rtl_artifact"
+    if "target is not available" in message:
+        return "unavailable_accelerator_target"
     if "platform memory binding is missing" in message:
         return "missing_platform_memory_binding"
     if "requires CGRA-sim report" in message or "requires DFG-sim report" in message:
@@ -262,7 +266,7 @@ def build_package(
             diagnostics.append("fabric ADG identity is missing")
         if not string_field(mapping, "mapping_id"):
             diagnostics.append("mapping identity is missing")
-    else:
+    elif target == "dfg-sim":
         if dfg_path is None:
             diagnostics.append("DFG-sim target requires DFG-sim report")
         elif string_field(dfg, "status") != "pass":
@@ -273,6 +277,21 @@ def build_package(
             diagnostics.append("DFG-sim target does not consume CGRA-sim reports")
         if comparison_path is not None:
             diagnostics.append("DFG-sim target does not consume simulation comparison reports")
+    elif target == "rtl-sim":
+        if not mapping:
+            diagnostics.append("RTL-sim target requires mapping artifact")
+        if not hardware:
+            diagnostics.append("fabric ADG identity is missing")
+        diagnostics.append("RTL-sim target requires RTL simulation artifacts")
+        diagnostics.append("RTL-sim target is not available until RTL artifacts are provided")
+    else:
+        if not mapping:
+            diagnostics.append("hardware target requires mapping artifact")
+        if not hardware:
+            diagnostics.append("fabric ADG identity is missing")
+        if not platform_binding:
+            diagnostics.append(f"platform memory binding is missing for {data_movement_policy} data movement")
+        diagnostics.append("hardware target is not available until a hardware backend is provided")
     if not workload or workload == "unknown":
         diagnostics.append("workload identity is missing")
     if comparison and string_field(comparison, "status") != "pass":
@@ -344,7 +363,7 @@ def build_package(
         simulator_report_identities = report_identities([cgra_path, comparison_path])
         selected_mapping_identity = artifact_id(mapping_path)
         fabric_adg_identity = hardware
-    else:
+    elif target == "dfg-sim":
         target_profile = {
             "target_kind": "simulator",
             "simulator": "dfg_sim",
@@ -358,6 +377,36 @@ def build_package(
         simulator_report_identities = report_identities([dfg_path])
         selected_mapping_identity = ""
         fabric_adg_identity = ""
+    elif target == "rtl-sim":
+        target_profile = {
+            "target_kind": "simulator",
+            "simulator": "rtl_sim",
+            "profile_id": "simulator::rtl_sim::generated_hardware",
+        }
+        required_runtime_features = [
+            "rtl_sim_dispatch",
+            "explicit_mapping_artifact",
+            "rtl_artifact_inputs",
+            "report_only_fallback",
+        ]
+        simulator_report_identities = []
+        selected_mapping_identity = artifact_id(mapping_path)
+        fabric_adg_identity = hardware
+    else:
+        target_profile = {
+            "target_kind": "hardware",
+            "hardware_backend": "physical_accelerator",
+            "profile_id": "hardware::physical_accelerator::explicit_platform_binding",
+        }
+        required_runtime_features = [
+            "hardware_dispatch",
+            "explicit_mapping_artifact",
+            "platform_memory_binding",
+            "report_only_fallback",
+        ]
+        simulator_report_identities = []
+        selected_mapping_identity = artifact_id(mapping_path)
+        fabric_adg_identity = hardware
 
     fallback_policy = "report_only"
     synchronization_mode = "host_wait"

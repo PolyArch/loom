@@ -1591,8 +1591,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if target_profile.get("target_kind") == "simulator":
                 if not isinstance(target_profile.get("simulator"), str) or not target_profile.get("simulator"):
                     diagnostics.append("runtime package simulator target lacks simulator")
-                elif target_profile.get("simulator") not in {"cgra_sim", "dfg_sim"}:
+                elif target_profile.get("simulator") not in {"cgra_sim", "dfg_sim", "rtl_sim"}:
                     diagnostics.append("runtime package has unsupported simulator target")
+            elif target_profile.get("target_kind") == "hardware":
+                if not isinstance(target_profile.get("hardware_backend"), str) or not target_profile.get("hardware_backend"):
+                    diagnostics.append("runtime package hardware target lacks hardware_backend")
+            elif target_profile.get("target_kind"):
+                diagnostics.append("runtime package has unsupported target_kind")
         fallback_policy = data.get("fallback_policy")
         if fallback_policy not in {
             "require_acceleration",
@@ -1688,7 +1693,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append("runtime package pass needs argument_descriptors")
             if not required_features:
                 diagnostics.append("runtime package pass needs required_runtime_features")
-            if not simulator_reports:
+            simulator = target_profile.get("simulator")
+            if simulator in {"cgra_sim", "dfg_sim"} and not simulator_reports:
                 diagnostics.append("runtime package pass needs simulator_report_identities")
             if target_profile.get("target_kind") == "simulator" and data_movement_policy != "simulated":
                 diagnostics.append("runtime package simulator target needs simulated data movement policy")
@@ -1697,7 +1703,6 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 for descriptor in argument_descriptors
                 if isinstance(descriptor, dict)
             }
-            simulator = target_profile.get("simulator")
             if simulator == "cgra_sim":
                 if not data.get("selected_mapping_artifact_identity"):
                     diagnostics.append("runtime package CGRA-sim target needs mapping artifact identity")
