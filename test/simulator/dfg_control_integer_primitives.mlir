@@ -2,6 +2,10 @@
 // RUN: FileCheck %s --check-prefix=COMPARE < %t.compare.json
 // RUN: loom-dfg-sim %s --graph integer_mix --arg 0=none --output %t.integer.json
 // RUN: FileCheck %s --check-prefix=INTEGER < %t.integer.json
+// RUN: loom-dfg-sim %s --graph byte_swap --arg 0=none --output %t.bswap.json
+// RUN: FileCheck %s --check-prefix=BSWAP < %t.bswap.json
+// RUN: loom-dfg-sim %s --graph zext_bits --arg 0=none --output %t.zext.json
+// RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.json
 
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
@@ -18,6 +22,19 @@
 // INTEGER-DAG: "optimistic_cycles": 21
 // INTEGER-DAG: "event_count": 14
 // INTEGER-DAG: "i32:3"
+
+// BSWAP-DAG: "workload": "byte_swap"
+// BSWAP-DAG: "graph": "byte_swap"
+// BSWAP-DAG: "status": "pass"
+// BSWAP-DAG: "optimistic_cycles": 2
+// BSWAP-DAG: "event_count": 2
+// BSWAP-DAG: "i32:2018915346"
+
+// ZEXT-DAG: "workload": "zext_bits"
+// ZEXT-DAG: "graph": "zext_bits"
+// ZEXT-DAG: "status": "pass"
+// ZEXT-DAG: "optimistic_cycles": 2
+// ZEXT-DAG: "i64:4294967295"
 
 module {
   dataflow.graph.func private @compare_select(%ctrl: none) -> (none, f32) {
@@ -44,5 +61,17 @@ module {
     %fallback = dataflow.constant %ctrl {const_value = 99 : i32} : i32
     %selected = arith.select %is_nonzero, %subtracted, %fallback : i32
     dataflow.graph.return %ctrl, %selected : none, i32
+  }
+
+  dataflow.graph.func private @byte_swap(%ctrl: none) -> (none, i32) {
+    %value = dataflow.constant %ctrl {const_value = 305419896 : i32} : i32
+    %swapped = llvm.intr.bswap(%value) : (i32) -> i32
+    dataflow.graph.return %ctrl, %swapped : none, i32
+  }
+
+  dataflow.graph.func private @zext_bits(%ctrl: none) -> (none, i64) {
+    %value = dataflow.constant %ctrl {const_value = -1 : i32} : i32
+    %wide = llvm.zext %value : i32 to i64
+    dataflow.graph.return %ctrl, %wide : none, i64
   }
 }

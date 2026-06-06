@@ -211,6 +211,14 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %abs : !fabric.bits<32>
     }
   }
+  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.op [@llvm.intr.bswap]
+    fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %swapped = fabric.op [@llvm.intr.bswap] (%value)
+                 : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %swapped : !fabric.bits<32>
+    }
+  }
   fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64>) -> !fabric.bits<64> {
     // CHECK: fabric.op [@llvm.zext]
     fabric.fu(%value = %pa : !fabric.bits<64> to !fabric.bits<32>)

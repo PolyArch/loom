@@ -527,7 +527,9 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
       evaluatePrimitiveOperation(
           PrimitiveOperationDescriptor{op->getName().getStringRef(),
                                        primitivePredicate(op),
-                                       integerBitWidth(result.getType())},
+                                       integerBitWidth(result.getType()),
+                                       integerBitWidth(
+                                           op->getOperand(0).getType())},
           operands);
   if (!valueOrErr) {
     state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));

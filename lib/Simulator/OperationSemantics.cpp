@@ -40,6 +40,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.zext", 1, 1, true, true},
     {"llvm.select", 1, 1, true, true},
     {"llvm.intr.fshl", 1, 1, true, true},
+    {"llvm.intr.bswap", 1, 1, true, true},
     {"llvm.intr.fmuladd", 4, 4, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"dataflow.stream", 1, 1, false, true},
@@ -137,6 +138,25 @@ PrimitiveValue integerFromBits(std::uint64_t bits, unsigned bitWidth) {
 
 PrimitiveValue integerFromSigned(std::int64_t value, unsigned bitWidth) {
   return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
+}
+
+llvm::Expected<PrimitiveValue>
+byteSwapInteger(llvm::StringRef opName, const PrimitiveValue &value,
+                unsigned bitWidth) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  if (bitWidth % 8 != 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "%s result bit width must be a multiple of 8, got %u",
+        opName.str().c_str(), bitWidth);
+  const std::uint64_t input = toUnsignedBits(value, bitWidth);
+  std::uint64_t output = 0;
+  const unsigned bytes = bitWidth / 8;
+  for (unsigned i = 0; i < bytes; ++i) {
+    const std::uint64_t byte = (input >> (i * 8)) & 0xffu;
+    output |= byte << ((bytes - 1 - i) * 8);
+  }
+  return integerFromBits(output, bitWidth);
 }
 
 bool compareInteger(llvm::StringRef predicate, const PrimitiveValue &lhs,
@@ -403,12 +423,15 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "llvm.zext") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
-    std::int64_t value = asInteger(operands[0]);
-    if (value < 0)
+    const unsigned sourceBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
+    if (sourceBitWidth > bitWidth)
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "%s requires a non-negative integer token", opName.str().c_str());
-    return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
+          "%s source bit width must not exceed result bit width",
+          opName.str().c_str());
+    return integerFromBits(toUnsignedBits(operands[0], sourceBitWidth),
+                           bitWidth);
   }
   if (opName == "llvm.intr.fshl") {
     if (llvm::Error arity = requireArity(opName, operands, 3))
@@ -421,6 +444,11 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return integerFromBits(lhs, bitWidth);
     return integerFromBits((lhs << amount) | (rhs >> (bitWidth - amount)),
                            bitWidth);
+  }
+  if (opName == "llvm.intr.bswap") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    return byteSwapInteger(opName, operands[0], bitWidth);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
