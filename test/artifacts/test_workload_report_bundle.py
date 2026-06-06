@@ -132,6 +132,10 @@ def main() -> int:
             "target_status": "not_run",
             "runtime_trace_identity": "",
             "profiling_record_identity": "",
+            "data_movement_policy": "simulated",
+            "synchronization_mode": "host_wait",
+            "required_data_movement_policies": ["simulated"],
+            "required_synchronization_policies": ["host_wait"],
             "output_buffer_identities": [],
             "input_artifact_fingerprints": json.loads(
                 (out_dir / "runtime-package.json").read_text()
@@ -239,6 +243,26 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime input fingerprint unexpectedly passed audit")
+        bad_runtime_policy_report = out_dir / "bad-runtime-policy-workload-report-bundle.json"
+        bad_runtime_policy_data = json.loads(report.read_text())
+        bad_runtime_policy_data["runtime_evidence"]["required_data_movement_policies"] = ["shared_coherent"]
+        bad_runtime_policy_data["runtime_evidence"]["required_synchronization_policies"] = ["device_poll"]
+        bad_runtime_policy_report.write_text(
+            json.dumps(bad_runtime_policy_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_policy_audit = out_dir / "bad-runtime-policy-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_policy_audit),
+                str(bad_runtime_policy_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime policies unexpectedly passed audit")
         reviews = audit_data.get("artifact_reviews", [])
         matching_reviews = [
             review for review in reviews

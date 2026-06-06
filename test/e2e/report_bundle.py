@@ -168,6 +168,12 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
+    required_data_movement_policies = runtime_package.get("required_data_movement_policies", [])
+    if not isinstance(required_data_movement_policies, list):
+        required_data_movement_policies = []
+    required_synchronization_policies = runtime_package.get("required_synchronization_policies", [])
+    if not isinstance(required_synchronization_policies, list):
+        required_synchronization_policies = []
     return {
         "runtime_package_identity": artifact_id(runtime_path) if runtime_path is not None else "",
         "runtime_report_identity": str(report.get("report_id", "")),
@@ -175,6 +181,18 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "target_status": str(report.get("target_status", "")),
         "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
         "profiling_record_identity": str(report.get("profiling_record_identity", "")),
+        "data_movement_policy": str(runtime_package.get("data_movement_policy", "")),
+        "synchronization_mode": str(runtime_package.get("synchronization_mode", "")),
+        "required_data_movement_policies": [
+            str(policy)
+            for policy in required_data_movement_policies
+            if isinstance(policy, str)
+        ],
+        "required_synchronization_policies": [
+            str(policy)
+            for policy in required_synchronization_policies
+            if isinstance(policy, str)
+        ],
         "input_artifact_fingerprints": {
             str(identity): str(fingerprint)
             for identity, fingerprint in input_fingerprints.items()

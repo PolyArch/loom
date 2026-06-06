@@ -1496,8 +1496,12 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
         "target_status",
         "runtime_trace_identity",
         "profiling_record_identity",
+        "data_movement_policy",
+        "synchronization_mode",
         "output_buffer_identities",
         "input_artifact_fingerprints",
+        "required_data_movement_policies",
+        "required_synchronization_policies",
         "fallback_decision",
     )
     for key in required_keys:
@@ -1510,12 +1514,54 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
         "target_status",
         "runtime_trace_identity",
         "profiling_record_identity",
+        "data_movement_policy",
+        "synchronization_mode",
     ):
         if not isinstance(value.get(key), str):
             diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
+    data_movement_policy = value.get("data_movement_policy")
+    if data_movement_policy not in DATA_MOVEMENT_POLICIES:
+        diagnostics.append("workload report bundle runtime_evidence has unknown data_movement_policy")
     outputs = value.get("output_buffer_identities")
     if not isinstance(outputs, list) or any(not isinstance(identity, str) for identity in outputs):
         diagnostics.append("workload report bundle runtime_evidence output_buffer_identities must be a string list")
+    required_data_movement_policies = value.get("required_data_movement_policies")
+    if not isinstance(required_data_movement_policies, list):
+        diagnostics.append("workload report bundle runtime_evidence required_data_movement_policies must be a list")
+        required_data_movement_policies = []
+    elif any(
+        not isinstance(policy, str) or not policy
+        for policy in required_data_movement_policies
+    ):
+        diagnostics.append(
+            "workload report bundle runtime_evidence required_data_movement_policies entries must be non-empty strings"
+        )
+    else:
+        for policy in required_data_movement_policies:
+            if policy not in DATA_MOVEMENT_POLICIES:
+                diagnostics.append(
+                    f"workload report bundle runtime_evidence required_data_movement_policies has unknown policy {policy}"
+                )
+    required_synchronization_policies = value.get("required_synchronization_policies")
+    if not isinstance(required_synchronization_policies, list):
+        diagnostics.append("workload report bundle runtime_evidence required_synchronization_policies must be a list")
+        required_synchronization_policies = []
+    elif any(
+        not isinstance(policy, str) or not policy
+        for policy in required_synchronization_policies
+    ):
+        diagnostics.append(
+            "workload report bundle runtime_evidence required_synchronization_policies entries must be non-empty strings"
+        )
+    if data_movement_policy not in required_data_movement_policies:
+        diagnostics.append(
+            "workload report bundle runtime_evidence required_data_movement_policies omits data_movement_policy"
+        )
+    synchronization_mode = value.get("synchronization_mode")
+    if synchronization_mode not in required_synchronization_policies:
+        diagnostics.append(
+            "workload report bundle runtime_evidence required_synchronization_policies omits synchronization_mode"
+        )
     input_fingerprints = value.get("input_artifact_fingerprints")
     if not isinstance(input_fingerprints, dict):
         diagnostics.append("workload report bundle runtime_evidence input_artifact_fingerprints must be an object")
