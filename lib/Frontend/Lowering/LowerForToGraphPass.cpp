@@ -3,13 +3,11 @@
 // `dataflow.graph.func` symbol definitions plus matching
 // `dataflow.graph.launch` ops.
 //
-// scf.for ops without iter_args are left in place; only the
-// reduction-shape gets promoted to a graph in this smoke deliverable.
-// The graph body wraps the for body verbatim so downstream passes
-// can later flatten the structured control flow into pure dataflow
-// primitives (per Part 3 templates). The graph's function_type is
-// the spec's `(none, T0..TN) -> (none, R0..RM)`: leading `none` are
-// the per-launch ctrl_in / done_out ports.
+// scf.for ops without iter_args are left in place. Straight-line
+// dataflow.thread bodies are also extracted into graph.func bodies so
+// element-wise kernels have an explicit SpatialCore graph surface. The
+// graph function_type is the spec's `(none, T0..TN) -> (none, R0..RM)`:
+// leading `none` values are the per-launch ctrl_in / done_out ports.
 
 #include "Frontend/Lowering/Passes.h"
 
@@ -143,6 +141,9 @@ struct LowerForToGraphPass
           return signalPassFailure();
       }
     }
+
+    if (failed(promoteStraightLineThreads(module, builder)))
+      return signalPassFailure();
   }
 
   // ====================================================================
@@ -457,6 +458,128 @@ struct LowerForToGraphPass
     for (size_t i = 0, e = loop.getNumResults(); i < e; ++i)
       loop.getResult(i).replaceAllUsesWith(launchOp.getResults()[i]);
     loop.erase();
+    return ::mlir::success();
+  }
+
+  bool isStraightLineGraphCandidate(::dataflow::ThreadOp thread) {
+    ::mlir::Region &body = thread.getBody();
+    if (!body.hasOneBlock())
+      return false;
+    ::mlir::Block &entry = body.front();
+    bool hasBodyOp = false;
+    for (::mlir::Operation &op : entry.without_terminator()) {
+      hasBodyOp = true;
+      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp>(
+              op))
+        return false;
+      if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::ForallOp,
+                      ::mlir::scf::WhileOp, ::mlir::scf::IfOp>(op))
+        return false;
+      if (op.getNumRegions() != 0)
+        return false;
+      if (op.hasTrait<::mlir::OpTrait::SymbolTable>())
+        return false;
+      if (::llvm::isa<::mlir::FunctionOpInterface>(op))
+        return false;
+    }
+    return hasBodyOp;
+  }
+
+  ::mlir::LogicalResult promoteStraightLineThreads(::mlir::ModuleOp module,
+                                                   ::mlir::OpBuilder &builder) {
+    ::llvm::SmallVector<::dataflow::ThreadOp, 8> threads;
+    for (::dataflow::ThreadOp thread : module.getOps<::dataflow::ThreadOp>()) {
+      if (isStraightLineGraphCandidate(thread))
+        threads.push_back(thread);
+    }
+
+    for (::dataflow::ThreadOp thread : threads) {
+      if (failed(promoteStraightLineThread(module, thread, builder)))
+        return ::mlir::failure();
+    }
+    return ::mlir::success();
+  }
+
+  ::mlir::LogicalResult promoteStraightLineThread(::mlir::ModuleOp module,
+                                                  ::dataflow::ThreadOp thread,
+                                                  ::mlir::OpBuilder &builder) {
+    ::mlir::Location loc = thread.getLoc();
+    ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
+    ::mlir::FunctionType threadType = thread.getFunctionType();
+    ::mlir::Region &threadBody = thread.getBody();
+    ::mlir::Block &threadEntry = threadBody.front();
+
+    size_t threadInputCount = threadType.getInputs().size();
+    if (threadEntry.getNumArguments() <= threadInputCount)
+      return thread.emitOpError("is missing thread control block argument");
+    ::mlir::Value threadCtrl = threadEntry.getArgument(threadInputCount);
+    if (!::llvm::isa<::mlir::NoneType>(threadCtrl.getType()))
+      return thread.emitOpError("thread control block argument must be none");
+
+    ::llvm::SmallVector<::mlir::Operation *, 8> bodyOps;
+    for (::mlir::Operation &op : threadEntry.without_terminator())
+      bodyOps.push_back(&op);
+
+    ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
+    inputTypes.push_back(noneType);
+    for (::mlir::Type ty : threadType.getInputs())
+      inputTypes.push_back(ty);
+    for (size_t i = threadInputCount + 1,
+                e = threadEntry.getNumArguments();
+         i < e; ++i)
+      inputTypes.push_back(threadEntry.getArgument(i).getType());
+
+    ::mlir::FunctionType graphType =
+        builder.getFunctionType(inputTypes, {noneType});
+    std::string stem = "g_" + sanitizeSymbol(thread.getSymName()) + "_0";
+    std::string graphName = uniqueSymbol(module, stem);
+
+    builder.setInsertionPointToEnd(module.getBody());
+    auto graph = ::dataflow::GraphFuncOp::create(
+        builder, loc, graphName, graphType,
+        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
+    graph.setSymVisibilityAttr(builder.getStringAttr("private"));
+
+    ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
+    for (::mlir::Type ty : inputTypes)
+      graphEntry->addArgument(ty, loc);
+
+    ::mlir::IRMapping mapping;
+    mapping.map(threadCtrl, graphEntry->getArgument(0));
+    size_t graphArgPos = 1;
+    for (size_t i = 0; i < threadInputCount; ++i)
+      mapping.map(threadEntry.getArgument(i),
+                  graphEntry->getArgument(graphArgPos++));
+    for (size_t i = threadInputCount + 1,
+                e = threadEntry.getNumArguments();
+         i < e; ++i)
+      mapping.map(threadEntry.getArgument(i),
+                  graphEntry->getArgument(graphArgPos++));
+
+    builder.setInsertionPointToEnd(graphEntry);
+    for (::mlir::Operation *op : bodyOps)
+      builder.clone(*op, mapping);
+    ::dataflow::GraphReturnOp::create(builder, loc,
+                                      ::mlir::ValueRange{
+                                          graphEntry->getArgument(0)});
+
+    builder.setInsertionPoint(&threadEntry, threadEntry.begin());
+    ::llvm::SmallVector<::mlir::Value, 8> launchOperands;
+    for (size_t i = 0; i < threadInputCount; ++i)
+      launchOperands.push_back(threadEntry.getArgument(i));
+    for (size_t i = threadInputCount + 1,
+                e = threadEntry.getNumArguments();
+         i < e; ++i)
+      launchOperands.push_back(threadEntry.getArgument(i));
+
+    auto callee =
+        ::mlir::FlatSymbolRefAttr::get(builder.getContext(), graphName);
+    ::dataflow::GraphLaunchOp::create(
+        builder, loc, /*doneOut=*/noneType, /*results=*/::mlir::TypeRange{},
+        callee, threadCtrl, launchOperands);
+
+    for (::mlir::Operation *op : ::llvm::reverse(bodyOps))
+      op->erase();
     return ::mlir::success();
   }
 };
