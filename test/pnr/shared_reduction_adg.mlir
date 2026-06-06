@@ -89,6 +89,15 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %abs : !fabric.bits<32>
     }
   }
+  fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64>) -> !fabric.bits<64> {
+    // CHECK: fabric.op [@llvm.zext]
+    fabric.fu(%value = %pa : !fabric.bits<64> to !fabric.bits<32>)
+        -> !fabric.bits<64> {
+      %wide = fabric.op [@llvm.zext] (%value)
+              : (!fabric.bits<32>) -> !fabric.bits<64>
+      fabric.yield %wide : !fabric.bits<64>
+    }
+  }
   fabric.pe [spatial] (%pc = %ctrl : !fabric.bits<0>) -> !fabric.bits<0> {
     fabric.fu(%fc = %pc : !fabric.bits<0>) -> () {
       // CHECK: fabric.op [@dataflow.sync]
@@ -99,12 +108,18 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
   // CHECK: fabric.mem [spatial]
-  %data, %done, %store_done =
-      fabric.mem [spatial] mgr(%mgr) load(%i32a, %ctrl)
+  %data0, %done0, %data1, %done1, %data2, %done2, %store_done =
+      fabric.mem [spatial] mgr(%mgr) load(%i32a, %ctrl, %i32b, %ctrl,
+                                          %i32c, %ctrl)
                             store(%i32a, %i32b, %ctrl)
-        [{load_group_size = 1 : i32, store_group_size = 1 : i32}]
+        [{load_group_size = 3 : i32, store_group_size = 1 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<0>,
            !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
-        -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>)
+        -> (!fabric.bits<32>, !fabric.bits<0>,
+            !fabric.bits<32>, !fabric.bits<0>,
+            !fabric.bits<32>, !fabric.bits<0>,
+            !fabric.bits<0>)
   fabric.yield
 }
