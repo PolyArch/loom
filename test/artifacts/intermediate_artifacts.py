@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import sys
@@ -308,6 +309,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         extra_columns=(
             "candidate_kind",
             "input_artifacts",
+            "input_artifact_fingerprints",
             "output_artifacts",
             "objective_record",
             "metric_records",
@@ -329,6 +331,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "",
             "blocked",
+            "",
             "",
             "",
             "",
@@ -822,6 +825,7 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
         required_provenance = (
             "candidate_kind",
             "input_artifacts",
+            "input_artifact_fingerprints",
             "output_artifacts",
             "objective_record",
             "metric_records",
@@ -951,11 +955,59 @@ def resolve_artifact_reference(anchor: Path, reference: str) -> Path:
     return (anchor.parent / path).resolve()
 
 
+def artifact_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def split_semicolon(value: str) -> list[str]:
+    return [entry for entry in value.split(";") if entry]
+
+
+def parse_dse_input_fingerprints(
+    raw: str,
+    diagnostics: list[str],
+    row_index: int,
+) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    if raw == "":
+        return parsed
+    for entry in raw.split(";"):
+        if entry == "":
+            diagnostics.append(f"row {row_index}: input_artifact_fingerprints contains an empty entry")
+            continue
+        if "=" not in entry:
+            diagnostics.append(f"row {row_index}: input_artifact_fingerprints entry lacks '='")
+            continue
+        reference, fingerprint = entry.rsplit("=", 1)
+        if reference == "":
+            diagnostics.append(f"row {row_index}: input_artifact_fingerprints contains an empty reference")
+            continue
+        if reference in parsed:
+            diagnostics.append(f"row {row_index}: input_artifact_fingerprints repeats {reference!r}")
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(
+                f"row {row_index}: input_artifact_fingerprints has invalid fingerprint for {reference!r}"
+            )
+            continue
+        parsed[reference] = fingerprint
+    return parsed
+
+
 def validate_dse_artifact_references(path: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     current_artifact = path.resolve()
     for index, row in enumerate(rows, start=1):
         if row.get("selection_status") not in {"selected", "pareto", "rejected"}:
             continue
+        input_references = split_semicolon(row.get("input_artifacts", ""))
+        input_fingerprints = parse_dse_input_fingerprints(
+            row.get("input_artifact_fingerprints", ""),
+            diagnostics,
+            index,
+        )
         for column in ("input_artifacts", "output_artifacts"):
             references = row.get(column, "")
             if references == "":
@@ -976,6 +1028,21 @@ def validate_dse_artifact_references(path: Path, rows: list[dict[str, str]], dia
                     diagnostics.append(
                         f"row {index}: output_artifacts does not reference this DSE candidate summary"
                     )
+        for reference in input_references:
+            if reference not in input_fingerprints:
+                diagnostics.append(f"row {index}: input_artifact_fingerprints lacks {reference!r}")
+                continue
+            resolved = resolve_artifact_reference(path, reference)
+            if resolved.is_file():
+                actual = artifact_fingerprint(resolved)
+                if input_fingerprints[reference] != actual:
+                    diagnostics.append(f"row {index}: input_artifact_fingerprints stale for {reference!r}")
+        input_reference_set = set(input_references)
+        for reference in input_fingerprints:
+            if reference not in input_reference_set:
+                diagnostics.append(
+                    f"row {index}: input_artifact_fingerprints references {reference!r} outside input_artifacts"
+                )
 
 
 def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:

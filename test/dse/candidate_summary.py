@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -287,6 +288,23 @@ def artifact_ref(value: object) -> str:
     return str(value) if value not in {"", None} else ""
 
 
+def fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def input_artifact_fingerprints(refs: list[str]) -> str:
+    entries: list[str] = []
+    for ref in refs:
+        path = Path(ref)
+        if path.is_file():
+            entries.append(f"{ref}={fingerprint(path)}")
+    return ";".join(entries)
+
+
 def policy_id_for_objective(objective: str, mapping: dict[str, str] | None = None) -> str:
     if mapping is not None and mapping.get("__policy_id"):
         return mapping["__policy_id"]
@@ -358,7 +376,7 @@ def candidate_row(
     if complete is not None:
         cycles, energy_nj = complete
         cycle_text = str(int(cycles))
-        input_artifacts = ";".join(
+        input_refs = [
             ref
             for ref in (
                 artifact_ref(mapping.get("__manifest_path")),
@@ -369,7 +387,8 @@ def candidate_row(
                 artifact_ref(fpa.get("__path")),
             )
             if ref
-        )
+        ]
+        input_artifacts = ";".join(input_refs)
         metric_records = ";".join(
             (
                 f"cgra_sim_cycles={cycle_text}",
@@ -393,6 +412,7 @@ def candidate_row(
             "selection_status": "selected",
             "candidate_kind": "combined_full_stack_candidate",
             "input_artifacts": input_artifacts,
+            "input_artifact_fingerprints": input_artifact_fingerprints(input_refs),
             "output_artifacts": str(output_artifact),
             "objective_record": f"objective::{effective_objective}",
             "metric_records": metric_records,
@@ -418,6 +438,7 @@ def candidate_row(
         "selection_status": "blocked",
         "candidate_kind": "combined_full_stack_candidate",
         "input_artifacts": "",
+        "input_artifact_fingerprints": "",
         "output_artifacts": str(output_artifact),
         "objective_record": f"objective::{effective_objective}",
         "metric_records": "",

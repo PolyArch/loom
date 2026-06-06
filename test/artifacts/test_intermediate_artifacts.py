@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -142,6 +143,18 @@ def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         reader = csv.DictReader(handle)
         rows = list(reader)
         return reader.fieldnames or [], rows
+
+
+def fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def semicolon_fingerprints(paths: list[Path]) -> str:
+    return ";".join(f"{path}={fingerprint(path)}" for path in paths)
 
 
 def assert_csv_artifact(
@@ -1145,12 +1158,25 @@ def main() -> int:
         dse_provenance_header = (
             "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"
             "area_um2,dynamic_power_mw,energy_nj,selection_status,candidate_kind,"
-            "input_artifacts,output_artifacts,objective_record,metric_records,policy_id,"
+            "input_artifacts,input_artifact_fingerprints,output_artifacts,objective_record,metric_records,policy_id,"
             "ordering_rule,diagnostic\n"
         )
-        valid_dse_input_artifacts = (
-            f"{valid_mapping};{valid_mapping_artifact};{cgra_without_report};"
-            f"{valid_cgra_report};{valid_rtl_fpa}"
+        valid_dse_inputs = [
+            valid_mapping,
+            valid_mapping_artifact,
+            cgra_without_report,
+            valid_cgra_report,
+            valid_rtl_fpa,
+        ]
+        valid_dse_input_artifacts = ";".join(str(path) for path in valid_dse_inputs)
+        valid_dse_input_fingerprints = semicolon_fingerprints(valid_dse_inputs)
+        missing_dse_input_fingerprints = ";".join(
+            f"{path}={'0' * 64}" for path in valid_dse_inputs[:-1]
+        )
+        mismatched_dse_input_fingerprints = valid_dse_input_fingerprints.replace(
+            fingerprint(valid_mapping),
+            "0" * 64,
+            1,
         )
         valid_dse_metric_records = (
             "cgra_sim_cycles=12;frequency_mhz=100;area_um2=200;"
@@ -1159,7 +1185,7 @@ def main() -> int:
         valid_dse = out_dir / "valid-dse-candidate-summary.csv"
         valid_dse_provenance = (
             "combined_full_stack_candidate,"
-            f"{valid_dse_input_artifacts},{valid_dse},"
+            f"{valid_dse_input_artifacts},{valid_dse_input_fingerprints},{valid_dse},"
             "objective::minimize_runtime,"
             f"{valid_dse_metric_records},"
             "deterministic_minimize_runtime_v1,"
@@ -1194,6 +1220,111 @@ def main() -> int:
                 f"DSE selected row with matching mapping/sim/FPA unexpectedly failed audit\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
+
+        missing_fingerprint_dse = out_dir / "missing-fingerprint-dse-candidate-summary.csv"
+        missing_fingerprint_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(missing_fingerprint_dse),
+        ).replace(
+            valid_dse_input_fingerprints,
+            "",
+        )
+        missing_fingerprint_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + missing_fingerprint_dse_provenance
+            + "input artifact provenance omits fingerprints\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-missing-dse-input-fingerprints.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(missing_fingerprint_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with missing input_artifact_fingerprints unexpectedly passed audit")
+
+        missing_fingerprint_entry_dse = out_dir / "missing-fingerprint-entry-dse-candidate-summary.csv"
+        missing_fingerprint_entry_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(missing_fingerprint_entry_dse),
+        ).replace(
+            valid_dse_input_fingerprints,
+            missing_dse_input_fingerprints,
+        )
+        missing_fingerprint_entry_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + missing_fingerprint_entry_dse_provenance
+            + "input artifact provenance omits one fingerprint entry\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-missing-dse-input-fingerprint-entry.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(missing_fingerprint_entry_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with incomplete input_artifact_fingerprints unexpectedly passed audit")
+
+        mismatched_fingerprint_dse = out_dir / "mismatched-fingerprint-dse-candidate-summary.csv"
+        mismatched_fingerprint_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(mismatched_fingerprint_dse),
+        ).replace(
+            valid_dse_input_fingerprints,
+            mismatched_dse_input_fingerprints,
+        )
+        mismatched_fingerprint_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + mismatched_fingerprint_dse_provenance
+            + "input artifact provenance carries stale fingerprint\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-dse-input-fingerprint.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(mismatched_fingerprint_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with stale input_artifact_fingerprints unexpectedly passed audit")
 
         duplicate_candidate_dse = out_dir / "duplicate-candidate-dse-candidate-summary.csv"
         duplicate_candidate_dse_provenance = valid_dse_provenance.replace(
