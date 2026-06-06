@@ -105,6 +105,31 @@ def semicolon_map(raw: str) -> dict[str, str]:
     return parsed
 
 
+def diagnostic_class(message: str) -> str:
+    if "selected DSE candidate" in message:
+        return "dse_candidate_missing"
+    if "workload report bundle" in message:
+        return "workload_report_bundle_failure"
+    if "hardware report bundle" in message:
+        return "hardware_report_bundle_failure"
+    return "dse_report_bundle_failure"
+
+
+def diagnostic_records(diagnostics: list[str]) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for index, message in enumerate(diagnostics, start=1):
+        records.append(
+            {
+                "diagnostic_id": f"dse-report-bundle::{index}",
+                "diagnostic_class": diagnostic_class(message),
+                "component": "dse_report_bundle",
+                "severity": "error",
+                "message": message,
+            }
+        )
+    return records
+
+
 def objective_record(row: dict[str, str]) -> dict[str, object]:
     objective = row.get("objective", "")
     objective_id = row.get("objective_record", "") or f"objective::{objective}"
@@ -263,6 +288,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "policy_configuration": {},
             "candidate_ordering_rule": "",
             "report_status": "blocked",
+            "diagnostic_records": diagnostic_records(diagnostics),
             "diagnostics": diagnostics,
         }
 
@@ -297,6 +323,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("no selected candidate identity was found")
 
     policy_id = selected_row.get("policy_id", "")
+    status = "pass" if not diagnostics else "blocked"
     return {
         "schema_version": 1,
         "kind": "dse_report_bundle",
@@ -318,7 +345,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "conflict_resolution": "candidate_ordering_rule",
         },
         "candidate_ordering_rule": selected_row.get("ordering_rule", ""),
-        "report_status": "pass" if not diagnostics else "blocked",
+        "report_status": status,
+        "diagnostic_records": diagnostic_records(diagnostics),
         "diagnostics": diagnostics,
     }
 

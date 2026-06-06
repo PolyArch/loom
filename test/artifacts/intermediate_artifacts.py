@@ -574,6 +574,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "policy_configuration",
             "candidate_ordering_rule",
             "report_status",
+            "diagnostic_records",
             "diagnostics",
         },
     },
@@ -2651,9 +2652,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DSE report bundle kind must be dse_report_bundle")
         if data.get("report_status") not in BASE_STATUSES:
             diagnostics.append("DSE report bundle report_status must be a known status")
-        for key in ("dse_run_id", "selected_policy_id", "candidate_ordering_rule"):
-            if not isinstance(data.get(key), str) or not data.get(key):
-                diagnostics.append(f"DSE report bundle lacks {key}")
+        if not isinstance(data.get("dse_run_id"), str) or not data.get("dse_run_id"):
+            diagnostics.append("DSE report bundle lacks dse_run_id")
+        if data.get("report_status") == "pass":
+            for key in ("selected_policy_id", "candidate_ordering_rule"):
+                if not isinstance(data.get(key), str) or not data.get(key):
+                    diagnostics.append(f"DSE report bundle lacks {key}")
         for key in (
             "objective_records",
             "candidate_list",
@@ -2664,23 +2668,31 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "referenced_workload_report_bundle_identities",
             "referenced_hardware_candidate_report_bundle_identities",
             "runtime_evidence_summaries",
+            "diagnostic_records",
             "diagnostics",
         ):
             if not isinstance(data.get(key), list):
                 diagnostics.append(f"DSE report bundle {key} must be a list")
+        diagnostic_records = validate_diagnostic_records(
+            data.get("diagnostic_records"),
+            diagnostics,
+            "DSE report bundle",
+        )
+        if data.get("report_status") != "pass" and not diagnostic_records:
+            diagnostics.append("DSE report bundle non-pass status needs diagnostic_records")
         validate_dse_report_input_fingerprints(path, data, diagnostics)
         if not isinstance(data.get("policy_configuration"), dict):
             diagnostics.append("DSE report bundle policy_configuration must be an object")
             policy_configuration = {}
         else:
             policy_configuration = data["policy_configuration"]
-        if (
+        if data.get("report_status") == "pass" and (
             not isinstance(policy_configuration.get("conflict_resolution"), str)
             or not policy_configuration.get("conflict_resolution")
         ):
             diagnostics.append("DSE report bundle policy_configuration lacks conflict_resolution")
         objectives = data.get("objective_records")
-        if not isinstance(objectives, list) or not objectives:
+        if not isinstance(objectives, list) or (data.get("report_status") == "pass" and not objectives):
             diagnostics.append("DSE report bundle needs non-empty objective_records")
             objectives = []
         for index, objective in enumerate(objectives, start=1):
@@ -2703,7 +2715,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(f"DSE report bundle objective {index} has invalid priority")
         candidates = data.get("candidate_list")
         candidate_ids: set[str] = set()
-        if not isinstance(candidates, list) or not candidates:
+        if not isinstance(candidates, list) or (data.get("report_status") == "pass" and not candidates):
             diagnostics.append("DSE report bundle needs non-empty candidate_list")
             candidates = []
         for index, candidate in enumerate(candidates, start=1):

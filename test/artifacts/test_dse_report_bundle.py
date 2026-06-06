@@ -29,6 +29,7 @@ REQUIRED_KEYS = {
     "policy_configuration",
     "candidate_ordering_rule",
     "report_status",
+    "diagnostic_records",
     "diagnostics",
 }
 
@@ -182,6 +183,8 @@ def main() -> int:
             raise AssertionError(f"unexpected selected candidates: {data}")
         if data["pareto_set"] != [] or data["rejected_candidate_summaries"] != []:
             raise AssertionError(f"unexpected non-selected candidate summaries: {data}")
+        if data["diagnostic_records"] != []:
+            raise AssertionError(f"passing DSE report should have no diagnostic records: {data}")
 
         audit = out_dir / "dse-artifact-audit-summary.json"
         artifact_test_common.require_success(
@@ -359,6 +362,44 @@ def main() -> int:
             "custom-workload-evidence"
         ) != artifact_test_common.fingerprint(custom_workload_report):
             raise AssertionError(f"custom workload report fingerprint was not preserved: {custom_name_data}")
+
+        missing_candidate_report = out_dir / "missing-candidate-dse-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(missing_candidate_report),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report without candidate summary unexpectedly passed")
+        missing_candidate_data = json.loads(missing_candidate_report.read_text())
+        records = missing_candidate_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "dse_candidate_missing"
+            and record.get("component") == "dse_report_bundle"
+            for record in records
+        ):
+            raise AssertionError(f"missing candidate report needs structured diagnostics: {missing_candidate_data}")
+        missing_candidate_audit = out_dir / "missing-candidate-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_candidate_audit),
+                str(missing_candidate_report),
+            ],
+            "blocked DSE report bundle audit",
+        )
 
     return 0
 
