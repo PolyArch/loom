@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -14,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+
+
+artifact_id = intermediate_artifacts.artifact_id_for_path
+fingerprint = intermediate_artifacts.artifact_fingerprint
 
 
 def component_for_kind(kind: str) -> str:
@@ -39,21 +42,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
-
-
-def fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def artifact_id(path: Path) -> str:
-    for suffix in (".csv", ".json"):
-        if path.name.endswith(suffix):
-            return path.name[: -len(suffix)]
-    return path.stem
 
 
 def discover_artifacts(explicit: list[str]) -> list[Path]:

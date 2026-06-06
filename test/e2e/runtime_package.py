@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -14,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+
+
+artifact_id = intermediate_artifacts.artifact_id_for_path
+input_artifact_fingerprints = intermediate_artifacts.input_artifact_fingerprints
 
 
 DATA_MOVEMENT_POLICIES = (
@@ -34,32 +37,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
-
-
-def artifact_id(path: Path | None) -> str:
-    if path is None:
-        return ""
-    for suffix in (".csv", ".json"):
-        if path.name.endswith(suffix):
-            return path.name[: -len(suffix)]
-    return path.stem
-
-
-def fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def input_artifact_fingerprints(paths: list[Path | None]) -> dict[str, str]:
-    fingerprints: dict[str, str] = {}
-    for path in paths:
-        identity = artifact_id(path)
-        if path is not None and identity and path.is_file():
-            fingerprints[identity] = fingerprint(path)
-    return fingerprints
 
 
 def read_json(path: Path | None) -> dict[str, object]:

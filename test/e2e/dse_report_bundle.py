@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -15,6 +14,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+
+
+artifact_id = intermediate_artifacts.artifact_id_for_path
+artifact_fingerprint = intermediate_artifacts.artifact_fingerprint
+input_artifact_fingerprints = intermediate_artifacts.input_artifact_fingerprints
 
 
 METRIC_ID_BY_NAME = {
@@ -31,21 +35,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
-
-
-def artifact_id(path: Path) -> str:
-    for suffix in (".csv", ".json"):
-        if path.name.endswith(suffix):
-            return path.name[: -len(suffix)]
-    return path.stem
-
-
-def artifact_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -178,14 +167,11 @@ def report_bundle_references(paths: list[Path], expected_kind: str) -> tuple[lis
 
 def input_artifact_references(paths: list[Path]) -> tuple[list[str], dict[str, str]]:
     ids: list[str] = []
-    fingerprints: dict[str, str] = {}
     for path in paths:
         if not path.is_file():
             continue
-        identity = artifact_id(path)
-        ids.append(identity)
-        fingerprints[identity] = artifact_fingerprint(path)
-    return ids, fingerprints
+        ids.append(artifact_id(path))
+    return ids, input_artifact_fingerprints(paths)
 
 
 def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:

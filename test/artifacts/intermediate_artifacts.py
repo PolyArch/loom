@@ -969,6 +969,24 @@ def artifact_fingerprint(path: Path) -> str:
     return digest.hexdigest()
 
 
+def artifact_id_for_path(path: Path | None) -> str:
+    if path is None:
+        return ""
+    for suffix in (".csv", ".json"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
+
+
+def input_artifact_fingerprints(paths: Iterable[Path | None]) -> dict[str, str]:
+    fingerprints: dict[str, str] = {}
+    for path in paths:
+        identity = artifact_id_for_path(path)
+        if path is not None and identity and path.is_file():
+            fingerprints[identity] = artifact_fingerprint(path)
+    return fingerprints
+
+
 def split_semicolon(value: str) -> list[str]:
     return [entry for entry in value.split(";") if entry]
 
