@@ -230,6 +230,20 @@ matvec_row_values() {
     printf "%s" "${values}"
 }
 
+gemv_row_values() {
+    local row="$1"
+    local values=""
+    local value=""
+    for j in $(seq 0 4); do
+        value=$((((row * 5 + j) % 10) + 1))
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
 configure_matvec_row_args() {
     local row="$1"
     append_ctrl_tokens 5
@@ -242,6 +256,22 @@ configure_matvec_row_args() {
         --arg 2=5
         --arg 3=1
         --arg 6=0
+    )
+}
+
+configure_gemv_row_args() {
+    local row="$1"
+    append_ctrl_tokens 5
+    append_raw_memref 4 "$(gemv_row_values "${row}")"
+    append_raw_memref 5 "1,2,3,4,5"
+    sim_args+=(
+        --graph g_t_gemv_kernel_0_0
+        --workload gemv
+        --arg 1=0
+        --arg 2=5
+        --arg 3=1
+        --arg 6=1
+        --arg 7=0
     )
 }
 
@@ -622,6 +652,9 @@ case "${CASE}" in
     matvec)
         configure_matvec_row_args 0
         ;;
+    gemv)
+        configure_gemv_row_args 0
+        ;;
     relu)
         configure_relu_core_args
         ;;
@@ -669,6 +702,31 @@ if [[ "${CASE}" == "matvec" ]]; then
     sim_args+=(
         --graph g_t_main_red_0_0
         --workload matvec
+        --arg 1=0
+        --arg 2=4
+        --arg 3=1
+        --arg 5=0
+    )
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${checksum_report}"
+    extra_reports+=("${checksum_report}")
+fi
+
+if [[ "${CASE}" == "gemv" ]]; then
+    for row in 1 2 3; do
+        row_report="${REPORT_JSON%.report.json}.row${row}.report.json"
+        sim_args=()
+        configure_gemv_row_args "${row}"
+        "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${row_report}"
+        extra_reports+=("${row_report}")
+    done
+
+    checksum_report="${REPORT_JSON%.report.json}.checksum.report.json"
+    sim_args=()
+    append_ctrl_tokens 4
+    append_raw_memref 4 "110,263,116,269"
+    sim_args+=(
+        --graph g_t_main_red_0_0
+        --workload gemv
         --arg 1=0
         --arg 2=4
         --arg 3=1
