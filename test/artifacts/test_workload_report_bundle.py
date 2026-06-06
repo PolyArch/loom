@@ -243,6 +243,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime input fingerprint unexpectedly passed audit")
+        stale_runtime_fingerprint_report = out_dir / "stale-runtime-fingerprint-workload-report-bundle.json"
+        stale_runtime_fingerprint_data = json.loads(report.read_text())
+        stale_runtime_fingerprint_data["runtime_evidence"]["input_artifact_fingerprints"]["pnr-mapping"] = "0" * 64
+        stale_runtime_fingerprint_report.write_text(
+            json.dumps(stale_runtime_fingerprint_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_runtime_fingerprint_audit = out_dir / "stale-runtime-fingerprint-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_runtime_fingerprint_audit),
+                str(stale_runtime_fingerprint_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with stale runtime input fingerprint unexpectedly passed audit")
         bad_runtime_policy_report = out_dir / "bad-runtime-policy-workload-report-bundle.json"
         bad_runtime_policy_data = json.loads(report.read_text())
         bad_runtime_policy_data["runtime_evidence"]["required_data_movement_policies"] = ["shared_coherent"]

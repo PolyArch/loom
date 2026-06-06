@@ -1554,7 +1554,12 @@ def validate_runtime_report(
         )
 
 
-def validate_runtime_evidence(value: object, diagnostics: list[str], require_complete: bool) -> None:
+def validate_runtime_evidence(
+    path: Path,
+    value: object,
+    diagnostics: list[str],
+    require_complete: bool,
+) -> None:
     if not isinstance(value, dict):
         diagnostics.append("workload report bundle runtime_evidence must be an object")
         return
@@ -1644,6 +1649,13 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
                 diagnostics.append(
                     "workload report bundle runtime_evidence "
                     f"input_artifact_fingerprints has invalid fingerprint for {identity}"
+                )
+                continue
+            resolved = resolve_json_identity_reference(path, identity)
+            if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+                diagnostics.append(
+                    "workload report bundle runtime_evidence "
+                    f"input_artifact_fingerprints stale for {identity!r}"
                 )
     fallback = value.get("fallback_decision")
     if not isinstance(fallback, dict):
@@ -2394,6 +2406,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "workload report bundle runtime",
         )
         validate_runtime_evidence(
+            path,
             data.get("runtime_evidence"),
             diagnostics,
             data.get("report_status") == "pass",
