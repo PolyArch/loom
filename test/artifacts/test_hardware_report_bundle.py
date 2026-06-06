@@ -21,6 +21,7 @@ REQUIRED_KEYS = {
     "eda_report_identities",
     "fpa_report_identities",
     "supported_workload_classes",
+    "input_artifact_fingerprints",
     "report_status",
     "diagnostics",
     "metric_records",
@@ -79,6 +80,12 @@ def main() -> int:
             raise AssertionError(f"unexpected FPA report identities: {data}")
         if data["supported_workload_classes"] != ["vecsum"]:
             raise AssertionError(f"unexpected supported workload classes: {data}")
+        expected_input_fingerprints = {
+            "adg-hardware-summary": artifact_test_common.fingerprint(out_dir / "adg-hardware-summary.csv"),
+            "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
+        }
+        if data["input_artifact_fingerprints"] != expected_input_fingerprints:
+            raise AssertionError(f"unexpected hardware report input fingerprints: {data}")
 
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:
@@ -138,6 +145,23 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected hardware report audit pass: {audit_data}")
+        stale_input_report = out_dir / "stale-input-hardware-report-bundle.json"
+        stale_input_data = json.loads(report.read_text())
+        stale_input_data["input_artifact_fingerprints"]["adg-hardware-summary"] = "0" * 64
+        stale_input_report.write_text(json.dumps(stale_input_data, indent=2, sort_keys=True) + "\n")
+        stale_input_audit = out_dir / "stale-input-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_input_audit),
+                str(stale_input_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with stale input fingerprint unexpectedly passed audit")
         reviews = audit_data.get("artifact_reviews", [])
         matching_reviews = [
             review for review in reviews

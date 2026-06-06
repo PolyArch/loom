@@ -548,6 +548,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "eda_report_identities",
             "fpa_report_identities",
             "supported_workload_classes",
+            "input_artifact_fingerprints",
             "report_status",
             "diagnostics",
             "metric_records",
@@ -1939,6 +1940,56 @@ def validate_workload_report_input_fingerprints(
             diagnostics.append(f"workload report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
+def validate_hardware_report_input_fingerprints(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    reference_ids: set[str] = set()
+    for key in ("eda_report_identities", "fpa_report_identities"):
+        value = data.get(key)
+        if isinstance(value, list):
+            reference_ids.update(
+                identity
+                for identity in value
+                if isinstance(identity, str) and identity
+            )
+    metrics = data.get("metric_records")
+    if isinstance(metrics, list):
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            source = metric.get("evidence_source_artifact_id")
+            if isinstance(source, str) and source:
+                reference_ids.add(source)
+    input_fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        diagnostics.append("hardware report bundle input_artifact_fingerprints must be an object")
+        input_fingerprints = {}
+    if data.get("report_status") == "pass" and not input_fingerprints:
+        diagnostics.append("hardware report bundle pass needs input_artifact_fingerprints")
+    for identity, fingerprint in input_fingerprints.items():
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append("hardware report bundle input_artifact_fingerprints has invalid identity")
+            continue
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(
+                f"hardware report bundle input_artifact_fingerprints has invalid fingerprint for {identity}"
+            )
+            continue
+        if identity not in reference_ids:
+            diagnostics.append(
+                f"hardware report bundle input_artifact_fingerprints references {identity!r} outside report inputs"
+            )
+            continue
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"hardware report bundle input_artifact_fingerprints stale for {identity!r}")
+    for reference in reference_ids:
+        if reference not in input_fingerprints:
+            diagnostics.append(f"hardware report bundle input_artifact_fingerprints lacks {reference!r}")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -2542,6 +2593,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append("hardware report bundle pass needs FPA report identity")
             if not data.get("supported_workload_classes"):
                 diagnostics.append("hardware report bundle pass needs supported workload classes")
+        validate_hardware_report_input_fingerprints(path, data, diagnostics)
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         if not isinstance(metrics, list) or not metrics:
