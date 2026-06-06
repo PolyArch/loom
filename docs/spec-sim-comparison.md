@@ -135,6 +135,20 @@ explicit unsupported or diagnostic marker according to the selected
 export profile. It must not silently write zero for a missing cycle
 value.
 
+If a workload is represented by multiple dataflow graph slices, the
+compact table row may aggregate those slices only when all source
+reports share the same workload identity and input identity. The DFG
+cycle value is the sum of matching DFG-sim reports. The CGRA cycle value
+is the sum of matching CGRA-sim reports, and each CGRA-sim report must
+reference a valid mapping artifact for its slice.
+
+Identical cycle values across distinct `pass` rows are a correctness
+risk, not a benign formatting issue. The comparison or artifact audit
+must fail such rows unless they belong to an explicitly documented
+equivalence group and the evidence explains why the kernels are
+first-principles equivalent for the modeled input, operation family, and
+graph shape.
+
 ## Use By PnR And DSE
 
 PnR may consume comparison reports from previous candidates as cost

@@ -184,6 +184,144 @@ def assert_json_artifact(path: Path, required_keys: set[str]) -> None:
         raise AssertionError(f"{path.name}: schema_version must be 1")
 
 
+def write_dfg_report(path: Path, workload: str, graph: str, cycles: int) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "dfg_sim_report",
+                "workload": workload,
+                "graph": graph,
+                "status": "pass",
+                "metric_definition": "optimistic_operation_latency_sum",
+                "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                "operation_cost_model_source": "loom.sim.operation_cost.v1",
+                "optimistic_cycles": cycles,
+                "wavefront_steps": min(cycles, 4),
+                "event_count": min(cycles, 10),
+                "final_outputs": ["none"],
+                "diagnostics": [],
+            }
+        )
+    )
+
+
+def write_mapping_artifact(path: Path, workload: str, graph: str, mapping_id: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "pnr_mapping",
+                "workload": workload,
+                "hardware": "fabric0",
+                "graph": graph,
+                "mapping_id": mapping_id,
+                "status": "pass",
+                "placed_records": 1,
+                "routed_edges": 1,
+                "unrouted_edges": 0,
+                "unplaced_records": 0,
+                "config_records": 0,
+                "placements": [
+                    {
+                        "software": f"{graph}#op0",
+                        "operation": "arith.addi",
+                        "resource_kind": "fabric.op",
+                        "hardware": "fabric0::fabric.op#0",
+                        "schedule": "spatial",
+                    }
+                ],
+                "routes": [
+                    {
+                        "record_id": "route#0",
+                        "edge_ref": f"{graph}#op0.result0->{graph}#op1.operand0",
+                        "producer_binding": f"placement:{graph}#op0",
+                        "consumer_binding": f"placement:{graph}#op1",
+                        "payload_kind": "data",
+                        "from": f"{graph}#op0",
+                        "to": f"{graph}#op1",
+                        "status": "routed",
+                        "segments": [
+                            {
+                                "segment_id": "seg0",
+                                "segment_kind": "module_path",
+                                "source_endpoint": "fabric0::fabric.op#0.out",
+                                "sink_endpoint": "fabric0::fabric.op#1.in",
+                            }
+                        ],
+                    }
+                ],
+                "config_bitstream": [],
+            }
+        )
+    )
+
+
+def write_cgra_report(
+    path: Path,
+    workload: str,
+    mapping_id: str,
+    dfg_cycles: int,
+    cgra_cycles: int,
+) -> None:
+    delta = cgra_cycles - dfg_cycles
+    route_cycles = 1 if delta > 0 else 0
+    memory_cycles = delta - route_cycles
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "cgra_sim_report",
+                "workload": workload,
+                "hardware": "fabric0",
+                "mapping_id": mapping_id,
+                "status": "pass",
+                "fidelity_level": "mapping_constraint_estimate",
+                "metric_definition": "mapping_constraint_estimate",
+                "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                "operation_cost_model_source": "loom.sim.operation_cost.v1",
+                "difference_classification": "expected_hardware_constraint"
+                if delta > 0
+                else "no_modeled_hardware_constraints",
+                "hardware_bound_classification": "within_modeled_bounds",
+                "dfg_cycles": dfg_cycles,
+                "modeled_lower_bound_cycles": cgra_cycles,
+                "performance_delta_cycles": delta,
+                "route_latency_cycles": route_cycles,
+                "memory_latency_cycles": memory_cycles,
+                "temporal_penalty_cycles": 0,
+                "hardware_aware_cycles": cgra_cycles,
+                "cycle_breakdown": [
+                    {
+                        "category": "route_latency",
+                        "cycles": route_cycles,
+                        "evidence": "mapping.route_segments",
+                    },
+                    {
+                        "category": "memory_latency",
+                        "cycles": memory_cycles,
+                        "evidence": "fabric.mem placement",
+                    },
+                ],
+                "unmodeled_constraints": ["cache_behavior"],
+                "first_principles_checks": [
+                    {
+                        "name": "cgra_not_more_optimistic_than_dfg",
+                        "status": "pass",
+                        "evidence": "hardware_aware_cycles >= dfg_cycles",
+                    },
+                    {
+                        "name": "delta_explained_by_modeled_constraints",
+                        "status": "pass",
+                        "evidence": "performance_delta_cycles = modeled penalties",
+                    },
+                ],
+                "diagnostics": ["synthetic checked CGRA report"],
+            }
+        )
+    )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-artifacts-") as tmp:
@@ -350,6 +488,120 @@ def main() -> int:
         if "DFG-sim cycles 64" not in messages or "CGRA-sim cycles 80" not in messages:
             raise AssertionError(f"duplicate simulator diagnostics missing: {audit_data}")
 
+        equivalent_reduction_sim = out_dir / "equivalent-reduction-sim-cycle-summary.csv"
+        equivalent_reduction_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecsum,579,589,pass,equivalent same-length integer reduction\n"
+            "reduction,579,589,pass,equivalent same-length integer reduction\n"
+        )
+        write_dfg_report(out_dir / "vecsum-dfg-sim-report.json", "vecsum", "g_vecsum", 579)
+        write_dfg_report(out_dir / "reduction-dfg-sim-report.json", "reduction", "g_reduction", 579)
+        write_mapping_artifact(
+            out_dir / "vecsum-pnr-mapping.json",
+            "vecsum",
+            "g_vecsum",
+            "map_vecsum",
+        )
+        write_mapping_artifact(
+            out_dir / "reduction-pnr-mapping.json",
+            "reduction",
+            "g_reduction",
+            "map_reduction",
+        )
+        write_cgra_report(
+            out_dir / "vecsum-cgra-sim-report.json",
+            "vecsum",
+            "map_vecsum",
+            579,
+            589,
+        )
+        write_cgra_report(
+            out_dir / "reduction-cgra-sim-report.json",
+            "reduction",
+            "map_reduction",
+            579,
+            589,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-equivalent-reduction.json"),
+                str(equivalent_reduction_sim),
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                str(out_dir / "reduction-dfg-sim-report.json"),
+                str(out_dir / "vecsum-pnr-mapping.json"),
+                str(out_dir / "reduction-pnr-mapping.json"),
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                str(out_dir / "reduction-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "allowed equivalent reduction simulator cycles unexpectedly failed audit"
+            )
+
+        aggregate_slice_sim = out_dir / "aggregate-slice-sim-cycle-summary.csv"
+        aggregate_slice_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,1603,1631,pass,core graph and checksum reduction slices\n"
+        )
+        write_dfg_report(out_dir / "vecadd-core-dfg-sim-report.json", "vecadd", "g_vecadd", 960)
+        write_dfg_report(
+            out_dir / "vecadd-reduction-dfg-sim-report.json",
+            "vecadd",
+            "g_main_red",
+            643,
+        )
+        write_mapping_artifact(
+            out_dir / "vecadd-core-pnr-mapping.json",
+            "vecadd",
+            "g_vecadd",
+            "map_vecadd_core",
+        )
+        write_mapping_artifact(
+            out_dir / "vecadd-reduction-pnr-mapping.json",
+            "vecadd",
+            "g_main_red",
+            "map_vecadd_reduction",
+        )
+        write_cgra_report(
+            out_dir / "vecadd-core-cgra-sim-report.json",
+            "vecadd",
+            "map_vecadd_core",
+            960,
+            978,
+        )
+        write_cgra_report(
+            out_dir / "vecadd-reduction-cgra-sim-report.json",
+            "vecadd",
+            "map_vecadd_reduction",
+            643,
+            653,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-aggregate-slices.json"),
+                str(aggregate_slice_sim),
+                str(out_dir / "vecadd-core-dfg-sim-report.json"),
+                str(out_dir / "vecadd-reduction-dfg-sim-report.json"),
+                str(out_dir / "vecadd-core-pnr-mapping.json"),
+                str(out_dir / "vecadd-reduction-pnr-mapping.json"),
+                str(out_dir / "vecadd-core-cgra-sim-report.json"),
+                str(out_dir / "vecadd-reduction-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "aggregate simulator slices unexpectedly failed audit"
+            )
+
         decimal_sim = out_dir / "decimal-sim-cycle-summary.csv"
         decimal_sim.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
@@ -474,6 +726,23 @@ def main() -> int:
             raise AssertionError(
                 f"DFG cycle backed by DFG report unexpectedly failed audit\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+        noncanonical_dfg_report = out_dir / "vecadd.dfg.report.json"
+        write_dfg_report(noncanonical_dfg_report, "vecadd", "g_vecadd", 10)
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-noncanonical-dfg-report.json"),
+                str(noncanonical_dfg_report),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "DFG report with noncanonical filename unexpectedly failed audit"
             )
 
         cgra_without_mapping = out_dir / "cgra-without-mapping-sim-cycle-summary.csv"

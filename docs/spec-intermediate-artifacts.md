@@ -37,6 +37,12 @@ Artifact existence is not sufficient evidence. A producer may create a
 file with invalid, empty, stale, or internally contradictory contents.
 Consumers and acceptance gates must inspect the artifact contents.
 
+JSON artifacts are self-describing when they contain a recognized
+`kind` field. Canonical filenames remain recommended for portability,
+but content audits must be able to classify DFG-sim reports,
+CGRA-sim reports, and PnR mapping artifacts from `kind` when local
+test or scratch paths use non-canonical filenames.
+
 ## Status Values
 
 CSV gates use these baseline status values unless a more specific spec
@@ -205,8 +211,23 @@ Rules:
   corresponding simulator report exists and produced the value.
 * Missing simulator evidence is represented by an explicit diagnostic,
   not numeric zero.
+* When one kernel or app row is composed from multiple dataflow graph
+  slices, the summary value is the sum of the matching DFG-sim report
+  cycles for that workload. If CGRA-sim reports are present for those
+  slices, the hardware-aware value is the sum of matching CGRA-sim
+  report cycles, and each CGRA-sim report must resolve to a pass PnR
+  mapping artifact.
 * CGRA-sim must not be more optimistic than DFG-sim for comparable
   metrics unless the row records a valid comparability diagnostic.
+* Distinct `pass` rows with identical DFG-sim or CGRA-sim cycle values
+  are invalid by default because they often indicate artifact reuse,
+  missing graph coverage, or an over-flat cost model. The only valid
+  exception is an explicitly documented equivalence group whose members
+  have the same operation family, same modeled input size, same relevant
+  graph shape, and matching first-principles audit evidence. For
+  example, same-length integer sum-reduction kernels may share a cycle
+  value; unrelated kernels such as elementwise arithmetic, mean, and
+  norm reductions must not be accepted as equivalent without evidence.
 
 ### RTL FPA Summary
 

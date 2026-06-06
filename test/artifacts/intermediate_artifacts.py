@@ -18,6 +18,7 @@ SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
 IMPORT_STATES = {"accepted", "deferred", "excluded"}
 INVENTORY_STATES = {"ready", "blocked"}
 IGNORED_IDENTITIES = {"", "scaffold", "none", None}
+ALLOWED_SIM_CYCLE_EQUIVALENCE_GROUPS = (frozenset({"vecsum", "reduction"}),)
 
 
 @dataclass(frozen=True)
@@ -466,6 +467,21 @@ def json_kind_for_path(path: Path) -> str | None:
         filename = str(schema["filename"])
         if name == filename or name.endswith("-" + filename):
             return kind
+    if not path.is_file() or path.suffix != ".json":
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    embedded_kind = data.get("kind")
+    if embedded_kind == "dfg_sim_report":
+        return "dfg_sim_report"
+    if embedded_kind == "cgra_sim_report":
+        return "cgra_sim_report"
+    if embedded_kind == "pnr_mapping":
+        return "pnr_mapping_artifact"
     return None
 
 
@@ -636,18 +652,23 @@ def validate_sim_cycle_uniqueness(rows: list[dict[str, str]], diagnostics: list[
             cgra_cycles.setdefault(cgra, []).append(kernel)
     for cycle, kernels in sorted(dfg_cycles.items(), key=lambda item: item[0]):
         unique_kernels = sorted(set(kernels))
-        if len(unique_kernels) > 1:
+        if len(unique_kernels) > 1 and not allowed_sim_cycle_equivalence(unique_kernels):
             diagnostics.append(
                 f"DFG-sim cycles {cycle} are shared by multiple kernels "
                 f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
             )
     for cycle, kernels in sorted(cgra_cycles.items(), key=lambda item: item[0]):
         unique_kernels = sorted(set(kernels))
-        if len(unique_kernels) > 1:
+        if len(unique_kernels) > 1 and not allowed_sim_cycle_equivalence(unique_kernels):
             diagnostics.append(
                 f"CGRA-sim cycles {cycle} are shared by multiple kernels "
                 f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
             )
+
+
+def allowed_sim_cycle_equivalence(kernels: list[str]) -> bool:
+    kernel_set = frozenset(kernels)
+    return any(kernel_set.issubset(group) for group in ALLOWED_SIM_CYCLE_EQUIVALENCE_GROUPS)
 
 
 def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
@@ -971,8 +992,8 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             and isinstance(artifact.get("hardware"), str)
         ):
             pass_mapping_artifacts_by_workload.setdefault(workload, []).append(artifact)
-    dfg_report_cycles_by_workload: dict[str, int] = {}
-    dfg_report_semantics_by_workload: dict[str, str] = {}
+    dfg_report_cycles_by_workload: dict[str, list[int]] = {}
+    dfg_report_semantics_by_workload: dict[str, set[str]] = {}
     for report in json_grouped.get("dfg_sim_report", []):
         workload = report.get("workload")
         cycles = report.get("optimistic_cycles")
@@ -984,9 +1005,9 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             and isinstance(cycles, int)
             and cycles >= 0
         ):
-            dfg_report_cycles_by_workload[workload] = cycles
+            dfg_report_cycles_by_workload.setdefault(workload, []).append(cycles)
             if isinstance(semantics, str):
-                dfg_report_semantics_by_workload[workload] = semantics
+                dfg_report_semantics_by_workload.setdefault(workload, set()).add(semantics)
     cgra_reports_by_workload: dict[str, list[dict[str, object]]] = {}
     for report in json_grouped.get("cgra_sim_report", []):
         workload = report.get("workload")
@@ -1117,15 +1138,16 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             )
         if row.get("dfg_sim_cycles", ""):
             dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
-            report_cycles = dfg_report_cycles_by_workload.get(kernel)
-            if report_cycles is not None:
-                if dfg_cycles is not None and dfg_cycles != report_cycles:
+            report_cycles = dfg_report_cycles_by_workload.get(kernel, [])
+            if report_cycles:
+                report_cycle_total = sum(report_cycles)
+                if dfg_cycles is not None and dfg_cycles != report_cycle_total:
                     findings.append(
                         cross_finding(
                             "sim_dfg_cycle_matches_dfg_report",
                             (
                                 f"sim kernel {kernel!r} DFG-sim cycles "
-                                f"{dfg_cycles} do not match DFG report cycles {report_cycles}"
+                                f"{dfg_cycles} do not match summed DFG report cycles {report_cycle_total}"
                             ),
                             row,
                         )
@@ -1164,19 +1186,22 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                     )
                 )
             elif cgra_cycles is not None:
-                matching_reports = [
+                reports_with_cycles = [
                     report
                     for report in cgra_reports
                     if isinstance(report.get("hardware_aware_cycles"), int)
-                    and report.get("hardware_aware_cycles") == cgra_cycles
                 ]
+                report_cycle_total = sum(
+                    int(report["hardware_aware_cycles"]) for report in reports_with_cycles
+                )
+                matching_reports = reports_with_cycles if report_cycle_total == cgra_cycles else []
                 if not matching_reports:
                     findings.append(
                         cross_finding(
                             "sim_cgra_cycle_matches_cgra_report",
                             (
                                 f"sim kernel {kernel!r} CGRA-sim cycles "
-                                f"{cgra_cycles} do not match any CGRA report"
+                                f"{cgra_cycles} do not match summed CGRA report cycles {report_cycle_total}"
                             ),
                             row,
                         )
@@ -1217,7 +1242,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                                     continue
                                 matching_mapping_reports.append(report)
                                 break
-                    if not matching_mapping_reports:
+                    if len(matching_mapping_reports) != len(matching_reports):
                         findings.append(
                             cross_finding(
                                 "sim_cgra_report_matches_mapping",
@@ -1232,10 +1257,12 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                         matching_reports = matching_mapping_reports
                 if matching_reports and row.get("dfg_sim_cycles", ""):
                     dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
-                    if dfg_cycles is not None and not any(
-                        report.get("dfg_cycles") == dfg_cycles
+                    report_dfg_cycles = [
+                        int(report["dfg_cycles"])
                         for report in matching_reports
-                    ):
+                        if isinstance(report.get("dfg_cycles"), int)
+                    ]
+                    if dfg_cycles is not None and sum(report_dfg_cycles) != dfg_cycles:
                         findings.append(
                             cross_finding(
                                 "sim_cgra_report_matches_dfg_cycle",
@@ -1246,9 +1273,9 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                                 row,
                             )
                         )
-                    dfg_semantics = dfg_report_semantics_by_workload.get(kernel)
-                    if dfg_semantics is not None and not any(
-                        report.get("operation_semantics_source") == dfg_semantics
+                    dfg_semantics = dfg_report_semantics_by_workload.get(kernel, set())
+                    if dfg_semantics and not all(
+                        report.get("operation_semantics_source") in dfg_semantics
                         for report in matching_reports
                     ):
                         findings.append(
