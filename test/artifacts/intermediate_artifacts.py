@@ -565,6 +565,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "selected_candidates",
             "pareto_set",
             "rejected_candidate_summaries",
+            "referenced_dse_candidate_artifact_identities",
             "referenced_workload_report_bundle_identities",
             "referenced_hardware_candidate_report_bundle_identities",
             "input_artifact_fingerprints",
@@ -1853,6 +1854,7 @@ def validate_dse_report_input_fingerprints(
 ) -> None:
     reference_ids: set[str] = set()
     for key in (
+        "referenced_dse_candidate_artifact_identities",
         "referenced_workload_report_bundle_identities",
         "referenced_hardware_candidate_report_bundle_identities",
     ):
@@ -2640,6 +2642,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "selected_candidates",
             "pareto_set",
             "rejected_candidate_summaries",
+            "referenced_dse_candidate_artifact_identities",
             "referenced_workload_report_bundle_identities",
             "referenced_hardware_candidate_report_bundle_identities",
             "runtime_evidence_summaries",
@@ -2724,6 +2727,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if data.get("report_status") == "pass":
             for key in (
                 "selected_candidates",
+                "referenced_dse_candidate_artifact_identities",
                 "referenced_workload_report_bundle_identities",
                 "referenced_hardware_candidate_report_bundle_identities",
             ):

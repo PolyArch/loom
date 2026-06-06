@@ -176,6 +176,18 @@ def report_bundle_references(paths: list[Path], expected_kind: str) -> tuple[lis
     return ids, fingerprints, diagnostics
 
 
+def input_artifact_references(paths: list[Path]) -> tuple[list[str], dict[str, str]]:
+    ids: list[str] = []
+    fingerprints: dict[str, str] = {}
+    for path in paths:
+        if not path.is_file():
+            continue
+        identity = artifact_id(path)
+        ids.append(identity)
+        fingerprints[identity] = artifact_fingerprint(path)
+    return ids, fingerprints
+
+
 def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
     summaries: list[dict[str, object]] = []
     for path in paths:
@@ -230,6 +242,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     selected = selected_candidate_row(grouped.get("dse_candidate", []))
+    candidate_ids, candidate_fingerprints = input_artifact_references(grouped.get("dse_candidate", []))
     workload_report_ids, workload_fingerprints, workload_diagnostics = report_bundle_references(
         grouped.get("workload_report_bundle", []),
         "workload_report_bundle",
@@ -239,6 +252,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "hardware_report_bundle",
     )
     input_artifact_fingerprints = {
+        **candidate_fingerprints,
         **workload_fingerprints,
         **hardware_fingerprints,
     }
@@ -254,6 +268,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "selected_candidates": [],
             "pareto_set": [],
             "rejected_candidate_summaries": [],
+            "referenced_dse_candidate_artifact_identities": candidate_ids,
             "referenced_workload_report_bundle_identities": workload_report_ids,
             "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
             "input_artifact_fingerprints": input_artifact_fingerprints,
@@ -305,6 +320,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "selected_candidates": selected_candidates,
         "pareto_set": pareto_set,
         "rejected_candidate_summaries": rejected,
+        "referenced_dse_candidate_artifact_identities": candidate_ids,
         "referenced_workload_report_bundle_identities": workload_report_ids,
         "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
         "input_artifact_fingerprints": input_artifact_fingerprints,

@@ -20,6 +20,7 @@ REQUIRED_KEYS = {
     "selected_candidates",
     "pareto_set",
     "rejected_candidate_summaries",
+    "referenced_dse_candidate_artifact_identities",
     "referenced_workload_report_bundle_identities",
     "referenced_hardware_candidate_report_bundle_identities",
     "input_artifact_fingerprints",
@@ -94,11 +95,14 @@ def main() -> int:
         }
         if data["policy_configuration"] != expected_policy_configuration:
             raise AssertionError(f"unexpected DSE policy configuration: {data}")
+        if data["referenced_dse_candidate_artifact_identities"] != ["dse-candidate-summary"]:
+            raise AssertionError(f"unexpected DSE candidate artifact references: {data}")
         if data["referenced_workload_report_bundle_identities"] != ["workload-report-bundle"]:
             raise AssertionError(f"unexpected workload report references: {data}")
         if data["referenced_hardware_candidate_report_bundle_identities"] != ["hardware-report-bundle"]:
             raise AssertionError(f"unexpected hardware report references: {data}")
         expected_report_fingerprints = {
+            "dse-candidate-summary": artifact_test_common.fingerprint(out_dir / "dse-candidate-summary.csv"),
             "workload-report-bundle": artifact_test_common.fingerprint(out_dir / "workload-report-bundle.json"),
             "hardware-report-bundle": artifact_test_common.fingerprint(out_dir / "hardware-report-bundle.json"),
         }
@@ -288,6 +292,24 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime summary policies unexpectedly passed audit")
+
+        stale_candidate_input = out_dir / "stale-candidate-input-dse-report-bundle.json"
+        stale_candidate_input_data = json.loads(report.read_text())
+        stale_candidate_input_data["input_artifact_fingerprints"]["dse-candidate-summary"] = "0" * 64
+        stale_candidate_input.write_text(json.dumps(stale_candidate_input_data, indent=2, sort_keys=True) + "\n")
+        stale_candidate_input_audit = out_dir / "stale-candidate-input-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_candidate_input_audit),
+                str(stale_candidate_input),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with stale candidate input fingerprint unexpectedly passed audit")
 
         bad_report_fingerprint = out_dir / "bad-report-fingerprint-dse-report-bundle.json"
         bad_report_fingerprint_data = json.loads(report.read_text())
