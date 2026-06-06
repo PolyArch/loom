@@ -362,6 +362,30 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                     {},
                     {}}},
       {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"lhs", "pa", "!fabric.bits<32>", ""},
+       {"rhs", "pb", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"sum"},
+                    {"arith.addf"},
+                    {"lhs", "rhs"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"lhs", "pa", "!fabric.bits<32>", ""},
+       {"rhs", "pb", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"product"},
+                    {"arith.mulf"},
+                    {"lhs", "rhs"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
   module.addPe(std::move(reductionPe));
 
   PeSpec syncPe;

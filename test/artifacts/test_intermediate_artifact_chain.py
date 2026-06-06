@@ -22,6 +22,7 @@ EXPECTED_FILES = [
     "pnr-mapping-summary.csv",
     "pnr-mapping.json",
     "vecsum-dfg-sim-report.json",
+    "vecsum-dfg-sim-cycle-summary.csv",
     "vecsum-cgra-sim-report.json",
     "sim-cycle-summary.csv",
     "rtl-fpa-summary.csv",

@@ -22,9 +22,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -74,6 +77,128 @@ bool isNestedInReductionFor(::mlir::scf::ForOp loop) {
   return false;
 }
 
+bool isPureScalarEpilogueOp(::mlir::Operation *op) {
+  if (op->getNumResults() == 0 || op->getNumRegions() != 0 ||
+      op->getNumSuccessors() != 0)
+    return false;
+  if (op->hasTrait<::mlir::OpTrait::IsTerminator>())
+    return false;
+  if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
+    return false;
+  if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(op))
+    return false;
+  ::llvm::StringRef name = op->getName().getStringRef();
+  if (name != "arith.addf" && name != "arith.subf" && name != "arith.mulf" &&
+      name != "arith.addi" && name != "arith.muli" && name != "arith.andi" &&
+      name != "arith.ori" && name != "arith.shli" && name != "arith.shrui" &&
+      name != "arith.index_cast" && name != "llvm.zext" &&
+      name != "llvm.intr.abs" && name != "llvm.intr.fmuladd")
+    return false;
+  if (auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(op))
+    return effects.hasNoEffect();
+  return ::mlir::isPure(op);
+}
+
+void collectEpilogueOps(::mlir::scf::ForOp loop,
+                        ::llvm::SmallVectorImpl<::mlir::Operation *> &ops) {
+  ops.clear();
+  ::mlir::Block *block = loop->getBlock();
+  ::llvm::DenseSet<::mlir::Value> available;
+  for (::mlir::Value value : loop.getResults())
+    available.insert(value);
+
+  for (auto it = std::next(::mlir::Block::iterator(loop.getOperation())),
+            end = block->end();
+       it != end; ++it) {
+    ::mlir::Operation *op = &*it;
+    if (op->hasTrait<::mlir::OpTrait::IsTerminator>())
+      break;
+    bool dependsOnReduction = false;
+    bool dependsOnUnsupportedLocal = false;
+    for (::mlir::Value operand : op->getOperands()) {
+      if (available.contains(operand)) {
+        dependsOnReduction = true;
+        continue;
+      }
+      ::mlir::Operation *def = operand.getDefiningOp();
+      if (def && def->getBlock() == block && def->isBeforeInBlock(op) &&
+          !def->isBeforeInBlock(loop.getOperation())) {
+        dependsOnUnsupportedLocal = true;
+        break;
+      }
+    }
+    if (dependsOnUnsupportedLocal)
+      break;
+    if (!dependsOnReduction)
+      continue;
+    if (!isPureScalarEpilogueOp(op))
+      break;
+    ops.push_back(op);
+    for (::mlir::Value result : op->getResults())
+      available.insert(result);
+  }
+}
+
+void collectAdditionalCaptures(::mlir::scf::ForOp loop,
+                               ::llvm::ArrayRef<::mlir::Operation *> ops,
+                               ::llvm::SetVector<::mlir::Value> &captures) {
+  ::llvm::DenseSet<::mlir::Operation *> opSet;
+  for (::mlir::Operation *op : ops)
+    opSet.insert(op);
+  ::llvm::DenseSet<::mlir::Value> loopResults;
+  for (::mlir::Value value : loop.getResults())
+    loopResults.insert(value);
+
+  for (::mlir::Operation *op : ops) {
+    for (::mlir::Value operand : op->getOperands()) {
+      if (loopResults.contains(operand))
+        continue;
+      ::mlir::Operation *def = operand.getDefiningOp();
+      if (def && opSet.contains(def))
+        continue;
+      captures.insert(operand);
+    }
+  }
+}
+
+void computeGraphOutputs(::mlir::scf::ForOp loop,
+                         ::llvm::ArrayRef<::mlir::Operation *> epilogueOps,
+                         ::llvm::SmallVectorImpl<::mlir::Value> &outputs) {
+  outputs.clear();
+  if (epilogueOps.empty()) {
+    outputs.append(loop.getResults().begin(), loop.getResults().end());
+    return;
+  }
+
+  ::llvm::DenseSet<::mlir::Operation *> epilogueSet;
+  for (::mlir::Operation *op : epilogueOps)
+    epilogueSet.insert(op);
+
+  auto usedOutsideEpilogue = [&](::mlir::Value value) {
+    for (::mlir::OpOperand &use : value.getUses())
+      if (!epilogueSet.contains(use.getOwner()))
+        return true;
+    return false;
+  };
+  auto usedByEpilogue = [&](::mlir::Value value) {
+    for (::mlir::OpOperand &use : value.getUses())
+      if (epilogueSet.contains(use.getOwner()))
+        return true;
+    return false;
+  };
+
+  for (::mlir::Value value : loop.getResults()) {
+    if (usedOutsideEpilogue(value))
+      outputs.push_back(value);
+  }
+  for (::mlir::Operation *op : epilogueOps) {
+    for (::mlir::Value value : op->getResults()) {
+      if (!usedByEpilogue(value))
+        outputs.push_back(value);
+    }
+  }
+}
+
 struct LowerForToGraphPass
     : public ::mlir::PassWrapper<LowerForToGraphPass,
                                  ::mlir::OperationPass<::mlir::ModuleOp>> {
@@ -114,8 +239,7 @@ struct LowerForToGraphPass
       ::llvm::SmallVector<::mlir::scf::ForOp, 4> loops;
     };
     ::llvm::SmallVector<Pending, 4> pending;
-    for (::dataflow::ThreadOp thread :
-         module.getOps<::dataflow::ThreadOp>()) {
+    for (::dataflow::ThreadOp thread : module.getOps<::dataflow::ThreadOp>()) {
       Pending p;
       p.thread = thread;
       thread.walk([&](::mlir::scf::ForOp loop) {
@@ -209,8 +333,7 @@ struct LowerForToGraphPass
   }
 
   void wrapOne(::mlir::ModuleOp module, ::mlir::scf::ForOp loop,
-               ::llvm::StringRef stem, size_t seq,
-               ::mlir::OpBuilder &builder) {
+               ::llvm::StringRef stem, size_t seq, ::mlir::OpBuilder &builder) {
     ::mlir::Location loc = loop.getLoc();
 
     // Collect every value used inside the loop that is defined
@@ -219,6 +342,9 @@ struct LowerForToGraphPass
     // args; we capture their *initial* SSA values via getInitArgs().
     ::llvm::SetVector<::mlir::Value> captures;
     collectExternalUses(loop, captures);
+    ::llvm::SmallVector<::mlir::Operation *, 4> epilogueOps;
+    collectEpilogueOps(loop, epilogueOps);
+    collectAdditionalCaptures(loop, epilogueOps, captures);
     captures.insert(loop.getLowerBound());
     captures.insert(loop.getUpperBound());
     captures.insert(loop.getStep());
@@ -272,6 +398,8 @@ struct LowerForToGraphPass
     for (auto [i, captured] : ::llvm::enumerate(captures))
       mapping.map(captured, entry->getArgument(i));
     builder.clone(*loop.getOperation(), mapping);
+    for (::mlir::Operation *op : epilogueOps)
+      builder.clone(*op, mapping);
     ::dataflow::ThreadYieldOp::create(builder, loc);
 
     // Emit the smoke-only synthetic launch at the original loop
@@ -308,8 +436,12 @@ struct LowerForToGraphPass
     //   lb, ub, step,
     //   captures (external uses besides iv / iter_args / lb / ub / step),
     //   initial iter_arg values.
+    ::llvm::SmallVector<::mlir::Operation *, 4> epilogueOps;
+    collectEpilogueOps(loop, epilogueOps);
+
     ::llvm::SetVector<::mlir::Value> captures;
     collectExternalUses(loop, captures);
+    collectAdditionalCaptures(loop, epilogueOps, captures);
     // Don't pass lb/ub/step twice: drop them from captures since we
     // forward them explicitly as separate body operands.
     captures.remove(loop.getLowerBound());
@@ -318,11 +450,13 @@ struct LowerForToGraphPass
 
     ::llvm::SmallVector<::mlir::Value, 4> initArgs(loop.getInitArgs().begin(),
                                                    loop.getInitArgs().end());
+    ::llvm::SmallVector<::mlir::Value, 4> outputValues;
+    computeGraphOutputs(loop, epilogueOps, outputValues);
 
     // Build the function type. Input layout:
     //   [ none, lb, ub, step, captures..., initIterArgs... ]
     // Result layout:
-    //   [ none, finalIterArgs... ]
+    //   [ none, final graph outputs... ]
     ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
     inputTypes.push_back(noneType);
     inputTypes.push_back(loop.getLowerBound().getType());
@@ -334,14 +468,13 @@ struct LowerForToGraphPass
       inputTypes.push_back(v.getType());
     ::llvm::SmallVector<::mlir::Type, 4> resultTypes;
     resultTypes.push_back(noneType);
-    for (::mlir::Value v : loop.getResults())
+    for (::mlir::Value v : outputValues)
       resultTypes.push_back(v.getType());
     ::mlir::FunctionType functionType =
         builder.getFunctionType(inputTypes, resultTypes);
 
     // Unique sym.
-    std::string symStem =
-        (stem + "_" + ::llvm::Twine(seq)).str();
+    std::string symStem = (stem + "_" + ::llvm::Twine(seq)).str();
     std::string symName = uniqueSymbol(module, symStem);
 
     // Insert the dataflow.graph.func definition at module scope.
@@ -373,9 +506,9 @@ struct LowerForToGraphPass
 
     // Build the new scf.for with the graph-side iter_arg seeds.
     builder.setInsertionPointToEnd(entry);
-    auto newLoop = ::mlir::scf::ForOp::create(
-        builder, loc, lbArg, ubArg, stepArg, initArgVals,
-        /*bodyBuilder=*/nullptr);
+    auto newLoop = ::mlir::scf::ForOp::create(builder, loc, lbArg, ubArg,
+                                              stepArg, initArgVals,
+                                              /*bodyBuilder=*/nullptr);
 
     // Move the original loop body into the new loop, remapping ivs +
     // captures.
@@ -392,12 +525,18 @@ struct LowerForToGraphPass
     for (size_t i = 0; i < initArgs.size(); ++i) {
       mapping.map(loop.getRegionIterArgs()[i], newBody.getArgument(1 + i));
     }
+    for (auto [i, result] : ::llvm::enumerate(loop.getResults()))
+      mapping.map(result, newLoop.getResult(i));
     for (auto [i, captured] : ::llvm::enumerate(captures))
       mapping.map(captured, captureArgs[i]);
 
     builder.setInsertionPointToEnd(&newBody);
     for (::mlir::Operation &op : origBody)
       builder.clone(op, mapping);
+
+    builder.setInsertionPointToEnd(entry);
+    for (::mlir::Operation *op : epilogueOps)
+      builder.clone(*op, mapping);
 
     // Emit graph.return: leading ctrl_in passes through (we use the
     // entry block's ctrl_in here as the done signal placeholder; the
@@ -406,8 +545,8 @@ struct LowerForToGraphPass
     builder.setInsertionPointToEnd(entry);
     ::llvm::SmallVector<::mlir::Value, 4> returnVals;
     returnVals.push_back(entry->getArgument(0)); // ctrl_in -> done_out
-    for (::mlir::Value r : newLoop.getResults())
-      returnVals.push_back(r);
+    for (::mlir::Value value : outputValues)
+      returnVals.push_back(mapping.lookup(value));
     ::dataflow::GraphReturnOp::create(builder, loc, returnVals);
 
     // Materialize the graph.launch at the original loop site inside
@@ -418,8 +557,7 @@ struct LowerForToGraphPass
     // the thread_ctrl as their start signal).
     builder.setInsertionPoint(loop);
     ::mlir::Value ctrlIn;
-    if (auto enclosingThread =
-            loop->getParentOfType<::dataflow::ThreadOp>()) {
+    if (auto enclosingThread = loop->getParentOfType<::dataflow::ThreadOp>()) {
       ::mlir::Block &threadEntry = enclosingThread.getBody().front();
       size_t ctrlIdx = enclosingThread.getFunctionType().getInputs().size();
       // The verifier guarantees this slot exists and is `none`-typed.
@@ -445,7 +583,7 @@ struct LowerForToGraphPass
       launchOperands.push_back(v);
 
     ::llvm::SmallVector<::mlir::Type, 4> launchResultTypes;
-    for (::mlir::Value v : loop.getResults())
+    for (::mlir::Value v : outputValues)
       launchResultTypes.push_back(v.getType());
 
     auto callee = ::mlir::FlatSymbolRefAttr::get(builder.getContext(), symName);
@@ -453,10 +591,13 @@ struct LowerForToGraphPass
         builder, loc, /*doneOut=*/noneType, /*results=*/launchResultTypes,
         callee, ctrlIn, launchOperands);
 
-    // Replace the loop's results with the graph.launch's user-data
-    // results (skip leading done_out).
-    for (size_t i = 0, e = loop.getNumResults(); i < e; ++i)
-      loop.getResult(i).replaceAllUsesWith(launchOp.getResults()[i]);
+    // Replace the selected graph outputs with the graph.launch's
+    // user-data results (skip leading done_out), then erase the
+    // scalar epilogue cloned into the graph.
+    for (size_t i = 0, e = outputValues.size(); i < e; ++i)
+      outputValues[i].replaceAllUsesWith(launchOp.getResults()[i]);
+    for (::mlir::Operation *op : ::llvm::reverse(epilogueOps))
+      op->erase();
     loop.erase();
     return ::mlir::success();
   }
@@ -524,8 +665,7 @@ struct LowerForToGraphPass
     inputTypes.push_back(noneType);
     for (::mlir::Type ty : threadType.getInputs())
       inputTypes.push_back(ty);
-    for (size_t i = threadInputCount + 1,
-                e = threadEntry.getNumArguments();
+    for (size_t i = threadInputCount + 1, e = threadEntry.getNumArguments();
          i < e; ++i)
       inputTypes.push_back(threadEntry.getArgument(i).getType());
 
@@ -550,8 +690,7 @@ struct LowerForToGraphPass
     for (size_t i = 0; i < threadInputCount; ++i)
       mapping.map(threadEntry.getArgument(i),
                   graphEntry->getArgument(graphArgPos++));
-    for (size_t i = threadInputCount + 1,
-                e = threadEntry.getNumArguments();
+    for (size_t i = threadInputCount + 1, e = threadEntry.getNumArguments();
          i < e; ++i)
       mapping.map(threadEntry.getArgument(i),
                   graphEntry->getArgument(graphArgPos++));
@@ -559,24 +698,22 @@ struct LowerForToGraphPass
     builder.setInsertionPointToEnd(graphEntry);
     for (::mlir::Operation *op : bodyOps)
       builder.clone(*op, mapping);
-    ::dataflow::GraphReturnOp::create(builder, loc,
-                                      ::mlir::ValueRange{
-                                          graphEntry->getArgument(0)});
+    ::dataflow::GraphReturnOp::create(
+        builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
 
     builder.setInsertionPoint(&threadEntry, threadEntry.begin());
     ::llvm::SmallVector<::mlir::Value, 8> launchOperands;
     for (size_t i = 0; i < threadInputCount; ++i)
       launchOperands.push_back(threadEntry.getArgument(i));
-    for (size_t i = threadInputCount + 1,
-                e = threadEntry.getNumArguments();
+    for (size_t i = threadInputCount + 1, e = threadEntry.getNumArguments();
          i < e; ++i)
       launchOperands.push_back(threadEntry.getArgument(i));
 
     auto callee =
         ::mlir::FlatSymbolRefAttr::get(builder.getContext(), graphName);
-    ::dataflow::GraphLaunchOp::create(
-        builder, loc, /*doneOut=*/noneType, /*results=*/::mlir::TypeRange{},
-        callee, threadCtrl, launchOperands);
+    ::dataflow::GraphLaunchOp::create(builder, loc, /*doneOut=*/noneType,
+                                      /*results=*/::mlir::TypeRange{}, callee,
+                                      threadCtrl, launchOperands);
 
     for (::mlir::Operation *op : ::llvm::reverse(bodyOps))
       op->erase();

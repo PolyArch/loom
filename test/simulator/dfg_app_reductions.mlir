@@ -141,9 +141,9 @@
 // MEAN-DAG: "workload": "mean"
 // MEAN-DAG: "graph": "g_t_mean_kernel_red_0_0"
 // MEAN-DAG: "status": "pass"
-// MEAN-DAG: "optimistic_cycles": 643
-// MEAN-DAG: "event_count": 387
-// MEAN-DAG: "f32:2016"
+// MEAN-DAG: "optimistic_cycles": 904
+// MEAN-DAG: "event_count": 518
+// MEAN-DAG: "f32:4.312500"
 
 // DOTPRODUCT-DAG: "kind": "dfg_sim_report"
 // DOTPRODUCT-DAG: "workload": "dotproduct"
@@ -199,7 +199,7 @@
 // SUMMARY-DAG: cumsum,14339,,blocked,DFG-sim report available
 // SUMMARY-DAG: dotproduct,1027,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,299,,blocked,DFG-sim report available
-// SUMMARY-DAG: mean,643,,blocked,DFG-sim report available
+// SUMMARY-DAG: mean,904,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,579,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available

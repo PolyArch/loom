@@ -235,14 +235,15 @@ case "${CASE}" in
         ;;
     mean)
         append_ctrl_tokens 64
-        append_linear_memref 4 64 1 "%.6e"
+        append_mod_shift_memref 4 64 10 0
         sim_args+=(
             --graph g_t_mean_kernel_red_0_0
             --workload mean
             --arg 1=0
             --arg 2=64
             --arg 3=1
-            --arg 5=0.000000e+00
+            --arg 5=1.562500e-02
+            --arg 6=0.000000e+00
         )
         ;;
     dotproduct)

@@ -56,6 +56,7 @@ hardware="${OUT_DIR}/adg-hardware-summary.csv"
 mapping="${OUT_DIR}/pnr-mapping-summary.csv"
 mapping_artifact="${OUT_DIR}/pnr-mapping.json"
 dfg_report="${OUT_DIR}/vecsum-dfg-sim-report.json"
+dfg_cycle="${OUT_DIR}/vecsum-dfg-sim-cycle-summary.csv"
 cgra_report="${OUT_DIR}/vecsum-cgra-sim-report.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
 rtl_fpa="${OUT_DIR}/rtl-fpa-summary.csv"
@@ -98,7 +99,7 @@ env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
   vecsum \
   "${vecsum_dfg_dir}/main_func.dfg.mlir" \
   "${dfg_report}" \
-  "${OUT_DIR}/vecsum-dfg-sim-cycle-summary.csv"
+  "${dfg_cycle}"
 bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
   --dfg-mlir "${vecsum_dfg_dir}/main_func.dfg.mlir" \
   --graph g_t_vecsum_red_0_0 \
@@ -131,6 +132,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${mapping}" \
   --artifact "${mapping_artifact}" \
   --artifact "${dfg_report}" \
+  --artifact "${dfg_cycle}" \
   --artifact "${cgra_report}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
@@ -166,6 +168,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${mapping}" \
   --artifact "${mapping_artifact}" \
   --artifact "${dfg_report}" \
+  --artifact "${dfg_cycle}" \
   --artifact "${cgra_report}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_fpa}" \
@@ -185,6 +188,7 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${mapping}" \
   "${mapping_artifact}" \
   "${dfg_report}" \
+  "${dfg_cycle}" \
   "${cgra_report}" \
   "${sim_cycle}" \
   "${rtl_fpa}" \
