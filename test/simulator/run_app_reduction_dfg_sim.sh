@@ -49,6 +49,15 @@ append_index_tokens() {
     done
 }
 
+append_repeated_arg() {
+    local index="$1"
+    local count="$2"
+    local value="$3"
+    for _ in $(seq 1 "${count}"); do
+        sim_args+=(--arg "${index}=${value}")
+    done
+}
+
 append_linear_memref() {
     local index="$1"
     local count="$2"
@@ -119,6 +128,33 @@ append_trapz_memrefs() {
         y_values+="${y_value}"
     done
     sim_args+=(--memref "4=${x_values}" --memref "5=${y_values}")
+}
+
+append_hash_mix_memrefs() {
+    local state_index="$1"
+    local data_index="$2"
+    local output_index="$3"
+    local count=64
+    local state_values=""
+    local data_values=""
+    local output_values=""
+    local state_value=""
+    local data_value=""
+    for i in $(seq 0 $((count - 1))); do
+        state_value=$((1732584193 + i))
+        data_value=$((-271733879 + i * 13))
+        if [[ -n "${state_values}" ]]; then
+            state_values+=","
+            data_values+=","
+            output_values+=","
+        fi
+        state_values+="${state_value}"
+        data_values+="${data_value}"
+        output_values+="0"
+    done
+    sim_args+=(--memref "${state_index}=${state_values}")
+    sim_args+=(--memref "${data_index}=${data_values}")
+    sim_args+=(--memref "${output_index}=${output_values}")
 }
 
 case "${CASE}" in
@@ -326,6 +362,18 @@ case "${CASE}" in
         sim_args+=(
             --graph g_t_main_0_0
             --workload compare_swap
+        )
+        ;;
+    hash_mix)
+        append_ctrl_tokens 64
+        append_hash_mix_memrefs 1 2 6
+        append_repeated_arg 3 64 7
+        append_repeated_arg 4 64 1540483477
+        append_repeated_arg 5 64 13
+        append_index_tokens 7 64
+        sim_args+=(
+            --graph g_t_main_1_0
+            --workload hash_mix
         )
         ;;
     *)

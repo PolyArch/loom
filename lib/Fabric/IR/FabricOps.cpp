@@ -494,6 +494,7 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     }
     add("llvm.zext", {pT(0)}, {pT(1)});
     add("llvm.intr.abs", {pT(0)}, {pT(0)});
+    add("llvm.intr.fshl", {pT(0), pT(0), pT(0)}, {pT(0)});
 
     // --- math unary ops: 1 in, 1 out, same width ---
     for (StringRef n : {"math.sin", "math.cos", "math.tan",

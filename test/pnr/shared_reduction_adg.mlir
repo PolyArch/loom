@@ -159,6 +159,16 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.op [@arith.xori]
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>) -> () {
+      %combined = fabric.op [@arith.xori] (%lhs, %rhs)
+                  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield
+    }
+  }
+  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                     %pb = %i32b : !fabric.bits<32>,
                     %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@llvm.intr.fmuladd]
@@ -169,6 +179,28 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
              : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
                -> !fabric.bits<32>
       fabric.yield
+    }
+  }
+  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                    %pb = %i32b : !fabric.bits<32>,
+                    %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.op [@llvm.intr.fshl]
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>,
+              %amount = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %rotated = fabric.op [@llvm.intr.fshl] (%lhs, %rhs, %amount)
+                 : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                   -> !fabric.bits<32>
+      fabric.yield %rotated : !fabric.bits<32>
+    }
+    // CHECK: fabric.op [@llvm.intr.fshl]
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>,
+              %amount = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %rotated = fabric.op [@llvm.intr.fshl] (%lhs, %rhs, %amount)
+                 : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+                   -> !fabric.bits<32>
+      fabric.yield %rotated : !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {

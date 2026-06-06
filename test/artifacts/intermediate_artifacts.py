@@ -333,6 +333,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "schema_version",
             "run_id",
             "artifact_reviews",
+            "cross_artifact_checks",
             "cross_artifact_findings",
             "diagnostics",
             "verdict",
@@ -1415,6 +1416,161 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
     return findings
 
 
+def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
+    path_list = list(paths)
+    grouped = rows_by_kind(path_list)
+    json_grouped = json_objects_by_kind(path_list)
+    checks: list[dict[str, object]] = []
+
+    dfg_reports_by_workload: dict[str, list[dict[str, object]]] = {}
+    for report in json_grouped.get("dfg_sim_report", []):
+        workload = report.get("workload")
+        cycles = report.get("optimistic_cycles")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and report.get("status") == "pass"
+            and isinstance(cycles, int)
+        ):
+            dfg_reports_by_workload.setdefault(workload, []).append(report)
+
+    cgra_reports_by_workload: dict[str, list[dict[str, object]]] = {}
+    for report in json_grouped.get("cgra_sim_report", []):
+        workload = report.get("workload")
+        cycles = report.get("hardware_aware_cycles")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and report.get("status") == "pass"
+            and isinstance(cycles, int)
+        ):
+            cgra_reports_by_workload.setdefault(workload, []).append(report)
+
+    pass_mapping_artifacts_by_workload: dict[str, list[dict[str, object]]] = {}
+    for artifact in json_grouped.get("pnr_mapping_artifact", []):
+        workload = artifact.get("workload")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and artifact.get("status") == "pass"
+            and isinstance(artifact.get("mapping_id"), str)
+            and isinstance(artifact.get("hardware"), str)
+        ):
+            pass_mapping_artifacts_by_workload.setdefault(workload, []).append(artifact)
+
+    for row in grouped.get("sim_cycle", []):
+        workload = row.get("kernel")
+        if not valid_identity(workload):
+            continue
+        assert workload is not None
+        dfg_cycles = nonnegative_int_cell(row, "dfg_sim_cycles")
+        if dfg_cycles is None:
+            continue
+        dfg_reports = dfg_reports_by_workload.get(workload, [])
+        dfg_report_cycles = [
+            int(report["optimistic_cycles"])
+            for report in dfg_reports
+            if isinstance(report.get("optimistic_cycles"), int)
+        ]
+        if not dfg_report_cycles or sum(dfg_report_cycles) != dfg_cycles:
+            continue
+        graphs = sorted(
+            str(report.get("graph"))
+            for report in dfg_reports
+            if isinstance(report.get("graph"), str)
+        )
+        dynamic_work_items = sum(
+            int(report["dynamic_work_items"])
+            for report in dfg_reports
+            if isinstance(report.get("dynamic_work_items"), int)
+        )
+        checks.append(
+            {
+                "rule": "sim_cycle_dfg_report_evidence",
+                "status": "pass",
+                "workload": workload,
+                "dfg_sim_cycles": dfg_cycles,
+                "dfg_report_cycles": dfg_report_cycles,
+                "graphs": graphs,
+                "dynamic_work_items": dynamic_work_items,
+            }
+        )
+
+        cgra_cycles = nonnegative_int_cell(row, "cgra_sim_cycles")
+        if cgra_cycles is None:
+            continue
+        cgra_reports = cgra_reports_by_workload.get(workload, [])
+        cgra_report_cycles = [
+            int(report["hardware_aware_cycles"])
+            for report in cgra_reports
+            if isinstance(report.get("hardware_aware_cycles"), int)
+        ]
+        if not cgra_report_cycles or sum(cgra_report_cycles) != cgra_cycles:
+            continue
+        mapping_ids: list[str] = []
+        hardware_refs: list[str] = []
+        route_segments = 0
+        performance_delta_cycles = 0
+        matched_all_mappings = True
+        pass_mappings = pass_mapping_artifacts_by_workload.get(workload, [])
+        for report in cgra_reports:
+            mapping_id = report.get("mapping_id")
+            hardware = report.get("hardware")
+            if not isinstance(mapping_id, str) or not isinstance(hardware, str):
+                matched_all_mappings = False
+                break
+            matching_mapping = None
+            for mapping in pass_mappings:
+                if mapping.get("mapping_id") != mapping_id or mapping.get("hardware") != hardware:
+                    continue
+                expected_route_segments = report.get("route_segments")
+                routes = mapping.get("routes")
+                if isinstance(expected_route_segments, int) and isinstance(routes, list):
+                    actual_route_segments = 0
+                    for route in routes:
+                        if isinstance(route, dict) and isinstance(route.get("segments"), list):
+                            actual_route_segments += len(route["segments"])
+                    if actual_route_segments != expected_route_segments:
+                        continue
+                expected_config_records = report.get("config_records")
+                if (
+                    isinstance(expected_config_records, int)
+                    and mapping.get("config_records") != expected_config_records
+                ):
+                    continue
+                matching_mapping = mapping
+                break
+            if matching_mapping is None:
+                matched_all_mappings = False
+                break
+            mapping_ids.append(mapping_id)
+            hardware_refs.append(hardware)
+            if isinstance(report.get("route_segments"), int):
+                route_segments += int(report["route_segments"])
+            if isinstance(report.get("performance_delta_cycles"), int):
+                performance_delta_cycles += int(report["performance_delta_cycles"])
+        if not matched_all_mappings:
+            continue
+        checks.append(
+            {
+                "rule": "sim_cycle_report_mapping_evidence",
+                "status": "pass",
+                "workload": workload,
+                "dfg_sim_cycles": dfg_cycles,
+                "cgra_sim_cycles": cgra_cycles,
+                "dfg_report_cycles": dfg_report_cycles,
+                "cgra_report_cycles": cgra_report_cycles,
+                "dynamic_work_items": dynamic_work_items,
+                "mapping_ids": sorted(mapping_ids),
+                "hardware": sorted(set(hardware_refs)),
+                "route_segments": route_segments,
+                "performance_delta_cycles": performance_delta_cycles,
+            }
+        )
+
+    return checks
+
+
 def audit(paths: Iterable[Path]) -> dict[str, object]:
     path_list = list(paths)
     reviews: list[dict[str, object]] = []
@@ -1439,12 +1595,14 @@ def audit(paths: Iterable[Path]) -> dict[str, object]:
         reviews.append(review)
         if review["finding"] != "pass":
             diagnostics.extend(str(item) for item in review.get("diagnostics", []))
+    cross_checks = cross_artifact_checks(path_list)
     cross_findings = cross_artifact_findings(path_list)
     diagnostics.extend(str(item["message"]) for item in cross_findings)
     return {
         "schema_version": 1,
         "run_id": "scaffold-audit",
         "artifact_reviews": reviews,
+        "cross_artifact_checks": cross_checks,
         "cross_artifact_findings": cross_findings,
         "diagnostics": diagnostics,
         "verdict": "pass" if not diagnostics else "fail",

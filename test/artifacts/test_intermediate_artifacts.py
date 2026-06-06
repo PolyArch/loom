@@ -1027,6 +1027,25 @@ def main() -> int:
                 f"CGRA cycle backed by CGRA report unexpectedly failed audit\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
+        audit_data = json.loads((out_dir / "artifact-audit-summary-cgra-report.json").read_text())
+        checks = audit_data.get("cross_artifact_checks")
+        if not isinstance(checks, list) or not checks:
+            raise AssertionError(f"expected cross-artifact pass checks, got {audit_data}")
+        matching_checks = [
+            check
+            for check in checks
+            if check.get("rule") == "sim_cycle_report_mapping_evidence"
+            and check.get("workload") == "vecadd"
+        ]
+        if not matching_checks:
+            raise AssertionError(f"expected sim cycle evidence check, got {checks}")
+        check = matching_checks[0]
+        if check.get("dfg_sim_cycles") != 10 or check.get("cgra_sim_cycles") != 12:
+            raise AssertionError(f"sim cycle evidence check missed cycle values: {check}")
+        if check.get("dynamic_work_items") != 1:
+            raise AssertionError(f"sim cycle evidence check missed dynamic work items: {check}")
+        if check.get("mapping_ids") != ["map0"]:
+            raise AssertionError(f"sim cycle evidence check missed mapping id: {check}")
 
         invalid_mapping = out_dir / "invalid-pnr-mapping-summary.csv"
         invalid_mapping.write_text(

@@ -5,6 +5,7 @@
 // RUN: env BUILD_DIR=%t.dir/correlation LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/correlation/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/cumsum LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/cumsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/compare_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/compare_swap/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/hash_mix LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/hash_mix/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
@@ -22,6 +23,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh correlation %t.dir/correlation/main_func.dfg.mlir %t.dir/reports/correlation.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh cumsum %t.dir/cumsum/main_func.dfg.mlir %t.dir/reports/cumsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh compare_swap %t.dir/compare_swap/main_func.dfg.mlir %t.dir/reports/compare_swap.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh hash_mix %t.dir/hash_mix/main_func.dfg.mlir %t.dir/reports/hash_mix.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reports/reduction.report.json %t.dir/summary.csv --append
@@ -38,6 +40,7 @@
 // RUN: FileCheck %s --check-prefix=CORRELATION < %t.dir/reports/correlation.report.json
 // RUN: FileCheck %s --check-prefix=CUMSUM < %t.dir/reports/cumsum.report.json
 // RUN: FileCheck %s --check-prefix=COMPARE-SWAP < %t.dir/reports/compare_swap.report.json
+// RUN: FileCheck %s --check-prefix=HASH-MIX < %t.dir/reports/hash_mix.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECADD-REDUCTION < %t.dir/reports/vecadd.reduction.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
@@ -104,6 +107,18 @@
 // COMPARE-SWAP-DAG: "wavefront_steps": 20
 // COMPARE-SWAP-DAG: "event_count": 128
 // COMPARE-SWAP-DAG: "dynamic_work_items": 16
+
+// HASH-MIX-DAG: "kind": "dfg_sim_report"
+// HASH-MIX-DAG: "workload": "hash_mix"
+// HASH-MIX-DAG: "graph": "g_t_main_1_0"
+// HASH-MIX-DAG: "status": "pass"
+// HASH-MIX-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
+// HASH-MIX-DAG: "optimistic_cycles": 1280
+// HASH-MIX-DAG: "wavefront_steps": 71
+// HASH-MIX-DAG: "event_count": 576
+// HASH-MIX-DAG: "dynamic_work_items": 64
+// HASH-MIX-DAG: "llvm.intr.fshl": 128
+// HASH-MIX-DAG: "arith.xori": 64
 
 // VECADD-DAG: "kind": "dfg_sim_report"
 // VECADD-DAG: "workload": "vecadd"
@@ -214,6 +229,7 @@
 // SUMMARY-DAG: cumsum,14339,,blocked,DFG-sim report available
 // SUMMARY-DAG: compare_swap,336,,blocked,DFG-sim report available
 // SUMMARY-DAG: dotproduct,1027,,blocked,DFG-sim report available
+// SUMMARY-DAG: hash_mix,1280,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,299,,blocked,DFG-sim report available
 // SUMMARY-DAG: mean,904,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available

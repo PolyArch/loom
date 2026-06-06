@@ -252,6 +252,12 @@ std::uint64_t dynamicWorkItems(const SimulatorState &state) {
   return workItems;
 }
 
+bool requiresCompleteDynamicReturn(mlir::Value value) {
+  if (!mlir::isa<mlir::NoneType>(value.getType()))
+    return true;
+  return value.getDefiningOp<dataflow::StoreOp>() != nullptr;
+}
+
 void flushPendingTokens(SimulatorState &state) {
   for (auto &entry : state.pendingChannels) {
     auto &target = state.channels[entry.first];
@@ -846,12 +852,23 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
 
   bool missingReturn = false;
+  report.dynamicWorkItems = dynamicWorkItems(state);
   for (mlir::Value value : returnValues) {
     auto it = state.observedOutputs.find(value);
     if (it == state.observedOutputs.end() || it->second.empty()) {
       report.finalOutputs.push_back("missing");
       missingReturn = true;
       continue;
+    }
+    if (report.dynamicWorkItems > 1 &&
+        requiresCompleteDynamicReturn(value) &&
+        it->second.size() < report.dynamicWorkItems) {
+      missingReturn = true;
+      state.diagnostics.push_back(llvm::formatv(
+                                      "dataflow.graph.return value produced "
+                                      "{0} of {1} dynamic work items",
+                                      it->second.size(), report.dynamicWorkItems)
+                                      .str());
     }
     report.finalOutputs.push_back(
         tokenToString(it->second.back(), value.getType()));
@@ -870,7 +887,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         "DFG-sim stopped before all returned values produced complete outputs");
   }
   report.eventCount = state.eventCount;
-  report.dynamicWorkItems = dynamicWorkItems(state);
   report.operationFireCounts = state.operationFireCounts;
   report.optimisticCycles =
       estimateDynamicPipelineCycles(state.operationFireCounts, state.diagnostics);
