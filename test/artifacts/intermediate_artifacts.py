@@ -948,6 +948,66 @@ def valid_identity(value: str | None) -> bool:
     return value not in IGNORED_IDENTITIES
 
 
+def build_pass_mapping_artifacts_by_workload(
+    json_grouped: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for artifact in json_grouped.get("pnr_mapping_artifact", []):
+        workload = artifact.get("workload")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and artifact.get("status") == "pass"
+            and isinstance(artifact.get("mapping_id"), str)
+            and isinstance(artifact.get("hardware"), str)
+        ):
+            grouped.setdefault(workload, []).append(artifact)
+    return grouped
+
+
+def build_pass_dfg_reports_by_workload(
+    json_grouped: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for report in json_grouped.get("dfg_sim_report", []):
+        workload = report.get("workload")
+        cycles = report.get("optimistic_cycles")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and report.get("status") == "pass"
+            and isinstance(cycles, int)
+            and cycles >= 0
+        ):
+            grouped.setdefault(workload, []).append(report)
+    return grouped
+
+
+def build_pass_cgra_reports_by_workload(
+    json_grouped: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for report in json_grouped.get("cgra_sim_report", []):
+        workload = report.get("workload")
+        if (
+            isinstance(workload, str)
+            and valid_identity(workload)
+            and report.get("status") == "pass"
+        ):
+            grouped.setdefault(workload, []).append(report)
+    return grouped
+
+
+def route_segment_count(routes: object) -> int | None:
+    if not isinstance(routes, list):
+        return None
+    count = 0
+    for route in routes:
+        if isinstance(route, dict) and isinstance(route.get("segments"), list):
+            count += len(route["segments"])
+    return count
+
+
 def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
     path_list = list(paths)
     grouped = rows_by_kind(path_list)
@@ -989,32 +1049,16 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         if valid_identity(row.get("workload")) and valid_identity(row.get("hardware"))
     ]
     pnr_pairs = {(row["workload"], row["hardware"]) for row in pnr_rows}
-    pass_mapping_artifacts_by_workload: dict[str, list[dict[str, object]]] = {}
-    for artifact in json_grouped.get("pnr_mapping_artifact", []):
-        workload = artifact.get("workload")
-        if (
-            isinstance(workload, str)
-            and valid_identity(workload)
-            and artifact.get("status") == "pass"
-            and isinstance(artifact.get("mapping_id"), str)
-            and isinstance(artifact.get("hardware"), str)
-        ):
-            pass_mapping_artifacts_by_workload.setdefault(workload, []).append(artifact)
+    pass_mapping_artifacts_by_workload = build_pass_mapping_artifacts_by_workload(json_grouped)
     dfg_report_cycles_by_workload: dict[str, list[int]] = {}
     dfg_report_semantics_by_workload: dict[str, set[str]] = {}
     dfg_reports_by_workload_graph: dict[tuple[str, str], list[dict[str, object]]] = {}
-    for report in json_grouped.get("dfg_sim_report", []):
-        workload = report.get("workload")
-        graph = report.get("graph")
-        cycles = report.get("optimistic_cycles")
-        semantics = report.get("operation_semantics_source")
-        if (
-            isinstance(workload, str)
-            and valid_identity(workload)
-            and report.get("status") == "pass"
-            and isinstance(cycles, int)
-            and cycles >= 0
-        ):
+    for workload, reports in build_pass_dfg_reports_by_workload(json_grouped).items():
+        for report in reports:
+            graph = report.get("graph")
+            cycles = report.get("optimistic_cycles")
+            semantics = report.get("operation_semantics_source")
+            assert isinstance(cycles, int)
             dfg_report_cycles_by_workload.setdefault(workload, []).append(cycles)
             if isinstance(semantics, str):
                 dfg_report_semantics_by_workload.setdefault(workload, set()).add(semantics)
@@ -1057,15 +1101,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                 )
             previous_extent = extent
             previous_cycles = cycles
-    cgra_reports_by_workload: dict[str, list[dict[str, object]]] = {}
-    for report in json_grouped.get("cgra_sim_report", []):
-        workload = report.get("workload")
-        if (
-            isinstance(workload, str)
-            and valid_identity(workload)
-            and report.get("status") == "pass"
-        ):
-            cgra_reports_by_workload.setdefault(workload, []).append(report)
+    cgra_reports_by_workload = build_pass_cgra_reports_by_workload(json_grouped)
 
     inventory_rows = grouped.get("old_app_corpus_inventory", [])
     import_rows = grouped.get("app_import_status", [])
@@ -1275,14 +1311,12 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                             ):
                                 route_segments = report.get("route_segments")
                                 if isinstance(route_segments, int):
-                                    routes = mapping.get("routes")
-                                    if isinstance(routes, list):
-                                        mapped_segments = 0
-                                        for route in routes:
-                                            if isinstance(route, dict) and isinstance(route.get("segments"), list):
-                                                mapped_segments += len(route["segments"])
-                                        if mapped_segments != route_segments:
-                                            continue
+                                    mapped_segments = route_segment_count(mapping.get("routes"))
+                                    if (
+                                        mapped_segments is not None
+                                        and mapped_segments != route_segments
+                                    ):
+                                        continue
                                 config_records = report.get("config_records")
                                 if (
                                     isinstance(config_records, int)
@@ -1422,41 +1456,9 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
     json_grouped = json_objects_by_kind(path_list)
     checks: list[dict[str, object]] = []
 
-    dfg_reports_by_workload: dict[str, list[dict[str, object]]] = {}
-    for report in json_grouped.get("dfg_sim_report", []):
-        workload = report.get("workload")
-        cycles = report.get("optimistic_cycles")
-        if (
-            isinstance(workload, str)
-            and valid_identity(workload)
-            and report.get("status") == "pass"
-            and isinstance(cycles, int)
-        ):
-            dfg_reports_by_workload.setdefault(workload, []).append(report)
-
-    cgra_reports_by_workload: dict[str, list[dict[str, object]]] = {}
-    for report in json_grouped.get("cgra_sim_report", []):
-        workload = report.get("workload")
-        cycles = report.get("hardware_aware_cycles")
-        if (
-            isinstance(workload, str)
-            and valid_identity(workload)
-            and report.get("status") == "pass"
-            and isinstance(cycles, int)
-        ):
-            cgra_reports_by_workload.setdefault(workload, []).append(report)
-
-    pass_mapping_artifacts_by_workload: dict[str, list[dict[str, object]]] = {}
-    for artifact in json_grouped.get("pnr_mapping_artifact", []):
-        workload = artifact.get("workload")
-        if (
-            isinstance(workload, str)
-            and valid_identity(workload)
-            and artifact.get("status") == "pass"
-            and isinstance(artifact.get("mapping_id"), str)
-            and isinstance(artifact.get("hardware"), str)
-        ):
-            pass_mapping_artifacts_by_workload.setdefault(workload, []).append(artifact)
+    dfg_reports_by_workload = build_pass_dfg_reports_by_workload(json_grouped)
+    cgra_reports_by_workload = build_pass_cgra_reports_by_workload(json_grouped)
+    pass_mapping_artifacts_by_workload = build_pass_mapping_artifacts_by_workload(json_grouped)
 
     for row in grouped.get("sim_cycle", []):
         workload = row.get("kernel")
@@ -1524,13 +1526,12 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
                 if mapping.get("mapping_id") != mapping_id or mapping.get("hardware") != hardware:
                     continue
                 expected_route_segments = report.get("route_segments")
-                routes = mapping.get("routes")
-                if isinstance(expected_route_segments, int) and isinstance(routes, list):
-                    actual_route_segments = 0
-                    for route in routes:
-                        if isinstance(route, dict) and isinstance(route.get("segments"), list):
-                            actual_route_segments += len(route["segments"])
-                    if actual_route_segments != expected_route_segments:
+                if isinstance(expected_route_segments, int):
+                    actual_route_segments = route_segment_count(mapping.get("routes"))
+                    if (
+                        actual_route_segments is not None
+                        and actual_route_segments != expected_route_segments
+                    ):
                         continue
                 expected_config_records = report.get("config_records")
                 if (

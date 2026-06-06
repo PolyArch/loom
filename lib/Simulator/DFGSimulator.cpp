@@ -606,11 +606,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
       op->getNumResults() == 1)
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
-                dataflow::InvariantOp, dataflow::SyncOp, mlir::arith::AddFOp,
-                mlir::arith::SubFOp, mlir::arith::MulFOp, dataflow::LoadOp,
-                dataflow::StoreOp, mlir::arith::AddIOp, mlir::arith::MulIOp,
-                mlir::LLVM::FMulAddOp, mlir::arith::IndexCastOp,
-                mlir::arith::ConstantOp>(op))
+                dataflow::InvariantOp, dataflow::SyncOp, dataflow::LoadOp,
+                dataflow::StoreOp, mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }

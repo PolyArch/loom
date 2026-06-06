@@ -36,9 +36,7 @@ declare -a sim_args=()
 
 append_ctrl_tokens() {
     local count="$1"
-    for _ in $(seq 1 "${count}"); do
-        sim_args+=(--arg 0=none)
-    done
+    append_repeated_arg 0 "${count}" none
 }
 
 append_index_tokens() {

@@ -413,14 +413,14 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "llvm.intr.fshl") {
     if (llvm::Error arity = requireArity(opName, operands, 3))
       return std::move(arity);
-    const unsigned width = normalizeBitWidth(descriptor.resultBitWidth);
     const unsigned amount =
-        static_cast<unsigned>(toUnsignedBits(operands[2], width) % width);
-    const std::uint64_t lhs = toUnsignedBits(operands[0], width);
-    const std::uint64_t rhs = toUnsignedBits(operands[1], width);
+        static_cast<unsigned>(toUnsignedBits(operands[2], bitWidth) % bitWidth);
+    const std::uint64_t lhs = toUnsignedBits(operands[0], bitWidth);
+    const std::uint64_t rhs = toUnsignedBits(operands[1], bitWidth);
     if (amount == 0)
-      return integerFromBits(lhs, width);
-    return integerFromBits((lhs << amount) | (rhs >> (width - amount)), width);
+      return integerFromBits(lhs, bitWidth);
+    return integerFromBits((lhs << amount) | (rhs >> (bitWidth - amount)),
+                           bitWidth);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
