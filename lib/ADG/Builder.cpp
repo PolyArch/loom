@@ -253,12 +253,24 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
                                        "unknown",
                                        load.control.c_str());
     }
-    os << "  %mem" << memIndex << "_data, %mem" << memIndex
-       << "_done = fabric.mem [" << scheduleName(mem.schedule)
-       << "] mgr(" << valueName(mem.manager) << ')';
-    for (const MemLoadPort &load : mem.loads) {
-      os << " load(" << valueName(load.address) << ", "
-         << valueName(load.control) << ')';
+    os << "  ";
+    for (std::size_t i = 0; i < mem.loads.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << "%mem" << memIndex << "_data" << i << ", %mem" << memIndex
+         << "_done" << i;
+    }
+    os << " = fabric.mem [" << scheduleName(mem.schedule) << "] mgr("
+       << valueName(mem.manager) << ')';
+    if (!mem.loads.empty()) {
+      os << " load(";
+      for (std::size_t i = 0; i < mem.loads.size(); ++i) {
+        if (i)
+          os << ", ";
+        const MemLoadPort &load = mem.loads[i];
+        os << valueName(load.address) << ", " << valueName(load.control);
+      }
+      os << ')';
     }
     os << "\n        [{load_group_size = "
        << static_cast<unsigned>(mem.loads.size())
@@ -297,6 +309,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       .addInput("i32a", "!fabric.bits<32>")
       .addInput("i32b", "!fabric.bits<32>")
       .addInput("i32c", "!fabric.bits<32>")
+      .addInput("i32d", "!fabric.bits<32>")
       .addInput("ctrl", "!fabric.bits<0>");
 
   PeSpec streamPe;
@@ -340,6 +353,32 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {}});
   reductionPe.fus.push_back(FuSpec{
       {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+       {"init", "pb", "!fabric.bits<32>", ""},
+       {"next", "pc", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"carried"},
+                    {"dataflow.carry"},
+                    {"cond", "init", "next"},
+                    {"!fabric.bits<1>", "!fabric.bits<32>",
+                     "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+       {"value", "pb", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"stable"},
+                    {"dataflow.invariant"},
+                    {"cond", "value"},
+                    {"!fabric.bits<1>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
        {"value", "pb", "!fabric.bits<32>", ""}},
       {},
       {FabricOpSpec{{"stable"},
@@ -356,6 +395,18 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {},
       {FabricOpSpec{{"sum"},
                     {"arith.addi"},
+                    {"lhs", "rhs"},
+                    {"!fabric.bits<32>", "!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {}});
+  reductionPe.fus.push_back(FuSpec{
+      {{"lhs", "pa", "!fabric.bits<32>", ""},
+       {"rhs", "pb", "!fabric.bits<32>", ""}},
+      {},
+      {FabricOpSpec{{"diff"},
+                    {"arith.subf"},
                     {"lhs", "rhs"},
                     {"!fabric.bits<32>", "!fabric.bits<32>"},
                     {"!fabric.bits<32>"},
@@ -404,7 +455,13 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {}});
   module.addPe(std::move(syncPe));
 
-  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"i32a", "ctrl"}}, 0});
+  module.addMem(MemSpec{Schedule::Spatial,
+                        "mgr",
+                        {{"i32a", "ctrl"},
+                         {"i32b", "ctrl"},
+                         {"i32c", "ctrl"},
+                         {"i32d", "ctrl"}},
+                        0});
   return module;
 }
 

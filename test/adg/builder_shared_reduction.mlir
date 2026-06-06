@@ -11,6 +11,7 @@
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@arith.addi]
 // HARDWARE-DAG: fabric.op [@arith.addf]
+// HARDWARE-DAG: fabric.op [@arith.subf]
 // HARDWARE-DAG: fabric.op [@arith.mulf]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
