@@ -111,6 +111,13 @@ def main() -> int:
         }
         if edge_pairs != expected_edges:
             raise AssertionError(f"unexpected edges: {edge_pairs}")
+        expected_edge_ids = {
+            f"edge::{left}->{right}"
+            for left, right in expected_edges
+        }
+        edge_ids = {edge.get("id") for edge in data["edges"]}
+        if edge_ids != expected_edge_ids:
+            raise AssertionError(f"unexpected edge ids: {edge_ids}")
         if data["diagnostics"]:
             raise AssertionError(f"unexpected diagnostics: {data['diagnostics']}")
 
@@ -194,6 +201,53 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("manifest with dangling edge unexpectedly passed audit")
+
+        missing_edge_id_manifest = out_dir / "missing-edge-id-full-stack-artifact-manifest.json"
+        missing_edge_id_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run_id": "missing-edge-id",
+                    "artifacts": [
+                        {
+                            "kind": "source_compat",
+                            "id": "source-compat-summary",
+                            "path": str(source),
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                        {
+                            "kind": "compiler_pipeline",
+                            "id": "compiler-pipeline-summary",
+                            "path": str(pipeline),
+                            "producer": "artifact summary command",
+                            "status": "present",
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "from": "source-compat-summary",
+                            "to": "compiler-pipeline-summary",
+                            "kind": "producer-consumer",
+                        }
+                    ],
+                    "diagnostics": [],
+                }
+            )
+        )
+        missing_edge_id_audit = out_dir / "missing-edge-id-artifact-audit-summary.json"
+        result = run_raw(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_edge_id_audit),
+                str(missing_edge_id_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("manifest edge without edge id unexpectedly passed audit")
 
         disconnected_manifest = out_dir / "disconnected-full-stack-artifact-manifest.json"
         disconnected_manifest.write_text(

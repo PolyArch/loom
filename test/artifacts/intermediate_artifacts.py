@@ -1124,18 +1124,29 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
         ids_by_kind.setdefault(kind, []).append(identity)
 
     edge_pairs: set[tuple[str, str]] = set()
+    edge_ids: set[str] = set()
     for index, edge in enumerate(edges, start=1):
         if not isinstance(edge, dict):
             diagnostics.append(f"artifact manifest edge {index} must be an object")
             continue
+        edge_id = edge.get("id")
         left = edge.get("from")
         right = edge.get("to")
+        if not isinstance(edge_id, str) or not edge_id:
+            diagnostics.append(f"artifact manifest edge {index} lacks id")
+        elif edge_id in edge_ids:
+            diagnostics.append(f"artifact manifest duplicate edge id {edge_id}")
+        else:
+            edge_ids.add(edge_id)
         if not isinstance(left, str) or not left:
             diagnostics.append(f"artifact manifest edge {index} lacks from")
             continue
         if not isinstance(right, str) or not right:
             diagnostics.append(f"artifact manifest edge {index} lacks to")
             continue
+        expected_edge_id = f"edge::{left}->{right}"
+        if isinstance(edge_id, str) and edge_id and edge_id != expected_edge_id:
+            diagnostics.append(f"artifact manifest edge {index} id does not match from/to")
         if left not in artifact_ids:
             diagnostics.append(f"artifact manifest edge {index} has unknown source {left}")
         if right not in artifact_ids:

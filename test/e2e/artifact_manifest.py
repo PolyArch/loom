@@ -20,7 +20,14 @@ def add_edge(edges: list[dict[str, str]], edge_keys: set[tuple[str, str]], left:
     if (left, right) in edge_keys:
         return
     edge_keys.add((left, right))
-    edges.append({"from": left, "to": right, "kind": "producer-consumer"})
+    edges.append(
+        {
+            "id": f"edge::{left}->{right}",
+            "from": left,
+            "to": right,
+            "kind": "producer-consumer",
+        }
+    )
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
