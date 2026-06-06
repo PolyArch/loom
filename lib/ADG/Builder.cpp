@@ -389,6 +389,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   reductionPe.fus.push_back(makeBinary32Fu("diff", "arith.subf"));
   reductionPe.fus.push_back(makeBinary32Fu("sum", "arith.addf"));
   reductionPe.fus.push_back(makeBinary32Fu("product", "arith.mulf"));
+  reductionPe.fus.push_back(makeBinary32Fu("shifted", "arith.shrui"));
+  reductionPe.fus.push_back(makeBinary32Fu("shifted", "arith.shli"));
+  reductionPe.fus.push_back(makeBinary32Fu("masked", "arith.andi"));
+  reductionPe.fus.push_back(makeBinary32Fu("combined", "arith.ori"));
   module.addPe(std::move(reductionPe));
 
   PeSpec syncPe;
