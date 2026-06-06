@@ -1342,6 +1342,18 @@ def validate_host_interface(
         diagnostics.append(f"{label} acceleration mode must require runtime package")
 
 
+def validate_report_only_runtime_claims(
+    value: dict[str, object],
+    output_buffer_identities: object,
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if value.get("launch_status") != "not_run" or value.get("target_status") != "not_run":
+        diagnostics.append(f"{label} must remain not_run")
+    if value.get("runtime_trace_identity") or value.get("profiling_record_identity") or output_buffer_identities:
+        diagnostics.append(f"{label} must not claim runtime outputs")
+
+
 def validate_runtime_report(
     value: object,
     data: dict[str, object],
@@ -1395,10 +1407,12 @@ def validate_runtime_report(
         diagnostics.append("runtime package runtime_report output_buffer_identities must be a string list")
     validate_diagnostic_records(value.get("diagnostic_records"), diagnostics, "runtime package runtime_report")
     if data.get("fallback_policy") == "report_only":
-        if value.get("launch_status") != "not_run" or value.get("target_status") != "not_run":
-            diagnostics.append("runtime package report_only runtime_report must remain not_run")
-        if value.get("runtime_trace_identity") or value.get("profiling_record_identity") or output_buffers:
-            diagnostics.append("runtime package report_only runtime_report must not claim runtime outputs")
+        validate_report_only_runtime_claims(
+            value,
+            output_buffers,
+            diagnostics,
+            "runtime package report_only runtime_report",
+        )
 
 
 def validate_runtime_evidence(value: object, diagnostics: list[str], require_complete: bool) -> None:
@@ -1438,10 +1452,12 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
     if require_complete and not value.get("runtime_report_identity"):
         diagnostics.append("workload report bundle pass needs runtime_report_identity")
     if fallback.get("decision") == "report_only":
-        if value.get("launch_status") != "not_run" or value.get("target_status") != "not_run":
-            diagnostics.append("workload report bundle report_only runtime evidence must remain not_run")
-        if value.get("runtime_trace_identity") or value.get("profiling_record_identity") or outputs:
-            diagnostics.append("workload report bundle report_only runtime evidence must not claim runtime outputs")
+        validate_report_only_runtime_claims(
+            value,
+            outputs,
+            diagnostics,
+            "workload report bundle report_only runtime evidence",
+        )
 
 
 def validate_runtime_evidence_summaries(
