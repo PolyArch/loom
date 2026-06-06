@@ -7,6 +7,8 @@
 // RUN: env BUILD_DIR=%t.dir/compare_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/compare_swap/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/hash_mix LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/hash_mix/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/vecscale LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecscale/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
@@ -25,6 +27,8 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh compare_swap %t.dir/compare_swap/main_func.dfg.mlir %t.dir/reports/compare_swap.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh hash_mix %t.dir/hash_mix/main_func.dfg.mlir %t.dir/reports/hash_mix.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecscale %t.dir/vecscale/main_func.dfg.mlir %t.dir/reports/vecscale.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecsum %t.dir/vecsum/main_func.dfg.mlir %t.dir/reports/vecsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reports/reduction.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh spmv %t.dir/spmv/main_func.dfg.mlir %t.dir/reports/spmv.report.json %t.dir/summary.csv --append
@@ -43,6 +47,8 @@
 // RUN: FileCheck %s --check-prefix=HASH-MIX < %t.dir/reports/hash_mix.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECADD-REDUCTION < %t.dir/reports/vecadd.reduction.report.json
+// RUN: FileCheck %s --check-prefix=VECMUL < %t.dir/reports/vecmul.report.json
+// RUN: FileCheck %s --check-prefix=VECSCALE < %t.dir/reports/vecscale.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reports/reduction.report.json
 // RUN: FileCheck %s --check-prefix=SPMV < %t.dir/reports/spmv.report.json
@@ -136,6 +142,26 @@
 // VECADD-REDUCTION-DAG: "status": "pass"
 // VECADD-REDUCTION-DAG: "optimistic_cycles": 643
 // VECADD-REDUCTION-DAG: "f32:3024"
+
+// VECMUL-DAG: "kind": "dfg_sim_report"
+// VECMUL-DAG: "workload": "vecmul"
+// VECMUL-DAG: "graph": "g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0"
+// VECMUL-DAG: "status": "pass"
+// VECMUL-DAG: "optimistic_cycles": 256
+// VECMUL-DAG: "wavefront_steps": 19
+// VECMUL-DAG: "event_count": 80
+// VECMUL-DAG: "dynamic_work_items": 16
+// VECMUL-DAG: "arith.mulf": 16
+
+// VECSCALE-DAG: "kind": "dfg_sim_report"
+// VECSCALE-DAG: "workload": "vecscale"
+// VECSCALE-DAG: "graph": "g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0"
+// VECSCALE-DAG: "status": "pass"
+// VECSCALE-DAG: "optimistic_cycles": 384
+// VECSCALE-DAG: "wavefront_steps": 35
+// VECSCALE-DAG: "event_count": 128
+// VECSCALE-DAG: "dynamic_work_items": 32
+// VECSCALE-DAG: "arith.muli": 32
 
 // VECSUM-DAG: "kind": "dfg_sim_report"
 // VECSUM-DAG: "workload": "vecsum"
@@ -236,6 +262,8 @@
 // SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecmul,256,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l1,643,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l2,771,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecscale,384,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,579,,blocked,DFG-sim report available

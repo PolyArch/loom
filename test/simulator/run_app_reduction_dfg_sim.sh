@@ -235,6 +235,28 @@ case "${CASE}" in
             --workload vecadd
         )
         ;;
+    vecmul)
+        append_ctrl_tokens 16
+        append_linear_memref 1 16 1 "%.6e"
+        append_linear_memref 2 16 0.5 "%.6e"
+        append_constant_memref 3 16 "0.000000e+00"
+        append_index_tokens 4 16
+        sim_args+=(
+            --graph g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0
+            --workload vecmul
+        )
+        ;;
+    vecscale)
+        append_ctrl_tokens 32
+        append_linear_memref 1 32 1 "%d"
+        append_repeated_arg 2 32 7
+        append_constant_memref 3 32 "0"
+        append_index_tokens 4 32
+        sim_args+=(
+            --graph g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0
+            --workload vecscale
+        )
+        ;;
     vecsum)
         append_ctrl_tokens 64
         append_linear_memref 4 64 1 "%d"
