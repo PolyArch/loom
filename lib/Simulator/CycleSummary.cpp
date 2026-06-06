@@ -107,6 +107,14 @@ CycleSummaryRow blockedRow(llvm::StringRef kernel, llvm::StringRef diagnostic) {
   };
 }
 
+void appendDiagnostic(std::string &target, llvm::StringRef diagnostic) {
+  if (diagnostic.empty())
+    return;
+  if (!target.empty())
+    target += "; ";
+  target += diagnostic.str();
+}
+
 CycleSummaryRow proxyOnlyRow(llvm::StringRef kernel,
                              const PrimitiveStats &stats) {
   std::string diagnostic =
@@ -310,23 +318,42 @@ loom::sim::summarizePrimitiveCoverage(llvm::StringRef csvPath,
   return rows;
 }
 
+void mergeDFGRow(CycleSummaryRow &target, CycleSummaryRow source) {
+  if (target.kernel.empty())
+    target.kernel = std::move(source.kernel);
+  if (!source.dfgSimCycles) {
+    target.dfgSimCycles.reset();
+    target.status = source.status;
+    appendDiagnostic(target.diagnostic, source.diagnostic);
+    return;
+  }
+  if (target.dfgSimCycles)
+    *target.dfgSimCycles += *source.dfgSimCycles;
+  else if (target.status.empty() || target.status == "blocked")
+    target.dfgSimCycles = *source.dfgSimCycles;
+  if (target.status.empty())
+    target.status = source.status;
+  if (target.status == "pass" && source.status != "pass")
+    target.status = source.status;
+  appendDiagnostic(target.diagnostic, source.diagnostic);
+}
+
 llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
 loom::sim::summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths) {
   if (reportPaths.empty())
     return scaffoldCycleSummaryRows();
 
-  llvm::SmallVector<CycleSummaryRow> rows;
-  llvm::StringSet<> seen;
+  std::map<std::string, CycleSummaryRow> byKernel;
   for (const std::string &path : reportPaths) {
     auto rowOrErr = summarizeOneDFGReport(path);
     if (!rowOrErr)
       return rowOrErr.takeError();
-    if (!seen.insert(rowOrErr->kernel).second)
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "duplicate DFG report workload %s",
-                                     rowOrErr->kernel.c_str());
-    rows.push_back(std::move(*rowOrErr));
+    std::string kernel = rowOrErr->kernel;
+    mergeDFGRow(byKernel[kernel], std::move(*rowOrErr));
   }
+  llvm::SmallVector<CycleSummaryRow> rows;
+  for (auto &[_, row] : byKernel)
+    rows.push_back(std::move(row));
   return rows;
 }
 
@@ -340,17 +367,30 @@ loom::sim::summarizeSimulationReports(
   if (cgraReportPaths.empty())
     return *dfgRowsOrErr;
 
-  llvm::StringMap<CGRASummary> cgraByKernel;
+  std::map<std::string, CGRASummary> cgraByKernel;
   for (const std::string &path : cgraReportPaths) {
     auto cgraOrErr = summarizeOneCGRAReport(path);
     if (!cgraOrErr)
       return cgraOrErr.takeError();
     std::string key = cgraOrErr->kernel;
-    if (cgraByKernel.contains(key))
-      return llvm::createStringError(std::errc::invalid_argument,
-                                     "duplicate CGRA report workload %s",
-                                     key.c_str());
-    cgraByKernel.try_emplace(key, std::move(*cgraOrErr));
+    CGRASummary &merged = cgraByKernel[key];
+    if (merged.kernel.empty())
+      merged.kernel = key;
+    if (!cgraOrErr->cycles) {
+      merged.cycles.reset();
+      merged.status = cgraOrErr->status;
+      appendDiagnostic(merged.diagnostic, cgraOrErr->diagnostic);
+      continue;
+    }
+    if (merged.cycles)
+      *merged.cycles += *cgraOrErr->cycles;
+    else if (merged.status.empty() || merged.status == "blocked")
+      merged.cycles = *cgraOrErr->cycles;
+    if (merged.status.empty())
+      merged.status = cgraOrErr->status;
+    if (merged.status == "pass" && cgraOrErr->status != "pass")
+      merged.status = cgraOrErr->status;
+    appendDiagnostic(merged.diagnostic, cgraOrErr->diagnostic);
   }
 
   for (CycleSummaryRow &row : *dfgRowsOrErr) {

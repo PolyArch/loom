@@ -41,6 +41,14 @@ append_ctrl_tokens() {
     done
 }
 
+append_index_tokens() {
+    local index="$1"
+    local count="$2"
+    for i in $(seq 0 $((count - 1))); do
+        sim_args+=(--arg "${index}=${i}")
+    done
+}
+
 append_linear_memref() {
     local index="$1"
     local count="$2"
@@ -178,14 +186,13 @@ case "${CASE}" in
         ;;
     vecadd)
         append_ctrl_tokens 64
-        append_linear_memref 4 64 1.5 "%.6e"
+        append_linear_memref 1 64 1 "%.6e"
+        append_linear_memref 2 64 0.5 "%.6e"
+        append_constant_memref 3 64 "0.000000e+00"
+        append_index_tokens 4 64
         sim_args+=(
-            --graph g_t_main_red_0_0
+            --graph g_t_vecadd_0_0
             --workload vecadd
-            --arg 1=0
-            --arg 2=64
-            --arg 3=1
-            --arg 5=0.000000e+00
         )
         ;;
     vecsum)
@@ -308,7 +315,25 @@ case "${CASE}" in
         ;;
 esac
 
-"${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
+extra_report=""
+if [[ "${CASE}" == "vecadd" ]]; then
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
+    extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
+    sim_args=()
+    append_ctrl_tokens 64
+    append_linear_memref 4 64 1.5 "%.6e"
+    sim_args+=(
+        --graph g_t_main_red_0_0
+        --workload vecadd
+        --arg 1=0
+        --arg 2=64
+        --arg 3=1
+        --arg 5=0.000000e+00
+    )
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
+else
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
+fi
 
 declare -a summary_reports=()
 if [[ "${APPEND}" == "--append" ]]; then
@@ -324,6 +349,9 @@ if [[ "${APPEND}" == "--append" ]]; then
     done
 else
     summary_reports+=(--dfg-report "${REPORT_JSON}")
+    if [[ -n "${extra_report}" ]]; then
+        summary_reports+=(--dfg-report "${extra_report}")
+    fi
 fi
 
 bash "${REPO}/test/app/run_sim_cycle_summary.sh" \

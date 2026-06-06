@@ -36,6 +36,7 @@
 // RUN: FileCheck %s --check-prefix=CORRELATION < %t.dir/reports/correlation.report.json
 // RUN: FileCheck %s --check-prefix=CUMSUM < %t.dir/reports/cumsum.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
+// RUN: FileCheck %s --check-prefix=VECADD-REDUCTION < %t.dir/reports/vecadd.reduction.report.json
 // RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/reports/vecsum.report.json
 // RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reports/reduction.report.json
 // RUN: FileCheck %s --check-prefix=SPMV < %t.dir/reports/spmv.report.json
@@ -94,13 +95,20 @@
 
 // VECADD-DAG: "kind": "dfg_sim_report"
 // VECADD-DAG: "workload": "vecadd"
-// VECADD-DAG: "graph": "g_t_main_red_0_0"
+// VECADD-DAG: "graph": "g_t_vecadd_0_0"
 // VECADD-DAG: "status": "pass"
 // VECADD-DAG: "metric_definition": "optimistic_operation_latency_sum"
-// VECADD-DAG: "optimistic_cycles": 643
-// VECADD-DAG: "wavefront_steps": 131
-// VECADD-DAG: "event_count": 387
-// VECADD-DAG: "f32:3024"
+// VECADD-DAG: "optimistic_cycles": 960
+// VECADD-DAG: "wavefront_steps": 67
+// VECADD-DAG: "event_count": 320
+// VECADD-DAG: "none"
+
+// VECADD-REDUCTION-DAG: "kind": "dfg_sim_report"
+// VECADD-REDUCTION-DAG: "workload": "vecadd"
+// VECADD-REDUCTION-DAG: "graph": "g_t_main_red_0_0"
+// VECADD-REDUCTION-DAG: "status": "pass"
+// VECADD-REDUCTION-DAG: "optimistic_cycles": 643
+// VECADD-REDUCTION-DAG: "f32:3024"
 
 // VECSUM-DAG: "kind": "dfg_sim_report"
 // VECSUM-DAG: "workload": "vecsum"
@@ -195,7 +203,7 @@
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,579,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecadd,643,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l1,643,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l2,771,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,579,,blocked,DFG-sim report available
