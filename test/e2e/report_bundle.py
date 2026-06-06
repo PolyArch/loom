@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Emit workload report bundles from full-stack intermediate artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "test" / "artifacts"))
+
+import intermediate_artifacts  # noqa: E402
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--artifact", action="append", default=[])
+    return parser.parse_args(argv)
+
+
+def artifact_id(path: Path) -> str:
+    for suffix in (".csv", ".json"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
+
+
+def read_csv(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    with path.open(newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def read_json(path: Path) -> dict[str, object]:
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text())
+
+
+def group_paths(paths: list[Path]) -> dict[str, list[Path]]:
+    grouped: dict[str, list[Path]] = {}
+    for path in paths:
+        grouped.setdefault(intermediate_artifacts.artifact_kind_for_path(path), []).append(path)
+    return grouped
+
+
+def first_path(grouped: dict[str, list[Path]], kind: str) -> Path | None:
+    paths = grouped.get(kind, [])
+    return paths[0] if paths else None
+
+
+def selected_dse_row(paths: list[Path]) -> dict[str, str] | None:
+    for path in paths:
+        for row in read_csv(path):
+            if row.get("selection_status") == "selected":
+                return row
+    return None
+
+
+def matching_row(paths: list[Path], key: str, value: str) -> dict[str, str] | None:
+    for path in paths:
+        for row in read_csv(path):
+            if row.get(key) == value:
+                return row
+    return None
+
+
+def hardware_matches(candidate: str, hardware: str) -> bool:
+    return candidate == hardware or candidate.rsplit("::", 1)[-1] == hardware
+
+
+def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> dict[str, str] | None:
+    for path in paths:
+        for row in read_csv(path):
+            if row.get("workload") == workload and hardware_matches(row.get("hardware", ""), hardware):
+                return row
+    return None
+
+
+def numeric(row: dict[str, str], key: str) -> float:
+    return float(row[key])
+
+
+def metric_record(
+    *,
+    metric_id: str,
+    metric_class: str,
+    value: float | int,
+    unit: str,
+    fidelity_level: str,
+    evidence_source_artifact_id: str,
+    producer_component: str,
+    derivation_kind: str,
+    diagnostics: list[str] | None = None,
+    input_metric_ids: list[str] | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "metric_id": metric_id,
+        "metric_class": metric_class,
+        "value": value,
+        "unit": unit,
+        "fidelity_level": fidelity_level,
+        "evidence_source_artifact_id": evidence_source_artifact_id,
+        "producer_component": producer_component,
+        "derivation_kind": derivation_kind,
+        "diagnostics": diagnostics or [],
+    }
+    if input_metric_ids is not None:
+        record["input_metric_ids"] = input_metric_ids
+    return record
+
+
+def build_bundle(paths: list[Path]) -> dict[str, object]:
+    grouped = group_paths(paths)
+    dse_path = first_path(grouped, "dse_candidate")
+    dse_row = selected_dse_row(grouped.get("dse_candidate", []))
+    if dse_row is None or dse_path is None:
+        return {
+            "schema_version": 1,
+            "kind": "workload_report_bundle",
+            "bundle_id": "workload::blocked",
+            "workload": "unknown",
+            "source_artifact_identity": "",
+            "compiler_command_identity": "",
+            "runtime_input_identity": "",
+            "selected_hardware_candidate_identity": "",
+            "selected_mapping_artifact_identity": "",
+            "report_status": "blocked",
+            "diagnostics": ["no selected DSE candidate artifact was provided"],
+            "metric_records": [],
+        }
+
+    workload = dse_row["workload"]
+    hardware = dse_row["hardware"]
+    mapping_id = dse_row["mapping_id"]
+    source_path = first_path(grouped, "source_compat")
+    compiler_path = first_path(grouped, "compiler_pipeline")
+    mapping_path = first_path(grouped, "pnr_mapping_artifact")
+    dfg_path = first_path(grouped, "dfg_sim_report")
+    cgra_path = first_path(grouped, "cgra_sim_report")
+    comparison_path = first_path(grouped, "sim_comparison_report")
+    runtime_path = first_path(grouped, "runtime_package")
+    rtl_path = first_path(grouped, "rtl_fpa")
+
+    dfg_report = read_json(dfg_path) if dfg_path is not None else {}
+    cgra_report = read_json(cgra_path) if cgra_path is not None else {}
+    comparison_report = read_json(comparison_path) if comparison_path is not None else {}
+    runtime_package = read_json(runtime_path) if runtime_path is not None else {}
+    rtl_row = matching_rtl_fpa_row(grouped.get("rtl_fpa", []), workload, hardware)
+    source_row = matching_row(grouped.get("source_compat", []), "case", workload)
+    compiler_row = matching_row(grouped.get("compiler_pipeline", []), "case", workload)
+
+    diagnostics: list[str] = []
+    if source_row is None:
+        diagnostics.append("source compatibility row is missing")
+    if compiler_row is None:
+        diagnostics.append("compiler pipeline row is missing")
+    if not dfg_report:
+        diagnostics.append("DFG-sim report is missing")
+    if not cgra_report:
+        diagnostics.append("CGRA-sim report is missing")
+    if comparison_report and comparison_report.get("status") != "pass":
+        diagnostics.append("simulation comparison report is not passing")
+    if runtime_package and runtime_package.get("status") != "pass":
+        diagnostics.append("runtime package is not passing")
+    if rtl_row is None or rtl_path is None:
+        diagnostics.append("RTL/FPA row is missing")
+
+    metric_records: list[dict[str, object]] = []
+    if isinstance(dfg_report.get("optimistic_cycles"), int) and dfg_path is not None:
+        metric_records.append(
+            metric_record(
+                metric_id=f"metric::{workload}::dfg_sim_cycles",
+                metric_class="optimistic_steps",
+                value=int(dfg_report["optimistic_cycles"]),
+                unit="cycles",
+                fidelity_level="dfg_software",
+                evidence_source_artifact_id=artifact_id(dfg_path),
+                producer_component="loom-dfg-sim",
+                derivation_kind="simulator_report",
+            )
+        )
+
+    if isinstance(cgra_report.get("hardware_aware_cycles"), int) and cgra_path is not None:
+        metric_records.append(
+            metric_record(
+                metric_id=f"metric::{workload}::cgra_sim_cycles",
+                metric_class="hardware_cycles",
+                value=int(cgra_report["hardware_aware_cycles"]),
+                unit="cycles",
+                fidelity_level="cgra_mapped",
+                evidence_source_artifact_id=artifact_id(cgra_path),
+                producer_component="loom-cgra-sim",
+                derivation_kind="simulator_report",
+                diagnostics=[str(item) for item in cgra_report.get("diagnostics", [])],
+            )
+        )
+
+    if rtl_row is not None and rtl_path is not None:
+        for key, metric_class, unit in (
+            ("frequency_mhz", "frequency", "MHz"),
+            ("area_um2", "area", "um2"),
+            ("dynamic_power_mw", "dynamic_power", "mW"),
+            ("leakage_power_mw", "leakage_power", "mW"),
+        ):
+            metric_records.append(
+                metric_record(
+                    metric_id=f"metric::{hardware}::{key}",
+                    metric_class=metric_class,
+                    value=numeric(rtl_row, key),
+                    unit=unit,
+                    fidelity_level="custom_calibrated",
+                    evidence_source_artifact_id=artifact_id(rtl_path),
+                    producer_component="rtl-fpa-summary",
+                    derivation_kind="analytic_fpa",
+                    diagnostics=[rtl_row.get("diagnostic", "")],
+                )
+            )
+
+    energy_inputs = [
+        f"metric::{workload}::cgra_sim_cycles",
+        f"metric::{hardware}::frequency_mhz",
+        f"metric::{hardware}::dynamic_power_mw",
+        f"metric::{hardware}::leakage_power_mw",
+    ]
+    metric_records.append(
+        metric_record(
+            metric_id=f"metric::{workload}::energy_nj",
+            metric_class="energy",
+            value=numeric(dse_row, "energy_nj"),
+            unit="nJ",
+            fidelity_level="custom_calibrated",
+            evidence_source_artifact_id=artifact_id(dse_path),
+            producer_component="dse-candidate-summary",
+            derivation_kind="cycle_frequency_power_area",
+            diagnostics=[dse_row.get("diagnostic", "")],
+            input_metric_ids=energy_inputs,
+        )
+    )
+
+    return {
+        "schema_version": 1,
+        "kind": "workload_report_bundle",
+        "bundle_id": f"workload::{workload}::{hardware}::{mapping_id}",
+        "workload": workload,
+        "source_artifact_identity": artifact_id(source_path) if source_path is not None else "",
+        "compiler_command_identity": artifact_id(compiler_path) if compiler_path is not None else "",
+        "runtime_input_identity": f"test-app-fixture::{workload}::default",
+        "selected_hardware_candidate_identity": hardware,
+        "selected_mapping_artifact_identity": artifact_id(mapping_path) if mapping_path is not None else "",
+        "optional_artifact_identities": {
+            "dfg_sim_report": artifact_id(dfg_path) if dfg_path is not None else "",
+            "cgra_sim_report": artifact_id(cgra_path) if cgra_path is not None else "",
+            "simulation_comparison_report": artifact_id(comparison_path) if comparison_path is not None else "",
+            "runtime_package": artifact_id(runtime_path) if runtime_path is not None else "",
+            "fpa_report": artifact_id(rtl_path) if rtl_path is not None else "",
+            "dse_feedback_record": artifact_id(dse_path),
+        },
+        "report_status": "pass" if not diagnostics else "blocked",
+        "diagnostics": diagnostics,
+        "metric_records": metric_records,
+    }
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    output = Path(args.output)
+    paths = [Path(value) for value in args.artifact]
+    bundle = build_bundle(paths)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n")
+    return 0 if bundle["report_status"] == "pass" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
