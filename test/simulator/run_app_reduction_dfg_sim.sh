@@ -155,6 +155,42 @@ append_hash_mix_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+to_i32_literal() {
+    local value=$(( $1 & 0xffffffff ))
+    if (( value >= 2147483648 )); then
+        printf "%d" $((value - 4294967296))
+    else
+        printf "%d" "${value}"
+    fi
+}
+
+append_xor_block_memrefs() {
+    local lhs_index="$1"
+    local rhs_index="$2"
+    local output_index="$3"
+    local count=32
+    local lhs_values=""
+    local rhs_values=""
+    local output_values=""
+    local lhs_value=""
+    local rhs_value=""
+    for i in $(seq 0 $((count - 1))); do
+        lhs_value="$(to_i32_literal $((0x12345678 + i * 0x01010101)))"
+        rhs_value="$(to_i32_literal $((0x0f0f0f0f ^ (i * 0x11111111))))"
+        if [[ -n "${lhs_values}" ]]; then
+            lhs_values+=","
+            rhs_values+=","
+            output_values+=","
+        fi
+        lhs_values+="${lhs_value}"
+        rhs_values+="${rhs_value}"
+        output_values+="0"
+    done
+    sim_args+=(--memref "${lhs_index}=${lhs_values}")
+    sim_args+=(--memref "${rhs_index}=${rhs_values}")
+    sim_args+=(--memref "${output_index}=${output_values}")
+}
+
 case "${CASE}" in
     bit_reverse)
         append_ctrl_tokens 32
@@ -394,6 +430,15 @@ case "${CASE}" in
         sim_args+=(
             --graph g_t_main_1_0
             --workload hash_mix
+        )
+        ;;
+    xor_block)
+        append_ctrl_tokens 32
+        append_xor_block_memrefs 1 2 3
+        append_index_tokens 4 32
+        sim_args+=(
+            --graph g_t_xor_block_0_0
+            --workload xor_block
         )
         ;;
     *)

@@ -6,6 +6,7 @@
 // RUN: env BUILD_DIR=%t.dir/cumsum LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/cumsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/compare_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/compare_swap/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/hash_mix LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/hash_mix/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/xor_block LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/xor_block/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecscale LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecscale/dfg_check.sh
@@ -26,6 +27,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh cumsum %t.dir/cumsum/main_func.dfg.mlir %t.dir/reports/cumsum.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh compare_swap %t.dir/compare_swap/main_func.dfg.mlir %t.dir/reports/compare_swap.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh hash_mix %t.dir/hash_mix/main_func.dfg.mlir %t.dir/reports/hash_mix.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh xor_block %t.dir/xor_block/main_func.dfg.mlir %t.dir/reports/xor_block.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecscale %t.dir/vecscale/main_func.dfg.mlir %t.dir/reports/vecscale.report.json %t.dir/summary.csv --append
@@ -45,6 +47,7 @@
 // RUN: FileCheck %s --check-prefix=CUMSUM < %t.dir/reports/cumsum.report.json
 // RUN: FileCheck %s --check-prefix=COMPARE-SWAP < %t.dir/reports/compare_swap.report.json
 // RUN: FileCheck %s --check-prefix=HASH-MIX < %t.dir/reports/hash_mix.report.json
+// RUN: FileCheck %s --check-prefix=XOR-BLOCK < %t.dir/reports/xor_block.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECADD-REDUCTION < %t.dir/reports/vecadd.reduction.report.json
 // RUN: FileCheck %s --check-prefix=VECMUL < %t.dir/reports/vecmul.report.json
@@ -125,6 +128,19 @@
 // HASH-MIX-DAG: "dynamic_work_items": 64
 // HASH-MIX-DAG: "llvm.intr.fshl": 128
 // HASH-MIX-DAG: "arith.xori": 64
+
+// XOR-BLOCK-DAG: "kind": "dfg_sim_report"
+// XOR-BLOCK-DAG: "workload": "xor_block"
+// XOR-BLOCK-DAG: "graph": "g_t_xor_block_0_0"
+// XOR-BLOCK-DAG: "status": "pass"
+// XOR-BLOCK-DAG: "optimistic_cycles": 448
+// XOR-BLOCK-DAG: "wavefront_steps": 35
+// XOR-BLOCK-DAG: "event_count": 160
+// XOR-BLOCK-DAG: "dynamic_work_items": 32
+// XOR-BLOCK-DAG: "arith.xori": 32
+// XOR-BLOCK-DAG: "dataflow.load": 64
+// XOR-BLOCK-DAG: "dataflow.store": 32
+// XOR-BLOCK-DAG: "dataflow.sync": 32
 
 // VECADD-DAG: "kind": "dfg_sim_report"
 // VECADD-DAG: "workload": "vecadd"
@@ -267,3 +283,4 @@
 // SUMMARY-DAG: vecnorm_l2,771,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecscale,384,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecsum,579,,blocked,DFG-sim report available
+// SUMMARY-DAG: xor_block,448,,blocked,DFG-sim report available
