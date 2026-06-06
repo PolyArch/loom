@@ -29,63 +29,49 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/prefix_sum/main_func.dfg.mlir --graph g_t_prefix_sum_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload prefix_sum --output %t.dir/prefix_sum.mapping.csv --artifact %t.dir/prefix_sum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/cumsum/main_func.dfg.mlir --graph g_t_cumsum_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload cumsum --output %t.dir/cumsum.mapping.csv --artifact %t.dir/cumsum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/integrate_trapz/main_func.dfg.mlir --graph g_t_integrate_trapz_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload integrate_trapz --output %t.dir/integrate_trapz.mapping.csv --artifact %t.dir/integrate_trapz.mapping.json
-// RUN: FileCheck %s --check-prefix=BIT-REVERSE < %t.dir/bit_reverse.mapping.csv
-// RUN: FileCheck %s --check-prefix=CONV1D < %t.dir/conv1d.mapping.csv
-// RUN: FileCheck %s --check-prefix=CONVOLVE-1D < %t.dir/convolve_1d.mapping.csv
-// RUN: FileCheck %s --check-prefix=CORRELATION < %t.dir/correlation.mapping.csv
-// RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.csv
-// RUN: FileCheck %s --check-prefix=MEAN < %t.dir/mean.mapping.csv
-// RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/vecnorm_l1.mapping.csv
-// RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/vecnorm_l2.mapping.csv
-// RUN: FileCheck %s --check-prefix=REDUCTION < %t.dir/reduction.mapping.csv
-// RUN: FileCheck %s --check-prefix=VECSUM < %t.dir/vecsum.mapping.csv
-// RUN: FileCheck %s --check-prefix=DOTPRODUCT < %t.dir/dotproduct.mapping.csv
-// RUN: FileCheck %s --check-prefix=SPMV < %t.dir/spmv.mapping.csv
-// RUN: FileCheck %s --check-prefix=PREFIX-SUM < %t.dir/prefix_sum.mapping.csv
-// RUN: FileCheck %s --check-prefix=CUMSUM < %t.dir/cumsum.mapping.csv
-// RUN: FileCheck %s --check-prefix=TRAPZ < %t.dir/integrate_trapz.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,BIT-REVERSE < %t.dir/bit_reverse.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,CONV1D < %t.dir/conv1d.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,CONVOLVE-1D < %t.dir/convolve_1d.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,CORRELATION < %t.dir/correlation.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,VECADD < %t.dir/vecadd.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,MEAN < %t.dir/mean.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,VECNORM-L1 < %t.dir/vecnorm_l1.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,VECNORM-L2 < %t.dir/vecnorm_l2.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,REDUCTION < %t.dir/reduction.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,VECSUM < %t.dir/vecsum.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,DOTPRODUCT < %t.dir/dotproduct.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,SPMV < %t.dir/spmv.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,PREFIX-SUM < %t.dir/prefix_sum.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,CUMSUM < %t.dir/cumsum.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,TRAPZ < %t.dir/integrate_trapz.mapping.csv
 
-// BIT-REVERSE: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// CONV1D: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// CONVOLVE-1D: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// CORRELATION: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECADD: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// MEAN: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // MEAN-NEXT: mean,shared_reduction_adg,mean__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECNORM-L1: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // VECNORM-L1-NEXT: vecnorm_l1,shared_reduction_adg,vecnorm_l1__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECNORM-L2: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // VECNORM-L2-NEXT: vecnorm_l2,shared_reduction_adg,vecnorm_l2__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// REDUCTION: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // REDUCTION-NEXT: reduction,shared_reduction_adg,reduction__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECSUM: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // VECSUM-NEXT: vecsum,shared_reduction_adg,vecsum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// DOTPRODUCT: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// SPMV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // SPMV-NEXT: spmv,shared_reduction_adg,spmv__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// PREFIX-SUM: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // PREFIX-SUM-NEXT: prefix_sum,shared_reduction_adg,prefix_sum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// CUMSUM: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // CUMSUM-NEXT: cumsum,shared_reduction_adg,cumsum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// TRAPZ: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
