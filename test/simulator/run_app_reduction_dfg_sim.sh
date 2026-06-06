@@ -246,6 +246,21 @@ append_byte_swap_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+downsample_avg_row_values() {
+    local row="$1"
+    local values=""
+    local value=""
+    local base=$((row * 4))
+    for offset in $(seq 0 3); do
+        value="$(awk -v i="$((base + offset))" 'BEGIN { printf "%.6e", i * 3 + 1 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
 matrix_vector_row_values() {
     local row="$1"
     local values=""
@@ -409,6 +424,33 @@ configure_rotate_bits_args() {
     )
 }
 
+configure_downsample_avg_args() {
+    local row="$1"
+    append_ctrl_tokens 4
+    append_raw_memref 4 "$(downsample_avg_row_values "${row}")"
+    sim_args+=(
+        --graph g_t_downsample_avg_0_0
+        --workload downsample_avg
+        --arg 1=0
+        --arg 2=4
+        --arg 3=1
+        --arg 5=2.500000e-01
+        --arg 6=0.000000e+00
+    )
+}
+
+configure_downsample_avg_init_args() {
+    append_ctrl_tokens 16
+    append_repeated_arg 1 16 3
+    append_repeated_arg 2 16 1
+    append_constant_memref 3 16 "0.000000e+00"
+    append_index_tokens 4 16
+    sim_args+=(
+        --graph g_t_main_0_0
+        --workload downsample_avg
+    )
+}
+
 case "${CASE}" in
     axpy)
         configure_axpy_args
@@ -489,6 +531,9 @@ case "${CASE}" in
             --arg 3=1
             --arg 6=0.000000e+00
         )
+        ;;
+    downsample_avg)
+        configure_downsample_avg_args 0
         ;;
     vecadd)
         append_ctrl_tokens 64
@@ -772,6 +817,22 @@ if [[ "${CASE}" == "gemv" ]]; then
     )
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${checksum_report}"
     extra_reports+=("${checksum_report}")
+fi
+
+if [[ "${CASE}" == "downsample_avg" ]]; then
+    init_report="${REPORT_JSON%.report.json}.init.report.json"
+    sim_args=()
+    configure_downsample_avg_init_args
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${init_report}"
+    extra_reports+=("${init_report}")
+
+    for row in 1 2 3; do
+        row_report="${REPORT_JSON%.report.json}.row${row}.report.json"
+        sim_args=()
+        configure_downsample_avg_args "${row}"
+        "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${row_report}"
+        extra_reports+=("${row_report}")
+    done
 fi
 
 if [[ "${CASE}" == "relu" ]]; then

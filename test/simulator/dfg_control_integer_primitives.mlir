@@ -6,6 +6,8 @@
 // RUN: FileCheck %s --check-prefix=BSWAP < %t.bswap.json
 // RUN: loom-dfg-sim %s --graph zext_bits --arg 0=none --output %t.zext.json
 // RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.json
+// RUN: loom-dfg-sim %s --graph uint_to_float --arg 0=none --output %t.uitofp.json
+// RUN: FileCheck %s --check-prefix=UITOFP < %t.uitofp.json
 
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
@@ -35,6 +37,13 @@
 // ZEXT-DAG: "status": "pass"
 // ZEXT-DAG: "optimistic_cycles": 2
 // ZEXT-DAG: "i64:4294967295"
+
+// UITOFP-DAG: "workload": "uint_to_float"
+// UITOFP-DAG: "graph": "uint_to_float"
+// UITOFP-DAG: "status": "pass"
+// UITOFP-DAG: "optimistic_cycles": 4
+// UITOFP-DAG: "event_count": 2
+// UITOFP-DAG: "f32:7"
 
 module {
   dataflow.graph.func private @compare_select(%ctrl: none) -> (none, f32) {
@@ -73,5 +82,11 @@ module {
     %value = dataflow.constant %ctrl {const_value = -1 : i32} : i32
     %wide = llvm.zext %value : i32 to i64
     dataflow.graph.return %ctrl, %wide : none, i64
+  }
+
+  dataflow.graph.func private @uint_to_float(%ctrl: none) -> (none, f32) {
+    %value = dataflow.constant %ctrl {const_value = 7 : i32} : i32
+    %fp = llvm.uitofp %value : i32 to f32
+    dataflow.graph.return %ctrl, %fp : none, f32
   }
 }

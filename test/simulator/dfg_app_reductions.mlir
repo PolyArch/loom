@@ -1,6 +1,7 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir/bit_reverse LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/bit_reverse/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/byte_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/byte_swap/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/downsample_avg LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/downsample_avg/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/conv1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/conv1d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/convolve_1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/convolve_1d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/correlation LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/correlation/dfg_check.sh
@@ -30,6 +31,7 @@
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh bit_reverse %t.dir/bit_reverse/main_func.dfg.mlir %t.dir/reports/bit_reverse.report.json %t.dir/summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh byte_swap %t.dir/byte_swap/main_func.dfg.mlir %t.dir/reports/byte_swap.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh downsample_avg %t.dir/downsample_avg/main_func.dfg.mlir %t.dir/reports/downsample_avg.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh conv1d %t.dir/conv1d/main_func.dfg.mlir %t.dir/reports/conv1d.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh convolve_1d %t.dir/convolve_1d/main_func.dfg.mlir %t.dir/reports/convolve_1d.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh correlation %t.dir/correlation/main_func.dfg.mlir %t.dir/reports/correlation.report.json %t.dir/summary.csv --append
@@ -58,6 +60,9 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=BIT-REVERSE < %t.dir/reports/bit_reverse.report.json
 // RUN: FileCheck %s --check-prefix=BYTE-SWAP < %t.dir/reports/byte_swap.report.json
+// RUN: FileCheck %s --check-prefix=DOWNSAMPLE-AVG-INIT < %t.dir/reports/downsample_avg.init.report.json
+// RUN: FileCheck %s --check-prefix=DOWNSAMPLE-AVG < %t.dir/reports/downsample_avg.report.json
+// RUN: FileCheck %s --check-prefix=DOWNSAMPLE-AVG-ROW1 < %t.dir/reports/downsample_avg.row1.report.json
 // RUN: FileCheck %s --check-prefix=CONV1D < %t.dir/reports/conv1d.report.json
 // RUN: FileCheck %s --check-prefix=CONVOLVE-1D < %t.dir/reports/convolve_1d.report.json
 // RUN: FileCheck %s --check-prefix=CORRELATION < %t.dir/reports/correlation.report.json
@@ -114,6 +119,41 @@
 // BYTE-SWAP-DAG: "dataflow.store": 32
 // BYTE-SWAP-DAG: "dataflow.sync": 32
 // BYTE-SWAP-DAG: "llvm.intr.bswap": 32
+
+// DOWNSAMPLE-AVG-INIT-DAG: "kind": "dfg_sim_report"
+// DOWNSAMPLE-AVG-INIT-DAG: "workload": "downsample_avg"
+// DOWNSAMPLE-AVG-INIT-DAG: "graph": "g_t_main_0_0"
+// DOWNSAMPLE-AVG-INIT-DAG: "status": "pass"
+// DOWNSAMPLE-AVG-INIT-DAG: "optimistic_cycles": 224
+// DOWNSAMPLE-AVG-INIT-DAG: "wavefront_steps": 22
+// DOWNSAMPLE-AVG-INIT-DAG: "event_count": 112
+// DOWNSAMPLE-AVG-INIT-DAG: "dynamic_work_items": 16
+// DOWNSAMPLE-AVG-INIT-DAG: "llvm.uitofp": 16
+// DOWNSAMPLE-AVG-INIT-DAG: "llvm.trunc": 16
+// DOWNSAMPLE-AVG-INIT-DAG: "dataflow.store": 16
+
+// DOWNSAMPLE-AVG-DAG: "kind": "dfg_sim_report"
+// DOWNSAMPLE-AVG-DAG: "workload": "downsample_avg"
+// DOWNSAMPLE-AVG-DAG: "graph": "g_t_downsample_avg_0_0"
+// DOWNSAMPLE-AVG-DAG: "status": "pass"
+// DOWNSAMPLE-AVG-DAG: "optimistic_cycles": 64
+// DOWNSAMPLE-AVG-DAG: "wavefront_steps": 12
+// DOWNSAMPLE-AVG-DAG: "event_count": 38
+// DOWNSAMPLE-AVG-DAG: "dynamic_work_items": 4
+// DOWNSAMPLE-AVG-DAG: "arith.addf": 4
+// DOWNSAMPLE-AVG-DAG: "arith.mulf": 5
+// DOWNSAMPLE-AVG-DAG: "dataflow.carry": 5
+// DOWNSAMPLE-AVG-DAG: "dataflow.invariant": 6
+// DOWNSAMPLE-AVG-DAG: "dataflow.load": 4
+// DOWNSAMPLE-AVG-DAG: "dataflow.stream": 5
+// DOWNSAMPLE-AVG-DAG: "f32:5.500000"
+
+// DOWNSAMPLE-AVG-ROW1-DAG: "kind": "dfg_sim_report"
+// DOWNSAMPLE-AVG-ROW1-DAG: "workload": "downsample_avg"
+// DOWNSAMPLE-AVG-ROW1-DAG: "graph": "g_t_downsample_avg_0_0"
+// DOWNSAMPLE-AVG-ROW1-DAG: "status": "pass"
+// DOWNSAMPLE-AVG-ROW1-DAG: "optimistic_cycles": 64
+// DOWNSAMPLE-AVG-ROW1-DAG: "f32:17.500000"
 
 // CONV1D-DAG: "kind": "dfg_sim_report"
 // CONV1D-DAG: "workload": "conv1d"
@@ -456,6 +496,7 @@
 // SUMMARY-DAG: cumsum,14339,,blocked,DFG-sim report available
 // SUMMARY-DAG: compare_swap,336,,blocked,DFG-sim report available
 // SUMMARY-DAG: dotproduct,1027,,blocked,DFG-sim report available
+// SUMMARY-DAG: downsample_avg,480,,blocked,DFG-sim report available
 // SUMMARY-DAG: gemv,423,,blocked,DFG-sim report available
 // SUMMARY-DAG: hash_mix,1280,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,299,,blocked,DFG-sim report available

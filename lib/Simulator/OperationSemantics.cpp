@@ -36,8 +36,16 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.cmpf", 2, 2, true, true},
     {"arith.select", 1, 1, true, true},
     {"arith.index_cast", 1, 1, true, true},
+    {"arith.sitofp", 3, 3, true, true},
+    {"arith.uitofp", 3, 3, true, true},
+    {"arith.fptosi", 3, 3, true, true},
+    {"arith.fptoui", 3, 3, true, true},
     {"llvm.trunc", 1, 1, true, true},
     {"llvm.zext", 1, 1, true, true},
+    {"llvm.sitofp", 3, 3, true, true},
+    {"llvm.uitofp", 3, 3, true, true},
+    {"llvm.fptosi", 3, 3, true, true},
+    {"llvm.fptoui", 3, 3, true, true},
     {"llvm.select", 1, 1, true, true},
     {"llvm.intr.fshl", 1, 1, true, true},
     {"llvm.intr.bswap", 1, 1, true, true},
@@ -432,6 +440,36 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
           opName.str().c_str());
     return integerFromBits(toUnsignedBits(operands[0], sourceBitWidth),
                            bitWidth);
+  }
+  if (opName == "llvm.sitofp" || opName == "arith.sitofp") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    return PrimitiveValue::floating(static_cast<double>(asInteger(operands[0])));
+  }
+  if (opName == "llvm.uitofp" || opName == "arith.uitofp") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    const unsigned sourceBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
+    return PrimitiveValue::floating(
+        static_cast<double>(toUnsignedBits(operands[0], sourceBitWidth)));
+  }
+  if (opName == "llvm.fptosi" || opName == "arith.fptosi") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    return integerFromSigned(static_cast<std::int64_t>(asFloat(operands[0])),
+                             bitWidth);
+  }
+  if (opName == "llvm.fptoui" || opName == "arith.fptoui") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    const double value = asFloat(operands[0]);
+    if (value < 0.0)
+      return llvm::createStringError(
+          std::errc::result_out_of_range,
+          "%s cannot convert negative value to unsigned integer",
+          opName.str().c_str());
+    return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
   }
   if (opName == "llvm.intr.fshl") {
     if (llvm::Error arity = requireArity(opName, operands, 3))

@@ -228,6 +228,22 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %wide : !fabric.bits<64>
     }
   }
+  fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64>) -> !fabric.bits<64> {
+    // CHECK: fabric.op [@llvm.trunc]
+    fabric.fu(%value = %pa : !fabric.bits<64>) -> !fabric.bits<64> {
+      %narrow = fabric.op [@llvm.trunc] (%value)
+                : (!fabric.bits<64>) -> !fabric.bits<64>
+      fabric.yield %narrow : !fabric.bits<64>
+    }
+  }
+  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.op [@llvm.uitofp]
+    fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %fp = fabric.op [@llvm.uitofp] (%value)
+            : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %fp : !fabric.bits<32>
+    }
+  }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                     %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@arith.cmpf]
