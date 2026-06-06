@@ -518,6 +518,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "runtime_input_identity",
             "selected_hardware_candidate_identity",
             "selected_mapping_artifact_identity",
+            "runtime_host_interface",
             "runtime_fallback_decision",
             "report_status",
             "diagnostic_records",
@@ -1308,9 +1309,14 @@ def validate_runtime_configuration(
             diagnostics.append(f"runtime package runtime_configuration {key} does not match package")
 
 
-def validate_host_interface(value: object, data: dict[str, object], diagnostics: list[str]) -> None:
+def validate_host_interface(
+    value: object,
+    data: dict[str, object],
+    diagnostics: list[str],
+    label: str = "runtime package",
+) -> None:
     if not isinstance(value, dict):
-        diagnostics.append("runtime package host_interface must be an object")
+        diagnostics.append(f"{label} host_interface must be an object")
         return
     for key in (
         "host_program_identity",
@@ -1319,18 +1325,18 @@ def validate_host_interface(value: object, data: dict[str, object], diagnostics:
         "source_provenance",
     ):
         if not isinstance(value.get(key), str) or not value.get(key):
-            diagnostics.append(f"runtime package host_interface lacks {key}")
+            diagnostics.append(f"{label} host_interface lacks {key}")
     for key in ("compatibility_mode_requires_runtime", "acceleration_mode_requires_runtime_package"):
         if not isinstance(value.get(key), bool):
-            diagnostics.append(f"runtime package host_interface {key} must be boolean")
-    if value.get("host_program_identity") != data.get("host_program_identity"):
-        diagnostics.append("runtime package host_interface host_program_identity does not match package")
-    if value.get("host_wrapper_identity") != data.get("host_wrapper_identity"):
-        diagnostics.append("runtime package host_interface host_wrapper_identity does not match package")
+            diagnostics.append(f"{label} host_interface {key} must be boolean")
+    if "host_program_identity" in data and value.get("host_program_identity") != data.get("host_program_identity"):
+        diagnostics.append(f"{label} host_interface host_program_identity does not match package")
+    if "host_wrapper_identity" in data and value.get("host_wrapper_identity") != data.get("host_wrapper_identity"):
+        diagnostics.append(f"{label} host_interface host_wrapper_identity does not match package")
     if value.get("compatibility_mode_requires_runtime") is not False:
-        diagnostics.append("runtime package compatibility mode must not require runtime")
+        diagnostics.append(f"{label} compatibility mode must not require runtime")
     if value.get("acceleration_mode_requires_runtime_package") is not True:
-        diagnostics.append("runtime package acceleration mode must require runtime package")
+        diagnostics.append(f"{label} acceleration mode must require runtime package")
 
 
 def audit_json(path: Path, kind: str) -> dict[str, object]:
@@ -1777,6 +1783,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics,
             "workload report bundle runtime",
             require_complete=data.get("report_status") == "pass",
+        )
+        validate_host_interface(
+            data.get("runtime_host_interface"),
+            {},
+            diagnostics,
+            "workload report bundle runtime",
         )
         diagnostic_records = validate_diagnostic_records(
             data.get("diagnostic_records"),

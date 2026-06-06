@@ -20,6 +20,7 @@ REQUIRED_KEYS = {
     "runtime_input_identity",
     "selected_hardware_candidate_identity",
     "selected_mapping_artifact_identity",
+    "runtime_host_interface",
     "runtime_fallback_decision",
     "report_status",
     "diagnostic_records",
@@ -104,6 +105,16 @@ def main() -> int:
             raise AssertionError(f"report should reference simulation comparison evidence: {data}")
         if optional_identities.get("runtime_package") != "runtime-package":
             raise AssertionError(f"report should reference runtime package evidence: {data}")
+        expected_host_interface = {
+            "host_program_identity": "test-app-host::vecsum::default",
+            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
+            "invocation_abi": "loom_runtime_package_v1",
+            "compatibility_mode_requires_runtime": False,
+            "acceleration_mode_requires_runtime_package": True,
+            "source_provenance": "test-app-fixture::vecsum::default",
+        }
+        if data["runtime_host_interface"] != expected_host_interface:
+            raise AssertionError(f"report should preserve runtime host interface: {data}")
         expected_runtime_fallback = {
             "policy": "report_only",
             "decision": "report_only",
@@ -176,6 +187,23 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected report bundle audit pass: {audit_data}")
+        bad_host_report = out_dir / "bad-host-interface-workload-report-bundle.json"
+        bad_host_data = json.loads(report.read_text())
+        bad_host_data["runtime_host_interface"]["compatibility_mode_requires_runtime"] = True
+        bad_host_report.write_text(json.dumps(bad_host_data, indent=2, sort_keys=True) + "\n")
+        bad_host_audit = out_dir / "bad-host-interface-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_host_audit),
+                str(bad_host_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report requiring runtime for compatibility mode unexpectedly passed audit")
         reviews = audit_data.get("artifact_reviews", [])
         matching_reviews = [
             review for review in reviews
