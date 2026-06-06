@@ -337,106 +337,58 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                         {"pb", "i32b", "!fabric.bits<32>", ""},
                         {"pc", "i32c", "!fabric.bits<32>", ""}};
   reductionPe.resultTypes = {"!fabric.bits<32>"};
-  reductionPe.fus.push_back(FuSpec{
-      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"init", "pb", "!fabric.bits<32>", ""},
-       {"next", "pc", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"carried"},
-                    {"dataflow.carry"},
-                    {"cond", "init", "next"},
-                    {"!fabric.bits<1>", "!fabric.bits<32>",
-                     "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"init", "pb", "!fabric.bits<32>", ""},
-       {"next", "pc", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"carried"},
-                    {"dataflow.carry"},
-                    {"cond", "init", "next"},
-                    {"!fabric.bits<1>", "!fabric.bits<32>",
-                     "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"value", "pb", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"stable"},
-                    {"dataflow.invariant"},
-                    {"cond", "value"},
-                    {"!fabric.bits<1>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-       {"value", "pb", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"stable"},
-                    {"dataflow.invariant"},
-                    {"cond", "value"},
-                    {"!fabric.bits<1>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"lhs", "pa", "!fabric.bits<32>", ""},
-       {"rhs", "pb", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"sum"},
-                    {"arith.addi"},
-                    {"lhs", "rhs"},
-                    {"!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"lhs", "pa", "!fabric.bits<32>", ""},
-       {"rhs", "pb", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"diff"},
-                    {"arith.subf"},
-                    {"lhs", "rhs"},
-                    {"!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"lhs", "pa", "!fabric.bits<32>", ""},
-       {"rhs", "pb", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"sum"},
-                    {"arith.addf"},
-                    {"lhs", "rhs"},
-                    {"!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
-  reductionPe.fus.push_back(FuSpec{
-      {{"lhs", "pa", "!fabric.bits<32>", ""},
-       {"rhs", "pb", "!fabric.bits<32>", ""}},
-      {},
-      {FabricOpSpec{{"product"},
-                    {"arith.mulf"},
-                    {"lhs", "rhs"},
-                    {"!fabric.bits<32>", "!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {}});
+  auto makeCarryFu = []() {
+    return FuSpec{
+        {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+         {"init", "pb", "!fabric.bits<32>", ""},
+         {"next", "pc", "!fabric.bits<32>", ""}},
+        {},
+        {FabricOpSpec{{"carried"},
+                      {"dataflow.carry"},
+                      {"cond", "init", "next"},
+                      {"!fabric.bits<1>", "!fabric.bits<32>",
+                       "!fabric.bits<32>"},
+                      {"!fabric.bits<32>"},
+                      {},
+                      {}}},
+        {}};
+  };
+  auto makeInvariantFu = []() {
+    return FuSpec{
+        {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+         {"value", "pb", "!fabric.bits<32>", ""}},
+        {},
+        {FabricOpSpec{{"stable"},
+                      {"dataflow.invariant"},
+                      {"cond", "value"},
+                      {"!fabric.bits<1>", "!fabric.bits<32>"},
+                      {"!fabric.bits<32>"},
+                      {},
+                      {}}},
+        {}};
+  };
+  auto makeBinary32Fu = [](std::string resultName, std::string opName) {
+    return FuSpec{
+        {{"lhs", "pa", "!fabric.bits<32>", ""},
+         {"rhs", "pb", "!fabric.bits<32>", ""}},
+        {},
+        {FabricOpSpec{{std::move(resultName)},
+                      {std::move(opName)},
+                      {"lhs", "rhs"},
+                      {"!fabric.bits<32>", "!fabric.bits<32>"},
+                      {"!fabric.bits<32>"},
+                      {},
+                      {}}},
+        {}};
+  };
+  reductionPe.fus.push_back(makeCarryFu());
+  reductionPe.fus.push_back(makeCarryFu());
+  reductionPe.fus.push_back(makeInvariantFu());
+  reductionPe.fus.push_back(makeInvariantFu());
+  reductionPe.fus.push_back(makeBinary32Fu("sum", "arith.addi"));
+  reductionPe.fus.push_back(makeBinary32Fu("diff", "arith.subf"));
+  reductionPe.fus.push_back(makeBinary32Fu("sum", "arith.addf"));
+  reductionPe.fus.push_back(makeBinary32Fu("product", "arith.mulf"));
   module.addPe(std::move(reductionPe));
 
   PeSpec syncPe;
