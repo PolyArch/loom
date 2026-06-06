@@ -1186,6 +1186,10 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} lacks consumer_component")
         elif consumer_component != expected_consumer_component:
             diagnostics.append(f"artifact manifest edge {index} consumer_component does not match sink kind")
+        if edge.get("public_spec_owner") != "docs/spec-full-stack-traceability.md":
+            diagnostics.append(f"artifact manifest edge {index} public_spec_owner is invalid")
+        if edge.get("schema_or_verifier") != "intermediate_artifact_audit":
+            diagnostics.append(f"artifact manifest edge {index} schema_or_verifier is invalid")
         input_fingerprints = edge.get("required_input_fingerprints")
         if not isinstance(input_fingerprints, dict):
             diagnostics.append(f"artifact manifest edge {index} required_input_fingerprints must be an object")

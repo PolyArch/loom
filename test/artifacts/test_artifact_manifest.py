@@ -148,6 +148,10 @@ def main() -> int:
                 edge.get("consumer_component"),
             ) != expected_components:
                 raise AssertionError(f"edge missed producer/consumer components: {edge}")
+            if edge.get("public_spec_owner") != "docs/spec-full-stack-traceability.md":
+                raise AssertionError(f"edge missed spec owner: {edge}")
+            if edge.get("schema_or_verifier") != "intermediate_artifact_audit":
+                raise AssertionError(f"edge missed verifier name: {edge}")
             left, right = key
             if edge.get("required_input_fingerprints") != {left: fingerprints[left]}:
                 raise AssertionError(f"edge missed input fingerprint: {edge}")
