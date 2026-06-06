@@ -9,6 +9,7 @@
 // RUN: env BUILD_DIR=%t.dir/xor_block LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/xor_block/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/axpy LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/axpy/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/relu LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/relu/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/rotate_bits LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/rotate_bits/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
@@ -33,6 +34,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh xor_block %t.dir/xor_block/main_func.dfg.mlir %t.dir/reports/xor_block.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh axpy %t.dir/axpy/main_func.dfg.mlir %t.dir/reports/axpy.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh relu %t.dir/relu/main_func.dfg.mlir %t.dir/reports/relu.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh rotate_bits %t.dir/rotate_bits/main_func.dfg.mlir %t.dir/reports/rotate_bits.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh matvec %t.dir/matvec/main_func.dfg.mlir %t.dir/reports/matvec.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
@@ -57,6 +59,7 @@
 // RUN: FileCheck %s --check-prefix=AXPY < %t.dir/reports/axpy.report.json
 // RUN: FileCheck %s --check-prefix=RELU < %t.dir/reports/relu.report.json
 // RUN: FileCheck %s --check-prefix=RELU-CHECKSUM < %t.dir/reports/relu.checksum.report.json
+// RUN: FileCheck %s --check-prefix=ROTATE-BITS < %t.dir/reports/rotate_bits.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/reports/matvec.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-ROW1 < %t.dir/reports/matvec.row1.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-CHECKSUM < %t.dir/reports/matvec.checksum.report.json
@@ -187,6 +190,21 @@
 // RELU-CHECKSUM-DAG: "optimistic_cycles": 323
 // RELU-CHECKSUM-DAG: "dynamic_work_items": 32
 // RELU-CHECKSUM-DAG: "f32:42"
+
+// ROTATE-BITS-DAG: "kind": "dfg_sim_report"
+// ROTATE-BITS-DAG: "workload": "rotate_bits"
+// ROTATE-BITS-DAG: "graph": "g_t_rotate_bits_0_0"
+// ROTATE-BITS-DAG: "status": "pass"
+// ROTATE-BITS-DAG: "optimistic_cycles": 544
+// ROTATE-BITS-DAG: "wavefront_steps": 37
+// ROTATE-BITS-DAG: "event_count": 256
+// ROTATE-BITS-DAG: "dynamic_work_items": 32
+// ROTATE-BITS-DAG: "arith.andi": 32
+// ROTATE-BITS-DAG: "arith.cmpi": 32
+// ROTATE-BITS-DAG: "llvm.intr.fshl": 32
+// ROTATE-BITS-DAG: "arith.select": 32
+// ROTATE-BITS-DAG: "dataflow.load": 64
+// ROTATE-BITS-DAG: "dataflow.store": 32
 
 // MATVEC-DAG: "kind": "dfg_sim_report"
 // MATVEC-DAG: "workload": "matvec"
@@ -352,6 +370,7 @@
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
 // SUMMARY-DAG: relu,707,,blocked,DFG-sim report available
+// SUMMARY-DAG: rotate_bits,544,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecmul,256,,blocked,DFG-sim report available

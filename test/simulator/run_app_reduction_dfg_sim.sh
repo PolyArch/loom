@@ -191,6 +191,31 @@ append_xor_block_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+append_rotate_bits_memrefs() {
+    local input_index="$1"
+    local shift_index="$2"
+    local output_index="$3"
+    local count=32
+    local input_values=""
+    local shift_values=""
+    local output_values=""
+    local input_value=""
+    for i in $(seq 0 $((count - 1))); do
+        input_value="$(to_i32_literal $((0x89abcdef + i * 0x01020408)))"
+        if [[ -n "${input_values}" ]]; then
+            input_values+=","
+            shift_values+=","
+            output_values+=","
+        fi
+        input_values+="${input_value}"
+        shift_values+="${i}"
+        output_values+="0"
+    done
+    sim_args+=(--memref "${input_index}=${input_values}")
+    sim_args+=(--memref "${shift_index}=${shift_values}")
+    sim_args+=(--memref "${output_index}=${output_values}")
+}
+
 matvec_row_values() {
     local row="$1"
     local values=""
@@ -281,6 +306,18 @@ configure_relu_checksum_args() {
         --arg 2=32
         --arg 3=1
         --arg 5=0.000000e+00
+    )
+}
+
+configure_rotate_bits_args() {
+    append_ctrl_tokens 32
+    append_rotate_bits_memrefs 1 3 5
+    append_repeated_arg 2 32 31
+    append_repeated_arg 4 32 0
+    append_index_tokens 6 32
+    sim_args+=(
+        --graph g_t_rotate_bits_0_0
+        --workload rotate_bits
     )
 }
 
@@ -412,6 +449,9 @@ case "${CASE}" in
             --arg 3=1
             --arg 5=0
         )
+        ;;
+    rotate_bits)
+        configure_rotate_bits_args
         ;;
     spmv)
         append_ctrl_tokens 2
