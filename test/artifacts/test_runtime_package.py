@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -43,15 +42,6 @@ REQUIRED_KEYS = {
     "diagnostics",
     "status",
 }
-
-
-def fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
@@ -165,9 +155,9 @@ def main() -> int:
         if data["runtime_configuration"] != expected_runtime_configuration:
             raise AssertionError(f"unexpected runtime configuration: {data}")
         expected_input_fingerprints = {
-            "pnr-mapping": fingerprint(out_dir / "pnr-mapping.json"),
-            "vecsum-cgra-sim-report": fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
-            "sim-comparison-report": fingerprint(out_dir / "sim-comparison-report.json"),
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+            "vecsum-cgra-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
+            "sim-comparison-report": artifact_test_common.fingerprint(out_dir / "sim-comparison-report.json"),
         }
         if data["input_artifact_fingerprints"] != expected_input_fingerprints:
             raise AssertionError(f"unexpected runtime input fingerprints: {data}")

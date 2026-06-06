@@ -39,16 +39,6 @@ def selected_candidate_row(path: Path) -> dict[str, str]:
     raise AssertionError(f"{path.name} has no selected candidate row")
 
 
-def semicolon_map(raw: str) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for entry in raw.split(";"):
-        if not entry:
-            continue
-        key, value = entry.rsplit("=", 1)
-        parsed[key] = value
-    return parsed
-
-
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-dse-report-") as tmp:
@@ -154,7 +144,7 @@ def main() -> int:
             raise AssertionError(f"unexpected candidate kind: {candidate}")
         if candidate.get("status") != "selected":
             raise AssertionError(f"candidate should be selected: {candidate}")
-        expected_input_fingerprints = semicolon_map(
+        expected_input_fingerprints = artifact_test_common.semicolon_map(
             selected_candidate_row(out_dir / "dse-candidate-summary.csv")["input_artifact_fingerprints"]
         )
         if candidate.get("input_artifact_fingerprints") != expected_input_fingerprints:

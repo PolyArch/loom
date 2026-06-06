@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import subprocess
 import tempfile
 from pathlib import Path
@@ -44,6 +45,24 @@ def read_csv_rows(path: Path, expected_header: list[str]) -> list[dict[str, str]
         if reader.fieldnames[: len(expected_header)] != expected_header:
             raise AssertionError(f"unexpected header: {reader.fieldnames}")
         return rows
+
+
+def fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def semicolon_map(raw: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for entry in raw.split(";"):
+        if not entry:
+            continue
+        key, value = entry.rsplit("=", 1)
+        parsed[key] = value
+    return parsed
 
 
 def run_csv_summary(

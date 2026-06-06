@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -24,25 +23,6 @@ HEADER = [
     "energy_nj",
     "selection_status",
 ]
-
-
-def fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def semicolon_map(raw: str) -> dict[str, str]:
-    parsed: dict[str, str] = {}
-    for entry in raw.split(";"):
-        if not entry:
-            continue
-        key, value = entry.rsplit("=", 1)
-        parsed[key] = value
-    return parsed
-
 
 def write_mapping_artifact(
     path: Path,
@@ -328,13 +308,13 @@ def main() -> int:
         ):
             if expected_path not in input_artifacts:
                 raise AssertionError(f"selected-like input artifacts missed {expected_path}: {row}")
-        input_fingerprints = semicolon_map(row.get("input_artifact_fingerprints", ""))
+        input_fingerprints = artifact_test_common.semicolon_map(row.get("input_artifact_fingerprints", ""))
         expected_fingerprints = {
-            str(selected_like_mapping): fingerprint(selected_like_mapping),
-            str(selected_like_mapping_artifact): fingerprint(selected_like_mapping_artifact),
-            str(selected_like_sim): fingerprint(selected_like_sim),
-            str(selected_like_cgra_report): fingerprint(selected_like_cgra_report),
-            str(selected_like_fpa): fingerprint(selected_like_fpa),
+            str(selected_like_mapping): artifact_test_common.fingerprint(selected_like_mapping),
+            str(selected_like_mapping_artifact): artifact_test_common.fingerprint(selected_like_mapping_artifact),
+            str(selected_like_sim): artifact_test_common.fingerprint(selected_like_sim),
+            str(selected_like_cgra_report): artifact_test_common.fingerprint(selected_like_cgra_report),
+            str(selected_like_fpa): artifact_test_common.fingerprint(selected_like_fpa),
         }
         if input_fingerprints != expected_fingerprints:
             raise AssertionError(f"selected-like input fingerprints are incomplete: {row}")
