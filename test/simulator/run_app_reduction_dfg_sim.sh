@@ -191,6 +191,35 @@ append_xor_block_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+matvec_row_values() {
+    local row="$1"
+    local values=""
+    local value=""
+    for j in $(seq 0 4); do
+        value=$((((row * 5 + j) % 10) + 1))
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+configure_matvec_row_args() {
+    local row="$1"
+    append_ctrl_tokens 5
+    append_raw_memref 4 "$(matvec_row_values "${row}")"
+    append_raw_memref 5 "1,2,3,4,5"
+    sim_args+=(
+        --graph g_t_matvec_kernel_0_0
+        --workload matvec
+        --arg 1=0
+        --arg 2=5
+        --arg 3=1
+        --arg 6=0
+    )
+}
+
 case "${CASE}" in
     bit_reverse)
         append_ctrl_tokens 32
@@ -441,13 +470,16 @@ case "${CASE}" in
             --workload xor_block
         )
         ;;
+    matvec)
+        configure_matvec_row_args 0
+        ;;
     *)
         echo "unsupported app reduction case: ${CASE}" >&2
         exit 2
         ;;
 esac
 
-extra_report=""
+declare -a extra_reports=()
 "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
 if [[ "${CASE}" == "vecadd" ]]; then
     extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
@@ -463,6 +495,32 @@ if [[ "${CASE}" == "vecadd" ]]; then
         --arg 5=0.000000e+00
     )
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
+    extra_reports+=("${extra_report}")
+fi
+
+if [[ "${CASE}" == "matvec" ]]; then
+    for row in 1 2 3; do
+        row_report="${REPORT_JSON%.report.json}.row${row}.report.json"
+        sim_args=()
+        configure_matvec_row_args "${row}"
+        "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${row_report}"
+        extra_reports+=("${row_report}")
+    done
+
+    checksum_report="${REPORT_JSON%.report.json}.checksum.report.json"
+    sim_args=()
+    append_ctrl_tokens 4
+    append_raw_memref 4 "55,130,55,130"
+    sim_args+=(
+        --graph g_t_main_red_0_0
+        --workload matvec
+        --arg 1=0
+        --arg 2=4
+        --arg 3=1
+        --arg 5=0
+    )
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${checksum_report}"
+    extra_reports+=("${checksum_report}")
 fi
 
 declare -a summary_reports=()
@@ -479,9 +537,9 @@ if [[ "${APPEND}" == "--append" ]]; then
     done
 else
     summary_reports+=(--dfg-report "${REPORT_JSON}")
-    if [[ -n "${extra_report}" ]]; then
+    for extra_report in "${extra_reports[@]}"; do
         summary_reports+=(--dfg-report "${extra_report}")
-    fi
+    done
 fi
 
 bash "${REPO}/test/app/run_sim_cycle_summary.sh" \

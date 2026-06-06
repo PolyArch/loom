@@ -7,6 +7,7 @@
 // RUN: env BUILD_DIR=%t.dir/compare_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/compare_swap/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/hash_mix LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/hash_mix/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/xor_block LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/xor_block/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecscale LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecscale/dfg_check.sh
@@ -28,6 +29,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh compare_swap %t.dir/compare_swap/main_func.dfg.mlir %t.dir/reports/compare_swap.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh hash_mix %t.dir/hash_mix/main_func.dfg.mlir %t.dir/reports/hash_mix.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh xor_block %t.dir/xor_block/main_func.dfg.mlir %t.dir/reports/xor_block.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh matvec %t.dir/matvec/main_func.dfg.mlir %t.dir/reports/matvec.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecscale %t.dir/vecscale/main_func.dfg.mlir %t.dir/reports/vecscale.report.json %t.dir/summary.csv --append
@@ -48,6 +50,9 @@
 // RUN: FileCheck %s --check-prefix=COMPARE-SWAP < %t.dir/reports/compare_swap.report.json
 // RUN: FileCheck %s --check-prefix=HASH-MIX < %t.dir/reports/hash_mix.report.json
 // RUN: FileCheck %s --check-prefix=XOR-BLOCK < %t.dir/reports/xor_block.report.json
+// RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/reports/matvec.report.json
+// RUN: FileCheck %s --check-prefix=MATVEC-ROW1 < %t.dir/reports/matvec.row1.report.json
+// RUN: FileCheck %s --check-prefix=MATVEC-CHECKSUM < %t.dir/reports/matvec.checksum.report.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/reports/vecadd.report.json
 // RUN: FileCheck %s --check-prefix=VECADD-REDUCTION < %t.dir/reports/vecadd.reduction.report.json
 // RUN: FileCheck %s --check-prefix=VECMUL < %t.dir/reports/vecmul.report.json
@@ -141,6 +146,33 @@
 // XOR-BLOCK-DAG: "dataflow.load": 64
 // XOR-BLOCK-DAG: "dataflow.store": 32
 // XOR-BLOCK-DAG: "dataflow.sync": 32
+
+// MATVEC-DAG: "kind": "dfg_sim_report"
+// MATVEC-DAG: "workload": "matvec"
+// MATVEC-DAG: "graph": "g_t_matvec_kernel_0_0"
+// MATVEC-DAG: "status": "pass"
+// MATVEC-DAG: "optimistic_cycles": 83
+// MATVEC-DAG: "wavefront_steps": 14
+// MATVEC-DAG: "event_count": 43
+// MATVEC-DAG: "dynamic_work_items": 5
+// MATVEC-DAG: "arith.muli": 5
+// MATVEC-DAG: "dataflow.load": 10
+// MATVEC-DAG: "i32:55"
+
+// MATVEC-ROW1-DAG: "kind": "dfg_sim_report"
+// MATVEC-ROW1-DAG: "workload": "matvec"
+// MATVEC-ROW1-DAG: "graph": "g_t_matvec_kernel_0_0"
+// MATVEC-ROW1-DAG: "status": "pass"
+// MATVEC-ROW1-DAG: "optimistic_cycles": 83
+// MATVEC-ROW1-DAG: "i32:130"
+
+// MATVEC-CHECKSUM-DAG: "kind": "dfg_sim_report"
+// MATVEC-CHECKSUM-DAG: "workload": "matvec"
+// MATVEC-CHECKSUM-DAG: "graph": "g_t_main_red_0_0"
+// MATVEC-CHECKSUM-DAG: "status": "pass"
+// MATVEC-CHECKSUM-DAG: "optimistic_cycles": 39
+// MATVEC-CHECKSUM-DAG: "dynamic_work_items": 4
+// MATVEC-CHECKSUM-DAG: "i32:370"
 
 // VECADD-DAG: "kind": "dfg_sim_report"
 // VECADD-DAG: "workload": "vecadd"
@@ -274,6 +306,7 @@
 // SUMMARY-DAG: hash_mix,1280,,blocked,DFG-sim report available
 // SUMMARY-DAG: integrate_trapz,299,,blocked,DFG-sim report available
 // SUMMARY-DAG: mean,904,,blocked,DFG-sim report available
+// SUMMARY-DAG: matvec,371,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
