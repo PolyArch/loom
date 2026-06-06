@@ -1613,9 +1613,62 @@ def validate_runtime_evidence_summaries(
             "runtime_report_identity",
             "launch_status",
             "target_status",
+            "data_movement_policy",
+            "synchronization_mode",
         ):
             if not isinstance(summary.get(key), str) or not summary.get(key):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
+        data_movement_policy = summary.get("data_movement_policy")
+        if data_movement_policy not in DATA_MOVEMENT_POLICIES:
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} has unknown data_movement_policy"
+            )
+        required_data_movement_policies = summary.get("required_data_movement_policies")
+        if not isinstance(required_data_movement_policies, list):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} required_data_movement_policies must be a list"
+            )
+            required_data_movement_policies = []
+        elif any(
+            not isinstance(policy, str) or not policy
+            for policy in required_data_movement_policies
+        ):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} "
+                "required_data_movement_policies entries must be non-empty strings"
+            )
+        else:
+            for policy in required_data_movement_policies:
+                if policy not in DATA_MOVEMENT_POLICIES:
+                    diagnostics.append(
+                        f"DSE report bundle runtime evidence summary {index} "
+                        f"required_data_movement_policies has unknown policy {policy}"
+                    )
+        required_synchronization_policies = summary.get("required_synchronization_policies")
+        if not isinstance(required_synchronization_policies, list):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} required_synchronization_policies must be a list"
+            )
+            required_synchronization_policies = []
+        elif any(
+            not isinstance(policy, str) or not policy
+            for policy in required_synchronization_policies
+        ):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} "
+                "required_synchronization_policies entries must be non-empty strings"
+            )
+        if data_movement_policy not in required_data_movement_policies:
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} "
+                "required_data_movement_policies omits data_movement_policy"
+            )
+        synchronization_mode = summary.get("synchronization_mode")
+        if synchronization_mode not in required_synchronization_policies:
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} "
+                "required_synchronization_policies omits synchronization_mode"
+            )
         input_fingerprints = summary.get("input_artifact_fingerprints")
         if not isinstance(input_fingerprints, dict):
             diagnostics.append(

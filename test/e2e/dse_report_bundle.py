@@ -179,6 +179,12 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         input_fingerprints = evidence.get("input_artifact_fingerprints", {})
         if not isinstance(input_fingerprints, dict):
             input_fingerprints = {}
+        required_data_movement_policies = evidence.get("required_data_movement_policies", [])
+        if not isinstance(required_data_movement_policies, list):
+            required_data_movement_policies = []
+        required_synchronization_policies = evidence.get("required_synchronization_policies", [])
+        if not isinstance(required_synchronization_policies, list):
+            required_synchronization_policies = []
         summaries.append(
             {
                 "workload_report_bundle_identity": artifact_id(path),
@@ -186,6 +192,18 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
                 "launch_status": str(evidence.get("launch_status", "")),
                 "target_status": str(evidence.get("target_status", "")),
+                "data_movement_policy": str(evidence.get("data_movement_policy", "")),
+                "synchronization_mode": str(evidence.get("synchronization_mode", "")),
+                "required_data_movement_policies": [
+                    str(policy)
+                    for policy in required_data_movement_policies
+                    if isinstance(policy, str)
+                ],
+                "required_synchronization_policies": [
+                    str(policy)
+                    for policy in required_synchronization_policies
+                    if isinstance(policy, str)
+                ],
                 "input_artifact_fingerprints": {
                     str(identity): str(fingerprint)
                     for identity, fingerprint in input_fingerprints.items()
