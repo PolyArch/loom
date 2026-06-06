@@ -133,6 +133,9 @@ def main() -> int:
             "runtime_trace_identity": "",
             "profiling_record_identity": "",
             "output_buffer_identities": [],
+            "input_artifact_fingerprints": json.loads(
+                (out_dir / "runtime-package.json").read_text()
+            )["input_artifact_fingerprints"],
             "fallback_decision": expected_runtime_fallback,
         }
         if data["runtime_evidence"] != expected_runtime_evidence:
@@ -217,6 +220,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report requiring runtime for compatibility mode unexpectedly passed audit")
+        bad_runtime_fingerprint_report = out_dir / "bad-runtime-fingerprint-workload-report-bundle.json"
+        bad_runtime_fingerprint_data = json.loads(report.read_text())
+        bad_runtime_fingerprint_data["runtime_evidence"]["input_artifact_fingerprints"]["runtime-package"] = "bad"
+        bad_runtime_fingerprint_report.write_text(
+            json.dumps(bad_runtime_fingerprint_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_fingerprint_audit = out_dir / "bad-runtime-fingerprint-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_fingerprint_audit),
+                str(bad_runtime_fingerprint_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime input fingerprint unexpectedly passed audit")
         reviews = audit_data.get("artifact_reviews", [])
         matching_reviews = [
             review for review in reviews

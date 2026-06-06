@@ -1428,6 +1428,7 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
         "runtime_trace_identity",
         "profiling_record_identity",
         "output_buffer_identities",
+        "input_artifact_fingerprints",
         "fallback_decision",
     )
     for key in required_keys:
@@ -1446,12 +1447,28 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
     outputs = value.get("output_buffer_identities")
     if not isinstance(outputs, list) or any(not isinstance(identity, str) for identity in outputs):
         diagnostics.append("workload report bundle runtime_evidence output_buffer_identities must be a string list")
+    input_fingerprints = value.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        diagnostics.append("workload report bundle runtime_evidence input_artifact_fingerprints must be an object")
+        input_fingerprints = {}
+    else:
+        for identity, fingerprint in input_fingerprints.items():
+            if not isinstance(identity, str) or not identity:
+                diagnostics.append("workload report bundle runtime_evidence input_artifact_fingerprints has invalid identity")
+                continue
+            if not valid_sha256_hex(fingerprint):
+                diagnostics.append(
+                    "workload report bundle runtime_evidence "
+                    f"input_artifact_fingerprints has invalid fingerprint for {identity}"
+                )
     fallback = value.get("fallback_decision")
     if not isinstance(fallback, dict):
         diagnostics.append("workload report bundle runtime_evidence fallback_decision must be an object")
         fallback = {}
     if require_complete and not value.get("runtime_report_identity"):
         diagnostics.append("workload report bundle pass needs runtime_report_identity")
+    if require_complete and not input_fingerprints:
+        diagnostics.append("workload report bundle pass needs runtime input_artifact_fingerprints")
     if fallback.get("decision") == "report_only":
         validate_report_only_runtime_claims(
             value,

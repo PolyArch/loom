@@ -165,6 +165,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     output_buffers = report.get("output_buffer_identities", [])
     if not isinstance(output_buffers, list):
         output_buffers = []
+    input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
+    if not isinstance(input_fingerprints, dict):
+        input_fingerprints = {}
     return {
         "runtime_package_identity": artifact_id(runtime_path) if runtime_path is not None else "",
         "runtime_report_identity": str(report.get("report_id", "")),
@@ -172,6 +175,11 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "target_status": str(report.get("target_status", "")),
         "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
         "profiling_record_identity": str(report.get("profiling_record_identity", "")),
+        "input_artifact_fingerprints": {
+            str(identity): str(fingerprint)
+            for identity, fingerprint in input_fingerprints.items()
+            if isinstance(identity, str) and isinstance(fingerprint, str)
+        },
         "output_buffer_identities": [
             str(identity)
             for identity in output_buffers
