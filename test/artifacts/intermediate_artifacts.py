@@ -1816,7 +1816,7 @@ def validate_dse_report_candidate_input_fingerprints(
             diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints lacks {reference!r}")
 
 
-def resolve_report_bundle_reference(anchor: Path, identity: str) -> Path | None:
+def resolve_json_identity_reference(anchor: Path, identity: str) -> Path | None:
     for reference in (identity, f"{identity}.json"):
         resolved = resolve_artifact_reference(anchor, reference)
         if resolved.is_file():
@@ -1861,7 +1861,7 @@ def validate_dse_report_input_fingerprints(
                 f"DSE report bundle input_artifact_fingerprints references {identity!r} outside report inputs"
             )
             continue
-        resolved = resolve_report_bundle_reference(path, identity)
+        resolved = resolve_json_identity_reference(path, identity)
         if resolved is not None and fingerprint != artifact_fingerprint(resolved):
             diagnostics.append(f"DSE report bundle input_artifact_fingerprints stale for {identity!r}")
     for reference in reference_ids:
@@ -2254,6 +2254,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append(
                         f"runtime package input_artifact_fingerprints has invalid fingerprint for {identity}"
                     )
+                    continue
+                resolved = resolve_json_identity_reference(path, identity)
+                if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+                    diagnostics.append(f"runtime package input_artifact_fingerprints stale for {identity!r}")
         for index, descriptor in enumerate(memory_descriptors, start=1):
             if not isinstance(descriptor, dict):
                 diagnostics.append(f"runtime package memory descriptor {index} must be an object")
