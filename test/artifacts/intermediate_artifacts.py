@@ -493,6 +493,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "fabric_adg_identity",
             "target_profile",
             "runtime_configuration",
+            "input_artifact_fingerprints",
             "runtime_report",
             "fallback_policy",
             "fallback_decision",
@@ -1847,6 +1848,19 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             simulator_reports = []
         elif any(not isinstance(identity, str) or not identity for identity in simulator_reports):
             diagnostics.append("runtime package simulator_report_identities entries must be non-empty strings")
+        input_fingerprints = data.get("input_artifact_fingerprints")
+        if not isinstance(input_fingerprints, dict):
+            diagnostics.append("runtime package input_artifact_fingerprints must be an object")
+            input_fingerprints = {}
+        else:
+            for identity, fingerprint in input_fingerprints.items():
+                if not isinstance(identity, str) or not identity:
+                    diagnostics.append("runtime package input_artifact_fingerprints has invalid identity")
+                    continue
+                if not valid_sha256_hex(fingerprint):
+                    diagnostics.append(
+                        f"runtime package input_artifact_fingerprints has invalid fingerprint for {identity}"
+                    )
         for index, descriptor in enumerate(memory_descriptors, start=1):
             if not isinstance(descriptor, dict):
                 diagnostics.append(f"runtime package memory descriptor {index} must be an object")
@@ -1908,6 +1922,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             simulator = target_profile.get("simulator")
             if simulator in {"cgra_sim", "dfg_sim"} and not simulator_reports:
                 diagnostics.append("runtime package pass needs simulator_report_identities")
+            if not input_fingerprints:
+                diagnostics.append("runtime package pass needs input_artifact_fingerprints")
             if target_profile.get("target_kind") == "simulator" and data_movement_policy != "simulated":
                 diagnostics.append("runtime package simulator target needs simulated data movement policy")
             argument_names = {
@@ -1924,6 +1940,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append("runtime package CGRA-sim target needs mapping artifact descriptor")
                 if not any(str(identity).endswith("cgra-sim-report") for identity in simulator_reports):
                     diagnostics.append("runtime package CGRA-sim target needs CGRA-sim report identity")
+                for identity in [data.get("selected_mapping_artifact_identity"), *simulator_reports]:
+                    if isinstance(identity, str) and identity and identity not in input_fingerprints:
+                        diagnostics.append(f"runtime package lacks input fingerprint for {identity}")
             if simulator == "dfg_sim":
                 if data.get("selected_mapping_artifact_identity"):
                     diagnostics.append("runtime package DFG-sim target must not require mapping artifact identity")
@@ -1935,6 +1954,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append("runtime package DFG-sim target needs DFG-sim report descriptor")
                 if not any(str(identity).endswith("dfg-sim-report") for identity in simulator_reports):
                     diagnostics.append("runtime package DFG-sim target needs DFG-sim report identity")
+                for identity in simulator_reports:
+                    if isinstance(identity, str) and identity and identity not in input_fingerprints:
+                        diagnostics.append(f"runtime package lacks input fingerprint for {identity}")
         elif not diagnostic_records:
             diagnostics.append("runtime package non-pass status needs diagnostic_records")
     if kind == "workload_report_bundle":
@@ -2237,6 +2259,14 @@ def cross_finding(rule: str, message: str, row: dict[str, str]) -> dict[str, obj
 
 def valid_identity(value: str | None) -> bool:
     return value not in IGNORED_IDENTITIES
+
+
+def valid_sha256_hex(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def artifact_path(record: dict[str, object]) -> Path | None:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -42,6 +43,23 @@ def artifact_id(path: Path | None) -> str:
         if path.name.endswith(suffix):
             return path.name[: -len(suffix)]
     return path.stem
+
+
+def fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def input_artifact_fingerprints(paths: list[Path | None]) -> dict[str, str]:
+    fingerprints: dict[str, str] = {}
+    for path in paths:
+        identity = artifact_id(path)
+        if path is not None and identity and path.is_file():
+            fingerprints[identity] = fingerprint(path)
+    return fingerprints
 
 
 def read_json(path: Path | None) -> dict[str, object]:
@@ -567,6 +585,9 @@ def build_package(
             platform_binding=platform_binding,
             fallback_policy=fallback_policy,
             synchronization_mode=synchronization_mode,
+        ),
+        "input_artifact_fingerprints": input_artifact_fingerprints(
+            [mapping_path, dfg_path, cgra_path, comparison_path]
         ),
         "runtime_report": runtime_report(
             workload=workload,

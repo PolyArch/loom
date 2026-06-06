@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ REQUIRED_KEYS = {
     "fabric_adg_identity",
     "target_profile",
     "runtime_configuration",
+    "input_artifact_fingerprints",
     "runtime_report",
     "fallback_policy",
     "fallback_decision",
@@ -39,6 +41,14 @@ REQUIRED_KEYS = {
     "diagnostics",
     "status",
 }
+
+
+def fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:
@@ -152,6 +162,13 @@ def main() -> int:
         }
         if data["runtime_configuration"] != expected_runtime_configuration:
             raise AssertionError(f"unexpected runtime configuration: {data}")
+        expected_input_fingerprints = {
+            "pnr-mapping": fingerprint(out_dir / "pnr-mapping.json"),
+            "vecsum-cgra-sim-report": fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
+            "sim-comparison-report": fingerprint(out_dir / "sim-comparison-report.json"),
+        }
+        if data["input_artifact_fingerprints"] != expected_input_fingerprints:
+            raise AssertionError(f"unexpected runtime input fingerprints: {data}")
         if data["fallback_policy"] != "report_only":
             raise AssertionError(f"unexpected fallback policy: {data}")
         expected_fallback = {
@@ -266,6 +283,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched runtime configuration unexpectedly passed audit")
+        bad_fingerprint_package = out_dir / "bad-fingerprint-runtime-package.json"
+        bad_fingerprint_data = json.loads(package.read_text())
+        bad_fingerprint_data["input_artifact_fingerprints"]["pnr-mapping"] = "not-a-sha256"
+        bad_fingerprint_package.write_text(json.dumps(bad_fingerprint_data, indent=2, sort_keys=True) + "\n")
+        bad_fingerprint_audit = out_dir / "bad-fingerprint-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_fingerprint_audit),
+                str(bad_fingerprint_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with malformed input fingerprint unexpectedly passed audit")
         bad_host_interface_package = out_dir / "bad-host-interface-runtime-package.json"
         bad_host_interface_data = json.loads(package.read_text())
         bad_host_interface_data["host_interface"]["compatibility_mode_requires_runtime"] = True
