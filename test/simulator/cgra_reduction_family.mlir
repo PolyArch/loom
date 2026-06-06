@@ -4,6 +4,7 @@
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l1 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l1/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/prefix_sum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/cumsum LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/cumsum/dfg_check.sh
@@ -12,6 +13,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l1 %t.dir/vecnorm_l1/main_func.dfg.mlir %t.dir/vecnorm_l1.dfg.report.json %t.dir/vecnorm_l1.dfg.summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l2 %t.dir/vecnorm_l2/main_func.dfg.mlir %t.dir/vecnorm_l2.dfg.report.json %t.dir/vecnorm_l2.dfg.summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh reduction %t.dir/reduction/main_func.dfg.mlir %t.dir/reduction.dfg.report.json %t.dir/reduction.dfg.summary.csv
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh dotproduct %t.dir/dotproduct/main_func.dfg.mlir %t.dir/dotproduct.dfg.report.json %t.dir/dotproduct.dfg.summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh spmv %t.dir/spmv/main_func.dfg.mlir %t.dir/spmv.dfg.report.json %t.dir/spmv.dfg.summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum %t.dir/prefix_sum/main_func.dfg.mlir %t.dir/prefix_sum.dfg.report.json %t.dir/prefix_sum.dfg.summary.csv
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh cumsum %t.dir/cumsum/main_func.dfg.mlir %t.dir/cumsum.dfg.report.json %t.dir/cumsum.dfg.summary.csv
@@ -20,6 +22,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l1/main_func.dfg.mlir --graph g_t_vecnorm_l1_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload vecnorm_l1 --output %t.dir/vecnorm_l1.mapping.csv --artifact %t.dir/vecnorm_l1.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l2/main_func.dfg.mlir --graph g_t_vecnorm_l2_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload vecnorm_l2 --output %t.dir/vecnorm_l2.mapping.csv --artifact %t.dir/vecnorm_l2.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/reduction/main_func.dfg.mlir --graph g_t_reduce_sum_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload reduction --output %t.dir/reduction.mapping.csv --artifact %t.dir/reduction.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/dotproduct/main_func.dfg.mlir --graph g_t_dotproduct_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload dotproduct --output %t.dir/dotproduct.mapping.csv --artifact %t.dir/dotproduct.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/prefix_sum/main_func.dfg.mlir --graph g_t_prefix_sum_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload prefix_sum --output %t.dir/prefix_sum.mapping.csv --artifact %t.dir/prefix_sum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/cumsum/main_func.dfg.mlir --graph g_t_cumsum_kernel_red_0_0 --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload cumsum --output %t.dir/cumsum.mapping.csv --artifact %t.dir/cumsum.mapping.json
@@ -28,10 +31,11 @@
 // RUN: loom-cgra-sim --dfg-report %t.dir/vecnorm_l1.dfg.report.json --mapping-artifact %t.dir/vecnorm_l1.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/vecnorm_l1.cgra.report.json
 // RUN: loom-cgra-sim --dfg-report %t.dir/vecnorm_l2.dfg.report.json --mapping-artifact %t.dir/vecnorm_l2.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/vecnorm_l2.cgra.report.json
 // RUN: loom-cgra-sim --dfg-report %t.dir/reduction.dfg.report.json --mapping-artifact %t.dir/reduction.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/reduction.cgra.report.json
+// RUN: loom-cgra-sim --dfg-report %t.dir/dotproduct.dfg.report.json --mapping-artifact %t.dir/dotproduct.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/dotproduct.cgra.report.json
 // RUN: loom-cgra-sim --dfg-report %t.dir/spmv.dfg.report.json --mapping-artifact %t.dir/spmv.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/spmv.cgra.report.json
 // RUN: loom-cgra-sim --dfg-report %t.dir/prefix_sum.dfg.report.json --mapping-artifact %t.dir/prefix_sum.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/prefix_sum.cgra.report.json
 // RUN: loom-cgra-sim --dfg-report %t.dir/cumsum.dfg.report.json --mapping-artifact %t.dir/cumsum.mapping.json --hardware-mlir %S/../pnr/shared_reduction_adg.mlir --output %t.dir/cumsum.cgra.report.json
-// RUN: bash %S/../app/run_sim_cycle_summary.sh --dfg-report %t.dir/vecadd.dfg.report.json --dfg-report %t.dir/vecadd.dfg.reduction.report.json --cgra-report %t.dir/vecadd.core.cgra.report.json --cgra-report %t.dir/vecadd.reduction.cgra.report.json --dfg-report %t.dir/mean.dfg.report.json --dfg-report %t.dir/vecnorm_l1.dfg.report.json --cgra-report %t.dir/vecnorm_l1.cgra.report.json --dfg-report %t.dir/vecnorm_l2.dfg.report.json --cgra-report %t.dir/vecnorm_l2.cgra.report.json --dfg-report %t.dir/reduction.dfg.report.json --cgra-report %t.dir/reduction.cgra.report.json --dfg-report %t.dir/spmv.dfg.report.json --cgra-report %t.dir/spmv.cgra.report.json --dfg-report %t.dir/prefix_sum.dfg.report.json --cgra-report %t.dir/prefix_sum.cgra.report.json --dfg-report %t.dir/cumsum.dfg.report.json --cgra-report %t.dir/cumsum.cgra.report.json --output %t.dir/summary.csv
+// RUN: bash %S/../app/run_sim_cycle_summary.sh --dfg-report %t.dir/vecadd.dfg.report.json --dfg-report %t.dir/vecadd.dfg.reduction.report.json --cgra-report %t.dir/vecadd.core.cgra.report.json --cgra-report %t.dir/vecadd.reduction.cgra.report.json --dfg-report %t.dir/mean.dfg.report.json --dfg-report %t.dir/vecnorm_l1.dfg.report.json --cgra-report %t.dir/vecnorm_l1.cgra.report.json --dfg-report %t.dir/vecnorm_l2.dfg.report.json --cgra-report %t.dir/vecnorm_l2.cgra.report.json --dfg-report %t.dir/reduction.dfg.report.json --cgra-report %t.dir/reduction.cgra.report.json --dfg-report %t.dir/dotproduct.dfg.report.json --cgra-report %t.dir/dotproduct.cgra.report.json --dfg-report %t.dir/spmv.dfg.report.json --cgra-report %t.dir/spmv.cgra.report.json --dfg-report %t.dir/prefix_sum.dfg.report.json --cgra-report %t.dir/prefix_sum.cgra.report.json --dfg-report %t.dir/cumsum.dfg.report.json --cgra-report %t.dir/cumsum.cgra.report.json --output %t.dir/summary.csv
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/summary.csv
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
@@ -40,6 +44,7 @@
 // SUMMARY-DAG: vecnorm_l1,643,654,pass
 // SUMMARY-DAG: vecnorm_l2,771,783,pass
 // SUMMARY-DAG: reduction,579,589,pass
+// SUMMARY-DAG: dotproduct,1027,1044,pass
 // SUMMARY-DAG: spmv,47,72,pass
 // SUMMARY-DAG: prefix_sum,835,852,pass
 // SUMMARY-DAG: cumsum,14339,14356,pass

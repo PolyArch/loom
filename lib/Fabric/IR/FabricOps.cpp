@@ -485,6 +485,7 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
       add(n, {pT(0), pT(0)}, {pT(0)});
     }
     add("arith.cmpf", {pT(0), pT(0)}, {pF(1)});
+    add("llvm.intr.fmuladd", {pT(0), pT(0), pT(0)}, {pT(0)});
 
     // --- arith int<->fp casts (independent in/out widths) ---
     for (StringRef n : {"arith.sitofp", "arith.uitofp",
