@@ -18,7 +18,6 @@ SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
 IMPORT_STATES = {"accepted", "deferred", "excluded"}
 INVENTORY_STATES = {"ready", "blocked"}
 IGNORED_IDENTITIES = {"", "scaffold", "none", None}
-ALLOWED_SIM_CYCLE_EQUIVALENCE_GROUPS = (frozenset({"vecsum", "reduction"}),)
 
 
 @dataclass(frozen=True)
@@ -353,6 +352,8 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "optimistic_cycles",
             "wavefront_steps",
             "event_count",
+            "dynamic_work_items",
+            "operation_fire_counts",
             "final_outputs",
             "diagnostics",
         },
@@ -659,16 +660,11 @@ def validate_unique_sim_cycles(
 ) -> None:
     for cycle, kernels in sorted(cycles_by_value.items(), key=lambda item: item[0]):
         unique_kernels = sorted(set(kernels))
-        if len(unique_kernels) > 1 and not allowed_sim_cycle_equivalence(unique_kernels):
+        if len(unique_kernels) > 1:
             diagnostics.append(
                 f"{label} cycles {cycle} are shared by multiple kernels "
                 f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
             )
-
-
-def allowed_sim_cycle_equivalence(kernels: list[str]) -> bool:
-    kernel_set = frozenset(kernels)
-    return any(kernel_set.issubset(group) for group in ALLOWED_SIM_CYCLE_EQUIVALENCE_GROUPS)
 
 
 def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
@@ -734,7 +730,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DFG simulator report kind must be dfg_sim_report")
         if data.get("status") not in BASE_STATUSES:
             diagnostics.append("DFG simulator report status must be a known status")
-        if data.get("metric_definition") != "optimistic_operation_latency_sum":
+        if data.get("metric_definition") != "optimistic_pipeline_latency_throughput_sum":
             diagnostics.append("DFG simulator report has unknown metric definition")
         if data.get("operation_semantics_source") != "loom.sim.operation_semantics.v1":
             diagnostics.append("DFG simulator report has unknown operation semantics source")
@@ -749,6 +745,17 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         wavefront_steps = data.get("wavefront_steps")
         if not isinstance(wavefront_steps, int) or wavefront_steps < 0:
             diagnostics.append("DFG simulator report wavefront_steps must be non-negative integer")
+        dynamic_work_items = data.get("dynamic_work_items")
+        if not isinstance(dynamic_work_items, int) or dynamic_work_items < 0:
+            diagnostics.append("DFG simulator report dynamic_work_items must be non-negative integer")
+        operation_fire_counts = data.get("operation_fire_counts")
+        if not isinstance(operation_fire_counts, dict) or not operation_fire_counts:
+            diagnostics.append("DFG simulator report needs non-empty operation_fire_counts")
+        elif not all(
+            isinstance(name, str) and isinstance(count, int) and count >= 0
+            for name, count in operation_fire_counts.items()
+        ):
+            diagnostics.append("DFG simulator report operation_fire_counts must map op names to non-negative integers")
         if isinstance(cycles, int) and isinstance(event_count, int) and cycles < event_count:
             diagnostics.append("DFG simulator optimistic_cycles must not be below event_count")
     if kind == "cgra_sim_report":
@@ -994,8 +1001,10 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             pass_mapping_artifacts_by_workload.setdefault(workload, []).append(artifact)
     dfg_report_cycles_by_workload: dict[str, list[int]] = {}
     dfg_report_semantics_by_workload: dict[str, set[str]] = {}
+    dfg_reports_by_workload_graph: dict[tuple[str, str], list[dict[str, object]]] = {}
     for report in json_grouped.get("dfg_sim_report", []):
         workload = report.get("workload")
+        graph = report.get("graph")
         cycles = report.get("optimistic_cycles")
         semantics = report.get("operation_semantics_source")
         if (
@@ -1008,6 +1017,45 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             dfg_report_cycles_by_workload.setdefault(workload, []).append(cycles)
             if isinstance(semantics, str):
                 dfg_report_semantics_by_workload.setdefault(workload, set()).add(semantics)
+            if isinstance(graph, str) and valid_identity(graph):
+                dfg_reports_by_workload_graph.setdefault((workload, graph), []).append(report)
+    for (workload, graph), reports in sorted(dfg_reports_by_workload_graph.items()):
+        scale_points: list[tuple[int, int]] = []
+        for report in reports:
+            dynamic_work_items = report.get("dynamic_work_items")
+            cycles = report.get("optimistic_cycles")
+            if isinstance(dynamic_work_items, int) and isinstance(cycles, int):
+                scale_points.append((dynamic_work_items, cycles))
+        distinct_extents = sorted({extent for extent, _ in scale_points})
+        if len(distinct_extents) <= 1:
+            continue
+        best_cycle_by_extent: dict[int, int] = {}
+        for extent, cycles in scale_points:
+            if extent not in best_cycle_by_extent or cycles < best_cycle_by_extent[extent]:
+                best_cycle_by_extent[extent] = cycles
+        previous_extent: int | None = None
+        previous_cycles: int | None = None
+        for extent in sorted(best_cycle_by_extent):
+            cycles = best_cycle_by_extent[extent]
+            if (
+                previous_extent is not None
+                and previous_cycles is not None
+                and cycles <= previous_cycles
+            ):
+                findings.append(
+                    cross_finding(
+                        "dfg_cycle_monotonic_with_dynamic_work_items",
+                        (
+                            f"DFG-sim workload {workload!r} graph {graph!r} has "
+                            f"{cycles} cycles at dynamic_work_items={extent}, "
+                            f"not greater than {previous_cycles} cycles at "
+                            f"dynamic_work_items={previous_extent}"
+                        ),
+                        {"workload": workload},
+                    )
+                )
+            previous_extent = extent
+            previous_cycles = cycles
     cgra_reports_by_workload: dict[str, list[dict[str, object]]] = {}
     for report in json_grouped.get("cgra_sim_report", []):
         workload = report.get("workload")

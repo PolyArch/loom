@@ -10,6 +10,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
 
 namespace loom {
@@ -39,12 +40,14 @@ struct DFGSimulationReport {
   std::string workload;
   std::string graph;
   std::string status;
-  std::string metricDefinition = "optimistic_operation_latency_sum";
+  std::string metricDefinition = "optimistic_pipeline_latency_throughput_sum";
   std::string operationSemanticsSource = kOperationSemanticsSource;
   std::string operationCostModelSource = kOperationCostModelSource;
   std::uint64_t optimisticCycles = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
+  std::uint64_t dynamicWorkItems = 0;
+  std::map<std::string, std::uint64_t> operationFireCounts;
   llvm::SmallVector<std::string> finalOutputs;
   llvm::SmallVector<std::string> diagnostics;
 };

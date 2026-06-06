@@ -208,13 +208,13 @@ case "${CASE}" in
         )
         ;;
     reduction)
-        append_ctrl_tokens 64
-        append_linear_memref 4 64 1 "%d"
+        append_ctrl_tokens 128
+        append_linear_memref 4 128 1 "%d"
         sim_args+=(
             --graph g_t_reduce_sum_red_0_0
             --workload reduction
             --arg 1=0
-            --arg 2=64
+            --arg 2=128
             --arg 3=1
             --arg 5=0
         )

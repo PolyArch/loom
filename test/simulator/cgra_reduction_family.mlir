@@ -73,7 +73,7 @@
 // SUMMARY-DAG: mean,904,917,pass
 // SUMMARY-DAG: vecnorm_l1,643,654,pass
 // SUMMARY-DAG: vecnorm_l2,771,783,pass
-// SUMMARY-DAG: reduction,579,589,pass
+// SUMMARY-DAG: reduction,1155,1165,pass
 // SUMMARY-DAG: vecsum,579,589,pass
 // SUMMARY-DAG: dotproduct,1027,1044,pass
 // SUMMARY-DAG: spmv,47,72,pass

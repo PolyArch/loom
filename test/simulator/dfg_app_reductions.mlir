@@ -97,7 +97,7 @@
 // VECADD-DAG: "workload": "vecadd"
 // VECADD-DAG: "graph": "g_t_vecadd_0_0"
 // VECADD-DAG: "status": "pass"
-// VECADD-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// VECADD-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // VECADD-DAG: "optimistic_cycles": 960
 // VECADD-DAG: "wavefront_steps": 67
 // VECADD-DAG: "event_count": 320
@@ -114,19 +114,22 @@
 // VECSUM-DAG: "workload": "vecsum"
 // VECSUM-DAG: "graph": "g_t_vecsum_red_0_0"
 // VECSUM-DAG: "status": "pass"
-// VECSUM-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// VECSUM-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // VECSUM-DAG: "optimistic_cycles": 579
 // VECSUM-DAG: "wavefront_steps": 131
 // VECSUM-DAG: "event_count": 387
+// VECSUM-DAG: "dynamic_work_items": 64
 // VECSUM-DAG: "i32:2116"
 
 // REDUCTION-DAG: "kind": "dfg_sim_report"
 // REDUCTION-DAG: "workload": "reduction"
 // REDUCTION-DAG: "graph": "g_t_reduce_sum_red_0_0"
 // REDUCTION-DAG: "status": "pass"
-// REDUCTION-DAG: "optimistic_cycles": 579
-// REDUCTION-DAG: "event_count": 387
-// REDUCTION-DAG: "i32:2016"
+// REDUCTION-DAG: "optimistic_cycles": 1155
+// REDUCTION-DAG: "wavefront_steps": 259
+// REDUCTION-DAG: "event_count": 771
+// REDUCTION-DAG: "dynamic_work_items": 128
+// REDUCTION-DAG: "i32:8128"
 
 // SPMV-DAG: "kind": "dfg_sim_report"
 // SPMV-DAG: "workload": "spmv"
@@ -149,7 +152,7 @@
 // DOTPRODUCT-DAG: "workload": "dotproduct"
 // DOTPRODUCT-DAG: "graph": "g_t_dotproduct_red_0_0"
 // DOTPRODUCT-DAG: "status": "pass"
-// DOTPRODUCT-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// DOTPRODUCT-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // DOTPRODUCT-DAG: "optimistic_cycles": 1027
 // DOTPRODUCT-DAG: "wavefront_steps": 131
 // DOTPRODUCT-DAG: "event_count": 451
@@ -167,7 +170,7 @@
 // VECNORM-L2-DAG: "workload": "vecnorm_l2"
 // VECNORM-L2-DAG: "graph": "g_t_vecnorm_l2_red_0_0"
 // VECNORM-L2-DAG: "status": "pass"
-// VECNORM-L2-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// VECNORM-L2-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // VECNORM-L2-DAG: "optimistic_cycles": 771
 // VECNORM-L2-DAG: "wavefront_steps": 132
 // VECNORM-L2-DAG: "event_count": 451
@@ -185,7 +188,7 @@
 // INTEGRATE-TRAPZ-DAG: "workload": "integrate_trapz"
 // INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
 // INTEGRATE-TRAPZ-DAG: "status": "pass"
-// INTEGRATE-TRAPZ-DAG: "metric_definition": "optimistic_operation_latency_sum"
+// INTEGRATE-TRAPZ-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 299
 // INTEGRATE-TRAPZ-DAG: "wavefront_steps": 21
 // INTEGRATE-TRAPZ-DAG: "event_count": 147
@@ -201,7 +204,7 @@
 // SUMMARY-DAG: integrate_trapz,299,,blocked,DFG-sim report available
 // SUMMARY-DAG: mean,904,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
-// SUMMARY-DAG: reduction,579,,blocked,DFG-sim report available
+// SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecnorm_l1,643,,blocked,DFG-sim report available

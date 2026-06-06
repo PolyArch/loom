@@ -18,6 +18,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -75,8 +76,8 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::SmallVector<std::string> diagnostics;
+  std::map<std::string, std::uint64_t> operationFireCounts;
   std::uint64_t eventCount = 0;
-  std::uint64_t cycleCount = 0;
 };
 
 std::string typePrefix(mlir::Type type) {
@@ -214,8 +215,36 @@ bool recordEvent(SimulatorState &state, llvm::StringRef opName) {
     return false;
   }
   ++state.eventCount;
-  state.cycleCount += costOrErr->latencyCycles;
+  ++state.operationFireCounts[opName.str()];
   return true;
+}
+
+std::uint64_t estimateDynamicPipelineCycles(
+    const std::map<std::string, std::uint64_t> &operationFireCounts,
+    llvm::SmallVectorImpl<std::string> &diagnostics) {
+  std::uint64_t cycles = 0;
+  for (const auto &[opName, fireCount] : operationFireCounts) {
+    if (fireCount == 0)
+      continue;
+    auto costOrErr = estimateOperationCost(opName);
+    if (!costOrErr) {
+      diagnostics.push_back(llvm::toString(costOrErr.takeError()));
+      continue;
+    }
+    cycles += costOrErr->latencyCycles;
+    if (fireCount > 1)
+      cycles += (fireCount - 1) * costOrErr->reciprocalThroughput;
+  }
+  return cycles;
+}
+
+std::uint64_t dynamicWorkItems(const SimulatorState &state) {
+  std::uint64_t maxStreamItems = 0;
+  for (const auto &entry : state.streamStates)
+    maxStreamItems = std::max(maxStreamItems, entry.second.trueEmissions);
+  if (maxStreamItems == 0 && state.eventCount > 0)
+    return 1;
+  return maxStreamItems;
 }
 
 void flushPendingTokens(SimulatorState &state) {
@@ -815,7 +844,10 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         "DFG-sim stopped before all returned values produced complete outputs");
   }
   report.eventCount = state.eventCount;
-  report.optimisticCycles = state.cycleCount;
+  report.dynamicWorkItems = dynamicWorkItems(state);
+  report.operationFireCounts = state.operationFireCounts;
+  report.optimisticCycles =
+      estimateDynamicPipelineCycles(state.operationFireCounts, state.diagnostics);
   report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
@@ -842,6 +874,12 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["optimistic_cycles"] = report.optimisticCycles;
   root["wavefront_steps"] = report.wavefrontSteps;
   root["event_count"] = report.eventCount;
+  root["dynamic_work_items"] = report.dynamicWorkItems;
+
+  llvm::json::Object fireCounts;
+  for (const auto &[opName, count] : report.operationFireCounts)
+    fireCounts[opName] = count;
+  root["operation_fire_counts"] = std::move(fireCounts);
 
   llvm::json::Array outputs;
   for (const std::string &value : report.finalOutputs)

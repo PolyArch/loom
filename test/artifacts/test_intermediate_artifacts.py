@@ -190,6 +190,7 @@ def write_dfg_report(
     graph: str,
     cycles: int,
     final_outputs: list[str] | None = None,
+    dynamic_work_items: int = 1,
 ) -> None:
     path.write_text(
         json.dumps(
@@ -199,12 +200,14 @@ def write_dfg_report(
                 "workload": workload,
                 "graph": graph,
                 "status": "pass",
-                "metric_definition": "optimistic_operation_latency_sum",
+                "metric_definition": "optimistic_pipeline_latency_throughput_sum",
                 "operation_semantics_source": "loom.sim.operation_semantics.v1",
                 "operation_cost_model_source": "loom.sim.operation_cost.v1",
                 "optimistic_cycles": cycles,
                 "wavefront_steps": min(cycles, 4),
                 "event_count": min(cycles, 10),
+                "dynamic_work_items": dynamic_work_items,
+                "operation_fire_counts": {"dataflow.stream": dynamic_work_items},
                 "final_outputs": final_outputs if final_outputs is not None else ["none"],
                 "diagnostics": [],
             }
@@ -494,14 +497,26 @@ def main() -> int:
         if "DFG-sim cycles 64" not in messages or "CGRA-sim cycles 80" not in messages:
             raise AssertionError(f"duplicate simulator diagnostics missing: {audit_data}")
 
-        equivalent_reduction_sim = out_dir / "equivalent-reduction-sim-cycle-summary.csv"
-        equivalent_reduction_sim.write_text(
+        unequal_extent_reduction_sim = out_dir / "unequal-extent-reduction-sim-cycle-summary.csv"
+        unequal_extent_reduction_sim.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
-            "vecsum,579,589,pass,equivalent same-length integer reduction\n"
-            "reduction,579,589,pass,equivalent same-length integer reduction\n"
+            "vecsum,579,589,pass,integer reduction with 64 items\n"
+            "reduction,579,589,pass,integer reduction with 128 items\n"
         )
-        write_dfg_report(out_dir / "vecsum-dfg-sim-report.json", "vecsum", "g_vecsum", 579)
-        write_dfg_report(out_dir / "reduction-dfg-sim-report.json", "reduction", "g_reduction", 579)
+        write_dfg_report(
+            out_dir / "vecsum-dfg-sim-report.json",
+            "vecsum",
+            "g_vecsum",
+            579,
+            dynamic_work_items=64,
+        )
+        write_dfg_report(
+            out_dir / "reduction-dfg-sim-report.json",
+            "reduction",
+            "g_reduction",
+            579,
+            dynamic_work_items=128,
+        )
         write_mapping_artifact(
             out_dir / "vecsum-pnr-mapping.json",
             "vecsum",
@@ -534,8 +549,8 @@ def main() -> int:
                 sys.executable,
                 "test/e2e/audit_intermediate_artifacts.py",
                 "--output",
-                str(out_dir / "artifact-audit-summary-equivalent-reduction.json"),
-                str(equivalent_reduction_sim),
+                str(out_dir / "artifact-audit-summary-unequal-extent-reduction.json"),
+                str(unequal_extent_reduction_sim),
                 str(out_dir / "vecsum-dfg-sim-report.json"),
                 str(out_dir / "reduction-dfg-sim-report.json"),
                 str(out_dir / "vecsum-pnr-mapping.json"),
@@ -544,10 +559,70 @@ def main() -> int:
                 str(out_dir / "reduction-cgra-sim-report.json"),
             ],
         )
-        if result.returncode != 0:
+        if result.returncode == 0:
             raise AssertionError(
-                "allowed equivalent reduction simulator cycles unexpectedly failed audit"
+                "unequal dynamic extent reduction simulator cycles unexpectedly passed audit"
             )
+
+        monotonic_bad_n64 = out_dir / "monotonic-bad-n64-dfg-sim-report.json"
+        monotonic_bad_n128 = out_dir / "monotonic-bad-n128-dfg-sim-report.json"
+        write_dfg_report(
+            monotonic_bad_n64,
+            "scale",
+            "g_scale",
+            100,
+            dynamic_work_items=64,
+        )
+        write_dfg_report(
+            monotonic_bad_n128,
+            "scale",
+            "g_scale",
+            100,
+            dynamic_work_items=128,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-monotonic-bad.json"),
+                str(monotonic_bad_n64),
+                str(monotonic_bad_n128),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("non-monotonic DFG scale reports unexpectedly passed audit")
+
+        monotonic_good_n64 = out_dir / "monotonic-good-n64-dfg-sim-report.json"
+        monotonic_good_n128 = out_dir / "monotonic-good-n128-dfg-sim-report.json"
+        write_dfg_report(
+            monotonic_good_n64,
+            "scale",
+            "g_scale",
+            100,
+            dynamic_work_items=64,
+        )
+        write_dfg_report(
+            monotonic_good_n128,
+            "scale",
+            "g_scale",
+            180,
+            dynamic_work_items=128,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-monotonic-good.json"),
+                str(monotonic_good_n64),
+                str(monotonic_good_n128),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError("monotonic DFG scale reports unexpectedly failed audit")
 
         aggregate_slice_sim = out_dir / "aggregate-slice-sim-cycle-summary.csv"
         aggregate_slice_sim.write_text(
