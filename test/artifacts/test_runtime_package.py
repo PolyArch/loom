@@ -17,6 +17,8 @@ REQUIRED_KEYS = {
     "workload",
     "work_package_identity",
     "launch_descriptor_identity",
+    "launch_descriptor",
+    "runtime_handle_model",
     "selected_mapping_artifact_identity",
     "fabric_adg_identity",
     "target_profile",
@@ -84,6 +86,32 @@ def main() -> int:
         expected_launch = "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::default"
         if data["launch_descriptor_identity"] != expected_launch:
             raise AssertionError(f"unexpected launch descriptor identity: {data}")
+        launch_descriptor = data["launch_descriptor"]
+        if launch_descriptor.get("descriptor_id") != expected_launch:
+            raise AssertionError(f"launch descriptor id should match package identity: {data}")
+        if launch_descriptor.get("work_package_identity") != data["work_package_identity"]:
+            raise AssertionError(f"launch descriptor missed work package identity: {data}")
+        if launch_descriptor.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"launch descriptor missed mapping identity: {data}")
+        if launch_descriptor.get("target_profile_id") != "simulator::cgra_sim::mapping_constraint_estimate":
+            raise AssertionError(f"launch descriptor missed target profile: {data}")
+        if launch_descriptor.get("memory_descriptor_logical_arguments") != ["vecsum.default_input"]:
+            raise AssertionError(f"launch descriptor missed memory descriptor bindings: {data}")
+        if launch_descriptor.get("argument_descriptor_names") != ["runtime_input", "mapping_artifact"]:
+            raise AssertionError(f"launch descriptor missed argument descriptors: {data}")
+        if launch_descriptor.get("scalar_value_descriptors") != []:
+            raise AssertionError(f"launch descriptor should expose scalar value descriptors: {data}")
+        if launch_descriptor.get("fallback_policy") != "report_only":
+            raise AssertionError(f"launch descriptor missed fallback policy: {data}")
+        if launch_descriptor.get("synchronization_mode") != "host_wait":
+            raise AssertionError(f"launch descriptor missed synchronization mode: {data}")
+        handle_model = data["runtime_handle_model"]
+        if handle_model.get("handle_kind") != "host_visible_launch_handle":
+            raise AssertionError(f"runtime handle model should be host-visible: {data}")
+        if handle_model.get("ir_token_kind") != "not_dataflow_thread_token":
+            raise AssertionError(f"runtime handle must not be a dataflow token: {data}")
+        if "wait_for_completion" not in handle_model.get("operations", []):
+            raise AssertionError(f"runtime handle should expose wait operation: {data}")
         if data["selected_mapping_artifact_identity"] != "pnr-mapping":
             raise AssertionError(f"unexpected selected mapping identity: {data}")
         if data["fabric_adg_identity"] != "shared_reduction_adg":
@@ -148,6 +176,23 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected runtime package audit pass: {audit_data}")
+        token_backed_package = out_dir / "token-backed-runtime-package.json"
+        token_backed_data = json.loads(package.read_text())
+        token_backed_data["runtime_handle_model"]["ir_token_kind"] = "dataflow_thread_token"
+        token_backed_package.write_text(json.dumps(token_backed_data, indent=2, sort_keys=True) + "\n")
+        token_backed_audit = out_dir / "token-backed-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(token_backed_audit),
+                str(token_backed_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package backed by dataflow token unexpectedly passed audit")
 
         missing_cgra = out_dir / "missing-cgra-runtime-package.json"
         result = artifact_test_common.run_command(
@@ -327,6 +372,14 @@ def main() -> int:
         }
         if dfg_data.get("target_profile") != expected_dfg_target:
             raise AssertionError(f"unexpected DFG-sim target profile: {dfg_data}")
+        dfg_launch_descriptor = dfg_data.get("launch_descriptor", {})
+        if dfg_launch_descriptor.get("selected_mapping_artifact_identity") != "":
+            raise AssertionError(f"DFG launch descriptor must not require mapping identity: {dfg_data}")
+        if dfg_launch_descriptor.get("argument_descriptor_names") != ["runtime_input", "dfg_sim_report"]:
+            raise AssertionError(f"DFG launch descriptor missed software report argument: {dfg_data}")
+        dfg_handle_model = dfg_data.get("runtime_handle_model", {})
+        if dfg_handle_model.get("ir_token_kind") != "not_dataflow_thread_token":
+            raise AssertionError(f"DFG runtime handle must not be a dataflow token: {dfg_data}")
         expected_dfg_fallback = {
             "policy": "report_only",
             "decision": "report_only",

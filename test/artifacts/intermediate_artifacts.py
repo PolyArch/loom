@@ -484,6 +484,8 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "workload",
             "work_package_identity",
             "launch_descriptor_identity",
+            "launch_descriptor",
+            "runtime_handle_model",
             "selected_mapping_artifact_identity",
             "fabric_adg_identity",
             "target_profile",
@@ -1182,6 +1184,90 @@ def validate_fallback_decision(
         diagnostics.append(f"{label} fallback_decision has unknown decision")
 
 
+def validate_runtime_launch_descriptor(
+    value: object,
+    data: dict[str, object],
+    target_profile: dict[str, object],
+    memory_descriptors: list[object],
+    argument_descriptors: list[object],
+    diagnostics: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package launch_descriptor must be an object")
+        return
+    for key in (
+        "descriptor_id",
+        "work_package_identity",
+        "selected_accelerator_region",
+        "logical_thread_domain",
+        "selected_mapping_artifact_identity",
+        "target_profile_id",
+        "fallback_policy",
+        "synchronization_mode",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"runtime package launch_descriptor lacks {key}")
+    for key in (
+        "argument_descriptor_names",
+        "memory_descriptor_logical_arguments",
+        "scalar_value_descriptors",
+    ):
+        entries = value.get(key)
+        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
+            diagnostics.append(f"runtime package launch_descriptor {key} must be a string list")
+    for key in ("profiling_settings", "trace_settings"):
+        settings = value.get(key)
+        if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
+            diagnostics.append(f"runtime package launch_descriptor {key} must record enabled boolean")
+    expected_pairs = (
+        ("descriptor_id", "launch_descriptor_identity"),
+        ("work_package_identity", "work_package_identity"),
+        ("selected_mapping_artifact_identity", "selected_mapping_artifact_identity"),
+        ("fallback_policy", "fallback_policy"),
+        ("synchronization_mode", "synchronization_mode"),
+    )
+    for descriptor_key, package_key in expected_pairs:
+        if value.get(descriptor_key) != data.get(package_key):
+            diagnostics.append(
+                f"runtime package launch_descriptor {descriptor_key} does not match {package_key}"
+            )
+    if value.get("target_profile_id") != target_profile.get("profile_id"):
+        diagnostics.append("runtime package launch_descriptor target_profile_id does not match target_profile")
+    argument_names = [
+        descriptor.get("name")
+        for descriptor in argument_descriptors
+        if isinstance(descriptor, dict) and isinstance(descriptor.get("name"), str)
+    ]
+    if value.get("argument_descriptor_names") != argument_names:
+        diagnostics.append("runtime package launch_descriptor argument descriptors do not match package")
+    memory_arguments = [
+        descriptor.get("logical_argument")
+        for descriptor in memory_descriptors
+        if isinstance(descriptor, dict) and isinstance(descriptor.get("logical_argument"), str)
+    ]
+    if value.get("memory_descriptor_logical_arguments") != memory_arguments:
+        diagnostics.append("runtime package launch_descriptor memory descriptors do not match package")
+
+
+def validate_runtime_handle_model(value: object, diagnostics: list[str]) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package runtime_handle_model must be an object")
+        return
+    if value.get("handle_kind") != "host_visible_launch_handle":
+        diagnostics.append("runtime package runtime_handle_model handle_kind must be host_visible_launch_handle")
+    if value.get("ir_token_kind") != "not_dataflow_thread_token":
+        diagnostics.append("runtime package runtime_handle_model must not use dataflow thread tokens")
+    if not isinstance(value.get("completion_source"), str) or not value.get("completion_source"):
+        diagnostics.append("runtime package runtime_handle_model lacks completion_source")
+    operations = value.get("operations")
+    if not isinstance(operations, list) or any(not isinstance(operation, str) for operation in operations):
+        diagnostics.append("runtime package runtime_handle_model operations must be a string list")
+        return
+    for operation in ("query_status", "wait_for_completion", "collect_diagnostics"):
+        if operation not in operations:
+            diagnostics.append(f"runtime package runtime_handle_model lacks {operation}")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -1543,6 +1629,15 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("name", "identity", "descriptor_kind"):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package argument descriptor {index} lacks {key}")
+        validate_runtime_launch_descriptor(
+            data.get("launch_descriptor"),
+            data,
+            target_profile,
+            memory_descriptors,
+            argument_descriptors,
+            diagnostics,
+        )
+        validate_runtime_handle_model(data.get("runtime_handle_model"), diagnostics)
         if data.get("status") == "pass":
             if not memory_descriptors:
                 diagnostics.append("runtime package pass needs memory_descriptors")

@@ -146,6 +146,57 @@ def fallback_decision(
     }
 
 
+def build_launch_descriptor(
+    *,
+    descriptor_id: str,
+    work_package_identity: str,
+    workload: str,
+    mapping_identity: str,
+    target_profile: dict[str, str],
+    memory_descriptors: list[dict[str, str]],
+    argument_descriptors: list[dict[str, str]],
+    fallback_policy: str,
+    synchronization_mode: str,
+) -> dict[str, object]:
+    return {
+        "descriptor_id": descriptor_id,
+        "work_package_identity": work_package_identity,
+        "selected_accelerator_region": f"accelerator-region::{workload}" if workload != "unknown" else "",
+        "logical_thread_domain": f"thread-domain::{workload}" if workload != "unknown" else "",
+        "argument_descriptor_names": [
+            descriptor["name"]
+            for descriptor in argument_descriptors
+            if "name" in descriptor
+        ],
+        "memory_descriptor_logical_arguments": [
+            descriptor["logical_argument"]
+            for descriptor in memory_descriptors
+            if "logical_argument" in descriptor
+        ],
+        "scalar_value_descriptors": [],
+        "selected_mapping_artifact_identity": mapping_identity,
+        "target_profile_id": target_profile.get("profile_id", ""),
+        "fallback_policy": fallback_policy,
+        "synchronization_mode": synchronization_mode,
+        "profiling_settings": {"enabled": False},
+        "trace_settings": {"enabled": False},
+    }
+
+
+def runtime_handle_model() -> dict[str, object]:
+    return {
+        "handle_kind": "host_visible_launch_handle",
+        "ir_token_kind": "not_dataflow_thread_token",
+        "completion_source": "runtime_target_status",
+        "operations": [
+            "query_status",
+            "wait_for_completion",
+            "collect_diagnostics",
+            "collect_profiling_data",
+        ],
+    }
+
+
 def build_package(
     paths: list[Path],
     target: str,
@@ -291,7 +342,19 @@ def build_package(
         fabric_adg_identity = ""
 
     fallback_policy = "report_only"
+    synchronization_mode = "host_wait"
     status = "pass" if not diagnostics else "blocked"
+    launch_descriptor = build_launch_descriptor(
+        descriptor_id=launch_descriptor_identity,
+        work_package_identity=work_package_identity,
+        workload=workload,
+        mapping_identity=selected_mapping_identity,
+        target_profile=target_profile,
+        memory_descriptors=memory_descriptors,
+        argument_descriptors=argument_descriptors,
+        fallback_policy=fallback_policy,
+        synchronization_mode=synchronization_mode,
+    )
 
     return {
         "schema_version": 1,
@@ -300,6 +363,8 @@ def build_package(
         "workload": workload,
         "work_package_identity": work_package_identity,
         "launch_descriptor_identity": launch_descriptor_identity,
+        "launch_descriptor": launch_descriptor,
+        "runtime_handle_model": runtime_handle_model(),
         "selected_mapping_artifact_identity": selected_mapping_identity,
         "fabric_adg_identity": fabric_adg_identity,
         "target_profile": target_profile,
@@ -310,7 +375,7 @@ def build_package(
             status=status,
             diagnostics=diagnostics,
         ),
-        "synchronization_mode": "host_wait",
+        "synchronization_mode": synchronization_mode,
         "data_movement_policy": data_movement_policy,
         "memory_descriptors": memory_descriptors,
         "argument_descriptors": argument_descriptors,
