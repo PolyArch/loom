@@ -15,9 +15,21 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
+DATA_MOVEMENT_POLICIES = (
+    "shared_coherent",
+    "shared_noncoherent",
+    "copy_in_copy_out",
+    "device_local",
+    "simulated",
+    "custom",
+)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("cgra-sim", "dfg-sim"), default="cgra-sim")
+    parser.add_argument("--data-movement-policy", choices=DATA_MOVEMENT_POLICIES, default="simulated")
+    parser.add_argument("--platform-binding", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
@@ -75,12 +87,16 @@ def report_identities(paths: list[Path | None]) -> list[str]:
 
 
 def diagnostic_class(message: str) -> str:
+    if "platform memory binding is missing" in message:
+        return "missing_platform_memory_binding"
     if "requires CGRA-sim report" in message or "requires DFG-sim report" in message:
         return "missing_simulator_report"
     if "requires mapping artifact" in message or "mapping identity is missing" in message:
         return "missing_mapping_artifact"
     if "fabric ADG identity is missing" in message:
         return "missing_fabric_adg"
+    if "requires simulated data movement policy" in message:
+        return "unsupported_data_movement_policy"
     if "does not consume" in message:
         return "unsupported_target_profile"
     if "identity mismatch" in message or "different mapping artifact" in message:
@@ -130,7 +146,12 @@ def fallback_decision(
     }
 
 
-def build_package(paths: list[Path], target: str) -> dict[str, object]:
+def build_package(
+    paths: list[Path],
+    target: str,
+    data_movement_policy: str,
+    platform_binding: str,
+) -> dict[str, object]:
     grouped = group_paths(paths)
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
     dfg_path = first_path(grouped, "dfg_sim_report")
@@ -191,6 +212,11 @@ def build_package(paths: list[Path], target: str) -> dict[str, object]:
         comparison_mapping = string_field(comparison, "mapping_artifact_identity")
         if comparison_mapping and comparison_mapping != artifact_id(mapping_path):
             diagnostics.append("simulation comparison report references a different mapping artifact")
+    if data_movement_policy != "simulated":
+        if not platform_binding:
+            diagnostics.append(f"platform memory binding is missing for {data_movement_policy} data movement")
+        if target in {"cgra-sim", "dfg-sim"}:
+            diagnostics.append("simulator target requires simulated data movement policy")
 
     package_id = f"runtime-package::{workload}::{mapping_id}" if workload != "unknown" else "runtime-package::blocked"
     work_package_identity = f"work-package::{workload}::{mapping_id}" if workload != "unknown" else ""
@@ -203,9 +229,10 @@ def build_package(paths: list[Path], target: str) -> dict[str, object]:
             {
                 "logical_argument": f"{workload}.default_input",
                 "direction": "read_write",
-                "policy": "simulated",
+                "policy": data_movement_policy,
                 "runtime_input_identity": runtime_input,
             }
+            | ({"platform_binding_identity": platform_binding} if platform_binding else {})
         )
 
     argument_descriptors = []
@@ -284,7 +311,7 @@ def build_package(paths: list[Path], target: str) -> dict[str, object]:
             diagnostics=diagnostics,
         ),
         "synchronization_mode": "host_wait",
-        "data_movement_policy": "simulated",
+        "data_movement_policy": data_movement_policy,
         "memory_descriptors": memory_descriptors,
         "argument_descriptors": argument_descriptors,
         "required_runtime_features": required_runtime_features,
@@ -299,7 +326,12 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
     paths = [Path(value) for value in args.artifact]
-    package = build_package(paths, args.target)
+    package = build_package(
+        paths,
+        args.target,
+        args.data_movement_policy,
+        args.platform_binding,
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
     return 0 if package["status"] == "pass" else 1

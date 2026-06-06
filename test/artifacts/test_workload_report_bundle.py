@@ -251,6 +251,72 @@ def main() -> int:
         ):
             raise AssertionError(f"report bundle should add its own runtime failure diagnostic: {blocked_data}")
 
+        missing_binding_runtime = out_dir / "missing-binding-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--data-movement-policy",
+                "shared_noncoherent",
+                "--output",
+                str(missing_binding_runtime),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package without platform binding unexpectedly passed")
+        missing_binding_report = out_dir / "missing-binding-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(missing_binding_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(missing_binding_runtime),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("report bundle with missing runtime platform binding unexpectedly passed")
+        missing_binding_data = json.loads(missing_binding_report.read_text())
+        records = missing_binding_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "missing_platform_memory_binding"
+            and record.get("component") == "runtime_package"
+            for record in records
+        ):
+            raise AssertionError(f"report bundle should preserve platform binding diagnostics: {missing_binding_data}")
+
     return 0
 
 

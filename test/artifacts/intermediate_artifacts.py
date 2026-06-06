@@ -18,6 +18,14 @@ SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
 IMPORT_STATES = {"accepted", "deferred", "excluded"}
 INVENTORY_STATES = {"ready", "blocked"}
 IGNORED_IDENTITIES = {"", "scaffold", "none", None}
+DATA_MOVEMENT_POLICIES = {
+    "shared_coherent",
+    "shared_noncoherent",
+    "copy_in_copy_out",
+    "device_local",
+    "simulated",
+    "custom",
+}
 ARTIFACT_EDGE_PAIRS = (
     ("old-app-corpus-inventory", "app-corpus-import-status"),
     ("app-corpus-import-status", "source-compat-summary"),
@@ -1479,14 +1487,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             require_complete=True,
         )
         data_movement_policy = data.get("data_movement_policy")
-        if data_movement_policy not in {
-            "shared_coherent",
-            "shared_noncoherent",
-            "copy_in_copy_out",
-            "device_local",
-            "simulated",
-            "custom",
-        }:
+        if data_movement_policy not in DATA_MOVEMENT_POLICIES:
             diagnostics.append("runtime package has unknown data_movement_policy")
         diagnostics_list = data.get("diagnostics")
         if not isinstance(diagnostics_list, list):
@@ -1523,6 +1524,18 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("logical_argument", "direction", "policy", "runtime_input_identity"):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package memory descriptor {index} lacks {key}")
+            descriptor_policy = descriptor.get("policy")
+            if descriptor_policy not in DATA_MOVEMENT_POLICIES:
+                diagnostics.append(f"runtime package memory descriptor {index} has unknown policy")
+            if descriptor_policy != data_movement_policy:
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} policy does not match data_movement_policy"
+                )
+            platform_binding = descriptor.get("platform_binding_identity")
+            if platform_binding is not None and (not isinstance(platform_binding, str) or not platform_binding):
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} has invalid platform_binding_identity"
+                )
         for index, descriptor in enumerate(argument_descriptors, start=1):
             if not isinstance(descriptor, dict):
                 diagnostics.append(f"runtime package argument descriptor {index} must be an object")

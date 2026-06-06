@@ -177,6 +177,72 @@ def main() -> int:
         ):
             raise AssertionError(f"missing CGRA-sim evidence needs structured diagnostics: {missing_cgra_data}")
 
+        missing_binding = out_dir / "missing-platform-binding-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--data-movement-policy",
+                "shared_noncoherent",
+                "--output",
+                str(missing_binding),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package without platform memory binding unexpectedly passed")
+        missing_binding_data = json.loads(missing_binding.read_text())
+        if missing_binding_data.get("status") != "blocked":
+            raise AssertionError(f"missing platform binding should block runtime package: {missing_binding_data}")
+        if missing_binding_data.get("data_movement_policy") != "shared_noncoherent":
+            raise AssertionError(f"runtime package should preserve requested memory policy: {missing_binding_data}")
+        descriptors = missing_binding_data.get("memory_descriptors", [])
+        if not descriptors or descriptors[0].get("policy") != "shared_noncoherent":
+            raise AssertionError(f"memory descriptor should preserve requested memory policy: {missing_binding_data}")
+        records = missing_binding_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "missing_platform_memory_binding"
+            and record.get("component") == "runtime_package"
+            for record in records
+        ):
+            raise AssertionError(f"missing platform binding needs structured diagnostics: {missing_binding_data}")
+        missing_binding_audit = out_dir / "missing-platform-binding-runtime-package-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_binding_audit),
+                str(missing_binding),
+            ],
+            "blocked runtime package audit",
+        )
+        mismatched_policy = out_dir / "mismatched-memory-policy-runtime-package.json"
+        mismatched_policy_data = json.loads(missing_binding.read_text())
+        mismatched_policy_data["memory_descriptors"][0]["policy"] = "simulated"
+        mismatched_policy.write_text(json.dumps(mismatched_policy_data, indent=2, sort_keys=True) + "\n")
+        mismatched_policy_audit = out_dir / "mismatched-memory-policy-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_policy_audit),
+                str(mismatched_policy),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched memory descriptor policy unexpectedly passed audit")
+
         mismatched_cgra = out_dir / "mismatch-cgra-sim-report.json"
         mismatched_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
         mismatched_cgra_data["workload"] = "other_workload"
