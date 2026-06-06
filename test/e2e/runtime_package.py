@@ -93,6 +93,8 @@ def diagnostic_class(message: str) -> str:
         return "unavailable_accelerator_target"
     if "platform memory binding is missing" in message:
         return "missing_platform_memory_binding"
+    if "memory layout is missing" in message:
+        return "missing_runtime_input_layout"
     if "requires CGRA-sim report" in message or "requires DFG-sim report" in message:
         return "missing_simulator_report"
     if "requires mapping artifact" in message or "mapping identity is missing" in message:
@@ -157,7 +159,7 @@ def build_launch_descriptor(
     workload: str,
     mapping_identity: str,
     target_profile: dict[str, str],
-    memory_descriptors: list[dict[str, str]],
+    memory_descriptors: list[dict[str, object]],
     argument_descriptors: list[dict[str, str]],
     fallback_policy: str,
     synchronization_mode: str,
@@ -233,6 +235,58 @@ def host_interface(
         "acceleration_mode_requires_runtime_package": True,
         "source_provenance": runtime_input,
     }
+
+
+def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
+    if workload == "vecsum":
+        return {
+            "byte_size": 256,
+            "element_layout": "u32[64]",
+            "alignment_bytes": 4,
+        }
+    return None
+
+
+def address_space_for_policy(data_movement_policy: str, platform_binding: str) -> str:
+    if data_movement_policy == "simulated":
+        return "simulator::memory_model"
+    if platform_binding:
+        return f"{platform_binding}::address_space"
+    return "platform::unbound_address_space"
+
+
+def coherence_requirement_for_policy(data_movement_policy: str) -> str:
+    return {
+        "shared_coherent": "shared_coherent",
+        "shared_noncoherent": "explicit_flush_invalidate",
+        "copy_in_copy_out": "copy_boundary",
+        "device_local": "device_local",
+        "simulated": "simulator_consistent",
+        "custom": "custom_policy",
+    }[data_movement_policy]
+
+
+def memory_descriptor(
+    *,
+    workload: str,
+    data_movement_policy: str,
+    runtime_input: str,
+    platform_binding: str,
+    layout: dict[str, object],
+) -> dict[str, object]:
+    descriptor: dict[str, object] = {
+        "logical_argument": f"{workload}.default_input",
+        "direction": "read_write",
+        "policy": data_movement_policy,
+        "runtime_input_identity": runtime_input,
+        **layout,
+        "address_space": address_space_for_policy(data_movement_policy, platform_binding),
+        "coherence_requirement": coherence_requirement_for_policy(data_movement_policy),
+        "transfer_policy": data_movement_policy,
+    }
+    if platform_binding:
+        descriptor["platform_binding_identity"] = platform_binding
+    return descriptor
 
 
 def runtime_report(
@@ -366,17 +420,21 @@ def build_package(
     launch_descriptor_identity = (
         f"launch::{workload}::{mapping_id}::{runtime_input}" if workload != "unknown" else ""
     )
-    memory_descriptors: list[dict[str, str]] = []
+    memory_descriptors: list[dict[str, object]] = []
     if workload != "unknown" and runtime_input:
-        memory_descriptors.append(
-            {
-                "logical_argument": f"{workload}.default_input",
-                "direction": "read_write",
-                "policy": data_movement_policy,
-                "runtime_input_identity": runtime_input,
-            }
-            | ({"platform_binding_identity": platform_binding} if platform_binding else {})
-        )
+        layout = memory_layout_for_workload(workload)
+        if layout is None:
+            diagnostics.append(f"runtime input memory layout is missing for {workload}")
+        else:
+            memory_descriptors.append(
+                memory_descriptor(
+                    workload=workload,
+                    data_movement_policy=data_movement_policy,
+                    runtime_input=runtime_input,
+                    platform_binding=platform_binding,
+                    layout=layout,
+                )
+            )
 
     argument_descriptors = []
     if runtime_input:

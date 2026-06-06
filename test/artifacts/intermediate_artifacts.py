@@ -1851,15 +1851,31 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if not isinstance(descriptor, dict):
                 diagnostics.append(f"runtime package memory descriptor {index} must be an object")
                 continue
-            for key in ("logical_argument", "direction", "policy", "runtime_input_identity"):
+            for key in (
+                "logical_argument",
+                "direction",
+                "policy",
+                "runtime_input_identity",
+                "element_layout",
+                "address_space",
+                "coherence_requirement",
+                "transfer_policy",
+            ):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package memory descriptor {index} lacks {key}")
+            for key in ("byte_size", "alignment_bytes"):
+                if not isinstance(descriptor.get(key), int) or descriptor.get(key) <= 0:
+                    diagnostics.append(f"runtime package memory descriptor {index} has invalid {key}")
             descriptor_policy = descriptor.get("policy")
             if descriptor_policy not in DATA_MOVEMENT_POLICIES:
                 diagnostics.append(f"runtime package memory descriptor {index} has unknown policy")
             if descriptor_policy != data_movement_policy:
                 diagnostics.append(
                     f"runtime package memory descriptor {index} policy does not match data_movement_policy"
+                )
+            if descriptor.get("transfer_policy") != data_movement_policy:
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} transfer_policy does not match data_movement_policy"
                 )
             platform_binding = descriptor.get("platform_binding_identity")
             if platform_binding is not None and (not isinstance(platform_binding, str) or not platform_binding):

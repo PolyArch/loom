@@ -197,6 +197,12 @@ def main() -> int:
             "direction": "read_write",
             "policy": "simulated",
             "runtime_input_identity": "test-app-fixture::vecsum::default",
+            "byte_size": 256,
+            "element_layout": "u32[64]",
+            "alignment_bytes": 4,
+            "address_space": "simulator::memory_model",
+            "coherence_requirement": "simulator_consistent",
+            "transfer_policy": "simulated",
         }
         if descriptor != expected_memory:
             raise AssertionError(f"unexpected memory descriptor: {data}")
@@ -388,6 +394,62 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched memory descriptor policy unexpectedly passed audit")
+        invalid_extent = out_dir / "invalid-memory-extent-runtime-package.json"
+        invalid_extent_data = json.loads(package.read_text())
+        invalid_extent_data["memory_descriptors"][0]["byte_size"] = 0
+        invalid_extent.write_text(json.dumps(invalid_extent_data, indent=2, sort_keys=True) + "\n")
+        invalid_extent_audit = out_dir / "invalid-memory-extent-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(invalid_extent_audit),
+                str(invalid_extent),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with invalid memory descriptor extent unexpectedly passed audit")
+
+        unknown_layout_report = out_dir / "toy-dfg-sim-report.json"
+        unknown_layout_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "dfg_sim_report",
+                    "workload": "toy",
+                    "status": "pass",
+                    "runtime_input_identity": "test-app-fixture::toy::default",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        unknown_layout_package = out_dir / "unknown-layout-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "dfg-sim",
+                "--output",
+                str(unknown_layout_package),
+                "--artifact",
+                str(unknown_layout_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with unknown memory layout unexpectedly passed")
+        unknown_layout_data = json.loads(unknown_layout_package.read_text())
+        if unknown_layout_data.get("status") != "blocked":
+            raise AssertionError(f"unknown memory layout should block runtime package: {unknown_layout_data}")
+        if unknown_layout_data.get("memory_descriptors") != []:
+            raise AssertionError(f"unknown memory layout must not invent memory descriptors: {unknown_layout_data}")
+        if "runtime input memory layout is missing for toy" not in unknown_layout_data.get("diagnostics", []):
+            raise AssertionError(f"unknown memory layout should be diagnosed: {unknown_layout_data}")
 
         mismatched_cgra = out_dir / "mismatch-cgra-sim-report.json"
         mismatched_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
