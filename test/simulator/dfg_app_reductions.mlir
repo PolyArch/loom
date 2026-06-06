@@ -8,6 +8,7 @@
 // RUN: env BUILD_DIR=%t.dir/hash_mix LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/hash_mix/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/xor_block LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/xor_block/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/axpy LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/axpy/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/relu LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/relu/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
@@ -31,6 +32,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh hash_mix %t.dir/hash_mix/main_func.dfg.mlir %t.dir/reports/hash_mix.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh xor_block %t.dir/xor_block/main_func.dfg.mlir %t.dir/reports/xor_block.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh axpy %t.dir/axpy/main_func.dfg.mlir %t.dir/reports/axpy.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh relu %t.dir/relu/main_func.dfg.mlir %t.dir/reports/relu.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh matvec %t.dir/matvec/main_func.dfg.mlir %t.dir/reports/matvec.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
@@ -53,6 +55,8 @@
 // RUN: FileCheck %s --check-prefix=HASH-MIX < %t.dir/reports/hash_mix.report.json
 // RUN: FileCheck %s --check-prefix=XOR-BLOCK < %t.dir/reports/xor_block.report.json
 // RUN: FileCheck %s --check-prefix=AXPY < %t.dir/reports/axpy.report.json
+// RUN: FileCheck %s --check-prefix=RELU < %t.dir/reports/relu.report.json
+// RUN: FileCheck %s --check-prefix=RELU-CHECKSUM < %t.dir/reports/relu.checksum.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/reports/matvec.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-ROW1 < %t.dir/reports/matvec.row1.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-CHECKSUM < %t.dir/reports/matvec.checksum.report.json
@@ -162,6 +166,27 @@
 // AXPY-DAG: "arith.muli": 8
 // AXPY-DAG: "dataflow.load": 16
 // AXPY-DAG: "dataflow.store": 8
+
+// RELU-DAG: "kind": "dfg_sim_report"
+// RELU-DAG: "workload": "relu"
+// RELU-DAG: "graph": "g_t_relu_0_0"
+// RELU-DAG: "status": "pass"
+// RELU-DAG: "optimistic_cycles": 384
+// RELU-DAG: "wavefront_steps": 36
+// RELU-DAG: "event_count": 160
+// RELU-DAG: "dynamic_work_items": 32
+// RELU-DAG: "arith.cmpf": 32
+// RELU-DAG: "arith.select": 32
+// RELU-DAG: "dataflow.load": 32
+// RELU-DAG: "dataflow.store": 32
+
+// RELU-CHECKSUM-DAG: "kind": "dfg_sim_report"
+// RELU-CHECKSUM-DAG: "workload": "relu"
+// RELU-CHECKSUM-DAG: "graph": "g_t_main_red_0_0"
+// RELU-CHECKSUM-DAG: "status": "pass"
+// RELU-CHECKSUM-DAG: "optimistic_cycles": 323
+// RELU-CHECKSUM-DAG: "dynamic_work_items": 32
+// RELU-CHECKSUM-DAG: "f32:42"
 
 // MATVEC-DAG: "kind": "dfg_sim_report"
 // MATVEC-DAG: "workload": "matvec"
@@ -326,6 +351,7 @@
 // SUMMARY-DAG: matvec,371,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
+// SUMMARY-DAG: relu,707,,blocked,DFG-sim report available
 // SUMMARY-DAG: spmv,47,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
 // SUMMARY-DAG: vecmul,256,,blocked,DFG-sim report available

@@ -233,6 +233,57 @@ configure_axpy_args() {
     )
 }
 
+relu_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", (i % 13) - 6 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+relu_output_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        value="$(awk -v i="${i}" 'BEGIN { v = (i % 13) - 6; if (v < 0) v = 0; printf "%.6e", v }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+configure_relu_core_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 1 "$(relu_input_values)"
+    append_repeated_arg 2 32 "0.000000e+00"
+    append_constant_memref 3 32 "0.000000e+00"
+    append_index_tokens 4 32
+    sim_args+=(
+        --graph g_t_relu_0_0
+        --workload relu
+    )
+}
+
+configure_relu_checksum_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 4 "$(relu_output_values)"
+    sim_args+=(
+        --graph g_t_main_red_0_0
+        --workload relu
+        --arg 1=0
+        --arg 2=32
+        --arg 3=1
+        --arg 5=0.000000e+00
+    )
+}
+
 case "${CASE}" in
     axpy)
         configure_axpy_args
@@ -489,6 +540,9 @@ case "${CASE}" in
     matvec)
         configure_matvec_row_args 0
         ;;
+    relu)
+        configure_relu_core_args
+        ;;
     *)
         echo "unsupported app reduction case: ${CASE}" >&2
         exit 2
@@ -535,6 +589,14 @@ if [[ "${CASE}" == "matvec" ]]; then
         --arg 3=1
         --arg 5=0
     )
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${checksum_report}"
+    extra_reports+=("${checksum_report}")
+fi
+
+if [[ "${CASE}" == "relu" ]]; then
+    checksum_report="${REPORT_JSON%.report.json}.checksum.report.json"
+    sim_args=()
+    configure_relu_checksum_args
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${checksum_report}"
     extra_reports+=("${checksum_report}")
 fi
