@@ -219,6 +219,13 @@ Rules:
   mapping artifact.
 * CGRA-sim must not be more optimistic than DFG-sim for comparable
   metrics unless the row records a valid comparability diagnostic.
+* DFG-sim cycles must be dynamic-execution metrics, not static graph
+  size metrics. For the same workload and dataflow graph, reports with
+  larger `dynamic_work_items` must have strictly larger
+  `optimistic_cycles` unless the report is explicitly blocked or
+  unsupported. This monotonicity rule is independent of any
+  cross-kernel equivalence group and cannot be waived by claiming that
+  two workloads have similar operation families.
 * Distinct `pass` rows with identical DFG-sim or CGRA-sim cycle values
   are invalid by default because they often indicate artifact reuse,
   missing graph coverage, or an over-flat cost model. The only valid
@@ -331,6 +338,47 @@ Rules:
   or close the corresponding unsupported-scope row.
 
 ## JSON Gate Schemas
+
+### DFG-Sim Report
+
+Purpose: record pure software dataflow simulation evidence for one
+dataflow graph without hardware resource constraints.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `workload`;
+* `graph`;
+* `status`;
+* `metric_definition`;
+* `operation_semantics_source`;
+* `operation_cost_model_source`;
+* `optimistic_cycles`;
+* `wavefront_steps`;
+* `event_count`;
+* `dynamic_work_items`;
+* `operation_fire_counts`;
+* `final_outputs`;
+* `diagnostics`.
+
+Rules:
+
+* `kind` must be `dfg_sim_report`.
+* `optimistic_cycles` is an optimistic dynamic execution estimate:
+  pipeline fill latency plus actual operation fire counts multiplied by
+  the SSOT reciprocal-throughput cost model. It must not be a static
+  count of graph nodes or scheduled wavefronts.
+* `dynamic_work_items` records the modeled dynamic input or token scale
+  for the graph execution, such as stream true-emission count or seeded
+  token count. It is used by content audit to reject non-physical cycle
+  estimates that do not grow with input scale.
+* `operation_fire_counts` must be the SSOT accounting source for DFG-sim
+  operation counts. CGRA-sim must reuse the same operation semantics and
+  cost model, adding hardware constraints instead of redefining the
+  primitive operation behavior.
+* `wavefront_steps` and `event_count` are supporting diagnostics; they
+  must not replace `optimistic_cycles` in simulator cycle summaries.
 
 ### PnR Mapping Artifact
 
