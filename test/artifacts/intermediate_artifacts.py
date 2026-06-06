@@ -565,6 +565,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "rejected_candidate_summaries",
             "referenced_workload_report_bundle_identities",
             "referenced_hardware_candidate_report_bundle_identities",
+            "input_artifact_fingerprints",
             "runtime_evidence_summaries",
             "selected_policy_id",
             "policy_configuration",
@@ -1815,6 +1816,59 @@ def validate_dse_report_candidate_input_fingerprints(
             diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints lacks {reference!r}")
 
 
+def resolve_report_bundle_reference(anchor: Path, identity: str) -> Path | None:
+    for reference in (identity, f"{identity}.json"):
+        resolved = resolve_artifact_reference(anchor, reference)
+        if resolved.is_file():
+            return resolved
+    return None
+
+
+def validate_dse_report_input_fingerprints(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    reference_ids: set[str] = set()
+    for key in (
+        "referenced_workload_report_bundle_identities",
+        "referenced_hardware_candidate_report_bundle_identities",
+    ):
+        value = data.get(key)
+        if isinstance(value, list):
+            reference_ids.update(
+                reference
+                for reference in value
+                if isinstance(reference, str) and reference
+            )
+    input_fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        diagnostics.append("DSE report bundle input_artifact_fingerprints must be an object")
+        input_fingerprints = {}
+    if data.get("report_status") == "pass" and not input_fingerprints:
+        diagnostics.append("DSE report bundle pass needs input_artifact_fingerprints")
+    for identity, fingerprint in input_fingerprints.items():
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append("DSE report bundle input_artifact_fingerprints has invalid identity")
+            continue
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(
+                f"DSE report bundle input_artifact_fingerprints has invalid fingerprint for {identity}"
+            )
+            continue
+        if identity not in reference_ids:
+            diagnostics.append(
+                f"DSE report bundle input_artifact_fingerprints references {identity!r} outside report inputs"
+            )
+            continue
+        resolved = resolve_report_bundle_reference(path, identity)
+        if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"DSE report bundle input_artifact_fingerprints stale for {identity!r}")
+    for reference in reference_ids:
+        if reference not in input_fingerprints:
+            diagnostics.append(f"DSE report bundle input_artifact_fingerprints lacks {reference!r}")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -2465,6 +2519,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         ):
             if not isinstance(data.get(key), list):
                 diagnostics.append(f"DSE report bundle {key} must be a list")
+        validate_dse_report_input_fingerprints(path, data, diagnostics)
         if not isinstance(data.get("policy_configuration"), dict):
             diagnostics.append("DSE report bundle policy_configuration must be an object")
             policy_configuration = {}

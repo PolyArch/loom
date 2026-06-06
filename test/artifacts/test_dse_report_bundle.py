@@ -22,6 +22,7 @@ REQUIRED_KEYS = {
     "rejected_candidate_summaries",
     "referenced_workload_report_bundle_identities",
     "referenced_hardware_candidate_report_bundle_identities",
+    "input_artifact_fingerprints",
     "runtime_evidence_summaries",
     "selected_policy_id",
     "policy_configuration",
@@ -97,6 +98,12 @@ def main() -> int:
             raise AssertionError(f"unexpected workload report references: {data}")
         if data["referenced_hardware_candidate_report_bundle_identities"] != ["hardware-report-bundle"]:
             raise AssertionError(f"unexpected hardware report references: {data}")
+        expected_report_fingerprints = {
+            "workload-report-bundle": artifact_test_common.fingerprint(out_dir / "workload-report-bundle.json"),
+            "hardware-report-bundle": artifact_test_common.fingerprint(out_dir / "hardware-report-bundle.json"),
+        }
+        if data["input_artifact_fingerprints"] != expected_report_fingerprints:
+            raise AssertionError(f"unexpected DSE report input fingerprints: {data}")
         workload_runtime_evidence = json.loads((out_dir / "workload-report-bundle.json").read_text())[
             "runtime_evidence"
         ]
@@ -262,6 +269,26 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime summary policies unexpectedly passed audit")
 
+        bad_report_fingerprint = out_dir / "bad-report-fingerprint-dse-report-bundle.json"
+        bad_report_fingerprint_data = json.loads(report.read_text())
+        bad_report_fingerprint_data["input_artifact_fingerprints"]["workload-report-bundle"] = "0" * 64
+        bad_report_fingerprint.write_text(
+            json.dumps(bad_report_fingerprint_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_report_fingerprint_audit = out_dir / "bad-report-fingerprint-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_report_fingerprint_audit),
+                str(bad_report_fingerprint),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with stale report input fingerprint unexpectedly passed audit")
+
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
         custom_name_report = out_dir / "custom-name-dse-report-bundle.json"
@@ -286,6 +313,10 @@ def main() -> int:
             raise AssertionError(f"custom-named workload report should be accepted: {custom_name_data}")
         if custom_name_data["referenced_workload_report_bundle_identities"] != ["custom-workload-evidence"]:
             raise AssertionError(f"custom workload report path identity was not preserved: {custom_name_data}")
+        if custom_name_data["input_artifact_fingerprints"].get(
+            "custom-workload-evidence"
+        ) != artifact_test_common.fingerprint(custom_workload_report):
+            raise AssertionError(f"custom workload report fingerprint was not preserved: {custom_name_data}")
 
     return 0
 

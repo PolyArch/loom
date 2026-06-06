@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -37,6 +38,14 @@ def artifact_id(path: Path) -> str:
         if path.name.endswith(suffix):
             return path.name[: -len(suffix)]
     return path.stem
+
+
+def artifact_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -149,8 +158,9 @@ def candidate_record(row: dict[str, str]) -> dict[str, object]:
     }
 
 
-def report_bundle_ids(paths: list[Path], expected_kind: str) -> tuple[list[str], list[str]]:
+def report_bundle_references(paths: list[Path], expected_kind: str) -> tuple[list[str], dict[str, str], list[str]]:
     ids: list[str] = []
+    fingerprints: dict[str, str] = {}
     diagnostics: list[str] = []
     for path in paths:
         data = read_json(path)
@@ -160,8 +170,10 @@ def report_bundle_ids(paths: list[Path], expected_kind: str) -> tuple[list[str],
         if data.get("report_status") != "pass":
             diagnostics.append(f"{artifact_id(path)} is not a passing report bundle")
             continue
-        ids.append(artifact_id(path))
-    return ids, diagnostics
+        identity = artifact_id(path)
+        ids.append(identity)
+        fingerprints[identity] = artifact_fingerprint(path)
+    return ids, fingerprints, diagnostics
 
 
 def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
@@ -218,14 +230,18 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     selected = selected_candidate_row(grouped.get("dse_candidate", []))
-    workload_report_ids, workload_diagnostics = report_bundle_ids(
+    workload_report_ids, workload_fingerprints, workload_diagnostics = report_bundle_references(
         grouped.get("workload_report_bundle", []),
         "workload_report_bundle",
     )
-    hardware_report_ids, hardware_diagnostics = report_bundle_ids(
+    hardware_report_ids, hardware_fingerprints, hardware_diagnostics = report_bundle_references(
         grouped.get("hardware_report_bundle", []),
         "hardware_report_bundle",
     )
+    input_artifact_fingerprints = {
+        **workload_fingerprints,
+        **hardware_fingerprints,
+    }
     diagnostics = workload_diagnostics + hardware_diagnostics
     if selected is None:
         diagnostics.append("no selected DSE candidate row was provided")
@@ -240,6 +256,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "rejected_candidate_summaries": [],
             "referenced_workload_report_bundle_identities": workload_report_ids,
             "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
+            "input_artifact_fingerprints": input_artifact_fingerprints,
             "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
             "selected_policy_id": "",
             "policy_configuration": {},
@@ -290,6 +307,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "rejected_candidate_summaries": rejected,
         "referenced_workload_report_bundle_identities": workload_report_ids,
         "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
+        "input_artifact_fingerprints": input_artifact_fingerprints,
         "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
         "selected_policy_id": policy_id,
         "policy_configuration": {
