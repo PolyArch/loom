@@ -1,5 +1,6 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir/bit_reverse LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/bit_reverse/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/byte_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/byte_swap/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/conv1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/conv1d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/convolve_1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/convolve_1d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/correlation LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/correlation/dfg_check.sh
@@ -28,6 +29,7 @@
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh bit_reverse %t.dir/bit_reverse/main_func.dfg.mlir %t.dir/reports/bit_reverse.report.json %t.dir/summary.csv
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh byte_swap %t.dir/byte_swap/main_func.dfg.mlir %t.dir/reports/byte_swap.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh conv1d %t.dir/conv1d/main_func.dfg.mlir %t.dir/reports/conv1d.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh convolve_1d %t.dir/convolve_1d/main_func.dfg.mlir %t.dir/reports/convolve_1d.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh correlation %t.dir/correlation/main_func.dfg.mlir %t.dir/reports/correlation.report.json %t.dir/summary.csv --append
@@ -55,6 +57,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum_inclusive %t.dir/prefix_sum_inclusive/main_func.dfg.mlir %t.dir/reports/prefix_sum_inclusive.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=BIT-REVERSE < %t.dir/reports/bit_reverse.report.json
+// RUN: FileCheck %s --check-prefix=BYTE-SWAP < %t.dir/reports/byte_swap.report.json
 // RUN: FileCheck %s --check-prefix=CONV1D < %t.dir/reports/conv1d.report.json
 // RUN: FileCheck %s --check-prefix=CONVOLVE-1D < %t.dir/reports/convolve_1d.report.json
 // RUN: FileCheck %s --check-prefix=CORRELATION < %t.dir/reports/correlation.report.json
@@ -98,6 +101,19 @@
 // BIT-REVERSE-DAG: "event_count": 267
 // BIT-REVERSE-DAG: "i32:510274632"
 // BIT-REVERSE-DAG: "i32:0"
+
+// BYTE-SWAP-DAG: "kind": "dfg_sim_report"
+// BYTE-SWAP-DAG: "workload": "byte_swap"
+// BYTE-SWAP-DAG: "graph": "g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
+// BYTE-SWAP-DAG: "status": "pass"
+// BYTE-SWAP-DAG: "optimistic_cycles": 320
+// BYTE-SWAP-DAG: "wavefront_steps": 35
+// BYTE-SWAP-DAG: "event_count": 128
+// BYTE-SWAP-DAG: "dynamic_work_items": 32
+// BYTE-SWAP-DAG: "dataflow.load": 32
+// BYTE-SWAP-DAG: "dataflow.store": 32
+// BYTE-SWAP-DAG: "dataflow.sync": 32
+// BYTE-SWAP-DAG: "llvm.intr.bswap": 32
 
 // CONV1D-DAG: "kind": "dfg_sim_report"
 // CONV1D-DAG: "workload": "conv1d"
@@ -433,6 +449,7 @@
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: axpy,136,,blocked,DFG-sim report available
 // SUMMARY-DAG: bit_reverse,267,,blocked,DFG-sim report available
+// SUMMARY-DAG: byte_swap,320,,blocked,DFG-sim report available
 // SUMMARY-DAG: conv1d,83,,blocked,DFG-sim report available
 // SUMMARY-DAG: convolve_1d,157,,blocked,DFG-sim report available
 // SUMMARY-DAG: correlation,346,,blocked,DFG-sim report available

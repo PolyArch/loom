@@ -216,6 +216,36 @@ append_rotate_bits_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+append_byte_swap_memrefs() {
+    local input_index="$1"
+    local output_index="$2"
+    local count=32
+    local input_values=""
+    local output_values=""
+    local value=""
+    for i in $(seq 0 $((count - 1))); do
+        case "${i}" in
+        0) value=0 ;;
+        1) value="$(to_i32_literal 0xffffffff)" ;;
+        2) value="$(to_i32_literal 0x12345678)" ;;
+        3) value="$(to_i32_literal 0x11223344)" ;;
+        4) value="$(to_i32_literal 0xff000000)" ;;
+        5) value="$(to_i32_literal 0x000000ff)" ;;
+        6) value="$(to_i32_literal 0xabcdef01)" ;;
+        7) value="$(to_i32_literal 0x01020304)" ;;
+        *) value="$(to_i32_literal $((i * 0x01020304)))" ;;
+        esac
+        if [[ -n "${input_values}" ]]; then
+            input_values+=","
+            output_values+=","
+        fi
+        input_values+="${value}"
+        output_values+="0"
+    done
+    sim_args+=(--memref "${input_index}=${input_values}")
+    sim_args+=(--memref "${output_index}=${output_values}")
+}
+
 matrix_vector_row_values() {
     local row="$1"
     local values=""
@@ -393,6 +423,15 @@ case "${CASE}" in
             --arg 3=1
             --arg 4=0
             --arg 5=305419896
+        )
+        ;;
+    byte_swap)
+        append_ctrl_tokens 32
+        append_byte_swap_memrefs 1 2
+        append_index_tokens 3 32
+        sim_args+=(
+            --graph g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0
+            --workload byte_swap
         )
         ;;
     conv1d)
