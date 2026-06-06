@@ -292,7 +292,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
         "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
         "selected_policy_id": policy_id,
-        "policy_configuration": {"policy_kind": "deterministic", "random_seed": None},
+        "policy_configuration": {
+            "policy_kind": "deterministic",
+            "random_seed": None,
+            "conflict_resolution": "candidate_ordering_rule",
+        },
         "candidate_ordering_rule": selected_row.get("ordering_rule", ""),
         "report_status": "pass" if not diagnostics else "blocked",
         "diagnostics": diagnostics,

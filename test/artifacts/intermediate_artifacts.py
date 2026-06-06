@@ -2467,6 +2467,14 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(f"DSE report bundle {key} must be a list")
         if not isinstance(data.get("policy_configuration"), dict):
             diagnostics.append("DSE report bundle policy_configuration must be an object")
+            policy_configuration = {}
+        else:
+            policy_configuration = data["policy_configuration"]
+        if (
+            not isinstance(policy_configuration.get("conflict_resolution"), str)
+            or not policy_configuration.get("conflict_resolution")
+        ):
+            diagnostics.append("DSE report bundle policy_configuration lacks conflict_resolution")
         objectives = data.get("objective_records")
         if not isinstance(objectives, list) or not objectives:
             diagnostics.append("DSE report bundle needs non-empty objective_records")

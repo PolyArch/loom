@@ -86,6 +86,13 @@ def main() -> int:
             raise AssertionError(f"unexpected DSE policy id: {data}")
         if data["candidate_ordering_rule"] != "runtime_score_then_candidate_id":
             raise AssertionError(f"unexpected DSE ordering rule: {data}")
+        expected_policy_configuration = {
+            "policy_kind": "deterministic",
+            "random_seed": None,
+            "conflict_resolution": "candidate_ordering_rule",
+        }
+        if data["policy_configuration"] != expected_policy_configuration:
+            raise AssertionError(f"unexpected DSE policy configuration: {data}")
         if data["referenced_workload_report_bundle_identities"] != ["workload-report-bundle"]:
             raise AssertionError(f"unexpected workload report references: {data}")
         if data["referenced_hardware_candidate_report_bundle_identities"] != ["hardware-report-bundle"]:
