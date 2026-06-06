@@ -94,6 +94,19 @@ def semicolon_list(raw: str) -> list[str]:
     return [entry for entry in raw.split(";") if entry]
 
 
+def semicolon_map(raw: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for entry in raw.split(";"):
+        if not entry:
+            continue
+        if "=" not in entry:
+            continue
+        key, value = entry.rsplit("=", 1)
+        if key and value:
+            parsed[key] = value
+    return parsed
+
+
 def objective_record(row: dict[str, str]) -> dict[str, object]:
     objective = row.get("objective", "")
     objective_id = row.get("objective_record", "") or f"objective::{objective}"
@@ -127,6 +140,7 @@ def candidate_record(row: dict[str, str]) -> dict[str, object]:
         "candidate_kind": row.get("candidate_kind", ""),
         "parent_candidate_ids": [],
         "referenced_input_artifacts": semicolon_list(row.get("input_artifacts", "")),
+        "input_artifact_fingerprints": semicolon_map(row.get("input_artifact_fingerprints", "")),
         "generated_output_artifacts": semicolon_list(row.get("output_artifacts", "")),
         "objective_records_used": [row.get("objective_record", "")],
         "metric_records_used": metric_ids_for_candidate(row),

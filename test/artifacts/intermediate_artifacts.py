@@ -1605,6 +1605,47 @@ def validate_runtime_evidence_summaries(
                 )
 
 
+def validate_dse_report_candidate_input_fingerprints(
+    path: Path,
+    candidate: dict[str, object],
+    diagnostics: list[str],
+    index: int,
+) -> None:
+    input_artifacts = candidate.get("referenced_input_artifacts")
+    input_refs = {
+        reference
+        for reference in input_artifacts
+        if isinstance(reference, str) and reference
+    } if isinstance(input_artifacts, list) else set()
+    input_fingerprints = candidate.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints must be an object")
+        input_fingerprints = {}
+    status = candidate.get("status")
+    if status in {"selected", "pareto", "rejected"} and not input_fingerprints:
+        diagnostics.append(f"DSE report bundle candidate {index} needs input_artifact_fingerprints")
+    for identity, fingerprint in input_fingerprints.items():
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints has invalid identity")
+            continue
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(
+                f"DSE report bundle candidate {index} input_artifact_fingerprints has invalid fingerprint for {identity}"
+            )
+            continue
+        if identity not in input_refs:
+            diagnostics.append(
+                f"DSE report bundle candidate {index} input_artifact_fingerprints references {identity!r} outside inputs"
+            )
+            continue
+        resolved = resolve_artifact_reference(path, identity)
+        if resolved.is_file() and fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints stale for {identity!r}")
+    for reference in input_refs:
+        if reference not in input_fingerprints:
+            diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints lacks {reference!r}")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -2279,6 +2320,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not isinstance(candidate.get(key), list):
                     diagnostics.append(f"DSE report bundle candidate {index} {key} must be a list")
+            validate_dse_report_candidate_input_fingerprints(path, candidate, diagnostics, index)
         selected_candidates = data.get("selected_candidates")
         if isinstance(selected_candidates, list):
             missing_selected = [

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import sys
 from pathlib import Path
@@ -28,6 +29,24 @@ REQUIRED_KEYS = {
     "report_status",
     "diagnostics",
 }
+
+
+def selected_candidate_row(path: Path) -> dict[str, str]:
+    with path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row.get("selection_status") == "selected":
+                return row
+    raise AssertionError(f"{path.name} has no selected candidate row")
+
+
+def semicolon_map(raw: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for entry in raw.split(";"):
+        if not entry:
+            continue
+        key, value = entry.rsplit("=", 1)
+        parsed[key] = value
+    return parsed
 
 
 def main() -> int:
@@ -131,6 +150,13 @@ def main() -> int:
             raise AssertionError(f"unexpected candidate kind: {candidate}")
         if candidate.get("status") != "selected":
             raise AssertionError(f"candidate should be selected: {candidate}")
+        expected_input_fingerprints = semicolon_map(
+            selected_candidate_row(out_dir / "dse-candidate-summary.csv")["input_artifact_fingerprints"]
+        )
+        if candidate.get("input_artifact_fingerprints") != expected_input_fingerprints:
+            raise AssertionError(f"candidate missed input artifact fingerprints: {candidate}")
+        if sorted(candidate.get("referenced_input_artifacts", [])) != sorted(expected_input_fingerprints):
+            raise AssertionError(f"candidate fingerprints do not cover referenced inputs: {candidate}")
         for metric_id in (
             "metric::vecsum::cgra_sim_cycles",
             "metric::shared_reduction_adg::frequency_mhz",
@@ -167,6 +193,28 @@ def main() -> int:
         ]
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one DSE report bundle review: {audit_data}")
+
+        bad_candidate_fingerprint = out_dir / "bad-candidate-fingerprint-dse-report-bundle.json"
+        bad_candidate_fingerprint_data = json.loads(report.read_text())
+        candidate_fingerprints = bad_candidate_fingerprint_data["candidate_list"][0]["input_artifact_fingerprints"]
+        first_input = next(iter(candidate_fingerprints))
+        candidate_fingerprints[first_input] = "bad"
+        bad_candidate_fingerprint.write_text(
+            json.dumps(bad_candidate_fingerprint_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_candidate_fingerprint_audit = out_dir / "bad-candidate-fingerprint-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_candidate_fingerprint_audit),
+                str(bad_candidate_fingerprint),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed candidate input fingerprint unexpectedly passed audit")
 
         bad_runtime_summary = out_dir / "bad-runtime-summary-dse-report-bundle.json"
         bad_runtime_summary_data = json.loads(report.read_text())
