@@ -235,6 +235,43 @@ def host_interface(
     }
 
 
+def runtime_report(
+    *,
+    workload: str,
+    mapping_id: str,
+    host_program_identity: str,
+    work_package_identity: str,
+    launch_descriptor_identity: str,
+    selected_mapping_identity: str,
+    fabric_adg_identity: str,
+    target_profile: dict[str, str],
+    data_movement_policy: str,
+    synchronization_mode: str,
+    fallback: dict[str, object],
+    simulator_report_identities: list[str],
+    diagnostics: list[str],
+) -> dict[str, object]:
+    return {
+        "report_id": f"runtime-report::{workload}::{mapping_id}::report_only",
+        "host_program_identity": host_program_identity,
+        "work_package_identity": work_package_identity,
+        "launch_descriptor_identity": launch_descriptor_identity,
+        "mapping_artifact_identity": selected_mapping_identity,
+        "fabric_adg_identity": fabric_adg_identity,
+        "target_profile_id": target_profile.get("profile_id", ""),
+        "memory_policy": data_movement_policy,
+        "synchronization_mode": synchronization_mode,
+        "fallback_decision": fallback,
+        "simulator_report_identities": simulator_report_identities,
+        "runtime_trace_identity": "",
+        "profiling_record_identity": "",
+        "output_buffer_identities": [],
+        "launch_status": "not_run",
+        "target_status": "not_run",
+        "diagnostic_records": diagnostic_records(diagnostics),
+    }
+
+
 def build_package(
     paths: list[Path],
     target: str,
@@ -429,6 +466,12 @@ def build_package(
     fallback_policy = "report_only"
     synchronization_mode = "host_wait"
     status = "pass" if not diagnostics else "blocked"
+    fallback = fallback_decision(
+        policy=fallback_policy,
+        target_profile=target_profile,
+        status=status,
+        diagnostics=diagnostics,
+    )
     launch_descriptor = build_launch_descriptor(
         descriptor_id=launch_descriptor_identity,
         work_package_identity=work_package_identity,
@@ -467,13 +510,23 @@ def build_package(
             fallback_policy=fallback_policy,
             synchronization_mode=synchronization_mode,
         ),
-        "fallback_policy": fallback_policy,
-        "fallback_decision": fallback_decision(
-            policy=fallback_policy,
+        "runtime_report": runtime_report(
+            workload=workload,
+            mapping_id=mapping_id,
+            host_program_identity=host_program_identity,
+            work_package_identity=work_package_identity,
+            launch_descriptor_identity=launch_descriptor_identity,
+            selected_mapping_identity=selected_mapping_identity,
+            fabric_adg_identity=fabric_adg_identity,
             target_profile=target_profile,
-            status=status,
+            data_movement_policy=data_movement_policy,
+            synchronization_mode=synchronization_mode,
+            fallback=fallback,
+            simulator_report_identities=simulator_report_identities,
             diagnostics=diagnostics,
         ),
+        "fallback_policy": fallback_policy,
+        "fallback_decision": fallback,
         "synchronization_mode": synchronization_mode,
         "data_movement_policy": data_movement_policy,
         "memory_descriptors": memory_descriptors,

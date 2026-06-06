@@ -21,6 +21,7 @@ REQUIRED_KEYS = {
     "selected_hardware_candidate_identity",
     "selected_mapping_artifact_identity",
     "runtime_host_interface",
+    "runtime_evidence",
     "runtime_fallback_decision",
     "report_status",
     "diagnostic_records",
@@ -124,6 +125,18 @@ def main() -> int:
         }
         if data["runtime_fallback_decision"] != expected_runtime_fallback:
             raise AssertionError(f"report should preserve runtime fallback decision: {data}")
+        expected_runtime_evidence = {
+            "runtime_package_identity": "runtime-package",
+            "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "launch_status": "not_run",
+            "target_status": "not_run",
+            "runtime_trace_identity": "",
+            "profiling_record_identity": "",
+            "output_buffer_identities": [],
+            "fallback_decision": expected_runtime_fallback,
+        }
+        if data["runtime_evidence"] != expected_runtime_evidence:
+            raise AssertionError(f"report should preserve runtime evidence references: {data}")
 
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:

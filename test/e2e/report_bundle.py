@@ -153,6 +153,34 @@ def runtime_diagnostic_records(runtime_package: dict[str, object]) -> list[dict[
     return [record for record in records if isinstance(record, dict)]
 
 
+def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | None) -> dict[str, object]:
+    report = runtime_package.get("runtime_report", {})
+    if not isinstance(report, dict):
+        report = {}
+    fallback = report.get("fallback_decision")
+    if not isinstance(fallback, dict):
+        fallback = runtime_package.get("fallback_decision", {})
+    if not isinstance(fallback, dict):
+        fallback = {}
+    output_buffers = report.get("output_buffer_identities", [])
+    if not isinstance(output_buffers, list):
+        output_buffers = []
+    return {
+        "runtime_package_identity": artifact_id(runtime_path) if runtime_path is not None else "",
+        "runtime_report_identity": str(report.get("report_id", "")),
+        "launch_status": str(report.get("launch_status", "")),
+        "target_status": str(report.get("target_status", "")),
+        "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
+        "profiling_record_identity": str(report.get("profiling_record_identity", "")),
+        "output_buffer_identities": [
+            str(identity)
+            for identity in output_buffers
+            if isinstance(identity, str)
+        ],
+        "fallback_decision": fallback,
+    }
+
+
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     dse_path = first_path(grouped, "dse_candidate")
@@ -168,7 +196,9 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "runtime_input_identity": "",
             "selected_hardware_candidate_identity": "",
             "selected_mapping_artifact_identity": "",
+            "runtime_host_interface": {},
             "runtime_fallback_decision": {},
+            "runtime_evidence": {},
             "report_status": "blocked",
             "diagnostic_records": [
                 diagnostic_record(1, "no selected DSE candidate artifact was provided")
@@ -307,6 +337,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "selected_hardware_candidate_identity": hardware,
         "selected_mapping_artifact_identity": artifact_id(mapping_path) if mapping_path is not None else "",
         "runtime_host_interface": runtime_host_interface,
+        "runtime_evidence": runtime_evidence(runtime_package, runtime_path),
         "runtime_fallback_decision": runtime_fallback_decision,
         "optional_artifact_identities": {
             "dfg_sim_report": artifact_id(dfg_path) if dfg_path is not None else "",

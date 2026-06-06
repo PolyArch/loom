@@ -493,6 +493,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "fabric_adg_identity",
             "target_profile",
             "runtime_configuration",
+            "runtime_report",
             "fallback_policy",
             "fallback_decision",
             "synchronization_mode",
@@ -519,6 +520,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "selected_hardware_candidate_identity",
             "selected_mapping_artifact_identity",
             "runtime_host_interface",
+            "runtime_evidence",
             "runtime_fallback_decision",
             "report_status",
             "diagnostic_records",
@@ -1339,6 +1341,108 @@ def validate_host_interface(
         diagnostics.append(f"{label} acceleration mode must require runtime package")
 
 
+def validate_runtime_report(
+    value: object,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package runtime_report must be an object")
+        return
+    for key in (
+        "report_id",
+        "host_program_identity",
+        "work_package_identity",
+        "launch_descriptor_identity",
+        "mapping_artifact_identity",
+        "fabric_adg_identity",
+        "target_profile_id",
+        "memory_policy",
+        "synchronization_mode",
+        "runtime_trace_identity",
+        "profiling_record_identity",
+        "launch_status",
+        "target_status",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"runtime package runtime_report lacks {key}")
+    expected_pairs = (
+        ("host_program_identity", "host_program_identity"),
+        ("work_package_identity", "work_package_identity"),
+        ("launch_descriptor_identity", "launch_descriptor_identity"),
+        ("mapping_artifact_identity", "selected_mapping_artifact_identity"),
+        ("fabric_adg_identity", "fabric_adg_identity"),
+        ("memory_policy", "data_movement_policy"),
+        ("synchronization_mode", "synchronization_mode"),
+    )
+    for report_key, package_key in expected_pairs:
+        if value.get(report_key) != data.get(package_key):
+            diagnostics.append(f"runtime package runtime_report {report_key} does not match package")
+    target_profile = data.get("target_profile")
+    if isinstance(target_profile, dict) and value.get("target_profile_id") != target_profile.get("profile_id"):
+        diagnostics.append("runtime package runtime_report target_profile_id does not match target_profile")
+    fallback = value.get("fallback_decision")
+    if fallback != data.get("fallback_decision"):
+        diagnostics.append("runtime package runtime_report fallback_decision does not match package")
+    simulator_reports = value.get("simulator_report_identities")
+    if not isinstance(simulator_reports, list) or any(not isinstance(identity, str) for identity in simulator_reports):
+        diagnostics.append("runtime package runtime_report simulator_report_identities must be a string list")
+    elif simulator_reports != data.get("simulator_report_identities"):
+        diagnostics.append("runtime package runtime_report simulator_report_identities does not match package")
+    output_buffers = value.get("output_buffer_identities")
+    if not isinstance(output_buffers, list) or any(not isinstance(identity, str) for identity in output_buffers):
+        diagnostics.append("runtime package runtime_report output_buffer_identities must be a string list")
+    validate_diagnostic_records(value.get("diagnostic_records"), diagnostics, "runtime package runtime_report")
+    if data.get("fallback_policy") == "report_only":
+        if value.get("launch_status") != "not_run" or value.get("target_status") != "not_run":
+            diagnostics.append("runtime package report_only runtime_report must remain not_run")
+        if value.get("runtime_trace_identity") or value.get("profiling_record_identity") or output_buffers:
+            diagnostics.append("runtime package report_only runtime_report must not claim runtime outputs")
+
+
+def validate_runtime_evidence(value: object, diagnostics: list[str], require_complete: bool) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("workload report bundle runtime_evidence must be an object")
+        return
+    required_keys = (
+        "runtime_package_identity",
+        "runtime_report_identity",
+        "launch_status",
+        "target_status",
+        "runtime_trace_identity",
+        "profiling_record_identity",
+        "output_buffer_identities",
+        "fallback_decision",
+    )
+    for key in required_keys:
+        if key not in value:
+            diagnostics.append(f"workload report bundle runtime_evidence lacks {key}")
+    for key in (
+        "runtime_package_identity",
+        "runtime_report_identity",
+        "launch_status",
+        "target_status",
+        "runtime_trace_identity",
+        "profiling_record_identity",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
+    outputs = value.get("output_buffer_identities")
+    if not isinstance(outputs, list) or any(not isinstance(identity, str) for identity in outputs):
+        diagnostics.append("workload report bundle runtime_evidence output_buffer_identities must be a string list")
+    fallback = value.get("fallback_decision")
+    if not isinstance(fallback, dict):
+        diagnostics.append("workload report bundle runtime_evidence fallback_decision must be an object")
+        fallback = {}
+    if require_complete and not value.get("runtime_report_identity"):
+        diagnostics.append("workload report bundle pass needs runtime_report_identity")
+    if fallback.get("decision") == "report_only":
+        if value.get("launch_status") != "not_run" or value.get("target_status") != "not_run":
+            diagnostics.append("workload report bundle report_only runtime evidence must remain not_run")
+        if value.get("runtime_trace_identity") or value.get("profiling_record_identity") or outputs:
+            diagnostics.append("workload report bundle report_only runtime evidence must not claim runtime outputs")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -1657,6 +1761,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics,
         )
         validate_host_interface(data.get("host_interface"), data, diagnostics)
+        validate_runtime_report(data.get("runtime_report"), data, diagnostics)
         data_movement_policy = data.get("data_movement_policy")
         if data_movement_policy not in DATA_MOVEMENT_POLICIES:
             diagnostics.append("runtime package has unknown data_movement_policy")
@@ -1789,6 +1894,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             {},
             diagnostics,
             "workload report bundle runtime",
+        )
+        validate_runtime_evidence(
+            data.get("runtime_evidence"),
+            diagnostics,
+            data.get("report_status") == "pass",
         )
         diagnostic_records = validate_diagnostic_records(
             data.get("diagnostic_records"),

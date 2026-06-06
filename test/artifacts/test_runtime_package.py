@@ -26,6 +26,7 @@ REQUIRED_KEYS = {
     "fabric_adg_identity",
     "target_profile",
     "runtime_configuration",
+    "runtime_report",
     "fallback_policy",
     "fallback_decision",
     "synchronization_mode",
@@ -162,6 +163,27 @@ def main() -> int:
         }
         if data["fallback_decision"] != expected_fallback:
             raise AssertionError(f"unexpected fallback decision: {data}")
+        expected_runtime_report = {
+            "report_id": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "host_program_identity": "test-app-host::vecsum::default",
+            "work_package_identity": "work-package::vecsum::vecsum__shared_reduction_adg",
+            "launch_descriptor_identity": expected_launch,
+            "mapping_artifact_identity": "pnr-mapping",
+            "fabric_adg_identity": "shared_reduction_adg",
+            "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+            "memory_policy": "simulated",
+            "synchronization_mode": "host_wait",
+            "fallback_decision": expected_fallback,
+            "simulator_report_identities": ["vecsum-cgra-sim-report", "sim-comparison-report"],
+            "runtime_trace_identity": "",
+            "profiling_record_identity": "",
+            "output_buffer_identities": [],
+            "launch_status": "not_run",
+            "target_status": "not_run",
+            "diagnostic_records": [],
+        }
+        if data["runtime_report"] != expected_runtime_report:
+            raise AssertionError(f"unexpected runtime report: {data}")
         if data["synchronization_mode"] != "host_wait":
             raise AssertionError(f"unexpected synchronization mode: {data}")
         if data["data_movement_policy"] != "simulated":
@@ -255,6 +277,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package requiring runtime for compatibility mode unexpectedly passed audit")
+        fake_execution_package = out_dir / "fake-execution-runtime-package.json"
+        fake_execution_data = json.loads(package.read_text())
+        fake_execution_data["runtime_report"]["launch_status"] = "pass"
+        fake_execution_package.write_text(json.dumps(fake_execution_data, indent=2, sort_keys=True) + "\n")
+        fake_execution_audit = out_dir / "fake-execution-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(fake_execution_audit),
+                str(fake_execution_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("report-only runtime package claiming execution unexpectedly passed audit")
 
         missing_cgra = out_dir / "missing-cgra-runtime-package.json"
         result = artifact_test_common.run_command(
