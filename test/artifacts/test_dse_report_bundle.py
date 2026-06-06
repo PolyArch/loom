@@ -81,6 +81,9 @@ def main() -> int:
             raise AssertionError(f"unexpected workload report references: {data}")
         if data["referenced_hardware_candidate_report_bundle_identities"] != ["hardware-report-bundle"]:
             raise AssertionError(f"unexpected hardware report references: {data}")
+        workload_runtime_evidence = json.loads((out_dir / "workload-report-bundle.json").read_text())[
+            "runtime_evidence"
+        ]
         expected_runtime_summaries = [
             {
                 "workload_report_bundle_identity": "workload-report-bundle",
@@ -88,6 +91,7 @@ def main() -> int:
                 "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
                 "launch_status": "not_run",
                 "target_status": "not_run",
+                "input_artifact_fingerprints": workload_runtime_evidence["input_artifact_fingerprints"],
                 "fallback_decision": {
                     "policy": "report_only",
                     "decision": "report_only",
@@ -163,6 +167,26 @@ def main() -> int:
         ]
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one DSE report bundle review: {audit_data}")
+
+        bad_runtime_summary = out_dir / "bad-runtime-summary-dse-report-bundle.json"
+        bad_runtime_summary_data = json.loads(report.read_text())
+        bad_runtime_summary_data["runtime_evidence_summaries"][0]["input_artifact_fingerprints"][
+            "runtime-package"
+        ] = "bad"
+        bad_runtime_summary.write_text(json.dumps(bad_runtime_summary_data, indent=2, sort_keys=True) + "\n")
+        bad_runtime_summary_audit = out_dir / "bad-runtime-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_summary_audit),
+                str(bad_runtime_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime summary fingerprint unexpectedly passed audit")
 
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())

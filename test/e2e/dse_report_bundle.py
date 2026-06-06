@@ -162,6 +162,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         fallback = evidence.get("fallback_decision", {})
         if not isinstance(fallback, dict):
             fallback = {}
+        input_fingerprints = evidence.get("input_artifact_fingerprints", {})
+        if not isinstance(input_fingerprints, dict):
+            input_fingerprints = {}
         summaries.append(
             {
                 "workload_report_bundle_identity": artifact_id(path),
@@ -169,6 +172,11 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
                 "launch_status": str(evidence.get("launch_status", "")),
                 "target_status": str(evidence.get("target_status", "")),
+                "input_artifact_fingerprints": {
+                    str(identity): str(fingerprint)
+                    for identity, fingerprint in input_fingerprints.items()
+                    if isinstance(identity, str) and isinstance(fingerprint, str)
+                },
                 "fallback_decision": fallback,
             }
         )

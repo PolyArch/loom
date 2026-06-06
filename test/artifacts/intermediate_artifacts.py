@@ -1501,6 +1501,29 @@ def validate_runtime_evidence_summaries(
         ):
             if not isinstance(summary.get(key), str) or not summary.get(key):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
+        input_fingerprints = summary.get("input_artifact_fingerprints")
+        if not isinstance(input_fingerprints, dict):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} input_artifact_fingerprints must be an object"
+            )
+            input_fingerprints = {}
+        else:
+            for identity, fingerprint in input_fingerprints.items():
+                if not isinstance(identity, str) or not identity:
+                    diagnostics.append(
+                        f"DSE report bundle runtime evidence summary {index} "
+                        "input_artifact_fingerprints has invalid identity"
+                    )
+                    continue
+                if not valid_sha256_hex(fingerprint):
+                    diagnostics.append(
+                        f"DSE report bundle runtime evidence summary {index} "
+                        f"input_artifact_fingerprints has invalid fingerprint for {identity}"
+                    )
+        if require_complete and not input_fingerprints:
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} needs input_artifact_fingerprints"
+            )
         fallback = summary.get("fallback_decision")
         validate_fallback_decision(
             fallback,
