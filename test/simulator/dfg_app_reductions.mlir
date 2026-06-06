@@ -7,6 +7,7 @@
 // RUN: env BUILD_DIR=%t.dir/compare_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/compare_swap/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/hash_mix LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/hash_mix/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/xor_block LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/xor_block/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/axpy LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/axpy/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
@@ -29,6 +30,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh compare_swap %t.dir/compare_swap/main_func.dfg.mlir %t.dir/reports/compare_swap.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh hash_mix %t.dir/hash_mix/main_func.dfg.mlir %t.dir/reports/hash_mix.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh xor_block %t.dir/xor_block/main_func.dfg.mlir %t.dir/reports/xor_block.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh axpy %t.dir/axpy/main_func.dfg.mlir %t.dir/reports/axpy.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh matvec %t.dir/matvec/main_func.dfg.mlir %t.dir/reports/matvec.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecadd %t.dir/vecadd/main_func.dfg.mlir %t.dir/reports/vecadd.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecmul %t.dir/vecmul/main_func.dfg.mlir %t.dir/reports/vecmul.report.json %t.dir/summary.csv --append
@@ -50,6 +52,7 @@
 // RUN: FileCheck %s --check-prefix=COMPARE-SWAP < %t.dir/reports/compare_swap.report.json
 // RUN: FileCheck %s --check-prefix=HASH-MIX < %t.dir/reports/hash_mix.report.json
 // RUN: FileCheck %s --check-prefix=XOR-BLOCK < %t.dir/reports/xor_block.report.json
+// RUN: FileCheck %s --check-prefix=AXPY < %t.dir/reports/axpy.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/reports/matvec.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-ROW1 < %t.dir/reports/matvec.row1.report.json
 // RUN: FileCheck %s --check-prefix=MATVEC-CHECKSUM < %t.dir/reports/matvec.checksum.report.json
@@ -146,6 +149,19 @@
 // XOR-BLOCK-DAG: "dataflow.load": 64
 // XOR-BLOCK-DAG: "dataflow.store": 32
 // XOR-BLOCK-DAG: "dataflow.sync": 32
+
+// AXPY-DAG: "kind": "dfg_sim_report"
+// AXPY-DAG: "workload": "axpy"
+// AXPY-DAG: "graph": "g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
+// AXPY-DAG: "status": "pass"
+// AXPY-DAG: "optimistic_cycles": 136
+// AXPY-DAG: "wavefront_steps": 12
+// AXPY-DAG: "event_count": 48
+// AXPY-DAG: "dynamic_work_items": 8
+// AXPY-DAG: "arith.addi": 8
+// AXPY-DAG: "arith.muli": 8
+// AXPY-DAG: "dataflow.load": 16
+// AXPY-DAG: "dataflow.store": 8
 
 // MATVEC-DAG: "kind": "dfg_sim_report"
 // MATVEC-DAG: "workload": "matvec"
@@ -296,6 +312,7 @@
 // INTEGRATE-TRAPZ-DAG: "f32:0.335938"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
+// SUMMARY-DAG: axpy,136,,blocked,DFG-sim report available
 // SUMMARY-DAG: bit_reverse,267,,blocked,DFG-sim report available
 // SUMMARY-DAG: conv1d,83,,blocked,DFG-sim report available
 // SUMMARY-DAG: convolve_1d,157,,blocked,DFG-sim report available

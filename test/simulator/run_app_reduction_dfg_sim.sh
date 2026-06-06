@@ -220,7 +220,23 @@ configure_matvec_row_args() {
     )
 }
 
+configure_axpy_args() {
+    append_ctrl_tokens 8
+    append_raw_memref 1 "1,2,3,4,5,6,7,8"
+    append_repeated_arg 2 8 3
+    append_raw_memref 3 "10,20,30,40,50,60,70,80"
+    append_constant_memref 4 8 "0"
+    append_index_tokens 5 8
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0
+        --workload axpy
+    )
+}
+
 case "${CASE}" in
+    axpy)
+        configure_axpy_args
+        ;;
     bit_reverse)
         append_ctrl_tokens 32
         sim_args+=(
