@@ -23,6 +23,7 @@
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/prefix_sum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/prefix_sum_inclusive LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum_inclusive/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/cumsum LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/cumsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: loom-pnr-map --dfg-mlir %t.dir/bit_reverse/main_func.dfg.mlir --graph g_t_bit_reverse_kernel_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload bit_reverse --output %t.dir/bit_reverse.mapping.csv --artifact %t.dir/bit_reverse.mapping.json
@@ -53,6 +54,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/dotproduct/main_func.dfg.mlir --graph g_t_dotproduct_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload dotproduct --output %t.dir/dotproduct.mapping.csv --artifact %t.dir/dotproduct.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/prefix_sum/main_func.dfg.mlir --graph g_t_prefix_sum_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload prefix_sum --output %t.dir/prefix_sum.mapping.csv --artifact %t.dir/prefix_sum.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/prefix_sum_inclusive/main_func.dfg.mlir --graph g_t_prefix_sum_inclusive_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload prefix_sum_inclusive --output %t.dir/prefix_sum_inclusive.mapping.csv --artifact %t.dir/prefix_sum_inclusive.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/cumsum/main_func.dfg.mlir --graph g_t_cumsum_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload cumsum --output %t.dir/cumsum.mapping.csv --artifact %t.dir/cumsum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/integrate_trapz/main_func.dfg.mlir --graph g_t_integrate_trapz_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload integrate_trapz --output %t.dir/integrate_trapz.mapping.csv --artifact %t.dir/integrate_trapz.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,BIT-REVERSE < %t.dir/bit_reverse.mapping.csv
@@ -83,6 +85,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,DOTPRODUCT < %t.dir/dotproduct.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,SPMV < %t.dir/spmv.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,PREFIX-SUM < %t.dir/prefix_sum.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,PREFIX-SUM-INCLUSIVE < %t.dir/prefix_sum_inclusive.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,CUMSUM < %t.dir/cumsum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,TRAPZ < %t.dir/integrate_trapz.mapping.csv
 
@@ -142,6 +145,8 @@
 // SPMV-NEXT: spmv,shared_reduction_adg,spmv__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
 // PREFIX-SUM-NEXT: prefix_sum,shared_reduction_adg,prefix_sum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+
+// PREFIX-SUM-INCLUSIVE-NEXT: prefix_sum_inclusive,shared_reduction_adg,prefix_sum_inclusive__shared_reduction_adg,6,9,0,0,pass
 
 // CUMSUM-NEXT: cumsum,shared_reduction_adg,cumsum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 

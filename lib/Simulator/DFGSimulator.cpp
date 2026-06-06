@@ -73,6 +73,7 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
+  llvm::DenseSet<mlir::Operation *> gateContinueStates;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
@@ -452,6 +453,33 @@ bool fireInvariant(dataflow::InvariantOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool fireGate(dataflow::GateOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op.getBeforeCondMutable()) ||
+      !hasToken(state.channels, op.getBeforeValueMutable()))
+    return false;
+  Token cond = popToken(state.channels, op.getBeforeCondMutable());
+  Token value = popToken(state.channels, op.getBeforeValueMutable());
+  const bool isContinue = state.gateContinueStates.contains(op.getOperation());
+  const bool open = boolToken(cond);
+
+  if (!isContinue) {
+    if (open) {
+      emitToken(state, op.getAfterValue(), value);
+      state.gateContinueStates.insert(op.getOperation());
+    }
+    return recordEvent(state, op->getName().getStringRef());
+  }
+
+  if (open) {
+    emitToken(state, op.getAfterCond(), Token{TokenKind::Bool, 0, 0.0, true});
+    emitToken(state, op.getAfterValue(), value);
+  } else {
+    emitToken(state, op.getAfterCond(), Token{TokenKind::Bool, 0, 0.0, false});
+    state.gateContinueStates.erase(op.getOperation());
+  }
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
   for (mlir::OpOperand &operand : op->getOpOperands()) {
     if (!hasToken(state.channels, operand))
@@ -588,6 +616,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireCarry(typedOp, state); })
       .Case<dataflow::InvariantOp>(
           [&](auto typedOp) { return fireInvariant(typedOp, state); })
+      .Case<dataflow::GateOp>(
+          [&](auto typedOp) { return fireGate(typedOp, state); })
       .Case<dataflow::SyncOp>(
           [&](auto typedOp) { return fireSync(typedOp, state); })
       .Case<dataflow::LoadOp>(
@@ -608,8 +638,9 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
       op->getNumResults() == 1)
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
-                dataflow::InvariantOp, dataflow::SyncOp, dataflow::LoadOp,
-                dataflow::StoreOp, mlir::arith::ConstantOp>(op))
+                dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
+                dataflow::LoadOp, dataflow::StoreOp,
+                mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }

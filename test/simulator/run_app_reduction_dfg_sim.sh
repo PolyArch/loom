@@ -588,6 +588,19 @@ case "${CASE}" in
             --arg 6=0
         )
         ;;
+    prefix_sum_inclusive)
+        append_ctrl_tokens 1023
+        append_mod_shift_memref 4 1024 10 1
+        append_constant_memref 5 1024 "0"
+        sim_args+=(
+            --graph g_t_prefix_sum_inclusive_kernel_red_0_0
+            --workload prefix_sum_inclusive
+            --arg 1=1
+            --arg 2=1024
+            --arg 3=1
+            --arg 6=1
+        )
+        ;;
     integrate_trapz)
         append_ctrl_tokens 8
         append_trapz_memrefs

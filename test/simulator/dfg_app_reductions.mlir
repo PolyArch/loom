@@ -24,6 +24,7 @@
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l1 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l1/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/prefix_sum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/prefix_sum_inclusive LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum_inclusive/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: mkdir -p %t.dir/reports
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh bit_reverse %t.dir/bit_reverse/main_func.dfg.mlir %t.dir/reports/bit_reverse.report.json %t.dir/summary.csv
@@ -51,6 +52,7 @@
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l1 %t.dir/vecnorm_l1/main_func.dfg.mlir %t.dir/reports/vecnorm_l1.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh vecnorm_l2 %t.dir/vecnorm_l2/main_func.dfg.mlir %t.dir/reports/vecnorm_l2.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum %t.dir/prefix_sum/main_func.dfg.mlir %t.dir/reports/prefix_sum.report.json %t.dir/summary.csv --append
+// RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh prefix_sum_inclusive %t.dir/prefix_sum_inclusive/main_func.dfg.mlir %t.dir/reports/prefix_sum_inclusive.report.json %t.dir/summary.csv --append
 // RUN: env LOOM_DFG_SIM=loom-dfg-sim bash %S/run_app_reduction_dfg_sim.sh integrate_trapz %t.dir/integrate_trapz/main_func.dfg.mlir %t.dir/reports/integrate_trapz.report.json %t.dir/summary.csv --append
 // RUN: FileCheck %s --check-prefix=BIT-REVERSE < %t.dir/reports/bit_reverse.report.json
 // RUN: FileCheck %s --check-prefix=CONV1D < %t.dir/reports/conv1d.report.json
@@ -84,6 +86,7 @@
 // RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/reports/vecnorm_l1.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/reports/vecnorm_l2.report.json
 // RUN: FileCheck %s --check-prefix=PREFIX-SUM < %t.dir/reports/prefix_sum.report.json
+// RUN: FileCheck %s --check-prefix=PREFIX-SUM-INCLUSIVE < %t.dir/reports/prefix_sum_inclusive.report.json
 // RUN: FileCheck %s --check-prefix=INTEGRATE-TRAPZ < %t.dir/reports/integrate_trapz.report.json
 // RUN: FileCheck %s --check-prefix=SUMMARY < %t.dir/summary.csv
 
@@ -407,6 +410,16 @@
 // PREFIX-SUM-DAG: "event_count": 451
 // PREFIX-SUM-DAG: "i32:2016"
 
+// PREFIX-SUM-INCLUSIVE-DAG: "kind": "dfg_sim_report"
+// PREFIX-SUM-INCLUSIVE-DAG: "workload": "prefix_sum_inclusive"
+// PREFIX-SUM-INCLUSIVE-DAG: "graph": "g_t_prefix_sum_inclusive_kernel_red_0_0"
+// PREFIX-SUM-INCLUSIVE-DAG: "status": "pass"
+// PREFIX-SUM-INCLUSIVE-DAG: "optimistic_cycles": 13302
+// PREFIX-SUM-INCLUSIVE-DAG: "wavefront_steps": 2050
+// PREFIX-SUM-INCLUSIVE-DAG: "event_count": 7164
+// PREFIX-SUM-INCLUSIVE-DAG: "dynamic_work_items": 1023
+// PREFIX-SUM-INCLUSIVE-DAG: "i32:5620"
+
 // INTEGRATE-TRAPZ-DAG: "kind": "dfg_sim_report"
 // INTEGRATE-TRAPZ-DAG: "workload": "integrate_trapz"
 // INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
@@ -432,6 +445,7 @@
 // SUMMARY-DAG: mean,904,,blocked,DFG-sim report available
 // SUMMARY-DAG: matvec,371,,blocked,DFG-sim report available
 // SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
+// SUMMARY-DAG: prefix_sum_inclusive,13302,,blocked,DFG-sim report available
 // SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
 // SUMMARY-DAG: relu,707,,blocked,DFG-sim report available
 // SUMMARY-DAG: rotate_bits,544,,blocked,DFG-sim report available
