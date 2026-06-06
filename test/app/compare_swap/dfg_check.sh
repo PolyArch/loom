@@ -5,7 +5,9 @@ set -euo pipefail
 export LC_ALL=C
 
 KERNEL="compare_swap"
-EXPECT_GRAPH="no"
+EXPECT_GRAPH="yes"
+EXPECT_STREAM="no"
+EXPECT_STORE="yes"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../../.." && pwd)"
 SHARED="${REPO}/test/app/dfg_common.sh"

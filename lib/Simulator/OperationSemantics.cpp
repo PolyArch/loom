@@ -1,5 +1,6 @@
 #include "Simulator/OperationSemantics.h"
 
+#include <cmath>
 #include <limits>
 #include <optional>
 #include <system_error>
@@ -23,13 +24,22 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.subf", 2, 2, true, true},
     {"arith.mulf", 3, 3, true, true},
     {"arith.addi", 1, 1, true, true},
+    {"arith.subi", 1, 1, true, true},
     {"arith.muli", 3, 3, true, true},
     {"arith.andi", 1, 1, true, true},
     {"arith.ori", 1, 1, true, true},
+    {"arith.xori", 1, 1, true, true},
     {"arith.shli", 1, 1, true, true},
     {"arith.shrui", 1, 1, true, true},
+    {"arith.remui", 8, 8, true, true},
+    {"arith.cmpi", 1, 1, true, true},
+    {"arith.cmpf", 2, 2, true, true},
+    {"arith.select", 1, 1, true, true},
     {"arith.index_cast", 1, 1, true, true},
+    {"llvm.trunc", 1, 1, true, true},
     {"llvm.zext", 1, 1, true, true},
+    {"llvm.select", 1, 1, true, true},
+    {"llvm.intr.fshl", 1, 1, true, true},
     {"llvm.intr.fmuladd", 4, 4, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"dataflow.stream", 1, 1, false, true},
@@ -92,6 +102,121 @@ double asFloat(const PrimitiveValue &value) {
   return static_cast<double>(asInteger(value));
 }
 
+unsigned normalizeBitWidth(unsigned bitWidth) {
+  if (bitWidth == 0 || bitWidth > 64)
+    return 64;
+  return bitWidth;
+}
+
+std::uint64_t maskForBitWidth(unsigned bitWidth) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  if (bitWidth == 64)
+    return ~std::uint64_t{0};
+  return (std::uint64_t{1} << bitWidth) - 1;
+}
+
+std::uint64_t toUnsignedBits(const PrimitiveValue &value, unsigned bitWidth) {
+  return static_cast<std::uint64_t>(asInteger(value)) &
+         maskForBitWidth(bitWidth);
+}
+
+std::int64_t fromUnsignedBits(std::uint64_t bits, unsigned bitWidth) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  bits &= maskForBitWidth(bitWidth);
+  if (bitWidth == 64)
+    return static_cast<std::int64_t>(bits);
+  const std::uint64_t signBit = std::uint64_t{1} << (bitWidth - 1);
+  if ((bits & signBit) == 0)
+    return static_cast<std::int64_t>(bits);
+  return static_cast<std::int64_t>(bits | ~maskForBitWidth(bitWidth));
+}
+
+PrimitiveValue integerFromBits(std::uint64_t bits, unsigned bitWidth) {
+  return PrimitiveValue::integer(fromUnsignedBits(bits, bitWidth));
+}
+
+PrimitiveValue integerFromSigned(std::int64_t value, unsigned bitWidth) {
+  return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
+}
+
+bool compareInteger(llvm::StringRef predicate, const PrimitiveValue &lhs,
+                    const PrimitiveValue &rhs, unsigned bitWidth) {
+  if (predicate == "eq")
+    return asInteger(lhs) == asInteger(rhs);
+  if (predicate == "ne")
+    return asInteger(lhs) != asInteger(rhs);
+  if (predicate == "slt")
+    return asInteger(lhs) < asInteger(rhs);
+  if (predicate == "sle")
+    return asInteger(lhs) <= asInteger(rhs);
+  if (predicate == "sgt")
+    return asInteger(lhs) > asInteger(rhs);
+  if (predicate == "sge")
+    return asInteger(lhs) >= asInteger(rhs);
+  const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
+  const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
+  if (predicate == "ult")
+    return lhsBits < rhsBits;
+  if (predicate == "ule")
+    return lhsBits <= rhsBits;
+  if (predicate == "ugt")
+    return lhsBits > rhsBits;
+  if (predicate == "uge")
+    return lhsBits >= rhsBits;
+  return false;
+}
+
+bool compareFloat(llvm::StringRef predicate, const PrimitiveValue &lhs,
+                  const PrimitiveValue &rhs) {
+  const double lhsValue = asFloat(lhs);
+  const double rhsValue = asFloat(rhs);
+  const bool lhsNan = std::isnan(lhsValue);
+  const bool rhsNan = std::isnan(rhsValue);
+  const bool ordered = !lhsNan && !rhsNan;
+  if (predicate == "false")
+    return false;
+  if (predicate == "true")
+    return true;
+  if (predicate == "ord")
+    return ordered;
+  if (predicate == "uno")
+    return !ordered;
+  if (predicate == "oeq")
+    return ordered && lhsValue == rhsValue;
+  if (predicate == "ogt")
+    return ordered && lhsValue > rhsValue;
+  if (predicate == "oge")
+    return ordered && lhsValue >= rhsValue;
+  if (predicate == "olt")
+    return ordered && lhsValue < rhsValue;
+  if (predicate == "ole")
+    return ordered && lhsValue <= rhsValue;
+  if (predicate == "one")
+    return ordered && lhsValue != rhsValue;
+  if (predicate == "ueq")
+    return !ordered || lhsValue == rhsValue;
+  if (predicate == "ugt")
+    return !ordered || lhsValue > rhsValue;
+  if (predicate == "uge")
+    return !ordered || lhsValue >= rhsValue;
+  if (predicate == "ult")
+    return !ordered || lhsValue < rhsValue;
+  if (predicate == "ule")
+    return !ordered || lhsValue <= rhsValue;
+  if (predicate == "une")
+    return !ordered || lhsValue != rhsValue;
+  return false;
+}
+
+llvm::Error requirePredicate(llvm::StringRef opName,
+                             llvm::StringRef predicate) {
+  if (!predicate.empty())
+    return llvm::Error::success();
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "%s requires a predicate descriptor",
+                                 opName.str().c_str());
+}
+
 } // namespace
 
 PrimitiveValue PrimitiveValue::none() { return PrimitiveValue{}; }
@@ -144,6 +269,15 @@ loom::sim::estimateOperationCost(llvm::StringRef opName) {
 llvm::Expected<PrimitiveValue>
 loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
                                       llvm::ArrayRef<PrimitiveValue> operands) {
+  return evaluatePrimitiveOperation(PrimitiveOperationDescriptor{opName, "", 0},
+                                    operands);
+}
+
+llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
+    const PrimitiveOperationDescriptor &descriptor,
+    llvm::ArrayRef<PrimitiveValue> operands) {
+  llvm::StringRef opName = descriptor.name;
+  const unsigned bitWidth = normalizeBitWidth(descriptor.resultBitWidth);
   if (opName == "arith.addf") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
@@ -165,26 +299,41 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
   if (opName == "arith.addi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return PrimitiveValue::integer(asInteger(operands[0]) +
-                                   asInteger(operands[1]));
+    return integerFromSigned(asInteger(operands[0]) + asInteger(operands[1]),
+                             bitWidth);
+  }
+  if (opName == "arith.subi") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    return integerFromSigned(asInteger(operands[0]) - asInteger(operands[1]),
+                             bitWidth);
   }
   if (opName == "arith.muli") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return PrimitiveValue::integer(asInteger(operands[0]) *
-                                   asInteger(operands[1]));
+    return integerFromSigned(asInteger(operands[0]) * asInteger(operands[1]),
+                             bitWidth);
   }
   if (opName == "arith.andi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return PrimitiveValue::integer(asInteger(operands[0]) &
-                                   asInteger(operands[1]));
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) &
+                               toUnsignedBits(operands[1], bitWidth),
+                           bitWidth);
   }
   if (opName == "arith.ori") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    return PrimitiveValue::integer(asInteger(operands[0]) |
-                                   asInteger(operands[1]));
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) |
+                               toUnsignedBits(operands[1], bitWidth),
+                           bitWidth);
+  }
+  if (opName == "arith.xori") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) ^
+                               toUnsignedBits(operands[1], bitWidth),
+                           bitWidth);
   }
   if (opName == "arith.shli") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
@@ -192,8 +341,9 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
     auto amountOrErr = asShiftAmount(opName, operands[1]);
     if (!amountOrErr)
       return amountOrErr.takeError();
-    return PrimitiveValue::integer(static_cast<std::int64_t>(
-        static_cast<std::uint64_t>(asInteger(operands[0])) << *amountOrErr));
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth)
+                               << *amountOrErr,
+                           bitWidth);
   }
   if (opName == "arith.shrui") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
@@ -201,13 +351,54 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
     auto amountOrErr = asShiftAmount(opName, operands[1]);
     if (!amountOrErr)
       return amountOrErr.takeError();
-    return PrimitiveValue::integer(static_cast<std::int64_t>(
-        static_cast<std::uint64_t>(asInteger(operands[0])) >> *amountOrErr));
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) >>
+                               *amountOrErr,
+                           bitWidth);
+  }
+  if (opName == "arith.remui") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    const std::uint64_t divisor = toUnsignedBits(operands[1], bitWidth);
+    if (divisor == 0)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "%s divisor must be non-zero",
+                                     opName.str().c_str());
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth) % divisor,
+                           bitWidth);
+  }
+  if (opName == "arith.cmpi") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    if (llvm::Error predicate =
+            requirePredicate(opName, descriptor.predicate))
+      return std::move(predicate);
+    return PrimitiveValue::boolean(
+        compareInteger(descriptor.predicate, operands[0], operands[1],
+                       bitWidth));
+  }
+  if (opName == "arith.cmpf") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    if (llvm::Error predicate =
+            requirePredicate(opName, descriptor.predicate))
+      return std::move(predicate);
+    return PrimitiveValue::boolean(
+        compareFloat(descriptor.predicate, operands[0], operands[1]));
+  }
+  if (opName == "arith.select" || opName == "llvm.select") {
+    if (llvm::Error arity = requireArity(opName, operands, 3))
+      return std::move(arity);
+    return operands[0].boolValue ? operands[1] : operands[2];
   }
   if (opName == "arith.index_cast") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
-    return PrimitiveValue::integer(asInteger(operands[0]));
+    return integerFromSigned(asInteger(operands[0]), bitWidth);
+  }
+  if (opName == "llvm.trunc") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    return integerFromBits(toUnsignedBits(operands[0], bitWidth), bitWidth);
   }
   if (opName == "llvm.zext") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
@@ -217,7 +408,19 @@ loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
       return llvm::createStringError(
           std::errc::invalid_argument,
           "%s requires a non-negative integer token", opName.str().c_str());
-    return PrimitiveValue::integer(value);
+    return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
+  }
+  if (opName == "llvm.intr.fshl") {
+    if (llvm::Error arity = requireArity(opName, operands, 3))
+      return std::move(arity);
+    const unsigned width = normalizeBitWidth(descriptor.resultBitWidth);
+    const unsigned amount =
+        static_cast<unsigned>(toUnsignedBits(operands[2], width) % width);
+    const std::uint64_t lhs = toUnsignedBits(operands[0], width);
+    const std::uint64_t rhs = toUnsignedBits(operands[1], width);
+    if (amount == 0)
+      return integerFromBits(lhs, width);
+    return integerFromBits((lhs << amount) | (rhs >> (width - amount)), width);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

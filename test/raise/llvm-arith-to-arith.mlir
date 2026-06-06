@@ -41,6 +41,13 @@ llvm.func @float_cmp(%a: f32, %b: f32) -> i1 {
     llvm.return %0 : i1
 }
 
+// CHECK-LABEL: func.func @numeric_select
+llvm.func @numeric_select(%cond: i1, %a: i32, %b: i32) -> i32 {
+    // CHECK: %{{.*}} = arith.select %arg0, %arg1, %arg2 : i32
+    %0 = llvm.select %cond, %a, %b : i1, i32
+    llvm.return %0 : i32
+}
+
 // CHECK-LABEL: func.func @int_constant
 llvm.func @int_constant() -> i32 {
     // CHECK: %{{.*}} = arith.constant 42 : i32
@@ -55,4 +62,11 @@ llvm.func @ptr_load_stays_llvm(%p: !llvm.ptr) -> f32 {
     // CHECK: %{{.*}} = llvm.load
     %v = llvm.load %p : !llvm.ptr -> f32
     llvm.return %v : f32
+}
+
+// CHECK-LABEL: func.func @ptr_select_stays_llvm
+llvm.func @ptr_select_stays_llvm(%cond: i1, %a: !llvm.ptr, %b: !llvm.ptr) -> !llvm.ptr {
+    // CHECK: %{{.*}} = llvm.select
+    %0 = llvm.select %cond, %a, %b : i1, !llvm.ptr
+    llvm.return %0 : !llvm.ptr
 }

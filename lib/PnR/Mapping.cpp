@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -54,6 +55,7 @@ struct HardwareResource {
   std::string id;
   ResourceKind kind;
   std::string schedule;
+  std::map<std::string, std::set<std::string>> hwParamOptions;
   std::map<std::string, std::string> swConfigs;
   llvm::StringSet<> supportedOps;
   bool used = false;
@@ -202,12 +204,48 @@ std::string scheduleName(fabric::Schedule schedule) {
   return fabric::stringifySchedule(schedule).str();
 }
 
+std::optional<std::string> predicateConfig(mlir::Operation *op) {
+  if (auto cmp = mlir::dyn_cast<mlir::arith::CmpIOp>(op))
+    return mlir::arith::stringifyCmpIPredicate(cmp.getPredicate()).str();
+  if (auto cmp = mlir::dyn_cast<mlir::arith::CmpFOp>(op))
+    return mlir::arith::stringifyCmpFPredicate(cmp.getPredicate()).str();
+  return std::nullopt;
+}
+
+std::map<std::string, std::string> softwareConfigsFor(const SoftwareNode &node) {
+  std::map<std::string, std::string> configs;
+  if (std::optional<std::string> predicate = predicateConfig(node.op))
+    configs.try_emplace("predicate", *predicate);
+  return configs;
+}
+
 std::string nearestSchedule(mlir::Operation *op) {
   for (mlir::Operation *cursor = op; cursor; cursor = cursor->getParentOp()) {
     if (auto attr = cursor->getAttrOfType<fabric::ScheduleAttr>("schedule"))
       return scheduleName(attr.getValue());
   }
   return "spatial";
+}
+
+void appendHwParamOptions(mlir::Operation *op, HardwareResource &resource) {
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (!hwParams)
+    return;
+  for (mlir::Attribute paramSet : hwParams) {
+    auto dict = mlir::dyn_cast<mlir::DictionaryAttr>(paramSet);
+    if (!dict)
+      continue;
+    for (mlir::NamedAttribute namedAttr : dict) {
+      std::set<std::string> &values =
+          resource.hwParamOptions[namedAttr.getName().getValue().str()];
+      if (auto array = mlir::dyn_cast<mlir::ArrayAttr>(namedAttr.getValue())) {
+        for (mlir::Attribute value : array)
+          values.insert(configValue(value));
+        continue;
+      }
+      values.insert(configValue(namedAttr.getValue()));
+    }
+  }
 }
 
 void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
@@ -229,6 +267,7 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
                          schedule,
                          {},
                          {},
+                         {},
                          false});
   }
   for (std::uint64_t i = 0; i < storePorts; ++i) {
@@ -236,6 +275,7 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
         HardwareResource{(hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
                          ResourceKind::MemStore,
                          schedule,
+                         {},
                          {},
                          {},
                          false});
@@ -252,6 +292,7 @@ void appendFabricOpResource(
   resource.id = (hardwareName + "::fabric.op#" + llvm::Twine(index)).str();
   resource.kind = ResourceKind::FabricOp;
   resource.schedule = nearestSchedule(op);
+  appendHwParamOptions(op, resource);
   if (auto swConfigs = op->getAttrOfType<mlir::DictionaryAttr>("sw_configs")) {
     for (mlir::NamedAttribute namedAttr : swConfigs) {
       resource.swConfigs[namedAttr.getName().getValue().str()] =
@@ -284,6 +325,26 @@ collectHardwareResources(mlir::Operation *hardware, llvm::StringRef name) {
   return resources;
 }
 
+bool resourceSupportsConfig(const HardwareResource &resource,
+                            llvm::StringRef key, llvm::StringRef value) {
+  auto fixed = resource.swConfigs.find(key.str());
+  if (fixed != resource.swConfigs.end())
+    return fixed->second == value;
+  auto allowed = resource.hwParamOptions.find(key.str());
+  if (allowed == resource.hwParamOptions.end() || allowed->second.empty())
+    return true;
+  return allowed->second.count(value.str()) != 0;
+}
+
+bool resourceSupportsSoftwareConfigs(const SoftwareNode &node,
+                                     const HardwareResource &resource) {
+  for (const auto &[key, value] : softwareConfigsFor(node)) {
+    if (!resourceSupportsConfig(resource, key, value))
+      return false;
+  }
+  return true;
+}
+
 HardwareResource *
 claimResource(SoftwareNode &node,
               llvm::MutableArrayRef<HardwareResource> resources) {
@@ -292,6 +353,8 @@ claimResource(SoftwareNode &node,
       continue;
     if (resource.kind == ResourceKind::FabricOp &&
         !resource.supportedOps.contains(node.operation))
+      continue;
+    if (!resourceSupportsSoftwareConfigs(node, resource))
       continue;
     resource.used = true;
     return &resource;
@@ -484,6 +547,7 @@ void addConfig(llvm::SmallVectorImpl<ConfigEntry> &entries,
 llvm::Error appendPlacementConfig(MappingSummary &summary,
                                   const SoftwareNode &node,
                                   const HardwareResource &resource) {
+  std::set<std::string> emittedSwConfigKeys;
   if (resource.kind == ResourceKind::FabricOp) {
     if (std::optional<std::string> opSel = configFor(resource, "op_sel")) {
       if (*opSel != node.operation)
@@ -507,8 +571,21 @@ llvm::Error appendPlacementConfig(MappingSummary &summary,
       resource.supportedOps.size() > 1 && !configFor(resource, "op_sel")) {
     addConfig(summary.configEntries, resource.id, "sw_configs.op_sel",
               node.operation, source);
+    emittedSwConfigKeys.insert("op_sel");
+  }
+  for (const auto &[key, value] : softwareConfigsFor(node)) {
+    if (!resourceSupportsConfig(resource, key, value))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware resource %s does not support software config %s=%s",
+          resource.id.c_str(), key.c_str(), value.c_str());
+    addConfig(summary.configEntries, resource.id, "sw_configs." + key, value,
+              source);
+    emittedSwConfigKeys.insert(key);
   }
   for (const auto &[key, value] : resource.swConfigs) {
+    if (emittedSwConfigKeys.count(key) != 0)
+      continue;
     addConfig(summary.configEntries, resource.id, "sw_configs." + key, value,
               source);
   }

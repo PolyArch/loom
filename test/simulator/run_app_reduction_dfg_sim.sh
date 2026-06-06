@@ -79,6 +79,12 @@ append_constant_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+append_raw_memref() {
+    local index="$1"
+    local values="$2"
+    sim_args+=(--memref "${index}=${values}")
+}
+
 append_mod_shift_memref() {
     local index="$1"
     local count="$2"
@@ -308,6 +314,18 @@ case "${CASE}" in
             --arg 6=5.000000e-01
             --arg 7=1
             --arg 8=0.000000e+00
+        )
+        ;;
+    compare_swap)
+        append_ctrl_tokens 16
+        append_raw_memref 1 "5,2,8,1,9,3,7,4,6,10,15,12,11,14,13,16"
+        append_raw_memref 2 "3,7,1,9,2,8,4,6,10,5,12,15,14,11,16,13"
+        append_constant_memref 3 16 "0.000000e+00"
+        append_constant_memref 4 16 "0.000000e+00"
+        append_index_tokens 5 16
+        sim_args+=(
+            --graph g_t_main_0_0
+            --workload compare_swap
         )
         ;;
     *)

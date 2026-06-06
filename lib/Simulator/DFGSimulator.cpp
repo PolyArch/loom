@@ -75,6 +75,7 @@ struct SimulatorState {
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
+  llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
   std::uint64_t eventCount = 0;
@@ -242,9 +243,13 @@ std::uint64_t dynamicWorkItems(const SimulatorState &state) {
   std::uint64_t maxStreamItems = 0;
   for (const auto &entry : state.streamStates)
     maxStreamItems = std::max(maxStreamItems, entry.second.trueEmissions);
-  if (maxStreamItems == 0 && state.eventCount > 0)
+  std::uint64_t maxSeededItems = 0;
+  for (const auto &entry : state.seededTokenCounts)
+    maxSeededItems = std::max(maxSeededItems, entry.second);
+  const std::uint64_t workItems = std::max(maxStreamItems, maxSeededItems);
+  if (workItems == 0 && state.eventCount > 0)
     return 1;
-  return maxStreamItems;
+  return workItems;
 }
 
 void flushPendingTokens(SimulatorState &state) {
@@ -297,6 +302,22 @@ Token tokenFromPrimitiveValue(const PrimitiveValue &value) {
     return Token{TokenKind::Bool, 0, 0.0, value.boolValue};
   }
   return Token{TokenKind::None};
+}
+
+unsigned integerBitWidth(mlir::Type type) {
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intType.getWidth();
+  if (mlir::isa<mlir::IndexType>(type))
+    return 64;
+  return 0;
+}
+
+std::string primitivePredicate(mlir::Operation *op) {
+  if (auto cmp = mlir::dyn_cast<mlir::arith::CmpIOp>(op))
+    return mlir::arith::stringifyCmpIPredicate(cmp.getPredicate()).str();
+  if (auto cmp = mlir::dyn_cast<mlir::arith::CmpFOp>(op))
+    return mlir::arith::stringifyCmpFPredicate(cmp.getPredicate()).str();
+  return "";
 }
 
 bool evaluateCont(std::int64_t current, std::int64_t ub, llvm::StringRef pred) {
@@ -497,7 +518,11 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
     operands.push_back(
         primitiveValueFromToken(popToken(state.channels, operand)));
   auto valueOrErr =
-      evaluatePrimitiveOperation(op->getName().getStringRef(), operands);
+      evaluatePrimitiveOperation(
+          PrimitiveOperationDescriptor{op->getName().getStringRef(),
+                                       primitivePredicate(op),
+                                       integerBitWidth(result.getType())},
+          operands);
   if (!valueOrErr) {
     state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
     return false;
@@ -640,6 +665,7 @@ void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
   for (mlir::OpOperand &use : arg.getUses())
     state.channels[&use].push_back(token);
   state.observedOutputs[arg].push_back(token);
+  ++state.seededTokenCounts[arg];
 }
 
 llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {

@@ -188,6 +188,39 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %wide : !fabric.bits<64>
     }
   }
+  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.op [@arith.cmpf]
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>) -> () {
+      %pred = fabric.op [@arith.cmpf] (%lhs, %rhs)
+              {hw_params = [{predicate = ["oeq", "ogt", "ugt", "ule"]}]}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+      fabric.yield
+    }
+  }
+  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                    %pb = %i32b : !fabric.bits<32>,
+                    %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+    // CHECK: fabric.op [@arith.select]
+    fabric.fu(%sel = %pa : !fabric.bits<32> to !fabric.bits<1>,
+              %when_true = %pb : !fabric.bits<32>,
+              %when_false = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %selected = fabric.op [@arith.select] (%sel, %when_true, %when_false)
+                  : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
+                    -> !fabric.bits<32>
+      fabric.yield %selected : !fabric.bits<32>
+    }
+    // CHECK: fabric.op [@arith.select]
+    fabric.fu(%sel = %pa : !fabric.bits<32> to !fabric.bits<1>,
+              %when_true = %pb : !fabric.bits<32>,
+              %when_false = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %selected = fabric.op [@arith.select] (%sel, %when_true, %when_false)
+                  : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
+                    -> !fabric.bits<32>
+      fabric.yield %selected : !fabric.bits<32>
+    }
+  }
   fabric.pe [spatial] (%pc = %ctrl : !fabric.bits<0>) -> !fabric.bits<0> {
     fabric.fu(%fc = %pc : !fabric.bits<0>) -> () {
       // CHECK: fabric.op [@dataflow.sync]
@@ -198,20 +231,23 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
   // CHECK: fabric.mem [spatial]
-  %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %store_done =
+  %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %store_done0, %store_done1 =
       fabric.mem [spatial] mgr(%mgr) load(%i32a, %ctrl, %i32b, %ctrl,
                                           %i32c, %ctrl, %i32d, %ctrl)
-                            store(%i32a, %i32b, %ctrl)
-        [{load_group_size = 4 : i32, store_group_size = 1 : i32}]
+                            store(%i32a, %i32b, %ctrl,
+                                  %i32c, %i32d, %ctrl)
+        [{load_group_size = 4 : i32, store_group_size = 2 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>,
            !fabric.bits<32>, !fabric.bits<0>,
            !fabric.bits<32>, !fabric.bits<0>,
            !fabric.bits<32>, !fabric.bits<0>,
+           !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>,
            !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
         -> (!fabric.bits<32>, !fabric.bits<0>,
             !fabric.bits<32>, !fabric.bits<0>,
             !fabric.bits<32>, !fabric.bits<0>,
             !fabric.bits<32>, !fabric.bits<0>,
+            !fabric.bits<0>,
             !fabric.bits<0>)
   fabric.yield
 }

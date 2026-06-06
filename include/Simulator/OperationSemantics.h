@@ -34,6 +34,12 @@ struct OperationCost {
   std::uint64_t reciprocalThroughput = 1;
 };
 
+struct PrimitiveOperationDescriptor {
+  llvm::StringRef name;
+  llvm::StringRef predicate;
+  unsigned resultBitWidth = 0;
+};
+
 bool isSupportedPrimitiveOperation(llvm::StringRef opName);
 
 bool isSupportedMappedOperation(llvm::StringRef opName);
@@ -44,6 +50,10 @@ llvm::Expected<OperationCost> estimateOperationCost(llvm::StringRef opName);
 
 llvm::Expected<PrimitiveValue>
 evaluatePrimitiveOperation(llvm::StringRef opName,
+                           llvm::ArrayRef<PrimitiveValue> operands);
+
+llvm::Expected<PrimitiveValue>
+evaluatePrimitiveOperation(const PrimitiveOperationDescriptor &descriptor,
                            llvm::ArrayRef<PrimitiveValue> operands);
 
 } // namespace sim

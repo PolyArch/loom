@@ -104,6 +104,25 @@ struct FCmpRewrite : public ::mlir::OpRewritePattern<::mlir::LLVM::FCmpOp> {
   }
 };
 
+struct SelectRewrite
+    : public ::mlir::OpRewritePattern<::mlir::LLVM::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::LLVM::SelectOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    if (!isArithCompatibleType(op.getResult().getType()))
+      return ::mlir::failure();
+    if (!isArithCompatibleType(op.getTrueValue().getType()) ||
+        !isArithCompatibleType(op.getFalseValue().getType()))
+      return ::mlir::failure();
+    rewriter.replaceOpWithNewOp<::mlir::arith::SelectOp>(
+        op, op.getResult().getType(), op.getCondition(), op.getTrueValue(),
+        op.getFalseValue());
+    return ::mlir::success();
+  }
+};
+
 // llvm.mlir.constant with builtin int/float type -> arith.constant.
 // llvm.mlir.constant with pointer / struct / vector elt of !llvm.* stays
 // in llvm form because arith.constant cannot represent it directly.
@@ -177,7 +196,7 @@ struct LLVMArithToArithPass
         BinaryRewrite<::mlir::LLVM::FRemOp, ::mlir::arith::RemFOp>,
 
         // compares + constants
-        ICmpRewrite, FCmpRewrite, ConstantRewrite>(ctx);
+        ICmpRewrite, FCmpRewrite, SelectRewrite, ConstantRewrite>(ctx);
 
     if (failed(::mlir::applyPatternsGreedily(funcOp.getBody(),
                                              std::move(patterns))))
