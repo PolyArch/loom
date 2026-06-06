@@ -184,7 +184,13 @@ def assert_json_artifact(path: Path, required_keys: set[str]) -> None:
         raise AssertionError(f"{path.name}: schema_version must be 1")
 
 
-def write_dfg_report(path: Path, workload: str, graph: str, cycles: int) -> None:
+def write_dfg_report(
+    path: Path,
+    workload: str,
+    graph: str,
+    cycles: int,
+    final_outputs: list[str] | None = None,
+) -> None:
     path.write_text(
         json.dumps(
             {
@@ -199,7 +205,7 @@ def write_dfg_report(path: Path, workload: str, graph: str, cycles: int) -> None
                 "optimistic_cycles": cycles,
                 "wavefront_steps": min(cycles, 4),
                 "event_count": min(cycles, 10),
-                "final_outputs": ["none"],
+                "final_outputs": final_outputs if final_outputs is not None else ["none"],
                 "diagnostics": [],
             }
         )
@@ -687,24 +693,12 @@ def main() -> int:
             raise AssertionError("DFG cycle backed only by primitive coverage unexpectedly passed audit")
 
         valid_dfg_report = out_dir / "valid-dfg-sim-report.json"
-        valid_dfg_report.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "dfg_sim_report",
-                    "workload": "vecadd",
-                    "graph": "g_vecadd",
-                    "status": "pass",
-                    "metric_definition": "optimistic_operation_latency_sum",
-                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
-                    "operation_cost_model_source": "loom.sim.operation_cost.v1",
-                    "optimistic_cycles": 10,
-                    "wavefront_steps": 4,
-                    "event_count": 10,
-                    "final_outputs": ["none", "f32:1"],
-                    "diagnostics": [],
-                }
-            )
+        write_dfg_report(
+            valid_dfg_report,
+            "vecadd",
+            "g_vecadd",
+            10,
+            final_outputs=["none", "f32:1"],
         )
         dfg_from_report = out_dir / "dfg-from-report-sim-cycle-summary.csv"
         dfg_from_report.write_text(
@@ -769,54 +763,7 @@ def main() -> int:
             "vecadd,fabric0,map0,1,1,0,0,pass,verified mapping\n"
         )
         valid_mapping_artifact = out_dir / "valid-pnr-mapping.json"
-        valid_mapping_artifact.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "pnr_mapping",
-                    "workload": "vecadd",
-                    "hardware": "fabric0",
-                    "graph": "g_vecadd",
-                    "mapping_id": "map0",
-                    "status": "pass",
-                    "placed_records": 1,
-                    "routed_edges": 1,
-                    "unrouted_edges": 0,
-                    "unplaced_records": 0,
-                    "config_records": 0,
-                    "placements": [
-                        {
-                            "software": "arith.addi#0",
-                            "operation": "arith.addi",
-                            "resource_kind": "fabric.op",
-                            "hardware": "fabric0::fabric.op#0",
-                            "schedule": "spatial",
-                        }
-                    ],
-                    "routes": [
-                        {
-                            "record_id": "route#0",
-                            "edge_ref": "arith.addi#0.result0->arith.muli#0.operand0",
-                            "producer_binding": "placement:arith.addi#0",
-                            "consumer_binding": "placement:arith.muli#0",
-                            "payload_kind": "data",
-                            "from": "arith.addi#0",
-                            "to": "arith.muli#0",
-                            "status": "routed",
-                            "segments": [
-                                {
-                                    "segment_id": "seg0",
-                                    "segment_kind": "module_path",
-                                    "source_endpoint": "fabric0::fabric.op#0.out",
-                                    "sink_endpoint": "fabric0::fabric.op#1.in",
-                                }
-                            ],
-                        }
-                    ],
-                    "config_bitstream": [],
-                }
-            )
-        )
+        write_mapping_artifact(valid_mapping_artifact, "vecadd", "g_vecadd", "map0")
         cgra_without_report = out_dir / "cgra-without-report-sim-cycle-summary.csv"
         cgra_without_report.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
@@ -841,57 +788,7 @@ def main() -> int:
             raise AssertionError("CGRA cycle without CGRA report unexpectedly passed audit")
 
         valid_cgra_report = out_dir / "valid-cgra-sim-report.json"
-        valid_cgra_report.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "cgra_sim_report",
-                    "workload": "vecadd",
-                    "hardware": "fabric0",
-                    "mapping_id": "map0",
-                    "status": "pass",
-                    "fidelity_level": "mapping_constraint_estimate",
-                    "metric_definition": "mapping_constraint_estimate",
-                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
-                    "operation_cost_model_source": "loom.sim.operation_cost.v1",
-                    "difference_classification": "expected_hardware_constraint",
-                    "hardware_bound_classification": "within_modeled_bounds",
-                    "dfg_cycles": 10,
-                    "modeled_lower_bound_cycles": 12,
-                    "performance_delta_cycles": 2,
-                    "route_latency_cycles": 1,
-                    "memory_latency_cycles": 1,
-                    "temporal_penalty_cycles": 0,
-                    "hardware_aware_cycles": 12,
-                    "cycle_breakdown": [
-                        {
-                            "category": "route_latency",
-                            "cycles": 1,
-                            "evidence": "mapping.route_segments",
-                        },
-                        {
-                            "category": "memory_latency",
-                            "cycles": 1,
-                            "evidence": "fabric.mem placement",
-                        },
-                    ],
-                    "unmodeled_constraints": ["cache_behavior"],
-                    "first_principles_checks": [
-                        {
-                            "name": "cgra_not_more_optimistic_than_dfg",
-                            "status": "pass",
-                            "evidence": "hardware_aware_cycles >= dfg_cycles",
-                        },
-                        {
-                            "name": "delta_explained_by_modeled_constraints",
-                            "status": "pass",
-                            "evidence": "performance_delta_cycles = modeled penalties",
-                        },
-                    ],
-                    "diagnostics": ["synthetic checked CGRA report"],
-                }
-            )
-        )
+        write_cgra_report(valid_cgra_report, "vecadd", "map0", 10, 12)
         invalid_delta_cgra_report = out_dir / "invalid-delta-cgra-sim-report.json"
         invalid_delta_cgra_report.write_text(
             json.dumps(
@@ -935,57 +832,7 @@ def main() -> int:
             )
         )
         wrong_mapping_cgra_report = out_dir / "wrong-mapping-cgra-sim-report.json"
-        wrong_mapping_cgra_report.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "kind": "cgra_sim_report",
-                    "workload": "vecadd",
-                    "hardware": "fabric0",
-                    "mapping_id": "map1",
-                    "status": "pass",
-                    "fidelity_level": "mapping_constraint_estimate",
-                    "metric_definition": "mapping_constraint_estimate",
-                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
-                    "operation_cost_model_source": "loom.sim.operation_cost.v1",
-                    "difference_classification": "expected_hardware_constraint",
-                    "hardware_bound_classification": "within_modeled_bounds",
-                    "dfg_cycles": 10,
-                    "modeled_lower_bound_cycles": 12,
-                    "performance_delta_cycles": 2,
-                    "route_latency_cycles": 1,
-                    "memory_latency_cycles": 1,
-                    "temporal_penalty_cycles": 0,
-                    "hardware_aware_cycles": 12,
-                    "cycle_breakdown": [
-                        {
-                            "category": "route_latency",
-                            "cycles": 1,
-                            "evidence": "mapping.route_segments",
-                        },
-                        {
-                            "category": "memory_latency",
-                            "cycles": 1,
-                            "evidence": "fabric.mem placement",
-                        },
-                    ],
-                    "unmodeled_constraints": ["cache_behavior"],
-                    "first_principles_checks": [
-                        {
-                            "name": "cgra_not_more_optimistic_than_dfg",
-                            "status": "pass",
-                            "evidence": "hardware_aware_cycles >= dfg_cycles",
-                        },
-                        {
-                            "name": "delta_explained_by_modeled_constraints",
-                            "status": "pass",
-                            "evidence": "performance_delta_cycles = modeled penalties",
-                        },
-                    ],
-                    "diagnostics": ["synthetic checked CGRA report"],
-                }
-            )
-        )
+        write_cgra_report(wrong_mapping_cgra_report, "vecadd", "map1", 10, 12)
         result = run_command(
             repo,
             [

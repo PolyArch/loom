@@ -650,18 +650,18 @@ def validate_sim_cycle_uniqueness(rows: list[dict[str, str]], diagnostics: list[
             dfg_cycles.setdefault(dfg, []).append(kernel)
         if cgra is not None:
             cgra_cycles.setdefault(cgra, []).append(kernel)
-    for cycle, kernels in sorted(dfg_cycles.items(), key=lambda item: item[0]):
+    validate_unique_sim_cycles("DFG-sim", dfg_cycles, diagnostics)
+    validate_unique_sim_cycles("CGRA-sim", cgra_cycles, diagnostics)
+
+
+def validate_unique_sim_cycles(
+    label: str, cycles_by_value: dict[int, list[str]], diagnostics: list[str]
+) -> None:
+    for cycle, kernels in sorted(cycles_by_value.items(), key=lambda item: item[0]):
         unique_kernels = sorted(set(kernels))
         if len(unique_kernels) > 1 and not allowed_sim_cycle_equivalence(unique_kernels):
             diagnostics.append(
-                f"DFG-sim cycles {cycle} are shared by multiple kernels "
-                f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
-            )
-    for cycle, kernels in sorted(cgra_cycles.items(), key=lambda item: item[0]):
-        unique_kernels = sorted(set(kernels))
-        if len(unique_kernels) > 1 and not allowed_sim_cycle_equivalence(unique_kernels):
-            diagnostics.append(
-                f"CGRA-sim cycles {cycle} are shared by multiple kernels "
+                f"{label} cycles {cycle} are shared by multiple kernels "
                 f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
             )
 

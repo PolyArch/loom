@@ -2,7 +2,6 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -338,6 +337,26 @@ void mergeDFGRow(CycleSummaryRow &target, CycleSummaryRow source) {
   appendDiagnostic(target.diagnostic, source.diagnostic);
 }
 
+void mergeCGRASummary(CGRASummary &target, CGRASummary source) {
+  if (target.kernel.empty())
+    target.kernel = std::move(source.kernel);
+  if (!source.cycles) {
+    target.cycles.reset();
+    target.status = source.status;
+    appendDiagnostic(target.diagnostic, source.diagnostic);
+    return;
+  }
+  if (target.cycles)
+    *target.cycles += *source.cycles;
+  else if (target.status.empty() || target.status == "blocked")
+    target.cycles = *source.cycles;
+  if (target.status.empty())
+    target.status = source.status;
+  if (target.status == "pass" && source.status != "pass")
+    target.status = source.status;
+  appendDiagnostic(target.diagnostic, source.diagnostic);
+}
+
 llvm::Expected<llvm::SmallVector<CycleSummaryRow>>
 loom::sim::summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths) {
   if (reportPaths.empty())
@@ -373,24 +392,7 @@ loom::sim::summarizeSimulationReports(
     if (!cgraOrErr)
       return cgraOrErr.takeError();
     std::string key = cgraOrErr->kernel;
-    CGRASummary &merged = cgraByKernel[key];
-    if (merged.kernel.empty())
-      merged.kernel = key;
-    if (!cgraOrErr->cycles) {
-      merged.cycles.reset();
-      merged.status = cgraOrErr->status;
-      appendDiagnostic(merged.diagnostic, cgraOrErr->diagnostic);
-      continue;
-    }
-    if (merged.cycles)
-      *merged.cycles += *cgraOrErr->cycles;
-    else if (merged.status.empty() || merged.status == "blocked")
-      merged.cycles = *cgraOrErr->cycles;
-    if (merged.status.empty())
-      merged.status = cgraOrErr->status;
-    if (merged.status == "pass" && cgraOrErr->status != "pass")
-      merged.status = cgraOrErr->status;
-    appendDiagnostic(merged.diagnostic, cgraOrErr->diagnostic);
+    mergeCGRASummary(cgraByKernel[key], std::move(*cgraOrErr));
   }
 
   for (CycleSummaryRow &row : *dfgRowsOrErr) {
@@ -400,17 +402,14 @@ loom::sim::summarizeSimulationReports(
     CGRASummary &cgra = cgraIt->second;
     if (!row.dfgSimCycles) {
       row.status = "blocked";
-      if (!row.diagnostic.empty())
-        row.diagnostic += "; ";
-      row.diagnostic +=
-          "CGRA-sim report available but DFG-sim cycles are missing";
+      appendDiagnostic(
+          row.diagnostic,
+          "CGRA-sim report available but DFG-sim cycles are missing");
       continue;
     }
     if (!cgra.cycles) {
       row.status = cgra.status;
-      if (!row.diagnostic.empty())
-        row.diagnostic += "; ";
-      row.diagnostic += cgra.diagnostic;
+      appendDiagnostic(row.diagnostic, cgra.diagnostic);
       continue;
     }
     if (*cgra.cycles < *row.dfgSimCycles)

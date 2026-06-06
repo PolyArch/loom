@@ -316,8 +316,8 @@ case "${CASE}" in
 esac
 
 extra_report=""
+"${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
 if [[ "${CASE}" == "vecadd" ]]; then
-    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
     extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
     sim_args=()
     append_ctrl_tokens 64
@@ -331,8 +331,6 @@ if [[ "${CASE}" == "vecadd" ]]; then
         --arg 5=0.000000e+00
     )
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
-else
-    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
 fi
 
 declare -a summary_reports=()
