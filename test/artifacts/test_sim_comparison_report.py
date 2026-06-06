@@ -153,6 +153,88 @@ def main() -> int:
         if not any("workload identity mismatch" in str(item) for item in diagnostics):
             raise AssertionError(f"mismatched report should diagnose workload identity: {mismatch_data}")
 
+        wrong_kind_dfg = out_dir / "wrong-kind-dfg-report.json"
+        wrong_kind_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
+        wrong_kind_dfg_data["kind"] = "cgra_sim_report"
+        wrong_kind_dfg.write_text(json.dumps(wrong_kind_dfg_data, indent=2, sort_keys=True) + "\n")
+        wrong_kind_dfg_report = out_dir / "wrong-kind-dfg-sim-comparison-report.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/simulator/run_sim_comparison_report.sh",
+                "--dfg-report",
+                str(wrong_kind_dfg),
+                "--cgra-report",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--mapping-artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--output",
+                str(wrong_kind_dfg_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("wrong-kind DFG report unexpectedly produced a passing comparison")
+        wrong_kind_dfg_data = json.loads(wrong_kind_dfg_report.read_text())
+        if wrong_kind_dfg_data.get("status") != "fail":
+            raise AssertionError(f"wrong-kind DFG report should fail: {wrong_kind_dfg_data}")
+        if wrong_kind_dfg_data.get("performance_comparison_status") != "blocked":
+            raise AssertionError(f"wrong-kind DFG report must block performance comparison: {wrong_kind_dfg_data}")
+        wrong_kind_dfg_audit = out_dir / "wrong-kind-dfg-artifact-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(wrong_kind_dfg_audit),
+                str(wrong_kind_dfg_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("wrong-kind DFG comparison unexpectedly passed audit")
+
+        wrong_kind_cgra = out_dir / "wrong-kind-cgra-report.json"
+        wrong_kind_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
+        wrong_kind_cgra_data["kind"] = "dfg_sim_report"
+        wrong_kind_cgra.write_text(json.dumps(wrong_kind_cgra_data, indent=2, sort_keys=True) + "\n")
+        wrong_kind_cgra_report = out_dir / "wrong-kind-cgra-sim-comparison-report.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/simulator/run_sim_comparison_report.sh",
+                "--dfg-report",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--cgra-report",
+                str(wrong_kind_cgra),
+                "--mapping-artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--output",
+                str(wrong_kind_cgra_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("wrong-kind CGRA report unexpectedly produced a passing comparison")
+        wrong_kind_cgra_data = json.loads(wrong_kind_cgra_report.read_text())
+        if wrong_kind_cgra_data.get("status") != "fail":
+            raise AssertionError(f"wrong-kind CGRA report should fail: {wrong_kind_cgra_data}")
+        if wrong_kind_cgra_data.get("performance_comparison_status") != "blocked":
+            raise AssertionError(f"wrong-kind CGRA report must block performance comparison: {wrong_kind_cgra_data}")
+        wrong_kind_cgra_audit = out_dir / "wrong-kind-cgra-artifact-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(wrong_kind_cgra_audit),
+                str(wrong_kind_cgra_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("wrong-kind CGRA comparison unexpectedly passed audit")
+
     return 0
 
 

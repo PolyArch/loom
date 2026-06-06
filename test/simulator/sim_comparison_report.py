@@ -153,7 +153,7 @@ def build_report(
             difference_classification = "expected_hardware_constraint"
 
     identity_or_mapping_failure = difference_classification in {"report_mismatch", "mapping_invalid"}
-    if any("mismatch" in diagnostic for diagnostic in diagnostics):
+    if identity_or_mapping_failure:
         status = "fail"
         performance_status = "blocked"
     elif performance_status == "fail":

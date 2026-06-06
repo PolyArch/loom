@@ -571,6 +571,18 @@ STANDARD_ARTIFACT_PATHS = (
     ("unsupported_scope", "temp/unsupported-scope-ledger.csv"),
 )
 
+EMBEDDED_JSON_KIND_ALIASES = {
+    "dfg_sim_report": "dfg_sim_report",
+    "cgra_sim_report": "cgra_sim_report",
+    "sim_comparison_report": "sim_comparison_report",
+    "pnr_mapping": "pnr_mapping_artifact",
+    "runtime_package": "runtime_package",
+    "workload_report_bundle": "workload_report_bundle",
+    "hardware_report_bundle": "hardware_report_bundle",
+    "dse_report_bundle": "dse_report_bundle",
+    "mapping_set_manifest": "mapping_set_manifest",
+}
+
 
 def schema_for_path(path: Path) -> CsvSchema | None:
     name = path.name
@@ -624,23 +636,9 @@ def json_kind_for_path(path: Path) -> str | None:
     if not isinstance(data, dict):
         return None
     embedded_kind = data.get("kind")
-    if embedded_kind == "dfg_sim_report":
-        return "dfg_sim_report"
-    if embedded_kind == "cgra_sim_report":
-        return "cgra_sim_report"
-    if embedded_kind == "sim_comparison_report":
-        return "sim_comparison_report"
-    if embedded_kind == "pnr_mapping":
-        return "pnr_mapping_artifact"
-    if embedded_kind == "runtime_package":
-        return "runtime_package"
-    if embedded_kind == "hardware_report_bundle":
-        return "hardware_report_bundle"
-    if embedded_kind == "dse_report_bundle":
-        return "dse_report_bundle"
-    if embedded_kind == "mapping_set_manifest":
-        return "mapping_set_manifest"
-    return None
+    if not isinstance(embedded_kind, str):
+        return None
+    return EMBEDDED_JSON_KIND_ALIASES.get(embedded_kind)
 
 
 def output_path(raw: str) -> Path:
@@ -1254,6 +1252,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("simulation comparison report kind must be sim_comparison_report")
         if data.get("status") not in BASE_STATUSES:
             diagnostics.append("simulation comparison report status must be a known status")
+        elif data.get("status") != "pass":
+            diagnostics.append("simulation comparison report status must be pass")
         for key in (
             "comparison_id",
             "workload",

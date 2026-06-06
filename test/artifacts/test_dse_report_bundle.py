@@ -145,6 +145,31 @@ def main() -> int:
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one DSE report bundle review: {audit_data}")
 
+        custom_workload_report = out_dir / "custom-workload-evidence.json"
+        custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
+        custom_name_report = out_dir / "custom-name-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(custom_name_report),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+                "--artifact",
+                str(custom_workload_report),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "DSE report bundle with embedded workload bundle kind",
+        )
+        custom_name_data = json.loads(custom_name_report.read_text())
+        if custom_name_data["report_status"] != "pass":
+            raise AssertionError(f"custom-named workload report should be accepted: {custom_name_data}")
+        if custom_name_data["referenced_workload_report_bundle_identities"] != ["custom-workload-evidence"]:
+            raise AssertionError(f"custom workload report path identity was not preserved: {custom_name_data}")
+
     return 0
 
 
