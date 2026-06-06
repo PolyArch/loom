@@ -144,6 +144,40 @@ class MakeWorktreeTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
 
+    def test_cmd_test_runs_perf_lit_separately(self):
+        popen_calls = []
+
+        class FakePipe:
+            def close(self):
+                pass
+
+        class FakeProcess:
+            def __init__(self, cmd, **kwargs):
+                self.cmd = cmd
+                self.kwargs = kwargs
+                self.stdout = FakePipe()
+                popen_calls.append(self)
+
+            def wait(self):
+                return 0
+
+        with (
+            patch.object(self.module, "check_git_version"),
+            patch.object(self.module, "check_loom_compilers"),
+            patch.object(self.module, "build_loom"),
+            patch.object(subprocess, "Popen", side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)),
+        ):
+            self.module.cmd_test(self.paths, self.args)
+
+        build_calls = [call for call in popen_calls if call.cmd[0] == "cmake"]
+        lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
+        self.assertEqual(len(build_calls), 1)
+        self.assertEqual(len(lit_calls), 1)
+        self.assertIn("--filter-out", build_calls[0].kwargs["env"]["LIT_OPTS"])
+        self.assertIn("techmap/perf", build_calls[0].kwargs["env"]["LIT_OPTS"])
+        self.assertIn("-j1", lit_calls[0].cmd)
+        self.assertEqual(lit_calls[0].cmd[-1], str(self.paths.loom_build / "test" / "techmap" / "perf"))
+
 
 if __name__ == "__main__":
     unittest.main()

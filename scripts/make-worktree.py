@@ -523,37 +523,64 @@ def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
         )
 
 
-def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
-    check_git_version()
-    check_loom_compilers()
-    build_loom(paths, args)
-    env = os.environ.copy()
-    extra = env.get("LIT_OPTS", "").strip()
-    env["LIT_OPTS"] = ("-sv --time-tests " + extra).strip()
-    top = paths.root / "test" / "lit_top_slowest.py"
-    cmake = subprocess.Popen(
-        [
-            "cmake", "--build", str(paths.loom_build),
-            f"-j{args.jobs}", "--target", "check-fabric",
-        ],
+def lit_opts(*parts: str) -> str:
+    return " ".join(part for part in parts if part).strip()
+
+
+def run_with_lit_filter(cmd: list[str], env: dict[str, str] | None = None) -> None:
+    top = Path(__file__).resolve().parents[1] / "test" / "lit_top_slowest.py"
+    proc = subprocess.Popen(
+        cmd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    assert proc.stdout is not None
     py = subprocess.Popen(
         [sys.executable, str(top)],
-        stdin=cmake.stdout,
+        stdin=proc.stdout,
     )
-    # Closing our handle to cmake.stdout lets cmake see SIGPIPE if the
-    # filter exits early.
-    assert cmake.stdout is not None
-    cmake.stdout.close()
+    proc.stdout.close()
     py_rc = py.wait()
-    cmake_rc = cmake.wait()
-    if cmake_rc != 0:
-        sys.exit(cmake_rc)
+    proc_rc = proc.wait()
+    if proc_rc != 0:
+        sys.exit(proc_rc)
     if py_rc != 0:
         sys.exit(py_rc)
+
+
+def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
+    check_git_version()
+    check_loom_compilers()
+    build_loom(paths, args)
+    base_env = os.environ.copy()
+    extra = base_env.get("LIT_OPTS", "").strip()
+    broad_env = base_env.copy()
+    broad_env["LIT_OPTS"] = lit_opts(
+        "-sv",
+        "--time-tests",
+        "--filter-out",
+        "techmap/perf",
+        extra,
+    )
+    run_with_lit_filter(
+        [
+            "cmake", "--build", str(paths.loom_build),
+            f"-j{args.jobs}", "--target", "check-fabric",
+        ],
+        env=broad_env,
+    )
+
+    perf_env = base_env.copy()
+    perf_env["LIT_OPTS"] = lit_opts("-sv", "--time-tests", extra)
+    run_with_lit_filter(
+        [
+            str(paths.llvm_lit),
+            "-j1",
+            str(paths.loom_build / "test" / "techmap" / "perf"),
+        ],
+        env=perf_env,
+    )
 
 
 def main() -> None:
