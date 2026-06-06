@@ -22,6 +22,7 @@ REQUIRED_KEYS = {
     "selected_mapping_artifact_identity",
     "fabric_adg_identity",
     "target_profile",
+    "runtime_configuration",
     "fallback_policy",
     "fallback_decision",
     "synchronization_mode",
@@ -123,6 +124,16 @@ def main() -> int:
         }
         if data["target_profile"] != expected_target:
             raise AssertionError(f"unexpected target profile: {data}")
+        expected_runtime_configuration = {
+            "configuration_id": "runtime-config::report_only::simulated::host_wait",
+            "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+            "data_movement_policy": "simulated",
+            "platform_binding_identity": "",
+            "fallback_policy": "report_only",
+            "synchronization_mode": "host_wait",
+        }
+        if data["runtime_configuration"] != expected_runtime_configuration:
+            raise AssertionError(f"unexpected runtime configuration: {data}")
         if data["fallback_policy"] != "report_only":
             raise AssertionError(f"unexpected fallback policy: {data}")
         expected_fallback = {
@@ -193,6 +204,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package backed by dataflow token unexpectedly passed audit")
+        mismatched_config_package = out_dir / "mismatched-runtime-config-package.json"
+        mismatched_config_data = json.loads(package.read_text())
+        mismatched_config_data["runtime_configuration"]["data_movement_policy"] = "shared_coherent"
+        mismatched_config_package.write_text(json.dumps(mismatched_config_data, indent=2, sort_keys=True) + "\n")
+        mismatched_config_audit = out_dir / "mismatched-runtime-config-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_config_audit),
+                str(mismatched_config_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched runtime configuration unexpectedly passed audit")
 
         missing_cgra = out_dir / "missing-cgra-runtime-package.json"
         result = artifact_test_common.run_command(
@@ -372,6 +400,16 @@ def main() -> int:
         }
         if dfg_data.get("target_profile") != expected_dfg_target:
             raise AssertionError(f"unexpected DFG-sim target profile: {dfg_data}")
+        expected_dfg_runtime_configuration = {
+            "configuration_id": "runtime-config::report_only::simulated::host_wait",
+            "target_profile_id": "simulator::dfg_sim::optimistic_pipeline_latency_throughput_sum",
+            "data_movement_policy": "simulated",
+            "platform_binding_identity": "",
+            "fallback_policy": "report_only",
+            "synchronization_mode": "host_wait",
+        }
+        if dfg_data.get("runtime_configuration") != expected_dfg_runtime_configuration:
+            raise AssertionError(f"unexpected DFG runtime configuration: {dfg_data}")
         dfg_launch_descriptor = dfg_data.get("launch_descriptor", {})
         if dfg_launch_descriptor.get("selected_mapping_artifact_identity") != "":
             raise AssertionError(f"DFG launch descriptor must not require mapping identity: {dfg_data}")

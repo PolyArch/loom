@@ -197,6 +197,24 @@ def runtime_handle_model() -> dict[str, object]:
     }
 
 
+def runtime_configuration(
+    *,
+    target_profile: dict[str, str],
+    data_movement_policy: str,
+    platform_binding: str,
+    fallback_policy: str,
+    synchronization_mode: str,
+) -> dict[str, str]:
+    return {
+        "configuration_id": f"runtime-config::{fallback_policy}::{data_movement_policy}::{synchronization_mode}",
+        "target_profile_id": target_profile.get("profile_id", ""),
+        "data_movement_policy": data_movement_policy,
+        "platform_binding_identity": platform_binding,
+        "fallback_policy": fallback_policy,
+        "synchronization_mode": synchronization_mode,
+    }
+
+
 def build_package(
     paths: list[Path],
     target: str,
@@ -368,6 +386,13 @@ def build_package(
         "selected_mapping_artifact_identity": selected_mapping_identity,
         "fabric_adg_identity": fabric_adg_identity,
         "target_profile": target_profile,
+        "runtime_configuration": runtime_configuration(
+            target_profile=target_profile,
+            data_movement_policy=data_movement_policy,
+            platform_binding=platform_binding,
+            fallback_policy=fallback_policy,
+            synchronization_mode=synchronization_mode,
+        ),
         "fallback_policy": fallback_policy,
         "fallback_decision": fallback_decision(
             policy=fallback_policy,

@@ -489,6 +489,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "selected_mapping_artifact_identity",
             "fabric_adg_identity",
             "target_profile",
+            "runtime_configuration",
             "fallback_policy",
             "fallback_decision",
             "synchronization_mode",
@@ -1268,6 +1269,42 @@ def validate_runtime_handle_model(value: object, diagnostics: list[str]) -> None
             diagnostics.append(f"runtime package runtime_handle_model lacks {operation}")
 
 
+def validate_runtime_configuration(
+    value: object,
+    data: dict[str, object],
+    target_profile: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package runtime_configuration must be an object")
+        return
+    for key in (
+        "configuration_id",
+        "target_profile_id",
+        "data_movement_policy",
+        "platform_binding_identity",
+        "fallback_policy",
+        "synchronization_mode",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"runtime package runtime_configuration lacks {key}")
+    expected_configuration_id = (
+        f"runtime-config::{data.get('fallback_policy')}::"
+        f"{data.get('data_movement_policy')}::{data.get('synchronization_mode')}"
+    )
+    if value.get("configuration_id") != expected_configuration_id:
+        diagnostics.append("runtime package runtime_configuration configuration_id does not match policy fields")
+    expected_pairs = (
+        ("target_profile_id", target_profile.get("profile_id")),
+        ("data_movement_policy", data.get("data_movement_policy")),
+        ("fallback_policy", data.get("fallback_policy")),
+        ("synchronization_mode", data.get("synchronization_mode")),
+    )
+    for key, expected in expected_pairs:
+        if value.get(key) != expected:
+            diagnostics.append(f"runtime package runtime_configuration {key} does not match package")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -1571,6 +1608,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             expected_policy=fallback_policy,
             target_profile_id=target_profile.get("profile_id"),
             require_complete=True,
+        )
+        validate_runtime_configuration(
+            data.get("runtime_configuration"),
+            data,
+            target_profile,
+            diagnostics,
         )
         data_movement_policy = data.get("data_movement_policy")
         if data_movement_policy not in DATA_MOVEMENT_POLICIES:
