@@ -484,6 +484,9 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "workload",
             "work_package_identity",
             "launch_descriptor_identity",
+            "host_program_identity",
+            "host_wrapper_identity",
+            "host_interface",
             "launch_descriptor",
             "runtime_handle_model",
             "selected_mapping_artifact_identity",
@@ -1305,6 +1308,31 @@ def validate_runtime_configuration(
             diagnostics.append(f"runtime package runtime_configuration {key} does not match package")
 
 
+def validate_host_interface(value: object, data: dict[str, object], diagnostics: list[str]) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package host_interface must be an object")
+        return
+    for key in (
+        "host_program_identity",
+        "host_wrapper_identity",
+        "invocation_abi",
+        "source_provenance",
+    ):
+        if not isinstance(value.get(key), str) or not value.get(key):
+            diagnostics.append(f"runtime package host_interface lacks {key}")
+    for key in ("compatibility_mode_requires_runtime", "acceleration_mode_requires_runtime_package"):
+        if not isinstance(value.get(key), bool):
+            diagnostics.append(f"runtime package host_interface {key} must be boolean")
+    if value.get("host_program_identity") != data.get("host_program_identity"):
+        diagnostics.append("runtime package host_interface host_program_identity does not match package")
+    if value.get("host_wrapper_identity") != data.get("host_wrapper_identity"):
+        diagnostics.append("runtime package host_interface host_wrapper_identity does not match package")
+    if value.get("compatibility_mode_requires_runtime") is not False:
+        diagnostics.append("runtime package compatibility mode must not require runtime")
+    if value.get("acceleration_mode_requires_runtime_package") is not True:
+        diagnostics.append("runtime package acceleration mode must require runtime package")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -1573,6 +1601,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "workload",
             "work_package_identity",
             "launch_descriptor_identity",
+            "host_program_identity",
+            "host_wrapper_identity",
             "synchronization_mode",
         ):
             if not isinstance(data.get(key), str) or not data.get(key):
@@ -1620,6 +1650,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             target_profile,
             diagnostics,
         )
+        validate_host_interface(data.get("host_interface"), data, diagnostics)
         data_movement_policy = data.get("data_movement_policy")
         if data_movement_policy not in DATA_MOVEMENT_POLICIES:
             diagnostics.append("runtime package has unknown data_movement_policy")

@@ -219,6 +219,22 @@ def runtime_configuration(
     }
 
 
+def host_interface(
+    *,
+    host_program_identity: str,
+    host_wrapper_identity: str,
+    runtime_input: str,
+) -> dict[str, object]:
+    return {
+        "host_program_identity": host_program_identity,
+        "host_wrapper_identity": host_wrapper_identity,
+        "invocation_abi": "loom_runtime_package_v1",
+        "compatibility_mode_requires_runtime": False,
+        "acceleration_mode_requires_runtime_package": True,
+        "source_provenance": runtime_input,
+    }
+
+
 def build_package(
     paths: list[Path],
     target: str,
@@ -308,6 +324,8 @@ def build_package(
 
     package_id = f"runtime-package::{workload}::{mapping_id}" if workload != "unknown" else "runtime-package::blocked"
     work_package_identity = f"work-package::{workload}::{mapping_id}" if workload != "unknown" else ""
+    host_program_identity = f"test-app-host::{workload}::default" if workload != "unknown" else ""
+    host_wrapper_identity = f"runtime-wrapper::{workload}::{mapping_id}" if workload != "unknown" else ""
     launch_descriptor_identity = (
         f"launch::{workload}::{mapping_id}::{runtime_input}" if workload != "unknown" else ""
     )
@@ -430,6 +448,13 @@ def build_package(
         "workload": workload,
         "work_package_identity": work_package_identity,
         "launch_descriptor_identity": launch_descriptor_identity,
+        "host_program_identity": host_program_identity,
+        "host_wrapper_identity": host_wrapper_identity,
+        "host_interface": host_interface(
+            host_program_identity=host_program_identity,
+            host_wrapper_identity=host_wrapper_identity,
+            runtime_input=runtime_input,
+        ),
         "launch_descriptor": launch_descriptor,
         "runtime_handle_model": runtime_handle_model(),
         "selected_mapping_artifact_identity": selected_mapping_identity,

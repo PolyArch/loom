@@ -17,6 +17,9 @@ REQUIRED_KEYS = {
     "workload",
     "work_package_identity",
     "launch_descriptor_identity",
+    "host_program_identity",
+    "host_wrapper_identity",
+    "host_interface",
     "launch_descriptor",
     "runtime_handle_model",
     "selected_mapping_artifact_identity",
@@ -84,6 +87,20 @@ def main() -> int:
             raise AssertionError(f"unexpected runtime package identity: {data}")
         if data["work_package_identity"] != "work-package::vecsum::vecsum__shared_reduction_adg":
             raise AssertionError(f"unexpected work package identity: {data}")
+        if data["host_program_identity"] != "test-app-host::vecsum::default":
+            raise AssertionError(f"unexpected host program identity: {data}")
+        if data["host_wrapper_identity"] != "runtime-wrapper::vecsum::vecsum__shared_reduction_adg":
+            raise AssertionError(f"unexpected host wrapper identity: {data}")
+        expected_host_interface = {
+            "host_program_identity": "test-app-host::vecsum::default",
+            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
+            "invocation_abi": "loom_runtime_package_v1",
+            "compatibility_mode_requires_runtime": False,
+            "acceleration_mode_requires_runtime_package": True,
+            "source_provenance": "test-app-fixture::vecsum::default",
+        }
+        if data["host_interface"] != expected_host_interface:
+            raise AssertionError(f"unexpected host interface metadata: {data}")
         expected_launch = "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::default"
         if data["launch_descriptor_identity"] != expected_launch:
             raise AssertionError(f"unexpected launch descriptor identity: {data}")
@@ -221,6 +238,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched runtime configuration unexpectedly passed audit")
+        bad_host_interface_package = out_dir / "bad-host-interface-runtime-package.json"
+        bad_host_interface_data = json.loads(package.read_text())
+        bad_host_interface_data["host_interface"]["compatibility_mode_requires_runtime"] = True
+        bad_host_interface_package.write_text(json.dumps(bad_host_interface_data, indent=2, sort_keys=True) + "\n")
+        bad_host_interface_audit = out_dir / "bad-host-interface-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_host_interface_audit),
+                str(bad_host_interface_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package requiring runtime for compatibility mode unexpectedly passed audit")
 
         missing_cgra = out_dir / "missing-cgra-runtime-package.json"
         result = artifact_test_common.run_command(
