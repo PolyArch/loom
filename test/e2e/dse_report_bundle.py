@@ -150,6 +150,31 @@ def report_bundle_ids(paths: list[Path], expected_kind: str) -> tuple[list[str],
     return ids, diagnostics
 
 
+def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
+    summaries: list[dict[str, object]] = []
+    for path in paths:
+        data = read_json(path)
+        if data.get("kind") != "workload_report_bundle" or data.get("report_status") != "pass":
+            continue
+        evidence = data.get("runtime_evidence", {})
+        if not isinstance(evidence, dict):
+            continue
+        fallback = evidence.get("fallback_decision", {})
+        if not isinstance(fallback, dict):
+            fallback = {}
+        summaries.append(
+            {
+                "workload_report_bundle_identity": artifact_id(path),
+                "runtime_package_identity": str(evidence.get("runtime_package_identity", "")),
+                "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
+                "launch_status": str(evidence.get("launch_status", "")),
+                "target_status": str(evidence.get("target_status", "")),
+                "fallback_decision": fallback,
+            }
+        )
+    return summaries
+
+
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     selected = selected_candidate_row(grouped.get("dse_candidate", []))
@@ -175,6 +200,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "rejected_candidate_summaries": [],
             "referenced_workload_report_bundle_identities": workload_report_ids,
             "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
+            "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
             "selected_policy_id": "",
             "policy_configuration": {},
             "candidate_ordering_rule": "",
@@ -224,6 +250,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "rejected_candidate_summaries": rejected,
         "referenced_workload_report_bundle_identities": workload_report_ids,
         "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
+        "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
         "selected_policy_id": policy_id,
         "policy_configuration": {"policy_kind": "deterministic", "random_seed": None},
         "candidate_ordering_rule": selected_row.get("ordering_rule", ""),

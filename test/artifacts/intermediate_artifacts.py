@@ -559,6 +559,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "rejected_candidate_summaries",
             "referenced_workload_report_bundle_identities",
             "referenced_hardware_candidate_report_bundle_identities",
+            "runtime_evidence_summaries",
             "selected_policy_id",
             "policy_configuration",
             "candidate_ordering_rule",
@@ -1443,6 +1444,43 @@ def validate_runtime_evidence(value: object, diagnostics: list[str], require_com
             diagnostics.append("workload report bundle report_only runtime evidence must not claim runtime outputs")
 
 
+def validate_runtime_evidence_summaries(
+    value: object,
+    diagnostics: list[str],
+    require_complete: bool,
+) -> None:
+    if not isinstance(value, list):
+        diagnostics.append("DSE report bundle runtime_evidence_summaries must be a list")
+        return
+    if require_complete and not value:
+        diagnostics.append("DSE report bundle pass needs runtime_evidence_summaries")
+    for index, summary in enumerate(value, start=1):
+        if not isinstance(summary, dict):
+            diagnostics.append(f"DSE report bundle runtime evidence summary {index} must be an object")
+            continue
+        for key in (
+            "workload_report_bundle_identity",
+            "runtime_package_identity",
+            "runtime_report_identity",
+            "launch_status",
+            "target_status",
+        ):
+            if not isinstance(summary.get(key), str) or not summary.get(key):
+                diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
+        fallback = summary.get("fallback_decision")
+        validate_fallback_decision(
+            fallback,
+            diagnostics,
+            f"DSE report bundle runtime evidence summary {index}",
+            require_complete=True,
+        )
+        if isinstance(fallback, dict) and fallback.get("decision") == "report_only":
+            if summary.get("launch_status") != "not_run" or summary.get("target_status") != "not_run":
+                diagnostics.append(
+                    f"DSE report bundle runtime evidence summary {index} report_only status must remain not_run"
+                )
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -2020,6 +2058,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "rejected_candidate_summaries",
             "referenced_workload_report_bundle_identities",
             "referenced_hardware_candidate_report_bundle_identities",
+            "runtime_evidence_summaries",
             "diagnostics",
         ):
             if not isinstance(data.get(key), list):
@@ -2096,6 +2135,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not data.get(key):
                     diagnostics.append(f"DSE report bundle pass needs {key}")
+        validate_runtime_evidence_summaries(
+            data.get("runtime_evidence_summaries"),
+            diagnostics,
+            data.get("report_status") == "pass",
+        )
     entries_checked = len(data) if isinstance(data, dict) else 0
     if isinstance(data, dict) and kind == "artifact_manifest":
         entries_checked = manifest_entries_checked if manifest_entries_checked is not None else 0

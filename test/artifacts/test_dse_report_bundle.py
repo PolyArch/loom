@@ -21,6 +21,7 @@ REQUIRED_KEYS = {
     "rejected_candidate_summaries",
     "referenced_workload_report_bundle_identities",
     "referenced_hardware_candidate_report_bundle_identities",
+    "runtime_evidence_summaries",
     "selected_policy_id",
     "policy_configuration",
     "candidate_ordering_rule",
@@ -80,6 +81,24 @@ def main() -> int:
             raise AssertionError(f"unexpected workload report references: {data}")
         if data["referenced_hardware_candidate_report_bundle_identities"] != ["hardware-report-bundle"]:
             raise AssertionError(f"unexpected hardware report references: {data}")
+        expected_runtime_summaries = [
+            {
+                "workload_report_bundle_identity": "workload-report-bundle",
+                "runtime_package_identity": "runtime-package",
+                "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+                "launch_status": "not_run",
+                "target_status": "not_run",
+                "fallback_decision": {
+                    "policy": "report_only",
+                    "decision": "report_only",
+                    "fallback_taken": False,
+                    "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+                    "reason": "report-only runtime package records launch metadata without executing accelerator work",
+                },
+            }
+        ]
+        if data["runtime_evidence_summaries"] != expected_runtime_summaries:
+            raise AssertionError(f"unexpected runtime evidence summaries: {data}")
 
         objectives = data.get("objective_records", [])
         if len(objectives) != 1:
