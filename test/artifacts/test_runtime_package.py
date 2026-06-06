@@ -36,6 +36,8 @@ REQUIRED_KEYS = {
     "memory_descriptors",
     "argument_descriptors",
     "required_runtime_features",
+    "required_data_movement_policies",
+    "required_synchronization_policies",
     "simulator_report_identities",
     "diagnostic_records",
     "diagnostics",
@@ -205,6 +207,10 @@ def main() -> int:
             raise AssertionError(f"unexpected synchronization mode: {data}")
         if data["data_movement_policy"] != "simulated":
             raise AssertionError(f"unexpected data movement policy: {data}")
+        if data.get("required_data_movement_policies") != ["simulated"]:
+            raise AssertionError(f"runtime package should record required data movement policies: {data}")
+        if data.get("required_synchronization_policies") != ["host_wait"]:
+            raise AssertionError(f"runtime package should record required synchronization policies: {data}")
         memory_descriptors = data.get("memory_descriptors", [])
         if not isinstance(memory_descriptors, list) or len(memory_descriptors) != 1:
             raise AssertionError(f"runtime package should include one memory descriptor: {data}")
@@ -283,6 +289,26 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched runtime configuration unexpectedly passed audit")
+        mismatched_required_policy_package = out_dir / "mismatched-required-policy-runtime-package.json"
+        mismatched_required_policy_data = json.loads(package.read_text())
+        mismatched_required_policy_data["required_data_movement_policies"] = ["shared_coherent"]
+        mismatched_required_policy_data["required_synchronization_policies"] = ["device_poll"]
+        mismatched_required_policy_package.write_text(
+            json.dumps(mismatched_required_policy_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_required_policy_audit = out_dir / "mismatched-required-policy-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_required_policy_audit),
+                str(mismatched_required_policy_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched required policies unexpectedly passed audit")
         bad_fingerprint_package = out_dir / "bad-fingerprint-runtime-package.json"
         bad_fingerprint_data = json.loads(package.read_text())
         bad_fingerprint_data["input_artifact_fingerprints"]["pnr-mapping"] = "not-a-sha256"
@@ -579,6 +605,10 @@ def main() -> int:
         }
         if dfg_data.get("runtime_configuration") != expected_dfg_runtime_configuration:
             raise AssertionError(f"unexpected DFG runtime configuration: {dfg_data}")
+        if dfg_data.get("required_data_movement_policies") != ["simulated"]:
+            raise AssertionError(f"DFG package should record required data movement policies: {dfg_data}")
+        if dfg_data.get("required_synchronization_policies") != ["host_wait"]:
+            raise AssertionError(f"DFG package should record required synchronization policies: {dfg_data}")
         dfg_launch_descriptor = dfg_data.get("launch_descriptor", {})
         if dfg_launch_descriptor.get("selected_mapping_artifact_identity") != "":
             raise AssertionError(f"DFG launch descriptor must not require mapping identity: {dfg_data}")
@@ -704,6 +734,10 @@ def main() -> int:
             raise AssertionError(f"hardware package should be blocked without backend inputs: {hardware_data}")
         if hardware_data.get("runtime_configuration", {}).get("platform_binding_identity") != "platform-binding::host-buffer::vecsum":
             raise AssertionError(f"hardware runtime configuration should preserve platform binding: {hardware_data}")
+        if hardware_data.get("required_data_movement_policies") != ["copy_in_copy_out"]:
+            raise AssertionError(f"hardware package should record required data movement policies: {hardware_data}")
+        if hardware_data.get("required_synchronization_policies") != ["host_wait"]:
+            raise AssertionError(f"hardware package should record required synchronization policies: {hardware_data}")
         hardware_records = hardware_data.get("diagnostic_records", [])
         actual_hardware_classes = {
             record.get("diagnostic_class")

@@ -611,6 +611,8 @@ def build_package(
         "memory_descriptors": memory_descriptors,
         "argument_descriptors": argument_descriptors,
         "required_runtime_features": required_runtime_features,
+        "required_data_movement_policies": [data_movement_policy],
+        "required_synchronization_policies": [synchronization_mode],
         "simulator_report_identities": simulator_report_identities,
         "diagnostic_records": diagnostic_records(diagnostics),
         "diagnostics": diagnostics,

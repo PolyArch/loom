@@ -505,6 +505,8 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "memory_descriptors",
             "argument_descriptors",
             "required_runtime_features",
+            "required_data_movement_policies",
+            "required_synchronization_policies",
             "simulator_report_identities",
             "diagnostic_records",
             "diagnostics",
@@ -1990,6 +1992,28 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             required_features = []
         elif any(not isinstance(feature, str) or not feature for feature in required_features):
             diagnostics.append("runtime package required_runtime_features entries must be non-empty strings")
+        required_data_movement_policies = data.get("required_data_movement_policies")
+        if not isinstance(required_data_movement_policies, list):
+            diagnostics.append("runtime package required_data_movement_policies must be a list")
+            required_data_movement_policies = []
+        elif any(
+            not isinstance(policy, str) or not policy
+            for policy in required_data_movement_policies
+        ):
+            diagnostics.append("runtime package required_data_movement_policies entries must be non-empty strings")
+        else:
+            for policy in required_data_movement_policies:
+                if policy not in DATA_MOVEMENT_POLICIES:
+                    diagnostics.append(f"runtime package required_data_movement_policies has unknown policy {policy}")
+        required_synchronization_policies = data.get("required_synchronization_policies")
+        if not isinstance(required_synchronization_policies, list):
+            diagnostics.append("runtime package required_synchronization_policies must be a list")
+            required_synchronization_policies = []
+        elif any(
+            not isinstance(policy, str) or not policy
+            for policy in required_synchronization_policies
+        ):
+            diagnostics.append("runtime package required_synchronization_policies entries must be non-empty strings")
         simulator_reports = data.get("simulator_report_identities")
         if not isinstance(simulator_reports, list):
             diagnostics.append("runtime package simulator_report_identities must be a list")
@@ -2051,6 +2075,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("name", "identity", "descriptor_kind"):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package argument descriptor {index} lacks {key}")
+        if data_movement_policy not in required_data_movement_policies:
+            diagnostics.append("runtime package required_data_movement_policies omits data_movement_policy")
+        synchronization_mode = data.get("synchronization_mode")
+        if synchronization_mode not in required_synchronization_policies:
+            diagnostics.append("runtime package required_synchronization_policies omits synchronization_mode")
         validate_runtime_launch_descriptor(
             data.get("launch_descriptor"),
             data,
@@ -2067,6 +2096,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append("runtime package pass needs argument_descriptors")
             if not required_features:
                 diagnostics.append("runtime package pass needs required_runtime_features")
+            if not required_data_movement_policies:
+                diagnostics.append("runtime package pass needs required_data_movement_policies")
+            if not required_synchronization_policies:
+                diagnostics.append("runtime package pass needs required_synchronization_policies")
             simulator = target_profile.get("simulator")
             if simulator in {"cgra_sim", "dfg_sim"} and not simulator_reports:
                 diagnostics.append("runtime package pass needs simulator_report_identities")
