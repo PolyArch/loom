@@ -86,6 +86,10 @@ def main() -> int:
         if data["schema_version"] != 1:
             raise AssertionError(f"unexpected schema version: {data['schema_version']!r}")
         artifacts = data["artifacts"]
+        fingerprints = {
+            artifact["id"]: artifact["fingerprint"]
+            for artifact in artifacts
+        }
         kinds = {artifact["kind"] for artifact in artifacts}
         if kinds != REQUIRED_KINDS:
             raise AssertionError(f"unexpected artifact kinds: {kinds}")
@@ -138,6 +142,11 @@ def main() -> int:
                 edge.get("consumer_artifact_kind"),
             ) != expected_kinds:
                 raise AssertionError(f"edge missed artifact kinds: {edge}")
+            left, right = key
+            if edge.get("required_input_fingerprints") != {left: fingerprints[left]}:
+                raise AssertionError(f"edge missed input fingerprint: {edge}")
+            if edge.get("produced_output_fingerprints") != {right: fingerprints[right]}:
+                raise AssertionError(f"edge missed output fingerprint: {edge}")
         if data["diagnostics"]:
             raise AssertionError(f"unexpected diagnostics: {data['diagnostics']}")
 

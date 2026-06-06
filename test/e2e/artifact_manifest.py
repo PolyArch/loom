@@ -66,6 +66,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     seen_ids = set()
     ids_by_kind: dict[str, list[str]] = {}
     kind_by_id: dict[str, str] = {}
+    fingerprint_by_id: dict[str, str] = {}
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
         identity = artifact_id(path)
@@ -79,6 +80,8 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         seen_ids.add(identity)
         ids_by_kind.setdefault(kind, []).append(identity)
         kind_by_id[identity] = kind
+        artifact_fingerprint = fingerprint(path)
+        fingerprint_by_id[identity] = artifact_fingerprint
         artifacts.append(
             {
                 "kind": kind,
@@ -86,7 +89,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
                 "path": str(path),
                 "producer": "artifact summary command",
                 "status": "present",
-                "fingerprint": fingerprint(path),
+                "fingerprint": artifact_fingerprint,
             }
         )
 
@@ -165,6 +168,12 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     for edge in edges:
         edge["producer_artifact_kind"] = kind_by_id.get(edge["from"], "")
         edge["consumer_artifact_kind"] = kind_by_id.get(edge["to"], "")
+        edge["required_input_fingerprints"] = {
+            edge["from"]: fingerprint_by_id.get(edge["from"], "")
+        }
+        edge["produced_output_fingerprints"] = {
+            edge["to"]: fingerprint_by_id.get(edge["to"], "")
+        }
 
     return {
         "schema_version": 1,

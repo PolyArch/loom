@@ -1106,6 +1106,7 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
 
     artifact_ids: set[str] = set()
     artifact_kinds: dict[str, str] = {}
+    artifact_fingerprints: dict[str, str] = {}
     ids_by_kind: dict[str, list[str]] = {}
     for index, artifact in enumerate(artifacts, start=1):
         if not isinstance(artifact, dict):
@@ -1123,6 +1124,12 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest artifact {identity} lacks kind")
             continue
         artifact_kinds[identity] = kind
+        fingerprint = artifact.get("fingerprint")
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(f"artifact manifest artifact {identity} lacks valid fingerprint")
+        else:
+            assert isinstance(fingerprint, str)
+            artifact_fingerprints[identity] = fingerprint
         ids_by_kind.setdefault(kind, []).append(identity)
 
     edge_pairs: set[tuple[str, str]] = set()
@@ -1163,6 +1170,16 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} lacks consumer_artifact_kind")
         elif right in artifact_kinds and consumer_kind != artifact_kinds[right]:
             diagnostics.append(f"artifact manifest edge {index} consumer_artifact_kind does not match sink")
+        input_fingerprints = edge.get("required_input_fingerprints")
+        if not isinstance(input_fingerprints, dict):
+            diagnostics.append(f"artifact manifest edge {index} required_input_fingerprints must be an object")
+        elif input_fingerprints.get(left) != artifact_fingerprints.get(left):
+            diagnostics.append(f"artifact manifest edge {index} input fingerprint does not match source")
+        output_fingerprints = edge.get("produced_output_fingerprints")
+        if not isinstance(output_fingerprints, dict):
+            diagnostics.append(f"artifact manifest edge {index} produced_output_fingerprints must be an object")
+        elif output_fingerprints.get(right) != artifact_fingerprints.get(right):
+            diagnostics.append(f"artifact manifest edge {index} output fingerprint does not match sink")
         edge_pairs.add((left, right))
 
     for left, right in ARTIFACT_EDGE_PAIRS:
