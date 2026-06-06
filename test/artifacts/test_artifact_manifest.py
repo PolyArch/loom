@@ -142,6 +142,12 @@ def main() -> int:
                 edge.get("consumer_artifact_kind"),
             ) != expected_kinds:
                 raise AssertionError(f"edge missed artifact kinds: {edge}")
+            expected_components = tuple(f"{kind}-producer" for kind in expected_kinds)
+            if (
+                edge.get("producer_component"),
+                edge.get("consumer_component"),
+            ) != expected_components:
+                raise AssertionError(f"edge missed producer/consumer components: {edge}")
             left, right = key
             if edge.get("required_input_fingerprints") != {left: fingerprints[left]}:
                 raise AssertionError(f"edge missed input fingerprint: {edge}")

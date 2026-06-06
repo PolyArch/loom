@@ -16,6 +16,10 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
+def component_for_kind(kind: str) -> str:
+    return f"{kind}-producer" if kind else ""
+
+
 def add_edge(edges: list[dict[str, str]], edge_keys: set[tuple[str, str]], left: str, right: str) -> None:
     if (left, right) in edge_keys:
         return
@@ -168,6 +172,8 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     for edge in edges:
         edge["producer_artifact_kind"] = kind_by_id.get(edge["from"], "")
         edge["consumer_artifact_kind"] = kind_by_id.get(edge["to"], "")
+        edge["producer_component"] = component_for_kind(edge["producer_artifact_kind"])
+        edge["consumer_component"] = component_for_kind(edge["consumer_artifact_kind"])
         edge["required_input_fingerprints"] = {
             edge["from"]: fingerprint_by_id.get(edge["from"], "")
         }

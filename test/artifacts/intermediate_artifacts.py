@@ -1094,6 +1094,10 @@ def require_manifest_edge(
         diagnostics.append(f"artifact manifest missing edge {left} -> {right}")
 
 
+def manifest_component_for_kind(kind: str) -> str:
+    return f"{kind}-producer" if kind else ""
+
+
 def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[str]) -> int:
     artifacts = data.get("artifacts")
     edges = data.get("edges")
@@ -1170,6 +1174,18 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} lacks consumer_artifact_kind")
         elif right in artifact_kinds and consumer_kind != artifact_kinds[right]:
             diagnostics.append(f"artifact manifest edge {index} consumer_artifact_kind does not match sink")
+        producer_component = edge.get("producer_component")
+        expected_producer_component = manifest_component_for_kind(str(producer_kind)) if isinstance(producer_kind, str) else ""
+        if not isinstance(producer_component, str) or not producer_component:
+            diagnostics.append(f"artifact manifest edge {index} lacks producer_component")
+        elif producer_component != expected_producer_component:
+            diagnostics.append(f"artifact manifest edge {index} producer_component does not match source kind")
+        consumer_component = edge.get("consumer_component")
+        expected_consumer_component = manifest_component_for_kind(str(consumer_kind)) if isinstance(consumer_kind, str) else ""
+        if not isinstance(consumer_component, str) or not consumer_component:
+            diagnostics.append(f"artifact manifest edge {index} lacks consumer_component")
+        elif consumer_component != expected_consumer_component:
+            diagnostics.append(f"artifact manifest edge {index} consumer_component does not match sink kind")
         input_fingerprints = edge.get("required_input_fingerprints")
         if not isinstance(input_fingerprints, dict):
             diagnostics.append(f"artifact manifest edge {index} required_input_fingerprints must be an object")
