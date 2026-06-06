@@ -353,6 +353,7 @@ def main() -> int:
                     "source-compat-summary.csv",
                     "compiler-pipeline-summary.csv",
                     "adg-hardware-summary.csv",
+                    "rtl-fpa-summary.csv",
                 },
             )
             produced.append(output)

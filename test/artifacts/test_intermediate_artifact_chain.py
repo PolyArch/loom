@@ -96,6 +96,32 @@ def main() -> int:
         if int(vecsum_rows[0]["cgra_sim_cycles"]) < int(vecsum_rows[0]["dfg_sim_cycles"]):
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {vecsum_rows[0]}")
 
+        dse_rows = read_csv_rows(out_dir / "dse-candidate-summary.csv")
+        vecsum_dse_rows = [row for row in dse_rows if row["workload"] == "vecsum"]
+        if len(vecsum_dse_rows) != 1:
+            raise AssertionError(f"expected one vecsum DSE row, got {dse_rows}")
+        vecsum_dse = vecsum_dse_rows[0]
+        expected_dse = {
+            "mapping_id": "vecsum__shared_reduction_adg",
+            "cgra_sim_cycles": "589",
+            "frequency_mhz": "250.000",
+            "area_um2": "7250.000",
+            "dynamic_power_mw": "6.000",
+            "energy_nj": "16.080",
+            "selection_status": "selected",
+        }
+        for key, value in expected_dse.items():
+            if vecsum_dse[key] != value:
+                raise AssertionError(f"unexpected vecsum DSE {key}: {vecsum_dse}")
+
+        demonstrator_rows = read_csv_rows(out_dir / "e2e-demonstrator-summary.csv")
+        vecsum_demo_rows = [row for row in demonstrator_rows if row["demonstrator"] == "app::vecsum::shared_reduction_adg"]
+        if len(vecsum_demo_rows) != 1:
+            raise AssertionError(f"expected one vecsum demonstrator row, got {demonstrator_rows}")
+        vecsum_demo = vecsum_demo_rows[0]
+        if vecsum_demo["rtl_status"] != "skipped" or vecsum_demo["fpa_status"] != "pass":
+            raise AssertionError(f"demonstrator should see analytic FPA evidence: {vecsum_demo}")
+
         import_rows = read_csv_rows(out_dir / "app-corpus-import-status.csv")
         states = {row["case"]: row["import_state"] for row in import_rows}
         if states != {"legacy_missing": "deferred", "vecadd": "accepted"}:

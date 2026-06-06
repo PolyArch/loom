@@ -48,13 +48,21 @@ def main() -> int:
         if len(matches) != 1:
             raise AssertionError(f"expected one vecadd pe_two_pes row, got {rows}")
         row = matches[0]
-        for column in ("rtl_lint_status", "rtl_sim_status", "synth_status", "status"):
-            if row[column] != "blocked":
-                raise AssertionError(f"{column} should be blocked: {row}")
-        for column in ("frequency_mhz", "area_um2", "dynamic_power_mw", "leakage_power_mw"):
-            if row[column] != "":
-                raise AssertionError(f"blocked row must not fake {column}: {row}")
-        if "RTL/FPA backend evidence is not available yet" not in row.get("diagnostic", ""):
+        for column in ("rtl_lint_status", "rtl_sim_status", "synth_status"):
+            if row[column] != "skipped":
+                raise AssertionError(f"{column} should be skipped for analytic FPA: {row}")
+        if row["status"] != "pass":
+            raise AssertionError(f"analytic FPA row should pass: {row}")
+        expected = {
+            "frequency_mhz": "480.000",
+            "area_um2": "1500.000",
+            "dynamic_power_mw": "1.400",
+            "leakage_power_mw": "0.250",
+        }
+        for column, value in expected.items():
+            if row[column] != value:
+                raise AssertionError(f"unexpected {column}: {row}")
+        if "analytic FPA estimate" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
 
     return 0

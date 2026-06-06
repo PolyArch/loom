@@ -130,8 +130,8 @@ def main() -> int:
             "artifact_status": "pass",
             "mapping_status": "blocked",
             "sim_status": "blocked",
-            "rtl_status": "blocked",
-            "fpa_status": "blocked",
+            "rtl_status": "skipped",
+            "fpa_status": "pass",
             "report_status": "blocked",
         }
         for key, value in expected.items():

@@ -140,10 +140,20 @@ def main() -> int:
         if len(rows) != 1:
             raise AssertionError(f"expected one selected-like row, got {rows}")
         row = rows[0]
-        if row["selection_status"] != "blocked":
-            raise AssertionError(f"selected-like row must stay blocked until energy evidence exists: {row}")
-        if row["energy_nj"] != "":
-            raise AssertionError(f"blocked selected-like row must not fake energy: {row}")
+        expected = {
+            "mapping_id": "map0",
+            "cgra_sim_cycles": "12",
+            "frequency_mhz": "100",
+            "area_um2": "200",
+            "dynamic_power_mw": "3",
+            "energy_nj": "0.480",
+            "selection_status": "selected",
+        }
+        for column, value in expected.items():
+            if row[column] != value:
+                raise AssertionError(f"unexpected selected-like {column}: {row}")
+        if "cycle-frequency-power-area energy estimate" not in row.get("diagnostic", ""):
+            raise AssertionError(f"unexpected selected-like diagnostic: {row}")
 
     return 0
 

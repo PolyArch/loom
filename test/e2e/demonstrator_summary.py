@@ -100,21 +100,41 @@ def sim_status(sim_paths: list[Path], workload: str) -> str:
     return aggregate_statuses(statuses)
 
 
-def rtl_status(rtl_paths: list[Path], workload: str, hardware: str) -> str:
-    statuses: list[str] = []
+def hardware_matches(row_hardware: str, hardware: str) -> bool:
+    return row_hardware == hardware or row_hardware.rsplit("::", 1)[-1] == hardware
+
+
+def matching_rtl_fpa_rows(
+    rtl_paths: list[Path],
+    workload: str,
+    hardware: str,
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
     for path in rtl_paths:
         for row in read_csv(path):
-            if row.get("workload") == workload and row.get("hardware") == hardware:
-                statuses.extend([row.get("rtl_lint_status", ""), row.get("rtl_sim_status", "")])
+            if row.get("workload") != workload:
+                continue
+            if hardware_matches(row.get("hardware", ""), hardware):
+                rows.append(row)
+    exact = [row for row in rows if row.get("hardware") == hardware]
+    if exact:
+        return exact
+    return rows if len(rows) == 1 else []
+
+
+def rtl_status(rtl_paths: list[Path], workload: str, hardware: str) -> str:
+    statuses: list[str] = []
+    for row in matching_rtl_fpa_rows(rtl_paths, workload, hardware):
+        statuses.extend([row.get("rtl_lint_status", ""), row.get("rtl_sim_status", "")])
     return aggregate_statuses(statuses)
 
 
 def fpa_status(rtl_paths: list[Path], workload: str, hardware: str) -> str:
     statuses: list[str] = []
-    for path in rtl_paths:
-        for row in read_csv(path):
-            if row.get("workload") == workload and row.get("hardware") == hardware:
-                statuses.extend([row.get("synth_status", ""), row.get("status", "")])
+    for row in matching_rtl_fpa_rows(rtl_paths, workload, hardware):
+        status = row.get("status", "")
+        if status:
+            statuses.append(status)
     return aggregate_statuses(statuses)
 
 
