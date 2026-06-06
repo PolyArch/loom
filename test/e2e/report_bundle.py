@@ -131,6 +131,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "runtime_input_identity": "",
             "selected_hardware_candidate_identity": "",
             "selected_mapping_artifact_identity": "",
+            "runtime_fallback_decision": {},
             "report_status": "blocked",
             "diagnostics": ["no selected DSE candidate artifact was provided"],
             "metric_records": [],
@@ -152,6 +153,9 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     cgra_report = read_json(cgra_path) if cgra_path is not None else {}
     comparison_report = read_json(comparison_path) if comparison_path is not None else {}
     runtime_package = read_json(runtime_path) if runtime_path is not None else {}
+    runtime_fallback_decision = runtime_package.get("fallback_decision", {})
+    if not isinstance(runtime_fallback_decision, dict):
+        runtime_fallback_decision = {}
     rtl_row = matching_rtl_fpa_row(grouped.get("rtl_fpa", []), workload, hardware)
     source_row = matching_row(grouped.get("source_compat", []), "case", workload)
     compiler_row = matching_row(grouped.get("compiler_pipeline", []), "case", workload)
@@ -254,6 +258,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "runtime_input_identity": f"test-app-fixture::{workload}::default",
         "selected_hardware_candidate_identity": hardware,
         "selected_mapping_artifact_identity": artifact_id(mapping_path) if mapping_path is not None else "",
+        "runtime_fallback_decision": runtime_fallback_decision,
         "optional_artifact_identities": {
             "dfg_sim_report": artifact_id(dfg_path) if dfg_path is not None else "",
             "cgra_sim_report": artifact_id(cgra_path) if cgra_path is not None else "",

@@ -74,6 +74,62 @@ def report_identities(paths: list[Path | None]) -> list[str]:
     return identities
 
 
+def diagnostic_class(message: str) -> str:
+    if "requires CGRA-sim report" in message or "requires DFG-sim report" in message:
+        return "missing_simulator_report"
+    if "requires mapping artifact" in message or "mapping identity is missing" in message:
+        return "missing_mapping_artifact"
+    if "fabric ADG identity is missing" in message:
+        return "missing_fabric_adg"
+    if "does not consume" in message:
+        return "unsupported_target_profile"
+    if "identity mismatch" in message or "different mapping artifact" in message:
+        return "stale_artifact_fingerprint"
+    if "sim report is not passing" in message or "simulation comparison report is not passing" in message:
+        return "simulator_target_failure"
+    return "runtime_configuration_failure"
+
+
+def diagnostic_records(diagnostics: list[str]) -> list[dict[str, str]]:
+    records = []
+    for index, message in enumerate(diagnostics, start=1):
+        records.append(
+            {
+                "diagnostic_id": f"runtime-package::{index}",
+                "diagnostic_class": diagnostic_class(message),
+                "component": "runtime_package",
+                "severity": "error",
+                "message": message,
+            }
+        )
+    return records
+
+
+def fallback_decision(
+    *,
+    policy: str,
+    target_profile: dict[str, str],
+    status: str,
+    diagnostics: list[str],
+) -> dict[str, object]:
+    target_profile_id = target_profile.get("profile_id", "")
+    if status == "pass" and policy == "report_only":
+        return {
+            "policy": policy,
+            "decision": "report_only",
+            "fallback_taken": False,
+            "target_profile_id": target_profile_id,
+            "reason": "report-only runtime package records launch metadata without executing accelerator work",
+        }
+    return {
+        "policy": policy,
+        "decision": "blocked",
+        "fallback_taken": False,
+        "target_profile_id": target_profile_id,
+        "reason": "; ".join(diagnostics) if diagnostics else "runtime package is blocked",
+    }
+
+
 def build_package(paths: list[Path], target: str) -> dict[str, object]:
     grouped = group_paths(paths)
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
@@ -207,6 +263,9 @@ def build_package(paths: list[Path], target: str) -> dict[str, object]:
         selected_mapping_identity = ""
         fabric_adg_identity = ""
 
+    fallback_policy = "report_only"
+    status = "pass" if not diagnostics else "blocked"
+
     return {
         "schema_version": 1,
         "kind": "runtime_package",
@@ -217,15 +276,22 @@ def build_package(paths: list[Path], target: str) -> dict[str, object]:
         "selected_mapping_artifact_identity": selected_mapping_identity,
         "fabric_adg_identity": fabric_adg_identity,
         "target_profile": target_profile,
-        "fallback_policy": "report_only",
+        "fallback_policy": fallback_policy,
+        "fallback_decision": fallback_decision(
+            policy=fallback_policy,
+            target_profile=target_profile,
+            status=status,
+            diagnostics=diagnostics,
+        ),
         "synchronization_mode": "host_wait",
         "data_movement_policy": "simulated",
         "memory_descriptors": memory_descriptors,
         "argument_descriptors": argument_descriptors,
         "required_runtime_features": required_runtime_features,
         "simulator_report_identities": simulator_report_identities,
+        "diagnostic_records": diagnostic_records(diagnostics),
         "diagnostics": diagnostics,
-        "status": "pass" if not diagnostics else "blocked",
+        "status": status,
     }
 
 

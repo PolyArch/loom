@@ -480,12 +480,14 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "fabric_adg_identity",
             "target_profile",
             "fallback_policy",
+            "fallback_decision",
             "synchronization_mode",
             "data_movement_policy",
             "memory_descriptors",
             "argument_descriptors",
             "required_runtime_features",
             "simulator_report_identities",
+            "diagnostic_records",
             "diagnostics",
             "status",
         },
@@ -502,6 +504,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "runtime_input_identity",
             "selected_hardware_candidate_identity",
             "selected_mapping_artifact_identity",
+            "runtime_fallback_decision",
             "report_status",
             "diagnostics",
             "metric_records",
@@ -1121,6 +1124,55 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
     return len(artifacts)
 
 
+def validate_diagnostic_records(
+    value: object,
+    diagnostics: list[str],
+    label: str,
+) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        diagnostics.append(f"{label} diagnostic_records must be a list")
+        return []
+    records: list[dict[str, object]] = []
+    for index, record in enumerate(value, start=1):
+        if not isinstance(record, dict):
+            diagnostics.append(f"{label} diagnostic record {index} must be an object")
+            continue
+        for key in ("diagnostic_id", "diagnostic_class", "component", "severity", "message"):
+            if not isinstance(record.get(key), str) or not record.get(key):
+                diagnostics.append(f"{label} diagnostic record {index} lacks {key}")
+        if record.get("severity") not in {"info", "warning", "error"}:
+            diagnostics.append(f"{label} diagnostic record {index} has unknown severity")
+        records.append(record)
+    return records
+
+
+def validate_fallback_decision(
+    value: object,
+    diagnostics: list[str],
+    label: str,
+    *,
+    expected_policy: object | None = None,
+    target_profile_id: object | None = None,
+    require_complete: bool = False,
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append(f"{label} fallback_decision must be an object")
+        return
+    if not value and not require_complete:
+        return
+    for key in ("policy", "decision", "target_profile_id", "reason"):
+        if not isinstance(value.get(key), str) or not value.get(key):
+            diagnostics.append(f"{label} fallback_decision lacks {key}")
+    if not isinstance(value.get("fallback_taken"), bool):
+        diagnostics.append(f"{label} fallback_decision fallback_taken must be boolean")
+    if expected_policy is not None and value.get("policy") != expected_policy:
+        diagnostics.append(f"{label} fallback_decision policy does not match fallback_policy")
+    if target_profile_id is not None and value.get("target_profile_id") != target_profile_id:
+        diagnostics.append(f"{label} fallback_decision target_profile_id does not match target_profile")
+    if value.get("decision") not in {"none", "report_only", "host_fallback", "scalar_fallback", "blocked"}:
+        diagnostics.append(f"{label} fallback_decision has unknown decision")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -1417,6 +1469,14 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "report_only",
         }:
             diagnostics.append("runtime package has unknown fallback_policy")
+        validate_fallback_decision(
+            data.get("fallback_decision"),
+            diagnostics,
+            "runtime package",
+            expected_policy=fallback_policy,
+            target_profile_id=target_profile.get("profile_id"),
+            require_complete=True,
+        )
         data_movement_policy = data.get("data_movement_policy")
         if data_movement_policy not in {
             "shared_coherent",
@@ -1430,6 +1490,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         diagnostics_list = data.get("diagnostics")
         if not isinstance(diagnostics_list, list):
             diagnostics.append("runtime package diagnostics must be a list")
+        diagnostic_records = validate_diagnostic_records(
+            data.get("diagnostic_records"),
+            diagnostics,
+            "runtime package",
+        )
         memory_descriptors = data.get("memory_descriptors")
         if not isinstance(memory_descriptors, list):
             diagnostics.append("runtime package memory_descriptors must be a list")
@@ -1501,6 +1566,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append("runtime package DFG-sim target needs DFG-sim report descriptor")
                 if not any(str(identity).endswith("dfg-sim-report") for identity in simulator_reports):
                     diagnostics.append("runtime package DFG-sim target needs DFG-sim report identity")
+        elif not diagnostic_records:
+            diagnostics.append("runtime package non-pass status needs diagnostic_records")
     if kind == "workload_report_bundle":
         if data.get("kind") != "workload_report_bundle":
             diagnostics.append("workload report bundle kind must be workload_report_bundle")
@@ -1517,6 +1584,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         ):
             if not isinstance(data.get(key), str) or not data.get(key):
                 diagnostics.append(f"workload report bundle lacks {key}")
+        validate_fallback_decision(
+            data.get("runtime_fallback_decision"),
+            diagnostics,
+            "workload report bundle runtime",
+            require_complete=data.get("report_status") == "pass",
+        )
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         if not isinstance(metrics, list) or not metrics:

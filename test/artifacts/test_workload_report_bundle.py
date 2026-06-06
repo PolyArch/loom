@@ -20,6 +20,7 @@ REQUIRED_KEYS = {
     "runtime_input_identity",
     "selected_hardware_candidate_identity",
     "selected_mapping_artifact_identity",
+    "runtime_fallback_decision",
     "report_status",
     "diagnostics",
     "metric_records",
@@ -102,6 +103,15 @@ def main() -> int:
             raise AssertionError(f"report should reference simulation comparison evidence: {data}")
         if optional_identities.get("runtime_package") != "runtime-package":
             raise AssertionError(f"report should reference runtime package evidence: {data}")
+        expected_runtime_fallback = {
+            "policy": "report_only",
+            "decision": "report_only",
+            "fallback_taken": False,
+            "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+            "reason": "report-only runtime package records launch metadata without executing accelerator work",
+        }
+        if data["runtime_fallback_decision"] != expected_runtime_fallback:
+            raise AssertionError(f"report should preserve runtime fallback decision: {data}")
 
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:

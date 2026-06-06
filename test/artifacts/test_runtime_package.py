@@ -21,12 +21,14 @@ REQUIRED_KEYS = {
     "fabric_adg_identity",
     "target_profile",
     "fallback_policy",
+    "fallback_decision",
     "synchronization_mode",
     "data_movement_policy",
     "memory_descriptors",
     "argument_descriptors",
     "required_runtime_features",
     "simulator_report_identities",
+    "diagnostic_records",
     "diagnostics",
     "status",
 }
@@ -95,6 +97,15 @@ def main() -> int:
             raise AssertionError(f"unexpected target profile: {data}")
         if data["fallback_policy"] != "report_only":
             raise AssertionError(f"unexpected fallback policy: {data}")
+        expected_fallback = {
+            "policy": "report_only",
+            "decision": "report_only",
+            "fallback_taken": False,
+            "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+            "reason": "report-only runtime package records launch metadata without executing accelerator work",
+        }
+        if data["fallback_decision"] != expected_fallback:
+            raise AssertionError(f"unexpected fallback decision: {data}")
         if data["synchronization_mode"] != "host_wait":
             raise AssertionError(f"unexpected synchronization mode: {data}")
         if data["data_movement_policy"] != "simulated":
@@ -157,6 +168,14 @@ def main() -> int:
             raise AssertionError(f"missing CGRA-sim evidence should block runtime package: {missing_cgra_data}")
         if not any("CGRA-sim target requires CGRA-sim report" in str(item) for item in missing_cgra_data.get("diagnostics", [])):
             raise AssertionError(f"missing CGRA-sim evidence should be diagnosed: {missing_cgra_data}")
+        missing_records = missing_cgra_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "missing_simulator_report"
+            and record.get("component") == "runtime_package"
+            for record in missing_records
+        ):
+            raise AssertionError(f"missing CGRA-sim evidence needs structured diagnostics: {missing_cgra_data}")
 
         mismatched_cgra = out_dir / "mismatch-cgra-sim-report.json"
         mismatched_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
@@ -242,6 +261,15 @@ def main() -> int:
         }
         if dfg_data.get("target_profile") != expected_dfg_target:
             raise AssertionError(f"unexpected DFG-sim target profile: {dfg_data}")
+        expected_dfg_fallback = {
+            "policy": "report_only",
+            "decision": "report_only",
+            "fallback_taken": False,
+            "target_profile_id": "simulator::dfg_sim::optimistic_pipeline_latency_throughput_sum",
+            "reason": "report-only runtime package records launch metadata without executing accelerator work",
+        }
+        if dfg_data.get("fallback_decision") != expected_dfg_fallback:
+            raise AssertionError(f"unexpected DFG-sim fallback decision: {dfg_data}")
         if dfg_data.get("selected_mapping_artifact_identity") != "":
             raise AssertionError(f"DFG-sim package must not require a mapping artifact: {dfg_data}")
         if dfg_data.get("fabric_adg_identity") != "":
