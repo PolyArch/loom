@@ -506,6 +506,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "selected_mapping_artifact_identity",
             "runtime_fallback_decision",
             "report_status",
+            "diagnostic_records",
             "diagnostics",
             "metric_records",
         },
@@ -1590,6 +1591,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "workload report bundle runtime",
             require_complete=data.get("report_status") == "pass",
         )
+        diagnostic_records = validate_diagnostic_records(
+            data.get("diagnostic_records"),
+            diagnostics,
+            "workload report bundle",
+        )
+        if data.get("report_status") != "pass" and not diagnostic_records:
+            diagnostics.append("workload report bundle non-pass status needs diagnostic_records")
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         if not isinstance(metrics, list) or not metrics:

@@ -116,6 +116,43 @@ def metric_record(
     return record
 
 
+def diagnostic_class(message: str) -> str:
+    if "runtime package is not passing" in message:
+        return "runtime_package_failure"
+    if "source compatibility row is missing" in message:
+        return "source_compatibility_missing"
+    if "compiler pipeline row is missing" in message:
+        return "compiler_pipeline_missing"
+    if "DFG-sim report is missing" in message:
+        return "dfg_sim_missing"
+    if "CGRA-sim report is missing" in message:
+        return "cgra_sim_missing"
+    if "simulation comparison report is not passing" in message:
+        return "simulation_comparison_failure"
+    if "RTL/FPA row is missing" in message:
+        return "rtl_fpa_missing"
+    if "no selected DSE candidate artifact was provided" in message:
+        return "dse_candidate_missing"
+    return "report_bundle_failure"
+
+
+def diagnostic_record(index: int, message: str) -> dict[str, str]:
+    return {
+        "diagnostic_id": f"workload-report-bundle::{index}",
+        "diagnostic_class": diagnostic_class(message),
+        "component": "workload_report_bundle",
+        "severity": "error",
+        "message": message,
+    }
+
+
+def runtime_diagnostic_records(runtime_package: dict[str, object]) -> list[dict[str, object]]:
+    records = runtime_package.get("diagnostic_records", [])
+    if not isinstance(records, list):
+        return []
+    return [record for record in records if isinstance(record, dict)]
+
+
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     dse_path = first_path(grouped, "dse_candidate")
@@ -133,6 +170,9 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "selected_mapping_artifact_identity": "",
             "runtime_fallback_decision": {},
             "report_status": "blocked",
+            "diagnostic_records": [
+                diagnostic_record(1, "no selected DSE candidate artifact was provided")
+            ],
             "diagnostics": ["no selected DSE candidate artifact was provided"],
             "metric_records": [],
         }
@@ -175,6 +215,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("runtime package is not passing")
     if rtl_row is None or rtl_path is None:
         diagnostics.append("RTL/FPA row is missing")
+    diagnostic_records = runtime_diagnostic_records(runtime_package)
+    diagnostic_records.extend(
+        diagnostic_record(index, message)
+        for index, message in enumerate(diagnostics, start=1)
+    )
 
     metric_records: list[dict[str, object]] = []
     if isinstance(dfg_report.get("optimistic_cycles"), int) and dfg_path is not None:
@@ -268,6 +313,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "dse_feedback_record": artifact_id(dse_path),
         },
         "report_status": "pass" if not diagnostics else "blocked",
+        "diagnostic_records": diagnostic_records,
         "diagnostics": diagnostics,
         "metric_records": metric_records,
     }

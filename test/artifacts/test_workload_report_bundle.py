@@ -22,6 +22,7 @@ REQUIRED_KEYS = {
     "selected_mapping_artifact_identity",
     "runtime_fallback_decision",
     "report_status",
+    "diagnostic_records",
     "diagnostics",
     "metric_records",
 }
@@ -182,6 +183,73 @@ def main() -> int:
         ]
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one report bundle review: {audit_data}")
+
+        blocked_runtime = out_dir / "blocked-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--output",
+                str(blocked_runtime),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package without simulator evidence unexpectedly passed")
+        blocked_report = out_dir / "blocked-runtime-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(blocked_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(blocked_runtime),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("report bundle with blocked runtime package unexpectedly passed")
+        blocked_data = json.loads(blocked_report.read_text())
+        records = blocked_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "missing_simulator_report"
+            and record.get("component") == "runtime_package"
+            for record in records
+        ):
+            raise AssertionError(f"report bundle should preserve runtime diagnostic records: {blocked_data}")
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "runtime_package_failure"
+            and record.get("component") == "workload_report_bundle"
+            for record in records
+        ):
+            raise AssertionError(f"report bundle should add its own runtime failure diagnostic: {blocked_data}")
 
     return 0
 
