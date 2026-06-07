@@ -2121,6 +2121,32 @@ EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME = {
     "dfg_sim_report": "dfg_sim_report",
     "rtl_manifest": "rtl_manifest",
 }
+EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
+    "optimistic_steps": "cycles",
+    "hardware_cycles": "cycles",
+    "frequency": "MHz",
+    "area": "um2",
+    "dynamic_power": "mW",
+    "leakage_power": "mW",
+    "energy": "nJ",
+    "hardware_nodes": "count",
+    "hardware_links": "count",
+}
+
+
+def validate_report_metric_unit(
+    metric: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+    index: int,
+) -> None:
+    metric_class = metric.get("metric_class")
+    unit = metric.get("unit")
+    if not isinstance(metric_class, str) or not isinstance(unit, str):
+        return
+    expected = EXPECTED_REPORT_METRIC_UNIT_BY_CLASS.get(metric_class)
+    if expected is not None and unit != expected:
+        diagnostics.append(f"{label} metric {index} unit does not match metric_class")
 
 
 def validate_runtime_argument_descriptor_kind(
@@ -3914,6 +3940,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not isinstance(metric.get(key), str) or not metric.get(key):
                     diagnostics.append(f"workload report bundle metric {index} lacks {key}")
+            validate_report_metric_unit(metric, diagnostics, "workload report bundle", index)
             value = metric.get("value")
             if not isinstance(value, (int, float)) or value < 0:
                 diagnostics.append(f"workload report bundle metric {index} has invalid value")
@@ -4034,6 +4061,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not isinstance(metric.get(key), str) or not metric.get(key):
                     diagnostics.append(f"hardware report bundle metric {index} lacks {key}")
+            validate_report_metric_unit(metric, diagnostics, "hardware report bundle", index)
             value = metric.get("value")
             if not isinstance(value, (int, float)) or value < 0:
                 diagnostics.append(f"hardware report bundle metric {index} has invalid value")
