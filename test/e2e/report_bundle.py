@@ -165,6 +165,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     simulator_reports = report.get("simulator_report_identities", [])
     if not isinstance(simulator_reports, list):
         simulator_reports = []
+    diagnostic_records = report.get("diagnostic_records", [])
+    if not isinstance(diagnostic_records, list):
+        diagnostic_records = []
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
@@ -225,6 +228,11 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
             str(identity)
             for identity in output_buffers
             if isinstance(identity, str)
+        ],
+        "diagnostic_records": [
+            record
+            for record in diagnostic_records
+            if isinstance(record, dict)
         ],
         "fallback_decision": fallback,
     }

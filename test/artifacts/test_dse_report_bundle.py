@@ -133,6 +133,7 @@ def main() -> int:
                 "required_synchronization_policies": ["host_wait"],
                 "simulator_report_identities": workload_runtime_evidence["simulator_report_identities"],
                 "output_buffer_identities": workload_runtime_evidence["output_buffer_identities"],
+                "diagnostic_records": workload_runtime_evidence["diagnostic_records"],
                 "input_artifact_fingerprints": workload_runtime_evidence["input_artifact_fingerprints"],
                 "fallback_decision": {
                     "policy": "report_only",
@@ -325,6 +326,28 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with malformed runtime identity summary unexpectedly passed audit")
+
+        bad_runtime_diagnostics_summary = out_dir / "bad-runtime-diagnostics-summary-dse-report-bundle.json"
+        bad_runtime_diagnostics_summary_data = json.loads(report.read_text())
+        bad_runtime_diagnostics_summary_data["runtime_evidence_summaries"][0]["diagnostic_records"] = (
+            "runtime-package::1"
+        )
+        bad_runtime_diagnostics_summary.write_text(
+            json.dumps(bad_runtime_diagnostics_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_diagnostics_summary_audit = out_dir / "bad-runtime-diagnostics-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_diagnostics_summary_audit),
+                str(bad_runtime_diagnostics_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime diagnostics summary unexpectedly passed audit")
 
         bad_runtime_output_summary = out_dir / "bad-runtime-output-summary-dse-report-bundle.json"
         bad_runtime_output_summary_data = json.loads(report.read_text())

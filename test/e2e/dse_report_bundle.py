@@ -220,6 +220,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         simulator_reports = evidence.get("simulator_report_identities", [])
         if not isinstance(simulator_reports, list):
             simulator_reports = []
+        diagnostic_records = evidence.get("diagnostic_records", [])
+        if not isinstance(diagnostic_records, list):
+            diagnostic_records = []
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -266,6 +269,11 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 str(identity)
                 for identity in output_buffers
                 if isinstance(identity, str)
+            ],
+            "diagnostic_records": [
+                record
+                for record in diagnostic_records
+                if isinstance(record, dict)
             ],
             "fallback_decision": fallback,
         }

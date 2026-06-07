@@ -1635,6 +1635,7 @@ def validate_runtime_evidence(
         "synchronization_mode",
         "output_buffer_identities",
         "simulator_report_identities",
+        "diagnostic_records",
         "input_artifact_fingerprints",
         "required_data_movement_policies",
         "required_synchronization_policies",
@@ -1682,6 +1683,11 @@ def validate_runtime_evidence(
     simulator_reports = value.get("simulator_report_identities")
     if not isinstance(simulator_reports, list) or any(not isinstance(identity, str) for identity in simulator_reports):
         diagnostics.append("workload report bundle runtime_evidence simulator_report_identities must be a string list")
+    validate_diagnostic_records(
+        value.get("diagnostic_records"),
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
     required_data_movement_policies = value.get("required_data_movement_policies")
     if not isinstance(required_data_movement_policies, list):
         diagnostics.append("workload report bundle runtime_evidence required_data_movement_policies must be a list")
@@ -1869,6 +1875,11 @@ def validate_runtime_evidence_summaries(
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} simulator_report_identities must be a string list"
             )
+        validate_diagnostic_records(
+            summary.get("diagnostic_records"),
+            diagnostics,
+            f"DSE report bundle runtime evidence summary {index}",
+        )
         input_fingerprints = summary.get("input_artifact_fingerprints")
         if not isinstance(input_fingerprints, dict):
             diagnostics.append(

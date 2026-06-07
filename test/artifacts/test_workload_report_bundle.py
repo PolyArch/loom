@@ -160,6 +160,7 @@ def main() -> int:
             "required_synchronization_policies": ["host_wait"],
             "simulator_report_identities": runtime_report["simulator_report_identities"],
             "output_buffer_identities": [],
+            "diagnostic_records": runtime_report["diagnostic_records"],
             "input_artifact_fingerprints": runtime_package_data["input_artifact_fingerprints"],
             "fallback_decision": expected_runtime_fallback,
         }
@@ -341,6 +342,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime identity unexpectedly passed audit")
+        bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
+        bad_runtime_diagnostics_data = json.loads(report.read_text())
+        bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"
+        bad_runtime_diagnostics_report.write_text(
+            json.dumps(bad_runtime_diagnostics_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_diagnostics_audit = out_dir / "bad-runtime-diagnostics-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_diagnostics_audit),
+                str(bad_runtime_diagnostics_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime diagnostics unexpectedly passed audit")
         bad_simulator_identities_report = out_dir / "bad-runtime-simulator-identities-workload-report-bundle.json"
         bad_simulator_identities_data = json.loads(report.read_text())
         bad_simulator_identities_data["runtime_evidence"]["simulator_report_identities"] = "vecsum-cgra-sim-report"
