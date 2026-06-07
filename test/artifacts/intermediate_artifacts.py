@@ -27,6 +27,14 @@ DATA_MOVEMENT_POLICIES = {
     "simulated",
     "custom",
 }
+COHERENCE_REQUIREMENT_BY_POLICY = {
+    "shared_coherent": "shared_coherent",
+    "shared_noncoherent": "explicit_flush_invalidate",
+    "copy_in_copy_out": "copy_boundary",
+    "device_local": "device_local",
+    "simulated": "simulator_consistent",
+    "custom": "custom_policy",
+}
 SYNCHRONIZATION_POLICIES = {
     "host_wait",
     "host_fence",
@@ -2034,6 +2042,9 @@ def validate_runtime_evidence_memory_descriptors(
             diagnostics.append(f"{label} memory descriptor {index} transfer_policy does not match runtime evidence")
         if descriptor.get("policy") not in DATA_MOVEMENT_POLICIES:
             diagnostics.append(f"{label} memory descriptor {index} has unknown policy")
+        expected_coherence = COHERENCE_REQUIREMENT_BY_POLICY.get(data_movement_policy)
+        if expected_coherence is not None and descriptor.get("coherence_requirement") != expected_coherence:
+            diagnostics.append(f"{label} memory descriptor {index} coherence_requirement does not match policy")
 
 
 def validate_runtime_evidence_argument_descriptors(
@@ -3565,6 +3576,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if descriptor_policy != data_movement_policy:
                 diagnostics.append(
                     f"runtime package memory descriptor {index} policy does not match data_movement_policy"
+                )
+            expected_coherence = COHERENCE_REQUIREMENT_BY_POLICY.get(data_movement_policy)
+            if expected_coherence is not None and descriptor.get("coherence_requirement") != expected_coherence:
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} coherence_requirement does not match policy"
                 )
             if descriptor.get("transfer_policy") != data_movement_policy:
                 diagnostics.append(

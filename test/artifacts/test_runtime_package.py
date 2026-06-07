@@ -788,6 +788,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package without host buffer identity unexpectedly passed audit")
+        mismatched_coherence = out_dir / "mismatched-coherence-runtime-package.json"
+        mismatched_coherence_data = json.loads(package.read_text())
+        mismatched_coherence_data["memory_descriptors"][0]["coherence_requirement"] = "shared_coherent"
+        mismatched_coherence.write_text(json.dumps(mismatched_coherence_data, indent=2, sort_keys=True) + "\n")
+        mismatched_coherence_audit = out_dir / "mismatched-coherence-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_coherence_audit),
+                str(mismatched_coherence),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched memory coherence unexpectedly passed audit")
 
         unknown_layout_report = out_dir / "toy-dfg-sim-report.json"
         unknown_layout_report.write_text(
