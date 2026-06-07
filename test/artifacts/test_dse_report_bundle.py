@@ -243,6 +243,27 @@ def main() -> int:
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one DSE report bundle review: {audit_data}")
 
+        stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
+        stochastic_without_seed_data = json.loads(report.read_text())
+        stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"
+        stochastic_without_seed_data["policy_configuration"]["random_seed"] = None
+        stochastic_without_seed.write_text(
+            json.dumps(stochastic_without_seed_data, indent=2, sort_keys=True) + "\n"
+        )
+        stochastic_without_seed_audit = out_dir / "stochastic-without-seed-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stochastic_without_seed_audit),
+                str(stochastic_without_seed),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with stochastic policy lacking seed unexpectedly passed audit")
+
         missing_candidate_metrics = out_dir / "missing-candidate-metrics-dse-report-bundle.json"
         missing_candidate_metrics_data = json.loads(report.read_text())
         missing_candidate_metrics_data["candidate_list"][0]["metric_records_used"] = []

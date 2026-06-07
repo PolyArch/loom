@@ -3822,6 +3822,14 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             or not policy_configuration.get("conflict_resolution")
         ):
             diagnostics.append("DSE report bundle policy_configuration lacks conflict_resolution")
+        policy_kind = policy_configuration.get("policy_kind")
+        if data.get("report_status") == "pass" and (
+            not isinstance(policy_kind, str) or not policy_kind
+        ):
+            diagnostics.append("DSE report bundle policy_configuration lacks policy_kind")
+        random_seed = policy_configuration.get("random_seed")
+        if policy_kind in {"stochastic", "seeded"} and not isinstance(random_seed, int):
+            diagnostics.append("DSE report bundle stochastic policy_configuration needs random_seed")
         referenced_metric_ids = dse_report_referenced_metric_ids(path, data)
         objectives = data.get("objective_records")
         if not isinstance(objectives, list) or (data.get("report_status") == "pass" and not objectives):
