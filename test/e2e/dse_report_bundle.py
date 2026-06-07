@@ -214,6 +214,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         input_fingerprints = evidence.get("input_artifact_fingerprints", {})
         if not isinstance(input_fingerprints, dict):
             input_fingerprints = {}
+        output_buffers = evidence.get("output_buffer_identities", [])
+        if not isinstance(output_buffers, list):
+            output_buffers = []
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -226,6 +229,8 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
             "launch_status": str(evidence.get("launch_status", "")),
             "target_status": str(evidence.get("target_status", "")),
+            "runtime_trace_identity": str(evidence.get("runtime_trace_identity", "")),
+            "profiling_record_identity": str(evidence.get("profiling_record_identity", "")),
             "data_movement_policy": str(evidence.get("data_movement_policy", "")),
             "synchronization_mode": str(evidence.get("synchronization_mode", "")),
             "required_data_movement_policies": [
@@ -243,6 +248,11 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 for identity, fingerprint in input_fingerprints.items()
                 if isinstance(identity, str) and isinstance(fingerprint, str)
             },
+            "output_buffer_identities": [
+                str(identity)
+                for identity in output_buffers
+                if isinstance(identity, str)
+            ],
             "fallback_decision": fallback,
         }
         custom_policy = evidence.get("custom_data_movement_policy_identity")

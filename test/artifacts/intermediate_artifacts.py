@@ -1763,6 +1763,9 @@ def validate_runtime_evidence_summaries(
         ):
             if not isinstance(summary.get(key), str) or not summary.get(key):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
+        for key in ("runtime_trace_identity", "profiling_record_identity"):
+            if not isinstance(summary.get(key), str):
+                diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
         data_movement_policy = summary.get("data_movement_policy")
         if data_movement_policy not in DATA_MOVEMENT_POLICIES:
             diagnostics.append(
@@ -1825,6 +1828,11 @@ def validate_runtime_evidence_summaries(
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} "
                 "required_synchronization_policies omits synchronization_mode"
+            )
+        outputs = summary.get("output_buffer_identities")
+        if not isinstance(outputs, list) or any(not isinstance(identity, str) for identity in outputs):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} output_buffer_identities must be a string list"
             )
         input_fingerprints = summary.get("input_artifact_fingerprints")
         if not isinstance(input_fingerprints, dict):
