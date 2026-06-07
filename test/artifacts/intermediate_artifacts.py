@@ -3915,6 +3915,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in (
                 "objective_id",
                 "objective_kind",
+                "constraint_or_optimization_mode",
                 "comparison_direction",
                 "units",
             ):

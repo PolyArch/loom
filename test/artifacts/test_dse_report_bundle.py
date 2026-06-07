@@ -166,6 +166,7 @@ def main() -> int:
         expected_objective = {
             "objective_id": "objective::minimize_runtime",
             "objective_kind": "minimize_runtime",
+            "constraint_or_optimization_mode": "optimization",
             "comparison_direction": "minimize",
             "units": "cycles",
         }
@@ -449,6 +450,26 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched objective units unexpectedly passed audit")
+
+        missing_objective_mode = out_dir / "missing-objective-mode-dse-report-bundle.json"
+        missing_objective_mode_data = json.loads(report.read_text())
+        del missing_objective_mode_data["objective_records"][0]["constraint_or_optimization_mode"]
+        missing_objective_mode.write_text(
+            json.dumps(missing_objective_mode_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_objective_mode_audit = out_dir / "missing-objective-mode-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_objective_mode_audit),
+                str(missing_objective_mode),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with objective lacking mode unexpectedly passed audit")
 
         missing_candidate_outputs = out_dir / "missing-candidate-outputs-dse-report-bundle.json"
         missing_candidate_outputs_data = json.loads(report.read_text())
