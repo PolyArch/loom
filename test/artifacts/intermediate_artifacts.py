@@ -3342,6 +3342,34 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("name", "identity", "descriptor_kind"):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package argument descriptor {index} lacks {key}")
+        artifact_input_references: set[str] = set()
+        selected_mapping = data.get("selected_mapping_artifact_identity")
+        if isinstance(selected_mapping, str) and selected_mapping:
+            artifact_input_references.add(selected_mapping)
+        for identity in simulator_reports:
+            if isinstance(identity, str) and identity:
+                artifact_input_references.add(identity)
+        for descriptor in argument_descriptors:
+            if not isinstance(descriptor, dict):
+                continue
+            if descriptor.get("descriptor_kind") in {
+                "pnr_mapping_artifact",
+                "dfg_sim_report",
+                "cgra_sim_report",
+                "sim_comparison_report",
+                "rtl_manifest",
+            }:
+                identity = descriptor.get("identity")
+                if isinstance(identity, str) and identity:
+                    artifact_input_references.add(identity)
+        for identity in input_fingerprints:
+            if identity not in artifact_input_references:
+                diagnostics.append(
+                    f"runtime package input_artifact_fingerprints references {identity!r} outside runtime inputs"
+                )
+        for reference in artifact_input_references:
+            if reference not in input_fingerprints:
+                diagnostics.append(f"runtime package input_artifact_fingerprints lacks {reference!r}")
         if data_movement_policy not in required_data_movement_policies:
             diagnostics.append("runtime package required_data_movement_policies omits data_movement_policy")
         synchronization_mode = data.get("synchronization_mode")

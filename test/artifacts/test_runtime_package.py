@@ -1076,6 +1076,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("RTL-sim runtime package with stale RTL manifest fingerprint unexpectedly passed audit")
+        missing_rtl_manifest_fingerprint = out_dir / "missing-rtl-manifest-fingerprint-runtime-package.json"
+        missing_rtl_manifest_fingerprint_data = json.loads(rtl_with_manifest_package.read_text())
+        missing_rtl_manifest_fingerprint_data["input_artifact_fingerprints"].pop("rtl-manifest", None)
+        missing_rtl_manifest_fingerprint.write_text(
+            json.dumps(missing_rtl_manifest_fingerprint_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_rtl_manifest_fingerprint_audit = (
+            out_dir / "missing-rtl-manifest-fingerprint-runtime-package-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_rtl_manifest_fingerprint_audit),
+                str(missing_rtl_manifest_fingerprint),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL-sim runtime package without RTL manifest fingerprint unexpectedly passed audit")
 
         hardware_package = out_dir / "hardware-runtime-package.json"
         result = artifact_test_common.run_command(
