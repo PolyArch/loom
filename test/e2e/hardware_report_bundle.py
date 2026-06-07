@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import report_metric_helpers  # noqa: E402
 
 
 artifact_id = intermediate_artifacts.artifact_id_for_path
@@ -91,31 +92,6 @@ def numeric(row: dict[str, str], key: str) -> float:
     return float(row[key])
 
 
-def metric_record(
-    *,
-    metric_id: str,
-    metric_class: str,
-    value: float | int,
-    unit: str,
-    fidelity_level: str,
-    evidence_source_artifact_id: str,
-    producer_component: str,
-    derivation_kind: str,
-    diagnostics: list[str] | None = None,
-) -> dict[str, object]:
-    return {
-        "metric_id": metric_id,
-        "metric_class": metric_class,
-        "value": value,
-        "unit": unit,
-        "fidelity_level": fidelity_level,
-        "evidence_source_artifact_id": evidence_source_artifact_id,
-        "producer_component": producer_component,
-        "derivation_kind": derivation_kind,
-        "diagnostics": diagnostics or [],
-    }
-
-
 def diagnostic_class(message: str) -> str:
     if "FPA row" in message:
         return "fpa_report_missing"
@@ -179,7 +155,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
 
     metric_records: list[dict[str, object]] = []
     metric_records.append(
-        metric_record(
+        report_metric_helpers.metric_record(
             metric_id=f"metric::{hardware}::node_count",
             metric_class="hardware_nodes",
             value=int(hardware_row["node_count"]),
@@ -192,7 +168,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         )
     )
     metric_records.append(
-        metric_record(
+        report_metric_helpers.metric_record(
             metric_id=f"metric::{hardware}::link_count",
             metric_class="hardware_links",
             value=int(hardware_row["link_count"]),
@@ -217,7 +193,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             ("leakage_power_mw", "leakage_power", "mW"),
         ):
             metric_records.append(
-                metric_record(
+                report_metric_helpers.metric_record(
                     metric_id=f"metric::{hardware}::{key}",
                     metric_class=metric_class,
                     value=numeric(fpa_row, key),

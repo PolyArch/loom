@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
 import runtime_evidence_helpers  # noqa: E402
+import report_metric_helpers  # noqa: E402
 
 
 artifact_id = intermediate_artifacts.artifact_id_for_path
@@ -94,35 +95,6 @@ def matching_rtl_manifest_path(paths: list[Path], hardware: str) -> Path | None:
 
 def numeric(row: dict[str, str], key: str) -> float:
     return float(row[key])
-
-
-def metric_record(
-    *,
-    metric_id: str,
-    metric_class: str,
-    value: float | int,
-    unit: str,
-    fidelity_level: str,
-    evidence_source_artifact_id: str,
-    producer_component: str,
-    derivation_kind: str,
-    diagnostics: list[str] | None = None,
-    input_metric_ids: list[str] | None = None,
-) -> dict[str, object]:
-    record: dict[str, object] = {
-        "metric_id": metric_id,
-        "metric_class": metric_class,
-        "value": value,
-        "unit": unit,
-        "fidelity_level": fidelity_level,
-        "evidence_source_artifact_id": evidence_source_artifact_id,
-        "producer_component": producer_component,
-        "derivation_kind": derivation_kind,
-        "diagnostics": diagnostics or [],
-    }
-    if input_metric_ids is not None:
-        record["input_metric_ids"] = input_metric_ids
-    return record
 
 
 def diagnostic_class(message: str) -> str:
@@ -247,7 +219,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     metric_records: list[dict[str, object]] = []
     if isinstance(dfg_report.get("optimistic_cycles"), int) and dfg_path is not None:
         metric_records.append(
-            metric_record(
+            report_metric_helpers.metric_record(
                 metric_id=f"metric::{workload}::dfg_sim_cycles",
                 metric_class="optimistic_steps",
                 value=int(dfg_report["optimistic_cycles"]),
@@ -260,7 +232,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         )
     if isinstance(dfg_report.get("dynamic_work_items"), int) and dfg_path is not None:
         metric_records.append(
-            metric_record(
+            report_metric_helpers.metric_record(
                 metric_id=f"metric::{workload}::workload_size_items",
                 metric_class="workload_size",
                 value=int(dfg_report["dynamic_work_items"]),
@@ -274,7 +246,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
 
     if isinstance(cgra_report.get("hardware_aware_cycles"), int) and cgra_path is not None:
         metric_records.append(
-            metric_record(
+            report_metric_helpers.metric_record(
                 metric_id=f"metric::{workload}::cgra_sim_cycles",
                 metric_class="hardware_cycles",
                 value=int(cgra_report["hardware_aware_cycles"]),
@@ -296,7 +268,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             ("leakage_power_mw", "leakage_power", "mW"),
         ):
             metric_records.append(
-                metric_record(
+                report_metric_helpers.metric_record(
                     metric_id=f"metric::{hardware}::{key}",
                     metric_class=metric_class,
                     value=numeric(rtl_row, key),
@@ -320,7 +292,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             f"metric::{hardware}::frequency_mhz",
         ]
         metric_records.append(
-            metric_record(
+            report_metric_helpers.metric_record(
                 metric_id=f"metric::{workload}::estimated_runtime_us",
                 metric_class="estimated_runtime",
                 value=int(cgra_report["hardware_aware_cycles"]) / numeric(rtl_row, "frequency_mhz"),
@@ -346,7 +318,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         leakage_power_metric_id,
     ]
     metric_records.append(
-        metric_record(
+        report_metric_helpers.metric_record(
             metric_id=f"metric::{workload}::energy_nj",
             metric_class="energy",
             value=numeric(dse_row, "energy_nj"),
@@ -371,7 +343,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         runtime_us = int(cgra_report["hardware_aware_cycles"]) / numeric(rtl_row, "frequency_mhz")
         throughput_items_per_s = int(dfg_report["dynamic_work_items"]) / runtime_us * 1_000_000.0
         metric_records.append(
-            metric_record(
+            report_metric_helpers.metric_record(
                 metric_id=throughput_metric_id,
                 metric_class="throughput",
                 value=throughput_items_per_s,
@@ -392,7 +364,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         total_power_w = (numeric(rtl_row, "dynamic_power_mw") + numeric(rtl_row, "leakage_power_mw")) / 1000.0
         if runtime_us > 0 and total_power_w > 0:
             metric_records.append(
-                metric_record(
+                report_metric_helpers.metric_record(
                     metric_id=f"metric::{workload}::performance_per_watt",
                     metric_class="performance_per_watt",
                     value=throughput_items_per_s / total_power_w,
@@ -414,7 +386,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         area_um2 = numeric(rtl_row, "area_um2")
         if area_um2 > 0:
             metric_records.append(
-                metric_record(
+                report_metric_helpers.metric_record(
                     metric_id=f"metric::{workload}::performance_per_area",
                     metric_class="performance_per_area",
                     value=throughput_items_per_s / area_um2,
