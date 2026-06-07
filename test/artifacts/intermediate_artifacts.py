@@ -1621,6 +1621,12 @@ def validate_runtime_evidence(
     required_keys = (
         "runtime_package_identity",
         "runtime_report_identity",
+        "host_program_identity",
+        "work_package_identity",
+        "launch_descriptor_identity",
+        "mapping_artifact_identity",
+        "fabric_adg_identity",
+        "target_profile_id",
         "launch_status",
         "target_status",
         "runtime_trace_identity",
@@ -1646,6 +1652,16 @@ def validate_runtime_evidence(
         "profiling_record_identity",
         "data_movement_policy",
         "synchronization_mode",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
+    for key in (
+        "host_program_identity",
+        "work_package_identity",
+        "launch_descriptor_identity",
+        "mapping_artifact_identity",
+        "fabric_adg_identity",
+        "target_profile_id",
     ):
         if not isinstance(value.get(key), str):
             diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
@@ -1766,6 +1782,16 @@ def validate_runtime_evidence_summaries(
             "synchronization_mode",
         ):
             if not isinstance(summary.get(key), str) or not summary.get(key):
+                diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
+        for key in (
+            "host_program_identity",
+            "work_package_identity",
+            "launch_descriptor_identity",
+            "mapping_artifact_identity",
+            "fabric_adg_identity",
+            "target_profile_id",
+        ):
+            if not isinstance(summary.get(key), str):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
         for key in ("runtime_trace_identity", "profiling_record_identity"):
             if not isinstance(summary.get(key), str):

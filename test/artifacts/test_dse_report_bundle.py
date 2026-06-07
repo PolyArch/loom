@@ -117,6 +117,12 @@ def main() -> int:
                 "workload_report_bundle_identity": "workload-report-bundle",
                 "runtime_package_identity": "runtime-package",
                 "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+                "host_program_identity": workload_runtime_evidence["host_program_identity"],
+                "work_package_identity": workload_runtime_evidence["work_package_identity"],
+                "launch_descriptor_identity": workload_runtime_evidence["launch_descriptor_identity"],
+                "mapping_artifact_identity": workload_runtime_evidence["mapping_artifact_identity"],
+                "fabric_adg_identity": workload_runtime_evidence["fabric_adg_identity"],
+                "target_profile_id": workload_runtime_evidence["target_profile_id"],
                 "launch_status": "not_run",
                 "target_status": "not_run",
                 "runtime_trace_identity": workload_runtime_evidence["runtime_trace_identity"],
@@ -299,6 +305,26 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime summary policies unexpectedly passed audit")
+
+        bad_runtime_identity_summary = out_dir / "bad-runtime-identity-summary-dse-report-bundle.json"
+        bad_runtime_identity_summary_data = json.loads(report.read_text())
+        bad_runtime_identity_summary_data["runtime_evidence_summaries"][0]["launch_descriptor_identity"] = []
+        bad_runtime_identity_summary.write_text(
+            json.dumps(bad_runtime_identity_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_identity_summary_audit = out_dir / "bad-runtime-identity-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_identity_summary_audit),
+                str(bad_runtime_identity_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime identity summary unexpectedly passed audit")
 
         bad_runtime_output_summary = out_dir / "bad-runtime-output-summary-dse-report-bundle.json"
         bad_runtime_output_summary_data = json.loads(report.read_text())

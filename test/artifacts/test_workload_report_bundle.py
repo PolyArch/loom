@@ -139,9 +139,17 @@ def main() -> int:
         }
         if data["runtime_fallback_decision"] != expected_runtime_fallback:
             raise AssertionError(f"report should preserve runtime fallback decision: {data}")
+        runtime_package_data = json.loads((out_dir / "runtime-package.json").read_text())
+        runtime_report = runtime_package_data["runtime_report"]
         expected_runtime_evidence = {
             "runtime_package_identity": "runtime-package",
             "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "host_program_identity": runtime_report["host_program_identity"],
+            "work_package_identity": runtime_report["work_package_identity"],
+            "launch_descriptor_identity": runtime_report["launch_descriptor_identity"],
+            "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
+            "fabric_adg_identity": runtime_report["fabric_adg_identity"],
+            "target_profile_id": runtime_report["target_profile_id"],
             "launch_status": "not_run",
             "target_status": "not_run",
             "runtime_trace_identity": "",
@@ -150,13 +158,9 @@ def main() -> int:
             "synchronization_mode": "host_wait",
             "required_data_movement_policies": ["simulated"],
             "required_synchronization_policies": ["host_wait"],
-            "simulator_report_identities": json.loads(
-                (out_dir / "runtime-package.json").read_text()
-            )["runtime_report"]["simulator_report_identities"],
+            "simulator_report_identities": runtime_report["simulator_report_identities"],
             "output_buffer_identities": [],
-            "input_artifact_fingerprints": json.loads(
-                (out_dir / "runtime-package.json").read_text()
-            )["input_artifact_fingerprints"],
+            "input_artifact_fingerprints": runtime_package_data["input_artifact_fingerprints"],
             "fallback_decision": expected_runtime_fallback,
         }
         if data["runtime_evidence"] != expected_runtime_evidence:
@@ -318,6 +322,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime policies unexpectedly passed audit")
+        bad_runtime_identity_report = out_dir / "bad-runtime-identity-workload-report-bundle.json"
+        bad_runtime_identity_data = json.loads(report.read_text())
+        bad_runtime_identity_data["runtime_evidence"]["launch_descriptor_identity"] = []
+        bad_runtime_identity_report.write_text(
+            json.dumps(bad_runtime_identity_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_identity_audit = out_dir / "bad-runtime-identity-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_identity_audit),
+                str(bad_runtime_identity_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime identity unexpectedly passed audit")
         bad_simulator_identities_report = out_dir / "bad-runtime-simulator-identities-workload-report-bundle.json"
         bad_simulator_identities_data = json.loads(report.read_text())
         bad_simulator_identities_data["runtime_evidence"]["simulator_report_identities"] = "vecsum-cgra-sim-report"

@@ -189,6 +189,12 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     evidence = {
         "runtime_package_identity": artifact_id(runtime_path) if runtime_path is not None else "",
         "runtime_report_identity": str(report.get("report_id", "")),
+        "host_program_identity": str(report.get("host_program_identity", "")),
+        "work_package_identity": str(report.get("work_package_identity", "")),
+        "launch_descriptor_identity": str(report.get("launch_descriptor_identity", "")),
+        "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),
+        "fabric_adg_identity": str(report.get("fabric_adg_identity", "")),
+        "target_profile_id": str(report.get("target_profile_id", "")),
         "launch_status": str(report.get("launch_status", "")),
         "target_status": str(report.get("target_status", "")),
         "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
