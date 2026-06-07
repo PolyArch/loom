@@ -108,6 +108,7 @@ Power results must distinguish dynamic power and leakage power when the
 evidence supports that split. Activity source must be explicit:
 
 * `none`;
+* `default_toggle`;
 * `cgra_sim`;
 * `rtl_waveform`;
 * `rtl_activity_file`;

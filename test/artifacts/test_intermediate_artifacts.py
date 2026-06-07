@@ -1142,8 +1142,11 @@ def main() -> int:
 
         valid_rtl_fpa = out_dir / "valid-rtl-fpa-summary.csv"
         valid_rtl_fpa.write_text(
-            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
-            "fabric0,vecadd,skipped,skipped,skipped,100,200,3,1,pass,analytic FPA evidence\n"
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric0,vecadd,skipped,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,analytic FPA evidence\n"
         )
         dse_provenance_header = (
             "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"

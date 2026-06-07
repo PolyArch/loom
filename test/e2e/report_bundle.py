@@ -397,6 +397,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         )
 
     if rtl_row is not None and rtl_path is not None:
+        fpa_fidelity = rtl_row.get("fidelity_level", "") or "custom_calibrated"
         for key, metric_class, unit in (
             ("frequency_mhz", "frequency", "MHz"),
             ("area_um2", "area", "um2"),
@@ -409,7 +410,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                     metric_class=metric_class,
                     value=numeric(rtl_row, key),
                     unit=unit,
-                    fidelity_level="custom_calibrated",
+                    fidelity_level=fpa_fidelity,
                     evidence_source_artifact_id=artifact_id(rtl_path),
                     producer_component="rtl-fpa-summary",
                     derivation_kind="analytic_fpa",
@@ -429,7 +430,9 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             metric_class="energy",
             value=numeric(dse_row, "energy_nj"),
             unit="nJ",
-            fidelity_level="custom_calibrated",
+            fidelity_level=(
+                rtl_row.get("fidelity_level", "") if rtl_row is not None else ""
+            ) or "custom_calibrated",
             evidence_source_artifact_id=artifact_id(dse_path),
             producer_component="dse-candidate-summary",
             derivation_kind="cycle_frequency_power_area",

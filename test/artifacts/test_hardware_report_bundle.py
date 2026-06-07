@@ -111,13 +111,13 @@ def main() -> int:
                 "frequency",
                 250.0,
                 "MHz",
-                "custom_calibrated",
+                "analytic",
             ),
             "metric::test/pnr/shared_reduction_adg.mlir::shared_reduction_adg::area_um2": (
                 "area",
                 7250.0,
                 "um2",
-                "custom_calibrated",
+                "analytic",
             ),
         }
         for metric_id, (metric_class, value, unit, fidelity) in expected_metrics.items():

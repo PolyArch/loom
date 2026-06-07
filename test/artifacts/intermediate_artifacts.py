@@ -32,6 +32,25 @@ SYNCHRONIZATION_POLICIES = {
     "host_fence",
     "device_poll",
 }
+FPA_FIDELITY_LEVELS = {
+    "analytic",
+    "mapped_activity",
+    "rtl_structural",
+    "rtl_activity",
+    "physical_estimate",
+    "fpga_estimate",
+    "custom",
+    "custom_calibrated",
+}
+FPA_ACTIVITY_SOURCES = {
+    "none",
+    "default_toggle",
+    "cgra_sim",
+    "rtl_waveform",
+    "rtl_activity_file",
+    "backend_internal",
+    "custom",
+}
 ARTIFACT_EDGE_PAIRS = (
     ("old-app-corpus-inventory", "app-corpus-import-status"),
     ("app-corpus-import-status", "source-compat-summary"),
@@ -239,6 +258,11 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "area_um2",
             "dynamic_power_mw",
             "leakage_power_mw",
+            "fidelity_level",
+            "frequency_source",
+            "area_source",
+            "power_source",
+            "activity_source",
         ),
         status_columns=("rtl_lint_status", "rtl_sim_status", "synth_status", "status"),
         extra_columns=("status", "diagnostic"),
@@ -250,6 +274,11 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "blocked",
             "blocked",
             "blocked",
+            "",
+            "",
+            "",
+            "",
+            "",
             "",
             "",
             "",
@@ -834,6 +863,20 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             diagnostics.append(
                 f"row {row_index}: CGRA-sim cycles are more optimistic than DFG-sim cycles"
             )
+    if schema.kind == "rtl_fpa" and statuses.get("status") == "pass":
+        fidelity = row.get("fidelity_level", "")
+        if fidelity not in FPA_FIDELITY_LEVELS:
+            diagnostics.append(f"row {row_index}: RTL/FPA pass row has unknown fidelity_level")
+        for column in ("frequency_source", "area_source", "power_source"):
+            if not row.get(column, ""):
+                diagnostics.append(f"row {row_index}: RTL/FPA pass row has no {column}")
+        activity_source = row.get("activity_source", "")
+        if activity_source not in FPA_ACTIVITY_SOURCES:
+            diagnostics.append(f"row {row_index}: RTL/FPA pass row has unknown activity_source")
+        if (
+            row.get("dynamic_power_mw", "") or row.get("leakage_power_mw", "")
+        ) and not activity_source:
+            diagnostics.append(f"row {row_index}: RTL/FPA power evidence has no activity_source")
     if schema.kind == "dse_candidate" and statuses.get("selection_status") in {"selected", "pareto", "rejected"}:
         required_provenance = (
             "candidate_kind",

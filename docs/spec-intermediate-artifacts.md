@@ -250,17 +250,26 @@ Required first columns:
 * `frequency_mhz`;
 * `area_um2`;
 * `dynamic_power_mw`;
-* `leakage_power_mw`.
+* `leakage_power_mw`;
+* `fidelity_level`;
+* `frequency_source`;
+* `area_source`;
+* `power_source`;
+* `activity_source`.
 
 Rules:
 
 * `frequency_mhz`, `area_um2`, `dynamic_power_mw`, and
   `leakage_power_mw` are numeric only when the corresponding evidence
   exists.
+* `fidelity_level` records the FPA evidence level for the numeric
+  frequency, area, and power fields.
+* `frequency_source`, `area_source`, and `power_source` identify the
+  model, report, or backend evidence source used for each metric class.
 * Missing backend evidence is recorded as unsupported, skipped, or
   blocked according to the selected profile.
-* Workload-specific power must identify an activity source in optional
-  columns or in the referenced FPA report.
+* Workload-specific power must identify an `activity_source` in the
+  summary row or in the referenced FPA report.
 
 ### End-To-End Demonstrator Summary
 

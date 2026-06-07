@@ -19,6 +19,11 @@ HEADER = [
     "area_um2",
     "dynamic_power_mw",
     "leakage_power_mw",
+    "fidelity_level",
+    "frequency_source",
+    "area_source",
+    "power_source",
+    "activity_source",
 ]
 
 
@@ -58,12 +63,46 @@ def main() -> int:
             "area_um2": "1500.000",
             "dynamic_power_mw": "1.400",
             "leakage_power_mw": "0.250",
+            "fidelity_level": "analytic",
+            "frequency_source": "analytic_fpa_model",
+            "area_source": "analytic_fpa_model",
+            "power_source": "analytic_fpa_model",
+            "activity_source": "default_toggle",
         }
         for column, value in expected.items():
             if row[column] != value:
                 raise AssertionError(f"unexpected {column}: {row}")
         if "analytic FPA estimate" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
+        audit = out_dir / "rtl-fpa-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(audit),
+                str(fpa),
+            ],
+            "RTL/FPA summary audit",
+        )
+        bad_activity = out_dir / "bad-activity-rtl-fpa-summary.csv"
+        bad_activity.write_text(
+            fpa.read_text().replace(",default_toggle,", ",,", 1)
+        )
+        bad_activity_audit = out_dir / "bad-activity-rtl-fpa-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_activity_audit),
+                str(bad_activity),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL/FPA summary with missing activity source unexpectedly passed audit")
 
     return 0
 

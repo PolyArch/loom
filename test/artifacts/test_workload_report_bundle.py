@@ -186,21 +186,21 @@ def main() -> int:
         expected_metrics = {
             "metric::vecsum::dfg_sim_cycles": ("optimistic_steps", 579, "cycles", "dfg_software"),
             "metric::vecsum::cgra_sim_cycles": ("hardware_cycles", 589, "cycles", "cgra_mapped"),
-            "metric::shared_reduction_adg::frequency_mhz": ("frequency", 250.0, "MHz", "custom_calibrated"),
-            "metric::shared_reduction_adg::area_um2": ("area", 7250.0, "um2", "custom_calibrated"),
+            "metric::shared_reduction_adg::frequency_mhz": ("frequency", 250.0, "MHz", "analytic"),
+            "metric::shared_reduction_adg::area_um2": ("area", 7250.0, "um2", "analytic"),
             "metric::shared_reduction_adg::dynamic_power_mw": (
                 "dynamic_power",
                 6.0,
                 "mW",
-                "custom_calibrated",
+                "analytic",
             ),
             "metric::shared_reduction_adg::leakage_power_mw": (
                 "leakage_power",
                 0.825,
                 "mW",
-                "custom_calibrated",
+                "analytic",
             ),
-            "metric::vecsum::energy_nj": ("energy", 16.08, "nJ", "custom_calibrated"),
+            "metric::vecsum::energy_nj": ("energy", 16.08, "nJ", "analytic"),
         }
         for metric_id, (metric_class, value, unit, fidelity) in expected_metrics.items():
             metric = metrics_by_id.get(metric_id)

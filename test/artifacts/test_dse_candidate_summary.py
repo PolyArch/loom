@@ -226,8 +226,11 @@ def main() -> int:
         )
         selected_like_fpa = out_dir / "selected-like-rtl-fpa-summary.csv"
         selected_like_fpa.write_text(
-            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
-            "fabric0,vecadd,pass,pass,pass,100,200,3,1,pass,synthetic FPA evidence without energy\n"
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric0,vecadd,pass,pass,pass,100,200,3,1,analytic,analytic_fpa_model,analytic_fpa_model,"
+            "analytic_fpa_model,default_toggle,pass,synthetic FPA evidence without energy\n"
         )
         summary_only_output = out_dir / "summary-only-dse-candidate-summary.csv"
         rows = artifact_test_common.run_csv_summary(
@@ -378,9 +381,13 @@ def main() -> int:
         write_cgra_report(slow_cgra_report, "vecadd", "map_slow", 10, 20, "fabric1")
         two_candidate_fpa = out_dir / "two-candidate-rtl-fpa-summary.csv"
         two_candidate_fpa.write_text(
-            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
-            "fabric0,vecadd,skipped,skipped,skipped,100,200,3,1,pass,synthetic fast FPA evidence\n"
-            "fabric1,vecadd,skipped,skipped,skipped,100,300,4,1,pass,synthetic slow FPA evidence\n"
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric0,vecadd,skipped,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,synthetic fast FPA evidence\n"
+            "fabric1,vecadd,skipped,skipped,skipped,100,300,4,1,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,synthetic slow FPA evidence\n"
         )
         two_candidate_output = out_dir / "two-candidate-dse-candidate-summary.csv"
         rows = artifact_test_common.run_csv_summary(
@@ -508,9 +515,13 @@ def main() -> int:
         )
         energy_fpa = out_dir / "energy-rtl-fpa-summary.csv"
         energy_fpa.write_text(
-            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
-            "fabric_fast,vecadd,skipped,skipped,skipped,100,300,20,0,pass,fast high-power evidence\n"
-            "fabric_efficient,vecadd,skipped,skipped,skipped,100,200,1,0,pass,slower low-power evidence\n"
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric_fast,vecadd,skipped,skipped,skipped,100,300,20,0,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,fast high-power evidence\n"
+            "fabric_efficient,vecadd,skipped,skipped,skipped,100,200,1,0,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,slower low-power evidence\n"
         )
         energy_output = out_dir / "energy-dse-candidate-summary.csv"
         rows = artifact_test_common.run_csv_summary(
@@ -596,8 +607,11 @@ def main() -> int:
         )
         same_hardware_fpa = out_dir / "same-hardware-rtl-fpa-summary.csv"
         same_hardware_fpa.write_text(
-            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,status,diagnostic\n"
-            "fabric_same,vecadd,skipped,skipped,skipped,100,200,3,1,pass,shared hardware FPA evidence\n"
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric_same,vecadd,skipped,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,shared hardware FPA evidence\n"
         )
         same_hardware_output = out_dir / "same-hardware-dse-candidate-summary.csv"
         rows = artifact_test_common.run_csv_summary(

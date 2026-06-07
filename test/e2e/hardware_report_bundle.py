@@ -181,6 +181,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     supported_workloads = sorted({row.get("workload", "") for _, row in fpa_rows if row.get("workload")})
     if fpa_rows:
         fpa_path, fpa_row = fpa_rows[0]
+        fpa_fidelity = fpa_row.get("fidelity_level", "") or "custom_calibrated"
         for key, metric_class, unit in (
             ("frequency_mhz", "frequency", "MHz"),
             ("area_um2", "area", "um2"),
@@ -193,7 +194,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                     metric_class=metric_class,
                     value=numeric(fpa_row, key),
                     unit=unit,
-                    fidelity_level="custom_calibrated",
+                    fidelity_level=fpa_fidelity,
                     evidence_source_artifact_id=artifact_id(fpa_path),
                     producer_component="rtl-fpa-summary",
                     derivation_kind="analytic_fpa",

@@ -79,6 +79,11 @@ def analytic_fpa_row(workload: str, hardware: HardwareCandidate) -> dict[str, st
         "area_um2": format_estimate(area_um2),
         "dynamic_power_mw": format_estimate(dynamic_power_mw),
         "leakage_power_mw": format_estimate(leakage_power_mw),
+        "fidelity_level": "analytic",
+        "frequency_source": "analytic_fpa_model",
+        "area_source": "analytic_fpa_model",
+        "power_source": "analytic_fpa_model",
+        "activity_source": "default_toggle",
         "status": "pass",
         "diagnostic": (
             "analytic FPA estimate; fidelity=analytic; "
