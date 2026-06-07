@@ -321,6 +321,80 @@ def main() -> int:
             "throughput DSE report bundle audit",
         )
 
+        perf_watt_candidate_summary = out_dir / "perf-watt-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "maximize_performance_per_watt",
+                "--output",
+                str(perf_watt_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "performance per watt DSE candidate summary",
+        )
+        perf_watt_report = out_dir / "perf-watt-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(perf_watt_report),
+                "--artifact",
+                str(perf_watt_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "performance per watt DSE report bundle",
+        )
+        perf_watt_data = json.loads(perf_watt_report.read_text())
+        perf_watt_objective = perf_watt_data.get("objective_records", [])[0]
+        expected_perf_watt_objective = {
+            "objective_id": "objective::maximize_performance_per_watt",
+            "objective_kind": "maximize_performance_per_watt",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "maximize",
+            "units": "items_per_s_per_w",
+        }
+        for key, value in expected_perf_watt_objective.items():
+            if perf_watt_objective.get(key) != value:
+                raise AssertionError(f"unexpected performance per watt objective {key}: {perf_watt_objective}")
+        if perf_watt_objective.get("metric_inputs") != ["metric::vecsum::performance_per_watt"]:
+            raise AssertionError(f"performance per watt objective should cite performance metric: {perf_watt_objective}")
+        if perf_watt_data.get("candidate_ordering_rule") != "performance_per_watt_score_then_candidate_id":
+            raise AssertionError(f"unexpected performance per watt ordering rule: {perf_watt_data}")
+        if perf_watt_data.get("selected_policy_id") != "deterministic_maximize_performance_per_watt_v1":
+            raise AssertionError(f"unexpected performance per watt policy id: {perf_watt_data}")
+        perf_watt_candidate = perf_watt_data.get("candidate_list", [])[0]
+        if "metric::vecsum::performance_per_watt" not in perf_watt_candidate.get("metric_records_used", []):
+            raise AssertionError(f"performance per watt candidate missed performance metric: {perf_watt_candidate}")
+        perf_watt_audit = out_dir / "perf-watt-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(perf_watt_audit),
+                str(perf_watt_report),
+            ],
+            "performance per watt DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"

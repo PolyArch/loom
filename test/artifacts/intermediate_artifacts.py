@@ -857,6 +857,8 @@ def nonnegative_int_cell(row: dict[str, str], column: str) -> int | None:
 def dse_ordering_rule_for_objective(objective: str) -> str:
     if objective == "maximize_throughput":
         return "throughput_score_then_candidate_id"
+    if objective == "maximize_performance_per_watt":
+        return "performance_per_watt_score_then_candidate_id"
     if objective in {"minimize_energy", "minimize_power"}:
         return "energy_score_then_candidate_id"
     return "runtime_score_then_candidate_id"
@@ -878,6 +880,8 @@ def dse_objective_semantics(objective: str) -> tuple[str, str] | None:
         return "minimize", "cycles"
     if objective == "maximize_throughput":
         return "maximize", "items_per_s"
+    if objective == "maximize_performance_per_watt":
+        return "maximize", "items_per_s_per_w"
     if objective in {"minimize_energy", "minimize_power"}:
         return "minimize", "nJ"
     return None
