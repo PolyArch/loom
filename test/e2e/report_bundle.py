@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import runtime_evidence_helpers  # noqa: E402
 
 
 artifact_id = intermediate_artifacts.artifact_id_for_path
@@ -162,145 +163,10 @@ def runtime_diagnostic_records(runtime_package: dict[str, object]) -> list[dict[
 
 
 def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | None) -> dict[str, object]:
-    report = runtime_package.get("runtime_report", {})
-    if not isinstance(report, dict):
-        report = {}
-    fallback = report.get("fallback_decision")
-    if not isinstance(fallback, dict):
-        fallback = runtime_package.get("fallback_decision", {})
-    if not isinstance(fallback, dict):
-        fallback = {}
-    output_buffers = report.get("output_buffer_identities", [])
-    if not isinstance(output_buffers, list):
-        output_buffers = []
-    simulator_reports = report.get("simulator_report_identities", [])
-    if not isinstance(simulator_reports, list):
-        simulator_reports = []
-    diagnostic_records = report.get("diagnostic_records", [])
-    if not isinstance(diagnostic_records, list):
-        diagnostic_records = []
-    work_package_metadata = runtime_package.get("work_package_metadata", {})
-    if not isinstance(work_package_metadata, dict):
-        work_package_metadata = {}
-    host_interface = runtime_package.get("host_interface", {})
-    if not isinstance(host_interface, dict):
-        host_interface = {}
-    report_output_configuration = runtime_package.get("report_output_configuration", {})
-    if not isinstance(report_output_configuration, dict):
-        report_output_configuration = {}
-    memory_descriptors = runtime_package.get("memory_descriptors", [])
-    if not isinstance(memory_descriptors, list):
-        memory_descriptors = []
-    argument_descriptors = runtime_package.get("argument_descriptors", [])
-    if not isinstance(argument_descriptors, list):
-        argument_descriptors = []
-    target_profile = runtime_package.get("target_profile", {})
-    if not isinstance(target_profile, dict):
-        target_profile = {}
-    runtime_configuration = runtime_package.get("runtime_configuration", {})
-    if not isinstance(runtime_configuration, dict):
-        runtime_configuration = {}
-    launch_descriptor = runtime_package.get("launch_descriptor", {})
-    if not isinstance(launch_descriptor, dict):
-        launch_descriptor = {}
-    input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
-    if not isinstance(input_fingerprints, dict):
-        input_fingerprints = {}
-    required_data_movement_policies = runtime_package.get("required_data_movement_policies", [])
-    if not isinstance(required_data_movement_policies, list):
-        required_data_movement_policies = []
-    required_synchronization_policies = runtime_package.get("required_synchronization_policies", [])
-    if not isinstance(required_synchronization_policies, list):
-        required_synchronization_policies = []
-    required_runtime_features = runtime_package.get("required_runtime_features", [])
-    if not isinstance(required_runtime_features, list):
-        required_runtime_features = []
-    data_movement_policy = str(runtime_package.get("data_movement_policy", ""))
-    custom_data_movement_policy = ""
-    if data_movement_policy == "custom":
-        report_custom_policy = report.get("custom_data_movement_policy_identity")
-        runtime_configuration = runtime_package.get("runtime_configuration", {})
-        runtime_custom_policy = None
-        if isinstance(runtime_configuration, dict):
-            runtime_custom_policy = runtime_configuration.get("custom_data_movement_policy_identity")
-        if isinstance(report_custom_policy, str) and report_custom_policy:
-            custom_data_movement_policy = report_custom_policy
-        elif isinstance(runtime_custom_policy, str) and runtime_custom_policy:
-            custom_data_movement_policy = runtime_custom_policy
-    evidence = {
-        "runtime_package_identity": artifact_id(runtime_path) if runtime_path is not None else "",
-        "runtime_report_identity": str(report.get("report_id", "")),
-        "host_program_identity": str(report.get("host_program_identity", "")),
-        "host_wrapper_identity": str(runtime_package.get("host_wrapper_identity", "")),
-        "host_interface": host_interface,
-        "runtime_handle_model": runtime_package.get("runtime_handle_model", {}),
-        "work_package_metadata": work_package_metadata,
-        "work_package_identity": str(report.get("work_package_identity", "")),
-        "launch_descriptor_identity": str(report.get("launch_descriptor_identity", "")),
-        "launch_descriptor": launch_descriptor,
-        "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),
-        "fabric_adg_identity": str(report.get("fabric_adg_identity", "")),
-        "target_profile_id": str(report.get("target_profile_id", "")),
-        "target_profile": target_profile,
-        "fallback_policy": str(runtime_package.get("fallback_policy", "")),
-        "launch_status": str(report.get("launch_status", "")),
-        "target_status": str(report.get("target_status", "")),
-        "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
-        "profiling_record_identity": str(report.get("profiling_record_identity", "")),
-        "data_movement_policy": data_movement_policy,
-        "synchronization_mode": str(runtime_package.get("synchronization_mode", "")),
-        "memory_descriptors": [
-            descriptor
-            for descriptor in memory_descriptors
-            if isinstance(descriptor, dict)
-        ],
-        "argument_descriptors": [
-            descriptor
-            for descriptor in argument_descriptors
-            if isinstance(descriptor, dict)
-        ],
-        "runtime_configuration": runtime_configuration,
-        "required_runtime_features": [
-            str(feature)
-            for feature in required_runtime_features
-            if isinstance(feature, str)
-        ],
-        "required_data_movement_policies": [
-            str(policy)
-            for policy in required_data_movement_policies
-            if isinstance(policy, str)
-        ],
-        "required_synchronization_policies": [
-            str(policy)
-            for policy in required_synchronization_policies
-            if isinstance(policy, str)
-        ],
-        "simulator_report_identities": [
-            str(identity)
-            for identity in simulator_reports
-            if isinstance(identity, str)
-        ],
-        "input_artifact_fingerprints": {
-            str(identity): str(fingerprint)
-            for identity, fingerprint in input_fingerprints.items()
-            if isinstance(identity, str) and isinstance(fingerprint, str)
-        },
-        "output_buffer_identities": [
-            str(identity)
-            for identity in output_buffers
-            if isinstance(identity, str)
-        ],
-        "diagnostic_records": [
-            record
-            for record in diagnostic_records
-            if isinstance(record, dict)
-        ],
-        "report_output_configuration": report_output_configuration,
-        "fallback_decision": fallback,
-    }
-    if custom_data_movement_policy:
-        evidence["custom_data_movement_policy_identity"] = custom_data_movement_policy
-    return evidence
+    return runtime_evidence_helpers.runtime_evidence_from_package(
+        runtime_package,
+        artifact_id(runtime_path) if runtime_path is not None else "",
+    )
 
 
 def build_bundle(paths: list[Path]) -> dict[str, object]:
