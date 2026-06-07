@@ -2017,6 +2017,10 @@ def validate_runtime_evidence_memory_descriptors(
         diagnostics.append(f"{label} memory_descriptors must be a list")
         return
     data_movement_policy = evidence.get("data_movement_policy")
+    runtime_configuration = evidence.get("runtime_configuration")
+    runtime_platform_binding = None
+    if isinstance(runtime_configuration, dict):
+        runtime_platform_binding = runtime_configuration.get("platform_binding_identity")
     for index, descriptor in enumerate(value, start=1):
         if not isinstance(descriptor, dict):
             diagnostics.append(f"{label} memory descriptor {index} must be an object")
@@ -2051,6 +2055,12 @@ def validate_runtime_evidence_memory_descriptors(
             and descriptor.get("address_space") != SIMULATOR_MEMORY_ADDRESS_SPACE
         ):
             diagnostics.append(f"{label} memory descriptor {index} address_space does not match simulated policy")
+        if isinstance(runtime_platform_binding, str) and runtime_platform_binding:
+            if descriptor.get("platform_binding_identity") != runtime_platform_binding:
+                diagnostics.append(
+                    f"{label} memory descriptor {index} "
+                    "platform_binding_identity does not match runtime configuration"
+                )
 
 
 def validate_runtime_evidence_argument_descriptors(
@@ -3554,8 +3564,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append(f"runtime package input_artifact_fingerprints stale for {identity!r}")
         runtime_configuration = data.get("runtime_configuration")
         runtime_custom_policy = None
+        runtime_platform_binding = None
         if isinstance(runtime_configuration, dict):
             runtime_custom_policy = runtime_configuration.get("custom_data_movement_policy_identity")
+            runtime_platform_binding = runtime_configuration.get("platform_binding_identity")
         for index, descriptor in enumerate(memory_descriptors, start=1):
             if not isinstance(descriptor, dict):
                 diagnostics.append(f"runtime package memory descriptor {index} must be an object")
@@ -3604,6 +3616,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(
                     f"runtime package memory descriptor {index} has invalid platform_binding_identity"
                 )
+            if isinstance(runtime_platform_binding, str) and runtime_platform_binding:
+                if descriptor.get("platform_binding_identity") != runtime_platform_binding:
+                    diagnostics.append(
+                        f"runtime package memory descriptor {index} "
+                        "platform_binding_identity does not match runtime configuration"
+                    )
             descriptor_custom_policy = descriptor.get("custom_data_movement_policy_identity")
             if descriptor_policy == "custom":
                 if not isinstance(descriptor_custom_policy, str) or not descriptor_custom_policy:

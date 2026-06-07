@@ -1207,6 +1207,27 @@ def main() -> int:
             ],
             "blocked hardware runtime package audit",
         )
+        missing_descriptor_binding = out_dir / "missing-descriptor-binding-runtime-package.json"
+        missing_descriptor_binding_data = json.loads(hardware_package.read_text())
+        missing_descriptor_binding_data["memory_descriptors"][0].pop("platform_binding_identity", None)
+        missing_descriptor_binding.write_text(
+            json.dumps(missing_descriptor_binding_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_descriptor_binding_audit = out_dir / "missing-descriptor-binding-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_descriptor_binding_audit),
+                str(missing_descriptor_binding),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError(
+                "runtime package with missing memory descriptor platform binding unexpectedly passed audit"
+            )
 
         require_acceleration_package = out_dir / "require-acceleration-hardware-runtime-package.json"
         result = artifact_test_common.run_command(
