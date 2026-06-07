@@ -1110,6 +1110,31 @@ def main() -> int:
             ],
             "blocked RTL-sim runtime package with manifest audit",
         )
+        mismatched_rtl_descriptor_kind = out_dir / "mismatched-rtl-descriptor-kind-runtime-package.json"
+        mismatched_rtl_descriptor_kind_data = json.loads(rtl_with_manifest_package.read_text())
+        for descriptor in mismatched_rtl_descriptor_kind_data["argument_descriptors"]:
+            if descriptor.get("name") == "rtl_manifest":
+                descriptor["descriptor_kind"] = "pnr_mapping_artifact"
+        mismatched_rtl_descriptor_kind.write_text(
+            json.dumps(mismatched_rtl_descriptor_kind_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_rtl_descriptor_kind_audit = (
+            out_dir / "mismatched-rtl-descriptor-kind-runtime-package-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_rtl_descriptor_kind_audit),
+                str(mismatched_rtl_descriptor_kind),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError(
+                "RTL-sim runtime package with mismatched RTL descriptor kind unexpectedly passed audit"
+            )
         stale_rtl_manifest_package = out_dir / "stale-rtl-manifest-runtime-package.json"
         stale_rtl_manifest_data = json.loads(rtl_with_manifest_package.read_text())
         stale_rtl_manifest_data["input_artifact_fingerprints"]["rtl-manifest"] = "0" * 64

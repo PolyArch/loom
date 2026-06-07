@@ -2084,6 +2084,7 @@ def validate_runtime_evidence_argument_descriptors(
         for key in ("name", "identity", "descriptor_kind"):
             if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                 diagnostics.append(f"{label} argument descriptor {index} lacks {key}")
+        validate_runtime_argument_descriptor_kind(descriptor, diagnostics, label, index)
 
 
 RUNTIME_ARTIFACT_DESCRIPTOR_KINDS = {
@@ -2093,6 +2094,24 @@ RUNTIME_ARTIFACT_DESCRIPTOR_KINDS = {
     "sim_comparison_report",
     "rtl_manifest",
 }
+EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME = {
+    "runtime_input": "test_fixture",
+    "mapping_artifact": "pnr_mapping_artifact",
+    "dfg_sim_report": "dfg_sim_report",
+    "rtl_manifest": "rtl_manifest",
+}
+
+
+def validate_runtime_argument_descriptor_kind(
+    descriptor: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+    index: int,
+) -> None:
+    name = descriptor.get("name")
+    expected = EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME.get(name)
+    if expected is not None and descriptor.get("descriptor_kind") != expected:
+        diagnostics.append(f"{label} argument descriptor {index} descriptor_kind does not match name")
 
 
 def runtime_artifact_input_references(
@@ -3655,6 +3674,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("name", "identity", "descriptor_kind"):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package argument descriptor {index} lacks {key}")
+            validate_runtime_argument_descriptor_kind(descriptor, diagnostics, "runtime package", index)
         artifact_input_references = runtime_artifact_input_references(
             data.get("selected_mapping_artifact_identity"),
             simulator_reports,
