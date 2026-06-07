@@ -363,6 +363,50 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with selected candidate status mismatch unexpectedly passed audit")
 
+        missing_rejected_summary = out_dir / "missing-rejected-summary-dse-report-bundle.json"
+        missing_rejected_summary_data = json.loads(report.read_text())
+        rejected_candidate = dict(missing_rejected_summary_data["candidate_list"][0])
+        rejected_candidate["candidate_id"] = "candidate::rejected"
+        rejected_candidate["status"] = "rejected"
+        rejected_candidate["diagnostics"] = ["dominated by selected candidate"]
+        missing_rejected_summary_data["candidate_list"].append(rejected_candidate)
+        missing_rejected_summary.write_text(
+            json.dumps(missing_rejected_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_rejected_summary_audit = out_dir / "missing-rejected-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_rejected_summary_audit),
+                str(missing_rejected_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with rejected candidate missing summary unexpectedly passed audit")
+
+        bad_rejected_summary = out_dir / "bad-rejected-summary-dse-report-bundle.json"
+        bad_rejected_summary_data = json.loads(report.read_text())
+        bad_rejected_summary_data["rejected_candidate_summaries"] = [
+            {"candidate_id": candidate_id, "diagnostics": []}
+        ]
+        bad_rejected_summary.write_text(json.dumps(bad_rejected_summary_data, indent=2, sort_keys=True) + "\n")
+        bad_rejected_summary_audit = out_dir / "bad-rejected-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_rejected_summary_audit),
+                str(bad_rejected_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with rejected summary for non-rejected candidate unexpectedly passed audit")
+
         bad_candidate_fingerprint = out_dir / "bad-candidate-fingerprint-dse-report-bundle.json"
         bad_candidate_fingerprint_data = json.loads(report.read_text())
         candidate_fingerprints = bad_candidate_fingerprint_data["candidate_list"][0]["input_artifact_fingerprints"]

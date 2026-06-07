@@ -3843,6 +3843,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         candidates = data.get("candidate_list")
         candidate_ids: set[str] = set()
         candidate_status_by_id: dict[str, object] = {}
+        rejected_candidate_ids: set[str] = set()
         if not isinstance(candidates, list) or (data.get("report_status") == "pass" and not candidates):
             diagnostics.append("DSE report bundle needs non-empty candidate_list")
             candidates = []
@@ -3863,6 +3864,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append(f"DSE report bundle candidate {index} lacks {key}")
             if candidate.get("status") not in SELECTION_STATUSES:
                 diagnostics.append(f"DSE report bundle candidate {index} has unknown status")
+            elif candidate.get("status") == "rejected" and isinstance(candidate_id, str) and candidate_id:
+                rejected_candidate_ids.add(candidate_id)
             for key in (
                 "parent_candidate_ids",
                 "referenced_input_artifacts",
@@ -3950,6 +3953,34 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if mismatched_pareto:
                 diagnostics.append(
                     f"DSE report bundle pareto candidates have non-pareto records {mismatched_pareto}"
+                )
+        rejected_summaries = data.get("rejected_candidate_summaries")
+        if isinstance(rejected_summaries, list):
+            rejected_summary_ids: set[str] = set()
+            for index, summary in enumerate(rejected_summaries, start=1):
+                if not isinstance(summary, dict):
+                    diagnostics.append(f"DSE report bundle rejected summary {index} must be an object")
+                    continue
+                candidate_id = summary.get("candidate_id")
+                if not isinstance(candidate_id, str) or not candidate_id:
+                    diagnostics.append(f"DSE report bundle rejected summary {index} lacks candidate_id")
+                else:
+                    rejected_summary_ids.add(candidate_id)
+                    if candidate_status_by_id.get(candidate_id) != "rejected":
+                        diagnostics.append(
+                            f"DSE report bundle rejected summary {index} does not reference a rejected candidate"
+                        )
+                summary_diagnostics = summary.get("diagnostics")
+                if (
+                    not isinstance(summary_diagnostics, list)
+                    or any(not isinstance(item, str) for item in summary_diagnostics)
+                ):
+                    diagnostics.append(f"DSE report bundle rejected summary {index} diagnostics must be a string list")
+            missing_rejected_summaries = sorted(rejected_candidate_ids - rejected_summary_ids)
+            if missing_rejected_summaries:
+                diagnostics.append(
+                    "DSE report bundle rejected candidates are missing summaries "
+                    f"{missing_rejected_summaries}"
                 )
         if data.get("report_status") == "pass":
             for key in (
