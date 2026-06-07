@@ -264,6 +264,28 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with stochastic policy lacking seed unexpectedly passed audit")
 
+        mismatched_conflict_resolution = out_dir / "mismatched-conflict-resolution-dse-report-bundle.json"
+        mismatched_conflict_resolution_data = json.loads(report.read_text())
+        mismatched_conflict_resolution_data["policy_configuration"]["conflict_resolution"] = "weighted_score"
+        mismatched_conflict_resolution.write_text(
+            json.dumps(mismatched_conflict_resolution_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_conflict_resolution_audit = (
+            out_dir / "mismatched-conflict-resolution-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_conflict_resolution_audit),
+                str(mismatched_conflict_resolution),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched conflict resolution unexpectedly passed audit")
+
         mismatched_policy_id = out_dir / "mismatched-policy-id-dse-report-bundle.json"
         mismatched_policy_id_data = json.loads(report.read_text())
         mismatched_policy_id_data["selected_policy_id"] = "other_policy"

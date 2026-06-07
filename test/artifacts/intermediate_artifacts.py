@@ -3887,6 +3887,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             or not policy_configuration.get("conflict_resolution")
         ):
             diagnostics.append("DSE report bundle policy_configuration lacks conflict_resolution")
+        if (
+            data.get("report_status") == "pass"
+            and isinstance(policy_configuration.get("conflict_resolution"), str)
+            and policy_configuration.get("conflict_resolution") != "candidate_ordering_rule"
+        ):
+            diagnostics.append("DSE report bundle policy_configuration conflict_resolution does not match ordering rule")
         policy_kind = policy_configuration.get("policy_kind")
         if data.get("report_status") == "pass" and (
             not isinstance(policy_kind, str) or not policy_kind
