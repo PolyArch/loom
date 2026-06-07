@@ -27,12 +27,19 @@ DATA_MOVEMENT_POLICIES = (
     "simulated",
     "custom",
 )
+FALLBACK_POLICIES = (
+    "require_acceleration",
+    "allow_host_fallback",
+    "allow_scalar_fallback",
+    "report_only",
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("cgra-sim", "dfg-sim", "rtl-sim", "hardware"), default="cgra-sim")
     parser.add_argument("--data-movement-policy", choices=DATA_MOVEMENT_POLICIES, default="simulated")
+    parser.add_argument("--fallback-policy", choices=FALLBACK_POLICIES, default="report_only")
     parser.add_argument("--platform-binding", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
@@ -138,6 +145,14 @@ def fallback_decision(
             "target_profile_id": target_profile_id,
             "reason": "report-only runtime package records launch metadata without executing accelerator work",
         }
+    if status == "pass":
+        return {
+            "policy": policy,
+            "decision": "none",
+            "fallback_taken": False,
+            "target_profile_id": target_profile_id,
+            "reason": "selected target profile metadata is available; no fallback was selected",
+        }
     return {
         "policy": policy,
         "decision": "blocked",
@@ -145,6 +160,15 @@ def fallback_decision(
         "target_profile_id": target_profile_id,
         "reason": "; ".join(diagnostics) if diagnostics else "runtime package is blocked",
     }
+
+
+def fallback_feature(policy: str) -> str:
+    return {
+        "require_acceleration": "require_acceleration_policy",
+        "allow_host_fallback": "host_fallback_policy",
+        "allow_scalar_fallback": "scalar_fallback_policy",
+        "report_only": "report_only_fallback",
+    }[policy]
 
 
 def build_launch_descriptor(
@@ -296,12 +320,13 @@ def runtime_report(
     target_profile: dict[str, str],
     data_movement_policy: str,
     synchronization_mode: str,
+    fallback_policy: str,
     fallback: dict[str, object],
     simulator_report_identities: list[str],
     diagnostics: list[str],
 ) -> dict[str, object]:
     return {
-        "report_id": f"runtime-report::{workload}::{mapping_id}::report_only",
+        "report_id": f"runtime-report::{workload}::{mapping_id}::{fallback_policy}",
         "host_program_identity": host_program_identity,
         "work_package_identity": work_package_identity,
         "launch_descriptor_identity": launch_descriptor_identity,
@@ -326,6 +351,7 @@ def build_package(
     target: str,
     data_movement_policy: str,
     platform_binding: str,
+    fallback_policy: str,
 ) -> dict[str, object]:
     grouped = group_paths(paths)
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
@@ -466,7 +492,7 @@ def build_package(
         required_runtime_features = [
             "simulator_dispatch",
             "explicit_mapping_artifact",
-            "report_only_fallback",
+            fallback_feature(fallback_policy),
         ]
         simulator_report_identities = report_identities([cgra_path, comparison_path])
         selected_mapping_identity = artifact_id(mapping_path)
@@ -480,7 +506,7 @@ def build_package(
         required_runtime_features = [
             "dfg_sim_dispatch",
             "software_dataflow_report",
-            "report_only_fallback",
+            fallback_feature(fallback_policy),
         ]
         simulator_report_identities = report_identities([dfg_path])
         selected_mapping_identity = ""
@@ -495,7 +521,7 @@ def build_package(
             "rtl_sim_dispatch",
             "explicit_mapping_artifact",
             "rtl_artifact_inputs",
-            "report_only_fallback",
+            fallback_feature(fallback_policy),
         ]
         simulator_report_identities = []
         selected_mapping_identity = artifact_id(mapping_path)
@@ -510,13 +536,12 @@ def build_package(
             "hardware_dispatch",
             "explicit_mapping_artifact",
             "platform_memory_binding",
-            "report_only_fallback",
+            fallback_feature(fallback_policy),
         ]
         simulator_report_identities = []
         selected_mapping_identity = artifact_id(mapping_path)
         fabric_adg_identity = hardware
 
-    fallback_policy = "report_only"
     synchronization_mode = "host_wait"
     status = "pass" if not diagnostics else "blocked"
     fallback = fallback_decision(
@@ -577,6 +602,7 @@ def build_package(
             target_profile=target_profile,
             data_movement_policy=data_movement_policy,
             synchronization_mode=synchronization_mode,
+            fallback_policy=fallback_policy,
             fallback=fallback,
             simulator_report_identities=simulator_report_identities,
             diagnostics=diagnostics,
@@ -606,6 +632,7 @@ def main(argv: list[str]) -> int:
         args.target,
         args.data_movement_policy,
         args.platform_binding,
+        args.fallback_policy,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")

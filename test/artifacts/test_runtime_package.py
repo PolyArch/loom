@@ -172,6 +172,70 @@ def main() -> int:
         }
         if data["fallback_decision"] != expected_fallback:
             raise AssertionError(f"unexpected fallback decision: {data}")
+
+        fallback_features = {
+            "require_acceleration": "require_acceleration_policy",
+            "allow_host_fallback": "host_fallback_policy",
+            "allow_scalar_fallback": "scalar_fallback_policy",
+        }
+        for fallback_policy, feature in fallback_features.items():
+            policy_package = out_dir / f"{fallback_policy}-runtime-package.json"
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_runtime_package.sh",
+                    "--fallback-policy",
+                    fallback_policy,
+                    "--output",
+                    str(policy_package),
+                    "--artifact",
+                    str(out_dir / "pnr-mapping.json"),
+                    "--artifact",
+                    str(out_dir / "vecsum-cgra-sim-report.json"),
+                    "--artifact",
+                    str(out_dir / "sim-comparison-report.json"),
+                ],
+                f"runtime package with {fallback_policy}",
+            )
+            policy_data = json.loads(policy_package.read_text())
+            if policy_data.get("fallback_policy") != fallback_policy:
+                raise AssertionError(f"runtime package should preserve fallback policy: {policy_data}")
+            expected_policy_fallback = {
+                "policy": fallback_policy,
+                "decision": "none",
+                "fallback_taken": False,
+                "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+                "reason": "selected target profile metadata is available; no fallback was selected",
+            }
+            if policy_data.get("fallback_decision") != expected_policy_fallback:
+                raise AssertionError(f"unexpected explicit fallback decision: {policy_data}")
+            expected_configuration_id = f"runtime-config::{fallback_policy}::simulated::host_wait"
+            if policy_data.get("runtime_configuration", {}).get("configuration_id") != expected_configuration_id:
+                raise AssertionError(f"runtime configuration should include fallback policy: {policy_data}")
+            if policy_data.get("launch_descriptor", {}).get("fallback_policy") != fallback_policy:
+                raise AssertionError(f"launch descriptor should include fallback policy: {policy_data}")
+            runtime_report = policy_data.get("runtime_report", {})
+            expected_report_id = f"runtime-report::vecsum::vecsum__shared_reduction_adg::{fallback_policy}"
+            if runtime_report.get("report_id") != expected_report_id:
+                raise AssertionError(f"runtime report id should include fallback policy: {policy_data}")
+            if runtime_report.get("fallback_decision") != expected_policy_fallback:
+                raise AssertionError(f"runtime report should preserve fallback decision: {policy_data}")
+            required_features = set(policy_data.get("required_runtime_features", []))
+            if required_features != {"simulator_dispatch", "explicit_mapping_artifact", feature}:
+                raise AssertionError(f"runtime features should include explicit fallback policy: {policy_data}")
+            policy_audit = out_dir / f"{fallback_policy}-runtime-package-audit-summary.json"
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "python3",
+                    "test/e2e/audit_intermediate_artifacts.py",
+                    "--output",
+                    str(policy_audit),
+                    str(policy_package),
+                ],
+                f"runtime package audit with {fallback_policy}",
+            )
         expected_runtime_report = {
             "report_id": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": "test-app-host::vecsum::default",
