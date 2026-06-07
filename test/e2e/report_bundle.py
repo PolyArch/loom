@@ -186,6 +186,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     runtime_configuration = runtime_package.get("runtime_configuration", {})
     if not isinstance(runtime_configuration, dict):
         runtime_configuration = {}
+    launch_descriptor = runtime_package.get("launch_descriptor", {})
+    if not isinstance(launch_descriptor, dict):
+        launch_descriptor = {}
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
@@ -219,6 +222,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "work_package_metadata": work_package_metadata,
         "work_package_identity": str(report.get("work_package_identity", "")),
         "launch_descriptor_identity": str(report.get("launch_descriptor_identity", "")),
+        "launch_descriptor": launch_descriptor,
         "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),
         "fabric_adg_identity": str(report.get("fabric_adg_identity", "")),
         "target_profile_id": str(report.get("target_profile_id", "")),

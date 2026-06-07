@@ -150,6 +150,7 @@ def main() -> int:
             "work_package_metadata": runtime_package_data["work_package_metadata"],
             "work_package_identity": runtime_report["work_package_identity"],
             "launch_descriptor_identity": runtime_report["launch_descriptor_identity"],
+            "launch_descriptor": runtime_package_data["launch_descriptor"],
             "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
             "fabric_adg_identity": runtime_report["fabric_adg_identity"],
             "target_profile_id": runtime_report["target_profile_id"],
@@ -414,6 +415,44 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime identity unexpectedly passed audit")
+        bad_runtime_launch_report = out_dir / "bad-runtime-launch-workload-report-bundle.json"
+        bad_runtime_launch_data = json.loads(report.read_text())
+        bad_runtime_launch_data["runtime_evidence"]["launch_descriptor"]["descriptor_id"] = "launch::other"
+        bad_runtime_launch_report.write_text(
+            json.dumps(bad_runtime_launch_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_launch_audit = out_dir / "bad-runtime-launch-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_launch_audit),
+                str(bad_runtime_launch_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime launch descriptor unexpectedly passed audit")
+        bad_runtime_scalar_report = out_dir / "bad-runtime-scalar-workload-report-bundle.json"
+        bad_runtime_scalar_data = json.loads(report.read_text())
+        bad_runtime_scalar_data["runtime_evidence"]["launch_descriptor"]["scalar_value_descriptors"] = "scalar"
+        bad_runtime_scalar_report.write_text(
+            json.dumps(bad_runtime_scalar_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_scalar_audit = out_dir / "bad-runtime-scalar-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_scalar_audit),
+                str(bad_runtime_scalar_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime scalar descriptors unexpectedly passed audit")
         bad_runtime_wrapper_report = out_dir / "bad-runtime-wrapper-workload-report-bundle.json"
         bad_runtime_wrapper_data = json.loads(report.read_text())
         bad_runtime_wrapper_data["runtime_evidence"]["host_wrapper_identity"] = []

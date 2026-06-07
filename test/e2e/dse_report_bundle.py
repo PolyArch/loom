@@ -241,6 +241,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         runtime_configuration = evidence.get("runtime_configuration", {})
         if not isinstance(runtime_configuration, dict):
             runtime_configuration = {}
+        launch_descriptor = evidence.get("launch_descriptor", {})
+        if not isinstance(launch_descriptor, dict):
+            launch_descriptor = {}
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -260,6 +263,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "work_package_metadata": work_package_metadata,
             "work_package_identity": str(evidence.get("work_package_identity", "")),
             "launch_descriptor_identity": str(evidence.get("launch_descriptor_identity", "")),
+            "launch_descriptor": launch_descriptor,
             "mapping_artifact_identity": str(evidence.get("mapping_artifact_identity", "")),
             "fabric_adg_identity": str(evidence.get("fabric_adg_identity", "")),
             "target_profile_id": str(evidence.get("target_profile_id", "")),

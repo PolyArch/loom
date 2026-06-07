@@ -1808,6 +1808,85 @@ def validate_runtime_evidence_report_output_configuration(
         diagnostics.append(f"{label} report_output_configuration must enable diagnostic output")
 
 
+def validate_runtime_evidence_launch_descriptor(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append(f"{label} launch_descriptor must be an object")
+        return
+    for key in (
+        "descriptor_id",
+        "work_package_identity",
+        "selected_accelerator_region",
+        "logical_thread_domain",
+        "selected_mapping_artifact_identity",
+        "target_profile_id",
+        "fallback_policy",
+        "synchronization_mode",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"{label} launch_descriptor lacks {key}")
+    for key in (
+        "argument_descriptor_names",
+        "memory_descriptor_logical_arguments",
+        "scalar_value_descriptors",
+    ):
+        entries = value.get(key)
+        if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
+            diagnostics.append(f"{label} launch_descriptor {key} must be a string list")
+    for key in ("profiling_settings", "trace_settings"):
+        settings = value.get(key)
+        if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
+            diagnostics.append(f"{label} launch_descriptor {key} must record enabled boolean")
+    expected_pairs = (
+        ("descriptor_id", evidence.get("launch_descriptor_identity")),
+        ("work_package_identity", evidence.get("work_package_identity")),
+        ("selected_mapping_artifact_identity", evidence.get("mapping_artifact_identity")),
+        ("target_profile_id", evidence.get("target_profile_id")),
+        ("fallback_policy", evidence.get("fallback_policy")),
+        ("synchronization_mode", evidence.get("synchronization_mode")),
+    )
+    for descriptor_key, expected in expected_pairs:
+        if value.get(descriptor_key) != expected:
+            diagnostics.append(f"{label} launch_descriptor {descriptor_key} does not match runtime evidence")
+    work_package_metadata = evidence.get("work_package_metadata")
+    if isinstance(work_package_metadata, dict):
+        for key in ("selected_accelerator_region", "logical_thread_domain"):
+            if value.get(key) != work_package_metadata.get(key):
+                diagnostics.append(f"{label} launch_descriptor {key} does not match work_package_metadata")
+    argument_descriptors = evidence.get("argument_descriptors")
+    if isinstance(argument_descriptors, list):
+        argument_names = [
+            descriptor.get("name")
+            for descriptor in argument_descriptors
+            if isinstance(descriptor, dict) and isinstance(descriptor.get("name"), str)
+        ]
+        if value.get("argument_descriptor_names") != argument_names:
+            diagnostics.append(f"{label} launch_descriptor argument descriptors do not match runtime evidence")
+    memory_descriptors = evidence.get("memory_descriptors")
+    if isinstance(memory_descriptors, list):
+        memory_arguments = [
+            descriptor.get("logical_argument")
+            for descriptor in memory_descriptors
+            if isinstance(descriptor, dict) and isinstance(descriptor.get("logical_argument"), str)
+        ]
+        if value.get("memory_descriptor_logical_arguments") != memory_arguments:
+            diagnostics.append(f"{label} launch_descriptor memory descriptors do not match runtime evidence")
+    report_output = evidence.get("report_output_configuration")
+    if isinstance(report_output, dict):
+        trace_settings = value.get("trace_settings")
+        trace_enabled = trace_settings.get("enabled") if isinstance(trace_settings, dict) else None
+        if trace_enabled != report_output.get("trace_output_enabled"):
+            diagnostics.append(f"{label} launch_descriptor trace setting does not match report_output_configuration")
+        profiling_settings = value.get("profiling_settings")
+        profiling_enabled = profiling_settings.get("enabled") if isinstance(profiling_settings, dict) else None
+        if profiling_enabled != report_output.get("profiling_output_enabled"):
+            diagnostics.append(f"{label} launch_descriptor profiling setting does not match report_output_configuration")
+
+
 def validate_runtime_evidence_memory_descriptors(
     value: object,
     evidence: dict[str, object],
@@ -1967,6 +2046,7 @@ def validate_runtime_evidence(
         "work_package_metadata",
         "work_package_identity",
         "launch_descriptor_identity",
+        "launch_descriptor",
         "mapping_artifact_identity",
         "fabric_adg_identity",
         "target_profile_id",
@@ -2031,6 +2111,12 @@ def validate_runtime_evidence(
     )
     validate_runtime_evidence_report_output_configuration(
         value.get("report_output_configuration"),
+        value,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_launch_descriptor(
+        value.get("launch_descriptor"),
         value,
         diagnostics,
         "workload report bundle runtime_evidence",
@@ -2203,6 +2289,7 @@ def validate_runtime_evidence_summaries(
             "synchronization_mode",
             "runtime_handle_model",
             "work_package_metadata",
+            "launch_descriptor",
             "report_output_configuration",
             "memory_descriptors",
             "argument_descriptors",
@@ -2218,6 +2305,13 @@ def validate_runtime_evidence_summaries(
                 )
             elif key == "work_package_metadata":
                 validate_runtime_evidence_work_package_metadata(
+                    summary.get(key),
+                    summary,
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "launch_descriptor":
+                validate_runtime_evidence_launch_descriptor(
                     summary.get(key),
                     summary,
                     diagnostics,

@@ -123,6 +123,7 @@ def main() -> int:
                 "work_package_metadata": workload_runtime_evidence["work_package_metadata"],
                 "work_package_identity": workload_runtime_evidence["work_package_identity"],
                 "launch_descriptor_identity": workload_runtime_evidence["launch_descriptor_identity"],
+                "launch_descriptor": workload_runtime_evidence["launch_descriptor"],
                 "mapping_artifact_identity": workload_runtime_evidence["mapping_artifact_identity"],
                 "fabric_adg_identity": workload_runtime_evidence["fabric_adg_identity"],
                 "target_profile_id": workload_runtime_evidence["target_profile_id"],
@@ -361,6 +362,50 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with malformed runtime identity summary unexpectedly passed audit")
+
+        bad_runtime_launch_summary = out_dir / "bad-runtime-launch-summary-dse-report-bundle.json"
+        bad_runtime_launch_summary_data = json.loads(report.read_text())
+        bad_runtime_launch_summary_data["runtime_evidence_summaries"][0]["launch_descriptor"][
+            "descriptor_id"
+        ] = "launch::other"
+        bad_runtime_launch_summary.write_text(
+            json.dumps(bad_runtime_launch_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_launch_summary_audit = out_dir / "bad-runtime-launch-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_launch_summary_audit),
+                str(bad_runtime_launch_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched runtime launch summary unexpectedly passed audit")
+
+        bad_runtime_scalar_summary = out_dir / "bad-runtime-scalar-summary-dse-report-bundle.json"
+        bad_runtime_scalar_summary_data = json.loads(report.read_text())
+        bad_runtime_scalar_summary_data["runtime_evidence_summaries"][0]["launch_descriptor"][
+            "scalar_value_descriptors"
+        ] = "scalar"
+        bad_runtime_scalar_summary.write_text(
+            json.dumps(bad_runtime_scalar_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_scalar_summary_audit = out_dir / "bad-runtime-scalar-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_scalar_summary_audit),
+                str(bad_runtime_scalar_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime scalar summary unexpectedly passed audit")
 
         bad_runtime_wrapper_summary = out_dir / "bad-runtime-wrapper-summary-dse-report-bundle.json"
         bad_runtime_wrapper_summary_data = json.loads(report.read_text())
