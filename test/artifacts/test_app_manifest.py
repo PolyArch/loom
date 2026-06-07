@@ -143,6 +143,23 @@ def main() -> int:
     data = json.loads(manifest.read_text())
     if {entry["case"] for entry in data["cases"]} != EXPECTED_CASES:
         raise AssertionError(f"manifest cases do not match expected seed set: {data}")
+    for entry in data["cases"]:
+        case = entry["case"]
+        for field in ("compiler_flags", "link_flags", "expected_executables"):
+            if field not in entry:
+                raise AssertionError(f"{case}: manifest entry lacks {field}")
+        if not isinstance(entry["compiler_flags"], list) or any(
+            not isinstance(flag, str) for flag in entry["compiler_flags"]
+        ):
+            raise AssertionError(f"{case}: compiler_flags must be a string list")
+        if not isinstance(entry["link_flags"], list) or any(
+            not isinstance(flag, str) for flag in entry["link_flags"]
+        ):
+            raise AssertionError(f"{case}: link_flags must be a string list")
+        if not isinstance(entry["expected_executables"], list) or len(entry["expected_executables"]) != 2:
+            raise AssertionError(f"{case}: expected_executables should name two variants")
+        if not all(isinstance(name, str) and name for name in entry["expected_executables"]):
+            raise AssertionError(f"{case}: expected_executables must contain non-empty strings")
 
     with artifact_test_common.repo_temp_dir(repo, "loom-bad-app-manifest-") as tmp:
         bad_manifest = Path(tmp) / "manifest.json"
@@ -157,6 +174,9 @@ def main() -> int:
                             "sources": ["missing.c"],
                             "expected_stdout": "expected.txt",
                             "tiers": ["run"],
+                            "compiler_flags": [],
+                            "link_flags": [],
+                            "expected_executables": ["main_func", "main_inline"],
                             "feature_tags": ["vector"],
                         }
                     ],
@@ -184,6 +204,9 @@ def main() -> int:
                             "sources": ["main_func.c"],
                             "expected_stdout": "expected.txt",
                             "tiers": ["run"],
+                            "compiler_flags": [],
+                            "link_flags": [],
+                            "expected_executables": ["main_func", "main_inline"],
                             "feature_tags": [1],
                         }
                     ],
@@ -199,6 +222,66 @@ def main() -> int:
             raise AssertionError("bad manifest with non-string tag unexpectedly passed")
         if "feature_tags must contain non-empty strings" not in result.stderr:
             raise AssertionError(f"bad manifest diagnostic should name non-string tag: {result.stderr}")
+
+        bad_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cases": [
+                        {
+                            "case": "vecadd",
+                            "language": "c",
+                            "sources": ["main_func.c"],
+                            "expected_stdout": "expected.txt",
+                            "tiers": ["run"],
+                            "compiler_flags": "-O2",
+                            "link_flags": [],
+                            "expected_executables": ["main_func", "main_inline"],
+                            "feature_tags": ["vector"],
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
+        )
+        if result.returncode == 0:
+            raise AssertionError("bad manifest with scalar compiler_flags unexpectedly passed")
+        if "compiler_flags must be a list" not in result.stderr:
+            raise AssertionError(f"bad manifest diagnostic should name compiler_flags: {result.stderr}")
+
+        bad_manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "cases": [
+                        {
+                            "case": "vecadd",
+                            "language": "c",
+                            "sources": ["main_func.c"],
+                            "expected_stdout": "expected.txt",
+                            "tiers": ["run"],
+                            "compiler_flags": [],
+                            "link_flags": [],
+                            "expected_executables": [],
+                            "feature_tags": ["vector"],
+                        }
+                    ],
+                }
+            )
+            + "\n"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            ["python3", "test/app/app_manifest.py", "validate", "--manifest", str(bad_manifest)],
+        )
+        if result.returncode == 0:
+            raise AssertionError("bad manifest with empty expected_executables unexpectedly passed")
+        if "expected_executables must be a non-empty list" not in result.stderr:
+            raise AssertionError(f"bad manifest diagnostic should name expected_executables: {result.stderr}")
 
     return 0
 

@@ -76,6 +76,28 @@ def non_empty_string_list_field(
     return strings
 
 
+def string_list_field(
+    entry: dict[object, object],
+    field: str,
+    context: str,
+    diagnostics: list[str],
+) -> list[str]:
+    value = entry.get(field)
+    if not isinstance(value, list):
+        diagnostics.append(f"{context}: {field} must be a list")
+        return []
+    strings: list[str] = []
+    has_invalid = False
+    for item in value:
+        if isinstance(item, str):
+            strings.append(item)
+        else:
+            has_invalid = True
+    if has_invalid:
+        diagnostics.append(f"{context}: {field} must contain strings")
+    return strings
+
+
 def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
     diagnostics: list[str] = []
     if not path.is_file():
@@ -126,6 +148,9 @@ def validate_manifest(path: Path) -> tuple[dict[str, object], list[str]]:
             if script:
                 require((case_dir / script).is_file(), f"{context}: missing {script}", diagnostics)
 
+        string_list_field(entry, "compiler_flags", context, diagnostics)
+        string_list_field(entry, "link_flags", context, diagnostics)
+        non_empty_string_list_field(entry, "expected_executables", context, diagnostics)
         non_empty_string_list_field(entry, "feature_tags", context, diagnostics)
 
     omitted = sorted(existing_app_cases() - seen)

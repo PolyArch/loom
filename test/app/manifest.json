@@ -7,7 +7,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "correlation", "float", "dynamic-bound", "reduction"]
+      "feature_tags": ["signal", "correlation", "float", "dynamic-bound", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["autocorrelation_func", "autocorrelation_inline"]
     },
     {
       "case": "axpy",
@@ -15,7 +18,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "numeric"]
+      "feature_tags": ["vector", "numeric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["axpy_func", "axpy_inline"]
     },
     {
       "case": "batchnorm",
@@ -23,7 +29,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["activation", "float", "transcendental", "nested-loop"]
+      "feature_tags": ["activation", "float", "transcendental", "nested-loop"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["batchnorm_func", "batchnorm_inline"]
     },
     {
       "case": "bit_reverse",
@@ -31,7 +40,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "per-element"]
+      "feature_tags": ["bit", "integer", "per-element"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bit_reverse_func", "bit_reverse_inline"]
     },
     {
       "case": "bitrev",
@@ -39,7 +51,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["bit", "permutation", "float", "indirect-store"]
+      "feature_tags": ["bit", "permutation", "float", "indirect-store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bitrev_func", "bitrev_inline"]
     },
     {
       "case": "bitrev_complex",
@@ -47,7 +62,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["bit", "permutation", "float", "complex", "indirect-store"]
+      "feature_tags": ["bit", "permutation", "float", "complex", "indirect-store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bitrev_complex_func", "bitrev_complex_inline"]
     },
     {
       "case": "byte_swap",
@@ -55,7 +73,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer"]
+      "feature_tags": ["bit", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["byte_swap_func", "byte_swap_inline"]
     },
     {
       "case": "bisection_step",
@@ -63,7 +84,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["numeric", "float", "control", "branch"]
+      "feature_tags": ["numeric", "float", "control", "branch"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bisection_step_func", "bisection_step_inline"]
     },
     {
       "case": "binary_search",
@@ -71,7 +95,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["search", "control"]
+      "feature_tags": ["search", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["binary_search_func", "binary_search_inline"]
     },
     {
       "case": "bitonic_stage",
@@ -79,7 +106,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "control", "float"]
+      "feature_tags": ["sort", "control", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bitonic_stage_func", "bitonic_stage_inline"]
     },
     {
       "case": "bitonic_stage-modified",
@@ -87,7 +117,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "control", "float", "nested-loop", "store"]
+      "feature_tags": ["sort", "control", "float", "nested-loop", "store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bitonic_stage-modified_func", "bitonic_stage-modified_inline"]
     },
     {
       "case": "bitonic_stage-tweak",
@@ -95,7 +128,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "control", "float", "in-place", "update"]
+      "feature_tags": ["sort", "control", "float", "in-place", "update"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["bitonic_stage-tweak_func", "bitonic_stage-tweak_inline"]
     },
     {
       "case": "clz",
@@ -103,7 +139,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "control"]
+      "feature_tags": ["bit", "integer", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["clz_func", "clz_inline"]
     },
     {
       "case": "col2im",
@@ -111,7 +150,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["convolution", "layout", "float", "accumulation"]
+      "feature_tags": ["convolution", "layout", "float", "accumulation"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["col2im_func", "col2im_inline"]
     },
     {
       "case": "compare_swap",
@@ -119,7 +161,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["sort", "control"]
+      "feature_tags": ["sort", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["compare_swap_func", "compare_swap_inline"]
     },
     {
       "case": "convolve_1d",
@@ -127,7 +172,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "convolution", "float", "reduction"]
+      "feature_tags": ["signal", "convolution", "float", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["convolve_1d_func", "convolve_1d_inline"]
     },
     {
       "case": "convolve_1d_same",
@@ -135,7 +183,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "convolution", "float", "control", "reduction"]
+      "feature_tags": ["signal", "convolution", "float", "control", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["convolve_1d_same_func", "convolve_1d_same_inline"]
     },
     {
       "case": "conv2d",
@@ -143,7 +194,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["convolution", "image", "float", "nested-loop"]
+      "feature_tags": ["convolution", "image", "float", "nested-loop"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["conv2d_func", "conv2d_inline"]
     },
     {
       "case": "correlation",
@@ -151,7 +205,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "correlation", "float", "reduction"]
+      "feature_tags": ["signal", "correlation", "float", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["correlation_func", "correlation_inline"]
     },
     {
       "case": "ctz",
@@ -159,7 +216,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "control"]
+      "feature_tags": ["bit", "integer", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["ctz_func", "ctz_inline"]
     },
     {
       "case": "conv1d",
@@ -167,7 +227,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["stencil", "signal"]
+      "feature_tags": ["stencil", "signal"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["conv1d_func", "conv1d_inline"]
     },
     {
       "case": "covariance",
@@ -175,7 +238,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["statistics", "reduction", "float"]
+      "feature_tags": ["statistics", "reduction", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["covariance_func", "covariance_inline"]
     },
     {
       "case": "crc32",
@@ -183,7 +249,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["checksum", "bit", "integer", "serial"]
+      "feature_tags": ["checksum", "bit", "integer", "serial"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["crc32_func", "crc32_inline"]
     },
     {
       "case": "cross_product",
@@ -191,7 +260,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["geometry", "vector", "float", "strided"]
+      "feature_tags": ["geometry", "vector", "float", "strided"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["cross_product_func", "cross_product_inline"]
     },
     {
       "case": "cumsum",
@@ -199,7 +271,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["scan", "prefix", "float", "store"]
+      "feature_tags": ["scan", "prefix", "float", "store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["cumsum_func", "cumsum_inline"]
     },
     {
       "case": "distance_point",
@@ -207,7 +282,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["geometry", "distance", "float", "sqrt"]
+      "feature_tags": ["geometry", "distance", "float", "sqrt"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["distance_point_func", "distance_point_inline"]
     },
     {
       "case": "delta_encode",
@@ -215,7 +293,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["encoding", "integer", "stencil"]
+      "feature_tags": ["encoding", "integer", "stencil"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["delta_encode_func", "delta_encode_inline"]
     },
     {
       "case": "delta_decode",
@@ -223,7 +304,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["encoding", "integer", "scan", "stateful"]
+      "feature_tags": ["encoding", "integer", "scan", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["delta_decode_func", "delta_decode_inline"]
     },
     {
       "case": "dotproduct",
@@ -231,7 +315,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["reduction", "vector"]
+      "feature_tags": ["reduction", "vector"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["dotproduct_func", "dotproduct_inline"]
     },
     {
       "case": "dotprod",
@@ -239,7 +326,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["reduction", "vector", "composite", "buffer"]
+      "feature_tags": ["reduction", "vector", "composite", "buffer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["dotprod_func", "dotprod_inline"]
     },
     {
       "case": "downsample",
@@ -247,7 +337,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "resampling", "strided-read"]
+      "feature_tags": ["signal", "resampling", "strided-read"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["downsample_func", "downsample_inline"]
     },
     {
       "case": "downsample_avg",
@@ -255,7 +348,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "resampling", "window", "reduction"]
+      "feature_tags": ["signal", "resampling", "window", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["downsample_avg_func", "downsample_avg_inline"]
     },
     {
       "case": "dot_product_3d",
@@ -263,7 +359,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "geometry", "float"]
+      "feature_tags": ["vector", "geometry", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["dot_product_3d_func", "dot_product_3d_inline"]
     },
     {
       "case": "edge_update",
@@ -271,7 +370,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["graph", "csr", "indirect", "stateful"]
+      "feature_tags": ["graph", "csr", "indirect", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["edge_update_func", "edge_update_inline"]
     },
     {
       "case": "edge_update_batch",
@@ -279,7 +381,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["graph", "csr", "indirect", "batch"]
+      "feature_tags": ["graph", "csr", "indirect", "batch"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["edge_update_batch_func", "edge_update_batch_inline"]
     },
     {
       "case": "find_first_set",
@@ -287,7 +392,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "search", "integer", "control"]
+      "feature_tags": ["bit", "search", "integer", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["find_first_set_func", "find_first_set_inline"]
     },
     {
       "case": "fir_filter",
@@ -295,7 +403,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "filter", "float"]
+      "feature_tags": ["signal", "filter", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["fir_filter_func", "fir_filter_inline"]
     },
     {
       "case": "fir_filter_stateful",
@@ -303,7 +414,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["signal", "filter", "float", "stateful"]
+      "feature_tags": ["signal", "filter", "float", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["fir_filter_stateful_func", "fir_filter_stateful_inline"]
     },
     {
       "case": "gemm",
@@ -311,7 +425,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["matrix", "numeric"]
+      "feature_tags": ["matrix", "numeric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["gemm_func", "gemm_inline"]
     },
     {
       "case": "gemv",
@@ -319,7 +436,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["matrix", "vector", "integer"]
+      "feature_tags": ["matrix", "vector", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["gemv_func", "gemv_inline"]
     },
     {
       "case": "gf_mul",
@@ -327,7 +447,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["finite-field", "integer", "bit", "control"]
+      "feature_tags": ["finite-field", "integer", "bit", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["gf_mul_func", "gf_mul_inline"]
     },
     {
       "case": "gather",
@@ -335,7 +458,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["memory", "indirect", "integer"]
+      "feature_tags": ["memory", "indirect", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["gather_func", "gather_inline"]
     },
     {
       "case": "hash_mix",
@@ -343,7 +469,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "hash", "integer", "vector"]
+      "feature_tags": ["bit", "hash", "integer", "vector"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["hash_mix_func", "hash_mix_inline"]
     },
     {
       "case": "hist_bin",
@@ -351,7 +480,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["histogram", "float", "indirect", "stateful"]
+      "feature_tags": ["histogram", "float", "indirect", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["hist_bin_func", "hist_bin_inline"]
     },
     {
       "case": "histogram",
@@ -359,7 +491,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["histogram", "integer", "indirect", "stateful"]
+      "feature_tags": ["histogram", "integer", "indirect", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["histogram_func", "histogram_inline"]
     },
     {
       "case": "histogram_strided",
@@ -367,7 +502,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["histogram", "integer", "indirect", "division"]
+      "feature_tags": ["histogram", "integer", "indirect", "division"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["histogram_strided_func", "histogram_strided_inline"]
     },
     {
       "case": "im2col",
@@ -375,7 +513,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["convolution", "layout", "float", "nested-loop"]
+      "feature_tags": ["convolution", "layout", "float", "nested-loop"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["im2col_func", "im2col_inline"]
     },
     {
       "case": "integrate_trapz",
@@ -383,7 +524,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["numeric", "reduction", "float"]
+      "feature_tags": ["numeric", "reduction", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["integrate_trapz_func", "integrate_trapz_inline"]
     },
     {
       "case": "interpolate_linear",
@@ -391,7 +535,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["interpolation", "float", "control", "search"]
+      "feature_tags": ["interpolation", "float", "control", "search"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["interpolate_linear_func", "interpolate_linear_inline"]
     },
     {
       "case": "lower_bound",
@@ -399,7 +546,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["search", "control"]
+      "feature_tags": ["search", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["lower_bound_func", "lower_bound_inline"]
     },
     {
       "case": "mean",
@@ -407,7 +557,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["reduction", "statistics", "float"]
+      "feature_tags": ["reduction", "statistics", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["mean_func", "mean_inline"]
     },
     {
       "case": "mat3x3_mult",
@@ -415,7 +568,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["matrix", "float", "reduction"]
+      "feature_tags": ["matrix", "float", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["mat3x3_mult_func", "mat3x3_mult_inline"]
     },
     {
       "case": "matmul",
@@ -423,7 +579,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["matrix", "integer", "reduction", "nested-loop"]
+      "feature_tags": ["matrix", "integer", "reduction", "nested-loop"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["matmul_func", "matmul_inline"]
     },
     {
       "case": "mmtile",
@@ -431,7 +590,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["matrix", "integer", "tiled", "reduction"]
+      "feature_tags": ["matrix", "integer", "tiled", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["mmtile_func", "mmtile_inline"]
     },
     {
       "case": "matvec",
@@ -439,7 +601,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["matrix", "vector", "integer"]
+      "feature_tags": ["matrix", "vector", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["matvec_func", "matvec_inline"]
     },
     {
       "case": "merge",
@@ -447,7 +612,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["sort", "control", "float"]
+      "feature_tags": ["sort", "control", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["merge_func", "merge_inline"]
     },
     {
       "case": "moving_avg",
@@ -455,7 +623,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "sliding-window", "float"]
+      "feature_tags": ["signal", "sliding-window", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["moving_avg_func", "moving_avg_inline"]
     },
     {
       "case": "modexp",
@@ -463,7 +634,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["modular-arithmetic", "integer", "bit", "while-loop"]
+      "feature_tags": ["modular-arithmetic", "integer", "bit", "while-loop"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["modexp_func", "modexp_inline"]
     },
     {
       "case": "modmul",
@@ -471,7 +645,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["modular-arithmetic", "integer", "multiply"]
+      "feature_tags": ["modular-arithmetic", "integer", "multiply"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["modmul_func", "modmul_inline"]
     },
     {
       "case": "normalize_vec3",
@@ -479,7 +656,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["geometry", "vector", "float", "control"]
+      "feature_tags": ["geometry", "vector", "float", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["normalize_vec3_func", "normalize_vec3_inline"]
     },
     {
       "case": "newton_iter",
@@ -487,7 +667,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["numeric", "float", "division", "per-element"]
+      "feature_tags": ["numeric", "float", "division", "per-element"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["newton_iter_func", "newton_iter_inline"]
     },
     {
       "case": "outer",
@@ -495,7 +678,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["matrix", "vector", "integer"]
+      "feature_tags": ["matrix", "vector", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["outer_func", "outer_inline"]
     },
     {
       "case": "pack_bits",
@@ -503,7 +689,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "encoding", "integer", "reduction"]
+      "feature_tags": ["bit", "encoding", "integer", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["pack_bits_func", "pack_bits_inline"]
     },
     {
       "case": "partition",
@@ -511,7 +700,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["sort", "control", "float"]
+      "feature_tags": ["sort", "control", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["partition_func", "partition_inline"]
     },
     {
       "case": "parity",
@@ -519,7 +711,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "control"]
+      "feature_tags": ["bit", "integer", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["parity_func", "parity_inline"]
     },
     {
       "case": "prefix_sum",
@@ -527,7 +722,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["scan", "integer"]
+      "feature_tags": ["scan", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["prefix_sum_func", "prefix_sum_inline"]
     },
     {
       "case": "prefix_sum_exclusive",
@@ -535,7 +733,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["scan", "prefix", "integer", "store"]
+      "feature_tags": ["scan", "prefix", "integer", "store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["prefix_sum_exclusive_func", "prefix_sum_exclusive_inline"]
     },
     {
       "case": "prefix_sum_inclusive",
@@ -543,7 +744,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["scan", "prefix", "integer", "store"]
+      "feature_tags": ["scan", "prefix", "integer", "store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["prefix_sum_inclusive_func", "prefix_sum_inclusive_inline"]
     },
     {
       "case": "quantile",
@@ -551,7 +755,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["statistics", "interpolation", "float", "control"]
+      "feature_tags": ["statistics", "interpolation", "float", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["quantile_func", "quantile_inline"]
     },
     {
       "case": "quat_mult",
@@ -559,7 +766,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["geometry", "quaternion", "float"]
+      "feature_tags": ["geometry", "quaternion", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["quat_mult_func", "quat_mult_inline"]
     },
     {
       "case": "popcount",
@@ -567,7 +777,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "control"]
+      "feature_tags": ["bit", "integer", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["popcount_func", "popcount_inline"]
     },
     {
       "case": "relu",
@@ -575,7 +788,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["activation", "float", "vector"]
+      "feature_tags": ["activation", "float", "vector"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["relu_func", "relu_inline"]
     },
     {
       "case": "reduction",
@@ -583,7 +799,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["reduction", "integer"]
+      "feature_tags": ["reduction", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["reduction_func", "reduction_inline"]
     },
     {
       "case": "rotate_bits",
@@ -591,7 +810,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "vector"]
+      "feature_tags": ["bit", "integer", "vector"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["rotate_bits_func", "rotate_bits_inline"]
     },
     {
       "case": "rle_decode",
@@ -599,7 +821,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["encoding", "integer", "nested-loop", "stateful"]
+      "feature_tags": ["encoding", "integer", "nested-loop", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["rle_decode_func", "rle_decode_inline"]
     },
     {
       "case": "rle_encode",
@@ -607,7 +832,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["encoding", "integer", "stateful", "compression"]
+      "feature_tags": ["encoding", "integer", "stateful", "compression"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["rle_encode_func", "rle_encode_inline"]
     },
     {
       "case": "runge_kutta_step",
@@ -615,7 +843,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["numeric", "float", "ode", "per-element"]
+      "feature_tags": ["numeric", "float", "ode", "per-element"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["runge_kutta_step_func", "runge_kutta_step_inline"]
     },
     {
       "case": "scatter_add",
@@ -623,7 +854,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["memory", "indirect", "integer"]
+      "feature_tags": ["memory", "indirect", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["scatter_add_func", "scatter_add_inline"]
     },
     {
       "case": "sbox_lookup",
@@ -631,7 +865,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["lookup", "memory", "indirect", "integer"]
+      "feature_tags": ["lookup", "memory", "indirect", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["sbox_lookup_func", "sbox_lookup_inline"]
     },
     {
       "case": "sigmoid",
@@ -639,7 +876,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["activation", "float", "transcendental"]
+      "feature_tags": ["activation", "float", "transcendental"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["sigmoid_func", "sigmoid_inline"]
     },
     {
       "case": "softmax",
@@ -647,7 +887,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["activation", "float", "transcendental", "reduction"]
+      "feature_tags": ["activation", "float", "transcendental", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["softmax_func", "softmax_inline"]
     },
     {
       "case": "spmv",
@@ -655,7 +898,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["sparse", "matrix", "vector", "indirect", "reduction"]
+      "feature_tags": ["sparse", "matrix", "vector", "indirect", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["spmv_func", "spmv_inline"]
     },
     {
       "case": "spmspv",
@@ -663,7 +909,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sparse", "matrix", "vector", "indirect", "densify"]
+      "feature_tags": ["sparse", "matrix", "vector", "indirect", "densify"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["spmspv_func", "spmspv_inline"]
     },
     {
       "case": "spmspm",
@@ -671,7 +920,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sparse", "matrix", "indirect", "accumulate", "compress"]
+      "feature_tags": ["sparse", "matrix", "indirect", "accumulate", "compress"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["spmspm_func", "spmspm_inline"]
     },
     {
       "case": "sort_bubble",
@@ -679,7 +931,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "float", "nested-loop", "swap"]
+      "feature_tags": ["sort", "float", "nested-loop", "swap"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["sort_bubble_func", "sort_bubble_inline"]
     },
     {
       "case": "sort_insertion",
@@ -687,7 +942,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "float", "control", "shift"]
+      "feature_tags": ["sort", "float", "control", "shift"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["sort_insertion_func", "sort_insertion_inline"]
     },
     {
       "case": "sort_merge",
@@ -695,7 +953,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "float", "merge", "buffer"]
+      "feature_tags": ["sort", "float", "merge", "buffer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["sort_merge_func", "sort_merge_inline"]
     },
     {
       "case": "sort_quick",
@@ -703,7 +964,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["sort", "float", "control", "stack", "while-loop"]
+      "feature_tags": ["sort", "float", "control", "stack", "while-loop"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["sort_quick_func", "sort_quick_inline"]
     },
     {
       "case": "string_compare",
@@ -711,7 +975,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["string", "control", "early-exit", "integer"]
+      "feature_tags": ["string", "control", "early-exit", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["string_compare_func", "string_compare_inline"]
     },
     {
       "case": "string_hash",
@@ -719,7 +986,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["string", "hash", "integer", "stateful"]
+      "feature_tags": ["string", "hash", "integer", "stateful"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["string_hash_func", "string_hash_inline"]
     },
     {
       "case": "stream_update",
@@ -727,7 +997,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["integer", "nested-loop", "modulo", "reduction"]
+      "feature_tags": ["integer", "nested-loop", "modulo", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["stream_update_func", "stream_update_inline"]
     },
     {
       "case": "transpose",
@@ -735,7 +1008,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["matrix", "memory", "integer"]
+      "feature_tags": ["matrix", "memory", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["transpose_func", "transpose_inline"]
     },
     {
       "case": "transform_point",
@@ -743,7 +1019,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["geometry", "matrix", "float", "strided"]
+      "feature_tags": ["geometry", "matrix", "float", "strided"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["transform_point_func", "transform_point_inline"]
     },
     {
       "case": "unpack_bits",
@@ -751,7 +1030,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "encoding", "integer"]
+      "feature_tags": ["bit", "encoding", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["unpack_bits_func", "unpack_bits_inline"]
     },
     {
       "case": "upsample",
@@ -759,7 +1041,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["signal", "resampling", "strided-write"]
+      "feature_tags": ["signal", "resampling", "strided-write"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["upsample_func", "upsample_inline"]
     },
     {
       "case": "upper_bound",
@@ -767,7 +1052,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["search", "control"]
+      "feature_tags": ["search", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["upper_bound_func", "upper_bound_inline"]
     },
     {
       "case": "variance",
@@ -775,7 +1063,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["statistics", "reduction", "float"]
+      "feature_tags": ["statistics", "reduction", "float"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["variance_func", "variance_inline"]
     },
     {
       "case": "vecadd",
@@ -783,7 +1074,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "numeric"]
+      "feature_tags": ["vector", "numeric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecadd_func", "vecadd_inline"]
     },
     {
       "case": "vecmul",
@@ -791,7 +1085,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "numeric"]
+      "feature_tags": ["vector", "numeric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecmul_func", "vecmul_inline"]
     },
     {
       "case": "vecnorm_l1",
@@ -799,7 +1096,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "reduction", "integer"]
+      "feature_tags": ["vector", "reduction", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecnorm_l1_func", "vecnorm_l1_inline"]
     },
     {
       "case": "vecnorm_l2",
@@ -807,7 +1107,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "reduction", "integer"]
+      "feature_tags": ["vector", "reduction", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecnorm_l2_func", "vecnorm_l2_inline"]
     },
     {
       "case": "vecscale",
@@ -815,7 +1118,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["vector", "integer"]
+      "feature_tags": ["vector", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecscale_func", "vecscale_inline"]
     },
     {
       "case": "vecsum",
@@ -823,7 +1129,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["reduction", "vector", "integer"]
+      "feature_tags": ["reduction", "vector", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecsum_func", "vecsum_inline"]
     },
     {
       "case": "vecsum-while",
@@ -831,7 +1140,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["reduction", "vector", "integer"]
+      "feature_tags": ["reduction", "vector", "integer"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["vecsum-while_func", "vecsum-while_inline"]
     },
     {
       "case": "window_blackman",
@@ -839,7 +1151,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["signal", "window", "float", "trigonometric"]
+      "feature_tags": ["signal", "window", "float", "trigonometric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["window_blackman_func", "window_blackman_inline"]
     },
     {
       "case": "window_hamming",
@@ -847,7 +1162,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["signal", "window", "float", "trigonometric"]
+      "feature_tags": ["signal", "window", "float", "trigonometric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["window_hamming_func", "window_hamming_inline"]
     },
     {
       "case": "window_hanning",
@@ -855,7 +1173,10 @@
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise"],
-      "feature_tags": ["signal", "window", "float", "trigonometric"]
+      "feature_tags": ["signal", "window", "float", "trigonometric"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["window_hanning_func", "window_hanning_inline"]
     },
     {
       "case": "xor_block",
@@ -863,7 +1184,10 @@
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
       "tiers": ["run", "raise", "dfg"],
-      "feature_tags": ["bit", "integer", "vector"]
+      "feature_tags": ["bit", "integer", "vector"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["xor_block_func", "xor_block_inline"]
     }
   ]
 }

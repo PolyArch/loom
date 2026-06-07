@@ -72,6 +72,9 @@ def prepare_single_case_app_tree(repo: Path, tmp_root: Path, case_name: str) -> 
                 "sources": ["main_func.cpp", "main_inline.cpp"],
                 "expected_stdout": "expected.txt",
                 "tiers": ["run"],
+                "compiler_flags": [],
+                "link_flags": [],
+                "expected_executables": [f"{case_name}_func", f"{case_name}_inline"],
                 "feature_tags": ["runner-fixture"],
             }
         ],
