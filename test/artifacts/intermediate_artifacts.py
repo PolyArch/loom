@@ -3867,6 +3867,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         metric_class_by_id: dict[str, str] = {}
+        metric_value_by_id: dict[str, float] = {}
         if not isinstance(metrics, list) or not metrics:
             diagnostics.append("workload report bundle needs non-empty metric_records")
             metrics = []
@@ -3897,6 +3898,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             value = metric.get("value")
             if not isinstance(value, (int, float)) or value < 0:
                 diagnostics.append(f"workload report bundle metric {index} has invalid value")
+            elif isinstance(metric_id, str) and metric_id:
+                metric_value_by_id[metric_id] = float(value)
             metric_diagnostics = metric.get("diagnostics")
             if not isinstance(metric_diagnostics, list):
                 diagnostics.append(f"workload report bundle metric {index} diagnostics must be a list")
@@ -3929,6 +3932,31 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(
                     f"workload report bundle energy metric lacks power source inputs {missing_power_inputs}"
                 )
+            input_value_by_class = {
+                metric_class_by_id[metric_id]: metric_value_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str)
+                and metric_id in metric_class_by_id
+                and metric_id in metric_value_by_id
+            }
+            frequency = input_value_by_class.get("frequency")
+            cycles = input_value_by_class.get("hardware_cycles")
+            if cycles is None:
+                cycles = input_value_by_class.get("optimistic_steps")
+            dynamic_power = input_value_by_class.get("dynamic_power")
+            leakage_power = input_value_by_class.get("leakage_power")
+            energy_value = metric.get("value")
+            if (
+                isinstance(energy_value, (int, float))
+                and cycles is not None
+                and frequency is not None
+                and frequency > 0
+                and dynamic_power is not None
+                and leakage_power is not None
+            ):
+                expected_energy = (dynamic_power + leakage_power) * cycles / frequency
+                if not nearly_equal(float(energy_value), expected_energy):
+                    diagnostics.append("workload report bundle energy metric value does not match inputs")
     if kind == "hardware_report_bundle":
         if data.get("kind") != "hardware_report_bundle":
             diagnostics.append("hardware report bundle kind must be hardware_report_bundle")

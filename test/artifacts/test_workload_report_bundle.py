@@ -271,6 +271,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with incomplete energy metric inputs unexpectedly passed audit")
+        mismatched_energy_value_report = out_dir / "mismatched-energy-value-workload-report-bundle.json"
+        mismatched_energy_value_data = json.loads(report.read_text())
+        for metric in mismatched_energy_value_data["metric_records"]:
+            if metric.get("metric_id") == "metric::vecsum::energy_nj":
+                metric["value"] = 1.0
+        mismatched_energy_value_report.write_text(
+            json.dumps(mismatched_energy_value_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_energy_value_audit = out_dir / "mismatched-energy-value-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_energy_value_audit),
+                str(mismatched_energy_value_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched energy metric value unexpectedly passed audit")
         bad_host_report = out_dir / "bad-host-interface-workload-report-bundle.json"
         bad_host_data = json.loads(report.read_text())
         bad_host_data["runtime_host_interface"]["compatibility_mode_requires_runtime"] = True
