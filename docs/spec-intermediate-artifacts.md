@@ -528,6 +528,44 @@ Rules:
 * An audit summary with unresolved contradictions blocks milestone
   acceptance.
 
+### RTL Manifest
+
+Purpose: record generated RTL source sets and lowering metadata from a
+Fabric hardware root.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `manifest_id`;
+* `source_fabric_adg_identity`;
+* `mapping_artifact_identity`;
+* `lowering_configuration`;
+* `emitted_source_files`;
+* `top_level_modules`;
+* `generated_packages`;
+* `generated_interfaces`;
+* `black_box_modules`;
+* `behavioral_models`;
+* `required_tool_capability_classes`;
+* `required_library_profile_classes`;
+* `constraints`;
+* `activity_hooks`;
+* `diagnostics`;
+* `status`.
+
+Rules:
+
+* `kind` must be `rtl_manifest`.
+* `emitted_source_files` entries must use portable relative paths and
+  carry fingerprints for the emitted source files.
+* A passing architecture RTL manifest must identify a Fabric ADG input,
+  at least one emitted SystemVerilog source file, at least one top-level
+  module, and the required RTL tool capability classes.
+* Behavioral models, black boxes, generated interfaces, constraints,
+  and activity hooks must be explicit lists so downstream FPA and EDA
+  tooling can distinguish present evidence from absent optional support.
+
 ## Content Audit Requirements
 
 Every intermediate artifact must pass a content audit before it can be

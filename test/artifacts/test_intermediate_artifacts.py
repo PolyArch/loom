@@ -122,6 +122,17 @@ JSON_COMMANDS = [
     ),
 ]
 
+RTL_MANIFEST_REQUIRED_KEYS = {
+    "schema_version",
+    "kind",
+    "manifest_id",
+    "source_fabric_adg_identity",
+    "emitted_source_files",
+    "top_level_modules",
+    "diagnostics",
+    "status",
+}
+
 
 def run_command(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -198,6 +209,7 @@ def assert_manifest_trace_edges(path: Path) -> None:
         "vecsum-dfg-sim-report",
         "vecsum-cgra-sim-report",
         "sim-cycle-summary",
+        "rtl-manifest",
         "dse-candidate-summary",
     }
     if not required_ids <= artifact_ids:
@@ -213,6 +225,8 @@ def assert_manifest_trace_edges(path: Path) -> None:
         ("pnr-mapping", "vecsum-cgra-sim-report"),
         ("vecsum-dfg-sim-report", "sim-cycle-summary"),
         ("vecsum-cgra-sim-report", "sim-cycle-summary"),
+        ("adg-hardware-summary", "rtl-manifest"),
+        ("rtl-manifest", "rtl-fpa-summary"),
         ("pnr-mapping", "dse-candidate-summary"),
         ("vecsum-cgra-sim-report", "dse-candidate-summary"),
     }
@@ -416,6 +430,26 @@ def main() -> int:
                 },
             )
             produced.append(output)
+            if filename == "adg-hardware-summary.csv":
+                rtl_manifest = out_dir / "rtl-manifest.json"
+                result = run_command(
+                    repo,
+                    [
+                        "bash",
+                        "test/rtl/run_rtl_manifest.sh",
+                        "--hardware-summary",
+                        str(output),
+                        "--output",
+                        str(rtl_manifest),
+                    ],
+                )
+                if result.returncode != 0:
+                    raise AssertionError(
+                        f"test/rtl/run_rtl_manifest.sh failed with {result.returncode}\n"
+                        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                    )
+                assert_json_artifact(rtl_manifest, RTL_MANIFEST_REQUIRED_KEYS)
+                produced.append(rtl_manifest)
             if filename == "sim-cycle-summary.csv":
                 for backing_name in (
                     "pnr-mapping.json",

@@ -61,6 +61,7 @@ cgra_report="${OUT_DIR}/vecsum-cgra-sim-report.json"
 sim_comparison="${OUT_DIR}/sim-comparison-report.json"
 runtime_package="${OUT_DIR}/runtime-package.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
+rtl_manifest="${OUT_DIR}/rtl-manifest.json"
 rtl_fpa="${OUT_DIR}/rtl-fpa-summary.csv"
 report_bundle="${OUT_DIR}/workload-report-bundle.json"
 hardware_bundle="${OUT_DIR}/hardware-report-bundle.json"
@@ -132,6 +133,9 @@ bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
   --dfg-report "${dfg_report}" \
   --cgra-report "${cgra_report}" \
   --output "${sim_cycle}"
+bash "${ROOT}/test/rtl/run_rtl_manifest.sh" \
+  --hardware-summary "${hardware}" \
+  --output "${rtl_manifest}"
 bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --primitive-coverage "${primitive}" \
   --hardware-summary "${hardware}" \
@@ -158,6 +162,7 @@ bash "${ROOT}/test/e2e/run_report_bundle.sh" \
   --artifact "${sim_comparison}" \
   --artifact "${runtime_package}" \
   --artifact "${sim_cycle}" \
+  --artifact "${rtl_manifest}" \
   --artifact "${rtl_fpa}" \
   --artifact "${dse_candidate}" \
   --output "${report_bundle}"
@@ -182,6 +187,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${sim_comparison}" \
   --artifact "${runtime_package}" \
   --artifact "${sim_cycle}" \
+  --artifact "${rtl_manifest}" \
   --artifact "${rtl_fpa}" \
   --artifact "${dse_candidate}" \
   --artifact "${report_bundle}" \
@@ -223,6 +229,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${sim_comparison}" \
   --artifact "${runtime_package}" \
   --artifact "${sim_cycle}" \
+  --artifact "${rtl_manifest}" \
   --artifact "${rtl_fpa}" \
   --artifact "${report_bundle}" \
   --artifact "${hardware_bundle}" \
@@ -248,6 +255,7 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${sim_comparison}" \
   "${runtime_package}" \
   "${sim_cycle}" \
+  "${rtl_manifest}" \
   "${rtl_fpa}" \
   "${report_bundle}" \
   "${hardware_bundle}" \

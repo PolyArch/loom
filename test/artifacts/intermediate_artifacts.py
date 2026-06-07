@@ -492,6 +492,29 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "status",
         },
     },
+    "rtl_manifest": {
+        "filename": "rtl-manifest.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "manifest_id",
+            "source_fabric_adg_identity",
+            "mapping_artifact_identity",
+            "lowering_configuration",
+            "emitted_source_files",
+            "top_level_modules",
+            "generated_packages",
+            "generated_interfaces",
+            "black_box_modules",
+            "behavioral_models",
+            "required_tool_capability_classes",
+            "required_library_profile_classes",
+            "constraints",
+            "activity_hooks",
+            "diagnostics",
+            "status",
+        },
+    },
     "pnr_mapping_artifact": {
         "filename": "pnr-mapping.json",
         "required_keys": {
@@ -630,6 +653,7 @@ STANDARD_ARTIFACT_PATHS = (
     ("sim_comparison_report", "temp/sim-comparison-report.json"),
     ("runtime_package", "temp/runtime-package.json"),
     ("sim_cycle", "temp/sim-cycle-summary.csv"),
+    ("rtl_manifest", "temp/rtl-manifest.json"),
     ("rtl_fpa", "temp/rtl-fpa-summary.csv"),
     ("workload_report_bundle", "temp/workload-report-bundle.json"),
     ("hardware_report_bundle", "temp/hardware-report-bundle.json"),
@@ -643,6 +667,7 @@ EMBEDDED_JSON_KIND_ALIASES = {
     "dfg_sim_report": "dfg_sim_report",
     "cgra_sim_report": "cgra_sim_report",
     "sim_comparison_report": "sim_comparison_report",
+    "rtl_manifest": "rtl_manifest",
     "pnr_mapping": "pnr_mapping_artifact",
     "runtime_package": "runtime_package",
     "workload_report_bundle": "workload_report_bundle",
@@ -1202,6 +1227,12 @@ def iter_artifact_manifest_required_edges(
     for cgra_id in ids_by_kind.get("cgra_sim_report", []):
         for dse_id in ids_by_kind.get("dse_candidate", []):
             yield cgra_id, dse_id
+
+    for rtl_manifest_id in ids_by_kind.get("rtl_manifest", []):
+        for hardware_id in ids_by_kind.get("adg_hardware", []):
+            yield hardware_id, rtl_manifest_id
+        for rtl_fpa_id in ids_by_kind.get("rtl_fpa", []):
+            yield rtl_manifest_id, rtl_fpa_id
 
     for comparison_id in ids_by_kind.get("sim_comparison_report", []):
         for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
@@ -2814,6 +2845,66 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         manifest_entries_checked = validate_artifact_manifest_edges(data, diagnostics)
     if kind == "artifact_audit" and data.get("verdict") not in {"pass", "fail"}:
         diagnostics.append("artifact audit verdict must be pass or fail")
+    if kind == "rtl_manifest":
+        if data.get("kind") != "rtl_manifest":
+            diagnostics.append("RTL manifest kind must be rtl_manifest")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("RTL manifest status must be a known status")
+        for key in ("manifest_id", "source_fabric_adg_identity", "mapping_artifact_identity"):
+            if not isinstance(data.get(key), str):
+                diagnostics.append(f"RTL manifest {key} must be a string")
+        if not isinstance(data.get("lowering_configuration"), dict):
+            diagnostics.append("RTL manifest lowering_configuration must be an object")
+        for key in (
+            "emitted_source_files",
+            "top_level_modules",
+            "generated_packages",
+            "generated_interfaces",
+            "black_box_modules",
+            "behavioral_models",
+            "required_tool_capability_classes",
+            "required_library_profile_classes",
+            "constraints",
+            "activity_hooks",
+            "diagnostics",
+        ):
+            if not isinstance(data.get(key), list):
+                diagnostics.append(f"RTL manifest {key} must be a list")
+        sources = data.get("emitted_source_files")
+        if not isinstance(sources, list):
+            sources = []
+        for index, source in enumerate(sources, start=1):
+            if not isinstance(source, dict):
+                diagnostics.append(f"RTL manifest source {index} must be an object")
+                continue
+            source_path_raw = source.get("path")
+            if not isinstance(source_path_raw, str) or not source_path_raw:
+                diagnostics.append(f"RTL manifest source {index} lacks path")
+                continue
+            source_path = Path(source_path_raw)
+            if source_path.is_absolute():
+                diagnostics.append(f"RTL manifest source {index} path must be relative")
+                continue
+            resolved_source = path.parent / source_path
+            if not resolved_source.is_file():
+                diagnostics.append(f"RTL manifest source {index} path does not exist")
+                continue
+            if source.get("language") != "systemverilog":
+                diagnostics.append(f"RTL manifest source {index} language must be systemverilog")
+            fingerprint = source.get("fingerprint")
+            if not valid_sha256_hex(fingerprint):
+                diagnostics.append(f"RTL manifest source {index} has invalid fingerprint")
+            elif fingerprint != artifact_fingerprint(resolved_source):
+                diagnostics.append(f"RTL manifest source {index} fingerprint is stale")
+        if data.get("status") == "pass":
+            if not data.get("source_fabric_adg_identity"):
+                diagnostics.append("RTL manifest pass needs source_fabric_adg_identity")
+            if not sources:
+                diagnostics.append("RTL manifest pass needs emitted_source_files")
+            if not data.get("top_level_modules"):
+                diagnostics.append("RTL manifest pass needs top_level_modules")
+            if not data.get("required_tool_capability_classes"):
+                diagnostics.append("RTL manifest pass needs required_tool_capability_classes")
     if kind == "dfg_sim_report":
         if data.get("kind") != "dfg_sim_report":
             diagnostics.append("DFG simulator report kind must be dfg_sim_report")
