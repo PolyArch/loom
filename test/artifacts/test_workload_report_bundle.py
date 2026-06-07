@@ -153,6 +153,7 @@ def main() -> int:
             "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
             "fabric_adg_identity": runtime_report["fabric_adg_identity"],
             "target_profile_id": runtime_report["target_profile_id"],
+            "target_profile": runtime_package_data["target_profile"],
             "fallback_policy": runtime_package_data["fallback_policy"],
             "launch_status": "not_run",
             "target_status": "not_run",
@@ -162,6 +163,7 @@ def main() -> int:
             "synchronization_mode": "host_wait",
             "memory_descriptors": runtime_package_data["memory_descriptors"],
             "argument_descriptors": runtime_package_data["argument_descriptors"],
+            "runtime_configuration": runtime_package_data["runtime_configuration"],
             "required_data_movement_policies": ["simulated"],
             "required_synchronization_policies": ["host_wait"],
             "simulator_report_identities": runtime_report["simulator_report_identities"],
@@ -525,6 +527,44 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime arguments unexpectedly passed audit")
+        bad_runtime_target_report = out_dir / "bad-runtime-target-workload-report-bundle.json"
+        bad_runtime_target_data = json.loads(report.read_text())
+        bad_runtime_target_data["runtime_evidence"]["target_profile"]["profile_id"] = "simulator::other"
+        bad_runtime_target_report.write_text(json.dumps(bad_runtime_target_data, indent=2, sort_keys=True) + "\n")
+        bad_runtime_target_audit = out_dir / "bad-runtime-target-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_target_audit),
+                str(bad_runtime_target_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime target profile unexpectedly passed audit")
+        bad_runtime_configuration_report = out_dir / "bad-runtime-configuration-workload-report-bundle.json"
+        bad_runtime_configuration_data = json.loads(report.read_text())
+        bad_runtime_configuration_data["runtime_evidence"]["runtime_configuration"][
+            "synchronization_mode"
+        ] = "device_poll"
+        bad_runtime_configuration_report.write_text(
+            json.dumps(bad_runtime_configuration_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_configuration_audit = out_dir / "bad-runtime-configuration-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_configuration_audit),
+                str(bad_runtime_configuration_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime configuration unexpectedly passed audit")
         bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
         bad_runtime_diagnostics_data = json.loads(report.read_text())
         bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"

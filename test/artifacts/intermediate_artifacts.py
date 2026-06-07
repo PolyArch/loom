@@ -1863,6 +1863,77 @@ def validate_runtime_evidence_argument_descriptors(
                 diagnostics.append(f"{label} argument descriptor {index} lacks {key}")
 
 
+def validate_runtime_evidence_target_profile(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append(f"{label} target_profile must be an object")
+        return
+    for key in ("target_kind", "profile_id"):
+        if not isinstance(value.get(key), str) or not value.get(key):
+            diagnostics.append(f"{label} target_profile lacks {key}")
+    if value.get("profile_id") != evidence.get("target_profile_id"):
+        diagnostics.append(f"{label} target_profile profile_id does not match runtime evidence")
+    if value.get("target_kind") == "simulator":
+        simulator = value.get("simulator")
+        if not isinstance(simulator, str) or not simulator:
+            diagnostics.append(f"{label} simulator target_profile lacks simulator")
+        elif simulator not in {"cgra_sim", "dfg_sim", "rtl_sim"}:
+            diagnostics.append(f"{label} target_profile has unsupported simulator")
+    elif value.get("target_kind") == "hardware":
+        if not isinstance(value.get("hardware_backend"), str) or not value.get("hardware_backend"):
+            diagnostics.append(f"{label} hardware target_profile lacks hardware_backend")
+    elif value.get("target_kind"):
+        diagnostics.append(f"{label} target_profile has unsupported target_kind")
+
+
+def validate_runtime_evidence_configuration(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append(f"{label} runtime_configuration must be an object")
+        return
+    for key in (
+        "configuration_id",
+        "target_profile_id",
+        "data_movement_policy",
+        "platform_binding_identity",
+        "fallback_policy",
+        "synchronization_mode",
+    ):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"{label} runtime_configuration lacks {key}")
+    expected_configuration_id = (
+        f"runtime-config::{evidence.get('fallback_policy')}::"
+        f"{evidence.get('data_movement_policy')}::{evidence.get('synchronization_mode')}"
+    )
+    if value.get("configuration_id") != expected_configuration_id:
+        diagnostics.append(f"{label} runtime_configuration configuration_id does not match runtime evidence")
+    expected_pairs = (
+        ("target_profile_id", evidence.get("target_profile_id")),
+        ("data_movement_policy", evidence.get("data_movement_policy")),
+        ("fallback_policy", evidence.get("fallback_policy")),
+        ("synchronization_mode", evidence.get("synchronization_mode")),
+    )
+    for key, expected in expected_pairs:
+        if value.get(key) != expected:
+            diagnostics.append(f"{label} runtime_configuration {key} does not match runtime evidence")
+    custom_identity = value.get("custom_data_movement_policy_identity")
+    if evidence.get("data_movement_policy") == "custom":
+        if not isinstance(custom_identity, str) or not custom_identity:
+            diagnostics.append(f"{label} runtime_configuration lacks custom_data_movement_policy_identity")
+    elif custom_identity is not None:
+        diagnostics.append(
+            f"{label} runtime_configuration custom_data_movement_policy_identity is only valid for custom policy"
+        )
+
+
 def validate_runtime_evidence(
     path: Path,
     value: object,
@@ -1884,6 +1955,7 @@ def validate_runtime_evidence(
         "mapping_artifact_identity",
         "fabric_adg_identity",
         "target_profile_id",
+        "target_profile",
         "fallback_policy",
         "launch_status",
         "target_status",
@@ -1893,6 +1965,7 @@ def validate_runtime_evidence(
         "synchronization_mode",
         "memory_descriptors",
         "argument_descriptors",
+        "runtime_configuration",
         "output_buffer_identities",
         "simulator_report_identities",
         "diagnostic_records",
@@ -1954,6 +2027,18 @@ def validate_runtime_evidence(
     )
     validate_runtime_evidence_argument_descriptors(
         value.get("argument_descriptors"),
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_target_profile(
+        value.get("target_profile"),
+        value,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_configuration(
+        value.get("runtime_configuration"),
+        value,
         diagnostics,
         "workload report bundle runtime_evidence",
     )
@@ -2099,6 +2184,8 @@ def validate_runtime_evidence_summaries(
             "report_output_configuration",
             "memory_descriptors",
             "argument_descriptors",
+            "target_profile",
+            "runtime_configuration",
         ):
             if key == "runtime_handle_model":
                 validate_runtime_handle_model(
@@ -2130,6 +2217,20 @@ def validate_runtime_evidence_summaries(
             elif key == "argument_descriptors":
                 validate_runtime_evidence_argument_descriptors(
                     summary.get(key),
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "target_profile":
+                validate_runtime_evidence_target_profile(
+                    summary.get(key),
+                    summary,
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "runtime_configuration":
+                validate_runtime_evidence_configuration(
+                    summary.get(key),
+                    summary,
                     diagnostics,
                     f"DSE report bundle runtime evidence summary {index}",
                 )

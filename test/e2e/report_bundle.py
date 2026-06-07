@@ -180,6 +180,12 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     argument_descriptors = runtime_package.get("argument_descriptors", [])
     if not isinstance(argument_descriptors, list):
         argument_descriptors = []
+    target_profile = runtime_package.get("target_profile", {})
+    if not isinstance(target_profile, dict):
+        target_profile = {}
+    runtime_configuration = runtime_package.get("runtime_configuration", {})
+    if not isinstance(runtime_configuration, dict):
+        runtime_configuration = {}
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
@@ -213,6 +219,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),
         "fabric_adg_identity": str(report.get("fabric_adg_identity", "")),
         "target_profile_id": str(report.get("target_profile_id", "")),
+        "target_profile": target_profile,
         "fallback_policy": str(runtime_package.get("fallback_policy", "")),
         "launch_status": str(report.get("launch_status", "")),
         "target_status": str(report.get("target_status", "")),
@@ -230,6 +237,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
             for descriptor in argument_descriptors
             if isinstance(descriptor, dict)
         ],
+        "runtime_configuration": runtime_configuration,
         "required_data_movement_policies": [
             str(policy)
             for policy in required_data_movement_policies

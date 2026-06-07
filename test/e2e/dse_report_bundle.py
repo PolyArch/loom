@@ -235,6 +235,12 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         argument_descriptors = evidence.get("argument_descriptors", [])
         if not isinstance(argument_descriptors, list):
             argument_descriptors = []
+        target_profile = evidence.get("target_profile", {})
+        if not isinstance(target_profile, dict):
+            target_profile = {}
+        runtime_configuration = evidence.get("runtime_configuration", {})
+        if not isinstance(runtime_configuration, dict):
+            runtime_configuration = {}
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -254,6 +260,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "mapping_artifact_identity": str(evidence.get("mapping_artifact_identity", "")),
             "fabric_adg_identity": str(evidence.get("fabric_adg_identity", "")),
             "target_profile_id": str(evidence.get("target_profile_id", "")),
+            "target_profile": target_profile,
             "fallback_policy": str(evidence.get("fallback_policy", "")),
             "launch_status": str(evidence.get("launch_status", "")),
             "target_status": str(evidence.get("target_status", "")),
@@ -271,6 +278,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 for descriptor in argument_descriptors
                 if isinstance(descriptor, dict)
             ],
+            "runtime_configuration": runtime_configuration,
             "required_data_movement_policies": [
                 str(policy)
                 for policy in required_data_movement_policies
