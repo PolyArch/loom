@@ -521,9 +521,22 @@ def main() -> int:
             isinstance(record, dict)
             and record.get("diagnostic_class") == "missing_platform_memory_binding"
             and record.get("component") == "runtime_package"
+            and record.get("source_provenance") == "test-app-fixture::vecsum::default"
+            and record.get("host_wrapper_identity") == "runtime-wrapper::vecsum::vecsum__shared_reduction_adg"
+            and record.get("failure_domain") == "platform_services"
             for record in records
         ):
             raise AssertionError(f"missing platform binding needs structured diagnostics: {missing_binding_data}")
+        runtime_report_records = missing_binding_data.get("runtime_report", {}).get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "missing_platform_memory_binding"
+            and record.get("source_provenance") == "test-app-fixture::vecsum::default"
+            and record.get("host_wrapper_identity") == "runtime-wrapper::vecsum::vecsum__shared_reduction_adg"
+            and record.get("failure_domain") == "platform_services"
+            for record in runtime_report_records
+        ):
+            raise AssertionError(f"runtime report should preserve diagnostic provenance: {missing_binding_data}")
         missing_binding_audit = out_dir / "missing-platform-binding-runtime-package-audit.json"
         artifact_test_common.require_success(
             repo,
@@ -536,6 +549,42 @@ def main() -> int:
             ],
             "blocked runtime package audit",
         )
+        missing_provenance_package = out_dir / "missing-provenance-runtime-package.json"
+        missing_provenance_data = json.loads(missing_binding.read_text())
+        missing_provenance_data["diagnostic_records"][0].pop("source_provenance", None)
+        missing_provenance_package.write_text(json.dumps(missing_provenance_data, indent=2, sort_keys=True) + "\n")
+        missing_provenance_audit = out_dir / "missing-provenance-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_provenance_audit),
+                str(missing_provenance_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with missing diagnostic provenance unexpectedly passed audit")
+        missing_report_provenance_package = out_dir / "missing-report-provenance-runtime-package.json"
+        missing_report_provenance_data = json.loads(missing_binding.read_text())
+        missing_report_provenance_data["runtime_report"]["diagnostic_records"][0].pop("host_wrapper_identity", None)
+        missing_report_provenance_package.write_text(
+            json.dumps(missing_report_provenance_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_report_provenance_audit = out_dir / "missing-report-provenance-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_report_provenance_audit),
+                str(missing_report_provenance_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime report with missing diagnostic provenance unexpectedly passed audit")
         mismatched_policy = out_dir / "mismatched-memory-policy-runtime-package.json"
         mismatched_policy_data = json.loads(missing_binding.read_text())
         mismatched_policy_data["memory_descriptors"][0]["policy"] = "simulated"

@@ -119,18 +119,45 @@ def diagnostic_class(message: str) -> str:
     return "runtime_configuration_failure"
 
 
-def diagnostic_records(diagnostics: list[str]) -> list[dict[str, str]]:
+def failure_domain(message: str) -> str:
+    diagnostic = diagnostic_class(message)
+    if diagnostic in {
+        "missing_mapping_artifact",
+        "missing_fabric_adg",
+        "stale_artifact_fingerprint",
+        "unsupported_target_profile",
+    }:
+        return "compiler_artifacts"
+    if diagnostic in {"missing_platform_memory_binding", "missing_runtime_input_layout"}:
+        return "platform_services"
+    if diagnostic in {"missing_simulator_report", "simulator_target_failure"}:
+        return "simulator_execution"
+    if diagnostic in {"missing_rtl_artifact", "unavailable_accelerator_target"}:
+        return "hardware_execution"
+    return "runtime_configuration"
+
+
+def diagnostic_records(
+    diagnostics: list[str],
+    *,
+    source_provenance: str,
+    host_wrapper_identity: str,
+) -> list[dict[str, str]]:
     records = []
     for index, message in enumerate(diagnostics, start=1):
-        records.append(
-            {
-                "diagnostic_id": f"runtime-package::{index}",
-                "diagnostic_class": diagnostic_class(message),
-                "component": "runtime_package",
-                "severity": "error",
-                "message": message,
-            }
-        )
+        record = {
+            "diagnostic_id": f"runtime-package::{index}",
+            "diagnostic_class": diagnostic_class(message),
+            "component": "runtime_package",
+            "severity": "error",
+            "message": message,
+            "failure_domain": failure_domain(message),
+        }
+        if source_provenance:
+            record["source_provenance"] = source_provenance
+        if host_wrapper_identity:
+            record["host_wrapper_identity"] = host_wrapper_identity
+        records.append(record)
     return records
 
 
@@ -325,6 +352,7 @@ def runtime_report(
     workload: str,
     mapping_id: str,
     host_program_identity: str,
+    host_wrapper_identity: str,
     work_package_identity: str,
     launch_descriptor_identity: str,
     selected_mapping_identity: str,
@@ -336,6 +364,7 @@ def runtime_report(
     fallback_policy: str,
     fallback: dict[str, object],
     simulator_report_identities: list[str],
+    source_provenance: str,
     diagnostics: list[str],
 ) -> dict[str, object]:
     report = {
@@ -355,7 +384,11 @@ def runtime_report(
         "output_buffer_identities": [],
         "launch_status": "not_run",
         "target_status": "not_run",
-        "diagnostic_records": diagnostic_records(diagnostics),
+        "diagnostic_records": diagnostic_records(
+            diagnostics,
+            source_provenance=source_provenance,
+            host_wrapper_identity=host_wrapper_identity,
+        ),
     }
     if data_movement_policy == "custom" and custom_data_movement_policy:
         report["custom_data_movement_policy_identity"] = custom_data_movement_policy
@@ -620,6 +653,7 @@ def build_package(
             workload=workload,
             mapping_id=mapping_id,
             host_program_identity=host_program_identity,
+            host_wrapper_identity=host_wrapper_identity,
             work_package_identity=work_package_identity,
             launch_descriptor_identity=launch_descriptor_identity,
             selected_mapping_identity=selected_mapping_identity,
@@ -631,6 +665,7 @@ def build_package(
             fallback_policy=fallback_policy,
             fallback=fallback,
             simulator_report_identities=simulator_report_identities,
+            source_provenance=runtime_input,
             diagnostics=diagnostics,
         ),
         "fallback_policy": fallback_policy,
@@ -643,7 +678,11 @@ def build_package(
         "required_data_movement_policies": [data_movement_policy],
         "required_synchronization_policies": [synchronization_mode],
         "simulator_report_identities": simulator_report_identities,
-        "diagnostic_records": diagnostic_records(diagnostics),
+        "diagnostic_records": diagnostic_records(
+            diagnostics,
+            source_provenance=runtime_input,
+            host_wrapper_identity=host_wrapper_identity,
+        ),
         "diagnostics": diagnostics,
         "status": status,
     }
