@@ -306,6 +306,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with incomplete energy metric inputs unexpectedly passed audit")
+        stale_energy_derivation_report = out_dir / "stale-energy-derivation-workload-report-bundle.json"
+        stale_energy_derivation_data = json.loads(report.read_text())
+        for metric in stale_energy_derivation_data["metric_records"]:
+            if metric.get("metric_id") == "metric::vecsum::energy_nj":
+                metric["derivation_kind"] = "cycle_frequency_power_area"
+        stale_energy_derivation_report.write_text(
+            json.dumps(stale_energy_derivation_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_energy_derivation_audit = out_dir / "stale-energy-derivation-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_energy_derivation_audit),
+                str(stale_energy_derivation_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with stale energy derivation unexpectedly passed audit")
         mismatched_energy_value_report = out_dir / "mismatched-energy-value-workload-report-bundle.json"
         mismatched_energy_value_data = json.loads(report.read_text())
         for metric in mismatched_energy_value_data["metric_records"]:

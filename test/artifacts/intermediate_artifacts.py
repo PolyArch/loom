@@ -2133,6 +2133,10 @@ EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
     "hardware_nodes": "count",
     "hardware_links": "count",
 }
+EXPECTED_WORKLOAD_DERIVATION_BY_METRIC_CLASS = {
+    "estimated_runtime": "cycle_frequency_runtime",
+    "energy": "runtime_power_energy",
+}
 
 
 def validate_report_metric_unit(
@@ -3942,6 +3946,14 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 if not isinstance(metric.get(key), str) or not metric.get(key):
                     diagnostics.append(f"workload report bundle metric {index} lacks {key}")
             validate_report_metric_unit(metric, diagnostics, "workload report bundle", index)
+            metric_class = metric.get("metric_class")
+            derivation_kind = metric.get("derivation_kind")
+            if isinstance(metric_class, str) and isinstance(derivation_kind, str):
+                expected_derivation = EXPECTED_WORKLOAD_DERIVATION_BY_METRIC_CLASS.get(metric_class)
+                if expected_derivation is not None and derivation_kind != expected_derivation:
+                    diagnostics.append(
+                        f"workload report bundle metric {index} derivation_kind does not match metric_class"
+                    )
             value = metric.get("value")
             if not isinstance(value, (int, float)) or value < 0:
                 diagnostics.append(f"workload report bundle metric {index} has invalid value")
