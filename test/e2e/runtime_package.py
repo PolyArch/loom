@@ -95,6 +95,21 @@ def report_identities(paths: list[Path | None]) -> list[str]:
     return identities
 
 
+def hardware_matches(candidate: str, hardware: str) -> bool:
+    return candidate == hardware or candidate.rsplit("::", 1)[-1] == hardware
+
+
+def matching_rtl_manifest_path(paths: list[Path], hardware: str) -> Path | None:
+    for path in paths:
+        data = read_json(path)
+        if data.get("kind") != "rtl_manifest" or data.get("status") != "pass":
+            continue
+        source = data.get("source_fabric_adg_identity")
+        if isinstance(source, str) and hardware_matches(source, hardware):
+            return path
+    return None
+
+
 def diagnostic_class(message: str) -> str:
     if "requires RTL" in message:
         return "missing_rtl_artifact"
@@ -453,6 +468,7 @@ def build_package(
     dfg_path = first_path(grouped, "dfg_sim_report")
     cgra_path = first_path(grouped, "cgra_sim_report")
     comparison_path = first_path(grouped, "sim_comparison_report")
+    rtl_manifest_path = None
 
     mapping = read_json(mapping_path)
     dfg = read_json(dfg_path)
@@ -467,6 +483,8 @@ def build_package(
     hardware = string_field(mapping, "hardware") or string_field(cgra, "hardware")
     mapping_id = string_field(mapping, "mapping_id") or target.replace("-", "_")
     runtime_input = runtime_input_identity(workload, comparison, dfg)
+    if hardware:
+        rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
 
     diagnostics: list[str] = []
     if data_movement_policy == "custom" and not custom_data_movement_policy:
@@ -509,8 +527,9 @@ def build_package(
             diagnostics.append("RTL-sim target requires mapping artifact")
         if not hardware:
             diagnostics.append("fabric ADG identity is missing")
-        diagnostics.append("RTL-sim target requires RTL simulation artifacts")
-        diagnostics.append("RTL-sim target is not available until RTL artifacts are provided")
+        if rtl_manifest_path is None:
+            diagnostics.append("RTL-sim target requires RTL manifest artifact")
+        diagnostics.append("RTL-sim target is not available until RTL simulation backend is provided")
     else:
         if not mapping:
             diagnostics.append("hardware target requires mapping artifact")
@@ -580,6 +599,14 @@ def build_package(
                 "name": "dfg_sim_report",
                 "identity": artifact_id(dfg_path),
                 "descriptor_kind": "dfg_sim_report",
+            }
+        )
+    if rtl_manifest_path is not None:
+        argument_descriptors.append(
+            {
+                "name": "rtl_manifest",
+                "identity": artifact_id(rtl_manifest_path),
+                "descriptor_kind": "rtl_manifest",
             }
         )
 
@@ -717,7 +744,7 @@ def build_package(
             synchronization_mode=synchronization_mode,
         ),
         "input_artifact_fingerprints": input_artifact_fingerprints(
-            [mapping_path, dfg_path, cgra_path, comparison_path]
+            [mapping_path, dfg_path, cgra_path, comparison_path, rtl_manifest_path]
         ),
         "runtime_report": runtime_report_data,
         "report_output_configuration": report_output_configuration(runtime_report_data, launch_descriptor),

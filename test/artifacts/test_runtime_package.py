@@ -1001,6 +1001,81 @@ def main() -> int:
             ],
             "blocked RTL-sim runtime package audit",
         )
+        rtl_with_manifest_package = out_dir / "rtl-with-manifest-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "rtl-sim",
+                "--output",
+                str(rtl_with_manifest_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL-sim runtime package without RTL simulator backend unexpectedly passed")
+        rtl_with_manifest_data = json.loads(rtl_with_manifest_package.read_text())
+        rtl_argument_descriptors = rtl_with_manifest_data.get("argument_descriptors", [])
+        if {
+            "name": "rtl_manifest",
+            "identity": "rtl-manifest",
+            "descriptor_kind": "rtl_manifest",
+        } not in rtl_argument_descriptors:
+            raise AssertionError(f"RTL-sim package missed RTL manifest argument descriptor: {rtl_with_manifest_data}")
+        rtl_launch_descriptor = rtl_with_manifest_data.get("launch_descriptor", {})
+        if "rtl_manifest" not in rtl_launch_descriptor.get("argument_descriptor_names", []):
+            raise AssertionError(f"RTL-sim launch descriptor missed RTL manifest argument: {rtl_with_manifest_data}")
+        expected_rtl_fingerprints = {
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+            "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
+        }
+        if rtl_with_manifest_data.get("input_artifact_fingerprints") != expected_rtl_fingerprints:
+            raise AssertionError(f"RTL-sim package missed RTL manifest input fingerprint: {rtl_with_manifest_data}")
+        rtl_with_manifest_classes = {
+            record.get("diagnostic_class")
+            for record in rtl_with_manifest_data.get("diagnostic_records", [])
+            if isinstance(record, dict)
+        }
+        if "missing_rtl_artifact" in rtl_with_manifest_classes:
+            raise AssertionError(f"RTL-sim package should not report missing RTL manifest: {rtl_with_manifest_data}")
+        if "unavailable_accelerator_target" not in rtl_with_manifest_classes:
+            raise AssertionError(f"RTL-sim package should still report unavailable backend: {rtl_with_manifest_data}")
+        rtl_with_manifest_audit = out_dir / "rtl-with-manifest-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(rtl_with_manifest_audit),
+                str(rtl_with_manifest_package),
+            ],
+            "blocked RTL-sim runtime package with manifest audit",
+        )
+        stale_rtl_manifest_package = out_dir / "stale-rtl-manifest-runtime-package.json"
+        stale_rtl_manifest_data = json.loads(rtl_with_manifest_package.read_text())
+        stale_rtl_manifest_data["input_artifact_fingerprints"]["rtl-manifest"] = "0" * 64
+        stale_rtl_manifest_package.write_text(
+            json.dumps(stale_rtl_manifest_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_rtl_manifest_audit = out_dir / "stale-rtl-manifest-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_rtl_manifest_audit),
+                str(stale_rtl_manifest_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL-sim runtime package with stale RTL manifest fingerprint unexpectedly passed audit")
 
         hardware_package = out_dir / "hardware-runtime-package.json"
         result = artifact_test_common.run_command(
