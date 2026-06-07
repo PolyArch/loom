@@ -1716,6 +1716,44 @@ def validate_runtime_report(
     )
 
 
+def validate_report_output_configuration(
+    value: object,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package report_output_configuration must be an object")
+        return
+    runtime_report = data.get("runtime_report")
+    if not isinstance(runtime_report, dict):
+        runtime_report = {}
+    launch_descriptor = data.get("launch_descriptor")
+    if not isinstance(launch_descriptor, dict):
+        launch_descriptor = {}
+    report_identity = value.get("runtime_report_identity")
+    if not isinstance(report_identity, str) or not report_identity:
+        diagnostics.append("runtime package report_output_configuration lacks runtime_report_identity")
+    elif report_identity != runtime_report.get("report_id"):
+        diagnostics.append(
+            "runtime package report_output_configuration runtime_report_identity does not match runtime_report"
+        )
+    for key in ("diagnostic_output_enabled", "trace_output_enabled", "profiling_output_enabled"):
+        if not isinstance(value.get(key), bool):
+            diagnostics.append(f"runtime package report_output_configuration {key} must be boolean")
+    if value.get("diagnostic_output_enabled") is not True:
+        diagnostics.append("runtime package report_output_configuration must enable diagnostic output")
+    trace_settings = launch_descriptor.get("trace_settings")
+    trace_enabled = trace_settings.get("enabled") if isinstance(trace_settings, dict) else None
+    if value.get("trace_output_enabled") != trace_enabled:
+        diagnostics.append("runtime package report_output_configuration trace setting does not match launch_descriptor")
+    profiling_settings = launch_descriptor.get("profiling_settings")
+    profiling_enabled = profiling_settings.get("enabled") if isinstance(profiling_settings, dict) else None
+    if value.get("profiling_output_enabled") != profiling_enabled:
+        diagnostics.append(
+            "runtime package report_output_configuration profiling setting does not match launch_descriptor"
+        )
+
+
 def validate_runtime_evidence(
     path: Path,
     value: object,
@@ -2594,6 +2632,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         )
         validate_host_interface(data.get("host_interface"), data, diagnostics)
         validate_runtime_report(data.get("runtime_report"), data, diagnostics)
+        validate_report_output_configuration(data.get("report_output_configuration"), data, diagnostics)
         data_movement_policy = data.get("data_movement_policy")
         if data_movement_policy not in DATA_MOVEMENT_POLICIES:
             diagnostics.append("runtime package has unknown data_movement_policy")

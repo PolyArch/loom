@@ -29,6 +29,7 @@ REQUIRED_KEYS = {
     "runtime_configuration",
     "input_artifact_fingerprints",
     "runtime_report",
+    "report_output_configuration",
     "fallback_policy",
     "fallback_decision",
     "synchronization_mode",
@@ -368,6 +369,14 @@ def main() -> int:
         }
         if data["runtime_report"] != expected_runtime_report:
             raise AssertionError(f"unexpected runtime report: {data}")
+        expected_report_output_configuration = {
+            "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "diagnostic_output_enabled": True,
+            "trace_output_enabled": False,
+            "profiling_output_enabled": False,
+        }
+        if data["report_output_configuration"] != expected_report_output_configuration:
+            raise AssertionError(f"unexpected report output configuration: {data}")
         if data["synchronization_mode"] != "host_wait":
             raise AssertionError(f"unexpected synchronization mode: {data}")
         if data["data_movement_policy"] != "simulated":
@@ -459,6 +468,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched work package metadata unexpectedly passed audit")
+        mismatched_report_output = out_dir / "mismatched-report-output-runtime-package.json"
+        mismatched_report_output_data = json.loads(package.read_text())
+        mismatched_report_output_data["report_output_configuration"][
+            "runtime_report_identity"
+        ] = "runtime-report::other"
+        mismatched_report_output.write_text(
+            json.dumps(mismatched_report_output_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_report_output_audit = out_dir / "mismatched-report-output-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_report_output_audit),
+                str(mismatched_report_output),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched report output configuration unexpectedly passed audit")
         mismatched_config_package = out_dir / "mismatched-runtime-config-package.json"
         mismatched_config_data = json.loads(package.read_text())
         mismatched_config_data["runtime_configuration"]["data_movement_policy"] = "shared_coherent"

@@ -421,6 +421,24 @@ def runtime_report(
     return report
 
 
+def report_output_configuration(
+    report: dict[str, object],
+    launch_descriptor: dict[str, object],
+) -> dict[str, object]:
+    trace_settings = launch_descriptor.get("trace_settings", {})
+    if not isinstance(trace_settings, dict):
+        trace_settings = {}
+    profiling_settings = launch_descriptor.get("profiling_settings", {})
+    if not isinstance(profiling_settings, dict):
+        profiling_settings = {}
+    return {
+        "runtime_report_identity": str(report.get("report_id", "")),
+        "diagnostic_output_enabled": True,
+        "trace_output_enabled": bool(trace_settings.get("enabled", False)),
+        "profiling_output_enabled": bool(profiling_settings.get("enabled", False)),
+    }
+
+
 def build_package(
     paths: list[Path],
     target: str,
@@ -644,6 +662,25 @@ def build_package(
         fallback_policy=fallback_policy,
         synchronization_mode=synchronization_mode,
     )
+    runtime_report_data = runtime_report(
+        workload=workload,
+        mapping_id=mapping_id,
+        host_program_identity=host_program_identity,
+        host_wrapper_identity=host_wrapper_identity,
+        work_package_identity=work_package_identity,
+        launch_descriptor_identity=launch_descriptor_identity,
+        selected_mapping_identity=selected_mapping_identity,
+        fabric_adg_identity=fabric_adg_identity,
+        target_profile=target_profile,
+        data_movement_policy=data_movement_policy,
+        custom_data_movement_policy=custom_data_movement_policy,
+        synchronization_mode=synchronization_mode,
+        fallback_policy=fallback_policy,
+        fallback=fallback,
+        simulator_report_identities=simulator_report_identities,
+        source_provenance=runtime_input,
+        diagnostics=diagnostics,
+    )
 
     return {
         "schema_version": 1,
@@ -682,25 +719,8 @@ def build_package(
         "input_artifact_fingerprints": input_artifact_fingerprints(
             [mapping_path, dfg_path, cgra_path, comparison_path]
         ),
-        "runtime_report": runtime_report(
-            workload=workload,
-            mapping_id=mapping_id,
-            host_program_identity=host_program_identity,
-            host_wrapper_identity=host_wrapper_identity,
-            work_package_identity=work_package_identity,
-            launch_descriptor_identity=launch_descriptor_identity,
-            selected_mapping_identity=selected_mapping_identity,
-            fabric_adg_identity=fabric_adg_identity,
-            target_profile=target_profile,
-            data_movement_policy=data_movement_policy,
-            custom_data_movement_policy=custom_data_movement_policy,
-            synchronization_mode=synchronization_mode,
-            fallback_policy=fallback_policy,
-            fallback=fallback,
-            simulator_report_identities=simulator_report_identities,
-            source_provenance=runtime_input,
-            diagnostics=diagnostics,
-        ),
+        "runtime_report": runtime_report_data,
+        "report_output_configuration": report_output_configuration(runtime_report_data, launch_descriptor),
         "fallback_policy": fallback_policy,
         "fallback_decision": fallback,
         "synchronization_mode": synchronization_mode,
