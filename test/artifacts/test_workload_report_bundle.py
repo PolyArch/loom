@@ -208,6 +208,12 @@ def main() -> int:
             ),
             "metric::vecsum::estimated_runtime_us": ("estimated_runtime", 2.356, "us", "analytic"),
             "metric::vecsum::energy_nj": ("energy", 16.08, "nJ", "analytic"),
+            "metric::vecsum::performance_per_watt": (
+                "performance_per_watt",
+                3980173759.46,
+                "items_per_s_per_w",
+                "analytic",
+            ),
         }
         for metric_id, (metric_class, value, unit, fidelity) in expected_metrics.items():
             metric = metrics_by_id.get(metric_id)
@@ -241,6 +247,16 @@ def main() -> int:
         }
         if runtime_inputs != required_runtime_inputs:
             raise AssertionError(f"runtime metric should preserve input metric ids: {runtime}")
+        performance_per_watt = metrics_by_id["metric::vecsum::performance_per_watt"]
+        performance_inputs = set(performance_per_watt.get("input_metric_ids", []))
+        required_performance_inputs = {
+            "metric::vecsum::workload_size_items",
+            "metric::vecsum::estimated_runtime_us",
+            "metric::shared_reduction_adg::dynamic_power_mw",
+            "metric::shared_reduction_adg::leakage_power_mw",
+        }
+        if performance_inputs != required_performance_inputs:
+            raise AssertionError(f"performance per watt should preserve input metric ids: {performance_per_watt}")
 
         audit = out_dir / "artifact-audit-summary.json"
         artifact_test_common.require_success(
@@ -328,6 +344,31 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with stale energy derivation unexpectedly passed audit")
+        missing_performance_input_report = out_dir / "missing-performance-input-workload-report-bundle.json"
+        missing_performance_input_data = json.loads(report.read_text())
+        for metric in missing_performance_input_data["metric_records"]:
+            if metric.get("metric_id") == "metric::vecsum::performance_per_watt":
+                metric["input_metric_ids"] = [
+                    metric_id
+                    for metric_id in metric["input_metric_ids"]
+                    if metric_id != "metric::vecsum::workload_size_items"
+                ]
+        missing_performance_input_report.write_text(
+            json.dumps(missing_performance_input_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_performance_input_audit = out_dir / "missing-performance-input-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_performance_input_audit),
+                str(missing_performance_input_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with incomplete performance metric inputs unexpectedly passed audit")
         mismatched_energy_value_report = out_dir / "mismatched-energy-value-workload-report-bundle.json"
         mismatched_energy_value_data = json.loads(report.read_text())
         for metric in mismatched_energy_value_data["metric_records"]:

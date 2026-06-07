@@ -468,10 +468,14 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             )
         )
 
+    workload_size_metric_id = f"metric::{workload}::workload_size_items"
+    runtime_metric_id = f"metric::{workload}::estimated_runtime_us"
+    dynamic_power_metric_id = f"metric::{hardware}::dynamic_power_mw"
+    leakage_power_metric_id = f"metric::{hardware}::leakage_power_mw"
     energy_inputs = [
-        f"metric::{workload}::estimated_runtime_us",
-        f"metric::{hardware}::dynamic_power_mw",
-        f"metric::{hardware}::leakage_power_mw",
+        runtime_metric_id,
+        dynamic_power_metric_id,
+        leakage_power_metric_id,
     ]
     metric_records.append(
         metric_record(
@@ -489,6 +493,37 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             input_metric_ids=energy_inputs,
         )
     )
+    if (
+        isinstance(dfg_report.get("dynamic_work_items"), int)
+        and isinstance(cgra_report.get("hardware_aware_cycles"), int)
+        and cgra_path is not None
+        and rtl_row is not None
+        and rtl_path is not None
+    ):
+        runtime_us = int(cgra_report["hardware_aware_cycles"]) / numeric(rtl_row, "frequency_mhz")
+        total_power_w = (numeric(rtl_row, "dynamic_power_mw") + numeric(rtl_row, "leakage_power_mw")) / 1000.0
+        if runtime_us > 0 and total_power_w > 0:
+            metric_records.append(
+                metric_record(
+                    metric_id=f"metric::{workload}::performance_per_watt",
+                    metric_class="performance_per_watt",
+                    value=int(dfg_report["dynamic_work_items"]) / runtime_us * 1_000_000.0 / total_power_w,
+                    unit="items_per_s_per_w",
+                    fidelity_level=(
+                        rtl_row.get("fidelity_level", "") if rtl_row is not None else ""
+                    ) or "custom_calibrated",
+                    evidence_source_artifact_id=artifact_id(dse_path),
+                    producer_component="workload-report-bundle",
+                    derivation_kind="workload_runtime_power_efficiency",
+                    diagnostics=[dse_row.get("diagnostic", "")],
+                    input_metric_ids=[
+                        workload_size_metric_id,
+                        runtime_metric_id,
+                        dynamic_power_metric_id,
+                        leakage_power_metric_id,
+                    ],
+                )
+            )
 
     return {
         "schema_version": 1,
