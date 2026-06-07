@@ -332,6 +332,7 @@ def memory_descriptor(
 ) -> dict[str, object]:
     descriptor: dict[str, object] = {
         "logical_argument": f"{workload}.default_input",
+        "host_buffer_identity": f"runtime-buffer::{workload}::default_input",
         "direction": "read_write",
         "policy": data_movement_policy,
         "runtime_input_identity": runtime_input,

@@ -2613,6 +2613,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 continue
             for key in (
                 "logical_argument",
+                "host_buffer_identity",
                 "direction",
                 "policy",
                 "runtime_input_identity",

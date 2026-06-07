@@ -299,6 +299,7 @@ def main() -> int:
         descriptor = memory_descriptors[0]
         expected_memory = {
             "logical_argument": "vecsum.default_input",
+            "host_buffer_identity": "runtime-buffer::vecsum::default_input",
             "direction": "read_write",
             "policy": "simulated",
             "runtime_input_identity": "test-app-fixture::vecsum::default",
@@ -619,6 +620,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with invalid memory descriptor extent unexpectedly passed audit")
+        missing_buffer = out_dir / "missing-buffer-runtime-package.json"
+        missing_buffer_data = json.loads(package.read_text())
+        missing_buffer_data["memory_descriptors"][0].pop("host_buffer_identity", None)
+        missing_buffer.write_text(json.dumps(missing_buffer_data, indent=2, sort_keys=True) + "\n")
+        missing_buffer_audit = out_dir / "missing-buffer-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_buffer_audit),
+                str(missing_buffer),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package without host buffer identity unexpectedly passed audit")
 
         unknown_layout_report = out_dir / "toy-dfg-sim-report.json"
         unknown_layout_report.write_text(
