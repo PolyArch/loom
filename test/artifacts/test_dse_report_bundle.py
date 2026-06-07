@@ -408,6 +408,26 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched objective identity unexpectedly passed audit")
 
+        mismatched_objective_units = out_dir / "mismatched-objective-units-dse-report-bundle.json"
+        mismatched_objective_units_data = json.loads(report.read_text())
+        mismatched_objective_units_data["objective_records"][0]["units"] = "nJ"
+        mismatched_objective_units.write_text(
+            json.dumps(mismatched_objective_units_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_objective_units_audit = out_dir / "mismatched-objective-units-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_objective_units_audit),
+                str(mismatched_objective_units),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched objective units unexpectedly passed audit")
+
         missing_candidate_outputs = out_dir / "missing-candidate-outputs-dse-report-bundle.json"
         missing_candidate_outputs_data = json.loads(report.read_text())
         missing_candidate_outputs_data["candidate_list"][0]["generated_output_artifacts"] = []

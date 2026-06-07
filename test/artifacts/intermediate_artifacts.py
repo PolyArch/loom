@@ -850,6 +850,14 @@ def dse_ordering_rule_for_objective(objective: str) -> str:
     return "runtime_score_then_candidate_id"
 
 
+def dse_objective_semantics(objective: str) -> tuple[str, str] | None:
+    if objective == "minimize_runtime":
+        return "minimize", "cycles"
+    if objective in {"minimize_energy", "minimize_power"}:
+        return "minimize", "nJ"
+    return None
+
+
 def parse_dse_metric_records(
     metric_records: str,
     diagnostics: list[str],
@@ -3909,6 +3917,15 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             objective_kind = objective.get("objective_kind")
             if isinstance(objective_kind, str) and objective_kind:
                 objective_kinds.add(objective_kind)
+                semantics = dse_objective_semantics(objective_kind)
+                if semantics is not None:
+                    expected_direction, expected_units = semantics
+                    if objective.get("comparison_direction") != expected_direction:
+                        diagnostics.append(
+                            f"DSE report bundle objective {index} comparison_direction does not match objective_kind"
+                        )
+                    if objective.get("units") != expected_units:
+                        diagnostics.append(f"DSE report bundle objective {index} units does not match objective_kind")
             objective_id = objective.get("objective_id")
             if isinstance(objective_id, str) and isinstance(objective_kind, str):
                 if objective_id != f"objective::{objective_kind}":
