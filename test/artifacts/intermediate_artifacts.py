@@ -2791,6 +2791,45 @@ def validate_dse_report_input_fingerprints(
             diagnostics.append(f"DSE report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
+def dse_report_referenced_metric_ids(
+    path: Path,
+    data: dict[str, object],
+) -> set[str]:
+    metric_ids: set[str] = set()
+    report_identities: list[str] = []
+    for key in (
+        "referenced_workload_report_bundle_identities",
+        "referenced_hardware_candidate_report_bundle_identities",
+    ):
+        identities = data.get(key)
+        if isinstance(identities, list):
+            report_identities.extend(
+                identity
+                for identity in identities
+                if isinstance(identity, str) and identity
+            )
+    for identity in report_identities:
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is None:
+            continue
+        try:
+            report = json.loads(resolved.read_text())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(report, dict):
+            continue
+        metrics = report.get("metric_records")
+        if not isinstance(metrics, list):
+            continue
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            metric_id = metric.get("metric_id")
+            if isinstance(metric_id, str) and metric_id:
+                metric_ids.add(metric_id)
+    return metric_ids
+
+
 def validate_workload_report_input_fingerprints(
     path: Path,
     data: dict[str, object],
@@ -3762,6 +3801,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             or not policy_configuration.get("conflict_resolution")
         ):
             diagnostics.append("DSE report bundle policy_configuration lacks conflict_resolution")
+        referenced_metric_ids = dse_report_referenced_metric_ids(path, data)
         objectives = data.get("objective_records")
         if not isinstance(objectives, list) or (data.get("report_status") == "pass" and not objectives):
             diagnostics.append("DSE report bundle needs non-empty objective_records")
@@ -3781,6 +3821,15 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("metric_inputs", "validity_conditions"):
                 if not isinstance(objective.get(key), list) or not objective.get(key):
                     diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
+            metric_inputs = objective.get("metric_inputs")
+            if isinstance(metric_inputs, list):
+                for metric_id in metric_inputs:
+                    if not isinstance(metric_id, str) or not metric_id:
+                        diagnostics.append(f"DSE report bundle objective {index} metric_inputs has invalid entry")
+                    elif referenced_metric_ids and metric_id not in referenced_metric_ids:
+                        diagnostics.append(
+                            f"DSE report bundle objective {index} metric_inputs references {metric_id!r}"
+                        )
             priority = objective.get("priority")
             if not isinstance(priority, (int, float)) or priority <= 0:
                 diagnostics.append(f"DSE report bundle objective {index} has invalid priority")
@@ -3849,6 +3898,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     if not isinstance(metric_id, str) or not metric_id:
                         diagnostics.append(
                             f"DSE report bundle candidate {index} metric_records_used has invalid entry"
+                        )
+                    elif referenced_metric_ids and metric_id not in referenced_metric_ids:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} metric_records_used references {metric_id!r}"
                         )
             validate_dse_report_candidate_input_fingerprints(path, candidate, diagnostics, index)
         selected_candidates = data.get("selected_candidates")

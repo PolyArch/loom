@@ -255,6 +255,46 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with selected candidate lacking metric evidence unexpectedly passed audit")
 
+        bad_candidate_metric_reference = out_dir / "bad-candidate-metric-reference-dse-report-bundle.json"
+        bad_candidate_metric_reference_data = json.loads(report.read_text())
+        bad_candidate_metric_reference_data["candidate_list"][0]["metric_records_used"].append("metric::missing")
+        bad_candidate_metric_reference.write_text(
+            json.dumps(bad_candidate_metric_reference_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_candidate_metric_reference_audit = out_dir / "bad-candidate-metric-reference-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_candidate_metric_reference_audit),
+                str(bad_candidate_metric_reference),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with unresolved candidate metric unexpectedly passed audit")
+
+        bad_objective_metric_reference = out_dir / "bad-objective-metric-reference-dse-report-bundle.json"
+        bad_objective_metric_reference_data = json.loads(report.read_text())
+        bad_objective_metric_reference_data["objective_records"][0]["metric_inputs"].append("metric::missing")
+        bad_objective_metric_reference.write_text(
+            json.dumps(bad_objective_metric_reference_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_objective_metric_reference_audit = out_dir / "bad-objective-metric-reference-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_objective_metric_reference_audit),
+                str(bad_objective_metric_reference),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with unresolved objective metric unexpectedly passed audit")
+
         missing_candidate_objectives = out_dir / "missing-candidate-objectives-dse-report-bundle.json"
         missing_candidate_objectives_data = json.loads(report.read_text())
         missing_candidate_objectives_data["candidate_list"][0]["objective_records_used"] = []
