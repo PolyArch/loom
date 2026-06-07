@@ -139,6 +139,29 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("RTL manifest with missing source file unexpectedly passed audit")
 
+        malformed_hardware = out_dir / "malformed-adg-hardware-summary.csv"
+        malformed_hardware.write_text(
+            "hardware,verify_status,node_count,link_count,diagnostic\n"
+            "bad_fabric,pass,not-an-int,1,synthetic malformed hardware summary\n"
+        )
+        malformed_manifest = out_dir / "malformed-rtl-manifest.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(malformed_hardware),
+                "--output",
+                str(malformed_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL manifest with malformed hardware counts unexpectedly passed")
+        malformed_data = json.loads(malformed_manifest.read_text())
+        if malformed_data.get("status") != "blocked" or malformed_data.get("emitted_source_files") != []:
+            raise AssertionError(f"malformed hardware counts should produce blocked manifest: {malformed_data}")
+
     return 0
 
 

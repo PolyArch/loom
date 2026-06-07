@@ -370,6 +370,7 @@ def candidate_row(
                 f"frequency_mhz={fpa['frequency_mhz']}",
                 f"area_um2={fpa['area_um2']}",
                 f"dynamic_power_mw={fpa['dynamic_power_mw']}",
+                f"leakage_power_mw={fpa['leakage_power_mw']}",
                 f"energy_nj={energy_nj:.3f}",
             )
         )

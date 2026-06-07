@@ -26,6 +26,7 @@ METRIC_ID_BY_NAME = {
     "frequency_mhz": "metric::{hardware}::frequency_mhz",
     "area_um2": "metric::{hardware}::area_um2",
     "dynamic_power_mw": "metric::{hardware}::dynamic_power_mw",
+    "leakage_power_mw": "metric::{hardware}::leakage_power_mw",
     "energy_nj": "metric::{workload}::energy_nj",
 }
 

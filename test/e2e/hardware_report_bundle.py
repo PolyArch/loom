@@ -34,6 +34,16 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def read_json(path: Path) -> dict[str, object] | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def group_paths(paths: list[Path]) -> dict[str, list[Path]]:
     grouped: dict[str, list[Path]] = {}
     for path in paths:
@@ -62,6 +72,19 @@ def matching_fpa_rows(paths: list[Path], hardware: str) -> list[tuple[Path, dict
             if hardware_matches(row.get("hardware", ""), hardware):
                 rows.append((path, row))
     return rows
+
+
+def matching_rtl_manifest(paths: list[Path], hardware: str) -> Path | None:
+    for path in paths:
+        data = read_json(path)
+        if data is None:
+            continue
+        if data.get("kind") != "rtl_manifest" or data.get("status") != "pass":
+            continue
+        source = data.get("source_fabric_adg_identity")
+        if isinstance(source, str) and hardware_matches(source, hardware):
+            return path
+    return None
 
 
 def numeric(row: dict[str, str], key: str) -> float:
@@ -96,6 +119,8 @@ def metric_record(
 def diagnostic_class(message: str) -> str:
     if "FPA row" in message:
         return "fpa_report_missing"
+    if "RTL manifest" in message:
+        return "rtl_manifest_missing"
     if "ADG hardware summary" in message:
         return "hardware_candidate_missing"
     return "hardware_report_bundle_failure"
@@ -144,8 +169,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
 
     hardware_path, hardware_row = selected
     hardware = hardware_row["hardware"]
+    rtl_manifest_path = matching_rtl_manifest(grouped.get("rtl_manifest", []), hardware)
     fpa_rows = matching_fpa_rows(grouped.get("rtl_fpa", []), hardware)
     diagnostics: list[str] = []
+    if rtl_manifest_path is None:
+        diagnostics.append("no passing RTL manifest matched the hardware candidate")
     if not fpa_rows:
         diagnostics.append("no passing FPA row matched the hardware candidate")
 
@@ -209,12 +237,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "hardware_candidate_identity": hardware,
         "fabric_adg_identity": fabric_adg_identity(hardware),
         "adg_builder_recipe_identity": "",
-        "rtl_manifest_identity": "",
+        "rtl_manifest_identity": artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
         "eda_report_identities": [],
         "fpa_report_identities": fpa_report_ids,
         "supported_workload_classes": supported_workloads,
         "input_artifact_fingerprints": input_artifact_fingerprints(
-            [hardware_path, *(path for path, _ in fpa_rows)]
+            [hardware_path, rtl_manifest_path, *(path for path, _ in fpa_rows)]
         ),
         "report_status": "pass" if not diagnostics else "blocked",
         "diagnostic_records": diagnostic_records(diagnostics),

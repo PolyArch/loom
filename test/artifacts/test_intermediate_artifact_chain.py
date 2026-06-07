@@ -173,6 +173,7 @@ def main() -> int:
             "frequency_mhz=250.000",
             "area_um2=7250.000",
             "dynamic_power_mw=6.000",
+            "leakage_power_mw=0.825",
             "energy_nj=16.080",
         ):
             if metric not in metric_records:
@@ -217,6 +218,8 @@ def main() -> int:
         expected_hardware = "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg"
         if hardware_bundle.get("hardware_candidate_identity") != expected_hardware:
             raise AssertionError(f"unexpected hardware report bundle identity: {hardware_bundle}")
+        if hardware_bundle.get("rtl_manifest_identity") != "rtl-manifest":
+            raise AssertionError(f"hardware report bundle missed RTL manifest identity: {hardware_bundle}")
         if hardware_bundle.get("report_status") != "pass":
             raise AssertionError(f"hardware report bundle should pass with ADG and FPA evidence: {hardware_bundle}")
         if hardware_bundle.get("supported_workload_classes") != ["vecsum"]:

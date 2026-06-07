@@ -329,6 +329,7 @@ def main() -> int:
             "frequency_mhz=100",
             "area_um2=200",
             "dynamic_power_mw=3",
+            "leakage_power_mw=1",
             "energy_nj=0.480",
         ):
             if metric not in metric_records:

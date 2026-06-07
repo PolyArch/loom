@@ -59,6 +59,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "adg-hardware-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
             ],
             "hardware candidate report bundle",
@@ -77,12 +79,15 @@ def main() -> int:
             raise AssertionError(f"unexpected hardware identity: {data}")
         if data["fabric_adg_identity"] != "test/pnr/shared_reduction_adg.mlir":
             raise AssertionError(f"unexpected Fabric ADG identity: {data}")
+        if data["rtl_manifest_identity"] != "rtl-manifest":
+            raise AssertionError(f"unexpected RTL manifest identity: {data}")
         if data["fpa_report_identities"] != ["rtl-fpa-summary"]:
             raise AssertionError(f"unexpected FPA report identities: {data}")
         if data["supported_workload_classes"] != ["vecsum"]:
             raise AssertionError(f"unexpected supported workload classes: {data}")
         expected_input_fingerprints = {
             "adg-hardware-summary": artifact_test_common.fingerprint(out_dir / "adg-hardware-summary.csv"),
+            "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
             "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
         }
         if data["input_artifact_fingerprints"] != expected_input_fingerprints:
@@ -165,6 +170,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("hardware report with stale input fingerprint unexpectedly passed audit")
+        stale_rtl_manifest_report = out_dir / "stale-rtl-manifest-hardware-report-bundle.json"
+        stale_rtl_manifest_data = json.loads(report.read_text())
+        stale_rtl_manifest_data["input_artifact_fingerprints"]["rtl-manifest"] = "0" * 64
+        stale_rtl_manifest_report.write_text(
+            json.dumps(stale_rtl_manifest_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_rtl_manifest_audit = out_dir / "stale-rtl-manifest-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_rtl_manifest_audit),
+                str(stale_rtl_manifest_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with stale RTL manifest fingerprint unexpectedly passed audit")
 
         missing_fpa_report = out_dir / "missing-fpa-hardware-report-bundle.json"
         result = artifact_test_common.run_command(

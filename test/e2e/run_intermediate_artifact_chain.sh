@@ -142,6 +142,7 @@ bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --output "${rtl_fpa}"
 bash "${ROOT}/test/e2e/run_hardware_report_bundle.sh" \
   --artifact "${hardware}" \
+  --artifact "${rtl_manifest}" \
   --artifact "${rtl_fpa}" \
   --output "${hardware_bundle}"
 bash "${ROOT}/test/dse/run_candidate_summary.sh" \

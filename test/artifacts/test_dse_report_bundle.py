@@ -198,6 +198,7 @@ def main() -> int:
             "metric::shared_reduction_adg::frequency_mhz",
             "metric::shared_reduction_adg::area_um2",
             "metric::shared_reduction_adg::dynamic_power_mw",
+            "metric::shared_reduction_adg::leakage_power_mw",
             "metric::vecsum::energy_nj",
         ):
             if metric_id not in candidate.get("metric_records_used", []):

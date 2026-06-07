@@ -37,12 +37,29 @@ def module_name(hardware_identity: str) -> str:
 def pass_hardware_rows(path: Path) -> list[dict[str, str]]:
     if not path.is_file():
         return []
+    rows: list[dict[str, str]] = []
     with path.open(newline="") as handle:
-        return [
-            row
-            for row in csv.DictReader(handle)
-            if row.get("verify_status") == "pass" and row.get("hardware")
-        ]
+        for row in csv.DictReader(handle):
+            if row.get("verify_status") != "pass" or not row.get("hardware"):
+                continue
+            parsed_counts = []
+            for key in ("node_count", "link_count"):
+                try:
+                    value = int(row.get(key, ""))
+                except ValueError:
+                    parsed_counts = []
+                    break
+                if value < 0:
+                    parsed_counts = []
+                    break
+                parsed_counts.append((key, str(value)))
+            if len(parsed_counts) != 2:
+                continue
+            normalized = dict(row)
+            for key, value in parsed_counts:
+                normalized[key] = value
+            rows.append(normalized)
+    return rows
 
 
 def sv_source(module: str, node_count: str, link_count: str) -> str:

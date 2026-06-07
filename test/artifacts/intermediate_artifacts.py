@@ -2774,6 +2774,9 @@ def validate_hardware_report_input_fingerprints(
     diagnostics: list[str],
 ) -> None:
     reference_ids: set[str] = set()
+    rtl_manifest_identity = data.get("rtl_manifest_identity")
+    if isinstance(rtl_manifest_identity, str) and rtl_manifest_identity:
+        reference_ids.add(rtl_manifest_identity)
     for key in ("eda_report_identities", "fpa_report_identities"):
         value = data.get(key)
         if isinstance(value, list):
@@ -3528,6 +3531,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if data.get("report_status") != "pass" and not diagnostic_records:
             diagnostics.append("hardware report bundle non-pass status needs diagnostic_records")
         if data.get("report_status") == "pass":
+            if not data.get("rtl_manifest_identity"):
+                diagnostics.append("hardware report bundle pass needs RTL manifest identity")
             if not data.get("fpa_report_identities"):
                 diagnostics.append("hardware report bundle pass needs FPA report identity")
             if not data.get("supported_workload_classes"):
