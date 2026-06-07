@@ -2042,6 +2042,53 @@ def validate_runtime_evidence_argument_descriptors(
                 diagnostics.append(f"{label} argument descriptor {index} lacks {key}")
 
 
+RUNTIME_ARTIFACT_DESCRIPTOR_KINDS = {
+    "pnr_mapping_artifact",
+    "dfg_sim_report",
+    "cgra_sim_report",
+    "sim_comparison_report",
+    "rtl_manifest",
+}
+
+
+def runtime_evidence_artifact_input_references(value: dict[str, object]) -> set[str]:
+    references: set[str] = set()
+    mapping = value.get("mapping_artifact_identity")
+    if isinstance(mapping, str) and mapping:
+        references.add(mapping)
+    simulator_reports = value.get("simulator_report_identities")
+    if isinstance(simulator_reports, list):
+        references.update(
+            identity
+            for identity in simulator_reports
+            if isinstance(identity, str) and identity
+        )
+    argument_descriptors = value.get("argument_descriptors")
+    if isinstance(argument_descriptors, list):
+        for descriptor in argument_descriptors:
+            if not isinstance(descriptor, dict):
+                continue
+            if descriptor.get("descriptor_kind") in RUNTIME_ARTIFACT_DESCRIPTOR_KINDS:
+                identity = descriptor.get("identity")
+                if isinstance(identity, str) and identity:
+                    references.add(identity)
+    return references
+
+
+def validate_runtime_evidence_input_fingerprint_references(
+    input_fingerprints: dict[object, object],
+    references: set[str],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    for identity in input_fingerprints:
+        if identity not in references:
+            diagnostics.append(f"{label} input_artifact_fingerprints references {identity!r} outside runtime inputs")
+    for reference in references:
+        if reference not in input_fingerprints:
+            diagnostics.append(f"{label} input_artifact_fingerprints lacks {reference!r}")
+
+
 def validate_runtime_evidence_required_features(
     value: object,
     diagnostics: list[str],
@@ -2346,6 +2393,12 @@ def validate_runtime_evidence(
                     "workload report bundle runtime_evidence "
                     f"input_artifact_fingerprints stale for {identity!r}"
                 )
+    validate_runtime_evidence_input_fingerprint_references(
+        input_fingerprints,
+        runtime_evidence_artifact_input_references(value),
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
     fallback = value.get("fallback_decision")
     if not isinstance(fallback, dict):
         diagnostics.append("workload report bundle runtime_evidence fallback_decision must be an object")
@@ -2605,6 +2658,12 @@ def validate_runtime_evidence_summaries(
                         f"DSE report bundle runtime evidence summary {index} "
                         f"input_artifact_fingerprints stale for {identity!r}"
                     )
+        validate_runtime_evidence_input_fingerprint_references(
+            input_fingerprints,
+            runtime_evidence_artifact_input_references(summary),
+            diagnostics,
+            f"DSE report bundle runtime evidence summary {index}",
+        )
         if require_complete and not input_fingerprints:
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} needs input_artifact_fingerprints"
