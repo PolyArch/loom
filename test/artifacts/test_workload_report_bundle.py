@@ -145,6 +145,7 @@ def main() -> int:
             "runtime_package_identity": "runtime-package",
             "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": runtime_report["host_program_identity"],
+            "host_wrapper_identity": runtime_package_data["host_wrapper_identity"],
             "work_package_identity": runtime_report["work_package_identity"],
             "launch_descriptor_identity": runtime_report["launch_descriptor_identity"],
             "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
@@ -247,6 +248,46 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report requiring runtime for compatibility mode unexpectedly passed audit")
+        bad_host_wrapper_report = out_dir / "bad-host-wrapper-workload-report-bundle.json"
+        bad_host_wrapper_data = json.loads(report.read_text())
+        bad_host_wrapper_data["runtime_host_interface"][
+            "host_wrapper_identity"
+        ] = "runtime-wrapper::other::vecsum"
+        bad_host_wrapper_report.write_text(json.dumps(bad_host_wrapper_data, indent=2, sort_keys=True) + "\n")
+        bad_host_wrapper_audit = out_dir / "bad-host-wrapper-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_host_wrapper_audit),
+                str(bad_host_wrapper_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime wrapper unexpectedly passed audit")
+        bad_source_provenance_report = out_dir / "bad-source-provenance-workload-report-bundle.json"
+        bad_source_provenance_data = json.loads(report.read_text())
+        bad_source_provenance_data["runtime_host_interface"][
+            "source_provenance"
+        ] = "test-app-fixture::other::default"
+        bad_source_provenance_report.write_text(
+            json.dumps(bad_source_provenance_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_source_provenance_audit = out_dir / "bad-source-provenance-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_source_provenance_audit),
+                str(bad_source_provenance_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime source provenance unexpectedly passed audit")
         stale_report_fingerprint = out_dir / "stale-input-fingerprint-workload-report-bundle.json"
         stale_report_fingerprint_data = json.loads(report.read_text())
         stale_report_fingerprint_data["input_artifact_fingerprints"]["source-compat-summary"] = "0" * 64
@@ -365,6 +406,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime identity unexpectedly passed audit")
+        bad_runtime_wrapper_report = out_dir / "bad-runtime-wrapper-workload-report-bundle.json"
+        bad_runtime_wrapper_data = json.loads(report.read_text())
+        bad_runtime_wrapper_data["runtime_evidence"]["host_wrapper_identity"] = []
+        bad_runtime_wrapper_report.write_text(
+            json.dumps(bad_runtime_wrapper_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_wrapper_audit = out_dir / "bad-runtime-wrapper-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_wrapper_audit),
+                str(bad_runtime_wrapper_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime wrapper unexpectedly passed audit")
         bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
         bad_runtime_diagnostics_data = json.loads(report.read_text())
         bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"

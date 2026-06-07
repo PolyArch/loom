@@ -1683,6 +1683,7 @@ def validate_runtime_evidence(
         "runtime_package_identity",
         "runtime_report_identity",
         "host_program_identity",
+        "host_wrapper_identity",
         "work_package_identity",
         "launch_descriptor_identity",
         "mapping_artifact_identity",
@@ -1720,6 +1721,7 @@ def validate_runtime_evidence(
             diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
     for key in (
         "host_program_identity",
+        "host_wrapper_identity",
         "work_package_identity",
         "launch_descriptor_identity",
         "mapping_artifact_identity",
@@ -1862,6 +1864,7 @@ def validate_runtime_evidence_summaries(
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
         for key in (
             "host_program_identity",
+            "host_wrapper_identity",
             "work_package_identity",
             "launch_descriptor_identity",
             "mapping_artifact_identity",
@@ -2731,15 +2734,27 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             require_complete=data.get("report_status") == "pass",
         )
         validate_workload_report_input_fingerprints(path, data, diagnostics)
+        runtime_evidence = data.get("runtime_evidence")
+        host_interface_expectations: dict[str, object] = {}
+        if isinstance(runtime_evidence, dict):
+            for key in ("host_program_identity", "host_wrapper_identity"):
+                if key in runtime_evidence:
+                    host_interface_expectations[key] = runtime_evidence.get(key)
+        runtime_host_interface = data.get("runtime_host_interface")
         validate_host_interface(
-            data.get("runtime_host_interface"),
-            {},
+            runtime_host_interface,
+            host_interface_expectations,
             diagnostics,
             "workload report bundle runtime",
         )
+        if isinstance(runtime_host_interface, dict):
+            if runtime_host_interface.get("source_provenance") != data.get("runtime_input_identity"):
+                diagnostics.append(
+                    "workload report bundle runtime host_interface source_provenance does not match runtime input"
+                )
         validate_runtime_evidence(
             path,
-            data.get("runtime_evidence"),
+            runtime_evidence,
             diagnostics,
             data.get("report_status") == "pass",
         )
