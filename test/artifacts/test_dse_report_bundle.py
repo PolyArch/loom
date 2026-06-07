@@ -469,6 +469,80 @@ def main() -> int:
             "performance per area DSE report bundle audit",
         )
 
+        area_candidate_summary = out_dir / "area-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "minimize_area",
+                "--output",
+                str(area_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "area DSE candidate summary",
+        )
+        area_report = out_dir / "area-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(area_report),
+                "--artifact",
+                str(area_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "area DSE report bundle",
+        )
+        area_data = json.loads(area_report.read_text())
+        area_objective = area_data.get("objective_records", [])[0]
+        expected_area_objective = {
+            "objective_id": "objective::minimize_area",
+            "objective_kind": "minimize_area",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "minimize",
+            "units": "um2",
+        }
+        for key, value in expected_area_objective.items():
+            if area_objective.get(key) != value:
+                raise AssertionError(f"unexpected area objective {key}: {area_objective}")
+        if area_objective.get("metric_inputs") != ["metric::shared_reduction_adg::area_um2"]:
+            raise AssertionError(f"area objective should cite area metric: {area_objective}")
+        if area_data.get("candidate_ordering_rule") != "area_score_then_candidate_id":
+            raise AssertionError(f"unexpected area ordering rule: {area_data}")
+        if area_data.get("selected_policy_id") != "deterministic_minimize_area_v1":
+            raise AssertionError(f"unexpected area policy id: {area_data}")
+        area_candidate = area_data.get("candidate_list", [])[0]
+        if "metric::shared_reduction_adg::area_um2" not in area_candidate.get("metric_records_used", []):
+            raise AssertionError(f"area candidate missed area metric: {area_candidate}")
+        area_audit = out_dir / "area-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(area_audit),
+                str(area_report),
+            ],
+            "area DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"

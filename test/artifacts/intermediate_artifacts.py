@@ -861,6 +861,8 @@ def dse_ordering_rule_for_objective(objective: str) -> str:
         return "performance_per_watt_score_then_candidate_id"
     if objective == "maximize_performance_per_area":
         return "performance_per_area_score_then_candidate_id"
+    if objective == "minimize_area":
+        return "area_score_then_candidate_id"
     if objective in {"minimize_energy", "minimize_power"}:
         return "energy_score_then_candidate_id"
     return "runtime_score_then_candidate_id"
@@ -886,6 +888,8 @@ def dse_objective_semantics(objective: str) -> tuple[str, str] | None:
         return "maximize", "items_per_s_per_w"
     if objective == "maximize_performance_per_area":
         return "maximize", "items_per_s_per_um2"
+    if objective == "minimize_area":
+        return "minimize", "um2"
     if objective in {"minimize_energy", "minimize_power"}:
         return "minimize", "nJ"
     return None

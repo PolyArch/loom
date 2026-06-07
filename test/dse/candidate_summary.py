@@ -293,6 +293,8 @@ def ordering_rule_for_objective(objective: str) -> str:
         return "performance_per_watt_score_then_candidate_id"
     if objective == "maximize_performance_per_area":
         return "performance_per_area_score_then_candidate_id"
+    if objective == "minimize_area":
+        return "area_score_then_candidate_id"
     if objective in {"minimize_energy", "minimize_power"}:
         return "energy_score_then_candidate_id"
     return "runtime_score_then_candidate_id"
@@ -446,6 +448,11 @@ def energy_score(row: dict[str, str]) -> float:
     return energy if energy is not None else float("inf")
 
 
+def area_score(row: dict[str, str]) -> float:
+    area = parse_positive_float(row, "area_um2")
+    return area if area is not None else float("inf")
+
+
 def throughput_score(row: dict[str, str]) -> float:
     cycles = parse_positive_float(row, "cgra_sim_cycles")
     frequency_mhz = parse_positive_float(row, "frequency_mhz")
@@ -500,6 +507,9 @@ def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
         elif effective_objective == "maximize_performance_per_area":
             score = performance_per_area_score
             selected = max(complete, key=lambda row: (score(row), row["candidate"]))
+        elif effective_objective == "minimize_area":
+            score = area_score
+            selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective in {"minimize_energy", "minimize_power"}:
             score = energy_score
             selected = min(complete, key=lambda row: (score(row), row["candidate"]))
