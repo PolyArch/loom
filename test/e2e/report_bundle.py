@@ -194,6 +194,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "runtime_report_identity": str(report.get("report_id", "")),
         "host_program_identity": str(report.get("host_program_identity", "")),
         "host_wrapper_identity": str(runtime_package.get("host_wrapper_identity", "")),
+        "runtime_handle_model": runtime_package.get("runtime_handle_model", {}),
         "work_package_identity": str(report.get("work_package_identity", "")),
         "launch_descriptor_identity": str(report.get("launch_descriptor_identity", "")),
         "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),

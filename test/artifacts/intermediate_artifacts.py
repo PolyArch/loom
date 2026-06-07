@@ -1485,23 +1485,27 @@ def validate_runtime_launch_descriptor(
         diagnostics.append("runtime package launch_descriptor memory descriptors do not match package")
 
 
-def validate_runtime_handle_model(value: object, diagnostics: list[str]) -> None:
+def validate_runtime_handle_model(
+    value: object,
+    diagnostics: list[str],
+    label: str = "runtime package",
+) -> None:
     if not isinstance(value, dict):
-        diagnostics.append("runtime package runtime_handle_model must be an object")
+        diagnostics.append(f"{label} runtime_handle_model must be an object")
         return
     if value.get("handle_kind") != "host_visible_launch_handle":
-        diagnostics.append("runtime package runtime_handle_model handle_kind must be host_visible_launch_handle")
+        diagnostics.append(f"{label} runtime_handle_model handle_kind must be host_visible_launch_handle")
     if value.get("ir_token_kind") != "not_dataflow_thread_token":
-        diagnostics.append("runtime package runtime_handle_model must not use dataflow thread tokens")
+        diagnostics.append(f"{label} runtime_handle_model must not use dataflow thread tokens")
     if not isinstance(value.get("completion_source"), str) or not value.get("completion_source"):
-        diagnostics.append("runtime package runtime_handle_model lacks completion_source")
+        diagnostics.append(f"{label} runtime_handle_model lacks completion_source")
     operations = value.get("operations")
     if not isinstance(operations, list) or any(not isinstance(operation, str) for operation in operations):
-        diagnostics.append("runtime package runtime_handle_model operations must be a string list")
+        diagnostics.append(f"{label} runtime_handle_model operations must be a string list")
         return
     for operation in ("query_status", "wait_for_completion", "collect_diagnostics"):
         if operation not in operations:
-            diagnostics.append(f"runtime package runtime_handle_model lacks {operation}")
+            diagnostics.append(f"{label} runtime_handle_model lacks {operation}")
 
 
 def validate_runtime_configuration(
@@ -1684,6 +1688,7 @@ def validate_runtime_evidence(
         "runtime_report_identity",
         "host_program_identity",
         "host_wrapper_identity",
+        "runtime_handle_model",
         "work_package_identity",
         "launch_descriptor_identity",
         "mapping_artifact_identity",
@@ -1731,6 +1736,11 @@ def validate_runtime_evidence(
     ):
         if not isinstance(value.get(key), str):
             diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
+    validate_runtime_handle_model(
+        value.get("runtime_handle_model"),
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
     data_movement_policy = value.get("data_movement_policy")
     if data_movement_policy not in DATA_MOVEMENT_POLICIES:
         diagnostics.append("workload report bundle runtime_evidence has unknown data_movement_policy")
@@ -1859,8 +1869,15 @@ def validate_runtime_evidence_summaries(
             "target_status",
             "data_movement_policy",
             "synchronization_mode",
+            "runtime_handle_model",
         ):
-            if not isinstance(summary.get(key), str) or not summary.get(key):
+            if key == "runtime_handle_model":
+                validate_runtime_handle_model(
+                    summary.get(key),
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif not isinstance(summary.get(key), str) or not summary.get(key):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
         for key in (
             "host_program_identity",

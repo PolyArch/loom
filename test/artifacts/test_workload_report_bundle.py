@@ -146,6 +146,7 @@ def main() -> int:
             "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": runtime_report["host_program_identity"],
             "host_wrapper_identity": runtime_package_data["host_wrapper_identity"],
+            "runtime_handle_model": runtime_package_data["runtime_handle_model"],
             "work_package_identity": runtime_report["work_package_identity"],
             "launch_descriptor_identity": runtime_report["launch_descriptor_identity"],
             "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
@@ -425,6 +426,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime wrapper unexpectedly passed audit")
+        bad_runtime_handle_report = out_dir / "bad-runtime-handle-workload-report-bundle.json"
+        bad_runtime_handle_data = json.loads(report.read_text())
+        bad_runtime_handle_data["runtime_evidence"]["runtime_handle_model"]["ir_token_kind"] = "dataflow_thread_token"
+        bad_runtime_handle_report.write_text(json.dumps(bad_runtime_handle_data, indent=2, sort_keys=True) + "\n")
+        bad_runtime_handle_audit = out_dir / "bad-runtime-handle-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_handle_audit),
+                str(bad_runtime_handle_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with dataflow-backed runtime handle unexpectedly passed audit")
         bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
         bad_runtime_diagnostics_data = json.loads(report.read_text())
         bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"

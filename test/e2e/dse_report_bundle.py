@@ -235,6 +235,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
             "host_program_identity": str(evidence.get("host_program_identity", "")),
             "host_wrapper_identity": str(evidence.get("host_wrapper_identity", "")),
+            "runtime_handle_model": evidence.get("runtime_handle_model", {}),
             "work_package_identity": str(evidence.get("work_package_identity", "")),
             "launch_descriptor_identity": str(evidence.get("launch_descriptor_identity", "")),
             "mapping_artifact_identity": str(evidence.get("mapping_artifact_identity", "")),
