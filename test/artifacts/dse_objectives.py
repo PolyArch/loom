@@ -51,6 +51,13 @@ OBJECTIVE_SPECS = {
         metric_entity="hardware",
         metric_name="area_um2",
     ),
+    "minimize_dynamic_power": DseObjectiveSpec(
+        direction="minimize",
+        units="mW",
+        ordering_rule="dynamic_power_score_then_candidate_id",
+        metric_entity="hardware",
+        metric_name="dynamic_power_mw",
+    ),
     "minimize_energy": DseObjectiveSpec(
         direction="minimize",
         units="nJ",

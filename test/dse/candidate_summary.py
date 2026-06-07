@@ -444,6 +444,11 @@ def area_score(row: dict[str, str]) -> float:
     return area if area is not None else float("inf")
 
 
+def dynamic_power_score(row: dict[str, str]) -> float:
+    dynamic_power = parse_positive_float(row, "dynamic_power_mw")
+    return dynamic_power if dynamic_power is not None else float("inf")
+
+
 def throughput_score(row: dict[str, str]) -> float:
     cycles = parse_positive_float(row, "cgra_sim_cycles")
     frequency_mhz = parse_positive_float(row, "frequency_mhz")
@@ -500,6 +505,9 @@ def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
             selected = max(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective == "minimize_area":
             score = area_score
+            selected = min(complete, key=lambda row: (score(row), row["candidate"]))
+        elif effective_objective == "minimize_dynamic_power":
+            score = dynamic_power_score
             selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective in {"minimize_energy", "minimize_power"}:
             score = energy_score

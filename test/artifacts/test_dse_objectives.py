@@ -34,6 +34,13 @@ EXPECTED = {
         "performance_per_area",
     ),
     "minimize_area": ("minimize", "um2", "area_score_then_candidate_id", "hardware", "area_um2"),
+    "minimize_dynamic_power": (
+        "minimize",
+        "mW",
+        "dynamic_power_score_then_candidate_id",
+        "hardware",
+        "dynamic_power_mw",
+    ),
     "minimize_energy": ("minimize", "nJ", "energy_score_then_candidate_id", "workload", "energy_nj"),
     "minimize_power": ("minimize", "nJ", "energy_score_then_candidate_id", "workload", "energy_nj"),
 }

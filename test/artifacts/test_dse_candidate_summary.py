@@ -561,6 +561,51 @@ def main() -> int:
             if row.get("ordering_rule") != "energy_score_then_candidate_id":
                 raise AssertionError(f"{hardware} candidate missed energy ordering rule: {row}")
 
+        dynamic_power_manifest = out_dir / "dynamic-power-mapping-set-manifest.json"
+        write_mapping_set_manifest(
+            dynamic_power_manifest,
+            "minimize_dynamic_power",
+            [fast_energy_mapping_artifact, efficient_energy_mapping_artifact],
+        )
+        dynamic_power_output = out_dir / "dynamic-power-dse-candidate-summary.csv"
+        rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/dse/run_candidate_summary.sh",
+            dynamic_power_output,
+            HEADER,
+            "--artifact",
+            str(dynamic_power_manifest),
+            "--artifact",
+            str(energy_sim),
+            "--artifact",
+            str(fast_energy_cgra_report),
+            "--artifact",
+            str(efficient_energy_cgra_report),
+            "--artifact",
+            str(energy_fpa),
+            label="dynamic-power-objective mapping-set manifest DSE candidate summary",
+        )
+        statuses = {row["hardware"]: row for row in rows}
+        if set(statuses) != {"fabric_fast", "fabric_efficient"}:
+            raise AssertionError(f"dynamic-power manifest should expand two mapping candidates, got {rows}")
+        if statuses["fabric_efficient"]["selection_status"] != "selected":
+            raise AssertionError(
+                f"dynamic-power manifest should select the lower-power candidate: {statuses['fabric_efficient']}"
+            )
+        if statuses["fabric_fast"]["selection_status"] != "rejected":
+            raise AssertionError(
+                f"dynamic-power manifest should reject the higher-power candidate: {statuses['fabric_fast']}"
+            )
+        for hardware, row in statuses.items():
+            if row.get("objective") != "minimize_dynamic_power":
+                raise AssertionError(f"{hardware} candidate missed manifest dynamic-power objective: {row}")
+            if row.get("objective_record") != "objective::minimize_dynamic_power":
+                raise AssertionError(f"{hardware} candidate missed manifest dynamic-power objective record: {row}")
+            if row.get("policy_id") != "deterministic_minimize_dynamic_power_v1":
+                raise AssertionError(f"{hardware} candidate missed manifest dynamic-power policy id: {row}")
+            if row.get("ordering_rule") != "dynamic_power_score_then_candidate_id":
+                raise AssertionError(f"{hardware} candidate missed dynamic-power ordering rule: {row}")
+
         same_hardware_fast_mapping_artifact = out_dir / "same-hardware-fast-pnr-mapping.json"
         same_hardware_slow_mapping_artifact = out_dir / "same-hardware-slow-pnr-mapping.json"
         write_mapping_artifact(

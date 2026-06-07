@@ -543,6 +543,81 @@ def main() -> int:
             "area DSE report bundle audit",
         )
 
+        dynamic_power_candidate_summary = out_dir / "dynamic-power-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "minimize_dynamic_power",
+                "--output",
+                str(dynamic_power_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "dynamic power DSE candidate summary",
+        )
+        dynamic_power_report = out_dir / "dynamic-power-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(dynamic_power_report),
+                "--artifact",
+                str(dynamic_power_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "dynamic power DSE report bundle",
+        )
+        dynamic_power_data = json.loads(dynamic_power_report.read_text())
+        dynamic_power_objective = dynamic_power_data.get("objective_records", [])[0]
+        expected_dynamic_power_objective = {
+            "objective_id": "objective::minimize_dynamic_power",
+            "objective_kind": "minimize_dynamic_power",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "minimize",
+            "units": "mW",
+        }
+        for key, value in expected_dynamic_power_objective.items():
+            if dynamic_power_objective.get(key) != value:
+                raise AssertionError(f"unexpected dynamic power objective {key}: {dynamic_power_objective}")
+        expected_dynamic_power_metric = "metric::shared_reduction_adg::dynamic_power_mw"
+        if dynamic_power_objective.get("metric_inputs") != [expected_dynamic_power_metric]:
+            raise AssertionError(f"dynamic power objective should cite power metric: {dynamic_power_objective}")
+        if dynamic_power_data.get("candidate_ordering_rule") != "dynamic_power_score_then_candidate_id":
+            raise AssertionError(f"unexpected dynamic power ordering rule: {dynamic_power_data}")
+        if dynamic_power_data.get("selected_policy_id") != "deterministic_minimize_dynamic_power_v1":
+            raise AssertionError(f"unexpected dynamic power policy id: {dynamic_power_data}")
+        dynamic_power_candidate = dynamic_power_data.get("candidate_list", [])[0]
+        if expected_dynamic_power_metric not in dynamic_power_candidate.get("metric_records_used", []):
+            raise AssertionError(f"dynamic power candidate missed power metric: {dynamic_power_candidate}")
+        dynamic_power_audit = out_dir / "dynamic-power-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(dynamic_power_audit),
+                str(dynamic_power_report),
+            ],
+            "dynamic power DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"
