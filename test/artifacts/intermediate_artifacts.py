@@ -2828,6 +2828,48 @@ def validate_workload_report_input_fingerprints(
             diagnostics.append(f"workload report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
+def validate_workload_runtime_evidence_references(
+    data: dict[str, object],
+    runtime_evidence: object,
+    diagnostics: list[str],
+) -> None:
+    if not isinstance(runtime_evidence, dict):
+        return
+    optional_identities = data.get("optional_artifact_identities")
+    runtime_package_identity = None
+    if isinstance(optional_identities, dict):
+        runtime_package_identity = optional_identities.get("runtime_package")
+    if isinstance(runtime_package_identity, str) and runtime_package_identity:
+        if runtime_evidence.get("runtime_package_identity") != runtime_package_identity:
+            diagnostics.append(
+                "workload report bundle runtime_evidence runtime_package_identity "
+                "does not match runtime package input"
+            )
+    runtime_input_identity = data.get("runtime_input_identity")
+    if isinstance(runtime_input_identity, str) and runtime_input_identity:
+        work_package_metadata = runtime_evidence.get("work_package_metadata")
+        if isinstance(work_package_metadata, dict):
+            if work_package_metadata.get("runtime_input_identity") != runtime_input_identity:
+                diagnostics.append(
+                    "workload report bundle runtime_evidence work_package_metadata "
+                    "runtime_input_identity does not match runtime input"
+                )
+        host_interface = runtime_evidence.get("host_interface")
+        if isinstance(host_interface, dict):
+            if host_interface.get("source_provenance") != runtime_input_identity:
+                diagnostics.append(
+                    "workload report bundle runtime_evidence host_interface "
+                    "source_provenance does not match runtime input"
+                )
+    selected_mapping = data.get("selected_mapping_artifact_identity")
+    if isinstance(selected_mapping, str) and selected_mapping:
+        if runtime_evidence.get("mapping_artifact_identity") != selected_mapping:
+            diagnostics.append(
+                "workload report bundle runtime_evidence mapping_artifact_identity "
+                "does not match selected mapping artifact"
+            )
+
+
 def validate_hardware_report_input_fingerprints(
     path: Path,
     data: dict[str, object],
@@ -3537,6 +3579,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(
                     "workload report bundle runtime host_interface source_provenance does not match runtime input"
                 )
+        validate_workload_runtime_evidence_references(
+            data,
+            runtime_evidence,
+            diagnostics,
+        )
         validate_runtime_evidence(
             path,
             runtime_evidence,

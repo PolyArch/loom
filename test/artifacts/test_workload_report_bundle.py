@@ -398,6 +398,50 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report without runtime input fingerprint unexpectedly passed audit")
+        mismatched_runtime_package_report = out_dir / "mismatched-runtime-package-workload-report-bundle.json"
+        mismatched_runtime_package_data = json.loads(report.read_text())
+        mismatched_runtime_package_data["runtime_evidence"]["runtime_package_identity"] = "runtime-package-other"
+        mismatched_runtime_package_report.write_text(
+            json.dumps(mismatched_runtime_package_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_runtime_package_audit = out_dir / "mismatched-runtime-package-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_runtime_package_audit),
+                str(mismatched_runtime_package_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime package identity unexpectedly passed audit")
+        mismatched_runtime_input_report = out_dir / "mismatched-runtime-input-workload-report-bundle.json"
+        mismatched_runtime_input_data = json.loads(report.read_text())
+        mismatched_runtime_input_identity = "test-app-fixture::other::default"
+        mismatched_runtime_input_data["runtime_evidence"]["work_package_metadata"][
+            "runtime_input_identity"
+        ] = mismatched_runtime_input_identity
+        mismatched_runtime_input_data["runtime_evidence"]["host_interface"][
+            "source_provenance"
+        ] = mismatched_runtime_input_identity
+        mismatched_runtime_input_report.write_text(
+            json.dumps(mismatched_runtime_input_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_runtime_input_audit = out_dir / "mismatched-runtime-input-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_runtime_input_audit),
+                str(mismatched_runtime_input_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime input identity unexpectedly passed audit")
         bad_runtime_policy_report = out_dir / "bad-runtime-policy-workload-report-bundle.json"
         bad_runtime_policy_data = json.loads(report.read_text())
         bad_runtime_policy_data["runtime_evidence"]["required_data_movement_policies"] = ["shared_coherent"]
