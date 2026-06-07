@@ -652,6 +652,35 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime summary source unexpectedly passed audit")
 
+        mismatched_runtime_report_summary = out_dir / "mismatched-runtime-report-summary-dse-report-bundle.json"
+        mismatched_runtime_report_summary_data = json.loads(report.read_text())
+        mismatched_runtime_report_summary_data["runtime_evidence_summaries"][0][
+            "runtime_report_identity"
+        ] = "runtime-report::other"
+        mismatched_runtime_report_summary_data["runtime_evidence_summaries"][0]["report_output_configuration"][
+            "runtime_report_identity"
+        ] = "runtime-report::other"
+        mismatched_runtime_report_summary.write_text(
+            json.dumps(mismatched_runtime_report_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_runtime_report_summary_audit = (
+            out_dir / "mismatched-runtime-report-summary-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_runtime_report_summary_audit),
+                str(mismatched_runtime_report_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError(
+                "DSE report with mismatched referenced runtime report summary unexpectedly passed audit"
+            )
+
         bad_runtime_policy_summary = out_dir / "bad-runtime-policy-summary-dse-report-bundle.json"
         bad_runtime_policy_summary_data = json.loads(report.read_text())
         bad_runtime_policy_summary_data["runtime_evidence_summaries"][0][

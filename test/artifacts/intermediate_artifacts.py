@@ -2433,6 +2433,20 @@ def validate_runtime_evidence(
         )
 
 
+def referenced_workload_runtime_evidence(path: Path, identity: str) -> dict[str, object] | None:
+    resolved = resolve_artifact_identity_reference(path, identity)
+    if resolved is None:
+        return None
+    try:
+        report = json.loads(resolved.read_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(report, dict) or report.get("kind") != "workload_report_bundle":
+        return None
+    evidence = report.get("runtime_evidence")
+    return evidence if isinstance(evidence, dict) else None
+
+
 def validate_runtime_evidence_summaries(
     path: Path,
     value: object,
@@ -2460,6 +2474,15 @@ def validate_runtime_evidence_summaries(
                 f"DSE report bundle runtime evidence summary {index} "
                 "workload_report_bundle_identity is not a referenced workload report"
             )
+        if isinstance(workload_report_identity, str) and workload_report_identity:
+            expected_evidence = referenced_workload_runtime_evidence(path, workload_report_identity)
+            if expected_evidence is not None:
+                for key, expected in expected_evidence.items():
+                    if summary.get(key) != expected:
+                        diagnostics.append(
+                            f"DSE report bundle runtime evidence summary {index} {key} "
+                            "does not match referenced workload report"
+                        )
         for key in (
             "workload_report_bundle_identity",
             "runtime_package_identity",
