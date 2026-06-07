@@ -363,6 +363,42 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with selected candidate status mismatch unexpectedly passed audit")
 
+        duplicate_selected = out_dir / "duplicate-selected-dse-report-bundle.json"
+        duplicate_selected_data = json.loads(report.read_text())
+        duplicate_selected_data["selected_candidates"] = [candidate_id, candidate_id]
+        duplicate_selected.write_text(json.dumps(duplicate_selected_data, indent=2, sort_keys=True) + "\n")
+        duplicate_selected_audit = out_dir / "duplicate-selected-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(duplicate_selected_audit),
+                str(duplicate_selected),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with duplicate selected candidate unexpectedly passed audit")
+
+        overlapping_selection = out_dir / "overlapping-selection-dse-report-bundle.json"
+        overlapping_selection_data = json.loads(report.read_text())
+        overlapping_selection_data["pareto_set"] = [candidate_id]
+        overlapping_selection.write_text(json.dumps(overlapping_selection_data, indent=2, sort_keys=True) + "\n")
+        overlapping_selection_audit = out_dir / "overlapping-selection-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(overlapping_selection_audit),
+                str(overlapping_selection),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with overlapping selected and Pareto candidates unexpectedly passed audit")
+
         missing_rejected_summary = out_dir / "missing-rejected-summary-dse-report-bundle.json"
         missing_rejected_summary_data = json.loads(report.read_text())
         rejected_candidate = dict(missing_rejected_summary_data["candidate_list"][0])

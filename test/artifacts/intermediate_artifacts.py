@@ -2830,6 +2830,27 @@ def dse_report_referenced_metric_ids(
     return metric_ids
 
 
+def validate_dse_candidate_id_list(
+    value: object,
+    diagnostics: list[str],
+    label: str,
+) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    candidate_ids: set[str] = set()
+    repeated: set[str] = set()
+    for candidate_id in value:
+        if not isinstance(candidate_id, str) or not candidate_id:
+            diagnostics.append(f"{label} contains invalid candidate id")
+            continue
+        if candidate_id in candidate_ids:
+            repeated.add(candidate_id)
+        candidate_ids.add(candidate_id)
+    if repeated:
+        diagnostics.append(f"{label} repeats candidate ids {sorted(repeated)}")
+    return candidate_ids
+
+
 def validate_workload_report_input_fingerprints(
     path: Path,
     data: dict[str, object],
@@ -3919,6 +3940,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         )
             validate_dse_report_candidate_input_fingerprints(path, candidate, diagnostics, index)
         selected_candidates = data.get("selected_candidates")
+        selected_candidate_ids = validate_dse_candidate_id_list(
+            selected_candidates,
+            diagnostics,
+            "DSE report bundle selected_candidates",
+        )
         if isinstance(selected_candidates, list):
             missing_selected = [
                 candidate_id
@@ -3937,6 +3963,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     f"DSE report bundle selected candidates have non-selected records {mismatched_selected}"
                 )
         pareto_set = data.get("pareto_set")
+        pareto_candidate_ids = validate_dse_candidate_id_list(
+            pareto_set,
+            diagnostics,
+            "DSE report bundle pareto_set",
+        )
         if isinstance(pareto_set, list):
             missing_pareto = [
                 candidate_id
@@ -3954,6 +3985,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(
                     f"DSE report bundle pareto candidates have non-pareto records {mismatched_pareto}"
                 )
+        overlapping_selection = sorted(selected_candidate_ids & pareto_candidate_ids)
+        if overlapping_selection:
+            diagnostics.append(
+                f"DSE report bundle selected and Pareto candidates overlap {overlapping_selection}"
+            )
         rejected_summaries = data.get("rejected_candidate_summaries")
         if isinstance(rejected_summaries, list):
             rejected_summary_ids: set[str] = set()
