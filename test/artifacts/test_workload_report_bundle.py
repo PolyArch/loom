@@ -417,6 +417,28 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime package identity unexpectedly passed audit")
+        missing_runtime_package_reference = out_dir / "missing-runtime-package-reference-workload-report-bundle.json"
+        missing_runtime_package_reference_data = json.loads(report.read_text())
+        missing_runtime_package_reference_data["optional_artifact_identities"].pop("runtime_package", None)
+        missing_runtime_package_reference_data["input_artifact_fingerprints"].pop("runtime-package", None)
+        missing_runtime_package_reference.write_text(
+            json.dumps(missing_runtime_package_reference_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_runtime_package_reference_audit = (
+            out_dir / "missing-runtime-package-reference-workload-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_runtime_package_reference_audit),
+                str(missing_runtime_package_reference),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report without runtime package input reference unexpectedly passed audit")
         mismatched_runtime_input_report = out_dir / "mismatched-runtime-input-workload-report-bundle.json"
         mismatched_runtime_input_data = json.loads(report.read_text())
         mismatched_runtime_input_identity = "test-app-fixture::other::default"

@@ -2851,8 +2851,9 @@ def validate_workload_runtime_evidence_references(
     runtime_package_identity = None
     if isinstance(optional_identities, dict):
         runtime_package_identity = optional_identities.get("runtime_package")
-    if isinstance(runtime_package_identity, str) and runtime_package_identity:
-        if runtime_evidence.get("runtime_package_identity") != runtime_package_identity:
+    evidence_runtime_package_identity = runtime_evidence.get("runtime_package_identity")
+    if isinstance(evidence_runtime_package_identity, str) and evidence_runtime_package_identity:
+        if runtime_package_identity != evidence_runtime_package_identity:
             diagnostics.append(
                 "workload report bundle runtime_evidence runtime_package_identity "
                 "does not match runtime package input"
