@@ -150,6 +150,9 @@ def main() -> int:
             "synchronization_mode": "host_wait",
             "required_data_movement_policies": ["simulated"],
             "required_synchronization_policies": ["host_wait"],
+            "simulator_report_identities": json.loads(
+                (out_dir / "runtime-package.json").read_text()
+            )["runtime_report"]["simulator_report_identities"],
             "output_buffer_identities": [],
             "input_artifact_fingerprints": json.loads(
                 (out_dir / "runtime-package.json").read_text()
@@ -315,6 +318,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime policies unexpectedly passed audit")
+        bad_simulator_identities_report = out_dir / "bad-runtime-simulator-identities-workload-report-bundle.json"
+        bad_simulator_identities_data = json.loads(report.read_text())
+        bad_simulator_identities_data["runtime_evidence"]["simulator_report_identities"] = "vecsum-cgra-sim-report"
+        bad_simulator_identities_report.write_text(
+            json.dumps(bad_simulator_identities_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_simulator_identities_audit = out_dir / "bad-runtime-simulator-identities-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_simulator_identities_audit),
+                str(bad_simulator_identities_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime simulator identities unexpectedly passed audit")
         extra_custom_policy_report = out_dir / "extra-custom-policy-workload-report-bundle.json"
         extra_custom_policy_data = json.loads(report.read_text())
         extra_custom_policy_data["runtime_evidence"][

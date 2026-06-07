@@ -217,6 +217,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         output_buffers = evidence.get("output_buffer_identities", [])
         if not isinstance(output_buffers, list):
             output_buffers = []
+        simulator_reports = evidence.get("simulator_report_identities", [])
+        if not isinstance(simulator_reports, list):
+            simulator_reports = []
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -242,6 +245,11 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 str(policy)
                 for policy in required_synchronization_policies
                 if isinstance(policy, str)
+            ],
+            "simulator_report_identities": [
+                str(identity)
+                for identity in simulator_reports
+                if isinstance(identity, str)
             ],
             "input_artifact_fingerprints": {
                 str(identity): str(fingerprint)

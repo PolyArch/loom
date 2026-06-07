@@ -162,6 +162,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     output_buffers = report.get("output_buffer_identities", [])
     if not isinstance(output_buffers, list):
         output_buffers = []
+    simulator_reports = report.get("simulator_report_identities", [])
+    if not isinstance(simulator_reports, list):
+        simulator_reports = []
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
@@ -201,6 +204,11 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
             str(policy)
             for policy in required_synchronization_policies
             if isinstance(policy, str)
+        ],
+        "simulator_report_identities": [
+            str(identity)
+            for identity in simulator_reports
+            if isinstance(identity, str)
         ],
         "input_artifact_fingerprints": {
             str(identity): str(fingerprint)
