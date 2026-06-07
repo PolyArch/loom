@@ -246,6 +246,31 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected report bundle audit pass: {audit_data}")
+        missing_energy_input_report = out_dir / "missing-energy-input-workload-report-bundle.json"
+        missing_energy_input_data = json.loads(report.read_text())
+        for metric in missing_energy_input_data["metric_records"]:
+            if metric.get("metric_id") == "metric::vecsum::energy_nj":
+                metric["input_metric_ids"] = [
+                    metric_id
+                    for metric_id in metric["input_metric_ids"]
+                    if metric_id != "metric::shared_reduction_adg::dynamic_power_mw"
+                ]
+        missing_energy_input_report.write_text(
+            json.dumps(missing_energy_input_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_energy_input_audit = out_dir / "missing-energy-input-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_energy_input_audit),
+                str(missing_energy_input_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with incomplete energy metric inputs unexpectedly passed audit")
         bad_host_report = out_dir / "bad-host-interface-workload-report-bundle.json"
         bad_host_data = json.loads(report.read_text())
         bad_host_data["runtime_host_interface"]["compatibility_mode_requires_runtime"] = True

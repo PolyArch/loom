@@ -3866,6 +3866,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("workload report bundle non-pass status needs diagnostic_records")
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
+        metric_class_by_id: dict[str, str] = {}
         if not isinstance(metrics, list) or not metrics:
             diagnostics.append("workload report bundle needs non-empty metric_records")
             metrics = []
@@ -3880,6 +3881,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(f"workload report bundle repeats metric_id {metric_id}")
             else:
                 metric_ids.add(metric_id)
+                metric_class = metric.get("metric_class")
+                if isinstance(metric_class, str) and metric_class:
+                    metric_class_by_id[metric_id] = metric_class
             for key in (
                 "metric_class",
                 "unit",
@@ -3907,6 +3911,23 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if missing_inputs:
                 diagnostics.append(
                     f"workload report bundle energy metric references missing inputs {missing_inputs}"
+                )
+            input_classes = {
+                metric_class_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str) and metric_id in metric_class_by_id
+            }
+            has_runtime_source = (
+                "estimated_runtime" in input_classes
+                or {"hardware_cycles", "frequency"} <= input_classes
+                or {"optimistic_steps", "frequency"} <= input_classes
+            )
+            if not has_runtime_source:
+                diagnostics.append("workload report bundle energy metric lacks runtime source inputs")
+            missing_power_inputs = sorted({"dynamic_power", "leakage_power"} - input_classes)
+            if missing_power_inputs:
+                diagnostics.append(
+                    f"workload report bundle energy metric lacks power source inputs {missing_power_inputs}"
                 )
     if kind == "hardware_report_bundle":
         if data.get("kind") != "hardware_report_bundle":
