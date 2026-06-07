@@ -3892,6 +3892,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if not isinstance(objectives, list) or (data.get("report_status") == "pass" and not objectives):
             diagnostics.append("DSE report bundle needs non-empty objective_records")
             objectives = []
+        objective_kinds: set[str] = set()
         for index, objective in enumerate(objectives, start=1):
             if not isinstance(objective, dict):
                 diagnostics.append(f"DSE report bundle objective {index} must be an object")
@@ -3904,6 +3905,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not isinstance(objective.get(key), str) or not objective.get(key):
                     diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
+            objective_kind = objective.get("objective_kind")
+            if isinstance(objective_kind, str) and objective_kind:
+                objective_kinds.add(objective_kind)
             for key in ("metric_inputs", "validity_conditions"):
                 if not isinstance(objective.get(key), list) or not objective.get(key):
                     diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
@@ -3919,6 +3923,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             priority = objective.get("priority")
             if not isinstance(priority, (int, float)) or priority <= 0:
                 diagnostics.append(f"DSE report bundle objective {index} has invalid priority")
+        if data.get("report_status") == "pass" and len(objective_kinds) == 1:
+            objective_kind = next(iter(objective_kinds))
+            if data.get("candidate_ordering_rule") != dse_ordering_rule_for_objective(objective_kind):
+                diagnostics.append("DSE report bundle candidate_ordering_rule does not match objective")
         objective_ids = {
             objective.get("objective_id")
             for objective in objectives

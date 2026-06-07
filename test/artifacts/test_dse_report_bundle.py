@@ -282,6 +282,26 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched selected policy id unexpectedly passed audit")
 
+        mismatched_ordering_rule = out_dir / "mismatched-ordering-rule-dse-report-bundle.json"
+        mismatched_ordering_rule_data = json.loads(report.read_text())
+        mismatched_ordering_rule_data["candidate_ordering_rule"] = "energy_score_then_candidate_id"
+        mismatched_ordering_rule.write_text(
+            json.dumps(mismatched_ordering_rule_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_ordering_rule_audit = out_dir / "mismatched-ordering-rule-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_ordering_rule_audit),
+                str(mismatched_ordering_rule),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched candidate ordering rule unexpectedly passed audit")
+
         missing_candidate_metrics = out_dir / "missing-candidate-metrics-dse-report-bundle.json"
         missing_candidate_metrics_data = json.loads(report.read_text())
         missing_candidate_metrics_data["candidate_list"][0]["metric_records_used"] = []
