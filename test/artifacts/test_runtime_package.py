@@ -933,6 +933,36 @@ def main() -> int:
             "runtime-policy::dma-window::vecsum"
         ):
             raise AssertionError(f"memory descriptor should preserve custom policy identity: {named_custom_data}")
+        named_custom_audit = out_dir / "named-custom-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(named_custom_audit),
+                str(named_custom),
+            ],
+            "named custom runtime package audit",
+        )
+        unnamed_custom = out_dir / "unnamed-custom-runtime-package.json"
+        unnamed_custom_data = json.loads(named_custom.read_text())
+        unnamed_custom_data["runtime_configuration"].pop("custom_data_movement_policy_identity", None)
+        unnamed_custom_data["memory_descriptors"][0].pop("custom_data_movement_policy_identity", None)
+        unnamed_custom.write_text(json.dumps(unnamed_custom_data, indent=2, sort_keys=True) + "\n")
+        unnamed_custom_audit = out_dir / "unnamed-custom-runtime-package-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unnamed_custom_audit),
+                str(unnamed_custom),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with unnamed custom policy unexpectedly passed audit")
 
     return 0
 

@@ -1483,6 +1483,16 @@ def validate_runtime_configuration(
     for key, expected in expected_pairs:
         if value.get(key) != expected:
             diagnostics.append(f"runtime package runtime_configuration {key} does not match package")
+    custom_identity = value.get("custom_data_movement_policy_identity")
+    if data.get("data_movement_policy") == "custom":
+        if not isinstance(custom_identity, str) or not custom_identity:
+            diagnostics.append(
+                "runtime package runtime_configuration lacks custom_data_movement_policy_identity"
+            )
+    elif custom_identity is not None:
+        diagnostics.append(
+            "runtime package runtime_configuration custom_data_movement_policy_identity is only valid for custom policy"
+        )
 
 
 def validate_host_interface(
@@ -2412,6 +2422,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 resolved = resolve_artifact_identity_reference(path, identity)
                 if resolved is not None and fingerprint != artifact_fingerprint(resolved):
                     diagnostics.append(f"runtime package input_artifact_fingerprints stale for {identity!r}")
+        runtime_configuration = data.get("runtime_configuration")
+        runtime_custom_policy = None
+        if isinstance(runtime_configuration, dict):
+            runtime_custom_policy = runtime_configuration.get("custom_data_movement_policy_identity")
         for index, descriptor in enumerate(memory_descriptors, start=1):
             if not isinstance(descriptor, dict):
                 diagnostics.append(f"runtime package memory descriptor {index} must be an object")
@@ -2446,6 +2460,20 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if platform_binding is not None and (not isinstance(platform_binding, str) or not platform_binding):
                 diagnostics.append(
                     f"runtime package memory descriptor {index} has invalid platform_binding_identity"
+                )
+            descriptor_custom_policy = descriptor.get("custom_data_movement_policy_identity")
+            if descriptor_policy == "custom":
+                if not isinstance(descriptor_custom_policy, str) or not descriptor_custom_policy:
+                    diagnostics.append(
+                        f"runtime package memory descriptor {index} lacks custom_data_movement_policy_identity"
+                    )
+                elif isinstance(runtime_custom_policy, str) and descriptor_custom_policy != runtime_custom_policy:
+                    diagnostics.append(
+                        f"runtime package memory descriptor {index} custom policy does not match configuration"
+                    )
+            elif descriptor_custom_policy is not None:
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} custom policy is only valid for custom policy"
                 )
         for index, descriptor in enumerate(argument_descriptors, start=1):
             if not isinstance(descriptor, dict):
