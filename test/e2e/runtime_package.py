@@ -105,6 +105,8 @@ def diagnostic_class(message: str) -> str:
         return "missing_fabric_adg"
     if "requires simulated data movement policy" in message:
         return "unsupported_data_movement_policy"
+    if "user-requested acceleration failed" in message:
+        return "user_requested_acceleration_failure"
     if "does not consume" in message:
         return "unsupported_target_profile"
     if "identity mismatch" in message or "different mapping artifact" in message:
@@ -544,6 +546,8 @@ def build_package(
 
     synchronization_mode = "host_wait"
     status = "pass" if not diagnostics else "blocked"
+    if status == "blocked" and fallback_policy == "require_acceleration":
+        diagnostics.append("user-requested acceleration failed")
     fallback = fallback_decision(
         policy=fallback_policy,
         target_profile=target_profile,

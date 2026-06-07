@@ -830,6 +830,45 @@ def main() -> int:
             "blocked hardware runtime package audit",
         )
 
+        require_acceleration_package = out_dir / "require-acceleration-hardware-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "hardware",
+                "--fallback-policy",
+                "require_acceleration",
+                "--data-movement-policy",
+                "copy_in_copy_out",
+                "--platform-binding",
+                "platform-binding::host-buffer::vecsum",
+                "--output",
+                str(require_acceleration_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("require-acceleration hardware runtime package unexpectedly passed")
+        require_acceleration_data = json.loads(require_acceleration_package.read_text())
+        if require_acceleration_data.get("fallback_decision", {}).get("policy") != "require_acceleration":
+            raise AssertionError(f"require-acceleration package should preserve policy: {require_acceleration_data}")
+        if require_acceleration_data.get("fallback_decision", {}).get("decision") != "blocked":
+            raise AssertionError(f"require-acceleration package should block without target: {require_acceleration_data}")
+        require_acceleration_records = require_acceleration_data.get("diagnostic_records", [])
+        require_acceleration_classes = {
+            record.get("diagnostic_class")
+            for record in require_acceleration_records
+            if isinstance(record, dict)
+        }
+        if "user_requested_acceleration_failure" not in require_acceleration_classes:
+            raise AssertionError(
+                f"require-acceleration package should diagnose user-requested acceleration failure: "
+                f"{require_acceleration_data}"
+            )
+
     return 0
 
 
