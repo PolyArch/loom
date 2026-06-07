@@ -32,6 +32,7 @@ SYNCHRONIZATION_POLICIES = {
     "host_fence",
     "device_poll",
 }
+RUNTIME_INVOCATION_ABI = "loom_runtime_package_v1"
 FPA_FIDELITY_LEVELS = {
     "analytic",
     "mapped_activity",
@@ -1699,6 +1700,8 @@ def validate_host_interface(
     for key in ("compatibility_mode_requires_runtime", "acceleration_mode_requires_runtime_package"):
         if not isinstance(value.get(key), bool):
             diagnostics.append(f"{label} host_interface {key} must be boolean")
+    if value.get("invocation_abi") != RUNTIME_INVOCATION_ABI:
+        diagnostics.append(f"{label} host_interface invocation_abi must be {RUNTIME_INVOCATION_ABI}")
     if "host_program_identity" in data and value.get("host_program_identity") != data.get("host_program_identity"):
         diagnostics.append(f"{label} host_interface host_program_identity does not match package")
     if "host_wrapper_identity" in data and value.get("host_wrapper_identity") != data.get("host_wrapper_identity"):

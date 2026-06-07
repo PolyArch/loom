@@ -577,6 +577,23 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package requiring runtime for compatibility mode unexpectedly passed audit")
+        bad_host_abi_package = out_dir / "bad-host-abi-runtime-package.json"
+        bad_host_abi_data = json.loads(package.read_text())
+        bad_host_abi_data["host_interface"]["invocation_abi"] = "other_runtime_abi"
+        bad_host_abi_package.write_text(json.dumps(bad_host_abi_data, indent=2, sort_keys=True) + "\n")
+        bad_host_abi_audit = out_dir / "bad-host-abi-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_host_abi_audit),
+                str(bad_host_abi_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with unsupported host ABI unexpectedly passed audit")
         fake_execution_package = out_dir / "fake-execution-runtime-package.json"
         fake_execution_data = json.loads(package.read_text())
         fake_execution_data["runtime_report"]["launch_status"] = "pass"
