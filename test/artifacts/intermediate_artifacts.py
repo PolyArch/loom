@@ -1574,6 +1574,18 @@ def validate_runtime_report(
     for report_key, package_key in expected_pairs:
         if value.get(report_key) != data.get(package_key):
             diagnostics.append(f"runtime package runtime_report {report_key} does not match package")
+    report_custom_policy = value.get("custom_data_movement_policy_identity")
+    runtime_configuration = data.get("runtime_configuration")
+    runtime_custom_policy = None
+    if isinstance(runtime_configuration, dict):
+        runtime_custom_policy = runtime_configuration.get("custom_data_movement_policy_identity")
+    if data.get("data_movement_policy") == "custom":
+        if not isinstance(report_custom_policy, str) or not report_custom_policy:
+            diagnostics.append("runtime package runtime_report lacks custom_data_movement_policy_identity")
+        elif isinstance(runtime_custom_policy, str) and report_custom_policy != runtime_custom_policy:
+            diagnostics.append("runtime package runtime_report custom policy does not match configuration")
+    elif report_custom_policy is not None:
+        diagnostics.append("runtime package runtime_report custom policy is only valid for custom policy")
     target_profile = data.get("target_profile")
     if isinstance(target_profile, dict) and value.get("target_profile_id") != target_profile.get("profile_id"):
         diagnostics.append("runtime package runtime_report target_profile_id does not match target_profile")

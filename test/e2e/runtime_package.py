@@ -331,13 +331,14 @@ def runtime_report(
     fabric_adg_identity: str,
     target_profile: dict[str, str],
     data_movement_policy: str,
+    custom_data_movement_policy: str,
     synchronization_mode: str,
     fallback_policy: str,
     fallback: dict[str, object],
     simulator_report_identities: list[str],
     diagnostics: list[str],
 ) -> dict[str, object]:
-    return {
+    report = {
         "report_id": f"runtime-report::{workload}::{mapping_id}::{fallback_policy}",
         "host_program_identity": host_program_identity,
         "work_package_identity": work_package_identity,
@@ -356,6 +357,9 @@ def runtime_report(
         "target_status": "not_run",
         "diagnostic_records": diagnostic_records(diagnostics),
     }
+    if data_movement_policy == "custom" and custom_data_movement_policy:
+        report["custom_data_movement_policy_identity"] = custom_data_movement_policy
+    return report
 
 
 def build_package(
@@ -622,6 +626,7 @@ def build_package(
             fabric_adg_identity=fabric_adg_identity,
             target_profile=target_profile,
             data_movement_policy=data_movement_policy,
+            custom_data_movement_policy=custom_data_movement_policy,
             synchronization_mode=synchronization_mode,
             fallback_policy=fallback_policy,
             fallback=fallback,
