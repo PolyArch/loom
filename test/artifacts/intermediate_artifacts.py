@@ -3784,8 +3784,16 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             priority = objective.get("priority")
             if not isinstance(priority, (int, float)) or priority <= 0:
                 diagnostics.append(f"DSE report bundle objective {index} has invalid priority")
+        objective_ids = {
+            objective.get("objective_id")
+            for objective in objectives
+            if isinstance(objective, dict)
+            and isinstance(objective.get("objective_id"), str)
+            and objective.get("objective_id")
+        }
         candidates = data.get("candidate_list")
         candidate_ids: set[str] = set()
+        candidate_status_by_id: dict[str, object] = {}
         if not isinstance(candidates, list) or (data.get("report_status") == "pass" and not candidates):
             diagnostics.append("DSE report bundle needs non-empty candidate_list")
             candidates = []
@@ -3800,6 +3808,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(f"DSE report bundle repeats candidate_id {candidate_id}")
             else:
                 candidate_ids.add(candidate_id)
+                candidate_status_by_id[candidate_id] = candidate.get("status")
             for key in ("candidate_kind", "status"):
                 if not isinstance(candidate.get(key), str) or not candidate.get(key):
                     diagnostics.append(f"DSE report bundle candidate {index} lacks {key}")
@@ -3815,6 +3824,32 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not isinstance(candidate.get(key), list):
                     diagnostics.append(f"DSE report bundle candidate {index} {key} must be a list")
+            objective_records_used = candidate.get("objective_records_used")
+            if isinstance(objective_records_used, list):
+                if candidate.get("status") in {"selected", "pareto"} and not objective_records_used:
+                    diagnostics.append(
+                        f"DSE report bundle candidate {index} needs objective_records_used"
+                    )
+                for objective_id in objective_records_used:
+                    if not isinstance(objective_id, str) or not objective_id:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} objective_records_used has invalid entry"
+                        )
+                    elif objective_ids and objective_id not in objective_ids:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} objective_records_used references {objective_id!r}"
+                        )
+            metric_records_used = candidate.get("metric_records_used")
+            if isinstance(metric_records_used, list):
+                if candidate.get("status") in {"selected", "pareto"} and not metric_records_used:
+                    diagnostics.append(
+                        f"DSE report bundle candidate {index} needs metric_records_used"
+                    )
+                for metric_id in metric_records_used:
+                    if not isinstance(metric_id, str) or not metric_id:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} metric_records_used has invalid entry"
+                        )
             validate_dse_report_candidate_input_fingerprints(path, candidate, diagnostics, index)
         selected_candidates = data.get("selected_candidates")
         if isinstance(selected_candidates, list):
@@ -3825,6 +3860,33 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ]
             if missing_selected:
                 diagnostics.append(f"DSE report bundle selected candidates are missing records {missing_selected}")
+            mismatched_selected = [
+                candidate_id
+                for candidate_id in selected_candidates
+                if candidate_status_by_id.get(candidate_id) != "selected"
+            ]
+            if mismatched_selected:
+                diagnostics.append(
+                    f"DSE report bundle selected candidates have non-selected records {mismatched_selected}"
+                )
+        pareto_set = data.get("pareto_set")
+        if isinstance(pareto_set, list):
+            missing_pareto = [
+                candidate_id
+                for candidate_id in pareto_set
+                if candidate_id not in candidate_ids
+            ]
+            if missing_pareto:
+                diagnostics.append(f"DSE report bundle pareto candidates are missing records {missing_pareto}")
+            mismatched_pareto = [
+                candidate_id
+                for candidate_id in pareto_set
+                if candidate_status_by_id.get(candidate_id) != "pareto"
+            ]
+            if mismatched_pareto:
+                diagnostics.append(
+                    f"DSE report bundle pareto candidates have non-pareto records {mismatched_pareto}"
+                )
         if data.get("report_status") == "pass":
             for key in (
                 "selected_candidates",
