@@ -174,8 +174,14 @@ class MakeWorktreeTest(unittest.TestCase):
 
         build_calls = [call for call in popen_calls if call.cmd[0] == "cmake"]
         lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
+        filter_calls = [call for call in popen_calls if call.cmd[0] == sys.executable]
         self.assertEqual(len(build_calls), 1)
         self.assertEqual(len(lit_calls), 1)
+        self.assertEqual(len(filter_calls), 2)
+        self.assertEqual(
+            {call.cmd[1] for call in filter_calls},
+            {str(self.paths.root / "test" / "lit_top_slowest.py")},
+        )
         self.assertIn("--filter-out", build_calls[0].kwargs["env"]["LIT_OPTS"])
         self.assertIn("techmap/perf", build_calls[0].kwargs["env"]["LIT_OPTS"])
         self.assertIn("-j1", lit_calls[0].cmd)

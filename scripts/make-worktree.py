@@ -527,8 +527,11 @@ def lit_opts(*parts: str) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
-def run_with_lit_filter(cmd: list[str], env: dict[str, str] | None = None) -> None:
-    top = Path(__file__).resolve().parents[1] / "test" / "lit_top_slowest.py"
+def run_with_lit_filter(
+    cmd: list[str],
+    lit_filter: Path,
+    env: dict[str, str] | None = None,
+) -> None:
     proc = subprocess.Popen(
         cmd,
         env=env,
@@ -537,7 +540,7 @@ def run_with_lit_filter(cmd: list[str], env: dict[str, str] | None = None) -> No
     )
     assert proc.stdout is not None
     py = subprocess.Popen(
-        [sys.executable, str(top)],
+        [sys.executable, str(lit_filter)],
         stdin=proc.stdout,
     )
     proc.stdout.close()
@@ -563,11 +566,13 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
         "techmap/perf",
         extra,
     )
+    lit_filter = paths.root / "test" / "lit_top_slowest.py"
     run_with_lit_filter(
         [
             "cmake", "--build", str(paths.loom_build),
             f"-j{args.jobs}", "--target", "check-fabric",
         ],
+        lit_filter,
         env=broad_env,
     )
 
@@ -579,6 +584,7 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
             "-j1",
             str(paths.loom_build / "test" / "techmap" / "perf"),
         ],
+        lit_filter,
         env=perf_env,
     )
 
