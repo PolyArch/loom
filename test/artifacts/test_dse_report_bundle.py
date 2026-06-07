@@ -209,6 +209,9 @@ def main() -> int:
             "metric::shared_reduction_adg::dynamic_power_mw",
             "metric::shared_reduction_adg::leakage_power_mw",
             "metric::vecsum::energy_nj",
+            "metric::vecsum::throughput_items_per_s",
+            "metric::vecsum::performance_per_watt",
+            "metric::vecsum::performance_per_area",
         ):
             if metric_id not in candidate.get("metric_records_used", []):
                 raise AssertionError(f"candidate missed metric {metric_id}: {candidate}")

@@ -89,6 +89,26 @@ def metric_ids_for_candidate(row: dict[str, str]) -> list[str]:
     return ids
 
 
+def workload_metric_ids_by_workload(paths: list[Path]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for path in paths:
+        data = read_json(path)
+        if data.get("kind") != "workload_report_bundle" or data.get("report_status") != "pass":
+            continue
+        workload = data.get("workload")
+        metrics = data.get("metric_records")
+        if not isinstance(workload, str) or not workload or not isinstance(metrics, list):
+            continue
+        ids = grouped.setdefault(workload, [])
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            metric_id = metric.get("metric_id")
+            if isinstance(metric_id, str) and metric_id and metric_id not in ids:
+                ids.append(metric_id)
+    return grouped
+
+
 def semicolon_list(raw: str) -> list[str]:
     return [entry for entry in raw.split(";") if entry]
 
@@ -379,6 +399,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         }
 
     _, selected_row = selected
+    workload_metric_ids = workload_metric_ids_by_workload(grouped.get("workload_report_bundle", []))
     candidates: list[dict[str, object]] = []
     selected_candidates: list[str] = []
     pareto_set: list[str] = []
@@ -387,6 +408,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         for row in read_csv(path):
             status = row.get("selection_status", "blocked")
             record = candidate_record(row)
+            metrics_used = record.get("metric_records_used")
+            if isinstance(metrics_used, list):
+                for metric_id in workload_metric_ids.get(row.get("workload", ""), []):
+                    if metric_id not in metrics_used:
+                        metrics_used.append(metric_id)
             candidates.append(record)
             candidate_id = row.get("candidate", "")
             if status == "selected" and candidate_id:
