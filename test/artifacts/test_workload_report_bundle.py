@@ -484,6 +484,29 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime policies unexpectedly passed audit")
+        bad_top_level_runtime_fallback_report = (
+            out_dir / "bad-top-level-runtime-fallback-workload-report-bundle.json"
+        )
+        bad_top_level_runtime_fallback_data = json.loads(report.read_text())
+        bad_top_level_runtime_fallback_data["runtime_fallback_decision"]["decision"] = "none"
+        bad_top_level_runtime_fallback_report.write_text(
+            json.dumps(bad_top_level_runtime_fallback_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_top_level_runtime_fallback_audit = (
+            out_dir / "bad-top-level-runtime-fallback-workload-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_top_level_runtime_fallback_audit),
+                str(bad_top_level_runtime_fallback_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched top-level runtime fallback unexpectedly passed audit")
         bad_runtime_fallback_report = out_dir / "bad-runtime-fallback-workload-report-bundle.json"
         bad_runtime_fallback_data = json.loads(report.read_text())
         bad_runtime_fallback_data["runtime_evidence"]["fallback_decision"]["policy"] = "allow_host_fallback"

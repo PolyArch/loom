@@ -3634,6 +3634,18 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("host_program_identity", "host_wrapper_identity"):
                 if key in runtime_evidence:
                     host_interface_expectations[key] = runtime_evidence.get(key)
+            runtime_fallback_decision = data.get("runtime_fallback_decision")
+            evidence_fallback_decision = runtime_evidence.get("fallback_decision")
+            if (
+                isinstance(runtime_fallback_decision, dict)
+                and runtime_fallback_decision
+                and isinstance(evidence_fallback_decision, dict)
+                and evidence_fallback_decision
+                and runtime_fallback_decision != evidence_fallback_decision
+            ):
+                diagnostics.append(
+                    "workload report bundle runtime_fallback_decision does not match runtime_evidence"
+                )
         runtime_host_interface = data.get("runtime_host_interface")
         validate_host_interface(
             runtime_host_interface,
