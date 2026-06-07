@@ -471,7 +471,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             ) or "custom_calibrated",
             evidence_source_artifact_id=artifact_id(dse_path),
             producer_component="dse-candidate-summary",
-            derivation_kind="cycle_frequency_power_area",
+            derivation_kind="runtime_power_energy",
             diagnostics=[dse_row.get("diagnostic", "")],
             input_metric_ids=energy_inputs,
         )

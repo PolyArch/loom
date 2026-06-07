@@ -230,6 +230,8 @@ def main() -> int:
         }
         if inputs != required_inputs:
             raise AssertionError(f"energy metric should preserve input metric ids: {energy}")
+        if energy.get("derivation_kind") != "runtime_power_energy":
+            raise AssertionError(f"energy metric should identify runtime and power derivation: {energy}")
         runtime = metrics_by_id["metric::vecsum::estimated_runtime_us"]
         runtime_inputs = set(runtime.get("input_metric_ids", []))
         required_runtime_inputs = {
