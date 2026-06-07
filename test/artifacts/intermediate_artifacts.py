@@ -3021,6 +3021,14 @@ def validate_workload_report_input_fingerprints(
             for identity in optional_identities.values()
             if isinstance(identity, str) and identity
         )
+    metrics = data.get("metric_records")
+    if isinstance(metrics, list):
+        for metric in metrics:
+            if not isinstance(metric, dict):
+                continue
+            source = metric.get("evidence_source_artifact_id")
+            if isinstance(source, str) and source:
+                reference_ids.add(source)
     input_fingerprints = data.get("input_artifact_fingerprints")
     if not isinstance(input_fingerprints, dict):
         diagnostics.append("workload report bundle input_artifact_fingerprints must be an object")
