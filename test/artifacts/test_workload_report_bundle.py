@@ -190,6 +190,7 @@ def main() -> int:
         metrics_by_id = metric_by_id(metrics)
         expected_metrics = {
             "metric::vecsum::dfg_sim_cycles": ("optimistic_steps", 579, "cycles", "dfg_software"),
+            "metric::vecsum::workload_size_items": ("workload_size", 64, "items", "dfg_software"),
             "metric::vecsum::cgra_sim_cycles": ("hardware_cycles", 589, "cycles", "cgra_mapped"),
             "metric::shared_reduction_adg::frequency_mhz": ("frequency", 250.0, "MHz", "analytic"),
             "metric::shared_reduction_adg::area_um2": ("area", 7250.0, "um2", "analytic"),

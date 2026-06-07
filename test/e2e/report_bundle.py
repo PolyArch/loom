@@ -392,6 +392,19 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                 derivation_kind="simulator_report",
             )
         )
+    if isinstance(dfg_report.get("dynamic_work_items"), int) and dfg_path is not None:
+        metric_records.append(
+            metric_record(
+                metric_id=f"metric::{workload}::workload_size_items",
+                metric_class="workload_size",
+                value=int(dfg_report["dynamic_work_items"]),
+                unit="items",
+                fidelity_level="dfg_software",
+                evidence_source_artifact_id=artifact_id(dfg_path),
+                producer_component="loom-dfg-sim",
+                derivation_kind="simulator_report",
+            )
+        )
 
     if isinstance(cgra_report.get("hardware_aware_cycles"), int) and cgra_path is not None:
         metric_records.append(

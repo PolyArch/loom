@@ -2122,6 +2122,7 @@ EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME = {
     "rtl_manifest": "rtl_manifest",
 }
 EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
+    "workload_size": "items",
     "optimistic_steps": "cycles",
     "hardware_cycles": "cycles",
     "estimated_runtime": "us",
