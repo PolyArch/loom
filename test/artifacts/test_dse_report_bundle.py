@@ -123,6 +123,7 @@ def main() -> int:
                 "mapping_artifact_identity": workload_runtime_evidence["mapping_artifact_identity"],
                 "fabric_adg_identity": workload_runtime_evidence["fabric_adg_identity"],
                 "target_profile_id": workload_runtime_evidence["target_profile_id"],
+                "fallback_policy": workload_runtime_evidence["fallback_policy"],
                 "launch_status": "not_run",
                 "target_status": "not_run",
                 "runtime_trace_identity": workload_runtime_evidence["runtime_trace_identity"],
@@ -306,6 +307,31 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime summary policies unexpectedly passed audit")
+
+        bad_runtime_fallback_summary = out_dir / "bad-runtime-fallback-summary-dse-report-bundle.json"
+        bad_runtime_fallback_summary_data = json.loads(report.read_text())
+        bad_runtime_fallback_summary_data["runtime_evidence_summaries"][0]["fallback_decision"][
+            "policy"
+        ] = "allow_host_fallback"
+        bad_runtime_fallback_summary_data["runtime_evidence_summaries"][0]["fallback_decision"][
+            "target_profile_id"
+        ] = "simulator::dfg_sim::optimistic_pipeline_latency_throughput_sum"
+        bad_runtime_fallback_summary.write_text(
+            json.dumps(bad_runtime_fallback_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_fallback_summary_audit = out_dir / "bad-runtime-fallback-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_fallback_summary_audit),
+                str(bad_runtime_fallback_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched runtime fallback summary unexpectedly passed audit")
 
         bad_runtime_identity_summary = out_dir / "bad-runtime-identity-summary-dse-report-bundle.json"
         bad_runtime_identity_summary_data = json.loads(report.read_text())

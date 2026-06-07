@@ -1627,6 +1627,7 @@ def validate_runtime_evidence(
         "mapping_artifact_identity",
         "fabric_adg_identity",
         "target_profile_id",
+        "fallback_policy",
         "launch_status",
         "target_status",
         "runtime_trace_identity",
@@ -1663,6 +1664,7 @@ def validate_runtime_evidence(
         "mapping_artifact_identity",
         "fabric_adg_identity",
         "target_profile_id",
+        "fallback_policy",
     ):
         if not isinstance(value.get(key), str):
             diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
@@ -1750,6 +1752,14 @@ def validate_runtime_evidence(
     if not isinstance(fallback, dict):
         diagnostics.append("workload report bundle runtime_evidence fallback_decision must be an object")
         fallback = {}
+    validate_fallback_decision(
+        fallback,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+        expected_policy=value.get("fallback_policy"),
+        target_profile_id=value.get("target_profile_id"),
+        require_complete=require_complete,
+    )
     if require_complete and not value.get("runtime_report_identity"):
         diagnostics.append("workload report bundle pass needs runtime_report_identity")
     if require_complete and not input_fingerprints:
@@ -1796,6 +1806,7 @@ def validate_runtime_evidence_summaries(
             "mapping_artifact_identity",
             "fabric_adg_identity",
             "target_profile_id",
+            "fallback_policy",
         ):
             if not isinstance(summary.get(key), str):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")
@@ -1915,6 +1926,8 @@ def validate_runtime_evidence_summaries(
             fallback,
             diagnostics,
             f"DSE report bundle runtime evidence summary {index}",
+            expected_policy=summary.get("fallback_policy"),
+            target_profile_id=summary.get("target_profile_id"),
             require_complete=True,
         )
         if isinstance(fallback, dict) and fallback.get("decision") == "report_only":

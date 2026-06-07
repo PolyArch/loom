@@ -239,6 +239,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "mapping_artifact_identity": str(evidence.get("mapping_artifact_identity", "")),
             "fabric_adg_identity": str(evidence.get("fabric_adg_identity", "")),
             "target_profile_id": str(evidence.get("target_profile_id", "")),
+            "fallback_policy": str(evidence.get("fallback_policy", "")),
             "launch_status": str(evidence.get("launch_status", "")),
             "target_status": str(evidence.get("target_status", "")),
             "runtime_trace_identity": str(evidence.get("runtime_trace_identity", "")),

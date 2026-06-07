@@ -150,6 +150,7 @@ def main() -> int:
             "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
             "fabric_adg_identity": runtime_report["fabric_adg_identity"],
             "target_profile_id": runtime_report["target_profile_id"],
+            "fallback_policy": runtime_package_data["fallback_policy"],
             "launch_status": "not_run",
             "target_status": "not_run",
             "runtime_trace_identity": "",
@@ -323,6 +324,28 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime policies unexpectedly passed audit")
+        bad_runtime_fallback_report = out_dir / "bad-runtime-fallback-workload-report-bundle.json"
+        bad_runtime_fallback_data = json.loads(report.read_text())
+        bad_runtime_fallback_data["runtime_evidence"]["fallback_decision"]["policy"] = "allow_host_fallback"
+        bad_runtime_fallback_data["runtime_evidence"]["fallback_decision"][
+            "target_profile_id"
+        ] = "simulator::dfg_sim::optimistic_pipeline_latency_throughput_sum"
+        bad_runtime_fallback_report.write_text(
+            json.dumps(bad_runtime_fallback_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_fallback_audit = out_dir / "bad-runtime-fallback-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_fallback_audit),
+                str(bad_runtime_fallback_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime fallback unexpectedly passed audit")
         bad_runtime_identity_report = out_dir / "bad-runtime-identity-workload-report-bundle.json"
         bad_runtime_identity_data = json.loads(report.read_text())
         bad_runtime_identity_data["runtime_evidence"]["launch_descriptor_identity"] = []

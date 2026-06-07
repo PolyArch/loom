@@ -198,6 +198,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),
         "fabric_adg_identity": str(report.get("fabric_adg_identity", "")),
         "target_profile_id": str(report.get("target_profile_id", "")),
+        "fallback_policy": str(runtime_package.get("fallback_policy", "")),
         "launch_status": str(report.get("launch_status", "")),
         "target_status": str(report.get("target_status", "")),
         "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
