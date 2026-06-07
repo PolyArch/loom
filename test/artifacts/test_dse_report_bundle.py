@@ -399,6 +399,48 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with overlapping selected and Pareto candidates unexpectedly passed audit")
 
+        unlisted_selected = out_dir / "unlisted-selected-dse-report-bundle.json"
+        unlisted_selected_data = json.loads(report.read_text())
+        extra_selected_candidate = dict(unlisted_selected_data["candidate_list"][0])
+        extra_selected_candidate["candidate_id"] = "candidate::unlisted-selected"
+        extra_selected_candidate["status"] = "selected"
+        unlisted_selected_data["candidate_list"].append(extra_selected_candidate)
+        unlisted_selected.write_text(json.dumps(unlisted_selected_data, indent=2, sort_keys=True) + "\n")
+        unlisted_selected_audit = out_dir / "unlisted-selected-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unlisted_selected_audit),
+                str(unlisted_selected),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with unlisted selected candidate unexpectedly passed audit")
+
+        unlisted_pareto = out_dir / "unlisted-pareto-dse-report-bundle.json"
+        unlisted_pareto_data = json.loads(report.read_text())
+        extra_pareto_candidate = dict(unlisted_pareto_data["candidate_list"][0])
+        extra_pareto_candidate["candidate_id"] = "candidate::unlisted-pareto"
+        extra_pareto_candidate["status"] = "pareto"
+        unlisted_pareto_data["candidate_list"].append(extra_pareto_candidate)
+        unlisted_pareto.write_text(json.dumps(unlisted_pareto_data, indent=2, sort_keys=True) + "\n")
+        unlisted_pareto_audit = out_dir / "unlisted-pareto-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unlisted_pareto_audit),
+                str(unlisted_pareto),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with unlisted Pareto candidate unexpectedly passed audit")
+
         missing_rejected_summary = out_dir / "missing-rejected-summary-dse-report-bundle.json"
         missing_rejected_summary_data = json.loads(report.read_text())
         rejected_candidate = dict(missing_rejected_summary_data["candidate_list"][0])

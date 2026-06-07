@@ -3864,6 +3864,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         candidates = data.get("candidate_list")
         candidate_ids: set[str] = set()
         candidate_status_by_id: dict[str, object] = {}
+        selected_record_ids: set[str] = set()
+        pareto_record_ids: set[str] = set()
         rejected_candidate_ids: set[str] = set()
         if not isinstance(candidates, list) or (data.get("report_status") == "pass" and not candidates):
             diagnostics.append("DSE report bundle needs non-empty candidate_list")
@@ -3885,8 +3887,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append(f"DSE report bundle candidate {index} lacks {key}")
             if candidate.get("status") not in SELECTION_STATUSES:
                 diagnostics.append(f"DSE report bundle candidate {index} has unknown status")
-            elif candidate.get("status") == "rejected" and isinstance(candidate_id, str) and candidate_id:
-                rejected_candidate_ids.add(candidate_id)
+            elif isinstance(candidate_id, str) and candidate_id:
+                if candidate.get("status") == "selected":
+                    selected_record_ids.add(candidate_id)
+                elif candidate.get("status") == "pareto":
+                    pareto_record_ids.add(candidate_id)
+                elif candidate.get("status") == "rejected":
+                    rejected_candidate_ids.add(candidate_id)
             for key in (
                 "parent_candidate_ids",
                 "referenced_input_artifacts",
@@ -3962,6 +3969,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append(
                     f"DSE report bundle selected candidates have non-selected records {mismatched_selected}"
                 )
+            unlisted_selected = sorted(selected_record_ids - selected_candidate_ids)
+            if unlisted_selected:
+                diagnostics.append(
+                    f"DSE report bundle selected candidate records are missing from selected_candidates {unlisted_selected}"
+                )
         pareto_set = data.get("pareto_set")
         pareto_candidate_ids = validate_dse_candidate_id_list(
             pareto_set,
@@ -3984,6 +3996,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if mismatched_pareto:
                 diagnostics.append(
                     f"DSE report bundle pareto candidates have non-pareto records {mismatched_pareto}"
+                )
+            unlisted_pareto = sorted(pareto_record_ids - pareto_candidate_ids)
+            if unlisted_pareto:
+                diagnostics.append(
+                    f"DSE report bundle Pareto candidate records are missing from pareto_set {unlisted_pareto}"
                 )
         overlapping_selection = sorted(selected_candidate_ids & pareto_candidate_ids)
         if overlapping_selection:
