@@ -3654,6 +3654,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "workload report bundle runtime",
         )
         if isinstance(runtime_host_interface, dict):
+            evidence_host_interface = {}
+            if isinstance(runtime_evidence, dict) and isinstance(runtime_evidence.get("host_interface"), dict):
+                evidence_host_interface = runtime_evidence["host_interface"]
+            if evidence_host_interface and runtime_host_interface != evidence_host_interface:
+                diagnostics.append(
+                    "workload report bundle runtime_host_interface does not match runtime_evidence"
+                )
             if runtime_host_interface.get("source_provenance") != data.get("runtime_input_identity"):
                 diagnostics.append(
                     "workload report bundle runtime host_interface source_provenance does not match runtime input"

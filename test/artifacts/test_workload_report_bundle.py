@@ -303,6 +303,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime source provenance unexpectedly passed audit")
+        bad_top_level_host_abi_report = out_dir / "bad-top-level-host-abi-workload-report-bundle.json"
+        bad_top_level_host_abi_data = json.loads(report.read_text())
+        bad_top_level_host_abi_data["runtime_host_interface"]["invocation_abi"] = "other_runtime_abi"
+        bad_top_level_host_abi_report.write_text(
+            json.dumps(bad_top_level_host_abi_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_top_level_host_abi_audit = out_dir / "bad-top-level-host-abi-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_top_level_host_abi_audit),
+                str(bad_top_level_host_abi_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched top-level runtime host ABI unexpectedly passed audit")
         stale_report_fingerprint = out_dir / "stale-input-fingerprint-workload-report-bundle.json"
         stale_report_fingerprint_data = json.loads(report.read_text())
         stale_report_fingerprint_data["input_artifact_fingerprints"]["source-compat-summary"] = "0" * 64
