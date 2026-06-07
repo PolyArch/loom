@@ -315,6 +315,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime policies unexpectedly passed audit")
+        extra_custom_policy_report = out_dir / "extra-custom-policy-workload-report-bundle.json"
+        extra_custom_policy_data = json.loads(report.read_text())
+        extra_custom_policy_data["runtime_evidence"][
+            "custom_data_movement_policy_identity"
+        ] = "runtime-policy::unexpected::vecsum"
+        extra_custom_policy_report.write_text(
+            json.dumps(extra_custom_policy_data, indent=2, sort_keys=True) + "\n"
+        )
+        extra_custom_policy_audit = out_dir / "extra-custom-policy-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(extra_custom_policy_audit),
+                str(extra_custom_policy_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with custom policy for simulated runtime unexpectedly passed audit")
         reviews = audit_data.get("artifact_reviews", [])
         matching_reviews = [
             review for review in reviews
@@ -455,6 +476,103 @@ def main() -> int:
             for record in records
         ):
             raise AssertionError(f"report bundle should preserve platform binding diagnostics: {missing_binding_data}")
+
+        named_custom_runtime = out_dir / "named-custom-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "hardware",
+                "--data-movement-policy",
+                "custom",
+                "--custom-data-movement-policy",
+                "runtime-policy::dma-window::vecsum",
+                "--platform-binding",
+                "platform-binding::host-buffer::vecsum",
+                "--output",
+                str(named_custom_runtime),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware runtime package without hardware backend unexpectedly passed")
+        named_custom_report = out_dir / "named-custom-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(named_custom_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(named_custom_runtime),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("report bundle with unavailable hardware runtime unexpectedly passed")
+        named_custom_data = json.loads(named_custom_report.read_text())
+        named_custom_evidence = named_custom_data.get("runtime_evidence", {})
+        if named_custom_evidence.get("data_movement_policy") != "custom":
+            raise AssertionError(f"custom report should preserve runtime data movement policy: {named_custom_data}")
+        if (
+            named_custom_evidence.get("custom_data_movement_policy_identity")
+            != "runtime-policy::dma-window::vecsum"
+        ):
+            raise AssertionError(f"custom report should preserve runtime policy identity: {named_custom_data}")
+        named_custom_audit = out_dir / "named-custom-workload-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(named_custom_audit),
+                str(named_custom_report),
+            ],
+            "named custom workload report bundle audit",
+        )
+        unnamed_custom_report = out_dir / "unnamed-custom-workload-report-bundle.json"
+        unnamed_custom_data = json.loads(named_custom_report.read_text())
+        unnamed_custom_data["runtime_evidence"].pop("custom_data_movement_policy_identity", None)
+        unnamed_custom_report.write_text(json.dumps(unnamed_custom_data, indent=2, sort_keys=True) + "\n")
+        unnamed_custom_audit = out_dir / "unnamed-custom-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unnamed_custom_audit),
+                str(unnamed_custom_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with unnamed custom runtime policy unexpectedly passed audit")
 
     return 0
 

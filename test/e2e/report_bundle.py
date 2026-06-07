@@ -171,14 +171,26 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     required_synchronization_policies = runtime_package.get("required_synchronization_policies", [])
     if not isinstance(required_synchronization_policies, list):
         required_synchronization_policies = []
-    return {
+    data_movement_policy = str(runtime_package.get("data_movement_policy", ""))
+    custom_data_movement_policy = ""
+    if data_movement_policy == "custom":
+        report_custom_policy = report.get("custom_data_movement_policy_identity")
+        runtime_configuration = runtime_package.get("runtime_configuration", {})
+        runtime_custom_policy = None
+        if isinstance(runtime_configuration, dict):
+            runtime_custom_policy = runtime_configuration.get("custom_data_movement_policy_identity")
+        if isinstance(report_custom_policy, str) and report_custom_policy:
+            custom_data_movement_policy = report_custom_policy
+        elif isinstance(runtime_custom_policy, str) and runtime_custom_policy:
+            custom_data_movement_policy = runtime_custom_policy
+    evidence = {
         "runtime_package_identity": artifact_id(runtime_path) if runtime_path is not None else "",
         "runtime_report_identity": str(report.get("report_id", "")),
         "launch_status": str(report.get("launch_status", "")),
         "target_status": str(report.get("target_status", "")),
         "runtime_trace_identity": str(report.get("runtime_trace_identity", "")),
         "profiling_record_identity": str(report.get("profiling_record_identity", "")),
-        "data_movement_policy": str(runtime_package.get("data_movement_policy", "")),
+        "data_movement_policy": data_movement_policy,
         "synchronization_mode": str(runtime_package.get("synchronization_mode", "")),
         "required_data_movement_policies": [
             str(policy)
@@ -202,6 +214,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         ],
         "fallback_decision": fallback,
     }
+    if custom_data_movement_policy:
+        evidence["custom_data_movement_policy_identity"] = custom_data_movement_policy
+    return evidence
 
 
 def build_bundle(paths: list[Path]) -> dict[str, object]:

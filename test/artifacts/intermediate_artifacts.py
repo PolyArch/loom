@@ -1651,6 +1651,14 @@ def validate_runtime_evidence(
     data_movement_policy = value.get("data_movement_policy")
     if data_movement_policy not in DATA_MOVEMENT_POLICIES:
         diagnostics.append("workload report bundle runtime_evidence has unknown data_movement_policy")
+    custom_identity = value.get("custom_data_movement_policy_identity")
+    if data_movement_policy == "custom":
+        if not isinstance(custom_identity, str) or not custom_identity:
+            diagnostics.append("workload report bundle runtime_evidence lacks custom_data_movement_policy_identity")
+    elif custom_identity is not None:
+        diagnostics.append(
+            "workload report bundle runtime_evidence custom_data_movement_policy_identity is only valid for custom policy"
+        )
     outputs = value.get("output_buffer_identities")
     if not isinstance(outputs, list) or any(not isinstance(identity, str) for identity in outputs):
         diagnostics.append("workload report bundle runtime_evidence output_buffer_identities must be a string list")
