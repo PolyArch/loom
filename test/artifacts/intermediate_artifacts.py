@@ -2927,6 +2927,30 @@ def validate_workload_runtime_evidence_references(
                 "workload report bundle runtime_evidence runtime_package_identity "
                 "does not match runtime package input"
             )
+    runtime_fallback_decision = data.get("runtime_fallback_decision")
+    evidence_fallback_decision = runtime_evidence.get("fallback_decision")
+    if (
+        isinstance(runtime_fallback_decision, dict)
+        and runtime_fallback_decision
+        and isinstance(evidence_fallback_decision, dict)
+        and evidence_fallback_decision
+        and runtime_fallback_decision != evidence_fallback_decision
+    ):
+        diagnostics.append(
+            "workload report bundle runtime_fallback_decision does not match runtime_evidence"
+        )
+    runtime_host_interface = data.get("runtime_host_interface")
+    evidence_host_interface = runtime_evidence.get("host_interface")
+    if (
+        isinstance(runtime_host_interface, dict)
+        and runtime_host_interface
+        and isinstance(evidence_host_interface, dict)
+        and evidence_host_interface
+        and runtime_host_interface != evidence_host_interface
+    ):
+        diagnostics.append(
+            "workload report bundle runtime_host_interface does not match runtime_evidence"
+        )
     selected_hardware = data.get("selected_hardware_candidate_identity")
     evidence_fabric = runtime_evidence.get("fabric_adg_identity")
     if (
@@ -3647,18 +3671,6 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("host_program_identity", "host_wrapper_identity"):
                 if key in runtime_evidence:
                     host_interface_expectations[key] = runtime_evidence.get(key)
-            runtime_fallback_decision = data.get("runtime_fallback_decision")
-            evidence_fallback_decision = runtime_evidence.get("fallback_decision")
-            if (
-                isinstance(runtime_fallback_decision, dict)
-                and runtime_fallback_decision
-                and isinstance(evidence_fallback_decision, dict)
-                and evidence_fallback_decision
-                and runtime_fallback_decision != evidence_fallback_decision
-            ):
-                diagnostics.append(
-                    "workload report bundle runtime_fallback_decision does not match runtime_evidence"
-                )
         runtime_host_interface = data.get("runtime_host_interface")
         validate_host_interface(
             runtime_host_interface,
@@ -3667,13 +3679,6 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "workload report bundle runtime",
         )
         if isinstance(runtime_host_interface, dict):
-            evidence_host_interface = {}
-            if isinstance(runtime_evidence, dict) and isinstance(runtime_evidence.get("host_interface"), dict):
-                evidence_host_interface = runtime_evidence["host_interface"]
-            if evidence_host_interface and runtime_host_interface != evidence_host_interface:
-                diagnostics.append(
-                    "workload report bundle runtime_host_interface does not match runtime_evidence"
-                )
             if runtime_host_interface.get("source_provenance") != data.get("runtime_input_identity"):
                 diagnostics.append(
                     "workload report bundle runtime host_interface source_provenance does not match runtime input"
