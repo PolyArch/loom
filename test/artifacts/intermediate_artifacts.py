@@ -3951,6 +3951,47 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if not isinstance(metric_diagnostics, list):
                 diagnostics.append(f"workload report bundle metric {index} diagnostics must be a list")
         for metric in metrics:
+            if not isinstance(metric, dict) or metric.get("metric_class") != "estimated_runtime":
+                continue
+            inputs = metric.get("input_metric_ids")
+            if not isinstance(inputs, list) or not inputs:
+                diagnostics.append("workload report bundle runtime metric lacks input_metric_ids")
+                continue
+            missing_inputs = [metric_id for metric_id in inputs if metric_id not in metric_ids]
+            if missing_inputs:
+                diagnostics.append(
+                    f"workload report bundle runtime metric references missing inputs {missing_inputs}"
+                )
+            input_classes = {
+                metric_class_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str) and metric_id in metric_class_by_id
+            }
+            has_cycle_source = bool({"hardware_cycles", "optimistic_steps"} & input_classes)
+            if not has_cycle_source or "frequency" not in input_classes:
+                diagnostics.append("workload report bundle runtime metric lacks cycle or frequency source inputs")
+            input_value_by_class = {
+                metric_class_by_id[metric_id]: metric_value_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str)
+                and metric_id in metric_class_by_id
+                and metric_id in metric_value_by_id
+            }
+            cycles = input_value_by_class.get("hardware_cycles")
+            if cycles is None:
+                cycles = input_value_by_class.get("optimistic_steps")
+            frequency = input_value_by_class.get("frequency")
+            runtime_value = metric.get("value")
+            if (
+                isinstance(runtime_value, (int, float))
+                and cycles is not None
+                and frequency is not None
+                and frequency > 0
+            ):
+                expected_runtime = cycles / frequency
+                if not nearly_equal(float(runtime_value), expected_runtime):
+                    diagnostics.append("workload report bundle runtime metric value does not match inputs")
+        for metric in metrics:
             if not isinstance(metric, dict) or metric.get("metric_class") != "energy":
                 continue
             inputs = metric.get("input_metric_ids")
