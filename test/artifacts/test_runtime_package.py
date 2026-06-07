@@ -1228,6 +1228,29 @@ def main() -> int:
             raise AssertionError(
                 "runtime package with missing memory descriptor platform binding unexpectedly passed audit"
             )
+        mismatched_descriptor_address = out_dir / "mismatched-descriptor-address-runtime-package.json"
+        mismatched_descriptor_address_data = json.loads(hardware_package.read_text())
+        mismatched_descriptor_address_data["memory_descriptors"][0][
+            "address_space"
+        ] = "platform::unbound_address_space"
+        mismatched_descriptor_address.write_text(
+            json.dumps(mismatched_descriptor_address_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_descriptor_address_audit = out_dir / "mismatched-descriptor-address-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_descriptor_address_audit),
+                str(mismatched_descriptor_address),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError(
+                "runtime package with mismatched memory descriptor address space unexpectedly passed audit"
+            )
 
         require_acceleration_package = out_dir / "require-acceleration-hardware-runtime-package.json"
         result = artifact_test_common.run_command(

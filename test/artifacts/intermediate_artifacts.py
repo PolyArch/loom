@@ -2061,6 +2061,12 @@ def validate_runtime_evidence_memory_descriptors(
                     f"{label} memory descriptor {index} "
                     "platform_binding_identity does not match runtime configuration"
                 )
+            expected_address_space = f"{runtime_platform_binding}::address_space"
+            if descriptor.get("address_space") != expected_address_space:
+                diagnostics.append(
+                    f"{label} memory descriptor {index} "
+                    "address_space does not match platform binding"
+                )
 
 
 def validate_runtime_evidence_argument_descriptors(
@@ -3621,6 +3627,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append(
                         f"runtime package memory descriptor {index} "
                         "platform_binding_identity does not match runtime configuration"
+                    )
+                expected_address_space = f"{runtime_platform_binding}::address_space"
+                if descriptor.get("address_space") != expected_address_space:
+                    diagnostics.append(
+                        f"runtime package memory descriptor {index} "
+                        "address_space does not match platform binding"
                     )
             descriptor_custom_policy = descriptor.get("custom_data_movement_policy_identity")
             if descriptor_policy == "custom":
