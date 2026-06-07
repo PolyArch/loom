@@ -171,6 +171,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     work_package_metadata = runtime_package.get("work_package_metadata", {})
     if not isinstance(work_package_metadata, dict):
         work_package_metadata = {}
+    host_interface = runtime_package.get("host_interface", {})
+    if not isinstance(host_interface, dict):
+        host_interface = {}
     report_output_configuration = runtime_package.get("report_output_configuration", {})
     if not isinstance(report_output_configuration, dict):
         report_output_configuration = {}
@@ -218,6 +221,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "runtime_report_identity": str(report.get("report_id", "")),
         "host_program_identity": str(report.get("host_program_identity", "")),
         "host_wrapper_identity": str(runtime_package.get("host_wrapper_identity", "")),
+        "host_interface": host_interface,
         "runtime_handle_model": runtime_package.get("runtime_handle_model", {}),
         "work_package_metadata": work_package_metadata,
         "work_package_identity": str(report.get("work_package_identity", "")),

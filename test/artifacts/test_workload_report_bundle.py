@@ -146,6 +146,7 @@ def main() -> int:
             "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": runtime_report["host_program_identity"],
             "host_wrapper_identity": runtime_package_data["host_wrapper_identity"],
+            "host_interface": runtime_package_data["host_interface"],
             "runtime_handle_model": runtime_package_data["runtime_handle_model"],
             "work_package_metadata": runtime_package_data["work_package_metadata"],
             "work_package_identity": runtime_report["work_package_identity"],
@@ -472,6 +473,46 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with malformed runtime wrapper unexpectedly passed audit")
+        bad_runtime_host_report = out_dir / "bad-runtime-host-workload-report-bundle.json"
+        bad_runtime_host_data = json.loads(report.read_text())
+        bad_runtime_host_data["runtime_evidence"]["host_interface"]["invocation_abi"] = ""
+        bad_runtime_host_report.write_text(
+            json.dumps(bad_runtime_host_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_host_audit = out_dir / "bad-runtime-host-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_host_audit),
+                str(bad_runtime_host_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime host interface unexpectedly passed audit")
+        bad_runtime_host_source_report = out_dir / "bad-runtime-host-source-workload-report-bundle.json"
+        bad_runtime_host_source_data = json.loads(report.read_text())
+        bad_runtime_host_source_data["runtime_evidence"]["host_interface"][
+            "source_provenance"
+        ] = "test-app-fixture::other::default"
+        bad_runtime_host_source_report.write_text(
+            json.dumps(bad_runtime_host_source_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_host_source_audit = out_dir / "bad-runtime-host-source-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_host_source_audit),
+                str(bad_runtime_host_source_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime host source unexpectedly passed audit")
         bad_runtime_handle_report = out_dir / "bad-runtime-handle-workload-report-bundle.json"
         bad_runtime_handle_data = json.loads(report.read_text())
         bad_runtime_handle_data["runtime_evidence"]["runtime_handle_model"]["ir_token_kind"] = "dataflow_thread_token"

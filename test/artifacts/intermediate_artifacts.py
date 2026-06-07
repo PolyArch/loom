@@ -1785,6 +1785,31 @@ def validate_runtime_evidence_work_package_metadata(
             diagnostics.append(f"{label} work_package_metadata {key} does not match runtime evidence")
 
 
+def validate_runtime_evidence_host_interface(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    validate_host_interface(
+        value,
+        {
+            "host_program_identity": evidence.get("host_program_identity"),
+            "host_wrapper_identity": evidence.get("host_wrapper_identity"),
+        },
+        diagnostics,
+        label,
+    )
+    if not isinstance(value, dict):
+        return
+    work_package_metadata = evidence.get("work_package_metadata")
+    expected_source = None
+    if isinstance(work_package_metadata, dict):
+        expected_source = work_package_metadata.get("runtime_input_identity")
+    if expected_source is not None and value.get("source_provenance") != expected_source:
+        diagnostics.append(f"{label} host_interface source_provenance does not match work_package_metadata")
+
+
 def validate_runtime_evidence_report_output_configuration(
     value: object,
     evidence: dict[str, object],
@@ -2042,6 +2067,7 @@ def validate_runtime_evidence(
         "runtime_report_identity",
         "host_program_identity",
         "host_wrapper_identity",
+        "host_interface",
         "runtime_handle_model",
         "work_package_metadata",
         "work_package_identity",
@@ -2105,6 +2131,12 @@ def validate_runtime_evidence(
     )
     validate_runtime_evidence_work_package_metadata(
         value.get("work_package_metadata"),
+        value,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_host_interface(
+        value.get("host_interface"),
         value,
         diagnostics,
         "workload report bundle runtime_evidence",
@@ -2289,6 +2321,7 @@ def validate_runtime_evidence_summaries(
             "synchronization_mode",
             "runtime_handle_model",
             "work_package_metadata",
+            "host_interface",
             "launch_descriptor",
             "report_output_configuration",
             "memory_descriptors",
@@ -2305,6 +2338,13 @@ def validate_runtime_evidence_summaries(
                 )
             elif key == "work_package_metadata":
                 validate_runtime_evidence_work_package_metadata(
+                    summary.get(key),
+                    summary,
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "host_interface":
+                validate_runtime_evidence_host_interface(
                     summary.get(key),
                     summary,
                     diagnostics,

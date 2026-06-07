@@ -226,6 +226,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         work_package_metadata = evidence.get("work_package_metadata", {})
         if not isinstance(work_package_metadata, dict):
             work_package_metadata = {}
+        host_interface = evidence.get("host_interface", {})
+        if not isinstance(host_interface, dict):
+            host_interface = {}
         report_output_configuration = evidence.get("report_output_configuration", {})
         if not isinstance(report_output_configuration, dict):
             report_output_configuration = {}
@@ -259,6 +262,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
             "host_program_identity": str(evidence.get("host_program_identity", "")),
             "host_wrapper_identity": str(evidence.get("host_wrapper_identity", "")),
+            "host_interface": host_interface,
             "runtime_handle_model": evidence.get("runtime_handle_model", {}),
             "work_package_metadata": work_package_metadata,
             "work_package_identity": str(evidence.get("work_package_identity", "")),

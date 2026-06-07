@@ -119,6 +119,7 @@ def main() -> int:
                 "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
                 "host_program_identity": workload_runtime_evidence["host_program_identity"],
                 "host_wrapper_identity": workload_runtime_evidence["host_wrapper_identity"],
+                "host_interface": workload_runtime_evidence["host_interface"],
                 "runtime_handle_model": workload_runtime_evidence["runtime_handle_model"],
                 "work_package_metadata": workload_runtime_evidence["work_package_metadata"],
                 "work_package_identity": workload_runtime_evidence["work_package_identity"],
@@ -426,6 +427,50 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with malformed runtime wrapper summary unexpectedly passed audit")
+
+        bad_runtime_host_summary = out_dir / "bad-runtime-host-summary-dse-report-bundle.json"
+        bad_runtime_host_summary_data = json.loads(report.read_text())
+        bad_runtime_host_summary_data["runtime_evidence_summaries"][0]["host_interface"]["invocation_abi"] = ""
+        bad_runtime_host_summary.write_text(
+            json.dumps(bad_runtime_host_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_host_summary_audit = out_dir / "bad-runtime-host-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_host_summary_audit),
+                str(bad_runtime_host_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime host summary unexpectedly passed audit")
+
+        bad_runtime_host_source_summary = out_dir / "bad-runtime-host-source-summary-dse-report-bundle.json"
+        bad_runtime_host_source_summary_data = json.loads(report.read_text())
+        bad_runtime_host_source_summary_data["runtime_evidence_summaries"][0]["host_interface"][
+            "source_provenance"
+        ] = "test-app-fixture::other::default"
+        bad_runtime_host_source_summary.write_text(
+            json.dumps(bad_runtime_host_source_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_host_source_summary_audit = (
+            out_dir / "bad-runtime-host-source-summary-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_host_source_summary_audit),
+                str(bad_runtime_host_source_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched runtime host source summary unexpectedly passed audit")
 
         bad_runtime_handle_summary = out_dir / "bad-runtime-handle-summary-dse-report-bundle.json"
         bad_runtime_handle_summary_data = json.loads(report.read_text())
