@@ -305,6 +305,27 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched selected policy id unexpectedly passed audit")
 
+        mismatched_policy_objective = out_dir / "mismatched-policy-objective-dse-report-bundle.json"
+        mismatched_policy_objective_data = json.loads(report.read_text())
+        mismatched_policy_objective_data["selected_policy_id"] = "deterministic_minimize_energy_v1"
+        mismatched_policy_objective_data["dse_run_id"] = "dse::deterministic_minimize_energy_v1"
+        mismatched_policy_objective.write_text(
+            json.dumps(mismatched_policy_objective_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_policy_objective_audit = out_dir / "mismatched-policy-objective-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_policy_objective_audit),
+                str(mismatched_policy_objective),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched policy objective unexpectedly passed audit")
+
         mismatched_ordering_rule = out_dir / "mismatched-ordering-rule-dse-report-bundle.json"
         mismatched_ordering_rule_data = json.loads(report.read_text())
         mismatched_ordering_rule_data["candidate_ordering_rule"] = "energy_score_then_candidate_id"

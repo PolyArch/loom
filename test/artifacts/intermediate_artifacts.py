@@ -860,6 +860,17 @@ def dse_ordering_rule_for_objective(objective: str) -> str:
     return "runtime_score_then_candidate_id"
 
 
+def dse_objective_for_known_policy_id(policy_id: str) -> str | None:
+    prefix = "deterministic_"
+    suffix = "_v1"
+    if not policy_id.startswith(prefix) or not policy_id.endswith(suffix):
+        return None
+    objective = policy_id[len(prefix) : -len(suffix)]
+    if dse_objective_semantics(objective) is None:
+        return None
+    return objective
+
+
 def dse_objective_semantics(objective: str) -> tuple[str, str] | None:
     if objective == "minimize_runtime":
         return "minimize", "cycles"
@@ -4144,6 +4155,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             objective_kind = next(iter(objective_kinds))
             if data.get("candidate_ordering_rule") != dse_ordering_rule_for_objective(objective_kind):
                 diagnostics.append("DSE report bundle candidate_ordering_rule does not match objective")
+            selected_policy_id = data.get("selected_policy_id")
+            if isinstance(selected_policy_id, str):
+                policy_objective = dse_objective_for_known_policy_id(selected_policy_id)
+                if policy_objective is not None and policy_objective != objective_kind:
+                    diagnostics.append("DSE report bundle selected_policy_id does not match objective")
         objective_ids = {
             objective.get("objective_id")
             for objective in objectives
