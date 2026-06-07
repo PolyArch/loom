@@ -246,6 +246,25 @@ def build_launch_descriptor(
     }
 
 
+def work_package_metadata(
+    *,
+    work_package_identity: str,
+    workload: str,
+    selected_mapping_identity: str,
+    fabric_adg_identity: str,
+    runtime_input: str,
+) -> dict[str, str]:
+    return {
+        "work_package_identity": work_package_identity,
+        "workload": workload,
+        "selected_accelerator_region": f"accelerator-region::{workload}" if workload != "unknown" else "",
+        "logical_thread_domain": f"thread-domain::{workload}" if workload != "unknown" else "",
+        "selected_mapping_artifact_identity": selected_mapping_identity,
+        "fabric_adg_identity": fabric_adg_identity,
+        "runtime_input_identity": runtime_input,
+    }
+
+
 def runtime_handle_model() -> dict[str, object]:
     return {
         "handle_kind": "host_visible_launch_handle",
@@ -632,6 +651,13 @@ def build_package(
         "package_id": package_id,
         "workload": workload,
         "work_package_identity": work_package_identity,
+        "work_package_metadata": work_package_metadata(
+            work_package_identity=work_package_identity,
+            workload=workload,
+            selected_mapping_identity=selected_mapping_identity,
+            fabric_adg_identity=fabric_adg_identity,
+            runtime_input=runtime_input,
+        ),
         "launch_descriptor_identity": launch_descriptor_identity,
         "host_program_identity": host_program_identity,
         "host_wrapper_identity": host_wrapper_identity,

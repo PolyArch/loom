@@ -16,6 +16,7 @@ REQUIRED_KEYS = {
     "package_id",
     "workload",
     "work_package_identity",
+    "work_package_metadata",
     "launch_descriptor_identity",
     "host_program_identity",
     "host_wrapper_identity",
@@ -90,6 +91,17 @@ def main() -> int:
             raise AssertionError(f"unexpected runtime package identity: {data}")
         if data["work_package_identity"] != "work-package::vecsum::vecsum__shared_reduction_adg":
             raise AssertionError(f"unexpected work package identity: {data}")
+        expected_work_package_metadata = {
+            "work_package_identity": "work-package::vecsum::vecsum__shared_reduction_adg",
+            "workload": "vecsum",
+            "selected_accelerator_region": "accelerator-region::vecsum",
+            "logical_thread_domain": "thread-domain::vecsum",
+            "selected_mapping_artifact_identity": "pnr-mapping",
+            "fabric_adg_identity": "shared_reduction_adg",
+            "runtime_input_identity": "test-app-fixture::vecsum::default",
+        }
+        if data["work_package_metadata"] != expected_work_package_metadata:
+            raise AssertionError(f"unexpected work package metadata: {data}")
         if data["host_program_identity"] != "test-app-host::vecsum::default":
             raise AssertionError(f"unexpected host program identity: {data}")
         if data["host_wrapper_identity"] != "runtime-wrapper::vecsum::vecsum__shared_reduction_adg":
@@ -426,6 +438,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package backed by dataflow token unexpectedly passed audit")
+        mismatched_work_package = out_dir / "mismatched-work-package-runtime-package.json"
+        mismatched_work_package_data = json.loads(package.read_text())
+        mismatched_work_package_data["work_package_metadata"][
+            "selected_mapping_artifact_identity"
+        ] = "other-mapping"
+        mismatched_work_package.write_text(
+            json.dumps(mismatched_work_package_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_work_package_audit = out_dir / "mismatched-work-package-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_work_package_audit),
+                str(mismatched_work_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched work package metadata unexpectedly passed audit")
         mismatched_config_package = out_dir / "mismatched-runtime-config-package.json"
         mismatched_config_data = json.loads(package.read_text())
         mismatched_config_data["runtime_configuration"]["data_movement_policy"] = "shared_coherent"

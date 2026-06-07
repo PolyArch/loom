@@ -1490,6 +1490,43 @@ def validate_runtime_launch_descriptor(
         diagnostics.append("runtime package launch_descriptor memory descriptors do not match package")
 
 
+def validate_work_package_metadata(
+    value: object,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append("runtime package work_package_metadata must be an object")
+        return
+    for key in (
+        "work_package_identity",
+        "workload",
+        "selected_accelerator_region",
+        "logical_thread_domain",
+        "runtime_input_identity",
+    ):
+        if not isinstance(value.get(key), str) or not value.get(key):
+            diagnostics.append(f"runtime package work_package_metadata lacks {key}")
+    for key in ("selected_mapping_artifact_identity", "fabric_adg_identity"):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"runtime package work_package_metadata {key} must be a string")
+    expected_pairs = (
+        ("work_package_identity", data.get("work_package_identity")),
+        ("workload", data.get("workload")),
+        ("selected_mapping_artifact_identity", data.get("selected_mapping_artifact_identity")),
+        ("fabric_adg_identity", data.get("fabric_adg_identity")),
+        ("runtime_input_identity", runtime_source_provenance(data)),
+    )
+    for key, expected in expected_pairs:
+        if value.get(key) != expected:
+            diagnostics.append(f"runtime package work_package_metadata {key} does not match package")
+    launch_descriptor = data.get("launch_descriptor")
+    if isinstance(launch_descriptor, dict):
+        for key in ("selected_accelerator_region", "logical_thread_domain"):
+            if value.get(key) != launch_descriptor.get(key):
+                diagnostics.append(f"runtime package work_package_metadata {key} does not match launch_descriptor")
+
+
 def validate_runtime_handle_model(
     value: object,
     diagnostics: list[str],
@@ -2514,6 +2551,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         for key in ("selected_mapping_artifact_identity", "fabric_adg_identity"):
             if not isinstance(data.get(key), str):
                 diagnostics.append(f"runtime package {key} must be a string")
+        validate_work_package_metadata(data.get("work_package_metadata"), data, diagnostics)
         target_profile = data.get("target_profile")
         if not isinstance(target_profile, dict):
             diagnostics.append("runtime package target_profile must be an object")
