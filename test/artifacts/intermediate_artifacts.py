@@ -2927,6 +2927,19 @@ def validate_workload_runtime_evidence_references(
                 "workload report bundle runtime_evidence runtime_package_identity "
                 "does not match runtime package input"
             )
+    selected_hardware = data.get("selected_hardware_candidate_identity")
+    evidence_fabric = runtime_evidence.get("fabric_adg_identity")
+    if (
+        isinstance(selected_hardware, str)
+        and selected_hardware
+        and isinstance(evidence_fabric, str)
+        and evidence_fabric
+        and selected_hardware != evidence_fabric
+    ):
+        diagnostics.append(
+            "workload report bundle runtime_evidence fabric_adg_identity "
+            "does not match selected hardware candidate"
+        )
     runtime_input_identity = data.get("runtime_input_identity")
     if isinstance(runtime_input_identity, str) and runtime_input_identity:
         work_package_metadata = runtime_evidence.get("work_package_metadata")

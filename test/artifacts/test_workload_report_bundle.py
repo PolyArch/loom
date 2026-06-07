@@ -436,6 +436,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime package identity unexpectedly passed audit")
+        mismatched_runtime_hardware_report = out_dir / "mismatched-runtime-hardware-workload-report-bundle.json"
+        mismatched_runtime_hardware_data = json.loads(report.read_text())
+        mismatched_runtime_hardware_data["selected_hardware_candidate_identity"] = "other_hardware"
+        mismatched_runtime_hardware_report.write_text(
+            json.dumps(mismatched_runtime_hardware_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_runtime_hardware_audit = (
+            out_dir / "mismatched-runtime-hardware-workload-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_runtime_hardware_audit),
+                str(mismatched_runtime_hardware_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime hardware unexpectedly passed audit")
         missing_runtime_package_reference = out_dir / "missing-runtime-package-reference-workload-report-bundle.json"
         missing_runtime_package_reference_data = json.loads(report.read_text())
         missing_runtime_package_reference_data["optional_artifact_identities"].pop("runtime_package", None)
