@@ -208,6 +208,12 @@ def main() -> int:
             ),
             "metric::vecsum::estimated_runtime_us": ("estimated_runtime", 2.356, "us", "analytic"),
             "metric::vecsum::energy_nj": ("energy", 16.08, "nJ", "analytic"),
+            "metric::vecsum::throughput_items_per_s": (
+                "throughput",
+                27164685.908,
+                "items_per_s",
+                "analytic",
+            ),
             "metric::vecsum::performance_per_watt": (
                 "performance_per_watt",
                 3980173759.46,
@@ -253,11 +259,18 @@ def main() -> int:
         }
         if runtime_inputs != required_runtime_inputs:
             raise AssertionError(f"runtime metric should preserve input metric ids: {runtime}")
+        throughput = metrics_by_id["metric::vecsum::throughput_items_per_s"]
+        throughput_inputs = set(throughput.get("input_metric_ids", []))
+        required_throughput_inputs = {
+            "metric::vecsum::workload_size_items",
+            "metric::vecsum::estimated_runtime_us",
+        }
+        if throughput_inputs != required_throughput_inputs:
+            raise AssertionError(f"throughput metric should preserve input metric ids: {throughput}")
         performance_per_watt = metrics_by_id["metric::vecsum::performance_per_watt"]
         performance_inputs = set(performance_per_watt.get("input_metric_ids", []))
         required_performance_inputs = {
-            "metric::vecsum::workload_size_items",
-            "metric::vecsum::estimated_runtime_us",
+            "metric::vecsum::throughput_items_per_s",
             "metric::shared_reduction_adg::dynamic_power_mw",
             "metric::shared_reduction_adg::leakage_power_mw",
         }
@@ -266,8 +279,7 @@ def main() -> int:
         performance_per_area = metrics_by_id["metric::vecsum::performance_per_area"]
         area_performance_inputs = set(performance_per_area.get("input_metric_ids", []))
         required_area_performance_inputs = {
-            "metric::vecsum::workload_size_items",
-            "metric::vecsum::estimated_runtime_us",
+            "metric::vecsum::throughput_items_per_s",
             "metric::shared_reduction_adg::area_um2",
         }
         if area_performance_inputs != required_area_performance_inputs:
@@ -359,6 +371,31 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with stale energy derivation unexpectedly passed audit")
+        missing_throughput_input_report = out_dir / "missing-throughput-input-workload-report-bundle.json"
+        missing_throughput_input_data = json.loads(report.read_text())
+        for metric in missing_throughput_input_data["metric_records"]:
+            if metric.get("metric_id") == "metric::vecsum::throughput_items_per_s":
+                metric["input_metric_ids"] = [
+                    metric_id
+                    for metric_id in metric["input_metric_ids"]
+                    if metric_id != "metric::vecsum::estimated_runtime_us"
+                ]
+        missing_throughput_input_report.write_text(
+            json.dumps(missing_throughput_input_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_throughput_input_audit = out_dir / "missing-throughput-input-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_throughput_input_audit),
+                str(missing_throughput_input_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with incomplete throughput metric inputs unexpectedly passed audit")
         missing_performance_input_report = out_dir / "missing-performance-input-workload-report-bundle.json"
         missing_performance_input_data = json.loads(report.read_text())
         for metric in missing_performance_input_data["metric_records"]:
@@ -366,7 +403,7 @@ def main() -> int:
                 metric["input_metric_ids"] = [
                     metric_id
                     for metric_id in metric["input_metric_ids"]
-                    if metric_id != "metric::vecsum::workload_size_items"
+                    if metric_id != "metric::vecsum::throughput_items_per_s"
                 ]
         missing_performance_input_report.write_text(
             json.dumps(missing_performance_input_data, indent=2, sort_keys=True) + "\n"

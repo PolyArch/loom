@@ -2126,6 +2126,7 @@ EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
     "optimistic_steps": "cycles",
     "hardware_cycles": "cycles",
     "estimated_runtime": "us",
+    "throughput": "items_per_s",
     "frequency": "MHz",
     "area": "um2",
     "dynamic_power": "mW",
@@ -2138,6 +2139,7 @@ EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
 }
 EXPECTED_WORKLOAD_DERIVATION_BY_METRIC_CLASS = {
     "estimated_runtime": "cycle_frequency_runtime",
+    "throughput": "workload_runtime_throughput",
     "energy": "runtime_power_energy",
     "performance_per_watt": "workload_runtime_power_efficiency",
     "performance_per_area": "workload_runtime_area_efficiency",
@@ -4067,6 +4069,47 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 if not nearly_equal(float(energy_value), expected_energy):
                     diagnostics.append("workload report bundle energy metric value does not match inputs")
         for metric in metrics:
+            if not isinstance(metric, dict) or metric.get("metric_class") != "throughput":
+                continue
+            inputs = metric.get("input_metric_ids")
+            if not isinstance(inputs, list) or not inputs:
+                diagnostics.append("workload report bundle throughput metric lacks input_metric_ids")
+                continue
+            missing_inputs = [metric_id for metric_id in inputs if metric_id not in metric_ids]
+            if missing_inputs:
+                diagnostics.append(
+                    f"workload report bundle throughput metric references missing inputs {missing_inputs}"
+                )
+            input_classes = {
+                metric_class_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str) and metric_id in metric_class_by_id
+            }
+            missing_classes = sorted({"workload_size", "estimated_runtime"} - input_classes)
+            if missing_classes:
+                diagnostics.append(
+                    f"workload report bundle throughput metric lacks source inputs {missing_classes}"
+                )
+            input_value_by_class = {
+                metric_class_by_id[metric_id]: metric_value_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str)
+                and metric_id in metric_class_by_id
+                and metric_id in metric_value_by_id
+            }
+            workload_size = input_value_by_class.get("workload_size")
+            runtime = input_value_by_class.get("estimated_runtime")
+            throughput_value = metric.get("value")
+            if (
+                isinstance(throughput_value, (int, float))
+                and workload_size is not None
+                and runtime is not None
+                and runtime > 0
+            ):
+                expected_throughput = workload_size / runtime * 1_000_000.0
+                if not nearly_equal(float(throughput_value), expected_throughput):
+                    diagnostics.append("workload report bundle throughput metric value does not match inputs")
+        for metric in metrics:
             if not isinstance(metric, dict) or metric.get("metric_class") != "performance_per_watt":
                 continue
             inputs = metric.get("input_metric_ids")
@@ -4083,9 +4126,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 for metric_id in inputs
                 if isinstance(metric_id, str) and metric_id in metric_class_by_id
             }
-            missing_classes = sorted(
-                {"workload_size", "estimated_runtime", "dynamic_power", "leakage_power"} - input_classes
-            )
+            missing_classes = sorted({"throughput", "dynamic_power", "leakage_power"} - input_classes)
             if missing_classes:
                 diagnostics.append(
                     f"workload report bundle performance per watt metric lacks source inputs {missing_classes}"
@@ -4097,23 +4138,18 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 and metric_id in metric_class_by_id
                 and metric_id in metric_value_by_id
             }
-            workload_size = input_value_by_class.get("workload_size")
-            runtime = input_value_by_class.get("estimated_runtime")
+            throughput = input_value_by_class.get("throughput")
             dynamic_power = input_value_by_class.get("dynamic_power")
             leakage_power = input_value_by_class.get("leakage_power")
             performance_value = metric.get("value")
             if (
                 isinstance(performance_value, (int, float))
-                and workload_size is not None
-                and runtime is not None
-                and runtime > 0
+                and throughput is not None
                 and dynamic_power is not None
                 and leakage_power is not None
                 and dynamic_power + leakage_power > 0
             ):
-                expected_performance = workload_size / runtime * 1_000_000.0 / (
-                    (dynamic_power + leakage_power) / 1000.0
-                )
+                expected_performance = throughput / ((dynamic_power + leakage_power) / 1000.0)
                 if not nearly_equal(float(performance_value), expected_performance):
                     diagnostics.append(
                         "workload report bundle performance per watt metric value does not match inputs"
@@ -4135,7 +4171,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 for metric_id in inputs
                 if isinstance(metric_id, str) and metric_id in metric_class_by_id
             }
-            missing_classes = sorted({"workload_size", "estimated_runtime", "area"} - input_classes)
+            missing_classes = sorted({"throughput", "area"} - input_classes)
             if missing_classes:
                 diagnostics.append(
                     f"workload report bundle performance per area metric lacks source inputs {missing_classes}"
@@ -4147,19 +4183,16 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 and metric_id in metric_class_by_id
                 and metric_id in metric_value_by_id
             }
-            workload_size = input_value_by_class.get("workload_size")
-            runtime = input_value_by_class.get("estimated_runtime")
+            throughput = input_value_by_class.get("throughput")
             area = input_value_by_class.get("area")
             performance_value = metric.get("value")
             if (
                 isinstance(performance_value, (int, float))
-                and workload_size is not None
-                and runtime is not None
-                and runtime > 0
+                and throughput is not None
                 and area is not None
                 and area > 0
             ):
-                expected_performance = workload_size / runtime * 1_000_000.0 / area
+                expected_performance = throughput / area
                 if not nearly_equal(float(performance_value), expected_performance):
                     diagnostics.append(
                         "workload report bundle performance per area metric value does not match inputs"
