@@ -805,6 +805,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched memory coherence unexpectedly passed audit")
+        mismatched_address_space = out_dir / "mismatched-address-space-runtime-package.json"
+        mismatched_address_space_data = json.loads(package.read_text())
+        mismatched_address_space_data["memory_descriptors"][0]["address_space"] = "platform::unbound_address_space"
+        mismatched_address_space.write_text(
+            json.dumps(mismatched_address_space_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_address_space_audit = out_dir / "mismatched-address-space-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_address_space_audit),
+                str(mismatched_address_space),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched simulated address space unexpectedly passed audit")
 
         unknown_layout_report = out_dir / "toy-dfg-sim-report.json"
         unknown_layout_report.write_text(

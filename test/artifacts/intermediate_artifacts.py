@@ -35,6 +35,7 @@ COHERENCE_REQUIREMENT_BY_POLICY = {
     "simulated": "simulator_consistent",
     "custom": "custom_policy",
 }
+SIMULATOR_MEMORY_ADDRESS_SPACE = "simulator::memory_model"
 SYNCHRONIZATION_POLICIES = {
     "host_wait",
     "host_fence",
@@ -2045,6 +2046,11 @@ def validate_runtime_evidence_memory_descriptors(
         expected_coherence = COHERENCE_REQUIREMENT_BY_POLICY.get(data_movement_policy)
         if expected_coherence is not None and descriptor.get("coherence_requirement") != expected_coherence:
             diagnostics.append(f"{label} memory descriptor {index} coherence_requirement does not match policy")
+        if (
+            data_movement_policy == "simulated"
+            and descriptor.get("address_space") != SIMULATOR_MEMORY_ADDRESS_SPACE
+        ):
+            diagnostics.append(f"{label} memory descriptor {index} address_space does not match simulated policy")
 
 
 def validate_runtime_evidence_argument_descriptors(
@@ -3581,6 +3587,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if expected_coherence is not None and descriptor.get("coherence_requirement") != expected_coherence:
                 diagnostics.append(
                     f"runtime package memory descriptor {index} coherence_requirement does not match policy"
+                )
+            if (
+                data_movement_policy == "simulated"
+                and descriptor.get("address_space") != SIMULATOR_MEMORY_ADDRESS_SPACE
+            ):
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} address_space does not match simulated policy"
                 )
             if descriptor.get("transfer_policy") != data_movement_policy:
                 diagnostics.append(
