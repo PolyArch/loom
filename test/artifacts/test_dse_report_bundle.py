@@ -395,6 +395,80 @@ def main() -> int:
             "performance per watt DSE report bundle audit",
         )
 
+        perf_area_candidate_summary = out_dir / "perf-area-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "maximize_performance_per_area",
+                "--output",
+                str(perf_area_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "performance per area DSE candidate summary",
+        )
+        perf_area_report = out_dir / "perf-area-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(perf_area_report),
+                "--artifact",
+                str(perf_area_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "performance per area DSE report bundle",
+        )
+        perf_area_data = json.loads(perf_area_report.read_text())
+        perf_area_objective = perf_area_data.get("objective_records", [])[0]
+        expected_perf_area_objective = {
+            "objective_id": "objective::maximize_performance_per_area",
+            "objective_kind": "maximize_performance_per_area",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "maximize",
+            "units": "items_per_s_per_um2",
+        }
+        for key, value in expected_perf_area_objective.items():
+            if perf_area_objective.get(key) != value:
+                raise AssertionError(f"unexpected performance per area objective {key}: {perf_area_objective}")
+        if perf_area_objective.get("metric_inputs") != ["metric::vecsum::performance_per_area"]:
+            raise AssertionError(f"performance per area objective should cite performance metric: {perf_area_objective}")
+        if perf_area_data.get("candidate_ordering_rule") != "performance_per_area_score_then_candidate_id":
+            raise AssertionError(f"unexpected performance per area ordering rule: {perf_area_data}")
+        if perf_area_data.get("selected_policy_id") != "deterministic_maximize_performance_per_area_v1":
+            raise AssertionError(f"unexpected performance per area policy id: {perf_area_data}")
+        perf_area_candidate = perf_area_data.get("candidate_list", [])[0]
+        if "metric::vecsum::performance_per_area" not in perf_area_candidate.get("metric_records_used", []):
+            raise AssertionError(f"performance per area candidate missed performance metric: {perf_area_candidate}")
+        perf_area_audit = out_dir / "perf-area-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(perf_area_audit),
+                str(perf_area_report),
+            ],
+            "performance per area DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"

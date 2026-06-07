@@ -291,6 +291,8 @@ def ordering_rule_for_objective(objective: str) -> str:
         return "throughput_score_then_candidate_id"
     if objective == "maximize_performance_per_watt":
         return "performance_per_watt_score_then_candidate_id"
+    if objective == "maximize_performance_per_area":
+        return "performance_per_area_score_then_candidate_id"
     if objective in {"minimize_energy", "minimize_power"}:
         return "energy_score_then_candidate_id"
     return "runtime_score_then_candidate_id"
@@ -465,6 +467,18 @@ def performance_per_watt_score(row: dict[str, str]) -> float:
     return (1.0 / runtime_us) / (total_power_mw / 1000.0)
 
 
+def performance_per_area_score(row: dict[str, str]) -> float:
+    cycles = parse_positive_float(row, "cgra_sim_cycles")
+    frequency_mhz = parse_positive_float(row, "frequency_mhz")
+    area_um2 = parse_positive_float(row, "area_um2")
+    if cycles is None or frequency_mhz is None or area_um2 is None:
+        return float("-inf")
+    runtime_us = cycles / frequency_mhz
+    if runtime_us <= 0:
+        return float("-inf")
+    return (1.0 / runtime_us) / area_um2
+
+
 def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
     score: Callable[[dict[str, str]], float]
     objectives = sorted({row.get("objective") or objective for row in rows})
@@ -482,6 +496,9 @@ def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
             selected = max(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective == "maximize_performance_per_watt":
             score = performance_per_watt_score
+            selected = max(complete, key=lambda row: (score(row), row["candidate"]))
+        elif effective_objective == "maximize_performance_per_area":
+            score = performance_per_area_score
             selected = max(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective in {"minimize_energy", "minimize_power"}:
             score = energy_score

@@ -169,6 +169,11 @@ def objective_record(row: dict[str, str]) -> dict[str, object]:
         metric_inputs = [f"metric::{workload}::performance_per_watt"] if workload else []
         direction = "maximize"
         units = "items_per_s_per_w"
+    elif objective == "maximize_performance_per_area":
+        workload = row.get("workload", "")
+        metric_inputs = [f"metric::{workload}::performance_per_area"] if workload else []
+        direction = "maximize"
+        units = "items_per_s_per_um2"
     elif objective in {"minimize_energy", "minimize_power"}:
         metric_inputs = [metric for metric in metric_inputs if metric.endswith("::energy_nj")]
         direction = "minimize"
