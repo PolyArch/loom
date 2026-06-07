@@ -160,6 +160,8 @@ def main() -> int:
             "profiling_record_identity": "",
             "data_movement_policy": "simulated",
             "synchronization_mode": "host_wait",
+            "memory_descriptors": runtime_package_data["memory_descriptors"],
+            "argument_descriptors": runtime_package_data["argument_descriptors"],
             "required_data_movement_policies": ["simulated"],
             "required_synchronization_policies": ["host_wait"],
             "simulator_report_identities": runtime_report["simulator_report_identities"],
@@ -487,6 +489,42 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime report output unexpectedly passed audit")
+        bad_runtime_memory_report = out_dir / "bad-runtime-memory-workload-report-bundle.json"
+        bad_runtime_memory_data = json.loads(report.read_text())
+        bad_runtime_memory_data["runtime_evidence"]["memory_descriptors"][0]["host_buffer_identity"] = []
+        bad_runtime_memory_report.write_text(json.dumps(bad_runtime_memory_data, indent=2, sort_keys=True) + "\n")
+        bad_runtime_memory_audit = out_dir / "bad-runtime-memory-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_memory_audit),
+                str(bad_runtime_memory_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime memory descriptor unexpectedly passed audit")
+        bad_runtime_arguments_report = out_dir / "bad-runtime-arguments-workload-report-bundle.json"
+        bad_runtime_arguments_data = json.loads(report.read_text())
+        bad_runtime_arguments_data["runtime_evidence"]["argument_descriptors"] = "runtime_input"
+        bad_runtime_arguments_report.write_text(
+            json.dumps(bad_runtime_arguments_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_arguments_audit = out_dir / "bad-runtime-arguments-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_arguments_audit),
+                str(bad_runtime_arguments_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime arguments unexpectedly passed audit")
         bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
         bad_runtime_diagnostics_data = json.loads(report.read_text())
         bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"

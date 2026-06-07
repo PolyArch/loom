@@ -133,6 +133,8 @@ def main() -> int:
                 "profiling_record_identity": workload_runtime_evidence["profiling_record_identity"],
                 "data_movement_policy": "simulated",
                 "synchronization_mode": "host_wait",
+                "memory_descriptors": workload_runtime_evidence["memory_descriptors"],
+                "argument_descriptors": workload_runtime_evidence["argument_descriptors"],
                 "required_data_movement_policies": ["simulated"],
                 "required_synchronization_policies": ["host_wait"],
                 "simulator_report_identities": workload_runtime_evidence["simulator_report_identities"],
@@ -446,6 +448,50 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime report output summary unexpectedly passed audit")
+
+        bad_runtime_memory_summary = out_dir / "bad-runtime-memory-summary-dse-report-bundle.json"
+        bad_runtime_memory_summary_data = json.loads(report.read_text())
+        bad_runtime_memory_summary_data["runtime_evidence_summaries"][0]["memory_descriptors"][0][
+            "host_buffer_identity"
+        ] = []
+        bad_runtime_memory_summary.write_text(
+            json.dumps(bad_runtime_memory_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_memory_summary_audit = out_dir / "bad-runtime-memory-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_memory_summary_audit),
+                str(bad_runtime_memory_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime memory summary unexpectedly passed audit")
+
+        bad_runtime_arguments_summary = out_dir / "bad-runtime-arguments-summary-dse-report-bundle.json"
+        bad_runtime_arguments_summary_data = json.loads(report.read_text())
+        bad_runtime_arguments_summary_data["runtime_evidence_summaries"][0][
+            "argument_descriptors"
+        ] = "runtime_input"
+        bad_runtime_arguments_summary.write_text(
+            json.dumps(bad_runtime_arguments_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_arguments_summary_audit = out_dir / "bad-runtime-arguments-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_arguments_summary_audit),
+                str(bad_runtime_arguments_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with malformed runtime arguments summary unexpectedly passed audit")
 
         bad_runtime_diagnostics_summary = out_dir / "bad-runtime-diagnostics-summary-dse-report-bundle.json"
         bad_runtime_diagnostics_summary_data = json.loads(report.read_text())

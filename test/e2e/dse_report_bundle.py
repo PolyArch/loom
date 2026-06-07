@@ -229,6 +229,12 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         report_output_configuration = evidence.get("report_output_configuration", {})
         if not isinstance(report_output_configuration, dict):
             report_output_configuration = {}
+        memory_descriptors = evidence.get("memory_descriptors", [])
+        if not isinstance(memory_descriptors, list):
+            memory_descriptors = []
+        argument_descriptors = evidence.get("argument_descriptors", [])
+        if not isinstance(argument_descriptors, list):
+            argument_descriptors = []
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -255,6 +261,16 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "profiling_record_identity": str(evidence.get("profiling_record_identity", "")),
             "data_movement_policy": str(evidence.get("data_movement_policy", "")),
             "synchronization_mode": str(evidence.get("synchronization_mode", "")),
+            "memory_descriptors": [
+                descriptor
+                for descriptor in memory_descriptors
+                if isinstance(descriptor, dict)
+            ],
+            "argument_descriptors": [
+                descriptor
+                for descriptor in argument_descriptors
+                if isinstance(descriptor, dict)
+            ],
             "required_data_movement_policies": [
                 str(policy)
                 for policy in required_data_movement_policies

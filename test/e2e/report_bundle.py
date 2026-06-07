@@ -174,6 +174,12 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     report_output_configuration = runtime_package.get("report_output_configuration", {})
     if not isinstance(report_output_configuration, dict):
         report_output_configuration = {}
+    memory_descriptors = runtime_package.get("memory_descriptors", [])
+    if not isinstance(memory_descriptors, list):
+        memory_descriptors = []
+    argument_descriptors = runtime_package.get("argument_descriptors", [])
+    if not isinstance(argument_descriptors, list):
+        argument_descriptors = []
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
@@ -214,6 +220,16 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "profiling_record_identity": str(report.get("profiling_record_identity", "")),
         "data_movement_policy": data_movement_policy,
         "synchronization_mode": str(runtime_package.get("synchronization_mode", "")),
+        "memory_descriptors": [
+            descriptor
+            for descriptor in memory_descriptors
+            if isinstance(descriptor, dict)
+        ],
+        "argument_descriptors": [
+            descriptor
+            for descriptor in argument_descriptors
+            if isinstance(descriptor, dict)
+        ],
         "required_data_movement_policies": [
             str(policy)
             for policy in required_data_movement_policies

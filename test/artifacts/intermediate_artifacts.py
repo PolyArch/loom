@@ -1808,6 +1808,61 @@ def validate_runtime_evidence_report_output_configuration(
         diagnostics.append(f"{label} report_output_configuration must enable diagnostic output")
 
 
+def validate_runtime_evidence_memory_descriptors(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, list):
+        diagnostics.append(f"{label} memory_descriptors must be a list")
+        return
+    data_movement_policy = evidence.get("data_movement_policy")
+    for index, descriptor in enumerate(value, start=1):
+        if not isinstance(descriptor, dict):
+            diagnostics.append(f"{label} memory descriptor {index} must be an object")
+            continue
+        for key in (
+            "logical_argument",
+            "host_buffer_identity",
+            "direction",
+            "policy",
+            "runtime_input_identity",
+            "element_layout",
+            "address_space",
+            "coherence_requirement",
+            "transfer_policy",
+        ):
+            if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
+                diagnostics.append(f"{label} memory descriptor {index} lacks {key}")
+        for key in ("byte_size", "alignment_bytes"):
+            if not isinstance(descriptor.get(key), int) or descriptor.get(key) <= 0:
+                diagnostics.append(f"{label} memory descriptor {index} has invalid {key}")
+        if descriptor.get("policy") != data_movement_policy:
+            diagnostics.append(f"{label} memory descriptor {index} policy does not match runtime evidence")
+        if descriptor.get("transfer_policy") != data_movement_policy:
+            diagnostics.append(f"{label} memory descriptor {index} transfer_policy does not match runtime evidence")
+        if descriptor.get("policy") not in DATA_MOVEMENT_POLICIES:
+            diagnostics.append(f"{label} memory descriptor {index} has unknown policy")
+
+
+def validate_runtime_evidence_argument_descriptors(
+    value: object,
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, list):
+        diagnostics.append(f"{label} argument_descriptors must be a list")
+        return
+    for index, descriptor in enumerate(value, start=1):
+        if not isinstance(descriptor, dict):
+            diagnostics.append(f"{label} argument descriptor {index} must be an object")
+            continue
+        for key in ("name", "identity", "descriptor_kind"):
+            if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
+                diagnostics.append(f"{label} argument descriptor {index} lacks {key}")
+
+
 def validate_runtime_evidence(
     path: Path,
     value: object,
@@ -1836,6 +1891,8 @@ def validate_runtime_evidence(
         "profiling_record_identity",
         "data_movement_policy",
         "synchronization_mode",
+        "memory_descriptors",
+        "argument_descriptors",
         "output_buffer_identities",
         "simulator_report_identities",
         "diagnostic_records",
@@ -1886,6 +1943,17 @@ def validate_runtime_evidence(
     validate_runtime_evidence_report_output_configuration(
         value.get("report_output_configuration"),
         value,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_memory_descriptors(
+        value.get("memory_descriptors"),
+        value,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_argument_descriptors(
+        value.get("argument_descriptors"),
         diagnostics,
         "workload report bundle runtime_evidence",
     )
@@ -2029,6 +2097,8 @@ def validate_runtime_evidence_summaries(
             "runtime_handle_model",
             "work_package_metadata",
             "report_output_configuration",
+            "memory_descriptors",
+            "argument_descriptors",
         ):
             if key == "runtime_handle_model":
                 validate_runtime_handle_model(
@@ -2047,6 +2117,19 @@ def validate_runtime_evidence_summaries(
                 validate_runtime_evidence_report_output_configuration(
                     summary.get(key),
                     summary,
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "memory_descriptors":
+                validate_runtime_evidence_memory_descriptors(
+                    summary.get(key),
+                    summary,
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "argument_descriptors":
+                validate_runtime_evidence_argument_descriptors(
+                    summary.get(key),
                     diagnostics,
                     f"DSE report bundle runtime evidence summary {index}",
                 )
