@@ -869,6 +869,71 @@ def main() -> int:
                 f"{require_acceleration_data}"
             )
 
+        custom_without_name = out_dir / "custom-without-name-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "hardware",
+                "--data-movement-policy",
+                "custom",
+                "--platform-binding",
+                "platform-binding::host-buffer::vecsum",
+                "--output",
+                str(custom_without_name),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("custom data movement without policy identity unexpectedly passed")
+        custom_without_name_data = json.loads(custom_without_name.read_text())
+        custom_without_name_classes = {
+            record.get("diagnostic_class")
+            for record in custom_without_name_data.get("diagnostic_records", [])
+            if isinstance(record, dict)
+        }
+        if "unsupported_data_movement_policy" not in custom_without_name_classes:
+            raise AssertionError(f"custom data movement should require explicit policy identity: {custom_without_name_data}")
+
+        named_custom = out_dir / "named-custom-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "hardware",
+                "--data-movement-policy",
+                "custom",
+                "--custom-data-movement-policy",
+                "runtime-policy::dma-window::vecsum",
+                "--platform-binding",
+                "platform-binding::host-buffer::vecsum",
+                "--output",
+                str(named_custom),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware runtime package without hardware backend unexpectedly passed")
+        named_custom_data = json.loads(named_custom.read_text())
+        if named_custom_data.get("data_movement_policy") != "custom":
+            raise AssertionError(f"named custom package should preserve custom policy: {named_custom_data}")
+        if (
+            named_custom_data.get("runtime_configuration", {}).get("custom_data_movement_policy_identity")
+            != "runtime-policy::dma-window::vecsum"
+        ):
+            raise AssertionError(f"runtime configuration should preserve custom policy identity: {named_custom_data}")
+        custom_descriptors = named_custom_data.get("memory_descriptors", [])
+        if not custom_descriptors or custom_descriptors[0].get("custom_data_movement_policy_identity") != (
+            "runtime-policy::dma-window::vecsum"
+        ):
+            raise AssertionError(f"memory descriptor should preserve custom policy identity: {named_custom_data}")
+
     return 0
 
 

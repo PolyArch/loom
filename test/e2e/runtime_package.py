@@ -39,6 +39,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", choices=("cgra-sim", "dfg-sim", "rtl-sim", "hardware"), default="cgra-sim")
     parser.add_argument("--data-movement-policy", choices=DATA_MOVEMENT_POLICIES, default="simulated")
+    parser.add_argument("--custom-data-movement-policy", default="")
     parser.add_argument("--fallback-policy", choices=FALLBACK_POLICIES, default="report_only")
     parser.add_argument("--platform-binding", default="")
     parser.add_argument("--output", required=True)
@@ -104,6 +105,8 @@ def diagnostic_class(message: str) -> str:
     if "fabric ADG identity is missing" in message:
         return "missing_fabric_adg"
     if "requires simulated data movement policy" in message:
+        return "unsupported_data_movement_policy"
+    if "custom data movement policy" in message:
         return "unsupported_data_movement_policy"
     if "user-requested acceleration failed" in message:
         return "user_requested_acceleration_failure"
@@ -228,11 +231,12 @@ def runtime_configuration(
     *,
     target_profile: dict[str, str],
     data_movement_policy: str,
+    custom_data_movement_policy: str,
     platform_binding: str,
     fallback_policy: str,
     synchronization_mode: str,
 ) -> dict[str, str]:
-    return {
+    configuration = {
         "configuration_id": f"runtime-config::{fallback_policy}::{data_movement_policy}::{synchronization_mode}",
         "target_profile_id": target_profile.get("profile_id", ""),
         "data_movement_policy": data_movement_policy,
@@ -240,6 +244,9 @@ def runtime_configuration(
         "fallback_policy": fallback_policy,
         "synchronization_mode": synchronization_mode,
     }
+    if data_movement_policy == "custom" and custom_data_movement_policy:
+        configuration["custom_data_movement_policy_identity"] = custom_data_movement_policy
+    return configuration
 
 
 def host_interface(
@@ -291,6 +298,7 @@ def memory_descriptor(
     *,
     workload: str,
     data_movement_policy: str,
+    custom_data_movement_policy: str,
     runtime_input: str,
     platform_binding: str,
     layout: dict[str, object],
@@ -307,6 +315,8 @@ def memory_descriptor(
     }
     if platform_binding:
         descriptor["platform_binding_identity"] = platform_binding
+    if data_movement_policy == "custom" and custom_data_movement_policy:
+        descriptor["custom_data_movement_policy_identity"] = custom_data_movement_policy
     return descriptor
 
 
@@ -352,6 +362,7 @@ def build_package(
     paths: list[Path],
     target: str,
     data_movement_policy: str,
+    custom_data_movement_policy: str,
     platform_binding: str,
     fallback_policy: str,
 ) -> dict[str, object]:
@@ -376,6 +387,10 @@ def build_package(
     runtime_input = runtime_input_identity(workload, comparison, dfg)
 
     diagnostics: list[str] = []
+    if data_movement_policy == "custom" and not custom_data_movement_policy:
+        diagnostics.append("custom data movement policy requires policy identity")
+    if data_movement_policy != "custom" and custom_data_movement_policy:
+        diagnostics.append("custom data movement policy identity is only valid for custom data movement")
     if target == "cgra-sim":
         if not mapping:
             diagnostics.append("CGRA-sim target requires mapping artifact")
@@ -453,6 +468,7 @@ def build_package(
                 memory_descriptor(
                     workload=workload,
                     data_movement_policy=data_movement_policy,
+                    custom_data_movement_policy=custom_data_movement_policy,
                     runtime_input=runtime_input,
                     platform_binding=platform_binding,
                     layout=layout,
@@ -588,6 +604,7 @@ def build_package(
         "runtime_configuration": runtime_configuration(
             target_profile=target_profile,
             data_movement_policy=data_movement_policy,
+            custom_data_movement_policy=custom_data_movement_policy,
             platform_binding=platform_binding,
             fallback_policy=fallback_policy,
             synchronization_mode=synchronization_mode,
@@ -635,6 +652,7 @@ def main(argv: list[str]) -> int:
         paths,
         args.target,
         args.data_movement_policy,
+        args.custom_data_movement_policy,
         args.platform_binding,
         args.fallback_policy,
     )
