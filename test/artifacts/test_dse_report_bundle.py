@@ -315,6 +315,30 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report without runtime summary input fingerprint unexpectedly passed audit")
 
+        mismatched_runtime_summary_source = out_dir / "mismatched-runtime-summary-source-dse-report-bundle.json"
+        mismatched_runtime_summary_source_data = json.loads(report.read_text())
+        mismatched_runtime_summary_source_data["runtime_evidence_summaries"][0][
+            "workload_report_bundle_identity"
+        ] = "workload-report-bundle-other"
+        mismatched_runtime_summary_source.write_text(
+            json.dumps(mismatched_runtime_summary_source_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_runtime_summary_source_audit = (
+            out_dir / "mismatched-runtime-summary-source-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_runtime_summary_source_audit),
+                str(mismatched_runtime_summary_source),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched runtime summary source unexpectedly passed audit")
+
         bad_runtime_policy_summary = out_dir / "bad-runtime-policy-summary-dse-report-bundle.json"
         bad_runtime_policy_summary_data = json.loads(report.read_text())
         bad_runtime_policy_summary_data["runtime_evidence_summaries"][0][

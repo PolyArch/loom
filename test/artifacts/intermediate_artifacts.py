@@ -2429,6 +2429,7 @@ def validate_runtime_evidence_summaries(
     value: object,
     diagnostics: list[str],
     require_complete: bool,
+    referenced_workload_report_identities: set[str] | None = None,
 ) -> None:
     if not isinstance(value, list):
         diagnostics.append("DSE report bundle runtime_evidence_summaries must be a list")
@@ -2439,6 +2440,17 @@ def validate_runtime_evidence_summaries(
         if not isinstance(summary, dict):
             diagnostics.append(f"DSE report bundle runtime evidence summary {index} must be an object")
             continue
+        workload_report_identity = summary.get("workload_report_bundle_identity")
+        if (
+            referenced_workload_report_identities is not None
+            and isinstance(workload_report_identity, str)
+            and workload_report_identity
+            and workload_report_identity not in referenced_workload_report_identities
+        ):
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} "
+                "workload_report_bundle_identity is not a referenced workload report"
+            )
         for key in (
             "workload_report_bundle_identity",
             "runtime_package_identity",
@@ -3826,6 +3838,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             data.get("runtime_evidence_summaries"),
             diagnostics,
             data.get("report_status") == "pass",
+            {
+                identity
+                for identity in data.get("referenced_workload_report_bundle_identities", [])
+                if isinstance(identity, str) and identity
+            },
         )
     entries_checked = len(data) if isinstance(data, dict) else 0
     if isinstance(data, dict) and kind == "artifact_manifest":
