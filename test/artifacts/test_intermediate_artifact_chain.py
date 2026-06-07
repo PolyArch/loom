@@ -195,6 +195,8 @@ def main() -> int:
             raise AssertionError(f"workload report bundle missed simulation comparison identity: {report_bundle}")
         if optional_identities.get("runtime_package") != "runtime-package":
             raise AssertionError(f"workload report bundle missed runtime package identity: {report_bundle}")
+        if optional_identities.get("rtl_manifest") != "rtl-manifest":
+            raise AssertionError(f"workload report bundle missed RTL manifest identity: {report_bundle}")
         bundle_metrics = {
             metric["metric_id"]: metric
             for metric in report_bundle.get("metric_records", [])
@@ -315,9 +317,11 @@ def main() -> int:
             ("pnr-mapping", "workload-report-bundle"),
             ("sim-comparison-report", "workload-report-bundle"),
             ("vecsum-cgra-sim-report", "workload-report-bundle"),
+            ("rtl-manifest", "workload-report-bundle"),
             ("rtl-fpa-summary", "workload-report-bundle"),
             ("dse-candidate-summary", "workload-report-bundle"),
             ("adg-hardware-summary", "hardware-report-bundle"),
+            ("rtl-manifest", "hardware-report-bundle"),
             ("rtl-fpa-summary", "hardware-report-bundle"),
             ("hardware-report-bundle", "e2e-demonstrator-summary"),
             ("dse-candidate-summary", "dse-report-bundle"),

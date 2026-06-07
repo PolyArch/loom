@@ -1256,6 +1256,7 @@ def iter_artifact_manifest_required_edges(
             "sim_comparison_report",
             "runtime_package",
             "sim_cycle",
+            "rtl_manifest",
             "rtl_fpa",
             "dse_candidate",
         ):
@@ -1265,7 +1266,7 @@ def iter_artifact_manifest_required_edges(
             yield report_id, demonstrator_id
 
     for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
-        for source_kind in ("adg_hardware", "rtl_fpa"):
+        for source_kind in ("adg_hardware", "rtl_manifest", "rtl_fpa"):
             for source_id in ids_by_kind.get(source_kind, []):
                 yield source_id, hardware_report_id
         for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):

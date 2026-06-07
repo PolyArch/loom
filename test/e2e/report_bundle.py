@@ -80,6 +80,17 @@ def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> dic
     return None
 
 
+def matching_rtl_manifest_path(paths: list[Path], hardware: str) -> Path | None:
+    for path in paths:
+        data = read_json(path)
+        if data.get("kind") != "rtl_manifest" or data.get("status") != "pass":
+            continue
+        source = data.get("source_fabric_adg_identity")
+        if isinstance(source, str) and hardware_matches(source, hardware):
+            return path
+    return None
+
+
 def numeric(row: dict[str, str], key: str) -> float:
     return float(row[key])
 
@@ -329,6 +340,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     cgra_path = first_path(grouped, "cgra_sim_report")
     comparison_path = first_path(grouped, "sim_comparison_report")
     runtime_path = first_path(grouped, "runtime_package")
+    rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
     rtl_path = first_path(grouped, "rtl_fpa")
 
     dfg_report = read_json(dfg_path) if dfg_path is not None else {}
@@ -463,6 +475,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                 cgra_path,
                 comparison_path,
                 runtime_path,
+                rtl_manifest_path,
                 rtl_path,
                 dse_path,
             ]
@@ -472,6 +485,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "cgra_sim_report": artifact_id(cgra_path) if cgra_path is not None else "",
             "simulation_comparison_report": artifact_id(comparison_path) if comparison_path is not None else "",
             "runtime_package": artifact_id(runtime_path) if runtime_path is not None else "",
+            "rtl_manifest": artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
             "fpa_report": artifact_id(rtl_path) if rtl_path is not None else "",
             "dse_feedback_record": artifact_id(dse_path),
         },

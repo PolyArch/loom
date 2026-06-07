@@ -79,6 +79,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "sim-cycle-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
@@ -108,6 +110,7 @@ def main() -> int:
             "vecsum-cgra-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
             "sim-comparison-report": artifact_test_common.fingerprint(out_dir / "sim-comparison-report.json"),
             "runtime-package": artifact_test_common.fingerprint(out_dir / "runtime-package.json"),
+            "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
             "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
             "dse-candidate-summary": artifact_test_common.fingerprint(out_dir / "dse-candidate-summary.csv"),
         }
@@ -120,6 +123,8 @@ def main() -> int:
             raise AssertionError(f"report should reference simulation comparison evidence: {data}")
         if optional_identities.get("runtime_package") != "runtime-package":
             raise AssertionError(f"report should reference runtime package evidence: {data}")
+        if optional_identities.get("rtl_manifest") != "rtl-manifest":
+            raise AssertionError(f"report should reference RTL manifest evidence: {data}")
         expected_host_interface = {
             "host_program_identity": "test-app-host::vecsum::default",
             "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
@@ -317,6 +322,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with stale input fingerprint unexpectedly passed audit")
+        stale_rtl_manifest_fingerprint = out_dir / "stale-rtl-manifest-workload-report-bundle.json"
+        stale_rtl_manifest_data = json.loads(report.read_text())
+        stale_rtl_manifest_data["input_artifact_fingerprints"]["rtl-manifest"] = "0" * 64
+        stale_rtl_manifest_fingerprint.write_text(
+            json.dumps(stale_rtl_manifest_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_rtl_manifest_audit = out_dir / "stale-rtl-manifest-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_rtl_manifest_audit),
+                str(stale_rtl_manifest_fingerprint),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with stale RTL manifest fingerprint unexpectedly passed audit")
         bad_runtime_fingerprint_report = out_dir / "bad-runtime-fingerprint-workload-report-bundle.json"
         bad_runtime_fingerprint_data = json.loads(report.read_text())
         bad_runtime_fingerprint_data["runtime_evidence"]["input_artifact_fingerprints"]["runtime-package"] = "bad"
