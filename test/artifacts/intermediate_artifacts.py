@@ -3945,6 +3945,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         diagnostics.append(
                             f"DSE report bundle candidate {index} generated_output_artifacts has invalid entry"
                         )
+                    elif not resolve_artifact_reference(path, artifact).is_file():
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} generated_output_artifacts reference {artifact!r} does not exist"
+                        )
             validate_dse_report_candidate_input_fingerprints(path, candidate, diagnostics, index)
         selected_candidates = data.get("selected_candidates")
         selected_candidate_ids = validate_dse_candidate_id_list(
