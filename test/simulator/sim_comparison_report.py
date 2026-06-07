@@ -9,6 +9,12 @@ import sys
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "test" / "artifacts"))
+
+import intermediate_artifacts  # noqa: E402
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dfg-report", required=True)
@@ -16,15 +22,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--mapping-artifact")
     parser.add_argument("--output", required=True)
     return parser.parse_args(argv)
-
-
-def artifact_id(path: Path | None) -> str:
-    if path is None:
-        return ""
-    for suffix in (".csv", ".json"):
-        if path.name.endswith(suffix):
-            return path.name[: -len(suffix)]
-    return path.stem
 
 
 def read_json(path: Path) -> dict[str, object]:
@@ -186,12 +183,12 @@ def build_report(
     return {
         "schema_version": 1,
         "kind": "sim_comparison_report",
-        "comparison_id": f"sim-comparison::{workload}::{artifact_id(cgra_path)}",
+        "comparison_id": f"sim-comparison::{workload}::{intermediate_artifacts.artifact_id_for_path(cgra_path)}",
         "workload": workload,
         "runtime_input_identity": runtime_input_identity,
-        "dfg_sim_report_identity": artifact_id(dfg_path),
-        "cgra_sim_report_identity": artifact_id(cgra_path),
-        "mapping_artifact_identity": artifact_id(mapping_path),
+        "dfg_sim_report_identity": intermediate_artifacts.artifact_id_for_path(dfg_path),
+        "cgra_sim_report_identity": intermediate_artifacts.artifact_id_for_path(cgra_path),
+        "mapping_artifact_identity": intermediate_artifacts.artifact_id_for_path(mapping_path),
         "functional_comparison_status": functional_status,
         "memory_comparison_status": memory_status,
         "performance_comparison_status": performance_status,

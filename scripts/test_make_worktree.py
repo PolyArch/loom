@@ -53,6 +53,15 @@ class MakeWorktreeTest(unittest.TestCase):
         self.paths = FakePaths()
         self.args = Namespace(jobs=1, lock_timeout=1.0)
 
+    def patch_compiler_versions(self, versions: dict[str, str]):
+        def check_output(cmd, **kwargs):
+            tool = cmd[0]
+            if tool in versions:
+                return versions[tool].encode()
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        return patch.object(subprocess, "check_output", side_effect=check_output)
+
     def test_configure_llvm_defaults_to_gcc_pair(self):
         calls = []
         with patch.object(self.module, "run", side_effect=lambda cmd: calls.append(cmd)):
@@ -70,18 +79,15 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertIn("-DCMAKE_CXX_COMPILER=clang++", calls[0])
 
     def test_build_llvm_rejects_old_gxx(self):
-        def fake_check_output(cmd, **kwargs):
-            tool = cmd[0]
-            if tool == "gcc":
-                return b"gcc (GCC) 14.3.1\n"
-            if tool == "g++":
-                return b"g++ (GCC) 7.3.0\n"
-            raise AssertionError(f"unexpected command: {cmd}")
-
         with (
             patch.object(self.module, "check_git_version"),
             patch.object(self.module, "build_llvm"),
-            patch.object(subprocess, "check_output", side_effect=fake_check_output),
+            self.patch_compiler_versions(
+                {
+                    "gcc": "gcc (GCC) 14.3.1\n",
+                    "g++": "g++ (GCC) 7.3.0\n",
+                }
+            ),
             self.assertRaises(SystemExit) as raised,
         ):
             self.module.cmd_build_llvm(self.paths, self.args)
@@ -126,18 +132,15 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(paths.llvm_stamp, root / "externals" / ".loom-build.llvm.stamp")
 
     def test_build_loom_rejects_clang_before_21_1_8(self):
-        def fake_check_output(cmd, **kwargs):
-            tool = cmd[0]
-            if tool == "clang":
-                return b"clang version 21.1.8\n"
-            if tool == "clang++":
-                return b"clang version 21.1.7\n"
-            raise AssertionError(f"unexpected command: {cmd}")
-
         with (
             patch.object(self.module, "check_git_version"),
             patch.object(self.module, "build_loom"),
-            patch.object(subprocess, "check_output", side_effect=fake_check_output),
+            self.patch_compiler_versions(
+                {
+                    "clang": "clang version 21.1.8\n",
+                    "clang++": "clang version 21.1.7\n",
+                }
+            ),
             self.assertRaises(SystemExit) as raised,
         ):
             self.module.cmd_build_loom(self.paths, self.args)

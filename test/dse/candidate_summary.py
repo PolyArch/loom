@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -43,22 +42,6 @@ def artifacts_by_kind(paths: list[Path]) -> dict[str, list[Path]]:
     grouped: dict[str, list[Path]] = {}
     for path in paths:
         grouped.setdefault(intermediate_artifacts.artifact_kind_for_path(path), []).append(path)
-    return grouped
-
-
-def json_artifacts_by_kind(paths: list[Path]) -> dict[str, list[dict[str, object]]]:
-    grouped: dict[str, list[dict[str, object]]] = {}
-    for path in paths:
-        kind = intermediate_artifacts.json_kind_for_path(path)
-        if kind is None or not path.is_file():
-            continue
-        try:
-            data = json.loads(path.read_text())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(data, dict):
-            data["__path"] = str(path)
-            grouped.setdefault(kind, []).append(data)
     return grouped
 
 
@@ -288,20 +271,12 @@ def artifact_ref(value: object) -> str:
     return str(value) if value not in {"", None} else ""
 
 
-def fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def input_artifact_fingerprints(refs: list[str]) -> str:
     entries: list[str] = []
     for ref in refs:
         path = Path(ref)
         if path.is_file():
-            entries.append(f"{ref}={fingerprint(path)}")
+            entries.append(f"{ref}={intermediate_artifacts.artifact_fingerprint(path)}")
     return ";".join(entries)
 
 
@@ -500,7 +475,7 @@ def main(argv: list[str]) -> int:
         include_unsupported_scope=False,
     )
     grouped = artifacts_by_kind(paths)
-    json_grouped = json_artifacts_by_kind(paths)
+    json_grouped = intermediate_artifacts.json_objects_by_kind(paths)
     pnr_mapping_rows = mapping_rows(grouped.get("pnr_mapping", []))
     pnr_mapping_rows.extend(mapping_rows_from_artifacts(json_grouped.get("pnr_mapping_artifact", [])))
     pnr_mapping_rows.extend(mapping_rows_from_manifests(json_grouped.get("mapping_set_manifest", [])))

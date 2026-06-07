@@ -1122,6 +1122,82 @@ def manifest_component_for_kind(kind: str) -> str:
     return f"{kind}-producer" if kind else ""
 
 
+def iter_artifact_manifest_required_edges(
+    artifact_ids: Iterable[str],
+    ids_by_kind: dict[str, list[str]],
+) -> Iterable[tuple[str, str]]:
+    artifact_id_set = set(artifact_ids)
+    for left, right in ARTIFACT_EDGE_PAIRS:
+        if left in artifact_id_set and right in artifact_id_set:
+            yield left, right
+
+    for mapping_id in ids_by_kind.get("pnr_mapping_artifact", []):
+        for source_kind in ("dataflow_primitive_coverage", "adg_hardware", "pnr_mapping"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, mapping_id
+        for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+            yield mapping_id, cgra_id
+        for dse_id in ids_by_kind.get("dse_candidate", []):
+            yield mapping_id, dse_id
+
+    for sim_id in ids_by_kind.get("sim_cycle", []):
+        for dfg_id in ids_by_kind.get("dfg_sim_report", []):
+            yield dfg_id, sim_id
+        if sim_id == "sim-cycle-summary":
+            for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+                yield cgra_id, sim_id
+
+    for dfg_id in ids_by_kind.get("dfg_sim_report", []):
+        for source_id in ids_by_kind.get("dataflow_primitive_coverage", []):
+            yield source_id, dfg_id
+
+    for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+        for dse_id in ids_by_kind.get("dse_candidate", []):
+            yield cgra_id, dse_id
+
+    for comparison_id in ids_by_kind.get("sim_comparison_report", []):
+        for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, comparison_id
+
+    for runtime_id in ids_by_kind.get("runtime_package", []):
+        for source_kind in ("pnr_mapping_artifact", "cgra_sim_report", "sim_comparison_report"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, runtime_id
+
+    for report_id in ids_by_kind.get("workload_report_bundle", []):
+        for source_kind in (
+            "source_compat",
+            "compiler_pipeline",
+            "dataflow_primitive_coverage",
+            "adg_hardware",
+            "pnr_mapping_artifact",
+            "dfg_sim_report",
+            "cgra_sim_report",
+            "sim_comparison_report",
+            "runtime_package",
+            "sim_cycle",
+            "rtl_fpa",
+            "dse_candidate",
+        ):
+            for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, report_id
+        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
+            yield report_id, demonstrator_id
+
+    for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
+        for source_kind in ("adg_hardware", "rtl_fpa"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, hardware_report_id
+        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
+            yield hardware_report_id, demonstrator_id
+
+    for dse_report_id in ids_by_kind.get("dse_report_bundle", []):
+        for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
+            for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, dse_report_id
+
+
 def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[str]) -> int:
     artifacts = data.get("artifacts")
     edges = data.get("edges")
@@ -1234,73 +1310,8 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} output fingerprint does not match sink")
         edge_pairs.add((left, right))
 
-    for left, right in ARTIFACT_EDGE_PAIRS:
-        if left in artifact_ids and right in artifact_ids:
-            require_manifest_edge(edge_pairs, diagnostics, left, right)
-
-    for mapping_id in ids_by_kind.get("pnr_mapping_artifact", []):
-        for source_kind in ("dataflow_primitive_coverage", "adg_hardware", "pnr_mapping"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                require_manifest_edge(edge_pairs, diagnostics, source_id, mapping_id)
-        for cgra_id in ids_by_kind.get("cgra_sim_report", []):
-            require_manifest_edge(edge_pairs, diagnostics, mapping_id, cgra_id)
-        for dse_id in ids_by_kind.get("dse_candidate", []):
-            require_manifest_edge(edge_pairs, diagnostics, mapping_id, dse_id)
-
-    for dfg_id in ids_by_kind.get("dfg_sim_report", []):
-        for source_id in ids_by_kind.get("dataflow_primitive_coverage", []):
-            require_manifest_edge(edge_pairs, diagnostics, source_id, dfg_id)
-        for sim_id in ids_by_kind.get("sim_cycle", []):
-            require_manifest_edge(edge_pairs, diagnostics, dfg_id, sim_id)
-
-    for cgra_id in ids_by_kind.get("cgra_sim_report", []):
-        for sim_id in ids_by_kind.get("sim_cycle", []):
-            if sim_id == "sim-cycle-summary":
-                require_manifest_edge(edge_pairs, diagnostics, cgra_id, sim_id)
-        for dse_id in ids_by_kind.get("dse_candidate", []):
-            require_manifest_edge(edge_pairs, diagnostics, cgra_id, dse_id)
-
-    for comparison_id in ids_by_kind.get("sim_comparison_report", []):
-        for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                require_manifest_edge(edge_pairs, diagnostics, source_id, comparison_id)
-
-    for runtime_id in ids_by_kind.get("runtime_package", []):
-        for source_kind in ("pnr_mapping_artifact", "cgra_sim_report", "sim_comparison_report"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                require_manifest_edge(edge_pairs, diagnostics, source_id, runtime_id)
-
-    for report_id in ids_by_kind.get("workload_report_bundle", []):
-        for source_kind in (
-            "source_compat",
-            "compiler_pipeline",
-            "dataflow_primitive_coverage",
-            "adg_hardware",
-            "pnr_mapping_artifact",
-            "dfg_sim_report",
-            "cgra_sim_report",
-            "sim_comparison_report",
-            "runtime_package",
-            "sim_cycle",
-            "rtl_fpa",
-            "dse_candidate",
-        ):
-            for source_id in ids_by_kind.get(source_kind, []):
-                require_manifest_edge(edge_pairs, diagnostics, source_id, report_id)
-        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
-            require_manifest_edge(edge_pairs, diagnostics, report_id, demonstrator_id)
-
-    for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
-        for source_kind in ("adg_hardware", "rtl_fpa"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                require_manifest_edge(edge_pairs, diagnostics, source_id, hardware_report_id)
-        for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
-            require_manifest_edge(edge_pairs, diagnostics, hardware_report_id, demonstrator_id)
-
-    for dse_report_id in ids_by_kind.get("dse_report_bundle", []):
-        for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                require_manifest_edge(edge_pairs, diagnostics, source_id, dse_report_id)
+    for left, right in iter_artifact_manifest_required_edges(artifact_ids, ids_by_kind):
+        require_manifest_edge(edge_pairs, diagnostics, left, right)
 
     return len(artifacts)
 
