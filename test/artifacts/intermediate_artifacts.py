@@ -3893,6 +3893,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DSE report bundle needs non-empty objective_records")
             objectives = []
         objective_kinds: set[str] = set()
+        objective_metric_inputs_by_id: dict[str, set[str]] = {}
         for index, objective in enumerate(objectives, start=1):
             if not isinstance(objective, dict):
                 diagnostics.append(f"DSE report bundle objective {index} must be an object")
@@ -3913,6 +3914,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
             metric_inputs = objective.get("metric_inputs")
             if isinstance(metric_inputs, list):
+                objective_id = objective.get("objective_id")
+                if isinstance(objective_id, str) and objective_id:
+                    objective_metric_inputs_by_id[objective_id] = {
+                        metric_id
+                        for metric_id in metric_inputs
+                        if isinstance(metric_id, str) and metric_id
+                    }
                 for metric_id in metric_inputs:
                     if not isinstance(metric_id, str) or not metric_id:
                         diagnostics.append(f"DSE report bundle objective {index} metric_inputs has invalid entry")
@@ -4007,6 +4015,23 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         diagnostics.append(
                             f"DSE report bundle candidate {index} metric_records_used references {metric_id!r}"
                         )
+                if candidate.get("status") in {"selected", "pareto"} and isinstance(objective_records_used, list):
+                    used_metrics = {
+                        metric_id
+                        for metric_id in metric_records_used
+                        if isinstance(metric_id, str) and metric_id
+                    }
+                    for objective_id in objective_records_used:
+                        if not isinstance(objective_id, str):
+                            continue
+                        missing_objective_metrics = sorted(
+                            objective_metric_inputs_by_id.get(objective_id, set()) - used_metrics
+                        )
+                        if missing_objective_metrics:
+                            diagnostics.append(
+                                f"DSE report bundle candidate {index} lacks objective metric inputs "
+                                f"{missing_objective_metrics}"
+                            )
             generated_output_artifacts = candidate.get("generated_output_artifacts")
             if isinstance(generated_output_artifacts, list):
                 if candidate.get("status") in {"selected", "pareto"} and not generated_output_artifacts:
