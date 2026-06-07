@@ -1525,7 +1525,7 @@ def validate_host_interface(
         diagnostics.append(f"{label} acceleration mode must require runtime package")
 
 
-def validate_report_only_runtime_claims(
+def validate_non_executed_runtime_claims(
     value: dict[str, object],
     output_buffer_identities: object,
     diagnostics: list[str],
@@ -1601,13 +1601,12 @@ def validate_runtime_report(
     if not isinstance(output_buffers, list) or any(not isinstance(identity, str) for identity in output_buffers):
         diagnostics.append("runtime package runtime_report output_buffer_identities must be a string list")
     validate_diagnostic_records(value.get("diagnostic_records"), diagnostics, "runtime package runtime_report")
-    if data.get("fallback_policy") == "report_only":
-        validate_report_only_runtime_claims(
-            value,
-            output_buffers,
-            diagnostics,
-            "runtime package report_only runtime_report",
-        )
+    validate_non_executed_runtime_claims(
+        value,
+        output_buffers,
+        diagnostics,
+        "runtime package runtime_report",
+    )
 
 
 def validate_runtime_evidence(
@@ -1722,7 +1721,7 @@ def validate_runtime_evidence(
     if require_complete and not input_fingerprints:
         diagnostics.append("workload report bundle pass needs runtime input_artifact_fingerprints")
     if fallback.get("decision") == "report_only":
-        validate_report_only_runtime_claims(
+        validate_non_executed_runtime_claims(
             value,
             outputs,
             diagnostics,

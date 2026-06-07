@@ -236,6 +236,34 @@ def main() -> int:
                 ],
                 f"runtime package audit with {fallback_policy}",
             )
+            fake_policy_execution_package = out_dir / f"{fallback_policy}-fake-execution-runtime-package.json"
+            fake_policy_execution_data = json.loads(policy_package.read_text())
+            fake_policy_execution_data["runtime_report"]["launch_status"] = "pass"
+            fake_policy_execution_data["runtime_report"]["target_status"] = "pass"
+            fake_policy_execution_data["runtime_report"]["runtime_trace_identity"] = (
+                f"runtime-trace::vecsum::{fallback_policy}"
+            )
+            fake_policy_execution_data["runtime_report"]["output_buffer_identities"] = [
+                f"runtime-output::vecsum::{fallback_policy}"
+            ]
+            fake_policy_execution_package.write_text(
+                json.dumps(fake_policy_execution_data, indent=2, sort_keys=True) + "\n"
+            )
+            fake_policy_execution_audit = out_dir / f"{fallback_policy}-fake-execution-runtime-package-audit.json"
+            result = artifact_test_common.run_command(
+                repo,
+                [
+                    "python3",
+                    "test/e2e/audit_intermediate_artifacts.py",
+                    "--output",
+                    str(fake_policy_execution_audit),
+                    str(fake_policy_execution_package),
+                ],
+            )
+            if result.returncode == 0:
+                raise AssertionError(
+                    f"runtime package with {fallback_policy} claiming execution unexpectedly passed audit"
+                )
         expected_runtime_report = {
             "report_id": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": "test-app-host::vecsum::default",
