@@ -2132,6 +2132,7 @@ EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
     "leakage_power": "mW",
     "energy": "nJ",
     "performance_per_watt": "items_per_s_per_w",
+    "performance_per_area": "items_per_s_per_um2",
     "hardware_nodes": "count",
     "hardware_links": "count",
 }
@@ -2139,6 +2140,7 @@ EXPECTED_WORKLOAD_DERIVATION_BY_METRIC_CLASS = {
     "estimated_runtime": "cycle_frequency_runtime",
     "energy": "runtime_power_energy",
     "performance_per_watt": "workload_runtime_power_efficiency",
+    "performance_per_area": "workload_runtime_area_efficiency",
 }
 
 
@@ -4115,6 +4117,52 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 if not nearly_equal(float(performance_value), expected_performance):
                     diagnostics.append(
                         "workload report bundle performance per watt metric value does not match inputs"
+                    )
+        for metric in metrics:
+            if not isinstance(metric, dict) or metric.get("metric_class") != "performance_per_area":
+                continue
+            inputs = metric.get("input_metric_ids")
+            if not isinstance(inputs, list) or not inputs:
+                diagnostics.append("workload report bundle performance per area metric lacks input_metric_ids")
+                continue
+            missing_inputs = [metric_id for metric_id in inputs if metric_id not in metric_ids]
+            if missing_inputs:
+                diagnostics.append(
+                    f"workload report bundle performance per area metric references missing inputs {missing_inputs}"
+                )
+            input_classes = {
+                metric_class_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str) and metric_id in metric_class_by_id
+            }
+            missing_classes = sorted({"workload_size", "estimated_runtime", "area"} - input_classes)
+            if missing_classes:
+                diagnostics.append(
+                    f"workload report bundle performance per area metric lacks source inputs {missing_classes}"
+                )
+            input_value_by_class = {
+                metric_class_by_id[metric_id]: metric_value_by_id[metric_id]
+                for metric_id in inputs
+                if isinstance(metric_id, str)
+                and metric_id in metric_class_by_id
+                and metric_id in metric_value_by_id
+            }
+            workload_size = input_value_by_class.get("workload_size")
+            runtime = input_value_by_class.get("estimated_runtime")
+            area = input_value_by_class.get("area")
+            performance_value = metric.get("value")
+            if (
+                isinstance(performance_value, (int, float))
+                and workload_size is not None
+                and runtime is not None
+                and runtime > 0
+                and area is not None
+                and area > 0
+            ):
+                expected_performance = workload_size / runtime * 1_000_000.0 / area
+                if not nearly_equal(float(performance_value), expected_performance):
+                    diagnostics.append(
+                        "workload report bundle performance per area metric value does not match inputs"
                     )
     if kind == "hardware_report_bundle":
         if data.get("kind") != "hardware_report_bundle":

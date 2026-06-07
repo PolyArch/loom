@@ -214,6 +214,12 @@ def main() -> int:
                 "items_per_s_per_w",
                 "analytic",
             ),
+            "metric::vecsum::performance_per_area": (
+                "performance_per_area",
+                3746.853,
+                "items_per_s_per_um2",
+                "analytic",
+            ),
         }
         for metric_id, (metric_class, value, unit, fidelity) in expected_metrics.items():
             metric = metrics_by_id.get(metric_id)
@@ -257,6 +263,15 @@ def main() -> int:
         }
         if performance_inputs != required_performance_inputs:
             raise AssertionError(f"performance per watt should preserve input metric ids: {performance_per_watt}")
+        performance_per_area = metrics_by_id["metric::vecsum::performance_per_area"]
+        area_performance_inputs = set(performance_per_area.get("input_metric_ids", []))
+        required_area_performance_inputs = {
+            "metric::vecsum::workload_size_items",
+            "metric::vecsum::estimated_runtime_us",
+            "metric::shared_reduction_adg::area_um2",
+        }
+        if area_performance_inputs != required_area_performance_inputs:
+            raise AssertionError(f"performance per area should preserve input metric ids: {performance_per_area}")
 
         audit = out_dir / "artifact-audit-summary.json"
         artifact_test_common.require_success(
@@ -369,6 +384,33 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with incomplete performance metric inputs unexpectedly passed audit")
+        missing_area_performance_input_report = out_dir / "missing-area-performance-input-workload-report-bundle.json"
+        missing_area_performance_input_data = json.loads(report.read_text())
+        for metric in missing_area_performance_input_data["metric_records"]:
+            if metric.get("metric_id") == "metric::vecsum::performance_per_area":
+                metric["input_metric_ids"] = [
+                    metric_id
+                    for metric_id in metric["input_metric_ids"]
+                    if metric_id != "metric::shared_reduction_adg::area_um2"
+                ]
+        missing_area_performance_input_report.write_text(
+            json.dumps(missing_area_performance_input_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_area_performance_input_audit = (
+            out_dir / "missing-area-performance-input-workload-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_area_performance_input_audit),
+                str(missing_area_performance_input_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with incomplete area performance inputs unexpectedly passed audit")
         mismatched_energy_value_report = out_dir / "mismatched-energy-value-workload-report-bundle.json"
         mismatched_energy_value_data = json.loads(report.read_text())
         for metric in mismatched_energy_value_data["metric_records"]:

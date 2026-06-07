@@ -472,6 +472,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     runtime_metric_id = f"metric::{workload}::estimated_runtime_us"
     dynamic_power_metric_id = f"metric::{hardware}::dynamic_power_mw"
     leakage_power_metric_id = f"metric::{hardware}::leakage_power_mw"
+    area_metric_id = f"metric::{hardware}::area_um2"
     energy_inputs = [
         runtime_metric_id,
         dynamic_power_metric_id,
@@ -521,6 +522,28 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                         runtime_metric_id,
                         dynamic_power_metric_id,
                         leakage_power_metric_id,
+                    ],
+                )
+            )
+        area_um2 = numeric(rtl_row, "area_um2")
+        if area_um2 > 0:
+            metric_records.append(
+                metric_record(
+                    metric_id=f"metric::{workload}::performance_per_area",
+                    metric_class="performance_per_area",
+                    value=int(dfg_report["dynamic_work_items"]) / runtime_us * 1_000_000.0 / area_um2,
+                    unit="items_per_s_per_um2",
+                    fidelity_level=(
+                        rtl_row.get("fidelity_level", "") if rtl_row is not None else ""
+                    ) or "custom_calibrated",
+                    evidence_source_artifact_id=artifact_id(dse_path),
+                    producer_component="workload-report-bundle",
+                    derivation_kind="workload_runtime_area_efficiency",
+                    diagnostics=[dse_row.get("diagnostic", "")],
+                    input_metric_ids=[
+                        workload_size_metric_id,
+                        runtime_metric_id,
+                        area_metric_id,
                     ],
                 )
             )
