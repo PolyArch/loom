@@ -247,6 +247,9 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         required_synchronization_policies = evidence.get("required_synchronization_policies", [])
         if not isinstance(required_synchronization_policies, list):
             required_synchronization_policies = []
+        required_runtime_features = evidence.get("required_runtime_features", [])
+        if not isinstance(required_runtime_features, list):
+            required_runtime_features = []
         summary = {
             "workload_report_bundle_identity": artifact_id(path),
             "runtime_package_identity": str(evidence.get("runtime_package_identity", "")),
@@ -279,6 +282,11 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 if isinstance(descriptor, dict)
             ],
             "runtime_configuration": runtime_configuration,
+            "required_runtime_features": [
+                str(feature)
+                for feature in required_runtime_features
+                if isinstance(feature, str)
+            ],
             "required_data_movement_policies": [
                 str(policy)
                 for policy in required_data_movement_policies

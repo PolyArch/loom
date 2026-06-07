@@ -195,6 +195,9 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     required_synchronization_policies = runtime_package.get("required_synchronization_policies", [])
     if not isinstance(required_synchronization_policies, list):
         required_synchronization_policies = []
+    required_runtime_features = runtime_package.get("required_runtime_features", [])
+    if not isinstance(required_runtime_features, list):
+        required_runtime_features = []
     data_movement_policy = str(runtime_package.get("data_movement_policy", ""))
     custom_data_movement_policy = ""
     if data_movement_policy == "custom":
@@ -238,6 +241,11 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
             if isinstance(descriptor, dict)
         ],
         "runtime_configuration": runtime_configuration,
+        "required_runtime_features": [
+            str(feature)
+            for feature in required_runtime_features
+            if isinstance(feature, str)
+        ],
         "required_data_movement_policies": [
             str(policy)
             for policy in required_data_movement_policies

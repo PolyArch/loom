@@ -1863,6 +1863,21 @@ def validate_runtime_evidence_argument_descriptors(
                 diagnostics.append(f"{label} argument descriptor {index} lacks {key}")
 
 
+def validate_runtime_evidence_required_features(
+    value: object,
+    diagnostics: list[str],
+    label: str,
+    require_complete: bool,
+) -> None:
+    if not isinstance(value, list):
+        diagnostics.append(f"{label} required_runtime_features must be a list")
+        return
+    if any(not isinstance(feature, str) or not feature for feature in value):
+        diagnostics.append(f"{label} required_runtime_features entries must be non-empty strings")
+    if require_complete and not value:
+        diagnostics.append(f"{label} pass needs required_runtime_features")
+
+
 def validate_runtime_evidence_target_profile(
     value: object,
     evidence: dict[str, object],
@@ -1966,6 +1981,7 @@ def validate_runtime_evidence(
         "memory_descriptors",
         "argument_descriptors",
         "runtime_configuration",
+        "required_runtime_features",
         "output_buffer_identities",
         "simulator_report_identities",
         "diagnostic_records",
@@ -2041,6 +2057,12 @@ def validate_runtime_evidence(
         value,
         diagnostics,
         "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_required_features(
+        value.get("required_runtime_features"),
+        diagnostics,
+        "workload report bundle runtime_evidence",
+        require_complete,
     )
     data_movement_policy = value.get("data_movement_policy")
     if data_movement_policy not in DATA_MOVEMENT_POLICIES:
@@ -2186,6 +2208,7 @@ def validate_runtime_evidence_summaries(
             "argument_descriptors",
             "target_profile",
             "runtime_configuration",
+            "required_runtime_features",
         ):
             if key == "runtime_handle_model":
                 validate_runtime_handle_model(
@@ -2233,6 +2256,13 @@ def validate_runtime_evidence_summaries(
                     summary,
                     diagnostics,
                     f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "required_runtime_features":
+                validate_runtime_evidence_required_features(
+                    summary.get(key),
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                    require_complete,
                 )
             elif not isinstance(summary.get(key), str) or not summary.get(key):
                 diagnostics.append(f"DSE report bundle runtime evidence summary {index} lacks {key}")

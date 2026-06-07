@@ -164,6 +164,7 @@ def main() -> int:
             "memory_descriptors": runtime_package_data["memory_descriptors"],
             "argument_descriptors": runtime_package_data["argument_descriptors"],
             "runtime_configuration": runtime_package_data["runtime_configuration"],
+            "required_runtime_features": runtime_package_data["required_runtime_features"],
             "required_data_movement_policies": ["simulated"],
             "required_synchronization_policies": ["host_wait"],
             "simulator_report_identities": runtime_report["simulator_report_identities"],
@@ -565,6 +566,25 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched runtime configuration unexpectedly passed audit")
+        bad_runtime_features_report = out_dir / "bad-runtime-features-workload-report-bundle.json"
+        bad_runtime_features_data = json.loads(report.read_text())
+        bad_runtime_features_data["runtime_evidence"]["required_runtime_features"] = ["simulator_dispatch", ""]
+        bad_runtime_features_report.write_text(
+            json.dumps(bad_runtime_features_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_features_audit = out_dir / "bad-runtime-features-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_features_audit),
+                str(bad_runtime_features_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with malformed runtime feature requirements unexpectedly passed audit")
         bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
         bad_runtime_diagnostics_data = json.loads(report.read_text())
         bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"
