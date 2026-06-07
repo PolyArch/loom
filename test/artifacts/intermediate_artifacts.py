@@ -1768,6 +1768,18 @@ def validate_runtime_evidence_summaries(
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} has unknown data_movement_policy"
             )
+        custom_identity = summary.get("custom_data_movement_policy_identity")
+        if data_movement_policy == "custom":
+            if not isinstance(custom_identity, str) or not custom_identity:
+                diagnostics.append(
+                    f"DSE report bundle runtime evidence summary {index} "
+                    "lacks custom_data_movement_policy_identity"
+                )
+        elif custom_identity is not None:
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} "
+                "custom_data_movement_policy_identity is only valid for custom policy"
+            )
         required_data_movement_policies = summary.get("required_data_movement_policies")
         if not isinstance(required_data_movement_policies, list):
             diagnostics.append(

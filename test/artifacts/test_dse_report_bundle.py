@@ -296,6 +296,51 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched runtime summary policies unexpectedly passed audit")
 
+        extra_custom_policy_summary = out_dir / "extra-custom-policy-summary-dse-report-bundle.json"
+        extra_custom_policy_summary_data = json.loads(report.read_text())
+        extra_custom_policy_summary_data["runtime_evidence_summaries"][0][
+            "custom_data_movement_policy_identity"
+        ] = "runtime-policy::unexpected::vecsum"
+        extra_custom_policy_summary.write_text(
+            json.dumps(extra_custom_policy_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        extra_custom_policy_summary_audit = out_dir / "extra-custom-policy-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(extra_custom_policy_summary_audit),
+                str(extra_custom_policy_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with custom policy for simulated runtime unexpectedly passed audit")
+
+        unnamed_custom_policy_summary = out_dir / "unnamed-custom-policy-summary-dse-report-bundle.json"
+        unnamed_custom_policy_summary_data = json.loads(report.read_text())
+        unnamed_custom_policy_summary_data["runtime_evidence_summaries"][0]["data_movement_policy"] = "custom"
+        unnamed_custom_policy_summary_data["runtime_evidence_summaries"][0][
+            "required_data_movement_policies"
+        ] = ["custom"]
+        unnamed_custom_policy_summary.write_text(
+            json.dumps(unnamed_custom_policy_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        unnamed_custom_policy_summary_audit = out_dir / "unnamed-custom-policy-summary-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unnamed_custom_policy_summary_audit),
+                str(unnamed_custom_policy_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with unnamed custom runtime policy unexpectedly passed audit")
+
         stale_candidate_input = out_dir / "stale-candidate-input-dse-report-bundle.json"
         stale_candidate_input_data = json.loads(report.read_text())
         stale_candidate_input_data["input_artifact_fingerprints"]["dse-candidate-summary"] = "0" * 64

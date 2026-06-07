@@ -220,33 +220,35 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         required_synchronization_policies = evidence.get("required_synchronization_policies", [])
         if not isinstance(required_synchronization_policies, list):
             required_synchronization_policies = []
-        summaries.append(
-            {
-                "workload_report_bundle_identity": artifact_id(path),
-                "runtime_package_identity": str(evidence.get("runtime_package_identity", "")),
-                "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
-                "launch_status": str(evidence.get("launch_status", "")),
-                "target_status": str(evidence.get("target_status", "")),
-                "data_movement_policy": str(evidence.get("data_movement_policy", "")),
-                "synchronization_mode": str(evidence.get("synchronization_mode", "")),
-                "required_data_movement_policies": [
-                    str(policy)
-                    for policy in required_data_movement_policies
-                    if isinstance(policy, str)
-                ],
-                "required_synchronization_policies": [
-                    str(policy)
-                    for policy in required_synchronization_policies
-                    if isinstance(policy, str)
-                ],
-                "input_artifact_fingerprints": {
-                    str(identity): str(fingerprint)
-                    for identity, fingerprint in input_fingerprints.items()
-                    if isinstance(identity, str) and isinstance(fingerprint, str)
-                },
-                "fallback_decision": fallback,
-            }
-        )
+        summary = {
+            "workload_report_bundle_identity": artifact_id(path),
+            "runtime_package_identity": str(evidence.get("runtime_package_identity", "")),
+            "runtime_report_identity": str(evidence.get("runtime_report_identity", "")),
+            "launch_status": str(evidence.get("launch_status", "")),
+            "target_status": str(evidence.get("target_status", "")),
+            "data_movement_policy": str(evidence.get("data_movement_policy", "")),
+            "synchronization_mode": str(evidence.get("synchronization_mode", "")),
+            "required_data_movement_policies": [
+                str(policy)
+                for policy in required_data_movement_policies
+                if isinstance(policy, str)
+            ],
+            "required_synchronization_policies": [
+                str(policy)
+                for policy in required_synchronization_policies
+                if isinstance(policy, str)
+            ],
+            "input_artifact_fingerprints": {
+                str(identity): str(fingerprint)
+                for identity, fingerprint in input_fingerprints.items()
+                if isinstance(identity, str) and isinstance(fingerprint, str)
+            },
+            "fallback_decision": fallback,
+        }
+        custom_policy = evidence.get("custom_data_movement_policy_identity")
+        if isinstance(custom_policy, str) and custom_policy:
+            summary["custom_data_movement_policy_identity"] = custom_policy
+        summaries.append(summary)
     return summaries
 
 
