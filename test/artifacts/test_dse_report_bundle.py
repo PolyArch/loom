@@ -618,6 +618,81 @@ def main() -> int:
             "dynamic power DSE report bundle audit",
         )
 
+        leakage_power_candidate_summary = out_dir / "leakage-power-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "minimize_leakage_power",
+                "--output",
+                str(leakage_power_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "leakage power DSE candidate summary",
+        )
+        leakage_power_report = out_dir / "leakage-power-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(leakage_power_report),
+                "--artifact",
+                str(leakage_power_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "leakage power DSE report bundle",
+        )
+        leakage_power_data = json.loads(leakage_power_report.read_text())
+        leakage_power_objective = leakage_power_data.get("objective_records", [])[0]
+        expected_leakage_power_objective = {
+            "objective_id": "objective::minimize_leakage_power",
+            "objective_kind": "minimize_leakage_power",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "minimize",
+            "units": "mW",
+        }
+        for key, value in expected_leakage_power_objective.items():
+            if leakage_power_objective.get(key) != value:
+                raise AssertionError(f"unexpected leakage power objective {key}: {leakage_power_objective}")
+        expected_leakage_power_metric = "metric::shared_reduction_adg::leakage_power_mw"
+        if leakage_power_objective.get("metric_inputs") != [expected_leakage_power_metric]:
+            raise AssertionError(f"leakage power objective should cite power metric: {leakage_power_objective}")
+        if leakage_power_data.get("candidate_ordering_rule") != "leakage_power_score_then_candidate_id":
+            raise AssertionError(f"unexpected leakage power ordering rule: {leakage_power_data}")
+        if leakage_power_data.get("selected_policy_id") != "deterministic_minimize_leakage_power_v1":
+            raise AssertionError(f"unexpected leakage power policy id: {leakage_power_data}")
+        leakage_power_candidate = leakage_power_data.get("candidate_list", [])[0]
+        if expected_leakage_power_metric not in leakage_power_candidate.get("metric_records_used", []):
+            raise AssertionError(f"leakage power candidate missed power metric: {leakage_power_candidate}")
+        leakage_power_audit = out_dir / "leakage-power-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(leakage_power_audit),
+                str(leakage_power_report),
+            ],
+            "leakage power DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"

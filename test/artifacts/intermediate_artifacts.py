@@ -348,6 +348,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "frequency_mhz",
             "area_um2",
             "dynamic_power_mw",
+            "leakage_power_mw",
             "energy_nj",
             "selection_status",
         ),
@@ -363,7 +364,14 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "ordering_rule",
             "diagnostic",
         ),
-        numeric_columns=("cgra_sim_cycles", "frequency_mhz", "area_um2", "dynamic_power_mw", "energy_nj"),
+        numeric_columns=(
+            "cgra_sim_cycles",
+            "frequency_mhz",
+            "area_um2",
+            "dynamic_power_mw",
+            "leakage_power_mw",
+            "energy_nj",
+        ),
         identity_columns=("candidate", "workload", "hardware", "mapping_id"),
         scaffold_row=(
             "scaffold",
@@ -371,6 +379,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "scaffold",
             "",
             "none",
+            "",
             "",
             "",
             "",
@@ -961,6 +970,7 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             "frequency_mhz",
             "area_um2",
             "dynamic_power_mw",
+            "leakage_power_mw",
             "energy_nj",
         ):
             if metric_records and metric not in parsed_metrics:

@@ -41,6 +41,13 @@ EXPECTED = {
         "hardware",
         "dynamic_power_mw",
     ),
+    "minimize_leakage_power": (
+        "minimize",
+        "mW",
+        "leakage_power_score_then_candidate_id",
+        "hardware",
+        "leakage_power_mw",
+    ),
     "minimize_energy": ("minimize", "nJ", "energy_score_then_candidate_id", "workload", "energy_nj"),
     "minimize_power": ("minimize", "nJ", "energy_score_then_candidate_id", "workload", "energy_nj"),
 }

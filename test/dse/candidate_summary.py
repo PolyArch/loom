@@ -383,6 +383,7 @@ def candidate_row(
             "frequency_mhz": fpa["frequency_mhz"],
             "area_um2": fpa["area_um2"],
             "dynamic_power_mw": fpa["dynamic_power_mw"],
+            "leakage_power_mw": fpa["leakage_power_mw"],
             "energy_nj": f"{energy_nj:.3f}",
             "selection_status": "selected",
             "candidate_kind": "combined_full_stack_candidate",
@@ -409,6 +410,7 @@ def candidate_row(
         "frequency_mhz": "",
         "area_um2": "",
         "dynamic_power_mw": "",
+        "leakage_power_mw": "",
         "energy_nj": "",
         "selection_status": "blocked",
         "candidate_kind": "combined_full_stack_candidate",
@@ -447,6 +449,11 @@ def area_score(row: dict[str, str]) -> float:
 def dynamic_power_score(row: dict[str, str]) -> float:
     dynamic_power = parse_positive_float(row, "dynamic_power_mw")
     return dynamic_power if dynamic_power is not None else float("inf")
+
+
+def leakage_power_score(row: dict[str, str]) -> float:
+    leakage_power = parse_positive_float(row, "leakage_power_mw")
+    return leakage_power if leakage_power is not None else float("inf")
 
 
 def throughput_score(row: dict[str, str]) -> float:
@@ -508,6 +515,9 @@ def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
             selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective == "minimize_dynamic_power":
             score = dynamic_power_score
+            selected = min(complete, key=lambda row: (score(row), row["candidate"]))
+        elif effective_objective == "minimize_leakage_power":
+            score = leakage_power_score
             selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective in {"minimize_energy", "minimize_power"}:
             score = energy_score

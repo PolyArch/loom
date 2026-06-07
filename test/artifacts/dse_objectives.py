@@ -58,6 +58,13 @@ OBJECTIVE_SPECS = {
         metric_entity="hardware",
         metric_name="dynamic_power_mw",
     ),
+    "minimize_leakage_power": DseObjectiveSpec(
+        direction="minimize",
+        units="mW",
+        ordering_rule="leakage_power_score_then_candidate_id",
+        metric_entity="hardware",
+        metric_name="leakage_power_mw",
+    ),
     "minimize_energy": DseObjectiveSpec(
         direction="minimize",
         units="nJ",

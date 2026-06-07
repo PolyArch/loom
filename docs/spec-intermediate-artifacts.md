@@ -312,6 +312,7 @@ Required first columns:
 * `frequency_mhz`;
 * `area_um2`;
 * `dynamic_power_mw`;
+* `leakage_power_mw`;
 * `energy_nj`;
 * `selection_status`.
 

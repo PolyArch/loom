@@ -102,6 +102,7 @@ CSV_COMMANDS = [
             "frequency_mhz",
             "area_um2",
             "dynamic_power_mw",
+            "leakage_power_mw",
             "energy_nj",
             "selection_status",
         ],
@@ -1184,7 +1185,7 @@ def main() -> int:
         )
         dse_provenance_header = (
             "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"
-            "area_um2,dynamic_power_mw,energy_nj,selection_status,candidate_kind,"
+            "area_um2,dynamic_power_mw,leakage_power_mw,energy_nj,selection_status,candidate_kind,"
             "input_artifacts,input_artifact_fingerprints,output_artifacts,objective_record,metric_records,policy_id,"
             "ordering_rule,diagnostic\n"
         )
@@ -1207,7 +1208,7 @@ def main() -> int:
         )
         valid_dse_metric_records = (
             "cgra_sim_cycles=12;frequency_mhz=100;area_um2=200;"
-            "dynamic_power_mw=3;energy_nj=0.480"
+            "dynamic_power_mw=3;leakage_power_mw=1;energy_nj=0.480"
         )
         valid_dse = out_dir / "valid-dse-candidate-summary.csv"
         valid_dse_provenance = (
@@ -1220,7 +1221,7 @@ def main() -> int:
         )
         valid_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + valid_dse_provenance
             + "cycle-frequency-power-area energy estimate\n"
         )
@@ -1258,7 +1259,7 @@ def main() -> int:
         )
         missing_fingerprint_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + missing_fingerprint_dse_provenance
             + "input artifact provenance omits fingerprints\n"
         )
@@ -1293,7 +1294,7 @@ def main() -> int:
         )
         missing_fingerprint_entry_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + missing_fingerprint_entry_dse_provenance
             + "input artifact provenance omits one fingerprint entry\n"
         )
@@ -1328,7 +1329,7 @@ def main() -> int:
         )
         mismatched_fingerprint_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + mismatched_fingerprint_dse_provenance
             + "input artifact provenance carries stale fingerprint\n"
         )
@@ -1360,10 +1361,10 @@ def main() -> int:
         )
         duplicate_candidate_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + duplicate_candidate_dse_provenance
             + "cycle-frequency-power-area energy estimate\n"
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,rejected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,rejected,"
             + duplicate_candidate_dse_provenance
             + "duplicate candidate identity with different selection status\n"
         )
@@ -1395,7 +1396,7 @@ def main() -> int:
         )
         stale_candidate_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + stale_candidate_dse_provenance
             + "candidate identity omits immutable mapping id\n"
         )
@@ -1430,7 +1431,7 @@ def main() -> int:
         )
         mismatched_objective_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + mismatched_objective_dse_provenance
             + "objective record contradicts row objective\n"
         )
@@ -1465,7 +1466,7 @@ def main() -> int:
         )
         mismatched_ordering_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + mismatched_ordering_dse_provenance
             + "ordering rule contradicts row objective\n"
         )
@@ -1500,7 +1501,7 @@ def main() -> int:
         )
         mismatched_metric_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + mismatched_metric_dse_provenance
             + "metric records contradict row values\n"
         )
@@ -1535,7 +1536,7 @@ def main() -> int:
         )
         bogus_input_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + bogus_input_dse_provenance
             + "input artifact provenance points at missing files\n"
         )
@@ -1567,7 +1568,7 @@ def main() -> int:
         )
         bogus_output_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + bogus_output_dse_provenance
             + "output artifact provenance points at a missing file\n"
         )
@@ -1599,7 +1600,7 @@ def main() -> int:
         )
         wrong_output_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + wrong_output_dse_provenance
             + "output artifact provenance points at an unrelated existing file\n"
         )
@@ -1634,7 +1635,7 @@ def main() -> int:
         )
         unrelated_input_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + unrelated_input_dse_provenance
             + "input artifact provenance points at unrelated existing files\n"
         )
@@ -1661,8 +1662,8 @@ def main() -> int:
 
         no_provenance_dse = out_dir / "no-provenance-dse-candidate-summary.csv"
         no_provenance_dse.write_text(
-            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,area_um2,dynamic_power_mw,energy_nj,selection_status,diagnostic\n"
-            "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,selected,metrics without artifact provenance\n"
+            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,energy_nj,selection_status,diagnostic\n"
+            "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,metrics without artifact provenance\n"
         )
         result = run_command(
             repo,
@@ -1687,8 +1688,8 @@ def main() -> int:
 
         no_provenance_rejected_dse = out_dir / "no-provenance-rejected-dse-candidate-summary.csv"
         no_provenance_rejected_dse.write_text(
-            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,area_um2,dynamic_power_mw,energy_nj,selection_status,diagnostic\n"
-            "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,0.480,rejected,metrics without rejected-candidate provenance\n"
+            "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,area_um2,dynamic_power_mw,leakage_power_mw,energy_nj,selection_status,diagnostic\n"
+            "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,rejected,metrics without rejected-candidate provenance\n"
         )
         result = run_command(
             repo,
@@ -1720,7 +1721,7 @@ def main() -> int:
         wrong_mapping_dse_provenance = valid_dse_provenance.replace(str(valid_dse), str(wrong_mapping_dse))
         wrong_mapping_dse.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0,vecadd,fabric0,map1,minimize_runtime,12,100,200,3,0.480,selected,"
+            + "candidate::vecadd::fabric0,vecadd,fabric0,map1,minimize_runtime,12,100,200,3,1,0.480,selected,"
             + wrong_mapping_dse_provenance
             + "stale mapping id with borrowed simulator cycles\n"
         )
@@ -1749,7 +1750,7 @@ def main() -> int:
         invalid_dse_energy_provenance = valid_dse_provenance.replace(str(valid_dse), str(invalid_dse_energy))
         invalid_dse_energy.write_text(
             dse_provenance_header
-            + "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,99.000,selected,"
+            + "candidate::vecadd::fabric0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,99.000,selected,"
             + invalid_dse_energy_provenance
             + "wrong synthetic energy\n"
         )

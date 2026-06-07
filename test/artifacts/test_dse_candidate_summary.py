@@ -20,6 +20,7 @@ HEADER = [
     "frequency_mhz",
     "area_um2",
     "dynamic_power_mw",
+    "leakage_power_mw",
     "energy_nj",
     "selection_status",
 ]
@@ -204,7 +205,15 @@ def main() -> int:
         row = matches[0]
         if not row["candidate"].startswith("candidate::vecadd::"):
             raise AssertionError(f"unexpected candidate id: {row}")
-        for column in ("mapping_id", "cgra_sim_cycles", "frequency_mhz", "area_um2", "dynamic_power_mw", "energy_nj"):
+        for column in (
+            "mapping_id",
+            "cgra_sim_cycles",
+            "frequency_mhz",
+            "area_um2",
+            "dynamic_power_mw",
+            "leakage_power_mw",
+            "energy_nj",
+        ):
             if row[column] != "":
                 raise AssertionError(f"blocked candidate must not fake {column}: {row}")
         if row["objective"] != "minimize_runtime":
@@ -249,7 +258,15 @@ def main() -> int:
         if len(rows) != 1:
             raise AssertionError(f"expected one summary-only row, got {rows}")
         row = rows[0]
-        for column in ("mapping_id", "cgra_sim_cycles", "frequency_mhz", "area_um2", "dynamic_power_mw", "energy_nj"):
+        for column in (
+            "mapping_id",
+            "cgra_sim_cycles",
+            "frequency_mhz",
+            "area_um2",
+            "dynamic_power_mw",
+            "leakage_power_mw",
+            "energy_nj",
+        ):
             if row[column] != "":
                 raise AssertionError(f"summary-only DSE candidate must not fake {column}: {row}")
         if row["selection_status"] != "blocked":
@@ -286,6 +303,7 @@ def main() -> int:
             "frequency_mhz": "100",
             "area_um2": "200",
             "dynamic_power_mw": "3",
+            "leakage_power_mw": "1",
             "energy_nj": "0.480",
             "selection_status": "selected",
         }
@@ -605,6 +623,63 @@ def main() -> int:
                 raise AssertionError(f"{hardware} candidate missed manifest dynamic-power policy id: {row}")
             if row.get("ordering_rule") != "dynamic_power_score_then_candidate_id":
                 raise AssertionError(f"{hardware} candidate missed dynamic-power ordering rule: {row}")
+
+        leakage_manifest = out_dir / "leakage-power-mapping-set-manifest.json"
+        write_mapping_set_manifest(
+            leakage_manifest,
+            "minimize_leakage_power",
+            [fast_energy_mapping_artifact, efficient_energy_mapping_artifact],
+        )
+        leakage_fpa = out_dir / "leakage-rtl-fpa-summary.csv"
+        leakage_fpa.write_text(
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric_fast,vecadd,skipped,skipped,skipped,100,300,1,20,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,fast high-leakage evidence\n"
+            "fabric_efficient,vecadd,skipped,skipped,skipped,100,200,20,1,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,slower low-leakage evidence\n"
+        )
+        leakage_output = out_dir / "leakage-power-dse-candidate-summary.csv"
+        rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/dse/run_candidate_summary.sh",
+            leakage_output,
+            HEADER,
+            "--artifact",
+            str(leakage_manifest),
+            "--artifact",
+            str(energy_sim),
+            "--artifact",
+            str(fast_energy_cgra_report),
+            "--artifact",
+            str(efficient_energy_cgra_report),
+            "--artifact",
+            str(leakage_fpa),
+            label="leakage-power-objective mapping-set manifest DSE candidate summary",
+        )
+        statuses = {row["hardware"]: row for row in rows}
+        if set(statuses) != {"fabric_fast", "fabric_efficient"}:
+            raise AssertionError(f"leakage-power manifest should expand two mapping candidates, got {rows}")
+        if statuses["fabric_efficient"]["selection_status"] != "selected":
+            raise AssertionError(
+                f"leakage-power manifest should select the lower-leakage candidate: {statuses['fabric_efficient']}"
+            )
+        if statuses["fabric_fast"]["selection_status"] != "rejected":
+            raise AssertionError(
+                f"leakage-power manifest should reject the higher-leakage candidate: {statuses['fabric_fast']}"
+            )
+        for hardware, row in statuses.items():
+            if row.get("objective") != "minimize_leakage_power":
+                raise AssertionError(f"{hardware} candidate missed manifest leakage-power objective: {row}")
+            if row.get("objective_record") != "objective::minimize_leakage_power":
+                raise AssertionError(f"{hardware} candidate missed manifest leakage-power objective record: {row}")
+            if row.get("policy_id") != "deterministic_minimize_leakage_power_v1":
+                raise AssertionError(f"{hardware} candidate missed manifest leakage-power policy id: {row}")
+            if row.get("ordering_rule") != "leakage_power_score_then_candidate_id":
+                raise AssertionError(f"{hardware} candidate missed leakage-power ordering rule: {row}")
+            if row.get("leakage_power_mw") not in {"20", "1"}:
+                raise AssertionError(f"{hardware} candidate missed leakage power evidence: {row}")
 
         same_hardware_fast_mapping_artifact = out_dir / "same-hardware-fast-pnr-mapping.json"
         same_hardware_slow_mapping_artifact = out_dir / "same-hardware-slow-pnr-mapping.json"
