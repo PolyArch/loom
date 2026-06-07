@@ -594,6 +594,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with unsupported host ABI unexpectedly passed audit")
+        mismatched_mapping_argument = out_dir / "mismatched-mapping-argument-runtime-package.json"
+        mismatched_mapping_argument_data = json.loads(package.read_text())
+        for descriptor in mismatched_mapping_argument_data["argument_descriptors"]:
+            if descriptor.get("name") == "mapping_artifact":
+                descriptor["identity"] = "sim-comparison-report"
+        mismatched_mapping_argument.write_text(
+            json.dumps(mismatched_mapping_argument_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_mapping_argument_audit = out_dir / "mismatched-mapping-argument-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_mapping_argument_audit),
+                str(mismatched_mapping_argument),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched mapping argument unexpectedly passed audit")
         fake_execution_package = out_dir / "fake-execution-runtime-package.json"
         fake_execution_data = json.loads(package.read_text())
         fake_execution_data["runtime_report"]["launch_status"] = "pass"

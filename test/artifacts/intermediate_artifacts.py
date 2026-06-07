@@ -2073,10 +2073,13 @@ def validate_runtime_evidence_argument_descriptors(
     value: object,
     diagnostics: list[str],
     label: str,
+    expected_identities_by_name: dict[str, object] | None = None,
 ) -> None:
     if not isinstance(value, list):
         diagnostics.append(f"{label} argument_descriptors must be a list")
         return
+    if expected_identities_by_name is None:
+        expected_identities_by_name = {}
     for index, descriptor in enumerate(value, start=1):
         if not isinstance(descriptor, dict):
             diagnostics.append(f"{label} argument descriptor {index} must be an object")
@@ -2085,6 +2088,13 @@ def validate_runtime_evidence_argument_descriptors(
             if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                 diagnostics.append(f"{label} argument descriptor {index} lacks {key}")
         validate_runtime_argument_descriptor_kind(descriptor, diagnostics, label, index)
+        validate_runtime_argument_descriptor_identity(
+            descriptor,
+            diagnostics,
+            label,
+            index,
+            expected_identities_by_name,
+        )
 
 
 RUNTIME_ARTIFACT_DESCRIPTOR_KINDS = {
@@ -2112,6 +2122,37 @@ def validate_runtime_argument_descriptor_kind(
     expected = EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME.get(name)
     if expected is not None and descriptor.get("descriptor_kind") != expected:
         diagnostics.append(f"{label} argument descriptor {index} descriptor_kind does not match name")
+
+
+def runtime_argument_identity_expectations(context: dict[str, object]) -> dict[str, object]:
+    expectations: dict[str, object] = {}
+    work_package_metadata = context.get("work_package_metadata")
+    runtime_input_identity = None
+    if isinstance(work_package_metadata, dict):
+        runtime_input_identity = work_package_metadata.get("runtime_input_identity")
+    if not runtime_input_identity:
+        runtime_input_identity = runtime_source_provenance(context)
+    if isinstance(runtime_input_identity, str) and runtime_input_identity:
+        expectations["runtime_input"] = runtime_input_identity
+    mapping_identity = context.get("selected_mapping_artifact_identity")
+    if not isinstance(mapping_identity, str):
+        mapping_identity = context.get("mapping_artifact_identity")
+    if isinstance(mapping_identity, str) and mapping_identity:
+        expectations["mapping_artifact"] = mapping_identity
+    return expectations
+
+
+def validate_runtime_argument_descriptor_identity(
+    descriptor: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+    index: int,
+    expected_identities_by_name: dict[str, object],
+) -> None:
+    name = descriptor.get("name")
+    expected = expected_identities_by_name.get(name)
+    if expected is not None and descriptor.get("identity") != expected:
+        diagnostics.append(f"{label} argument descriptor {index} identity does not match name")
 
 
 def runtime_artifact_input_references(
@@ -2357,6 +2398,7 @@ def validate_runtime_evidence(
         value.get("argument_descriptors"),
         diagnostics,
         "workload report bundle runtime_evidence",
+        runtime_argument_identity_expectations(value),
     )
     validate_runtime_evidence_target_profile(
         value.get("target_profile"),
@@ -2611,6 +2653,7 @@ def validate_runtime_evidence_summaries(
                     summary.get(key),
                     diagnostics,
                     f"DSE report bundle runtime evidence summary {index}",
+                    runtime_argument_identity_expectations(summary),
                 )
             elif key == "target_profile":
                 validate_runtime_evidence_target_profile(
@@ -3675,6 +3718,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package argument descriptor {index} lacks {key}")
             validate_runtime_argument_descriptor_kind(descriptor, diagnostics, "runtime package", index)
+            validate_runtime_argument_descriptor_identity(
+                descriptor,
+                diagnostics,
+                "runtime package",
+                index,
+                runtime_argument_identity_expectations(data),
+            )
         artifact_input_references = runtime_artifact_input_references(
             data.get("selected_mapping_artifact_identity"),
             simulator_reports,
