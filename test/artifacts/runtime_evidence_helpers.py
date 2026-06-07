@@ -75,6 +75,13 @@ def fallback_decision(runtime_package: dict[str, object], report: dict[str, obje
     return fallback if isinstance(fallback, dict) else {}
 
 
+def host_wrapper_identity(runtime_package: dict[str, object], report: dict[str, object]) -> str:
+    report_identity = report.get("host_wrapper_identity")
+    if isinstance(report_identity, str) and report_identity:
+        return report_identity
+    return str(runtime_package.get("host_wrapper_identity", ""))
+
+
 def custom_data_movement_policy(runtime_package: dict[str, object], report: dict[str, object]) -> str:
     if str(runtime_package.get("data_movement_policy", "")) != "custom":
         return ""
@@ -97,7 +104,7 @@ def runtime_evidence_from_package(
         "runtime_package_identity": runtime_package_identity,
         "runtime_report_identity": str(report.get("report_id", "")),
         "host_program_identity": str(report.get("host_program_identity", "")),
-        "host_wrapper_identity": str(runtime_package.get("host_wrapper_identity", "")),
+        "host_wrapper_identity": host_wrapper_identity(runtime_package, report),
         "host_interface": dict_field(runtime_package, "host_interface"),
         "runtime_handle_model": dict_field(runtime_package, "runtime_handle_model"),
         "work_package_metadata": dict_field(runtime_package, "work_package_metadata"),

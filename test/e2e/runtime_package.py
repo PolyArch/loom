@@ -383,6 +383,7 @@ def runtime_report(
     report = {
         "report_id": f"runtime-report::{workload}::{mapping_id}::{fallback_policy}",
         "host_program_identity": host_program_identity,
+        "host_wrapper_identity": host_wrapper_identity,
         "work_package_identity": work_package_identity,
         "launch_descriptor_identity": launch_descriptor_identity,
         "mapping_artifact_identity": selected_mapping_identity,

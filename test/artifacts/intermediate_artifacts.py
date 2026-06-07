@@ -1761,6 +1761,7 @@ def validate_runtime_report(
     for key in (
         "report_id",
         "host_program_identity",
+        "host_wrapper_identity",
         "work_package_identity",
         "launch_descriptor_identity",
         "mapping_artifact_identity",
@@ -1777,6 +1778,7 @@ def validate_runtime_report(
             diagnostics.append(f"runtime package runtime_report lacks {key}")
     expected_pairs = (
         ("host_program_identity", "host_program_identity"),
+        ("host_wrapper_identity", "host_wrapper_identity"),
         ("work_package_identity", "work_package_identity"),
         ("launch_descriptor_identity", "launch_descriptor_identity"),
         ("mapping_artifact_identity", "selected_mapping_artifact_identity"),

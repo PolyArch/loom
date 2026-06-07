@@ -43,6 +43,7 @@ def sample_runtime_package() -> dict[str, object]:
         "runtime_report": {
             "report_id": "runtime-report::vecsum",
             "host_program_identity": "test-app-host::vecsum",
+            "host_wrapper_identity": "runtime-wrapper::vecsum",
             "work_package_identity": "work-package::vecsum",
             "launch_descriptor_identity": "launch-descriptor::vecsum",
             "mapping_artifact_identity": "pnr-mapping",

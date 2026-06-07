@@ -150,7 +150,7 @@ def main() -> int:
             "runtime_package_identity": "runtime-package",
             "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": runtime_report["host_program_identity"],
-            "host_wrapper_identity": runtime_package_data["host_wrapper_identity"],
+            "host_wrapper_identity": runtime_report["host_wrapper_identity"],
             "host_interface": runtime_package_data["host_interface"],
             "runtime_handle_model": runtime_package_data["runtime_handle_model"],
             "work_package_metadata": runtime_package_data["work_package_metadata"],

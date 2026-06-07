@@ -351,6 +351,7 @@ def main() -> int:
         expected_runtime_report = {
             "report_id": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": "test-app-host::vecsum::default",
+            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
             "work_package_identity": "work-package::vecsum::vecsum__shared_reduction_adg",
             "launch_descriptor_identity": expected_launch,
             "mapping_artifact_identity": "pnr-mapping",
