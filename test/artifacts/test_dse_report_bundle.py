@@ -189,10 +189,18 @@ def main() -> int:
         expected_input_fingerprints = artifact_test_common.semicolon_map(
             selected_candidate_row(out_dir / "dse-candidate-summary.csv")["input_artifact_fingerprints"]
         )
+        selected_row = selected_candidate_row(out_dir / "dse-candidate-summary.csv")
         if candidate.get("input_artifact_fingerprints") != expected_input_fingerprints:
             raise AssertionError(f"candidate missed input artifact fingerprints: {candidate}")
         if sorted(candidate.get("referenced_input_artifacts", [])) != sorted(expected_input_fingerprints):
             raise AssertionError(f"candidate fingerprints do not cover referenced inputs: {candidate}")
+        expected_outputs = [
+            output
+            for output in selected_row.get("output_artifacts", "").split(";")
+            if output
+        ]
+        if sorted(candidate.get("generated_output_artifacts", [])) != sorted(expected_outputs):
+            raise AssertionError(f"candidate missed generated output artifacts: {candidate}")
         for metric_id in (
             "metric::vecsum::cgra_sim_cycles",
             "metric::shared_reduction_adg::frequency_mhz",
@@ -294,6 +302,26 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with unresolved objective metric unexpectedly passed audit")
+
+        missing_candidate_outputs = out_dir / "missing-candidate-outputs-dse-report-bundle.json"
+        missing_candidate_outputs_data = json.loads(report.read_text())
+        missing_candidate_outputs_data["candidate_list"][0]["generated_output_artifacts"] = []
+        missing_candidate_outputs.write_text(
+            json.dumps(missing_candidate_outputs_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_candidate_outputs_audit = out_dir / "missing-candidate-outputs-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_candidate_outputs_audit),
+                str(missing_candidate_outputs),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with selected candidate lacking output artifacts unexpectedly passed audit")
 
         missing_candidate_objectives = out_dir / "missing-candidate-objectives-dse-report-bundle.json"
         missing_candidate_objectives_data = json.loads(report.read_text())

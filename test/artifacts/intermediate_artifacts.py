@@ -3903,6 +3903,17 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         diagnostics.append(
                             f"DSE report bundle candidate {index} metric_records_used references {metric_id!r}"
                         )
+            generated_output_artifacts = candidate.get("generated_output_artifacts")
+            if isinstance(generated_output_artifacts, list):
+                if candidate.get("status") in {"selected", "pareto"} and not generated_output_artifacts:
+                    diagnostics.append(
+                        f"DSE report bundle candidate {index} needs generated_output_artifacts"
+                    )
+                for artifact in generated_output_artifacts:
+                    if not isinstance(artifact, str) or not artifact:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} generated_output_artifacts has invalid entry"
+                        )
             validate_dse_report_candidate_input_fingerprints(path, candidate, diagnostics, index)
         selected_candidates = data.get("selected_candidates")
         if isinstance(selected_candidates, list):
