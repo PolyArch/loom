@@ -205,9 +205,17 @@ def main() -> int:
         energy_metric = bundle_metrics.get("metric::vecsum::energy_nj")
         if energy_metric is None or energy_metric.get("value") != 16.08:
             raise AssertionError(f"missing vecsum energy metric in workload report bundle: {report_bundle}")
-        expected_energy_inputs = {
+        runtime_metric = bundle_metrics.get("metric::vecsum::estimated_runtime_us")
+        if runtime_metric is None or abs(float(runtime_metric.get("value", 0.0)) - 2.356) > 0.001:
+            raise AssertionError(f"missing vecsum runtime metric in workload report bundle: {report_bundle}")
+        expected_runtime_inputs = {
             "metric::vecsum::cgra_sim_cycles",
             "metric::shared_reduction_adg::frequency_mhz",
+        }
+        if set(runtime_metric.get("input_metric_ids", [])) != expected_runtime_inputs:
+            raise AssertionError(f"unexpected vecsum runtime provenance: {runtime_metric}")
+        expected_energy_inputs = {
+            "metric::vecsum::estimated_runtime_us",
             "metric::shared_reduction_adg::dynamic_power_mw",
             "metric::shared_reduction_adg::leakage_power_mw",
         }

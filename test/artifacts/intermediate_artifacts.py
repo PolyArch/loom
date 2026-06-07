@@ -2124,6 +2124,7 @@ EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME = {
 EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
     "optimistic_steps": "cycles",
     "hardware_cycles": "cycles",
+    "estimated_runtime": "us",
     "frequency": "MHz",
     "area": "um2",
     "dynamic_power": "mW",
@@ -3989,18 +3990,22 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             cycles = input_value_by_class.get("hardware_cycles")
             if cycles is None:
                 cycles = input_value_by_class.get("optimistic_steps")
+            runtime = input_value_by_class.get("estimated_runtime")
             dynamic_power = input_value_by_class.get("dynamic_power")
             leakage_power = input_value_by_class.get("leakage_power")
             energy_value = metric.get("value")
             if (
                 isinstance(energy_value, (int, float))
-                and cycles is not None
-                and frequency is not None
-                and frequency > 0
+                and (runtime is not None or (cycles is not None and frequency is not None and frequency > 0))
                 and dynamic_power is not None
                 and leakage_power is not None
             ):
-                expected_energy = (dynamic_power + leakage_power) * cycles / frequency
+                runtime_us = runtime
+                if runtime_us is None:
+                    assert cycles is not None
+                    assert frequency is not None
+                    runtime_us = cycles / frequency
+                expected_energy = (dynamic_power + leakage_power) * runtime_us
                 if not nearly_equal(float(energy_value), expected_energy):
                     diagnostics.append("workload report bundle energy metric value does not match inputs")
     if kind == "hardware_report_bundle":

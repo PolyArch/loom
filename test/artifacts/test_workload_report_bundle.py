@@ -205,6 +205,7 @@ def main() -> int:
                 "mW",
                 "analytic",
             ),
+            "metric::vecsum::estimated_runtime_us": ("estimated_runtime", 2.356, "us", "analytic"),
             "metric::vecsum::energy_nj": ("energy", 16.08, "nJ", "analytic"),
         }
         for metric_id, (metric_class, value, unit, fidelity) in expected_metrics.items():
@@ -223,13 +224,20 @@ def main() -> int:
         energy = metrics_by_id["metric::vecsum::energy_nj"]
         inputs = set(energy.get("input_metric_ids", []))
         required_inputs = {
-            "metric::vecsum::cgra_sim_cycles",
-            "metric::shared_reduction_adg::frequency_mhz",
+            "metric::vecsum::estimated_runtime_us",
             "metric::shared_reduction_adg::dynamic_power_mw",
             "metric::shared_reduction_adg::leakage_power_mw",
         }
         if inputs != required_inputs:
             raise AssertionError(f"energy metric should preserve input metric ids: {energy}")
+        runtime = metrics_by_id["metric::vecsum::estimated_runtime_us"]
+        runtime_inputs = set(runtime.get("input_metric_ids", []))
+        required_runtime_inputs = {
+            "metric::vecsum::cgra_sim_cycles",
+            "metric::shared_reduction_adg::frequency_mhz",
+        }
+        if runtime_inputs != required_runtime_inputs:
+            raise AssertionError(f"runtime metric should preserve input metric ids: {runtime}")
 
         audit = out_dir / "artifact-audit-summary.json"
         artifact_test_common.require_success(

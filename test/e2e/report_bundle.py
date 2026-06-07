@@ -430,9 +430,33 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                 )
             )
 
+    if (
+        isinstance(cgra_report.get("hardware_aware_cycles"), int)
+        and cgra_path is not None
+        and rtl_row is not None
+        and rtl_path is not None
+    ):
+        runtime_inputs = [
+            f"metric::{workload}::cgra_sim_cycles",
+            f"metric::{hardware}::frequency_mhz",
+        ]
+        metric_records.append(
+            metric_record(
+                metric_id=f"metric::{workload}::estimated_runtime_us",
+                metric_class="estimated_runtime",
+                value=int(cgra_report["hardware_aware_cycles"]) / numeric(rtl_row, "frequency_mhz"),
+                unit="us",
+                fidelity_level=rtl_row.get("fidelity_level", "") or "custom_calibrated",
+                evidence_source_artifact_id=artifact_id(cgra_path),
+                producer_component="workload-report-bundle",
+                derivation_kind="cycle_frequency_runtime",
+                diagnostics=[rtl_row.get("diagnostic", "")],
+                input_metric_ids=runtime_inputs,
+            )
+        )
+
     energy_inputs = [
-        f"metric::{workload}::cgra_sim_cycles",
-        f"metric::{hardware}::frequency_mhz",
+        f"metric::{workload}::estimated_runtime_us",
         f"metric::{hardware}::dynamic_power_mw",
         f"metric::{hardware}::leakage_power_mw",
     ]
