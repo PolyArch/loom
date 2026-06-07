@@ -287,6 +287,8 @@ def policy_id_for_objective(objective: str, mapping: dict[str, str] | None = Non
 
 
 def ordering_rule_for_objective(objective: str) -> str:
+    if objective == "maximize_throughput":
+        return "throughput_score_then_candidate_id"
     if objective in {"minimize_energy", "minimize_power"}:
         return "energy_score_then_candidate_id"
     return "runtime_score_then_candidate_id"
@@ -440,6 +442,14 @@ def energy_score(row: dict[str, str]) -> float:
     return energy if energy is not None else float("inf")
 
 
+def throughput_score(row: dict[str, str]) -> float:
+    cycles = parse_positive_float(row, "cgra_sim_cycles")
+    frequency_mhz = parse_positive_float(row, "frequency_mhz")
+    if cycles is None or frequency_mhz is None:
+        return float("-inf")
+    return frequency_mhz / cycles
+
+
 def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
     score: Callable[[dict[str, str]], float]
     objectives = sorted({row.get("objective") or objective for row in rows})
@@ -452,11 +462,15 @@ def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
         ]
         if len(complete) <= 1:
             continue
-        if effective_objective in {"minimize_energy", "minimize_power"}:
+        if effective_objective == "maximize_throughput":
+            score = throughput_score
+            selected = max(complete, key=lambda row: (score(row), row["candidate"]))
+        elif effective_objective in {"minimize_energy", "minimize_power"}:
             score = energy_score
+            selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         else:
             score = runtime_score
-        selected = min(complete, key=lambda row: (score(row), row["candidate"]))
+            selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         for row in complete:
             if row is selected:
                 continue

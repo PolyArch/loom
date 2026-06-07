@@ -247,6 +247,80 @@ def main() -> int:
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one DSE report bundle review: {audit_data}")
 
+        throughput_candidate_summary = out_dir / "throughput-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "maximize_throughput",
+                "--output",
+                str(throughput_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "throughput DSE candidate summary",
+        )
+        throughput_report = out_dir / "throughput-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(throughput_report),
+                "--artifact",
+                str(throughput_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "throughput DSE report bundle",
+        )
+        throughput_data = json.loads(throughput_report.read_text())
+        throughput_objective = throughput_data.get("objective_records", [])[0]
+        expected_throughput_objective = {
+            "objective_id": "objective::maximize_throughput",
+            "objective_kind": "maximize_throughput",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "maximize",
+            "units": "items_per_s",
+        }
+        for key, value in expected_throughput_objective.items():
+            if throughput_objective.get(key) != value:
+                raise AssertionError(f"unexpected throughput objective {key}: {throughput_objective}")
+        if throughput_objective.get("metric_inputs") != ["metric::vecsum::throughput_items_per_s"]:
+            raise AssertionError(f"throughput objective should cite throughput metric: {throughput_objective}")
+        if throughput_data.get("candidate_ordering_rule") != "throughput_score_then_candidate_id":
+            raise AssertionError(f"unexpected throughput ordering rule: {throughput_data}")
+        if throughput_data.get("selected_policy_id") != "deterministic_maximize_throughput_v1":
+            raise AssertionError(f"unexpected throughput policy id: {throughput_data}")
+        throughput_candidate = throughput_data.get("candidate_list", [])[0]
+        if "metric::vecsum::throughput_items_per_s" not in throughput_candidate.get("metric_records_used", []):
+            raise AssertionError(f"throughput candidate missed throughput metric: {throughput_candidate}")
+        throughput_audit = out_dir / "throughput-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(throughput_audit),
+                str(throughput_report),
+            ],
+            "throughput DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"
