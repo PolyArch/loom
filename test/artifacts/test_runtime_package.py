@@ -133,6 +133,10 @@ def main() -> int:
             raise AssertionError(f"launch descriptor missed memory descriptor bindings: {data}")
         if launch_descriptor.get("argument_descriptor_names") != ["runtime_input", "mapping_artifact"]:
             raise AssertionError(f"launch descriptor missed argument descriptors: {data}")
+        if launch_descriptor.get("argument_descriptors") != data["argument_descriptors"]:
+            raise AssertionError(f"launch descriptor should embed argument descriptors: {data}")
+        if launch_descriptor.get("memory_descriptors") != data["memory_descriptors"]:
+            raise AssertionError(f"launch descriptor should embed memory descriptors: {data}")
         if launch_descriptor.get("scalar_value_descriptors") != []:
             raise AssertionError(f"launch descriptor should expose scalar value descriptors: {data}")
         if launch_descriptor.get("fallback_policy") != "report_only":

@@ -1566,6 +1566,15 @@ def validate_runtime_launch_descriptor(
         entries = value.get(key)
         if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
             diagnostics.append(f"runtime package launch_descriptor {key} must be a string list")
+    for key, expected in (
+        ("argument_descriptors", argument_descriptors),
+        ("memory_descriptors", memory_descriptors),
+    ):
+        entries = value.get(key)
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            diagnostics.append(f"runtime package launch_descriptor {key} must be an object list")
+        elif entries != expected:
+            diagnostics.append(f"runtime package launch_descriptor {key} does not match package")
     for key in ("profiling_settings", "trace_settings"):
         settings = value.get(key)
         if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
@@ -1976,6 +1985,10 @@ def validate_runtime_evidence_launch_descriptor(
         entries = value.get(key)
         if not isinstance(entries, list) or any(not isinstance(entry, str) for entry in entries):
             diagnostics.append(f"{label} launch_descriptor {key} must be a string list")
+    for key in ("argument_descriptors", "memory_descriptors"):
+        entries = value.get(key)
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            diagnostics.append(f"{label} launch_descriptor {key} must be an object list")
     for key in ("profiling_settings", "trace_settings"):
         settings = value.get(key)
         if not isinstance(settings, dict) or not isinstance(settings.get("enabled"), bool):
@@ -1998,6 +2011,8 @@ def validate_runtime_evidence_launch_descriptor(
                 diagnostics.append(f"{label} launch_descriptor {key} does not match work_package_metadata")
     argument_descriptors = evidence.get("argument_descriptors")
     if isinstance(argument_descriptors, list):
+        if value.get("argument_descriptors") != argument_descriptors:
+            diagnostics.append(f"{label} launch_descriptor argument_descriptors do not match runtime evidence")
         argument_names = [
             descriptor.get("name")
             for descriptor in argument_descriptors
@@ -2007,6 +2022,8 @@ def validate_runtime_evidence_launch_descriptor(
             diagnostics.append(f"{label} launch_descriptor argument descriptors do not match runtime evidence")
     memory_descriptors = evidence.get("memory_descriptors")
     if isinstance(memory_descriptors, list):
+        if value.get("memory_descriptors") != memory_descriptors:
+            diagnostics.append(f"{label} launch_descriptor memory_descriptors do not match runtime evidence")
         memory_arguments = [
             descriptor.get("logical_argument")
             for descriptor in memory_descriptors

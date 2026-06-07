@@ -223,6 +223,8 @@ def build_launch_descriptor(
             for descriptor in memory_descriptors
             if "logical_argument" in descriptor
         ],
+        "argument_descriptors": argument_descriptors,
+        "memory_descriptors": memory_descriptors,
         "scalar_value_descriptors": [],
         "selected_mapping_artifact_identity": mapping_identity,
         "target_profile_id": target_profile.get("profile_id", ""),
