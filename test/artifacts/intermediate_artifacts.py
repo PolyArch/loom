@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import dse_objectives
+
 
 BASE_STATUSES = {"pass", "fail", "unsupported", "skipped", "blocked", "not_run"}
 SELECTION_STATUSES = {"selected", "pareto", "rejected", "infeasible", "blocked"}
@@ -855,17 +857,7 @@ def nonnegative_int_cell(row: dict[str, str], column: str) -> int | None:
 
 
 def dse_ordering_rule_for_objective(objective: str) -> str:
-    if objective == "maximize_throughput":
-        return "throughput_score_then_candidate_id"
-    if objective == "maximize_performance_per_watt":
-        return "performance_per_watt_score_then_candidate_id"
-    if objective == "maximize_performance_per_area":
-        return "performance_per_area_score_then_candidate_id"
-    if objective == "minimize_area":
-        return "area_score_then_candidate_id"
-    if objective in {"minimize_energy", "minimize_power"}:
-        return "energy_score_then_candidate_id"
-    return "runtime_score_then_candidate_id"
+    return dse_objectives.ordering_rule_for_objective(objective)
 
 
 def dse_objective_for_known_policy_id(policy_id: str) -> str | None:
@@ -880,19 +872,7 @@ def dse_objective_for_known_policy_id(policy_id: str) -> str | None:
 
 
 def dse_objective_semantics(objective: str) -> tuple[str, str] | None:
-    if objective == "minimize_runtime":
-        return "minimize", "cycles"
-    if objective == "maximize_throughput":
-        return "maximize", "items_per_s"
-    if objective == "maximize_performance_per_watt":
-        return "maximize", "items_per_s_per_w"
-    if objective == "maximize_performance_per_area":
-        return "maximize", "items_per_s_per_um2"
-    if objective == "minimize_area":
-        return "minimize", "um2"
-    if objective in {"minimize_energy", "minimize_power"}:
-        return "minimize", "nJ"
-    return None
+    return dse_objectives.objective_semantics(objective)
 
 
 def parse_dse_metric_records(

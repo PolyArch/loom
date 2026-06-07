@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import dse_objectives  # noqa: E402
 
 
 artifact_id = intermediate_artifacts.artifact_id_for_path
@@ -155,34 +156,16 @@ def objective_record(row: dict[str, str]) -> dict[str, object]:
     objective = row.get("objective", "")
     objective_id = row.get("objective_record", "") or f"objective::{objective}"
     metric_inputs = metric_ids_for_candidate(row)
-    if objective == "minimize_runtime":
-        metric_inputs = [metric for metric in metric_inputs if metric.endswith("::cgra_sim_cycles")]
-        direction = "minimize"
-        units = "cycles"
-    elif objective == "maximize_throughput":
-        workload = row.get("workload", "")
-        metric_inputs = [f"metric::{workload}::throughput_items_per_s"] if workload else []
-        direction = "maximize"
-        units = "items_per_s"
-    elif objective == "maximize_performance_per_watt":
-        workload = row.get("workload", "")
-        metric_inputs = [f"metric::{workload}::performance_per_watt"] if workload else []
-        direction = "maximize"
-        units = "items_per_s_per_w"
-    elif objective == "maximize_performance_per_area":
-        workload = row.get("workload", "")
-        metric_inputs = [f"metric::{workload}::performance_per_area"] if workload else []
-        direction = "maximize"
-        units = "items_per_s_per_um2"
-    elif objective == "minimize_area":
-        hardware = row.get("hardware", "")
-        metric_inputs = [f"metric::{hardware}::area_um2"] if hardware else []
-        direction = "minimize"
-        units = "um2"
-    elif objective in {"minimize_energy", "minimize_power"}:
-        metric_inputs = [metric for metric in metric_inputs if metric.endswith("::energy_nj")]
-        direction = "minimize"
-        units = "nJ"
+    spec = dse_objectives.objective_spec(objective)
+    if spec is not None:
+        metric_id = dse_objectives.metric_id_for_objective(
+            objective,
+            row.get("workload", ""),
+            row.get("hardware", ""),
+        )
+        metric_inputs = [metric_id] if metric_id is not None else []
+        direction = spec.direction
+        units = spec.units
     else:
         direction = "minimize"
         units = "score"

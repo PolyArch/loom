@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import dse_objectives  # noqa: E402
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -283,21 +284,11 @@ def input_artifact_fingerprints(refs: list[str]) -> str:
 def policy_id_for_objective(objective: str, mapping: dict[str, str] | None = None) -> str:
     if mapping is not None and mapping.get("__policy_id"):
         return mapping["__policy_id"]
-    return f"deterministic_{objective}_v1"
+    return dse_objectives.policy_id_for_objective(objective)
 
 
 def ordering_rule_for_objective(objective: str) -> str:
-    if objective == "maximize_throughput":
-        return "throughput_score_then_candidate_id"
-    if objective == "maximize_performance_per_watt":
-        return "performance_per_watt_score_then_candidate_id"
-    if objective == "maximize_performance_per_area":
-        return "performance_per_area_score_then_candidate_id"
-    if objective == "minimize_area":
-        return "area_score_then_candidate_id"
-    if objective in {"minimize_energy", "minimize_power"}:
-        return "energy_score_then_candidate_id"
-    return "runtime_score_then_candidate_id"
+    return dse_objectives.ordering_rule_for_objective(objective)
 
 
 def complete_candidate_id(workload: str, hardware: str, mapping_id: str) -> str:
