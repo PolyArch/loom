@@ -387,6 +387,27 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with unresolved objective metric unexpectedly passed audit")
 
+        mismatched_objective_identity = out_dir / "mismatched-objective-identity-dse-report-bundle.json"
+        mismatched_objective_identity_data = json.loads(report.read_text())
+        mismatched_objective_identity_data["objective_records"][0]["objective_id"] = "objective::other"
+        mismatched_objective_identity_data["candidate_list"][0]["objective_records_used"] = ["objective::other"]
+        mismatched_objective_identity.write_text(
+            json.dumps(mismatched_objective_identity_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_objective_identity_audit = out_dir / "mismatched-objective-identity-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_objective_identity_audit),
+                str(mismatched_objective_identity),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched objective identity unexpectedly passed audit")
+
         missing_candidate_outputs = out_dir / "missing-candidate-outputs-dse-report-bundle.json"
         missing_candidate_outputs_data = json.loads(report.read_text())
         missing_candidate_outputs_data["candidate_list"][0]["generated_output_artifacts"] = []

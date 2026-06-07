@@ -3909,6 +3909,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             objective_kind = objective.get("objective_kind")
             if isinstance(objective_kind, str) and objective_kind:
                 objective_kinds.add(objective_kind)
+            objective_id = objective.get("objective_id")
+            if isinstance(objective_id, str) and isinstance(objective_kind, str):
+                if objective_id != f"objective::{objective_kind}":
+                    diagnostics.append(f"DSE report bundle objective {index} objective_id does not match objective_kind")
             for key in ("metric_inputs", "validity_conditions"):
                 if not isinstance(objective.get(key), list) or not objective.get(key):
                     diagnostics.append(f"DSE report bundle objective {index} lacks {key}")
