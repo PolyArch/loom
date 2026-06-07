@@ -264,6 +264,24 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with stochastic policy lacking seed unexpectedly passed audit")
 
+        mismatched_policy_id = out_dir / "mismatched-policy-id-dse-report-bundle.json"
+        mismatched_policy_id_data = json.loads(report.read_text())
+        mismatched_policy_id_data["selected_policy_id"] = "other_policy"
+        mismatched_policy_id.write_text(json.dumps(mismatched_policy_id_data, indent=2, sort_keys=True) + "\n")
+        mismatched_policy_id_audit = out_dir / "mismatched-policy-id-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_policy_id_audit),
+                str(mismatched_policy_id),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched selected policy id unexpectedly passed audit")
+
         missing_candidate_metrics = out_dir / "missing-candidate-metrics-dse-report-bundle.json"
         missing_candidate_metrics_data = json.loads(report.read_text())
         missing_candidate_metrics_data["candidate_list"][0]["metric_records_used"] = []

@@ -3789,6 +3789,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for key in ("selected_policy_id", "candidate_ordering_rule"):
                 if not isinstance(data.get(key), str) or not data.get(key):
                     diagnostics.append(f"DSE report bundle lacks {key}")
+            selected_policy_id = data.get("selected_policy_id")
+            if isinstance(selected_policy_id, str) and data.get("dse_run_id") != f"dse::{selected_policy_id}":
+                diagnostics.append("DSE report bundle dse_run_id does not match selected_policy_id")
         for key in (
             "objective_records",
             "candidate_list",
