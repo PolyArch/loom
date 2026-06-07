@@ -147,6 +147,7 @@ def main() -> int:
             "host_program_identity": runtime_report["host_program_identity"],
             "host_wrapper_identity": runtime_package_data["host_wrapper_identity"],
             "runtime_handle_model": runtime_package_data["runtime_handle_model"],
+            "work_package_metadata": runtime_package_data["work_package_metadata"],
             "work_package_identity": runtime_report["work_package_identity"],
             "launch_descriptor_identity": runtime_report["launch_descriptor_identity"],
             "mapping_artifact_identity": runtime_report["mapping_artifact_identity"],
@@ -164,6 +165,7 @@ def main() -> int:
             "simulator_report_identities": runtime_report["simulator_report_identities"],
             "output_buffer_identities": [],
             "diagnostic_records": runtime_report["diagnostic_records"],
+            "report_output_configuration": runtime_package_data["report_output_configuration"],
             "input_artifact_fingerprints": runtime_package_data["input_artifact_fingerprints"],
             "fallback_decision": expected_runtime_fallback,
         }
@@ -443,6 +445,48 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with dataflow-backed runtime handle unexpectedly passed audit")
+        bad_runtime_work_package_report = out_dir / "bad-runtime-work-package-workload-report-bundle.json"
+        bad_runtime_work_package_data = json.loads(report.read_text())
+        bad_runtime_work_package_data["runtime_evidence"]["work_package_metadata"][
+            "selected_mapping_artifact_identity"
+        ] = "other-mapping"
+        bad_runtime_work_package_report.write_text(
+            json.dumps(bad_runtime_work_package_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_work_package_audit = out_dir / "bad-runtime-work-package-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_work_package_audit),
+                str(bad_runtime_work_package_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime work package unexpectedly passed audit")
+        bad_runtime_report_output_report = out_dir / "bad-runtime-report-output-workload-report-bundle.json"
+        bad_runtime_report_output_data = json.loads(report.read_text())
+        bad_runtime_report_output_data["runtime_evidence"]["report_output_configuration"][
+            "runtime_report_identity"
+        ] = "runtime-report::other"
+        bad_runtime_report_output_report.write_text(
+            json.dumps(bad_runtime_report_output_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_report_output_audit = out_dir / "bad-runtime-report-output-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_report_output_audit),
+                str(bad_runtime_report_output_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched runtime report output unexpectedly passed audit")
         bad_runtime_diagnostics_report = out_dir / "bad-runtime-diagnostics-workload-report-bundle.json"
         bad_runtime_diagnostics_data = json.loads(report.read_text())
         bad_runtime_diagnostics_data["runtime_evidence"]["diagnostic_records"] = "runtime-package::1"

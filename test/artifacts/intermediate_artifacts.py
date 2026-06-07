@@ -1754,6 +1754,60 @@ def validate_report_output_configuration(
         )
 
 
+def validate_runtime_evidence_work_package_metadata(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append(f"{label} work_package_metadata must be an object")
+        return
+    for key in (
+        "work_package_identity",
+        "workload",
+        "selected_accelerator_region",
+        "logical_thread_domain",
+        "runtime_input_identity",
+    ):
+        if not isinstance(value.get(key), str) or not value.get(key):
+            diagnostics.append(f"{label} work_package_metadata lacks {key}")
+    for key in ("selected_mapping_artifact_identity", "fabric_adg_identity"):
+        if not isinstance(value.get(key), str):
+            diagnostics.append(f"{label} work_package_metadata {key} must be a string")
+    expected_pairs = (
+        ("work_package_identity", evidence.get("work_package_identity")),
+        ("selected_mapping_artifact_identity", evidence.get("mapping_artifact_identity")),
+        ("fabric_adg_identity", evidence.get("fabric_adg_identity")),
+    )
+    for key, expected in expected_pairs:
+        if value.get(key) != expected:
+            diagnostics.append(f"{label} work_package_metadata {key} does not match runtime evidence")
+
+
+def validate_runtime_evidence_report_output_configuration(
+    value: object,
+    evidence: dict[str, object],
+    diagnostics: list[str],
+    label: str,
+) -> None:
+    if not isinstance(value, dict):
+        diagnostics.append(f"{label} report_output_configuration must be an object")
+        return
+    report_identity = value.get("runtime_report_identity")
+    if not isinstance(report_identity, str) or not report_identity:
+        diagnostics.append(f"{label} report_output_configuration lacks runtime_report_identity")
+    elif report_identity != evidence.get("runtime_report_identity"):
+        diagnostics.append(
+            f"{label} report_output_configuration runtime_report_identity does not match runtime evidence"
+        )
+    for key in ("diagnostic_output_enabled", "trace_output_enabled", "profiling_output_enabled"):
+        if not isinstance(value.get(key), bool):
+            diagnostics.append(f"{label} report_output_configuration {key} must be boolean")
+    if value.get("diagnostic_output_enabled") is not True:
+        diagnostics.append(f"{label} report_output_configuration must enable diagnostic output")
+
+
 def validate_runtime_evidence(
     path: Path,
     value: object,
@@ -1769,6 +1823,7 @@ def validate_runtime_evidence(
         "host_program_identity",
         "host_wrapper_identity",
         "runtime_handle_model",
+        "work_package_metadata",
         "work_package_identity",
         "launch_descriptor_identity",
         "mapping_artifact_identity",
@@ -1784,6 +1839,7 @@ def validate_runtime_evidence(
         "output_buffer_identities",
         "simulator_report_identities",
         "diagnostic_records",
+        "report_output_configuration",
         "input_artifact_fingerprints",
         "required_data_movement_policies",
         "required_synchronization_policies",
@@ -1818,6 +1874,18 @@ def validate_runtime_evidence(
             diagnostics.append(f"workload report bundle runtime_evidence {key} must be a string")
     validate_runtime_handle_model(
         value.get("runtime_handle_model"),
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_work_package_metadata(
+        value.get("work_package_metadata"),
+        value,
+        diagnostics,
+        "workload report bundle runtime_evidence",
+    )
+    validate_runtime_evidence_report_output_configuration(
+        value.get("report_output_configuration"),
+        value,
         diagnostics,
         "workload report bundle runtime_evidence",
     )
@@ -1959,10 +2027,26 @@ def validate_runtime_evidence_summaries(
             "data_movement_policy",
             "synchronization_mode",
             "runtime_handle_model",
+            "work_package_metadata",
+            "report_output_configuration",
         ):
             if key == "runtime_handle_model":
                 validate_runtime_handle_model(
                     summary.get(key),
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "work_package_metadata":
+                validate_runtime_evidence_work_package_metadata(
+                    summary.get(key),
+                    summary,
+                    diagnostics,
+                    f"DSE report bundle runtime evidence summary {index}",
+                )
+            elif key == "report_output_configuration":
+                validate_runtime_evidence_report_output_configuration(
+                    summary.get(key),
+                    summary,
                     diagnostics,
                     f"DSE report bundle runtime evidence summary {index}",
                 )

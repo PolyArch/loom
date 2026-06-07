@@ -223,6 +223,12 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
         diagnostic_records = evidence.get("diagnostic_records", [])
         if not isinstance(diagnostic_records, list):
             diagnostic_records = []
+        work_package_metadata = evidence.get("work_package_metadata", {})
+        if not isinstance(work_package_metadata, dict):
+            work_package_metadata = {}
+        report_output_configuration = evidence.get("report_output_configuration", {})
+        if not isinstance(report_output_configuration, dict):
+            report_output_configuration = {}
         required_data_movement_policies = evidence.get("required_data_movement_policies", [])
         if not isinstance(required_data_movement_policies, list):
             required_data_movement_policies = []
@@ -236,6 +242,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
             "host_program_identity": str(evidence.get("host_program_identity", "")),
             "host_wrapper_identity": str(evidence.get("host_wrapper_identity", "")),
             "runtime_handle_model": evidence.get("runtime_handle_model", {}),
+            "work_package_metadata": work_package_metadata,
             "work_package_identity": str(evidence.get("work_package_identity", "")),
             "launch_descriptor_identity": str(evidence.get("launch_descriptor_identity", "")),
             "mapping_artifact_identity": str(evidence.get("mapping_artifact_identity", "")),
@@ -278,6 +285,7 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
                 for record in diagnostic_records
                 if isinstance(record, dict)
             ],
+            "report_output_configuration": report_output_configuration,
             "fallback_decision": fallback,
         }
         custom_policy = evidence.get("custom_data_movement_policy_identity")

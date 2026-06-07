@@ -168,6 +168,12 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     diagnostic_records = report.get("diagnostic_records", [])
     if not isinstance(diagnostic_records, list):
         diagnostic_records = []
+    work_package_metadata = runtime_package.get("work_package_metadata", {})
+    if not isinstance(work_package_metadata, dict):
+        work_package_metadata = {}
+    report_output_configuration = runtime_package.get("report_output_configuration", {})
+    if not isinstance(report_output_configuration, dict):
+        report_output_configuration = {}
     input_fingerprints = runtime_package.get("input_artifact_fingerprints", {})
     if not isinstance(input_fingerprints, dict):
         input_fingerprints = {}
@@ -195,6 +201,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
         "host_program_identity": str(report.get("host_program_identity", "")),
         "host_wrapper_identity": str(runtime_package.get("host_wrapper_identity", "")),
         "runtime_handle_model": runtime_package.get("runtime_handle_model", {}),
+        "work_package_metadata": work_package_metadata,
         "work_package_identity": str(report.get("work_package_identity", "")),
         "launch_descriptor_identity": str(report.get("launch_descriptor_identity", "")),
         "mapping_artifact_identity": str(report.get("mapping_artifact_identity", "")),
@@ -237,6 +244,7 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
             for record in diagnostic_records
             if isinstance(record, dict)
         ],
+        "report_output_configuration": report_output_configuration,
         "fallback_decision": fallback,
     }
     if custom_data_movement_policy:

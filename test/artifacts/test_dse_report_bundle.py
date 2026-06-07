@@ -120,6 +120,7 @@ def main() -> int:
                 "host_program_identity": workload_runtime_evidence["host_program_identity"],
                 "host_wrapper_identity": workload_runtime_evidence["host_wrapper_identity"],
                 "runtime_handle_model": workload_runtime_evidence["runtime_handle_model"],
+                "work_package_metadata": workload_runtime_evidence["work_package_metadata"],
                 "work_package_identity": workload_runtime_evidence["work_package_identity"],
                 "launch_descriptor_identity": workload_runtime_evidence["launch_descriptor_identity"],
                 "mapping_artifact_identity": workload_runtime_evidence["mapping_artifact_identity"],
@@ -137,6 +138,7 @@ def main() -> int:
                 "simulator_report_identities": workload_runtime_evidence["simulator_report_identities"],
                 "output_buffer_identities": workload_runtime_evidence["output_buffer_identities"],
                 "diagnostic_records": workload_runtime_evidence["diagnostic_records"],
+                "report_output_configuration": workload_runtime_evidence["report_output_configuration"],
                 "input_artifact_fingerprints": workload_runtime_evidence["input_artifact_fingerprints"],
                 "fallback_decision": {
                     "policy": "report_only",
@@ -396,6 +398,54 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE report with dataflow-backed runtime handle summary unexpectedly passed audit")
+
+        bad_runtime_work_package_summary = out_dir / "bad-runtime-work-package-summary-dse-report-bundle.json"
+        bad_runtime_work_package_summary_data = json.loads(report.read_text())
+        bad_runtime_work_package_summary_data["runtime_evidence_summaries"][0]["work_package_metadata"][
+            "selected_mapping_artifact_identity"
+        ] = "other-mapping"
+        bad_runtime_work_package_summary.write_text(
+            json.dumps(bad_runtime_work_package_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_work_package_summary_audit = (
+            out_dir / "bad-runtime-work-package-summary-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_work_package_summary_audit),
+                str(bad_runtime_work_package_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched runtime work package summary unexpectedly passed audit")
+
+        bad_runtime_report_output_summary = out_dir / "bad-runtime-report-output-summary-dse-report-bundle.json"
+        bad_runtime_report_output_summary_data = json.loads(report.read_text())
+        bad_runtime_report_output_summary_data["runtime_evidence_summaries"][0]["report_output_configuration"][
+            "runtime_report_identity"
+        ] = "runtime-report::other"
+        bad_runtime_report_output_summary.write_text(
+            json.dumps(bad_runtime_report_output_summary_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_runtime_report_output_summary_audit = (
+            out_dir / "bad-runtime-report-output-summary-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_runtime_report_output_summary_audit),
+                str(bad_runtime_report_output_summary),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched runtime report output summary unexpectedly passed audit")
 
         bad_runtime_diagnostics_summary = out_dir / "bad-runtime-diagnostics-summary-dse-report-bundle.json"
         bad_runtime_diagnostics_summary_data = json.loads(report.read_text())
