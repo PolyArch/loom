@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from pathlib import Path
@@ -14,12 +13,19 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import artifact_io_helpers  # noqa: E402
 import runtime_evidence_helpers  # noqa: E402
 import report_metric_helpers  # noqa: E402
 
 
 artifact_id = intermediate_artifacts.artifact_id_for_path
 input_artifact_fingerprints = intermediate_artifacts.input_artifact_fingerprints
+read_csv = artifact_io_helpers.read_csv
+read_json = artifact_io_helpers.read_json
+group_paths = artifact_io_helpers.group_paths
+first_path = artifact_io_helpers.first_path
+hardware_matches = artifact_io_helpers.hardware_matches
+matching_rtl_manifest_path = artifact_io_helpers.matching_rtl_manifest_path
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -27,31 +33,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def read_json(path: Path) -> dict[str, object]:
-    if not path.is_file():
-        return {}
-    return json.loads(path.read_text())
-
-
-def group_paths(paths: list[Path]) -> dict[str, list[Path]]:
-    grouped: dict[str, list[Path]] = {}
-    for path in paths:
-        grouped.setdefault(intermediate_artifacts.artifact_kind_for_path(path), []).append(path)
-    return grouped
-
-
-def first_path(grouped: dict[str, list[Path]], kind: str) -> Path | None:
-    paths = grouped.get(kind, [])
-    return paths[0] if paths else None
 
 
 def selected_dse_row(paths: list[Path]) -> dict[str, str] | None:
@@ -70,26 +51,11 @@ def matching_row(paths: list[Path], key: str, value: str) -> dict[str, str] | No
     return None
 
 
-def hardware_matches(candidate: str, hardware: str) -> bool:
-    return candidate == hardware or candidate.rsplit("::", 1)[-1] == hardware
-
-
 def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> dict[str, str] | None:
     for path in paths:
         for row in read_csv(path):
             if row.get("workload") == workload and hardware_matches(row.get("hardware", ""), hardware):
                 return row
-    return None
-
-
-def matching_rtl_manifest_path(paths: list[Path], hardware: str) -> Path | None:
-    for path in paths:
-        data = read_json(path)
-        if data.get("kind") != "rtl_manifest" or data.get("status") != "pass":
-            continue
-        source = data.get("source_fabric_adg_identity")
-        if isinstance(source, str) and hardware_matches(source, hardware):
-            return path
     return None
 
 

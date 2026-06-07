@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from pathlib import Path
@@ -14,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+import artifact_io_helpers  # noqa: E402
 import dse_objectives  # noqa: E402
 import runtime_evidence_helpers  # noqa: E402
 
@@ -21,6 +21,9 @@ import runtime_evidence_helpers  # noqa: E402
 artifact_id = intermediate_artifacts.artifact_id_for_path
 artifact_fingerprint = intermediate_artifacts.artifact_fingerprint
 input_artifact_fingerprints = intermediate_artifacts.input_artifact_fingerprints
+read_csv = artifact_io_helpers.read_csv
+read_json = artifact_io_helpers.read_json
+group_paths = artifact_io_helpers.group_paths
 
 
 METRIC_ID_BY_NAME = {
@@ -38,26 +41,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
-
-
-def read_json(path: Path) -> dict[str, object]:
-    if not path.is_file():
-        return {}
-    return json.loads(path.read_text())
-
-
-def group_paths(paths: list[Path]) -> dict[str, list[Path]]:
-    grouped: dict[str, list[Path]] = {}
-    for path in paths:
-        grouped.setdefault(intermediate_artifacts.artifact_kind_for_path(path), []).append(path)
-    return grouped
 
 
 def selected_candidate_row(paths: list[Path]) -> tuple[Path, dict[str, str]] | None:
