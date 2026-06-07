@@ -1338,6 +1338,22 @@ def validate_diagnostic_records(
     return records
 
 
+RUNTIME_FAILURE_DOMAINS = {
+    "compiler_artifacts",
+    "runtime_configuration",
+    "platform_services",
+    "simulator_execution",
+    "hardware_execution",
+}
+
+
+def runtime_source_provenance(data: dict[str, object]) -> object:
+    host_interface = data.get("host_interface")
+    if isinstance(host_interface, dict):
+        return host_interface.get("source_provenance")
+    return None
+
+
 def validate_runtime_diagnostic_provenance(
     records: list[dict[str, object]],
     diagnostics: list[str],
@@ -1346,16 +1362,9 @@ def validate_runtime_diagnostic_provenance(
     source_provenance: object,
     host_wrapper_identity: object,
 ) -> None:
-    valid_domains = {
-        "compiler_artifacts",
-        "runtime_configuration",
-        "platform_services",
-        "simulator_execution",
-        "hardware_execution",
-    }
     for index, record in enumerate(records, start=1):
         failure_domain = record.get("failure_domain")
-        if not isinstance(failure_domain, str) or failure_domain not in valid_domains:
+        if not isinstance(failure_domain, str) or failure_domain not in RUNTIME_FAILURE_DOMAINS:
             diagnostics.append(f"{label} diagnostic record {index} has invalid failure_domain")
         if isinstance(source_provenance, str) and source_provenance:
             if record.get("source_provenance") != source_provenance:
@@ -1363,6 +1372,25 @@ def validate_runtime_diagnostic_provenance(
         if isinstance(host_wrapper_identity, str) and host_wrapper_identity:
             if record.get("host_wrapper_identity") != host_wrapper_identity:
                 diagnostics.append(f"{label} diagnostic record {index} host_wrapper_identity does not match package")
+
+
+def validate_runtime_diagnostic_records(
+    value: object,
+    diagnostics: list[str],
+    label: str,
+    *,
+    source_provenance: object,
+    host_wrapper_identity: object,
+) -> list[dict[str, object]]:
+    records = validate_diagnostic_records(value, diagnostics, label)
+    validate_runtime_diagnostic_provenance(
+        records,
+        diagnostics,
+        label,
+        source_provenance=source_provenance,
+        host_wrapper_identity=host_wrapper_identity,
+    )
+    return records
 
 
 def validate_fallback_decision(
@@ -1627,20 +1655,11 @@ def validate_runtime_report(
     output_buffers = value.get("output_buffer_identities")
     if not isinstance(output_buffers, list) or any(not isinstance(identity, str) for identity in output_buffers):
         diagnostics.append("runtime package runtime_report output_buffer_identities must be a string list")
-    diagnostic_records = validate_diagnostic_records(
+    validate_runtime_diagnostic_records(
         value.get("diagnostic_records"),
         diagnostics,
         "runtime package runtime_report",
-    )
-    host_interface = data.get("host_interface")
-    source_provenance = None
-    if isinstance(host_interface, dict):
-        source_provenance = host_interface.get("source_provenance")
-    validate_runtime_diagnostic_provenance(
-        diagnostic_records,
-        diagnostics,
-        "runtime package runtime_report",
-        source_provenance=source_provenance,
+        source_provenance=runtime_source_provenance(data),
         host_wrapper_identity=data.get("host_wrapper_identity"),
     )
     validate_non_executed_runtime_claims(
@@ -2498,20 +2517,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         diagnostics_list = data.get("diagnostics")
         if not isinstance(diagnostics_list, list):
             diagnostics.append("runtime package diagnostics must be a list")
-        diagnostic_records = validate_diagnostic_records(
+        diagnostic_records = validate_runtime_diagnostic_records(
             data.get("diagnostic_records"),
             diagnostics,
             "runtime package",
-        )
-        host_interface = data.get("host_interface")
-        source_provenance = None
-        if isinstance(host_interface, dict):
-            source_provenance = host_interface.get("source_provenance")
-        validate_runtime_diagnostic_provenance(
-            diagnostic_records,
-            diagnostics,
-            "runtime package",
-            source_provenance=source_provenance,
+            source_provenance=runtime_source_provenance(data),
             host_wrapper_identity=data.get("host_wrapper_identity"),
         )
         memory_descriptors = data.get("memory_descriptors")
