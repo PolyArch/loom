@@ -33,6 +33,11 @@ FALLBACK_POLICIES = (
     "allow_scalar_fallback",
     "report_only",
 )
+SYNCHRONIZATION_MODES = (
+    "host_wait",
+    "host_fence",
+    "device_poll",
+)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -41,6 +46,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--data-movement-policy", choices=DATA_MOVEMENT_POLICIES, default="simulated")
     parser.add_argument("--custom-data-movement-policy", default="")
     parser.add_argument("--fallback-policy", choices=FALLBACK_POLICIES, default="report_only")
+    parser.add_argument("--synchronization-mode", choices=SYNCHRONIZATION_MODES, default="host_wait")
     parser.add_argument("--platform-binding", default="")
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
@@ -403,6 +409,7 @@ def build_package(
     custom_data_movement_policy: str,
     platform_binding: str,
     fallback_policy: str,
+    synchronization_mode: str,
 ) -> dict[str, object]:
     grouped = group_paths(paths)
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
@@ -598,7 +605,6 @@ def build_package(
         selected_mapping_identity = artifact_id(mapping_path)
         fabric_adg_identity = hardware
 
-    synchronization_mode = "host_wait"
     status = "pass" if not diagnostics else "blocked"
     if status == "blocked" and fallback_policy == "require_acceleration":
         diagnostics.append("user-requested acceleration failed")
@@ -700,6 +706,7 @@ def main(argv: list[str]) -> int:
         args.custom_data_movement_policy,
         args.platform_binding,
         args.fallback_policy,
+        args.synchronization_mode,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")

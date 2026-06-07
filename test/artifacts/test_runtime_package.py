@@ -264,6 +264,77 @@ def main() -> int:
                 raise AssertionError(
                     f"runtime package with {fallback_policy} claiming execution unexpectedly passed audit"
                 )
+        host_fence_package = out_dir / "host-fence-runtime-package.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--synchronization-mode",
+                "host_fence",
+                "--output",
+                str(host_fence_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+            "runtime package with host fence synchronization",
+        )
+        host_fence_data = json.loads(host_fence_package.read_text())
+        if host_fence_data.get("synchronization_mode") != "host_fence":
+            raise AssertionError(f"runtime package should preserve requested synchronization mode: {host_fence_data}")
+        if host_fence_data.get("runtime_configuration", {}).get("synchronization_mode") != "host_fence":
+            raise AssertionError(f"runtime configuration should preserve synchronization mode: {host_fence_data}")
+        if (
+            host_fence_data.get("runtime_configuration", {}).get("configuration_id")
+            != "runtime-config::report_only::simulated::host_fence"
+        ):
+            raise AssertionError(f"runtime configuration id should include synchronization mode: {host_fence_data}")
+        if host_fence_data.get("launch_descriptor", {}).get("synchronization_mode") != "host_fence":
+            raise AssertionError(f"launch descriptor should preserve synchronization mode: {host_fence_data}")
+        if host_fence_data.get("runtime_report", {}).get("synchronization_mode") != "host_fence":
+            raise AssertionError(f"runtime report should preserve synchronization mode: {host_fence_data}")
+        if host_fence_data.get("required_synchronization_policies") != ["host_fence"]:
+            raise AssertionError(f"runtime package should record required synchronization mode: {host_fence_data}")
+        host_fence_audit = out_dir / "host-fence-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(host_fence_audit),
+                str(host_fence_package),
+            ],
+            "host fence runtime package audit",
+        )
+        unsupported_sync_package = out_dir / "unsupported-sync-runtime-package.json"
+        unsupported_sync_data = json.loads(host_fence_package.read_text())
+        unsupported_sync_data["synchronization_mode"] = "unknown_sync"
+        unsupported_sync_data["required_synchronization_policies"] = ["unknown_sync"]
+        unsupported_sync_data["runtime_configuration"]["synchronization_mode"] = "unknown_sync"
+        unsupported_sync_data["runtime_configuration"][
+            "configuration_id"
+        ] = "runtime-config::report_only::simulated::unknown_sync"
+        unsupported_sync_data["launch_descriptor"]["synchronization_mode"] = "unknown_sync"
+        unsupported_sync_data["runtime_report"]["synchronization_mode"] = "unknown_sync"
+        unsupported_sync_package.write_text(json.dumps(unsupported_sync_data, indent=2, sort_keys=True) + "\n")
+        unsupported_sync_audit = out_dir / "unsupported-sync-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unsupported_sync_audit),
+                str(unsupported_sync_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with unsupported synchronization mode unexpectedly passed audit")
         expected_runtime_report = {
             "report_id": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
             "host_program_identity": "test-app-host::vecsum::default",

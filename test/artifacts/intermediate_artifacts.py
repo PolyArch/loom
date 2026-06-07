@@ -27,6 +27,11 @@ DATA_MOVEMENT_POLICIES = {
     "simulated",
     "custom",
 }
+SYNCHRONIZATION_POLICIES = {
+    "host_wait",
+    "host_fence",
+    "device_poll",
+}
 ARTIFACT_EDGE_PAIRS = (
     ("old-app-corpus-inventory", "app-corpus-import-status"),
     ("app-corpus-import-status", "source-compat-summary"),
@@ -1744,6 +1749,9 @@ def validate_runtime_evidence(
     data_movement_policy = value.get("data_movement_policy")
     if data_movement_policy not in DATA_MOVEMENT_POLICIES:
         diagnostics.append("workload report bundle runtime_evidence has unknown data_movement_policy")
+    synchronization_mode = value.get("synchronization_mode")
+    if synchronization_mode not in SYNCHRONIZATION_POLICIES:
+        diagnostics.append("workload report bundle runtime_evidence has unknown synchronization_mode")
     custom_identity = value.get("custom_data_movement_policy_identity")
     if data_movement_policy == "custom":
         if not isinstance(custom_identity, str) or not custom_identity:
@@ -1791,11 +1799,17 @@ def validate_runtime_evidence(
         diagnostics.append(
             "workload report bundle runtime_evidence required_synchronization_policies entries must be non-empty strings"
         )
+    else:
+        for policy in required_synchronization_policies:
+            if policy not in SYNCHRONIZATION_POLICIES:
+                diagnostics.append(
+                    "workload report bundle runtime_evidence "
+                    f"required_synchronization_policies has unknown policy {policy}"
+                )
     if data_movement_policy not in required_data_movement_policies:
         diagnostics.append(
             "workload report bundle runtime_evidence required_data_movement_policies omits data_movement_policy"
         )
-    synchronization_mode = value.get("synchronization_mode")
     if synchronization_mode not in required_synchronization_policies:
         diagnostics.append(
             "workload report bundle runtime_evidence required_synchronization_policies omits synchronization_mode"
@@ -1899,6 +1913,11 @@ def validate_runtime_evidence_summaries(
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} has unknown data_movement_policy"
             )
+        synchronization_mode = summary.get("synchronization_mode")
+        if synchronization_mode not in SYNCHRONIZATION_POLICIES:
+            diagnostics.append(
+                f"DSE report bundle runtime evidence summary {index} has unknown synchronization_mode"
+            )
         custom_identity = summary.get("custom_data_movement_policy_identity")
         if data_movement_policy == "custom":
             if not isinstance(custom_identity, str) or not custom_identity:
@@ -1946,12 +1965,18 @@ def validate_runtime_evidence_summaries(
                 f"DSE report bundle runtime evidence summary {index} "
                 "required_synchronization_policies entries must be non-empty strings"
             )
+        else:
+            for policy in required_synchronization_policies:
+                if policy not in SYNCHRONIZATION_POLICIES:
+                    diagnostics.append(
+                        f"DSE report bundle runtime evidence summary {index} "
+                        f"required_synchronization_policies has unknown policy {policy}"
+                    )
         if data_movement_policy not in required_data_movement_policies:
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} "
                 "required_data_movement_policies omits data_movement_policy"
             )
-        synchronization_mode = summary.get("synchronization_mode")
         if synchronization_mode not in required_synchronization_policies:
             diagnostics.append(
                 f"DSE report bundle runtime evidence summary {index} "
@@ -2580,6 +2605,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             for policy in required_synchronization_policies
         ):
             diagnostics.append("runtime package required_synchronization_policies entries must be non-empty strings")
+        else:
+            for policy in required_synchronization_policies:
+                if policy not in SYNCHRONIZATION_POLICIES:
+                    diagnostics.append(
+                        f"runtime package required_synchronization_policies has unknown policy {policy}"
+                    )
         simulator_reports = data.get("simulator_report_identities")
         if not isinstance(simulator_reports, list):
             diagnostics.append("runtime package simulator_report_identities must be a list")
@@ -2667,6 +2698,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if data_movement_policy not in required_data_movement_policies:
             diagnostics.append("runtime package required_data_movement_policies omits data_movement_policy")
         synchronization_mode = data.get("synchronization_mode")
+        if synchronization_mode not in SYNCHRONIZATION_POLICIES:
+            diagnostics.append("runtime package has unknown synchronization_mode")
         if synchronization_mode not in required_synchronization_policies:
             diagnostics.append("runtime package required_synchronization_policies omits synchronization_mode")
         validate_runtime_launch_descriptor(
