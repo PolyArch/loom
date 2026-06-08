@@ -290,6 +290,45 @@ def main() -> int:
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one hardware report bundle review: {audit_data}")
 
+        duplicate_fpa_summary = out_dir / "duplicate-rtl-fpa-summary.csv"
+        duplicate_fpa_summary.write_text((out_dir / "rtl-fpa-summary.csv").read_text())
+        duplicate_fpa_report = out_dir / "duplicate-fpa-hardware-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_hardware_report_bundle.sh",
+                "--output",
+                str(duplicate_fpa_report),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(duplicate_fpa_summary),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "hardware report bundle with duplicate FPA rows",
+        )
+        duplicate_fpa_data = json.loads(duplicate_fpa_report.read_text())
+        if duplicate_fpa_data["fpa_report_identities"] != ["duplicate-rtl-fpa-summary"]:
+            raise AssertionError(f"hardware report should select one canonical FPA report: {duplicate_fpa_data}")
+        if sorted(duplicate_fpa_data["input_artifact_fingerprints"]) != [
+            "adg-hardware-summary",
+            "duplicate-rtl-fpa-summary",
+            "rtl-manifest",
+        ]:
+            raise AssertionError(f"hardware report should fingerprint only selected FPA input: {duplicate_fpa_data}")
+        duplicate_metrics = metric_by_id(duplicate_fpa_data.get("metric_records", []))
+        frequency_metric = duplicate_metrics.get(
+            "metric::test/pnr/shared_reduction_adg.mlir::shared_reduction_adg::frequency_mhz"
+        )
+        if frequency_metric is None or frequency_metric.get("evidence_source_artifact_id") != (
+            "duplicate-rtl-fpa-summary"
+        ):
+            raise AssertionError(f"hardware report metrics should cite selected FPA report: {duplicate_fpa_data}")
+
     return 0
 
 
