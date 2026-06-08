@@ -59,11 +59,12 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
         identity = artifact_id(path)
+        logical_path = path.name
         if not path.is_file():
-            diagnostics.append({"status": "blocked", "message": f"missing artifact: {path}"})
+            diagnostics.append({"status": "blocked", "message": f"missing artifact: {identity}"})
             continue
         if kind == "unknown":
-            diagnostics.append({"status": "blocked", "message": f"unknown artifact schema: {path}"})
+            diagnostics.append({"status": "blocked", "message": f"unknown artifact schema: {logical_path}"})
         if identity in seen_ids:
             diagnostics.append({"status": "blocked", "message": f"duplicate artifact id: {identity}"})
         seen_ids.add(identity)
@@ -76,7 +77,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
             {
                 "kind": kind,
                 "id": identity,
-                "path": str(path),
+                "logical_path": logical_path,
                 "producer": "artifact summary command",
                 "status": "present",
                 "fingerprint": artifact_fingerprint,

@@ -119,11 +119,23 @@ def main() -> int:
             "dataflow-primitive-coverage",
         ]:
             raise AssertionError(f"unexpected artifact ids: {ids}")
+        if str(out_dir) in json.dumps(data, sort_keys=True):
+            raise AssertionError(f"manifest should not expose private output paths: {data}")
+        expected_logical_paths = {
+            "source-compat-summary": "source-compat-summary.csv",
+            "compiler-pipeline-summary": "compiler-pipeline-summary.csv",
+            "cmsis-compiler-pipeline-summary": "cmsis-compiler-pipeline-summary.csv",
+            "dataflow-primitive-coverage": "dataflow-primitive-coverage.csv",
+        }
         for artifact in artifacts:
             if len(artifact.get("fingerprint", "")) != 64:
                 raise AssertionError(f"missing sha256 fingerprint: {artifact}")
             if artifact.get("status") != "present":
                 raise AssertionError(f"artifact should be present: {artifact}")
+            if "path" in artifact:
+                raise AssertionError(f"artifact manifest record should not expose local path: {artifact}")
+            if artifact.get("logical_path") != expected_logical_paths.get(artifact.get("id")):
+                raise AssertionError(f"artifact manifest record missed logical path: {artifact}")
         edge_pairs = {(edge["from"], edge["to"]) for edge in data["edges"]}
         expected_edges = {
             ("source-compat-summary", "compiler-pipeline-summary"),

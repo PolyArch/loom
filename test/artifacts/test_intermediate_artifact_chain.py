@@ -297,7 +297,11 @@ def main() -> int:
             raise AssertionError(f"chain should not have cross-artifact findings: {audit}")
 
         manifest = json.loads((out_dir / "full-stack-artifact-manifest.json").read_text())
-        manifest_artifacts = {Path(artifact["path"]).name for artifact in manifest.get("artifacts", [])}
+        manifest_artifacts = {
+            artifact.get("logical_path")
+            for artifact in manifest.get("artifacts", [])
+            if isinstance(artifact, dict)
+        }
         expected_manifest = set(EXPECTED_FILES) - {
             "artifact-audit-summary.json",
             "full-stack-artifact-manifest.json",

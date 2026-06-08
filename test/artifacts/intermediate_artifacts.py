@@ -1469,7 +1469,10 @@ def validate_artifact_manifest_edges(
         else:
             assert isinstance(fingerprint, str)
             artifact_fingerprints[identity] = fingerprint
-        resolved_path = manifest_artifact_path(artifact.get("path"), manifest_path)
+        resolved_path = manifest_artifact_path(
+            artifact.get("path", artifact.get("logical_path")),
+            manifest_path,
+        )
         if resolved_path is not None:
             artifact_paths_by_id[identity] = resolved_path
         ids_by_kind.setdefault(kind, []).append(identity)
