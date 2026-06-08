@@ -1160,6 +1160,59 @@ def main() -> int:
             "blocked DFG-sim runtime package with ignored mapping audit",
         )
 
+        stale_dfg_mapping = out_dir / "stale-dfg-runtime-mapping.json"
+        stale_dfg_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        stale_dfg_mapping_data["workload"] = "other_workload"
+        stale_dfg_mapping_data["mapping_id"] = "other_mapping"
+        stale_dfg_mapping_data["hardware"] = "other_hardware"
+        stale_dfg_mapping.write_text(json.dumps(stale_dfg_mapping_data, indent=2, sort_keys=True) + "\n")
+        stale_dfg_mapping_package = out_dir / "stale-dfg-mapping-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "dfg-sim",
+                "--output",
+                str(stale_dfg_mapping_package),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(stale_dfg_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DFG-sim runtime package with stale mapping artifact unexpectedly passed")
+        stale_dfg_mapping_data = json.loads(stale_dfg_mapping_package.read_text())
+        if stale_dfg_mapping_data.get("workload") != "vecsum":
+            raise AssertionError(f"DFG-sim package workload should come from DFG report: {stale_dfg_mapping_data}")
+        if stale_dfg_mapping_data.get("package_id") != "runtime-package::vecsum::dfg_sim":
+            raise AssertionError(f"DFG-sim package id should ignore stale mapping identity: {stale_dfg_mapping_data}")
+        if stale_dfg_mapping_data.get("work_package_identity") != "work-package::vecsum::dfg_sim":
+            raise AssertionError(f"DFG-sim work package should ignore stale mapping identity: {stale_dfg_mapping_data}")
+        if (
+            stale_dfg_mapping_data.get("launch_descriptor_identity")
+            != "launch::vecsum::dfg_sim::test-app-fixture::vecsum::default"
+        ):
+            raise AssertionError(f"DFG-sim launch identity should ignore stale mapping identity: {stale_dfg_mapping_data}")
+        if stale_dfg_mapping_data.get("input_artifact_fingerprints") != {
+            "vecsum-dfg-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-dfg-sim-report.json"),
+        }:
+            raise AssertionError(f"DFG-sim stale mapping package should only consume DFG report: {stale_dfg_mapping_data}")
+        stale_dfg_mapping_audit = out_dir / "stale-dfg-mapping-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_dfg_mapping_audit),
+                str(stale_dfg_mapping_package),
+            ],
+            "blocked DFG-sim runtime package with stale mapping audit",
+        )
+
         rtl_package = out_dir / "rtl-runtime-package.json"
         result = artifact_test_common.run_command(
             repo,

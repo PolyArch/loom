@@ -452,15 +452,22 @@ def build_package(
     dfg = read_json(dfg_path)
     cgra = read_json(cgra_path)
     comparison = read_json(comparison_path)
+    consumed_mapping_path = mapping_path if target in {"cgra-sim", "rtl-sim", "hardware"} else None
+    consumed_dfg_path = dfg_path if target == "dfg-sim" else None
+    consumed_cgra_path = cgra_path if target == "cgra-sim" else None
+    consumed_comparison_path = comparison_path if target == "cgra-sim" else None
+    mapping_for_identity = mapping if consumed_mapping_path is not None else {}
+    dfg_for_identity = dfg if consumed_dfg_path is not None else {}
+    cgra_for_identity = cgra if consumed_cgra_path is not None else {}
+    comparison_for_identity = comparison if consumed_comparison_path is not None else {}
     workload = (
-        string_field(mapping, "workload")
-        or string_field(dfg, "workload")
-        or string_field(cgra, "workload")
+        string_field(mapping_for_identity, "workload")
+        or string_field(dfg_for_identity, "workload")
+        or string_field(cgra_for_identity, "workload")
         or "unknown"
     )
-    hardware = string_field(mapping, "hardware") or string_field(cgra, "hardware")
-    mapping_id = string_field(mapping, "mapping_id") or target.replace("-", "_")
-    runtime_input = runtime_input_identity(workload, comparison, dfg)
+    hardware = string_field(mapping_for_identity, "hardware") or string_field(cgra_for_identity, "hardware")
+    runtime_input = runtime_input_identity(workload, comparison_for_identity, dfg_for_identity)
     if hardware:
         rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
 
@@ -530,14 +537,10 @@ def build_package(
         if target in {"cgra-sim", "dfg-sim"}:
             diagnostics.append("simulator target requires simulated data movement policy")
 
-    consumed_mapping_path = mapping_path if target in {"cgra-sim", "rtl-sim", "hardware"} else None
-    consumed_dfg_path = dfg_path if target == "dfg-sim" else None
-    consumed_cgra_path = cgra_path if target == "cgra-sim" else None
-    consumed_comparison_path = comparison_path if target == "cgra-sim" else None
     consumed_rtl_manifest_path = rtl_manifest_path if target == "rtl-sim" else None
     package_mapping_id = (
-        string_field(mapping, "mapping_id")
-        if consumed_mapping_path is not None and string_field(mapping, "mapping_id")
+        string_field(mapping_for_identity, "mapping_id")
+        if consumed_mapping_path is not None and string_field(mapping_for_identity, "mapping_id")
         else target.replace("-", "_")
     )
 
