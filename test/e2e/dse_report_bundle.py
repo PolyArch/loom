@@ -98,10 +98,6 @@ def workload_metric_ids_by_workload(paths: list[Path]) -> dict[str, list[str]]:
     return grouped
 
 
-def semicolon_list(raw: str) -> list[str]:
-    return [entry for entry in raw.split(";") if entry]
-
-
 def artifact_identity(reference: str) -> str:
     return artifact_id(Path(reference)) if reference else ""
 
