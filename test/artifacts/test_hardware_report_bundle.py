@@ -247,6 +247,44 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("hardware report with stale RTL manifest fingerprint unexpectedly passed audit")
 
+        bad_builder_recipe_report = out_dir / "bad-builder-recipe-hardware-report-bundle.json"
+        bad_builder_recipe_data = json.loads(report.read_text())
+        bad_builder_recipe_data["adg_builder_recipe_identity"] = []
+        bad_builder_recipe_report.write_text(
+            json.dumps(bad_builder_recipe_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_builder_recipe_audit = out_dir / "bad-builder-recipe-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_builder_recipe_audit),
+                str(bad_builder_recipe_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with malformed ADG builder recipe unexpectedly passed audit")
+
+        bad_rtl_identity_report = out_dir / "bad-rtl-identity-hardware-report-bundle.json"
+        bad_rtl_identity_data = json.loads(report.read_text())
+        bad_rtl_identity_data["rtl_manifest_identity"] = 7
+        bad_rtl_identity_report.write_text(json.dumps(bad_rtl_identity_data, indent=2, sort_keys=True) + "\n")
+        bad_rtl_identity_audit = out_dir / "bad-rtl-identity-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_rtl_identity_audit),
+                str(bad_rtl_identity_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with malformed RTL manifest identity unexpectedly passed audit")
+
         missing_fpa_report = out_dir / "missing-fpa-hardware-report-bundle.json"
         result = artifact_test_common.run_command(
             repo,

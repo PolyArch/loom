@@ -4954,6 +4954,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         for key in ("bundle_id", "hardware_candidate_identity", "fabric_adg_identity"):
             if not isinstance(data.get(key), str) or not data.get(key):
                 diagnostics.append(f"hardware report bundle lacks {key}")
+        for key in ("adg_builder_recipe_identity", "rtl_manifest_identity"):
+            if not isinstance(data.get(key), str):
+                diagnostics.append(f"hardware report bundle {key} must be a string")
         for key in (
             "eda_report_identities",
             "fpa_report_identities",
