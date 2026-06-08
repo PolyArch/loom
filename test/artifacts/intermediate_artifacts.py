@@ -3332,6 +3332,84 @@ def validate_hardware_report_input_fingerprints(
             diagnostics.append(f"hardware report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
+def read_resolved_json_reference(path: Path, identity: object) -> dict[str, object] | None:
+    if not isinstance(identity, str) or not identity:
+        return None
+    resolved = resolve_artifact_identity_reference(path, identity)
+    if resolved is None:
+        return None
+    try:
+        value = json.loads(resolved.read_text())
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def simulator_report_runtime_input_identity(report: dict[str, object], workload: object) -> str:
+    identity = report.get("runtime_input_identity")
+    if isinstance(identity, str) and identity:
+        return identity
+    if isinstance(workload, str) and workload:
+        return f"test-app-fixture::{workload}::default"
+    return ""
+
+
+def validate_sim_comparison_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    workload = data.get("workload")
+    runtime_input_identity = data.get("runtime_input_identity")
+    dfg_report = read_resolved_json_reference(path, data.get("dfg_sim_report_identity"))
+    if dfg_report is not None:
+        if dfg_report.get("kind") != "dfg_sim_report":
+            diagnostics.append("simulation comparison report DFG reference is not a DFG simulator report")
+        if isinstance(workload, str) and workload and dfg_report.get("workload") != workload:
+            diagnostics.append("simulation comparison report DFG reference workload does not match report")
+        expected_runtime_input = simulator_report_runtime_input_identity(dfg_report, workload)
+        if (
+            isinstance(runtime_input_identity, str)
+            and runtime_input_identity
+            and expected_runtime_input
+            and expected_runtime_input != runtime_input_identity
+        ):
+            diagnostics.append("simulation comparison report DFG reference runtime input does not match report")
+
+    cgra_report = read_resolved_json_reference(path, data.get("cgra_sim_report_identity"))
+    if cgra_report is not None:
+        if cgra_report.get("kind") != "cgra_sim_report":
+            diagnostics.append("simulation comparison report CGRA reference is not a CGRA simulator report")
+        if isinstance(workload, str) and workload and cgra_report.get("workload") != workload:
+            diagnostics.append("simulation comparison report CGRA reference workload does not match report")
+        expected_runtime_input = simulator_report_runtime_input_identity(cgra_report, workload)
+        if (
+            isinstance(runtime_input_identity, str)
+            and runtime_input_identity
+            and expected_runtime_input
+            and expected_runtime_input != runtime_input_identity
+        ):
+            diagnostics.append("simulation comparison report CGRA reference runtime input does not match report")
+
+    mapping_report = read_resolved_json_reference(path, data.get("mapping_artifact_identity"))
+    if mapping_report is not None:
+        if mapping_report.get("kind") != "pnr_mapping":
+            diagnostics.append("simulation comparison report mapping reference is not a PnR mapping artifact")
+        if isinstance(workload, str) and workload and mapping_report.get("workload") != workload:
+            diagnostics.append("simulation comparison report mapping reference workload does not match report")
+        if cgra_report is not None:
+            mapping_id = mapping_report.get("mapping_id")
+            cgra_mapping_id = cgra_report.get("mapping_id")
+            if (
+                isinstance(mapping_id, str)
+                and mapping_id
+                and isinstance(cgra_mapping_id, str)
+                and cgra_mapping_id
+                and mapping_id != cgra_mapping_id
+            ):
+                diagnostics.append("simulation comparison report mapping reference does not match CGRA report")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -3584,6 +3662,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         delta = data.get("performance_delta_cycles")
         if delta is not None and (not isinstance(delta, int) or delta < 0):
             diagnostics.append("simulation comparison report performance_delta_cycles must be non-negative integer or null")
+        validate_sim_comparison_references(path, data, diagnostics)
     if kind == "pnr_mapping_artifact":
         if data.get("kind") != "pnr_mapping":
             diagnostics.append("PnR mapping artifact kind must be pnr_mapping")

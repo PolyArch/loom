@@ -120,6 +120,26 @@ def main() -> int:
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected comparison report audit pass: {audit_data}")
 
+        mismatched_runtime_input = out_dir / "mismatch-runtime-input-sim-comparison-report.json"
+        mismatched_runtime_input_data = json.loads(json.dumps(data))
+        mismatched_runtime_input_data["runtime_input_identity"] = "test-app-fixture::other::default"
+        mismatched_runtime_input.write_text(
+            json.dumps(mismatched_runtime_input_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_runtime_input_audit = out_dir / "mismatch-runtime-input-artifact-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_runtime_input_audit),
+                str(mismatched_runtime_input),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("mismatched runtime input comparison unexpectedly passed audit")
+
         mismatched_dfg = out_dir / "mismatch-dfg-sim-report.json"
         dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
         dfg_data["workload"] = "other_workload"
