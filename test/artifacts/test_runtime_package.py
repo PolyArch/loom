@@ -507,6 +507,70 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected runtime package audit pass: {audit_data}")
+        alternate_runtime_input = "test-app-fixture::vecsum::alternate"
+        alternate_dfg_report = out_dir / "alternate-runtime-input-dfg-sim-report.json"
+        alternate_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
+        alternate_dfg_data["runtime_input_identity"] = alternate_runtime_input
+        alternate_dfg_report.write_text(json.dumps(alternate_dfg_data, indent=2, sort_keys=True) + "\n")
+        alternate_cgra_report = out_dir / "alternate-runtime-input-cgra-sim-report.json"
+        alternate_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
+        alternate_cgra_data["runtime_input_identity"] = alternate_runtime_input
+        alternate_cgra_report.write_text(json.dumps(alternate_cgra_data, indent=2, sort_keys=True) + "\n")
+        alternate_comparison = out_dir / "alternate-runtime-input-sim-comparison-report.json"
+        alternate_comparison_data = json.loads((out_dir / "sim-comparison-report.json").read_text())
+        alternate_comparison_data["comparison_id"] = (
+            "sim-comparison::vecsum::alternate-runtime-input-cgra-sim-report"
+        )
+        alternate_comparison_data["runtime_input_identity"] = alternate_runtime_input
+        alternate_comparison_data["dfg_sim_report_identity"] = "alternate-runtime-input-dfg-sim-report"
+        alternate_comparison_data["cgra_sim_report_identity"] = "alternate-runtime-input-cgra-sim-report"
+        alternate_comparison.write_text(json.dumps(alternate_comparison_data, indent=2, sort_keys=True) + "\n")
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "alternate-runtime-input-sim-comparison-report-audit.json"),
+                str(alternate_comparison),
+            ],
+            "alternate runtime input comparison audit",
+        )
+        mismatched_comparison_package = out_dir / "mismatched-comparison-runtime-package.json"
+        mismatched_comparison_data = json.loads(package.read_text())
+        for descriptor in mismatched_comparison_data["argument_descriptors"]:
+            if descriptor.get("name") == "sim_comparison_report":
+                descriptor["identity"] = "alternate-runtime-input-sim-comparison-report"
+        for descriptor in mismatched_comparison_data["launch_descriptor"]["argument_descriptors"]:
+            if descriptor.get("name") == "sim_comparison_report":
+                descriptor["identity"] = "alternate-runtime-input-sim-comparison-report"
+        mismatched_comparison_data["simulator_report_identities"] = [
+            "vecsum-cgra-sim-report",
+            "alternate-runtime-input-sim-comparison-report",
+        ]
+        mismatched_comparison_data["runtime_report"]["simulator_report_identities"] = list(
+            mismatched_comparison_data["simulator_report_identities"]
+        )
+        mismatched_comparison_data["input_artifact_fingerprints"].pop("sim-comparison-report", None)
+        mismatched_comparison_data["input_artifact_fingerprints"][
+            "alternate-runtime-input-sim-comparison-report"
+        ] = artifact_test_common.fingerprint(alternate_comparison)
+        mismatched_comparison_package.write_text(
+            json.dumps(mismatched_comparison_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_comparison_audit = out_dir / "mismatched-comparison-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_comparison_audit),
+                str(mismatched_comparison_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with unrelated comparison reference unexpectedly passed audit")
         token_backed_package = out_dir / "token-backed-runtime-package.json"
         token_backed_data = json.loads(package.read_text())
         token_backed_data["runtime_handle_model"]["ir_token_kind"] = "dataflow_thread_token"

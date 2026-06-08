@@ -3468,6 +3468,77 @@ def validate_workload_report_sim_comparison_reference(
             )
 
 
+def validate_runtime_package_sim_comparison_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("status") != "pass":
+        return
+    simulator_reports = data.get("simulator_report_identities")
+    if not isinstance(simulator_reports, list):
+        return
+    comparison_identity = next(
+        (
+            identity
+            for identity in simulator_reports
+            if isinstance(identity, str) and identity.endswith("sim-comparison-report")
+        ),
+        "",
+    )
+    comparison = read_resolved_json_reference(path, comparison_identity)
+    if comparison is None:
+        return
+    if comparison.get("kind") != "sim_comparison_report":
+        diagnostics.append("runtime package simulation comparison reference has wrong kind")
+        return
+    validate_sim_comparison_references(
+        path,
+        comparison,
+        diagnostics,
+        "runtime package simulation comparison",
+    )
+    work_package_metadata = data.get("work_package_metadata")
+    runtime_input_identity = None
+    if isinstance(work_package_metadata, dict):
+        runtime_input_identity = work_package_metadata.get("runtime_input_identity")
+    if not isinstance(runtime_input_identity, str) or not runtime_input_identity:
+        runtime_input_identity = runtime_source_provenance(data)
+    for comparison_key, package_value, label in (
+        ("workload", data.get("workload"), "workload"),
+        ("runtime_input_identity", runtime_input_identity, "runtime input"),
+        ("mapping_artifact_identity", data.get("selected_mapping_artifact_identity"), "mapping artifact"),
+    ):
+        comparison_value = comparison.get(comparison_key)
+        if (
+            isinstance(comparison_value, str)
+            and comparison_value
+            and isinstance(package_value, str)
+            and package_value
+            and comparison_value != package_value
+        ):
+            diagnostics.append(
+                f"runtime package simulation comparison {label} does not match package"
+            )
+    cgra_identity = next(
+        (
+            identity
+            for identity in simulator_reports
+            if isinstance(identity, str) and identity.endswith("cgra-sim-report")
+        ),
+        "",
+    )
+    comparison_cgra_identity = comparison.get("cgra_sim_report_identity")
+    if (
+        isinstance(comparison_cgra_identity, str)
+        and comparison_cgra_identity
+        and isinstance(cgra_identity, str)
+        and cgra_identity
+        and comparison_cgra_identity != cgra_identity
+    ):
+        diagnostics.append("runtime package simulation comparison CGRA report does not match package")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -4028,6 +4099,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             simulator_reports,
             argument_descriptors,
         )
+        validate_runtime_package_sim_comparison_reference(path, data, diagnostics)
         for identity in input_fingerprints:
             if identity not in artifact_input_references:
                 diagnostics.append(
