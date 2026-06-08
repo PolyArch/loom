@@ -287,6 +287,62 @@ def main() -> int:
             cgra_path.write_text(original_cgra_text)
             comparison_path.write_text(original_comparison_text)
 
+        filtered_runtime_input_report = out_dir / "filtered-runtime-input-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_runtime_input_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(alternate_runtime_package),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with alternate runtime input package before matching package",
+        )
+        filtered_runtime_input_data = json.loads(filtered_runtime_input_report.read_text())
+        filtered_runtime_input_identities = filtered_runtime_input_data.get("optional_artifact_identities", {})
+        if filtered_runtime_input_identities.get("runtime_package") != "runtime-package":
+            raise AssertionError(
+                f"workload report should select runtime package matching simulation runtime input: "
+                f"{filtered_runtime_input_data}"
+            )
+        if filtered_runtime_input_data.get("runtime_input_identity") != "test-app-fixture::vecsum::default":
+            raise AssertionError(
+                f"workload report should preserve selected simulation runtime input: {filtered_runtime_input_data}"
+            )
+        if "alternate-runtime-input-runtime-package" in filtered_runtime_input_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint alternate runtime input package: "
+                f"{filtered_runtime_input_data}"
+            )
+
         unrelated_runtime_package = out_dir / "unrelated-runtime-package.json"
         unrelated_runtime_data = json.loads((out_dir / "runtime-package.json").read_text())
         unrelated_runtime_data["package_id"] = "runtime-package::other_workload::other_mapping"
