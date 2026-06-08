@@ -45,6 +45,22 @@ def run_raw(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def write_minimal_report_bundle(
+    path: Path,
+    *,
+    kind: str,
+    identity: str,
+    report_status: str = "pass",
+) -> None:
+    data: dict[str, object] = {
+        "schema_version": 1,
+        "kind": kind,
+        "bundle_id": identity,
+        "report_status": report_status,
+    }
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     temp_root = repo / "temp" / "test-runs"
@@ -376,6 +392,81 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("manifest with disconnected trace artifacts unexpectedly passed audit")
+
+        primary_workload = out_dir / "workload-report-bundle.json"
+        secondary_workload = out_dir / "secondary-workload-report-bundle.json"
+        primary_hardware = out_dir / "hardware-report-bundle.json"
+        secondary_hardware = out_dir / "secondary-hardware-report-bundle.json"
+        primary_dse = out_dir / "dse-report-bundle.json"
+        write_minimal_report_bundle(
+            primary_workload,
+            kind="workload_report_bundle",
+            identity="workload::primary",
+        )
+        write_minimal_report_bundle(
+            secondary_workload,
+            kind="workload_report_bundle",
+            identity="workload::secondary",
+        )
+        write_minimal_report_bundle(
+            primary_hardware,
+            kind="hardware_report_bundle",
+            identity="hardware::primary",
+        )
+        write_minimal_report_bundle(
+            secondary_hardware,
+            kind="hardware_report_bundle",
+            identity="hardware::secondary",
+        )
+        primary_dse.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "dse_report_bundle",
+                    "dse_run_id": "dse::primary",
+                    "referenced_workload_report_bundle_identities": ["workload-report-bundle"],
+                    "referenced_hardware_candidate_report_bundle_identities": ["hardware-report-bundle"],
+                    "report_status": "pass",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        multi_bundle_manifest = out_dir / "multi-bundle-full-stack-artifact-manifest.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                "--artifact",
+                str(primary_workload),
+                "--artifact",
+                str(secondary_workload),
+                "--artifact",
+                str(primary_hardware),
+                "--artifact",
+                str(secondary_hardware),
+                "--artifact",
+                str(primary_dse),
+                "--output",
+                str(multi_bundle_manifest),
+            ],
+        )
+        multi_bundle_data = json.loads(multi_bundle_manifest.read_text())
+        multi_bundle_edges = {
+            (edge["from"], edge["to"])
+            for edge in multi_bundle_data.get("edges", [])
+        }
+        expected_multi_bundle_edges = {
+            ("workload-report-bundle", "dse-report-bundle"),
+            ("hardware-report-bundle", "dse-report-bundle"),
+        }
+        if multi_bundle_edges != expected_multi_bundle_edges:
+            raise AssertionError(
+                "manifest should only connect DSE report bundles to explicitly referenced report bundles: "
+                f"{multi_bundle_edges}"
+            )
 
     return 0
 

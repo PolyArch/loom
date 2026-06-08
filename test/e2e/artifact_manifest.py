@@ -55,6 +55,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     ids_by_kind: dict[str, list[str]] = {}
     kind_by_id: dict[str, str] = {}
     fingerprint_by_id: dict[str, str] = {}
+    path_by_id: dict[str, Path] = {}
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
         identity = artifact_id(path)
@@ -68,6 +69,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
         seen_ids.add(identity)
         ids_by_kind.setdefault(kind, []).append(identity)
         kind_by_id[identity] = kind
+        path_by_id[identity] = path
         artifact_fingerprint = fingerprint(path)
         fingerprint_by_id[identity] = artifact_fingerprint
         artifacts.append(
@@ -83,7 +85,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
 
     edges = []
     edge_keys: set[tuple[str, str]] = set()
-    for left, right in intermediate_artifacts.iter_artifact_manifest_required_edges(seen_ids, ids_by_kind):
+    for left, right in intermediate_artifacts.iter_artifact_manifest_required_edges(seen_ids, ids_by_kind, path_by_id):
         add_edge(edges, edge_keys, left, right)
 
     for edge in edges:

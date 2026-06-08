@@ -1274,9 +1274,37 @@ def manifest_component_for_kind(kind: str) -> str:
     return f"{kind}-producer" if kind else ""
 
 
+def read_manifest_json_artifact(path: Path | None) -> dict[str, object] | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def iter_manifest_json_identity_references(
+    data: dict[str, object] | None,
+    key: str,
+    artifact_id_set: set[str],
+) -> Iterable[str]:
+    if data is None:
+        return
+    references = data.get(key)
+    if not isinstance(references, list):
+        return
+    for reference in references:
+        if isinstance(reference, str) and reference in artifact_id_set:
+            yield reference
+
+
 def iter_artifact_manifest_required_edges(
     artifact_ids: Iterable[str],
     ids_by_kind: dict[str, list[str]],
+    artifact_paths_by_id: dict[str, Path] | None = None,
 ) -> Iterable[tuple[str, str]]:
     artifact_id_set = set(artifact_ids)
     for left, right in ARTIFACT_EDGE_PAIRS:
@@ -1352,12 +1380,35 @@ def iter_artifact_manifest_required_edges(
             yield hardware_report_id, demonstrator_id
 
     for dse_report_id in ids_by_kind.get("dse_report_bundle", []):
-        for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
-            for source_id in ids_by_kind.get(source_kind, []):
+        if artifact_paths_by_id is None or dse_report_id not in artifact_paths_by_id:
+            for source_kind in ("dse_candidate", "workload_report_bundle", "hardware_report_bundle"):
+                for source_id in ids_by_kind.get(source_kind, []):
+                    yield source_id, dse_report_id
+            continue
+        report = read_manifest_json_artifact(artifact_paths_by_id.get(dse_report_id))
+        for key in (
+            "referenced_dse_candidate_artifact_identities",
+            "referenced_workload_report_bundle_identities",
+            "referenced_hardware_candidate_report_bundle_identities",
+        ):
+            for source_id in iter_manifest_json_identity_references(report, key, artifact_id_set):
                 yield source_id, dse_report_id
 
 
-def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[str]) -> int:
+def manifest_artifact_path(raw_path: object, manifest_path: Path | None) -> Path | None:
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    path = Path(raw_path)
+    if path.is_absolute() or manifest_path is None:
+        return path
+    return manifest_path.parent / path
+
+
+def validate_artifact_manifest_edges(
+    data: dict[str, object],
+    diagnostics: list[str],
+    manifest_path: Path | None = None,
+) -> int:
     artifacts = data.get("artifacts")
     edges = data.get("edges")
     if not isinstance(artifacts, list):
@@ -1370,6 +1421,7 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
     artifact_ids: set[str] = set()
     artifact_kinds: dict[str, str] = {}
     artifact_fingerprints: dict[str, str] = {}
+    artifact_paths_by_id: dict[str, Path] = {}
     ids_by_kind: dict[str, list[str]] = {}
     for index, artifact in enumerate(artifacts, start=1):
         if not isinstance(artifact, dict):
@@ -1393,6 +1445,9 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
         else:
             assert isinstance(fingerprint, str)
             artifact_fingerprints[identity] = fingerprint
+        resolved_path = manifest_artifact_path(artifact.get("path"), manifest_path)
+        if resolved_path is not None:
+            artifact_paths_by_id[identity] = resolved_path
         ids_by_kind.setdefault(kind, []).append(identity)
 
     edge_pairs: set[tuple[str, str]] = set()
@@ -1469,7 +1524,7 @@ def validate_artifact_manifest_edges(data: dict[str, object], diagnostics: list[
             diagnostics.append(f"artifact manifest edge {index} output fingerprint does not match sink")
         edge_pairs.add((left, right))
 
-    for left, right in iter_artifact_manifest_required_edges(artifact_ids, ids_by_kind):
+    for left, right in iter_artifact_manifest_required_edges(artifact_ids, ids_by_kind, artifact_paths_by_id):
         require_manifest_edge(edge_pairs, diagnostics, left, right)
 
     return len(artifacts)
@@ -3901,7 +3956,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         diagnostics.append("artifact manifest contains blocked diagnostics")
     manifest_entries_checked: int | None = None
     if kind == "artifact_manifest" and isinstance(data, dict):
-        manifest_entries_checked = validate_artifact_manifest_edges(data, diagnostics)
+        manifest_entries_checked = validate_artifact_manifest_edges(data, diagnostics, path)
     if kind == "artifact_audit" and data.get("verdict") not in {"pass", "fail"}:
         diagnostics.append("artifact audit verdict must be pass or fail")
     if kind == "rtl_manifest":
