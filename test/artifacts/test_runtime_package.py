@@ -196,6 +196,50 @@ def main() -> int:
         if data["fallback_decision"] != expected_fallback:
             raise AssertionError(f"unexpected fallback decision: {data}")
 
+        unrelated_mapping = out_dir / "unrelated-pnr-mapping.json"
+        unrelated_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        unrelated_mapping_data["workload"] = "other_workload"
+        unrelated_mapping_data["hardware"] = "other_hardware"
+        unrelated_mapping_data["mapping_id"] = "other_mapping"
+        unrelated_mapping.write_text(json.dumps(unrelated_mapping_data, indent=2, sort_keys=True) + "\n")
+        unrelated_cgra = out_dir / "unrelated-cgra-sim-report.json"
+        unrelated_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
+        unrelated_cgra_data["workload"] = "other_workload"
+        unrelated_cgra_data["hardware"] = "other_hardware"
+        unrelated_cgra_data["mapping_id"] = "other_mapping"
+        unrelated_cgra.write_text(json.dumps(unrelated_cgra_data, indent=2, sort_keys=True) + "\n")
+        filtered_package = out_dir / "filtered-inputs-runtime-package.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--output",
+                str(filtered_package),
+                "--artifact",
+                str(unrelated_mapping),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(unrelated_cgra),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+            "runtime package with unrelated inputs before comparison references",
+        )
+        filtered_data = json.loads(filtered_package.read_text())
+        if filtered_data.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"runtime package should select comparison mapping input: {filtered_data}")
+        if filtered_data.get("simulator_report_identities") != [
+            "vecsum-cgra-sim-report",
+            "sim-comparison-report",
+        ]:
+            raise AssertionError(f"runtime package should select comparison simulator inputs: {filtered_data}")
+        if filtered_data.get("input_artifact_fingerprints") != expected_input_fingerprints:
+            raise AssertionError(f"runtime package should fingerprint only selected inputs: {filtered_data}")
+
         fallback_features = {
             "require_acceleration": "require_acceleration_policy",
             "allow_host_fallback": "host_fallback_policy",

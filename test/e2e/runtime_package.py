@@ -82,6 +82,15 @@ def report_identities(paths: list[Path | None]) -> list[str]:
     return identities
 
 
+def path_with_artifact_identity(paths: list[Path], identity: str) -> Path | None:
+    if not identity:
+        return None
+    for path in paths:
+        if artifact_id(path) == identity:
+            return path
+    return None
+
+
 def diagnostic_class(message: str) -> str:
     if "requires RTL" in message:
         return "missing_rtl_artifact"
@@ -448,10 +457,24 @@ def build_package(
     comparison_path = first_path(grouped, "sim_comparison_report")
     rtl_manifest_path = None
 
+    comparison = read_json(comparison_path)
+    if target == "cgra-sim" and comparison:
+        comparison_mapping_path = path_with_artifact_identity(
+            grouped.get("pnr_mapping_artifact", []),
+            string_field(comparison, "mapping_artifact_identity"),
+        )
+        comparison_cgra_path = path_with_artifact_identity(
+            grouped.get("cgra_sim_report", []),
+            string_field(comparison, "cgra_sim_report_identity"),
+        )
+        if comparison_mapping_path is not None:
+            mapping_path = comparison_mapping_path
+        if comparison_cgra_path is not None:
+            cgra_path = comparison_cgra_path
+
     mapping = read_json(mapping_path)
     dfg = read_json(dfg_path)
     cgra = read_json(cgra_path)
-    comparison = read_json(comparison_path)
     consumed_mapping_path = mapping_path if target in {"cgra-sim", "rtl-sim", "hardware"} else None
     consumed_dfg_path = dfg_path if target == "dfg-sim" else None
     consumed_cgra_path = cgra_path if target == "cgra-sim" else None
