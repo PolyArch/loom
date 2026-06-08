@@ -693,6 +693,104 @@ def main() -> int:
             "leakage power DSE report bundle audit",
         )
 
+        unsupported_scope_ledger = out_dir / "dse-objective-unsupported-scope-ledger.csv"
+        unsupported_scope_ledger.write_text(
+            "stage,case,artifact,reason,owner,blocking_input\n"
+            "dse,candidate::vecsum::shared_reduction_adg::vecsum__shared_reduction_adg,"
+            f"dse-candidate-summary,synthetic candidate diagnostic,implementation,{out_dir / 'pnr-mapping.json'}\n"
+        )
+        unsupported_scope_candidate_summary = out_dir / "unsupported-scope-dse-candidate-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/dse/run_candidate_summary.sh",
+                "--objective",
+                "minimize_unsupported_scope_diagnostics",
+                "--output",
+                str(unsupported_scope_candidate_summary),
+                "--artifact",
+                str(out_dir / "pnr-mapping-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(unsupported_scope_ledger),
+            ],
+            "unsupported-scope objective DSE candidate summary",
+        )
+        unsupported_scope_report = out_dir / "unsupported-scope-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(unsupported_scope_report),
+                "--artifact",
+                str(unsupported_scope_candidate_summary),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "unsupported-scope objective DSE report bundle",
+        )
+        unsupported_scope_data = json.loads(unsupported_scope_report.read_text())
+        unsupported_scope_objective = unsupported_scope_data.get("objective_records", [])[0]
+        expected_unsupported_scope_objective = {
+            "objective_id": "objective::minimize_unsupported_scope_diagnostics",
+            "objective_kind": "minimize_unsupported_scope_diagnostics",
+            "constraint_or_optimization_mode": "optimization",
+            "comparison_direction": "minimize",
+            "units": "count",
+        }
+        for key, value in expected_unsupported_scope_objective.items():
+            if unsupported_scope_objective.get(key) != value:
+                raise AssertionError(
+                    f"unexpected unsupported-scope objective {key}: {unsupported_scope_objective}"
+                )
+        expected_unsupported_scope_metric = (
+            "metric::vecsum::shared_reduction_adg::"
+            "vecsum__shared_reduction_adg::unsupported_scope_diagnostics_count"
+        )
+        if unsupported_scope_objective.get("metric_inputs") != [expected_unsupported_scope_metric]:
+            raise AssertionError(
+                f"unsupported-scope objective should cite diagnostic metric: {unsupported_scope_objective}"
+            )
+        if (
+            unsupported_scope_data.get("candidate_ordering_rule")
+            != "unsupported_scope_diagnostics_score_then_candidate_id"
+        ):
+            raise AssertionError(f"unexpected unsupported-scope ordering rule: {unsupported_scope_data}")
+        if (
+            unsupported_scope_data.get("selected_policy_id")
+            != "deterministic_minimize_unsupported_scope_diagnostics_v1"
+        ):
+            raise AssertionError(f"unexpected unsupported-scope policy id: {unsupported_scope_data}")
+        unsupported_scope_candidate = unsupported_scope_data.get("candidate_list", [])[0]
+        if expected_unsupported_scope_metric not in unsupported_scope_candidate.get("metric_records_used", []):
+            raise AssertionError(
+                f"unsupported-scope candidate missed diagnostic metric: {unsupported_scope_candidate}"
+            )
+        unsupported_scope_audit = out_dir / "unsupported-scope-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(unsupported_scope_audit),
+                str(unsupported_scope_report),
+            ],
+            "unsupported-scope DSE report bundle audit",
+        )
+
         stochastic_without_seed = out_dir / "stochastic-without-seed-dse-report-bundle.json"
         stochastic_without_seed_data = json.loads(report.read_text())
         stochastic_without_seed_data["policy_configuration"]["policy_kind"] = "stochastic"

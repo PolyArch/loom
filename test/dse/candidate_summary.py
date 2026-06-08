@@ -281,6 +281,17 @@ def input_artifact_fingerprints(refs: list[str]) -> str:
     return ";".join(entries)
 
 
+def unique_refs(refs: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if ref == "" or ref in seen:
+            continue
+        unique.append(ref)
+        seen.add(ref)
+    return unique
+
+
 def policy_id_for_objective(objective: str, mapping: dict[str, str] | None = None) -> str:
     if mapping is not None and mapping.get("__policy_id"):
         return mapping["__policy_id"]
@@ -293,6 +304,57 @@ def ordering_rule_for_objective(objective: str) -> str:
 
 def complete_candidate_id(workload: str, hardware: str, mapping_id: str) -> str:
     return f"candidate::{workload}::{hardware}::{mapping_id}"
+
+
+def path_aliases(raw_path: str, base_path: str = "") -> set[str]:
+    if raw_path == "":
+        return set()
+    path = Path(raw_path)
+    aliases = {raw_path, str(path)}
+    if base_path and not path.is_absolute():
+        path = Path(base_path).parent / path
+        aliases.add(str(path))
+    aliases.add(str(path.resolve()))
+    return aliases
+
+
+def blocking_input_matches(row: dict[str, str], input_refs: list[str]) -> bool:
+    blocking_input = row.get("blocking_input", "")
+    if blocking_input == "":
+        return False
+    input_aliases: set[str] = set()
+    for ref in input_refs:
+        input_aliases.update(path_aliases(ref))
+    return bool(path_aliases(blocking_input, row.get("__path", "")) & input_aliases)
+
+
+def matching_unsupported_scope_rows(
+    ledger_rows: list[dict[str, str]],
+    candidate_id: str,
+    mapping_id: str,
+    input_refs: list[str],
+) -> list[dict[str, str]]:
+    matches: list[dict[str, str]] = []
+    for row in ledger_rows:
+        case = row.get("case", "")
+        if case == candidate_id or case.startswith(f"{candidate_id}:"):
+            matches.append(row)
+            continue
+        if case == mapping_id or case.endswith(f":{mapping_id}"):
+            matches.append(row)
+            continue
+        if blocking_input_matches(row, input_refs):
+            matches.append(row)
+    return matches
+
+
+def unsupported_scope_count(
+    ledger_rows: list[dict[str, str]],
+    candidate_id: str,
+    mapping_id: str,
+    input_refs: list[str],
+) -> int:
+    return len(matching_unsupported_scope_rows(ledger_rows, candidate_id, mapping_id, input_refs))
 
 
 def complete_evidence(
@@ -342,6 +404,7 @@ def candidate_row(
     cgra_report: dict[str, object],
     objective: str,
     output_artifact: Path,
+    unsupported_scope_rows: list[dict[str, str]],
 ) -> dict[str, str]:
     workload = mapping["workload"]
     hardware = mapping["hardware"]
@@ -350,31 +413,59 @@ def candidate_row(
     if complete is not None:
         cycles, energy_nj = complete
         cycle_text = str(int(cycles))
-        input_refs = [
+        input_refs = unique_refs(
+            [
+                ref
+                for ref in (
+                    artifact_ref(mapping.get("__manifest_path")),
+                    artifact_ref(mapping.get("__path")),
+                    artifact_ref(mapping_artifact.get("__path")),
+                    artifact_ref(sim.get("__path")),
+                    artifact_ref(cgra_report.get("__path")),
+                    artifact_ref(fpa.get("__path")),
+                )
+                if ref
+            ]
+        )
+        candidate_id = complete_candidate_id(workload, hardware, mapping["mapping_id"])
+        unsupported_count = unsupported_scope_count(
+            unsupported_scope_rows,
+            candidate_id,
+            mapping["mapping_id"],
+            input_refs,
+        )
+        ledger_refs = [
             ref
             for ref in (
-                artifact_ref(mapping.get("__manifest_path")),
-                artifact_ref(mapping.get("__path")),
-                artifact_ref(mapping_artifact.get("__path")),
-                artifact_ref(sim.get("__path")),
-                artifact_ref(cgra_report.get("__path")),
-                artifact_ref(fpa.get("__path")),
+                artifact_ref(row.get("__path"))
+                for row in (
+                    unsupported_scope_rows
+                    if effective_objective == "minimize_unsupported_scope_diagnostics"
+                    else matching_unsupported_scope_rows(
+                        unsupported_scope_rows,
+                        candidate_id,
+                        mapping["mapping_id"],
+                        input_refs,
+                    )
+                )
             )
             if ref
         ]
+        input_refs = unique_refs(input_refs + ledger_refs)
         input_artifacts = ";".join(input_refs)
-        metric_records = ";".join(
-            (
-                f"cgra_sim_cycles={cycle_text}",
-                f"frequency_mhz={fpa['frequency_mhz']}",
-                f"area_um2={fpa['area_um2']}",
-                f"dynamic_power_mw={fpa['dynamic_power_mw']}",
-                f"leakage_power_mw={fpa['leakage_power_mw']}",
-                f"energy_nj={energy_nj:.3f}",
-            )
-        )
-        return {
-            "candidate": complete_candidate_id(workload, hardware, mapping["mapping_id"]),
+        metric_record_values = [
+            f"cgra_sim_cycles={cycle_text}",
+            f"frequency_mhz={fpa['frequency_mhz']}",
+            f"area_um2={fpa['area_um2']}",
+            f"dynamic_power_mw={fpa['dynamic_power_mw']}",
+            f"leakage_power_mw={fpa['leakage_power_mw']}",
+            f"energy_nj={energy_nj:.3f}",
+        ]
+        if effective_objective == "minimize_unsupported_scope_diagnostics":
+            metric_record_values.append(f"unsupported_scope_diagnostics_count={unsupported_count}")
+        metric_records = ";".join(metric_record_values)
+        row = {
+            "candidate": candidate_id,
             "workload": workload,
             "hardware": hardware,
             "mapping_id": mapping["mapping_id"],
@@ -400,6 +491,9 @@ def candidate_row(
                 "cgra_sim_cycles/frequency_mhz"
             ),
         }
+        if effective_objective == "minimize_unsupported_scope_diagnostics":
+            row["unsupported_scope_diagnostics_count"] = str(unsupported_count)
+        return row
     return {
         "candidate": f"candidate::{workload}::{hardware}",
         "workload": workload,
@@ -412,6 +506,7 @@ def candidate_row(
         "dynamic_power_mw": "",
         "leakage_power_mw": "",
         "energy_nj": "",
+        "unsupported_scope_diagnostics_count": "",
         "selection_status": "blocked",
         "candidate_kind": "combined_full_stack_candidate",
         "input_artifacts": "",
@@ -454,6 +549,11 @@ def dynamic_power_score(row: dict[str, str]) -> float:
 def leakage_power_score(row: dict[str, str]) -> float:
     leakage_power = parse_positive_float(row, "leakage_power_mw")
     return leakage_power if leakage_power is not None else float("inf")
+
+
+def unsupported_scope_diagnostics_score(row: dict[str, str]) -> float:
+    count = parse_float(row, "unsupported_scope_diagnostics_count")
+    return count if count is not None else float("inf")
 
 
 def throughput_score(row: dict[str, str]) -> float:
@@ -519,6 +619,9 @@ def select_candidates(rows: list[dict[str, str]], objective: str) -> None:
         elif effective_objective == "minimize_leakage_power":
             score = leakage_power_score
             selected = min(complete, key=lambda row: (score(row), row["candidate"]))
+        elif effective_objective == "minimize_unsupported_scope_diagnostics":
+            score = unsupported_scope_diagnostics_score
+            selected = min(complete, key=lambda row: (score(row), row["candidate"]))
         elif effective_objective in {"minimize_energy", "minimize_power"}:
             score = energy_score
             selected = min(complete, key=lambda row: (score(row), row["candidate"]))
@@ -549,6 +652,11 @@ def main(argv: list[str]) -> int:
     pnr_mapping_rows.extend(mapping_rows_from_artifacts(json_grouped.get("pnr_mapping_artifact", [])))
     pnr_mapping_rows.extend(mapping_rows_from_manifests(json_grouped.get("mapping_set_manifest", [])))
     pnr_mapping_rows = dedupe_mapping_rows(pnr_mapping_rows)
+    unsupported_scope_rows = [
+        attach_path(row, path)
+        for path in grouped.get("unsupported_scope", [])
+        for row in read_csv(path)
+    ]
     rows = [
         candidate_row(
             row,
@@ -566,6 +674,7 @@ def main(argv: list[str]) -> int:
             ),
             args.objective,
             output,
+            unsupported_scope_rows,
         )
         for row in pnr_mapping_rows
     ]

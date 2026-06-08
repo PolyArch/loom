@@ -33,6 +33,9 @@ METRIC_ID_BY_NAME = {
     "dynamic_power_mw": "metric::{hardware}::dynamic_power_mw",
     "leakage_power_mw": "metric::{hardware}::leakage_power_mw",
     "energy_nj": "metric::{workload}::energy_nj",
+    "unsupported_scope_diagnostics_count": (
+        "metric::{workload}::{hardware}::{mapping_id}::unsupported_scope_diagnostics_count"
+    ),
 }
 
 
@@ -65,12 +68,13 @@ def parse_metric_names(raw: str) -> list[str]:
 def metric_ids_for_candidate(row: dict[str, str]) -> list[str]:
     workload = row.get("workload", "")
     hardware = row.get("hardware", "")
+    mapping_id = row.get("mapping_id", "")
     ids: list[str] = []
     for name in parse_metric_names(row.get("metric_records", "")):
         template = METRIC_ID_BY_NAME.get(name)
         if template is None:
             continue
-        ids.append(template.format(workload=workload, hardware=hardware))
+        ids.append(template.format(workload=workload, hardware=hardware, mapping_id=mapping_id))
     return ids
 
 
@@ -146,6 +150,7 @@ def objective_record(row: dict[str, str]) -> dict[str, object]:
             objective,
             row.get("workload", ""),
             row.get("hardware", ""),
+            row.get("mapping_id", ""),
         )
         metric_inputs = [metric_id] if metric_id is not None else []
         direction = spec.direction

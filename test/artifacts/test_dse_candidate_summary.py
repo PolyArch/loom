@@ -764,6 +764,71 @@ def main() -> int:
             if mapping_id not in row["candidate"]:
                 raise AssertionError(f"candidate id must include mapping id {mapping_id}: {row}")
 
+        unsupported_scope_manifest = out_dir / "unsupported-scope-mapping-set-manifest.json"
+        write_mapping_set_manifest(
+            unsupported_scope_manifest,
+            "minimize_unsupported_scope_diagnostics",
+            [same_hardware_fast_mapping_artifact, same_hardware_slow_mapping_artifact],
+        )
+        unsupported_scope_ledger = out_dir / "unsupported-scope-ledger.csv"
+        unsupported_scope_ledger.write_text(
+            "stage,case,artifact,reason,owner,blocking_input\n"
+            "dse,candidate::vecadd::fabric_same::map_same_fast,dse-candidate-summary,"
+            f"synthetic candidate diagnostic,implementation,{same_hardware_fast_mapping_artifact}\n"
+        )
+        unsupported_scope_output = out_dir / "unsupported-scope-dse-candidate-summary.csv"
+        rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/dse/run_candidate_summary.sh",
+            unsupported_scope_output,
+            HEADER,
+            "--artifact",
+            str(unsupported_scope_manifest),
+            "--artifact",
+            str(same_hardware_sim),
+            "--artifact",
+            str(same_hardware_fast_cgra_report),
+            "--artifact",
+            str(same_hardware_slow_cgra_report),
+            "--artifact",
+            str(same_hardware_fpa),
+            "--artifact",
+            str(unsupported_scope_ledger),
+            label="unsupported-scope-objective DSE candidate summary",
+        )
+        rows_by_mapping = {row["mapping_id"]: row for row in rows}
+        if set(rows_by_mapping) != {"map_same_fast", "map_same_slow"}:
+            raise AssertionError(f"unsupported-scope objective missed mapping candidates: {rows}")
+        if rows_by_mapping["map_same_slow"]["selection_status"] != "selected":
+            raise AssertionError(
+                "unsupported-scope objective should select the candidate with fewer diagnostics: "
+                f"{rows_by_mapping['map_same_slow']}"
+            )
+        if rows_by_mapping["map_same_fast"]["selection_status"] != "rejected":
+            raise AssertionError(
+                "unsupported-scope objective should reject the diagnosed candidate: "
+                f"{rows_by_mapping['map_same_fast']}"
+            )
+        expected_counts = {"map_same_fast": "1", "map_same_slow": "0"}
+        for mapping_id, row in rows_by_mapping.items():
+            if row.get("objective") != "minimize_unsupported_scope_diagnostics":
+                raise AssertionError(f"{mapping_id} candidate missed unsupported-scope objective: {row}")
+            if row.get("policy_id") != "deterministic_minimize_unsupported_scope_diagnostics_v1":
+                raise AssertionError(f"{mapping_id} candidate missed unsupported-scope policy id: {row}")
+            if row.get("ordering_rule") != "unsupported_scope_diagnostics_score_then_candidate_id":
+                raise AssertionError(f"{mapping_id} candidate missed unsupported-scope ordering rule: {row}")
+            if row.get("unsupported_scope_diagnostics_count") != expected_counts[mapping_id]:
+                raise AssertionError(f"{mapping_id} candidate missed diagnostic count: {row}")
+            metric_records = row.get("metric_records", "")
+            expected_metric = (
+                "unsupported_scope_diagnostics_count="
+                f"{expected_counts[mapping_id]}"
+            )
+            if expected_metric not in metric_records:
+                raise AssertionError(f"{mapping_id} candidate missed diagnostic metric: {row}")
+            if unsupported_scope_ledger.name not in row.get("input_artifacts", ""):
+                raise AssertionError(f"{mapping_id} candidate missed ledger provenance: {row}")
+
     return 0
 
 

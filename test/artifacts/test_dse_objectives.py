@@ -48,6 +48,13 @@ EXPECTED = {
         "hardware",
         "leakage_power_mw",
     ),
+    "minimize_unsupported_scope_diagnostics": (
+        "minimize",
+        "count",
+        "unsupported_scope_diagnostics_score_then_candidate_id",
+        "candidate",
+        "unsupported_scope_diagnostics_count",
+    ),
     "minimize_energy": ("minimize", "nJ", "energy_score_then_candidate_id", "workload", "energy_nj"),
     "minimize_power": ("minimize", "nJ", "energy_score_then_candidate_id", "workload", "energy_nj"),
 }

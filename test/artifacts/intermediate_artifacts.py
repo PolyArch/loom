@@ -354,6 +354,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         ),
         status_columns=("selection_status",),
         extra_columns=(
+            "unsupported_scope_diagnostics_count",
             "candidate_kind",
             "input_artifacts",
             "input_artifact_fingerprints",
@@ -386,6 +387,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "",
             "blocked",
+            "",
             "",
             "",
             "",
@@ -906,6 +908,25 @@ def parse_dse_metric_records(
     return parsed
 
 
+def dse_candidate_metric_id(row: dict[str, str], name: str) -> str | None:
+    workload = row.get("workload", "")
+    hardware = row.get("hardware", "")
+    mapping_id = row.get("mapping_id", "")
+    if name in {"cgra_sim_cycles", "energy_nj", "throughput_items_per_s", "performance_per_watt", "performance_per_area"}:
+        if not workload:
+            return None
+        return f"metric::{workload}::{name}"
+    if name in {"frequency_mhz", "area_um2", "dynamic_power_mw", "leakage_power_mw"}:
+        if not hardware:
+            return None
+        return f"metric::{hardware}::{name}"
+    if name == "unsupported_scope_diagnostics_count":
+        if not workload or not hardware or not mapping_id:
+            return None
+        return f"metric::{workload}::{hardware}::{mapping_id}::{name}"
+    return None
+
+
 def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics: list[str], row_index: int) -> None:
     statuses = dict(row_statuses(schema, row))
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
@@ -984,6 +1005,28 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
                     or abs(row_value - metric_value) > 0.001
                 ):
                     diagnostics.append(f"row {row_index}: metric_records {metric} does not match row value")
+        diagnostic_count = row.get("unsupported_scope_diagnostics_count", "")
+        if objective == "minimize_unsupported_scope_diagnostics":
+            if diagnostic_count == "":
+                diagnostics.append(
+                    f"row {row_index}: unsupported-scope objective needs diagnostic count evidence"
+                )
+            elif numeric_value(row, "unsupported_scope_diagnostics_count") is None:
+                diagnostics.append(
+                    f"row {row_index}: unsupported_scope_diagnostics_count is not numeric"
+                )
+            metric_value = parsed_metrics.get("unsupported_scope_diagnostics_count")
+            if metric_value is None:
+                diagnostics.append(
+                    f"row {row_index}: metric_records missing unsupported_scope_diagnostics_count"
+                )
+            elif numeric_value(parsed_metrics, "unsupported_scope_diagnostics_count") != numeric_value(
+                row,
+                "unsupported_scope_diagnostics_count",
+            ):
+                diagnostics.append(
+                    f"row {row_index}: metric_records unsupported_scope_diagnostics_count does not match row value"
+                )
     if schema.kind == "pnr_mapping" and statuses.get("status") == "pass":
         placed_records = numeric_value(row, "placed_records")
         unrouted_edges = numeric_value(row, "unrouted_edges")
@@ -3008,7 +3051,15 @@ def dse_report_referenced_metric_ids(
     data: dict[str, object],
 ) -> set[str]:
     metric_ids: set[str] = set()
+    candidate_identities: list[str] = []
     report_identities: list[str] = []
+    candidate_references = data.get("referenced_dse_candidate_artifact_identities")
+    if isinstance(candidate_references, list):
+        candidate_identities.extend(
+            identity
+            for identity in candidate_references
+            if isinstance(identity, str) and identity
+        )
     for key in (
         "referenced_workload_report_bundle_identities",
         "referenced_hardware_candidate_report_bundle_identities",
@@ -3020,6 +3071,21 @@ def dse_report_referenced_metric_ids(
                 for identity in identities
                 if isinstance(identity, str) and identity
             )
+    for identity in candidate_identities:
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is None:
+            continue
+        try:
+            with resolved.open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        except OSError:
+            continue
+        for row in rows:
+            parsed_metrics = parse_dse_metric_records(row.get("metric_records", ""), [], 0)
+            for name in parsed_metrics:
+                metric_id = dse_candidate_metric_id(row, name)
+                if metric_id is not None:
+                    metric_ids.add(metric_id)
     for identity in report_identities:
         resolved = resolve_artifact_identity_reference(path, identity)
         if resolved is None:

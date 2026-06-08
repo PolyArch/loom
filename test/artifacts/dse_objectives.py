@@ -65,6 +65,13 @@ OBJECTIVE_SPECS = {
         metric_entity="hardware",
         metric_name="leakage_power_mw",
     ),
+    "minimize_unsupported_scope_diagnostics": DseObjectiveSpec(
+        direction="minimize",
+        units="count",
+        ordering_rule="unsupported_scope_diagnostics_score_then_candidate_id",
+        metric_entity="candidate",
+        metric_name="unsupported_scope_diagnostics_count",
+    ),
     "minimize_energy": DseObjectiveSpec(
         direction="minimize",
         units="nJ",
@@ -108,11 +115,28 @@ def objective_semantics(objective: str) -> tuple[str, str] | None:
     return spec.direction, spec.units
 
 
-def metric_id_for_objective(objective: str, workload: str, hardware: str) -> str | None:
+def metric_id_for_objective(
+    objective: str,
+    workload: str,
+    hardware: str,
+    mapping_id: str = "",
+) -> str | None:
     spec = objective_spec(objective)
     if spec is None:
         return None
-    entity = workload if spec.metric_entity == "workload" else hardware
+    if spec.metric_entity == "workload":
+        if not workload:
+            return None
+        return f"metric::{workload}::{spec.metric_name}"
+    if spec.metric_entity == "hardware":
+        if not hardware:
+            return None
+        return f"metric::{hardware}::{spec.metric_name}"
+    if spec.metric_entity == "candidate":
+        if not workload or not hardware or not mapping_id:
+            return None
+        return f"metric::{workload}::{hardware}::{mapping_id}::{spec.metric_name}"
+    entity = workload or hardware
     if not entity:
         return None
     return f"metric::{entity}::{spec.metric_name}"
