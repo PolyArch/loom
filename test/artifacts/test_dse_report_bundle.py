@@ -2022,6 +2022,63 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched workload hardware unexpectedly passed audit")
 
+        unrelated_workload_report = out_dir / "unrelated-workload-report-bundle.json"
+        unrelated_workload_report_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
+        unrelated_workload_report_data["bundle_id"] = (
+            "workload::other_workload::shared_reduction_adg::vecsum__shared_reduction_adg"
+        )
+        unrelated_workload_report_data["workload"] = "other_workload"
+        unrelated_workload_report.write_text(
+            json.dumps(unrelated_workload_report_data, indent=2, sort_keys=True) + "\n"
+        )
+        unrelated_hardware_report = out_dir / "unrelated-hardware-report-bundle.json"
+        unrelated_hardware_report_data = json.loads((out_dir / "hardware-report-bundle.json").read_text())
+        unrelated_hardware_report_data["bundle_id"] = "hardware::other_hardware"
+        unrelated_hardware_report_data["hardware_candidate_identity"] = "other_hardware"
+        unrelated_hardware_report_data["fabric_adg_identity"] = "other_hardware"
+        unrelated_hardware_report.write_text(
+            json.dumps(unrelated_hardware_report_data, indent=2, sort_keys=True) + "\n"
+        )
+        filtered_report = out_dir / "filtered-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(filtered_report),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(unrelated_workload_report),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+                "--artifact",
+                str(unrelated_hardware_report),
+            ],
+            "DSE report bundle with unrelated passing reports",
+        )
+        filtered_data = json.loads(filtered_report.read_text())
+        if filtered_data["referenced_workload_report_bundle_identities"] != ["workload-report-bundle"]:
+            raise AssertionError(f"DSE report should ignore unrelated workload reports: {filtered_data}")
+        if filtered_data["referenced_hardware_candidate_report_bundle_identities"] != ["hardware-report-bundle"]:
+            raise AssertionError(f"DSE report should ignore unrelated hardware reports: {filtered_data}")
+        if sorted(filtered_data["input_artifact_fingerprints"]) != [
+            "dse-candidate-summary",
+            "hardware-report-bundle",
+            "workload-report-bundle",
+        ]:
+            raise AssertionError(f"DSE report should fingerprint only selected report inputs: {filtered_data}")
+        summary_ids = [
+            summary.get("workload_report_bundle_identity")
+            for summary in filtered_data.get("runtime_evidence_summaries", [])
+            if isinstance(summary, dict)
+        ]
+        if summary_ids != ["workload-report-bundle"]:
+            raise AssertionError(f"DSE report should summarize only selected workload runtime evidence: {filtered_data}")
+
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
         custom_name_report = out_dir / "custom-name-dse-report-bundle.json"

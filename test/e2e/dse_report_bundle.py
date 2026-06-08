@@ -185,9 +185,40 @@ def candidate_record(row: dict[str, str]) -> dict[str, object]:
     }
 
 
-def report_bundle_references(paths: list[Path], expected_kind: str) -> tuple[list[str], dict[str, str], list[str]]:
+def report_matches_selected_candidate(
+    data: dict[str, object],
+    selected_row: dict[str, str] | None,
+    expected_kind: str,
+) -> bool:
+    if selected_row is None:
+        return True
+    workload = selected_row.get("workload", "")
+    hardware = selected_row.get("hardware", "")
+    if expected_kind == "workload_report_bundle":
+        report_workload = data.get("workload")
+        report_hardware = data.get("selected_hardware_candidate_identity")
+        if isinstance(report_workload, str) and report_workload != workload:
+            return False
+        if isinstance(report_hardware, str) and report_hardware:
+            return artifact_io_helpers.hardware_matches(report_hardware, hardware)
+        return True
+    if expected_kind == "hardware_report_bundle":
+        for key in ("hardware_candidate_identity", "fabric_adg_identity"):
+            report_hardware = data.get(key)
+            if isinstance(report_hardware, str) and artifact_io_helpers.hardware_matches(report_hardware, hardware):
+                return True
+        return False
+    return True
+
+
+def report_bundle_references(
+    paths: list[Path],
+    expected_kind: str,
+    selected_row: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, str], list[Path], list[str]]:
     ids: list[str] = []
     fingerprints: dict[str, str] = {}
+    selected_paths: list[Path] = []
     diagnostics: list[str] = []
     for path in paths:
         data = read_json(path)
@@ -197,10 +228,13 @@ def report_bundle_references(paths: list[Path], expected_kind: str) -> tuple[lis
         if data.get("report_status") != "pass":
             diagnostics.append(f"{artifact_id(path)} is not a passing report bundle")
             continue
+        if not report_matches_selected_candidate(data, selected_row, expected_kind):
+            continue
         identity = artifact_id(path)
         ids.append(identity)
         fingerprints[identity] = artifact_fingerprint(path)
-    return ids, fingerprints, diagnostics
+        selected_paths.append(path)
+    return ids, fingerprints, selected_paths, diagnostics
 
 
 def input_artifact_references(paths: list[Path]) -> tuple[list[str], dict[str, str]]:
@@ -233,14 +267,17 @@ def runtime_evidence_summaries(paths: list[Path]) -> list[dict[str, object]]:
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     selected = selected_candidate_row(grouped.get("dse_candidate", []))
+    selected_row = selected[1] if selected is not None else None
     candidate_ids, candidate_fingerprints = input_artifact_references(grouped.get("dse_candidate", []))
-    workload_report_ids, workload_fingerprints, workload_diagnostics = report_bundle_references(
+    workload_report_ids, workload_fingerprints, workload_report_paths, workload_diagnostics = report_bundle_references(
         grouped.get("workload_report_bundle", []),
         "workload_report_bundle",
+        selected_row,
     )
-    hardware_report_ids, hardware_fingerprints, hardware_diagnostics = report_bundle_references(
+    hardware_report_ids, hardware_fingerprints, _, hardware_diagnostics = report_bundle_references(
         grouped.get("hardware_report_bundle", []),
         "hardware_report_bundle",
+        selected_row,
     )
     input_artifact_fingerprints = {
         **candidate_fingerprints,
@@ -263,7 +300,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "referenced_workload_report_bundle_identities": workload_report_ids,
             "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
             "input_artifact_fingerprints": input_artifact_fingerprints,
-            "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
+            "runtime_evidence_summaries": runtime_evidence_summaries(workload_report_paths),
             "selected_policy_id": "",
             "policy_configuration": {},
             "candidate_ordering_rule": "",
@@ -272,7 +309,6 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "diagnostics": diagnostics,
         }
 
-    _, selected_row = selected
     workload_metric_ids = workload_metric_ids_by_workload(grouped.get("workload_report_bundle", []))
     candidates: list[dict[str, object]] = []
     selected_candidates: list[str] = []
@@ -323,7 +359,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "referenced_workload_report_bundle_identities": workload_report_ids,
         "referenced_hardware_candidate_report_bundle_identities": hardware_report_ids,
         "input_artifact_fingerprints": input_artifact_fingerprints,
-        "runtime_evidence_summaries": runtime_evidence_summaries(grouped.get("workload_report_bundle", [])),
+        "runtime_evidence_summaries": runtime_evidence_summaries(workload_report_paths),
         "selected_policy_id": policy_id,
         "policy_configuration": {
             "policy_kind": "deterministic",
