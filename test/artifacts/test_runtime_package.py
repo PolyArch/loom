@@ -441,6 +441,57 @@ def main() -> int:
         if simulator_reports != {"vecsum-cgra-sim-report", "sim-comparison-report"}:
             raise AssertionError(f"unexpected simulator report identities: {data}")
 
+        cgra_with_dfg_package = out_dir / "cgra-with-dfg-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--output",
+                str(cgra_with_dfg_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA-sim runtime package with DFG-sim report unexpectedly passed")
+        cgra_with_dfg_data = json.loads(cgra_with_dfg_package.read_text())
+        if cgra_with_dfg_data.get("status") != "blocked":
+            raise AssertionError(f"CGRA-sim package with DFG report should be blocked: {cgra_with_dfg_data}")
+        if "vecsum-dfg-sim-report" in cgra_with_dfg_data.get("input_artifact_fingerprints", {}):
+            raise AssertionError(f"CGRA-sim package should not consume DFG report fingerprint: {cgra_with_dfg_data}")
+        if any(
+            isinstance(descriptor, dict) and descriptor.get("name") == "dfg_sim_report"
+            for descriptor in cgra_with_dfg_data.get("argument_descriptors", [])
+        ):
+            raise AssertionError(f"CGRA-sim package should not include DFG report argument: {cgra_with_dfg_data}")
+        records = cgra_with_dfg_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "unsupported_target_profile"
+            and "does not consume DFG-sim reports" in record.get("message", "")
+            for record in records
+        ):
+            raise AssertionError(f"CGRA-sim package should diagnose extra DFG report: {cgra_with_dfg_data}")
+        cgra_with_dfg_audit = out_dir / "cgra-with-dfg-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(cgra_with_dfg_audit),
+                str(cgra_with_dfg_package),
+            ],
+            "blocked CGRA-sim runtime package with ignored DFG report audit",
+        )
+
         audit = out_dir / "runtime-package-audit-summary.json"
         artifact_test_common.require_success(
             repo,

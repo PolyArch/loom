@@ -481,6 +481,8 @@ def build_package(
             diagnostics.append("CGRA-sim target requires mapping artifact")
         elif string_field(mapping, "status") != "pass":
             diagnostics.append("PnR mapping artifact is not passing")
+        if dfg_path is not None:
+            diagnostics.append("CGRA-sim target does not consume DFG-sim reports")
         if cgra_path is None:
             diagnostics.append("CGRA-sim target requires CGRA-sim report")
         elif string_field(cgra, "status") != "pass":
