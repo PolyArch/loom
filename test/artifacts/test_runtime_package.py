@@ -1110,6 +1110,26 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched CGRA report reference unexpectedly passed audit")
 
+        stale_mapping_hardware = out_dir / "stale-mapping-hardware-runtime-package.json"
+        stale_mapping_hardware_data = json.loads(package.read_text())
+        stale_mapping_hardware_data["fabric_adg_identity"] = "other_hardware"
+        stale_mapping_hardware_data["work_package_metadata"]["fabric_adg_identity"] = "other_hardware"
+        stale_mapping_hardware_data["runtime_report"]["fabric_adg_identity"] = "other_hardware"
+        stale_mapping_hardware.write_text(json.dumps(stale_mapping_hardware_data, indent=2, sort_keys=True) + "\n")
+        stale_mapping_hardware_audit = out_dir / "stale-mapping-hardware-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_mapping_hardware_audit),
+                str(stale_mapping_hardware),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched mapping hardware unexpectedly passed audit")
+
         blocked_mapping = out_dir / "blocked-pnr-mapping.json"
         blocked_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
         blocked_mapping_data["status"] = "blocked"

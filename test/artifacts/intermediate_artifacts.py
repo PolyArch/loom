@@ -3851,6 +3851,30 @@ def validate_runtime_package_simulator_report_references(
             diagnostics.append(f"runtime package simulator report {identity!r} has wrong kind")
 
 
+def validate_runtime_package_mapping_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("status") != "pass":
+        return
+    mapping_identity = data.get("selected_mapping_artifact_identity")
+    if not isinstance(mapping_identity, str) or not mapping_identity:
+        return
+    mapping = read_resolved_json_reference(path, mapping_identity)
+    if mapping is None:
+        return
+    if mapping.get("kind") != "pnr_mapping":
+        diagnostics.append("runtime package selected mapping reference has wrong kind")
+        return
+    if mapping.get("status") != "pass":
+        diagnostics.append("runtime package selected mapping reference is not passing")
+    if mapping.get("workload") != data.get("workload"):
+        diagnostics.append("runtime package selected mapping workload does not match package")
+    if not hardware_identity_matches(mapping.get("hardware"), data.get("fabric_adg_identity")):
+        diagnostics.append("runtime package selected mapping hardware does not match package")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -4413,6 +4437,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         )
         validate_runtime_package_sim_comparison_reference(path, data, diagnostics)
         validate_runtime_package_simulator_report_references(path, data, diagnostics)
+        validate_runtime_package_mapping_reference(path, data, diagnostics)
         for identity in input_fingerprints:
             if identity not in artifact_input_references:
                 diagnostics.append(
