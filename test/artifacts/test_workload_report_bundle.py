@@ -435,6 +435,85 @@ def main() -> int:
                 f"workload report should preserve selected runtime evidence: {filtered_blocked_runtime_data}"
             )
 
+        blocked_matching_runtime_package = out_dir / "blocked-matching-runtime-package.json"
+        blocked_matching_runtime_data = json.loads((out_dir / "runtime-package.json").read_text())
+        blocked_matching_runtime_data["status"] = "blocked"
+        blocked_matching_runtime_data["diagnostics"] = ["matching runtime package is blocked"]
+        blocked_matching_runtime_data["diagnostic_records"] = [
+            {
+                "diagnostic_id": "runtime-package::1",
+                "diagnostic_class": "runtime_configuration_failure",
+                "component": "runtime_package",
+                "severity": "error",
+                "message": "matching runtime package is blocked",
+                "failure_domain": "runtime_configuration",
+                "source_provenance": "test-app-fixture::vecsum::default",
+                "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
+            }
+        ]
+        blocked_matching_runtime_data["runtime_report"]["diagnostic_records"] = list(
+            blocked_matching_runtime_data["diagnostic_records"]
+        )
+        blocked_matching_runtime_package.write_text(
+            json.dumps(blocked_matching_runtime_data, indent=2, sort_keys=True) + "\n"
+        )
+        filtered_matching_runtime_report = out_dir / "filtered-matching-runtime-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_matching_runtime_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(blocked_matching_runtime_package),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with blocked matching runtime package before passing package",
+        )
+        filtered_matching_runtime_data = json.loads(filtered_matching_runtime_report.read_text())
+        filtered_matching_runtime_identities = filtered_matching_runtime_data.get("optional_artifact_identities", {})
+        if filtered_matching_runtime_identities.get("runtime_package") != "runtime-package":
+            raise AssertionError(
+                f"workload report should prefer passing matching runtime package: "
+                f"{filtered_matching_runtime_data}"
+            )
+        if "blocked-matching-runtime-package" in filtered_matching_runtime_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint shadowed blocked runtime package: "
+                f"{filtered_matching_runtime_data}"
+            )
+        if filtered_matching_runtime_data["report_status"] != "pass":
+            raise AssertionError(
+                f"workload report should stay passing when a passing runtime package is available: "
+                f"{filtered_matching_runtime_data}"
+            )
+
         unrelated_mapping_artifact = out_dir / "unrelated-pnr-mapping.json"
         unrelated_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
         unrelated_mapping_data["workload"] = "other_workload"

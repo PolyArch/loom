@@ -293,15 +293,20 @@ def matching_runtime_package_path(
     hardware: str,
     mapping_identity: str,
 ) -> Path | None:
+    matches: list[tuple[Path, dict[str, object]]] = []
     for path in paths:
+        data = read_json(path)
         if runtime_package_matches(
-            read_json(path),
+            data,
             workload=workload,
             hardware=hardware,
             mapping_identity=mapping_identity,
         ):
+            matches.append((path, data))
+    for path, data in matches:
+        if data.get("status") == "pass":
             return path
-    return None
+    return matches[0][0] if matches else None
 
 
 def build_bundle(paths: list[Path]) -> dict[str, object]:
