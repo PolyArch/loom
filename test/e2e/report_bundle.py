@@ -59,6 +59,25 @@ def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> dic
     return None
 
 
+def dfg_report_matches(data: dict[str, object], workload: str, graph: str) -> bool:
+    if data.get("kind") != "dfg_sim_report":
+        return False
+    report_workload = data.get("workload")
+    if isinstance(report_workload, str) and report_workload != workload:
+        return False
+    report_graph = data.get("graph")
+    if isinstance(report_graph, str) and report_graph and graph and report_graph != graph:
+        return False
+    return True
+
+
+def matching_dfg_report_path(paths: list[Path], workload: str, graph: str) -> Path | None:
+    for path in paths:
+        if dfg_report_matches(read_json(path), workload, graph):
+            return path
+    return None
+
+
 def cgra_report_matches(data: dict[str, object], workload: str, hardware: str, mapping_id: str) -> bool:
     if data.get("kind") != "cgra_sim_report":
         return False
@@ -291,7 +310,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     source_path = first_path(grouped, "source_compat")
     compiler_path = first_path(grouped, "compiler_pipeline")
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
-    dfg_path = first_path(grouped, "dfg_sim_report")
+    mapping_artifact = read_json(mapping_path) if mapping_path is not None else {}
+    dfg_path = matching_dfg_report_path(
+        grouped.get("dfg_sim_report", []),
+        workload,
+        str(mapping_artifact.get("graph", "")),
+    )
     cgra_path = matching_cgra_report_path(grouped.get("cgra_sim_report", []), workload, hardware, mapping_id)
     comparison_path = matching_comparison_report_path(
         grouped.get("sim_comparison_report", []),

@@ -357,6 +357,62 @@ def main() -> int:
                 f"workload report should summarize only selected runtime evidence: {filtered_runtime_data}"
             )
 
+        unrelated_dfg_report = out_dir / "unrelated-dfg-sim-report.json"
+        unrelated_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
+        unrelated_dfg_data["workload"] = "other_workload"
+        unrelated_dfg_data["graph"] = "other_graph"
+        unrelated_dfg_data["optimistic_cycles"] = 999999
+        unrelated_dfg_report.write_text(json.dumps(unrelated_dfg_data, indent=2, sort_keys=True) + "\n")
+        filtered_dfg_report = out_dir / "filtered-dfg-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_dfg_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(unrelated_dfg_report),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unrelated DFG report",
+        )
+        filtered_dfg_data = json.loads(filtered_dfg_report.read_text())
+        filtered_dfg_identities = filtered_dfg_data.get("optional_artifact_identities", {})
+        if filtered_dfg_identities.get("dfg_sim_report") != "vecsum-dfg-sim-report":
+            raise AssertionError(f"workload report should ignore unrelated DFG report: {filtered_dfg_data}")
+        filtered_dfg_metrics = metric_by_id(filtered_dfg_data.get("metric_records", []))
+        filtered_dfg_metric = filtered_dfg_metrics.get("metric::vecsum::dfg_sim_cycles")
+        if filtered_dfg_metric is None or filtered_dfg_metric.get("value") != 579:
+            raise AssertionError(f"workload report should use selected DFG cycles: {filtered_dfg_data}")
+        if "unrelated-dfg-sim-report" in filtered_dfg_data["input_artifact_fingerprints"]:
+            raise AssertionError(f"workload report should not fingerprint unrelated DFG report: {filtered_dfg_data}")
+
         unrelated_cgra_report = out_dir / "unrelated-cgra-sim-report.json"
         unrelated_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
         unrelated_cgra_data["workload"] = "other_workload"
