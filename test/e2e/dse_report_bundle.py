@@ -247,7 +247,7 @@ def report_bundle_references(
         if not report_matches_selected_candidate(data, selected_row, expected_kind):
             continue
         selected_paths.append(path)
-    selected_paths = sorted(selected_paths, key=artifact_id)[:1]
+    selected_paths = artifact_io_helpers.select_by_artifact_id(selected_paths, lambda path: path)
     ids: list[str] = []
     fingerprints: dict[str, str] = {}
     for path in selected_paths:

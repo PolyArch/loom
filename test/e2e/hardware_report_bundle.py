@@ -48,7 +48,7 @@ def matching_fpa_rows(paths: list[Path], hardware: str) -> list[tuple[Path, dict
                 continue
             if hardware_matches(row.get("hardware", ""), hardware):
                 rows.append((path, row))
-    return sorted(rows, key=lambda entry: artifact_id(entry[0]))[:1]
+    return artifact_io_helpers.select_by_artifact_id(rows, lambda entry: entry[0])
 
 
 def numeric(row: dict[str, str], key: str) -> float:

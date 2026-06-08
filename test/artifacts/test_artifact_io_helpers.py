@@ -81,6 +81,12 @@ def main() -> int:
             raise AssertionError(f"group_paths should use artifact kind detection: {grouped}")
         if artifact_io_helpers.first_path(grouped, "runtime_package") is not None:
             raise AssertionError("first_path should return None when a kind is absent")
+        selected = artifact_io_helpers.select_by_artifact_id(
+            [("later", out_dir / "z-workload-report-bundle.json"), ("earlier", out_dir / "a-workload-report-bundle.json")],
+            lambda item: item[1],
+        )
+        if selected != [("earlier", out_dir / "a-workload-report-bundle.json")]:
+            raise AssertionError(f"select_by_artifact_id should choose deterministic artifact identity: {selected}")
 
         if not artifact_io_helpers.hardware_matches("fabric::shared_reduction_adg", "shared_reduction_adg"):
             raise AssertionError("hardware_matches should accept namespace-stripped hardware identities")

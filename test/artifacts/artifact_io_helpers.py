@@ -42,6 +42,10 @@ def first_path(grouped: dict[str, list[Path]], kind: str) -> Path | None:
     return paths[0] if paths else None
 
 
+def select_by_artifact_id(items: list, path_for_item, limit: int = 1) -> list:
+    return sorted(items, key=lambda item: intermediate_artifacts.artifact_id_for_path(path_for_item(item)))[:limit]
+
+
 def hardware_matches(candidate: str, hardware: str) -> bool:
     return candidate == hardware or candidate.rsplit("::", 1)[-1] == hardware
 
