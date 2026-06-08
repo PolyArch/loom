@@ -479,6 +479,82 @@ def main() -> int:
                 "manifest should only connect DSE report bundles to explicitly referenced report bundles: "
                 f"{multi_bundle_edges}"
             )
+
+        relative_dir = out_dir / "relative-paths"
+        relative_nested_dir = relative_dir / "nested"
+        relative_nested_dir.mkdir(parents=True)
+        relative_workload = relative_dir / "workload-report-bundle.json"
+        relative_hardware = relative_dir / "hardware-report-bundle.json"
+        relative_dse = relative_nested_dir / "dse-report-bundle.json"
+        write_minimal_report_bundle(
+            relative_workload,
+            kind="workload_report_bundle",
+            identity="workload::relative",
+        )
+        write_minimal_report_bundle(
+            relative_hardware,
+            kind="hardware_report_bundle",
+            identity="hardware::relative",
+        )
+        relative_dse.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "dse_report_bundle",
+                    "dse_run_id": "dse::relative",
+                    "referenced_workload_report_bundle_identities": ["workload-report-bundle"],
+                    "referenced_hardware_candidate_report_bundle_identities": ["hardware-report-bundle"],
+                    "report_status": "pass",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        relative_manifest = relative_dir / "relative-full-stack-artifact-manifest.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                "--artifact",
+                str(relative_workload),
+                "--artifact",
+                str(relative_hardware),
+                "--artifact",
+                str(relative_dse),
+                "--output",
+                str(relative_manifest),
+            ],
+        )
+        relative_data = json.loads(relative_manifest.read_text())
+        relative_logical_paths = {
+            artifact["id"]: artifact.get("logical_path")
+            for artifact in relative_data.get("artifacts", [])
+        }
+        if relative_logical_paths.get("dse-report-bundle") != "nested/dse-report-bundle.json":
+            raise AssertionError(
+                "nested manifest artifact should keep a relative logical path: "
+                f"{relative_logical_paths}"
+            )
+        relative_audit = relative_dir / "relative-artifact-audit-summary.json"
+        result = run_raw(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(relative_audit),
+                str(relative_manifest),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "manifest audit should resolve nested logical paths from the manifest directory\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\n"
+                f"audit:\n{relative_audit.read_text() if relative_audit.is_file() else '<missing>'}"
+            )
+
         extra_edge_manifest = out_dir / "extra-edge-full-stack-artifact-manifest.json"
         extra_edge_data = dict(multi_bundle_data)
         extra_edge_data["run_id"] = "extra-edge"

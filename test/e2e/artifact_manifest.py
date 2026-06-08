@@ -48,7 +48,14 @@ def discover_artifacts(explicit: list[str]) -> list[Path]:
     )
 
 
-def build_manifest(paths: list[Path]) -> dict[str, object]:
+def logical_artifact_path(path: Path, manifest_output: Path) -> str:
+    try:
+        return path.resolve().relative_to(manifest_output.parent.resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
+def build_manifest(paths: list[Path], manifest_output: Path) -> dict[str, object]:
     artifacts = []
     diagnostics = []
     seen_ids = set()
@@ -59,7 +66,7 @@ def build_manifest(paths: list[Path]) -> dict[str, object]:
     for path in paths:
         kind = intermediate_artifacts.artifact_kind_for_path(path)
         identity = artifact_id(path)
-        logical_path = path.name
+        logical_path = logical_artifact_path(path, manifest_output)
         if not path.is_file():
             diagnostics.append({"status": "blocked", "message": f"missing artifact: {identity}"})
             continue
@@ -123,7 +130,7 @@ def main(argv: list[str]) -> int:
         intermediate_artifacts.write_json("artifact_manifest", intermediate_artifacts.output_path(args.output))
         return 0
     output.parent.mkdir(parents=True, exist_ok=True)
-    manifest = build_manifest(paths)
+    manifest = build_manifest(paths, output)
     output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return 1 if manifest["diagnostics"] else 0
 
