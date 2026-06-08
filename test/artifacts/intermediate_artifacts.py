@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 import dse_objectives
+import runtime_evidence_helpers
 
 
 BASE_STATUSES = {"pass", "fail", "unsupported", "skipped", "blocked", "not_run"}
@@ -3431,6 +3432,38 @@ def validate_workload_runtime_evidence_references(
             )
 
 
+def validate_workload_runtime_package_projection(
+    path: Path,
+    data: dict[str, object],
+    runtime_evidence: object,
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass" or not isinstance(runtime_evidence, dict):
+        return
+    optional_identities = data.get("optional_artifact_identities")
+    if not isinstance(optional_identities, dict):
+        return
+    runtime_package_identity = optional_identities.get("runtime_package")
+    package = read_resolved_json_reference(path, runtime_package_identity)
+    if package is None:
+        return
+    if package.get("kind") != "runtime_package":
+        diagnostics.append("workload report bundle runtime package reference has wrong kind")
+        return
+    if package.get("status") != "pass":
+        diagnostics.append("workload report bundle runtime package reference is not passing")
+        return
+    expected = runtime_evidence_helpers.runtime_evidence_from_package(
+        package,
+        runtime_package_identity if isinstance(runtime_package_identity, str) else "",
+    )
+    for key, expected_value in expected.items():
+        if runtime_evidence.get(key) != expected_value:
+            diagnostics.append(
+                f"workload report bundle runtime_evidence {key} does not match referenced runtime package"
+            )
+
+
 def validate_hardware_report_input_fingerprints(
     path: Path,
     data: dict[str, object],
@@ -4454,6 +4487,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     "workload report bundle runtime host_interface source_provenance does not match runtime input"
                 )
         validate_workload_runtime_evidence_references(
+            data,
+            runtime_evidence,
+            diagnostics,
+        )
+        validate_workload_runtime_package_projection(
+            path,
             data,
             runtime_evidence,
             diagnostics,

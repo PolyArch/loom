@@ -969,6 +969,43 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report without runtime package input reference unexpectedly passed audit")
+
+        stale_runtime_package_projection = out_dir / "stale-runtime-package-projection-workload-report-bundle.json"
+        stale_runtime_package = out_dir / "stale-runtime-package.json"
+        stale_runtime_package_data = json.loads((out_dir / "runtime-package.json").read_text())
+        stale_runtime_package_data["host_wrapper_identity"] = "runtime-wrapper::vecsum::other"
+        stale_runtime_package_data["runtime_report"]["host_wrapper_identity"] = "runtime-wrapper::vecsum::other"
+        stale_runtime_package.write_text(json.dumps(stale_runtime_package_data, indent=2, sort_keys=True) + "\n")
+        stale_runtime_package_projection_data = json.loads(report.read_text())
+        stale_runtime_package_projection_data["optional_artifact_identities"]["runtime_package"] = (
+            "stale-runtime-package"
+        )
+        stale_runtime_package_projection_data["runtime_evidence"]["runtime_package_identity"] = (
+            "stale-runtime-package"
+        )
+        stale_runtime_package_projection_data["input_artifact_fingerprints"].pop("runtime-package", None)
+        stale_runtime_package_projection_data["input_artifact_fingerprints"][
+            "stale-runtime-package"
+        ] = artifact_test_common.fingerprint(stale_runtime_package)
+        stale_runtime_package_projection.write_text(
+            json.dumps(stale_runtime_package_projection_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_runtime_package_projection_audit = (
+            out_dir / "stale-runtime-package-projection-workload-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_runtime_package_projection_audit),
+                str(stale_runtime_package_projection),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with stale runtime package projection unexpectedly passed audit")
+
         mismatched_runtime_input_report = out_dir / "mismatched-runtime-input-workload-report-bundle.json"
         mismatched_runtime_input_data = json.loads(report.read_text())
         mismatched_runtime_input_identity = "test-app-fixture::other::default"
