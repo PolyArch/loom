@@ -167,6 +167,17 @@
       "expected_executables": ["compare_swap_func", "compare_swap_inline"]
     },
     {
+      "case": "compact",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["filter", "integer", "control", "store"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["compact_func", "compact_inline"]
+    },
+    {
       "case": "convolve_1d",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

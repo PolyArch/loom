@@ -26,6 +26,7 @@ EXPECTED_CASES = {
     "clz",
     "col2im",
     "compare_swap",
+    "compact",
     "convolve_1d",
     "convolve_1d_same",
     "conv2d",
