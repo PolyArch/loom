@@ -2000,6 +2000,13 @@ def main() -> int:
             != "runtime-policy::dma-window::vecsum"
         ):
             raise AssertionError(f"runtime configuration should preserve custom policy identity: {named_custom_data}")
+        expected_custom_configuration_id = (
+            "runtime-config::report_only::custom::host_wait::runtime-policy::dma-window::vecsum"
+        )
+        if named_custom_data.get("runtime_configuration", {}).get("configuration_id") != (
+            expected_custom_configuration_id
+        ):
+            raise AssertionError(f"runtime configuration id should identify custom policy: {named_custom_data}")
         custom_descriptors = named_custom_data.get("memory_descriptors", [])
         if not custom_descriptors or custom_descriptors[0].get("custom_data_movement_policy_identity") != (
             "runtime-policy::dma-window::vecsum"

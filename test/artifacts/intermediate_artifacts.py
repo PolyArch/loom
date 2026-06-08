@@ -1817,10 +1817,13 @@ def validate_runtime_configuration(
     ):
         if not isinstance(value.get(key), str):
             diagnostics.append(f"runtime package runtime_configuration lacks {key}")
+    custom_identity = value.get("custom_data_movement_policy_identity")
     expected_configuration_id = (
         f"runtime-config::{data.get('fallback_policy')}::"
         f"{data.get('data_movement_policy')}::{data.get('synchronization_mode')}"
     )
+    if data.get("data_movement_policy") == "custom" and isinstance(custom_identity, str) and custom_identity:
+        expected_configuration_id = f"{expected_configuration_id}::{custom_identity}"
     if value.get("configuration_id") != expected_configuration_id:
         diagnostics.append("runtime package runtime_configuration configuration_id does not match policy fields")
     expected_pairs = (
@@ -1832,7 +1835,6 @@ def validate_runtime_configuration(
     for key, expected in expected_pairs:
         if value.get(key) != expected:
             diagnostics.append(f"runtime package runtime_configuration {key} does not match package")
-    custom_identity = value.get("custom_data_movement_policy_identity")
     if data.get("data_movement_policy") == "custom":
         if not isinstance(custom_identity, str) or not custom_identity:
             diagnostics.append(
@@ -2479,10 +2481,13 @@ def validate_runtime_evidence_configuration(
     ):
         if not isinstance(value.get(key), str):
             diagnostics.append(f"{label} runtime_configuration lacks {key}")
+    custom_identity = value.get("custom_data_movement_policy_identity")
     expected_configuration_id = (
         f"runtime-config::{evidence.get('fallback_policy')}::"
         f"{evidence.get('data_movement_policy')}::{evidence.get('synchronization_mode')}"
     )
+    if evidence.get("data_movement_policy") == "custom" and isinstance(custom_identity, str) and custom_identity:
+        expected_configuration_id = f"{expected_configuration_id}::{custom_identity}"
     if value.get("configuration_id") != expected_configuration_id:
         diagnostics.append(f"{label} runtime_configuration configuration_id does not match runtime evidence")
     expected_pairs = (
@@ -2494,7 +2499,6 @@ def validate_runtime_evidence_configuration(
     for key, expected in expected_pairs:
         if value.get(key) != expected:
             diagnostics.append(f"{label} runtime_configuration {key} does not match runtime evidence")
-    custom_identity = value.get("custom_data_movement_policy_identity")
     if evidence.get("data_movement_policy") == "custom":
         if not isinstance(custom_identity, str) or not custom_identity:
             diagnostics.append(f"{label} runtime_configuration lacks custom_data_movement_policy_identity")

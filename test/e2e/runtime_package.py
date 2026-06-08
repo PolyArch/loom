@@ -385,8 +385,11 @@ def runtime_configuration(
     fallback_policy: str,
     synchronization_mode: str,
 ) -> dict[str, str]:
+    configuration_id = f"runtime-config::{fallback_policy}::{data_movement_policy}::{synchronization_mode}"
+    if data_movement_policy == "custom" and custom_data_movement_policy:
+        configuration_id = f"{configuration_id}::{custom_data_movement_policy}"
     configuration = {
-        "configuration_id": f"runtime-config::{fallback_policy}::{data_movement_policy}::{synchronization_mode}",
+        "configuration_id": configuration_id,
         "target_profile_id": target_profile.get("profile_id", ""),
         "data_movement_policy": data_movement_policy,
         "platform_binding_identity": platform_binding,
