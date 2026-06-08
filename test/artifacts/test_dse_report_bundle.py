@@ -2094,6 +2094,44 @@ def main() -> int:
         if summary_ids != ["workload-report-bundle"]:
             raise AssertionError(f"DSE report should summarize only selected workload runtime evidence: {filtered_data}")
 
+        duplicate_workload_report = out_dir / "duplicate-workload-report-bundle.json"
+        duplicate_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
+        duplicate_report = out_dir / "duplicate-filtered-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(duplicate_report),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+                "--artifact",
+                str(duplicate_workload_report),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "DSE report bundle with duplicate matching workload reports",
+        )
+        duplicate_data = json.loads(duplicate_report.read_text())
+        if duplicate_data["referenced_workload_report_bundle_identities"] != ["duplicate-workload-report-bundle"]:
+            raise AssertionError(f"DSE report should deterministically select one workload report: {duplicate_data}")
+        if sorted(duplicate_data["input_artifact_fingerprints"]) != [
+            "dse-candidate-summary",
+            "duplicate-workload-report-bundle",
+            "hardware-report-bundle",
+        ]:
+            raise AssertionError(f"DSE report should fingerprint only the selected workload report: {duplicate_data}")
+        duplicate_summary_ids = [
+            summary.get("workload_report_bundle_identity")
+            for summary in duplicate_data.get("runtime_evidence_summaries", [])
+            if isinstance(summary, dict)
+        ]
+        if duplicate_summary_ids != ["duplicate-workload-report-bundle"]:
+            raise AssertionError(f"DSE report should summarize only the selected workload report: {duplicate_data}")
+
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
         custom_name_report = out_dir / "custom-name-dse-report-bundle.json"

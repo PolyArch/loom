@@ -234,8 +234,6 @@ def report_bundle_references(
     expected_kind: str,
     selected_row: dict[str, str] | None = None,
 ) -> tuple[list[str], dict[str, str], list[Path], list[str]]:
-    ids: list[str] = []
-    fingerprints: dict[str, str] = {}
     selected_paths: list[Path] = []
     diagnostics: list[str] = []
     for path in paths:
@@ -248,10 +246,14 @@ def report_bundle_references(
             continue
         if not report_matches_selected_candidate(data, selected_row, expected_kind):
             continue
+        selected_paths.append(path)
+    selected_paths = sorted(selected_paths, key=artifact_id)[:1]
+    ids: list[str] = []
+    fingerprints: dict[str, str] = {}
+    for path in selected_paths:
         identity = artifact_id(path)
         ids.append(identity)
         fingerprints[identity] = artifact_fingerprint(path)
-        selected_paths.append(path)
     return ids, fingerprints, selected_paths, diagnostics
 
 
