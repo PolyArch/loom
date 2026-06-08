@@ -414,6 +414,63 @@ def main() -> int:
         if "unrelated-cgra-sim-report" in filtered_cgra_data["input_artifact_fingerprints"]:
             raise AssertionError(f"workload report should not fingerprint unrelated CGRA report: {filtered_cgra_data}")
 
+        unrelated_comparison_report = out_dir / "unrelated-sim-comparison-report.json"
+        unrelated_comparison_data = json.loads((out_dir / "sim-comparison-report.json").read_text())
+        unrelated_comparison_data["workload"] = "other_workload"
+        unrelated_comparison_data["mapping_artifact_identity"] = "other-mapping"
+        unrelated_comparison_data["cgra_sim_report_identity"] = "unrelated-cgra-sim-report"
+        unrelated_comparison_data["cgra_sim_cycles"] = 999999
+        unrelated_comparison_report.write_text(json.dumps(unrelated_comparison_data, indent=2, sort_keys=True) + "\n")
+        filtered_comparison_report = out_dir / "filtered-comparison-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_comparison_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(unrelated_comparison_report),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unrelated comparison report",
+        )
+        filtered_comparison_data = json.loads(filtered_comparison_report.read_text())
+        filtered_comparison_identities = filtered_comparison_data.get("optional_artifact_identities", {})
+        if filtered_comparison_identities.get("simulation_comparison_report") != "sim-comparison-report":
+            raise AssertionError(
+                f"workload report should ignore unrelated comparison report: {filtered_comparison_data}"
+            )
+        if "unrelated-sim-comparison-report" in filtered_comparison_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint unrelated comparison report: {filtered_comparison_data}"
+            )
+
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:
             raise AssertionError(f"report should include metric records: {data}")

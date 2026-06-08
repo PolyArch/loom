@@ -130,6 +130,50 @@ def comparison_diagnostics(
     return diagnostics
 
 
+def comparison_report_matches(
+    data: dict[str, object],
+    *,
+    workload: str,
+    dfg_identity: str,
+    cgra_identity: str,
+    mapping_identity: str,
+) -> bool:
+    if data.get("kind") != "sim_comparison_report":
+        return False
+    report_workload = data.get("workload")
+    if isinstance(report_workload, str) and report_workload != workload:
+        return False
+    for key, expected in (
+        ("dfg_sim_report_identity", dfg_identity),
+        ("cgra_sim_report_identity", cgra_identity),
+        ("mapping_artifact_identity", mapping_identity),
+    ):
+        actual = data.get(key)
+        if isinstance(actual, str) and actual and expected and actual != expected:
+            return False
+    return True
+
+
+def matching_comparison_report_path(
+    paths: list[Path],
+    *,
+    workload: str,
+    dfg_identity: str,
+    cgra_identity: str,
+    mapping_identity: str,
+) -> Path | None:
+    for path in paths:
+        if comparison_report_matches(
+            read_json(path),
+            workload=workload,
+            dfg_identity=dfg_identity,
+            cgra_identity=cgra_identity,
+            mapping_identity=mapping_identity,
+        ):
+            return path
+    return None
+
+
 def diagnostic_record(index: int, message: str) -> dict[str, str]:
     return {
         "diagnostic_id": f"workload-report-bundle::{index}",
@@ -249,7 +293,14 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
     dfg_path = first_path(grouped, "dfg_sim_report")
     cgra_path = matching_cgra_report_path(grouped.get("cgra_sim_report", []), workload, hardware, mapping_id)
-    comparison_path = first_path(grouped, "sim_comparison_report")
+    comparison_path = matching_comparison_report_path(
+        grouped.get("sim_comparison_report", []),
+        workload=workload,
+        dfg_identity=artifact_id(dfg_path) if dfg_path is not None else "",
+        cgra_identity=artifact_id(cgra_path) if cgra_path is not None else "",
+        mapping_identity=artifact_id(mapping_path) if mapping_path is not None else "",
+    )
+    comparison_diagnostic_path = comparison_path or first_path(grouped, "sim_comparison_report")
     runtime_path = matching_runtime_package_path(
         grouped.get("runtime_package", []),
         workload=workload,
@@ -262,6 +313,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     dfg_report = read_json(dfg_path) if dfg_path is not None else {}
     cgra_report = read_json(cgra_path) if cgra_path is not None else {}
     comparison_report = read_json(comparison_path) if comparison_path is not None else {}
+    comparison_diagnostic_report = read_json(comparison_diagnostic_path) if comparison_diagnostic_path is not None else {}
     runtime_package = read_json(runtime_path) if runtime_path is not None else {}
     runtime_evidence_data = runtime_evidence(runtime_package, runtime_path)
     runtime_input_identity = runtime_input_identity_from_evidence(runtime_evidence_data, workload)
@@ -288,7 +340,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("simulation comparison report is not passing")
     diagnostics.extend(
         comparison_diagnostics(
-            comparison_report,
+            comparison_diagnostic_report,
             dfg_identity=artifact_id(dfg_path) if dfg_path is not None else "",
             cgra_identity=artifact_id(cgra_path) if cgra_path is not None else "",
             mapping_identity=artifact_id(mapping_path) if mapping_path is not None else "",
