@@ -207,11 +207,24 @@ def main() -> int:
                 descriptor["identity"] = alternate_runtime_input
         for descriptor in launch_descriptor["memory_descriptors"]:
             descriptor["runtime_input_identity"] = alternate_runtime_input
+        dfg_path = out_dir / "vecsum-dfg-sim-report.json"
+        cgra_path = out_dir / "vecsum-cgra-sim-report.json"
         comparison_path = out_dir / "sim-comparison-report.json"
+        original_dfg_text = dfg_path.read_text()
+        original_cgra_text = cgra_path.read_text()
         original_comparison_text = comparison_path.read_text()
+        alternate_dfg_data = json.loads(original_dfg_text)
+        alternate_dfg_data["runtime_input_identity"] = alternate_runtime_input
+        dfg_path.write_text(json.dumps(alternate_dfg_data, indent=2, sort_keys=True) + "\n")
+        alternate_cgra_data = json.loads(original_cgra_text)
+        alternate_cgra_data["runtime_input_identity"] = alternate_runtime_input
+        cgra_path.write_text(json.dumps(alternate_cgra_data, indent=2, sort_keys=True) + "\n")
         alternate_comparison_data = json.loads(original_comparison_text)
         alternate_comparison_data["runtime_input_identity"] = alternate_runtime_input
         comparison_path.write_text(json.dumps(alternate_comparison_data, indent=2, sort_keys=True) + "\n")
+        alternate_runtime_data["input_artifact_fingerprints"][
+            "vecsum-cgra-sim-report"
+        ] = artifact_test_common.fingerprint(cgra_path)
         alternate_runtime_data["input_artifact_fingerprints"][
             "sim-comparison-report"
         ] = artifact_test_common.fingerprint(comparison_path)
@@ -269,6 +282,8 @@ def main() -> int:
                 "alternate runtime input workload report audit",
             )
         finally:
+            dfg_path.write_text(original_dfg_text)
+            cgra_path.write_text(original_cgra_text)
             comparison_path.write_text(original_comparison_text)
 
         metrics = data.get("metric_records", [])
@@ -387,6 +402,62 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected report bundle audit pass: {audit_data}")
+        alternate_comparison_runtime_input = "test-app-fixture::vecsum::alternate"
+        alternate_dfg_report = out_dir / "alternate-runtime-input-dfg-sim-report.json"
+        alternate_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
+        alternate_dfg_data["runtime_input_identity"] = alternate_comparison_runtime_input
+        alternate_dfg_report.write_text(json.dumps(alternate_dfg_data, indent=2, sort_keys=True) + "\n")
+        alternate_cgra_report = out_dir / "alternate-runtime-input-cgra-sim-report.json"
+        alternate_cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
+        alternate_cgra_data["runtime_input_identity"] = alternate_comparison_runtime_input
+        alternate_cgra_report.write_text(json.dumps(alternate_cgra_data, indent=2, sort_keys=True) + "\n")
+        alternate_comparison = out_dir / "alternate-runtime-input-sim-comparison-report.json"
+        alternate_comparison_data = json.loads((out_dir / "sim-comparison-report.json").read_text())
+        alternate_comparison_data["comparison_id"] = (
+            "sim-comparison::vecsum::alternate-runtime-input-cgra-sim-report"
+        )
+        alternate_comparison_data["runtime_input_identity"] = alternate_comparison_runtime_input
+        alternate_comparison_data["dfg_sim_report_identity"] = "alternate-runtime-input-dfg-sim-report"
+        alternate_comparison_data["cgra_sim_report_identity"] = "alternate-runtime-input-cgra-sim-report"
+        alternate_comparison.write_text(json.dumps(alternate_comparison_data, indent=2, sort_keys=True) + "\n")
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "alternate-runtime-input-sim-comparison-report-audit.json"),
+                str(alternate_comparison),
+            ],
+            "alternate runtime input comparison audit",
+        )
+        mismatched_comparison_reference = out_dir / "mismatched-comparison-reference-workload-report-bundle.json"
+        mismatched_comparison_reference_data = json.loads(report.read_text())
+        mismatched_comparison_reference_data["optional_artifact_identities"][
+            "simulation_comparison_report"
+        ] = "alternate-runtime-input-sim-comparison-report"
+        mismatched_comparison_reference_data["input_artifact_fingerprints"].pop("sim-comparison-report", None)
+        mismatched_comparison_reference_data["input_artifact_fingerprints"][
+            "alternate-runtime-input-sim-comparison-report"
+        ] = artifact_test_common.fingerprint(alternate_comparison)
+        mismatched_comparison_reference.write_text(
+            json.dumps(mismatched_comparison_reference_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_comparison_reference_audit = (
+            out_dir / "mismatched-comparison-reference-workload-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_comparison_reference_audit),
+                str(mismatched_comparison_reference),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with unrelated comparison reference unexpectedly passed audit")
         missing_runtime_input_report = out_dir / "missing-runtime-input-workload-report-bundle.json"
         missing_runtime_input_data = json.loads(report.read_text())
         for metric in missing_runtime_input_data["metric_records"]:
