@@ -278,6 +278,35 @@ def main() -> int:
                 f"runtime package should fingerprint only matching comparison inputs: {filtered_comparison_data}"
             )
 
+        cgra_only_expected_fingerprints = {
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+            "vecsum-cgra-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
+        }
+        filtered_mapping_package = out_dir / "filtered-mapping-runtime-package.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--output",
+                str(filtered_mapping_package),
+                "--artifact",
+                str(unrelated_mapping),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+            ],
+            "runtime package with unrelated mapping before CGRA report mapping",
+        )
+        filtered_mapping_data = json.loads(filtered_mapping_package.read_text())
+        if filtered_mapping_data.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"runtime package should select CGRA mapping input: {filtered_mapping_data}")
+        if filtered_mapping_data.get("simulator_report_identities") != ["vecsum-cgra-sim-report"]:
+            raise AssertionError(f"runtime package should select CGRA simulator input: {filtered_mapping_data}")
+        if filtered_mapping_data.get("input_artifact_fingerprints") != cgra_only_expected_fingerprints:
+            raise AssertionError(f"runtime package should fingerprint only CGRA-selected inputs: {filtered_mapping_data}")
+
         fallback_features = {
             "require_acceleration": "require_acceleration_policy",
             "allow_host_fallback": "host_fallback_policy",

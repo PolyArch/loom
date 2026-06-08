@@ -112,6 +112,35 @@ def matching_cgra_comparison_inputs(
     return None
 
 
+def cgra_report_matches_mapping(cgra: dict[str, object], mapping: dict[str, object]) -> bool:
+    for key in ("workload", "mapping_id"):
+        cgra_value = string_field(cgra, key)
+        mapping_value = string_field(mapping, key)
+        if cgra_value and mapping_value and cgra_value != mapping_value:
+            return False
+    cgra_hardware = string_field(cgra, "hardware")
+    mapping_hardware = string_field(mapping, "hardware")
+    if cgra_hardware and mapping_hardware and not hardware_matches(cgra_hardware, mapping_hardware):
+        return False
+    return True
+
+
+def matching_cgra_mapping_inputs(
+    grouped: dict[str, list[Path]],
+) -> tuple[Path, Path] | None:
+    mapping_paths = grouped.get("pnr_mapping_artifact", [])
+    for cgra_path in grouped.get("cgra_sim_report", []):
+        cgra = read_json(cgra_path)
+        mapping_matches = [
+            path
+            for path in mapping_paths
+            if cgra_report_matches_mapping(cgra, read_json(path))
+        ]
+        if len(mapping_matches) == 1:
+            return mapping_matches[0], cgra_path
+    return None
+
+
 def matching_rtl_inputs(
     grouped: dict[str, list[Path]],
 ) -> tuple[Path, Path] | None:
@@ -506,6 +535,10 @@ def build_package(
         comparison_inputs = matching_cgra_comparison_inputs(grouped)
         if comparison_inputs is not None:
             comparison_path, mapping_path, cgra_path, comparison = comparison_inputs
+        else:
+            cgra_inputs = matching_cgra_mapping_inputs(grouped)
+            if cgra_inputs is not None:
+                mapping_path, cgra_path = cgra_inputs
     elif target == "rtl-sim":
         rtl_inputs = matching_rtl_inputs(grouped)
         if rtl_inputs is not None:
