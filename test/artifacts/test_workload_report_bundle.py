@@ -514,6 +514,79 @@ def main() -> int:
                 f"{filtered_matching_runtime_data}"
             )
 
+        dfg_runtime_package = out_dir / "dfg-runtime-package.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "dfg-sim",
+                "--output",
+                str(dfg_runtime_package),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+            ],
+            "DFG-sim runtime package for workload report filtering",
+        )
+        filtered_dfg_runtime_report = out_dir / "filtered-dfg-runtime-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_dfg_runtime_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(dfg_runtime_package),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with DFG runtime package before CGRA runtime package",
+        )
+        filtered_dfg_runtime_data = json.loads(filtered_dfg_runtime_report.read_text())
+        filtered_dfg_runtime_identities = filtered_dfg_runtime_data.get("optional_artifact_identities", {})
+        if filtered_dfg_runtime_identities.get("runtime_package") != "runtime-package":
+            raise AssertionError(
+                f"workload report should select CGRA runtime package for mapped evidence: "
+                f"{filtered_dfg_runtime_data}"
+            )
+        if "dfg-runtime-package" in filtered_dfg_runtime_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint DFG runtime package for mapped evidence: "
+                f"{filtered_dfg_runtime_data}"
+            )
+        runtime_evidence = filtered_dfg_runtime_data.get("runtime_evidence", {})
+        if runtime_evidence.get("target_profile", {}).get("simulator") != "cgra_sim":
+            raise AssertionError(
+                f"workload report should preserve mapped runtime evidence boundary: "
+                f"{filtered_dfg_runtime_data}"
+            )
+
         unrelated_mapping_artifact = out_dir / "unrelated-pnr-mapping.json"
         unrelated_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
         unrelated_mapping_data["workload"] = "other_workload"

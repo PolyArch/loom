@@ -270,17 +270,28 @@ def runtime_package_matches(
     package_workload = data.get("workload")
     if isinstance(package_workload, str) and package_workload != workload:
         return False
+    metadata = data.get("work_package_metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
     package_mapping = data.get("selected_mapping_artifact_identity")
-    if isinstance(package_mapping, str) and package_mapping and package_mapping != mapping_identity:
+    metadata_mapping = metadata.get("selected_mapping_artifact_identity")
+    mapping_candidates = [
+        candidate
+        for candidate in (package_mapping, metadata_mapping)
+        if isinstance(candidate, str) and candidate
+    ]
+    if mapping_identity and mapping_identity not in mapping_candidates:
         return False
     package_hardware = data.get("fabric_adg_identity")
+    metadata_hardware = metadata.get("fabric_adg_identity")
+    hardware_candidates = [
+        candidate
+        for candidate in (package_hardware, metadata_hardware)
+        if isinstance(candidate, str) and candidate
+    ]
+    if hardware and not any(hardware_matches(candidate, hardware) for candidate in hardware_candidates):
+        return False
     if isinstance(package_hardware, str) and package_hardware:
         return hardware_matches(package_hardware, hardware)
-    metadata = data.get("work_package_metadata")
-    if isinstance(metadata, dict):
-        metadata_hardware = metadata.get("fabric_adg_identity")
-        if isinstance(metadata_hardware, str) and metadata_hardware:
-            return hardware_matches(metadata_hardware, hardware)
     if data.get("status") != "pass":
         return True
     return True
