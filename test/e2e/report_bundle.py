@@ -267,8 +267,6 @@ def runtime_package_matches(
 ) -> bool:
     if data.get("kind") != "runtime_package":
         return False
-    if data.get("status") != "pass":
-        return True
     package_workload = data.get("workload")
     if isinstance(package_workload, str) and package_workload != workload:
         return False
@@ -283,6 +281,8 @@ def runtime_package_matches(
         metadata_hardware = metadata.get("fabric_adg_identity")
         if isinstance(metadata_hardware, str) and metadata_hardware:
             return hardware_matches(metadata_hardware, hardware)
+    if data.get("status") != "pass":
+        return True
     return True
 
 
