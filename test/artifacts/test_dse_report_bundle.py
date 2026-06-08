@@ -42,6 +42,25 @@ def selected_candidate_row(path: Path) -> dict[str, str]:
     raise AssertionError(f"{path.name} has no selected candidate row")
 
 
+def artifact_identity(reference: str) -> str:
+    path = Path(reference)
+    for suffix in (".csv", ".json"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
+
+
+def identity_list(raw: str) -> list[str]:
+    return [artifact_identity(reference) for reference in raw.split(";") if reference]
+
+
+def identity_map(raw: str) -> dict[str, str]:
+    return {
+        artifact_identity(reference): fingerprint
+        for reference, fingerprint in artifact_test_common.semicolon_map(raw).items()
+    }
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-dse-report-") as tmp:
@@ -187,21 +206,17 @@ def main() -> int:
             raise AssertionError(f"unexpected candidate kind: {candidate}")
         if candidate.get("status") != "selected":
             raise AssertionError(f"candidate should be selected: {candidate}")
-        expected_input_fingerprints = artifact_test_common.semicolon_map(
-            selected_candidate_row(out_dir / "dse-candidate-summary.csv")["input_artifact_fingerprints"]
-        )
         selected_row = selected_candidate_row(out_dir / "dse-candidate-summary.csv")
+        expected_input_fingerprints = identity_map(selected_row["input_artifact_fingerprints"])
         if candidate.get("input_artifact_fingerprints") != expected_input_fingerprints:
             raise AssertionError(f"candidate missed input artifact fingerprints: {candidate}")
         if sorted(candidate.get("referenced_input_artifacts", [])) != sorted(expected_input_fingerprints):
             raise AssertionError(f"candidate fingerprints do not cover referenced inputs: {candidate}")
-        expected_outputs = [
-            output
-            for output in selected_row.get("output_artifacts", "").split(";")
-            if output
-        ]
+        expected_outputs = identity_list(selected_row.get("output_artifacts", ""))
         if sorted(candidate.get("generated_output_artifacts", [])) != sorted(expected_outputs):
             raise AssertionError(f"candidate missed generated output artifacts: {candidate}")
+        if str(out_dir) in json.dumps(candidate, sort_keys=True):
+            raise AssertionError(f"candidate record should not expose private paths: {candidate}")
         for metric_id in (
             "metric::vecsum::cgra_sim_cycles",
             "metric::shared_reduction_adg::frequency_mhz",
@@ -2107,6 +2122,52 @@ def main() -> int:
             "custom-workload-evidence"
         ) != artifact_test_common.fingerprint(custom_workload_report):
             raise AssertionError(f"custom workload report fingerprint was not preserved: {custom_name_data}")
+
+        wrong_kind_workload_report = out_dir / "wrong-kind-workload-report-bundle.json"
+        wrong_kind_workload_report.write_text(
+            json.dumps({"schema_version": 1, "kind": "runtime_package"}, indent=2, sort_keys=True) + "\n"
+        )
+        private_path_report = out_dir / "private-path-dse-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(private_path_report),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+                "--artifact",
+                str(wrong_kind_workload_report),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with wrong-kind workload report unexpectedly passed")
+        private_path_data = json.loads(private_path_report.read_text())
+        private_path_text = json.dumps(private_path_data, sort_keys=True)
+        if str(out_dir) in private_path_text:
+            raise AssertionError(f"DSE report diagnostics should not expose private paths: {private_path_data}")
+        if not any(
+            "wrong-kind-workload-report-bundle is not a workload_report_bundle" in str(item)
+            for item in private_path_data.get("diagnostics", [])
+        ):
+            raise AssertionError(f"DSE report should diagnose wrong-kind workload report by identity: {private_path_data}")
+        private_path_audit = out_dir / "private-path-dse-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(private_path_audit),
+                str(private_path_report),
+            ],
+            "blocked DSE report bundle with portable diagnostics audit",
+        )
 
         missing_candidate_report = out_dir / "missing-candidate-dse-report-bundle.json"
         result = artifact_test_common.run_command(

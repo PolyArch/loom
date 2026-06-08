@@ -102,6 +102,14 @@ def semicolon_list(raw: str) -> list[str]:
     return [entry for entry in raw.split(";") if entry]
 
 
+def artifact_identity(reference: str) -> str:
+    return artifact_id(Path(reference)) if reference else ""
+
+
+def semicolon_identity_list(raw: str) -> list[str]:
+    return [identity for identity in (artifact_identity(entry) for entry in raw.split(";") if entry) if identity]
+
+
 def semicolon_map(raw: str) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for entry in raw.split(";"):
@@ -112,6 +120,15 @@ def semicolon_map(raw: str) -> dict[str, str]:
         key, value = entry.rsplit("=", 1)
         if key and value:
             parsed[key] = value
+    return parsed
+
+
+def semicolon_identity_map(raw: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for reference, fingerprint in semicolon_map(raw).items():
+        identity = artifact_identity(reference)
+        if identity:
+            parsed[identity] = fingerprint
     return parsed
 
 
@@ -175,9 +192,9 @@ def candidate_record(row: dict[str, str]) -> dict[str, object]:
         "candidate_id": row.get("candidate", ""),
         "candidate_kind": row.get("candidate_kind", ""),
         "parent_candidate_ids": [],
-        "referenced_input_artifacts": semicolon_list(row.get("input_artifacts", "")),
-        "input_artifact_fingerprints": semicolon_map(row.get("input_artifact_fingerprints", "")),
-        "generated_output_artifacts": semicolon_list(row.get("output_artifacts", "")),
+        "referenced_input_artifacts": semicolon_identity_list(row.get("input_artifacts", "")),
+        "input_artifact_fingerprints": semicolon_identity_map(row.get("input_artifact_fingerprints", "")),
+        "generated_output_artifacts": semicolon_identity_list(row.get("output_artifacts", "")),
         "objective_records_used": [row.get("objective_record", "")],
         "metric_records_used": metric_ids_for_candidate(row),
         "status": row.get("selection_status", "blocked"),
@@ -223,7 +240,7 @@ def report_bundle_references(
     for path in paths:
         data = read_json(path)
         if data.get("kind") != expected_kind:
-            diagnostics.append(f"{path} is not a {expected_kind}")
+            diagnostics.append(f"{artifact_id(path)} is not a {expected_kind}")
             continue
         if data.get("report_status") != "pass":
             diagnostics.append(f"{artifact_id(path)} is not a passing report bundle")

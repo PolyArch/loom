@@ -3056,8 +3056,8 @@ def validate_dse_report_candidate_input_fingerprints(
                 f"DSE report bundle candidate {index} input_artifact_fingerprints references {identity!r} outside inputs"
             )
             continue
-        resolved = resolve_artifact_reference(path, identity)
-        if resolved.is_file() and fingerprint != artifact_fingerprint(resolved):
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is not None and fingerprint != artifact_fingerprint(resolved):
             diagnostics.append(f"DSE report bundle candidate {index} input_artifact_fingerprints stale for {identity!r}")
     for reference in input_refs:
         if reference not in input_fingerprints:
@@ -5221,7 +5221,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         diagnostics.append(
                             f"DSE report bundle candidate {index} generated_output_artifacts has invalid entry"
                         )
-                    elif not resolve_artifact_reference(path, artifact).is_file():
+                    elif resolve_artifact_identity_reference(path, artifact) is None:
                         diagnostics.append(
                             f"DSE report bundle candidate {index} generated_output_artifacts reference {artifact!r} does not exist"
                         )
