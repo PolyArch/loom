@@ -51,11 +51,11 @@ def matching_row(paths: list[Path], key: str, value: str) -> dict[str, str] | No
     return None
 
 
-def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> dict[str, str] | None:
+def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> tuple[Path, dict[str, str]] | None:
     for path in paths:
         for row in read_csv(path):
             if row.get("workload") == workload and hardware_matches(row.get("hardware", ""), hardware):
-                return row
+                return path, row
     return None
 
 
@@ -364,7 +364,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         mapping_identity=artifact_id(mapping_path) if mapping_path is not None else "",
     )
     rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
-    rtl_path = first_path(grouped, "rtl_fpa")
+    rtl_match = matching_rtl_fpa_row(grouped.get("rtl_fpa", []), workload, hardware)
+    if rtl_match is None:
+        rtl_path = None
+        rtl_row = None
+    else:
+        rtl_path, rtl_row = rtl_match
 
     dfg_report = read_json(dfg_path) if dfg_path is not None else {}
     cgra_report = read_json(cgra_path) if cgra_path is not None else {}
@@ -379,7 +384,6 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     runtime_host_interface = runtime_package.get("host_interface", {})
     if not isinstance(runtime_host_interface, dict):
         runtime_host_interface = {}
-    rtl_row = matching_rtl_fpa_row(grouped.get("rtl_fpa", []), workload, hardware)
     source_row = matching_row(grouped.get("source_compat", []), "case", workload)
     compiler_row = matching_row(grouped.get("compiler_pipeline", []), "case", workload)
 

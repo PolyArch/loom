@@ -472,6 +472,68 @@ def main() -> int:
                 f"workload report should not fingerprint unselected DSE summary: {filtered_dse_data}"
             )
 
+        unrelated_fpa_summary = out_dir / "unrelated-rtl-fpa-summary.csv"
+        with (out_dir / "rtl-fpa-summary.csv").open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            unrelated_fpa_rows = list(reader)
+        for row in unrelated_fpa_rows:
+            row["workload"] = "other_workload"
+            row["hardware"] = "other_hardware"
+            row["frequency_mhz"] = "999999"
+            row["area_um2"] = "999999"
+            row["dynamic_power_mw"] = "999999"
+            row["leakage_power_mw"] = "999999"
+        with unrelated_fpa_summary.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(unrelated_fpa_rows)
+        filtered_fpa_report = out_dir / "filtered-fpa-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_fpa_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(unrelated_fpa_summary),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unrelated FPA summary",
+        )
+        filtered_fpa_data = json.loads(filtered_fpa_report.read_text())
+        filtered_fpa_identities = filtered_fpa_data.get("optional_artifact_identities", {})
+        if filtered_fpa_identities.get("fpa_report") != "rtl-fpa-summary":
+            raise AssertionError(f"workload report should reference selected FPA summary: {filtered_fpa_data}")
+        if "unrelated-rtl-fpa-summary" in filtered_fpa_data["input_artifact_fingerprints"]:
+            raise AssertionError(f"workload report should not fingerprint unrelated FPA summary: {filtered_fpa_data}")
+
         unrelated_dfg_report = out_dir / "unrelated-dfg-sim-report.json"
         unrelated_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
         unrelated_dfg_data["workload"] = "other_workload"
