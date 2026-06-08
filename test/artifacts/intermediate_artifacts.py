@@ -1524,7 +1524,10 @@ def validate_artifact_manifest_edges(
             diagnostics.append(f"artifact manifest edge {index} output fingerprint does not match sink")
         edge_pairs.add((left, right))
 
-    for left, right in iter_artifact_manifest_required_edges(artifact_ids, ids_by_kind, artifact_paths_by_id):
+    required_edge_pairs = set(iter_artifact_manifest_required_edges(artifact_ids, ids_by_kind, artifact_paths_by_id))
+    for left, right in sorted(edge_pairs - required_edge_pairs):
+        diagnostics.append(f"artifact manifest unexpected edge {left} -> {right}")
+    for left, right in required_edge_pairs:
         require_manifest_edge(edge_pairs, diagnostics, left, right)
 
     return len(artifacts)

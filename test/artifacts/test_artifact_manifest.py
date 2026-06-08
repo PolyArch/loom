@@ -467,6 +467,54 @@ def main() -> int:
                 "manifest should only connect DSE report bundles to explicitly referenced report bundles: "
                 f"{multi_bundle_edges}"
             )
+        extra_edge_manifest = out_dir / "extra-edge-full-stack-artifact-manifest.json"
+        extra_edge_data = dict(multi_bundle_data)
+        extra_edge_data["run_id"] = "extra-edge"
+        extra_edge_data["edges"] = list(multi_bundle_data.get("edges", []))
+        multi_bundle_fingerprints = {
+            artifact["id"]: artifact["fingerprint"]
+            for artifact in multi_bundle_data.get("artifacts", [])
+            if isinstance(artifact, dict)
+        }
+        extra_edge_data["edges"].append(
+            {
+                "id": "edge::secondary-workload-report-bundle->dse-report-bundle",
+                "from": "secondary-workload-report-bundle",
+                "to": "dse-report-bundle",
+                "kind": "producer-consumer",
+                "producer_artifact_kind": "workload_report_bundle",
+                "consumer_artifact_kind": "dse_report_bundle",
+                "producer_component": "workload_report_bundle-producer",
+                "consumer_component": "dse_report_bundle-producer",
+                "public_spec_owner": "docs/spec-full-stack-traceability.md",
+                "schema_or_verifier": "intermediate_artifact_audit",
+                "validation_command_role": "artifact content audit",
+                "negative_diagnostic_classes": ["missing_edge", "stale_fingerprint"],
+                "minimal_positive_demonstrator_requirement": "intermediate artifact chain",
+                "required_input_fingerprints": {
+                    "secondary-workload-report-bundle": multi_bundle_fingerprints[
+                        "secondary-workload-report-bundle"
+                    ]
+                },
+                "produced_output_fingerprints": {
+                    "dse-report-bundle": multi_bundle_fingerprints["dse-report-bundle"]
+                },
+            }
+        )
+        extra_edge_manifest.write_text(json.dumps(extra_edge_data, indent=2, sort_keys=True) + "\n")
+        extra_edge_audit = out_dir / "extra-edge-artifact-audit-summary.json"
+        result = run_raw(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(extra_edge_audit),
+                str(extra_edge_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("manifest with an unreferenced DSE report edge unexpectedly passed audit")
 
     return 0
 
