@@ -106,11 +106,14 @@ def main() -> int:
         expected_input_fingerprints = {
             "source-compat-summary": artifact_test_common.fingerprint(out_dir / "source-compat-summary.csv"),
             "compiler-pipeline-summary": artifact_test_common.fingerprint(out_dir / "compiler-pipeline-summary.csv"),
+            "dataflow-primitive-coverage": artifact_test_common.fingerprint(out_dir / "dataflow-primitive-coverage.csv"),
+            "adg-hardware-summary": artifact_test_common.fingerprint(out_dir / "adg-hardware-summary.csv"),
             "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
             "vecsum-dfg-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-dfg-sim-report.json"),
             "vecsum-cgra-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-cgra-sim-report.json"),
             "sim-comparison-report": artifact_test_common.fingerprint(out_dir / "sim-comparison-report.json"),
             "runtime-package": artifact_test_common.fingerprint(out_dir / "runtime-package.json"),
+            "sim-cycle-summary": artifact_test_common.fingerprint(out_dir / "sim-cycle-summary.csv"),
             "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
             "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
             "dse-candidate-summary": artifact_test_common.fingerprint(out_dir / "dse-candidate-summary.csv"),
@@ -120,10 +123,16 @@ def main() -> int:
         optional_identities = data.get("optional_artifact_identities", {})
         if not isinstance(optional_identities, dict):
             raise AssertionError(f"report should include optional artifact identities: {data}")
+        if optional_identities.get("dataflow_primitive_coverage") != "dataflow-primitive-coverage":
+            raise AssertionError(f"report should reference dataflow primitive evidence: {data}")
+        if optional_identities.get("adg_hardware") != "adg-hardware-summary":
+            raise AssertionError(f"report should reference ADG hardware evidence: {data}")
         if optional_identities.get("simulation_comparison_report") != "sim-comparison-report":
             raise AssertionError(f"report should reference simulation comparison evidence: {data}")
         if optional_identities.get("runtime_package") != "runtime-package":
             raise AssertionError(f"report should reference runtime package evidence: {data}")
+        if optional_identities.get("sim_cycle_summary") != "sim-cycle-summary":
+            raise AssertionError(f"report should reference simulator cycle summary evidence: {data}")
         if optional_identities.get("rtl_manifest") != "rtl-manifest":
             raise AssertionError(f"report should reference RTL manifest evidence: {data}")
         expected_host_interface = {

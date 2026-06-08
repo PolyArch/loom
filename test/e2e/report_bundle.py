@@ -397,6 +397,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         compiler_row = None
     else:
         compiler_path, compiler_row = compiler_match
+    primitive_path = first_path(grouped, "dataflow_primitive_coverage")
+    hardware_path = first_path(grouped, "adg_hardware")
     mapping_path = matching_mapping_artifact_path(
         grouped.get("pnr_mapping_artifact", []),
         workload,
@@ -430,6 +432,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         mapping_identity=artifact_id(mapping_path) if mapping_path is not None else "",
         runtime_input_identity=runtime_input_identity,
     )
+    sim_cycle_path = first_path(grouped, "sim_cycle")
     rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
     rtl_match = matching_rtl_fpa_row(grouped.get("rtl_fpa", []), workload, hardware)
     if rtl_match is None:
@@ -692,21 +695,27 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             [
                 source_path,
                 compiler_path,
+                primitive_path,
+                hardware_path,
                 mapping_path,
                 dfg_path,
                 cgra_path,
                 comparison_path,
                 runtime_path,
+                sim_cycle_path,
                 rtl_manifest_path,
                 rtl_path,
                 dse_path,
             ]
         ),
         "optional_artifact_identities": {
+            "dataflow_primitive_coverage": artifact_id(primitive_path) if primitive_path is not None else "",
+            "adg_hardware": artifact_id(hardware_path) if hardware_path is not None else "",
             "dfg_sim_report": artifact_id(dfg_path) if dfg_path is not None else "",
             "cgra_sim_report": artifact_id(cgra_path) if cgra_path is not None else "",
             "simulation_comparison_report": artifact_id(comparison_path) if comparison_path is not None else "",
             "runtime_package": artifact_id(runtime_path) if runtime_path is not None else "",
+            "sim_cycle_summary": artifact_id(sim_cycle_path) if sim_cycle_path is not None else "",
             "rtl_manifest": artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
             "fpa_report": artifact_id(rtl_path) if rtl_path is not None else "",
             "dse_feedback_record": artifact_id(dse_path),
