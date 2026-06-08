@@ -148,6 +148,8 @@ def diagnostic_class(message: str) -> str:
         return "simulation_comparison_failure"
     if "RTL/FPA row is missing" in message:
         return "rtl_fpa_missing"
+    if "selected mapping artifact is missing" in message:
+        return "mapping_artifact_missing"
     if "no selected DSE candidate artifact was provided" in message:
         return "dse_candidate_missing"
     return "report_bundle_failure"
@@ -459,6 +461,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("DFG-sim report is missing")
     if not cgra_report:
         diagnostics.append("CGRA-sim report is missing")
+    if mapping_path is None:
+        diagnostics.append("selected mapping artifact is missing")
     if comparison_report and comparison_report.get("status") != "pass":
         diagnostics.append("simulation comparison report is not passing")
     diagnostics.extend(
