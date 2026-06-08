@@ -64,6 +64,8 @@ def numeric(row: dict[str, str], key: str) -> float:
 
 
 def diagnostic_class(message: str) -> str:
+    if "runtime package is missing" in message:
+        return "missing_runtime_package"
     if "runtime package is not passing" in message:
         return "runtime_package_failure"
     if "source compatibility row is missing" in message:
@@ -172,6 +174,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("CGRA-sim report is missing")
     if comparison_report and comparison_report.get("status") != "pass":
         diagnostics.append("simulation comparison report is not passing")
+    if runtime_path is None:
+        diagnostics.append("runtime package is missing")
     if runtime_package and runtime_package.get("status") != "pass":
         diagnostics.append("runtime package is not passing")
     if rtl_row is None or rtl_path is None:

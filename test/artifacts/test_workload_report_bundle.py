@@ -1169,6 +1169,50 @@ def main() -> int:
         if len(matching_reviews) != 1:
             raise AssertionError(f"expected one report bundle review: {audit_data}")
 
+        missing_runtime_report = out_dir / "missing-runtime-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(missing_runtime_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("report bundle without runtime package unexpectedly passed")
+        missing_runtime_data = json.loads(missing_runtime_report.read_text())
+        missing_runtime_records = missing_runtime_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "missing_runtime_package"
+            and record.get("component") == "workload_report_bundle"
+            for record in missing_runtime_records
+        ):
+            raise AssertionError(f"missing runtime package should be diagnosed: {missing_runtime_data}")
+
         blocked_runtime = out_dir / "blocked-runtime-package.json"
         result = artifact_test_common.run_command(
             repo,
