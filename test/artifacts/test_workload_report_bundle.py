@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import sys
 from pathlib import Path
@@ -409,6 +410,66 @@ def main() -> int:
         if "unrelated-pnr-mapping" in filtered_mapping_data["input_artifact_fingerprints"]:
             raise AssertionError(
                 f"workload report should not fingerprint unrelated mapping artifact: {filtered_mapping_data}"
+            )
+
+        unselected_dse_summary = out_dir / "unselected-dse-candidate-summary.csv"
+        with (out_dir / "dse-candidate-summary.csv").open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            original_dse_rows = list(reader)
+        for row in original_dse_rows:
+            if row.get("selection_status") == "selected":
+                row["selection_status"] = "rejected"
+        with unselected_dse_summary.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(original_dse_rows)
+        filtered_dse_report = out_dir / "filtered-dse-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_dse_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(unselected_dse_summary),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unselected DSE summary before selected summary",
+        )
+        filtered_dse_data = json.loads(filtered_dse_report.read_text())
+        filtered_dse_identities = filtered_dse_data.get("optional_artifact_identities", {})
+        if filtered_dse_identities.get("dse_feedback_record") != "dse-candidate-summary":
+            raise AssertionError(f"workload report should reference selected DSE summary: {filtered_dse_data}")
+        if "unselected-dse-candidate-summary" in filtered_dse_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint unselected DSE summary: {filtered_dse_data}"
             )
 
         unrelated_dfg_report = out_dir / "unrelated-dfg-sim-report.json"

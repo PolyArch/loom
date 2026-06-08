@@ -35,11 +35,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def selected_dse_row(paths: list[Path]) -> dict[str, str] | None:
+def selected_dse_row(paths: list[Path]) -> tuple[Path, dict[str, str]] | None:
     for path in paths:
         for row in read_csv(path):
             if row.get("selection_status") == "selected":
-                return row
+                return path, row
     return None
 
 
@@ -306,9 +306,8 @@ def matching_runtime_package_path(
 
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
-    dse_path = first_path(grouped, "dse_candidate")
-    dse_row = selected_dse_row(grouped.get("dse_candidate", []))
-    if dse_row is None or dse_path is None:
+    selected_dse = selected_dse_row(grouped.get("dse_candidate", []))
+    if selected_dse is None:
         return {
             "schema_version": 1,
             "kind": "workload_report_bundle",
@@ -331,6 +330,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "metric_records": [],
         }
 
+    dse_path, dse_row = selected_dse
     workload = dse_row["workload"]
     hardware = dse_row["hardware"]
     mapping_id = dse_row["mapping_id"]
