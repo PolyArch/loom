@@ -3121,18 +3121,10 @@ def dse_report_referenced_metric_ids(
     return metric_ids
 
 
-def dse_report_candidate_rows(
+def dse_report_referenced_candidate_rows(
     path: Path,
     data: dict[str, object],
 ) -> list[dict[str, str]]:
-    candidates = data.get("candidate_list")
-    reported_candidate_ids = {
-        candidate.get("candidate_id")
-        for candidate in candidates
-        if isinstance(candidate, dict)
-        and isinstance(candidate.get("candidate_id"), str)
-        and candidate.get("candidate_id")
-    } if isinstance(candidates, list) else set()
     rows: list[dict[str, str]] = []
     references = data.get("referenced_dse_candidate_artifact_identities")
     if not isinstance(references, list):
@@ -3147,12 +3139,7 @@ def dse_report_candidate_rows(
             candidate_rows = read_csv_rows(resolved)
         except OSError:
             continue
-        for row in candidate_rows:
-            candidate_id = row.get("candidate", "")
-            if reported_candidate_ids and candidate_id not in reported_candidate_ids:
-                continue
-            if row.get("selection_status") in {"selected", "pareto", "rejected"}:
-                rows.append(row)
+        rows.extend(candidate_rows)
     return rows
 
 
@@ -3165,8 +3152,9 @@ def validate_dse_report_hardware_bundle_references(
         return
     candidate_hardware = {
         row["hardware"]
-        for row in dse_report_candidate_rows(path, data)
+        for row in dse_report_referenced_candidate_rows(path, data)
         if valid_identity(row.get("hardware"))
+        and row.get("selection_status") in {"selected", "pareto", "rejected"}
     }
     if not candidate_hardware:
         return
@@ -3203,7 +3191,9 @@ def validate_dse_report_workload_bundle_references(
     if data.get("report_status") != "pass":
         return
     candidate_hardware_by_workload: dict[str, set[str]] = {}
-    for row in dse_report_candidate_rows(path, data):
+    for row in dse_report_referenced_candidate_rows(path, data):
+        if row.get("selection_status") not in {"selected", "pareto", "rejected"}:
+            continue
         workload = row.get("workload")
         hardware = row.get("hardware")
         if valid_identity(workload):
@@ -3244,6 +3234,42 @@ def validate_dse_report_workload_bundle_references(
             diagnostics.append(
                 f"DSE report bundle workload report reference {identity!r} selected hardware "
                 "does not match DSE candidates"
+            )
+
+
+def validate_dse_report_candidate_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    referenced_status_by_id = {
+        row["candidate"]: row.get("selection_status", "")
+        for row in dse_report_referenced_candidate_rows(path, data)
+        if valid_identity(row.get("candidate"))
+        and row.get("selection_status") in {"selected", "pareto", "rejected"}
+    }
+    if not referenced_status_by_id:
+        return
+    candidates = data.get("candidate_list")
+    if not isinstance(candidates, list):
+        return
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            continue
+        candidate_id = candidate.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            continue
+        referenced_status = referenced_status_by_id.get(candidate_id)
+        if referenced_status is None:
+            diagnostics.append(
+                f"DSE report bundle candidate {index} is absent from referenced candidate evidence"
+            )
+            continue
+        if candidate.get("status") != referenced_status:
+            diagnostics.append(
+                f"DSE report bundle candidate {index} status does not match referenced candidate evidence"
             )
 
 
@@ -4825,6 +4851,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if data.get("report_status") != "pass" and not diagnostic_records:
             diagnostics.append("DSE report bundle non-pass status needs diagnostic_records")
         validate_dse_report_input_fingerprints(path, data, diagnostics)
+        validate_dse_report_candidate_references(path, data, diagnostics)
         validate_dse_report_workload_bundle_references(path, data, diagnostics)
         validate_dse_report_hardware_bundle_references(path, data, diagnostics)
         if not isinstance(data.get("policy_configuration"), dict):
