@@ -1791,6 +1791,72 @@ def main() -> int:
             ],
             "blocked hardware runtime package audit",
         )
+        unrelated_hardware_mapping = out_dir / "unrelated-hardware-pnr-mapping.json"
+        unrelated_hardware_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        unrelated_hardware_mapping_data["workload"] = "other_workload"
+        unrelated_hardware_mapping_data["hardware"] = "other_hardware"
+        unrelated_hardware_mapping_data["mapping_id"] = "other_mapping"
+        unrelated_hardware_mapping.write_text(
+            json.dumps(unrelated_hardware_mapping_data, indent=2, sort_keys=True) + "\n"
+        )
+        filtered_hardware_package = out_dir / "filtered-hardware-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "hardware",
+                "--data-movement-policy",
+                "copy_in_copy_out",
+                "--platform-binding",
+                "platform-binding::host-buffer::vecsum",
+                "--output",
+                str(filtered_hardware_package),
+                "--artifact",
+                str(unrelated_hardware_mapping),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware runtime package without hardware backend unexpectedly passed")
+        filtered_hardware_data = json.loads(filtered_hardware_package.read_text())
+        if filtered_hardware_data.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"hardware package should select platform-bound mapping: {filtered_hardware_data}")
+        if filtered_hardware_data.get("fabric_adg_identity") != "shared_reduction_adg":
+            raise AssertionError(f"hardware package should select platform-bound hardware: {filtered_hardware_data}")
+        if filtered_hardware_data.get("input_artifact_fingerprints") != {
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+        }:
+            raise AssertionError(f"hardware package should fingerprint only selected mapping: {filtered_hardware_data}")
+        if {
+            "name": "mapping_artifact",
+            "identity": "pnr-mapping",
+            "descriptor_kind": "pnr_mapping_artifact",
+        } not in filtered_hardware_data.get("argument_descriptors", []):
+            raise AssertionError(f"hardware package should bind selected mapping argument: {filtered_hardware_data}")
+        if any(
+            "other_workload" in str(item)
+            for item in (
+                filtered_hardware_data.get("package_id"),
+                filtered_hardware_data.get("work_package_identity"),
+                filtered_hardware_data.get("launch_descriptor_identity"),
+            )
+        ):
+            raise AssertionError(f"hardware package identities should ignore unrelated mapping: {filtered_hardware_data}")
+        filtered_hardware_audit = out_dir / "filtered-hardware-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(filtered_hardware_audit),
+                str(filtered_hardware_package),
+            ],
+            "blocked hardware runtime package with selected mapping audit",
+        )
         missing_descriptor_binding = out_dir / "missing-descriptor-binding-runtime-package.json"
         missing_descriptor_binding_data = json.loads(hardware_package.read_text())
         missing_descriptor_binding_data["memory_descriptors"][0].pop("platform_binding_identity", None)

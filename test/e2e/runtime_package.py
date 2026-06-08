@@ -164,6 +164,29 @@ def matching_rtl_inputs(
     return None
 
 
+def platform_binding_workload(platform_binding: str) -> str:
+    return platform_binding.rsplit("::", 1)[-1] if platform_binding else ""
+
+
+def matching_hardware_mapping_input(
+    grouped: dict[str, list[Path]],
+    platform_binding: str,
+) -> tuple[Path | None, bool]:
+    mapping_paths = grouped.get("pnr_mapping_artifact", [])
+    if len(mapping_paths) == 1:
+        return mapping_paths[0], False
+    workload = platform_binding_workload(platform_binding)
+    if workload:
+        matches = [
+            path
+            for path in mapping_paths
+            if string_field(read_json(path), "workload") == workload
+        ]
+        if len(matches) == 1:
+            return matches[0], False
+    return None, len(mapping_paths) > 1
+
+
 def diagnostic_class(message: str) -> str:
     if "requires RTL" in message:
         return "missing_rtl_artifact"
@@ -529,6 +552,7 @@ def build_package(
     cgra_path = first_path(grouped, "cgra_sim_report")
     comparison_path = first_path(grouped, "sim_comparison_report")
     rtl_manifest_path = None
+    hardware_mapping_inputs_ambiguous = False
 
     comparison = read_json(comparison_path)
     if target == "cgra-sim":
@@ -543,6 +567,8 @@ def build_package(
         rtl_inputs = matching_rtl_inputs(grouped)
         if rtl_inputs is not None:
             mapping_path, rtl_manifest_path = rtl_inputs
+    elif target == "hardware":
+        mapping_path, hardware_mapping_inputs_ambiguous = matching_hardware_mapping_input(grouped, platform_binding)
 
     mapping = read_json(mapping_path)
     dfg = read_json(dfg_path)
@@ -614,7 +640,10 @@ def build_package(
         diagnostics.append("RTL-sim target is not available until RTL simulation backend is provided")
     else:
         if not mapping:
-            diagnostics.append("hardware target requires mapping artifact")
+            if hardware_mapping_inputs_ambiguous:
+                diagnostics.append("hardware target requires mapping artifact input to be unambiguous")
+            else:
+                diagnostics.append("hardware target requires mapping artifact")
         if not hardware:
             diagnostics.append("fabric ADG identity is missing")
         if not platform_binding:
