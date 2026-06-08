@@ -3202,12 +3202,17 @@ def validate_dse_report_workload_bundle_references(
 ) -> None:
     if data.get("report_status") != "pass":
         return
-    candidate_workloads = {
-        row["workload"]
-        for row in dse_report_candidate_rows(path, data)
-        if valid_identity(row.get("workload"))
-    }
-    if not candidate_workloads:
+    candidate_hardware_by_workload: dict[str, set[str]] = {}
+    for row in dse_report_candidate_rows(path, data):
+        workload = row.get("workload")
+        hardware = row.get("hardware")
+        if valid_identity(workload):
+            assert workload is not None
+            candidate_hardware_by_workload.setdefault(workload, set())
+            if valid_identity(hardware):
+                assert hardware is not None
+                candidate_hardware_by_workload[workload].add(hardware)
+    if not candidate_hardware_by_workload:
         return
     references = data.get("referenced_workload_report_bundle_identities")
     if not isinstance(references, list):
@@ -3225,9 +3230,20 @@ def validate_dse_report_workload_bundle_references(
             diagnostics.append(f"DSE report bundle workload report reference {identity!r} is not passing")
             continue
         workload = report.get("workload")
-        if not isinstance(workload, str) or workload not in candidate_workloads:
+        if not isinstance(workload, str) or workload not in candidate_hardware_by_workload:
             diagnostics.append(
                 f"DSE report bundle workload report reference {identity!r} does not match DSE candidates"
+            )
+            continue
+        candidate_hardware = candidate_hardware_by_workload[workload]
+        selected_hardware = report.get("selected_hardware_candidate_identity")
+        if candidate_hardware and not any(
+            hardware_identity_matches(candidate, selected_hardware)
+            for candidate in candidate_hardware
+        ):
+            diagnostics.append(
+                f"DSE report bundle workload report reference {identity!r} selected hardware "
+                "does not match DSE candidates"
             )
 
 

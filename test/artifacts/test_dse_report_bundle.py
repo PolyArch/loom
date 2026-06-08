@@ -1958,6 +1958,49 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched workload report bundle unexpectedly passed audit")
 
+        mismatched_workload_hardware_bundle = out_dir / "mismatched-workload-hardware-report-bundle.json"
+        mismatched_workload_hardware_bundle_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
+        mismatched_workload_hardware_bundle_data["bundle_id"] = (
+            "workload::vecsum::other_hardware::vecsum__shared_reduction_adg"
+        )
+        mismatched_workload_hardware_bundle_data["selected_hardware_candidate_identity"] = "other_hardware"
+        mismatched_workload_hardware_bundle.write_text(
+            json.dumps(mismatched_workload_hardware_bundle_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_workload_hardware_report = out_dir / "mismatched-workload-hardware-dse-report-bundle.json"
+        mismatched_workload_hardware_report_data = json.loads(report.read_text())
+        mismatched_workload_hardware_report_data["referenced_workload_report_bundle_identities"] = [
+            "mismatched-workload-hardware-report-bundle"
+        ]
+        mismatched_workload_hardware_report_data["runtime_evidence_summaries"][0][
+            "workload_report_bundle_identity"
+        ] = "mismatched-workload-hardware-report-bundle"
+        mismatched_workload_hardware_report_data["input_artifact_fingerprints"].pop(
+            "workload-report-bundle",
+            None,
+        )
+        mismatched_workload_hardware_report_data["input_artifact_fingerprints"][
+            "mismatched-workload-hardware-report-bundle"
+        ] = artifact_test_common.fingerprint(mismatched_workload_hardware_bundle)
+        mismatched_workload_hardware_report.write_text(
+            json.dumps(mismatched_workload_hardware_report_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_workload_hardware_report_audit = (
+            out_dir / "mismatched-workload-hardware-dse-report-bundle-audit.json"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_workload_hardware_report_audit),
+                str(mismatched_workload_hardware_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched workload hardware unexpectedly passed audit")
+
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
         custom_name_report = out_dir / "custom-name-dse-report-bundle.json"
