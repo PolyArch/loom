@@ -2314,6 +2314,53 @@ def main() -> int:
         if "pnr-mapping" in missing_mapping_data.get("input_artifact_fingerprints", {}):
             raise AssertionError(f"missing mapping report should not fingerprint absent mapping: {missing_mapping_data}")
 
+        missing_support_artifacts_report = out_dir / "missing-support-artifacts-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(missing_support_artifacts_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("report bundle without full-stack support artifacts unexpectedly passed")
+        missing_support_data = json.loads(missing_support_artifacts_report.read_text())
+        missing_support_records = missing_support_data.get("diagnostic_records", [])
+        expected_missing_support_classes = {
+            "dataflow_primitive_coverage_missing",
+            "adg_hardware_missing",
+            "sim_cycle_summary_missing",
+        }
+        missing_support_classes = {
+            record.get("diagnostic_class")
+            for record in missing_support_records
+            if isinstance(record, dict) and record.get("component") == "workload_report_bundle"
+        }
+        if not expected_missing_support_classes <= missing_support_classes:
+            raise AssertionError(f"missing full-stack support artifacts should be diagnosed: {missing_support_data}")
+
         blocked_runtime = out_dir / "blocked-runtime-package.json"
         result = artifact_test_common.run_command(
             repo,

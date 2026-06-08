@@ -140,6 +140,12 @@ def diagnostic_class(message: str) -> str:
         return "source_compatibility_missing"
     if "compiler pipeline row is missing" in message:
         return "compiler_pipeline_missing"
+    if "dataflow primitive coverage is missing" in message:
+        return "dataflow_primitive_coverage_missing"
+    if "ADG hardware summary is missing" in message:
+        return "adg_hardware_missing"
+    if "simulator cycle summary is missing" in message:
+        return "sim_cycle_summary_missing"
     if "DFG-sim report is missing" in message:
         return "dfg_sim_missing"
     if "CGRA-sim report is missing" in message:
@@ -460,6 +466,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("source compatibility row is missing")
     if compiler_row is None:
         diagnostics.append("compiler pipeline row is missing")
+    if primitive_path is None:
+        diagnostics.append("dataflow primitive coverage is missing")
+    if hardware_path is None:
+        diagnostics.append("ADG hardware summary is missing")
+    if sim_cycle_path is None:
+        diagnostics.append("simulator cycle summary is missing")
     if not dfg_report:
         diagnostics.append("DFG-sim report is missing")
     if not cgra_report:
