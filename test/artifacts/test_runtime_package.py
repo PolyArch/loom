@@ -240,6 +240,44 @@ def main() -> int:
         if filtered_data.get("input_artifact_fingerprints") != expected_input_fingerprints:
             raise AssertionError(f"runtime package should fingerprint only selected inputs: {filtered_data}")
 
+        unrelated_comparison = out_dir / "unrelated-sim-comparison-report.json"
+        unrelated_comparison_data = json.loads((out_dir / "sim-comparison-report.json").read_text())
+        unrelated_comparison_data["workload"] = "other_workload"
+        unrelated_comparison_data["mapping_artifact_identity"] = "other-mapping"
+        unrelated_comparison_data["cgra_sim_report_identity"] = "other-cgra-sim-report"
+        unrelated_comparison.write_text(json.dumps(unrelated_comparison_data, indent=2, sort_keys=True) + "\n")
+        filtered_comparison_package = out_dir / "filtered-comparison-runtime-package.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--output",
+                str(filtered_comparison_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(unrelated_comparison),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+            "runtime package with unrelated comparison before matching comparison",
+        )
+        filtered_comparison_data = json.loads(filtered_comparison_package.read_text())
+        if filtered_comparison_data.get("simulator_report_identities") != [
+            "vecsum-cgra-sim-report",
+            "sim-comparison-report",
+        ]:
+            raise AssertionError(
+                f"runtime package should select matching comparison report: {filtered_comparison_data}"
+            )
+        if filtered_comparison_data.get("input_artifact_fingerprints") != expected_input_fingerprints:
+            raise AssertionError(
+                f"runtime package should fingerprint only matching comparison inputs: {filtered_comparison_data}"
+            )
+
         fallback_features = {
             "require_acceleration": "require_acceleration_policy",
             "allow_host_fallback": "host_fallback_policy",

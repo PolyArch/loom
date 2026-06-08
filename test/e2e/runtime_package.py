@@ -91,6 +91,26 @@ def path_with_artifact_identity(paths: list[Path], identity: str) -> Path | None
     return None
 
 
+def matching_cgra_comparison_inputs(
+    grouped: dict[str, list[Path]],
+) -> tuple[Path, Path, Path, dict[str, object]] | None:
+    mapping_paths = grouped.get("pnr_mapping_artifact", [])
+    cgra_paths = grouped.get("cgra_sim_report", [])
+    for comparison_path in grouped.get("sim_comparison_report", []):
+        comparison = read_json(comparison_path)
+        mapping_path = path_with_artifact_identity(
+            mapping_paths,
+            string_field(comparison, "mapping_artifact_identity"),
+        )
+        cgra_path = path_with_artifact_identity(
+            cgra_paths,
+            string_field(comparison, "cgra_sim_report_identity"),
+        )
+        if mapping_path is not None and cgra_path is not None:
+            return comparison_path, mapping_path, cgra_path, comparison
+    return None
+
+
 def diagnostic_class(message: str) -> str:
     if "requires RTL" in message:
         return "missing_rtl_artifact"
@@ -458,19 +478,10 @@ def build_package(
     rtl_manifest_path = None
 
     comparison = read_json(comparison_path)
-    if target == "cgra-sim" and comparison:
-        comparison_mapping_path = path_with_artifact_identity(
-            grouped.get("pnr_mapping_artifact", []),
-            string_field(comparison, "mapping_artifact_identity"),
-        )
-        comparison_cgra_path = path_with_artifact_identity(
-            grouped.get("cgra_sim_report", []),
-            string_field(comparison, "cgra_sim_report_identity"),
-        )
-        if comparison_mapping_path is not None:
-            mapping_path = comparison_mapping_path
-        if comparison_cgra_path is not None:
-            cgra_path = comparison_cgra_path
+    if target == "cgra-sim":
+        comparison_inputs = matching_cgra_comparison_inputs(grouped)
+        if comparison_inputs is not None:
+            comparison_path, mapping_path, cgra_path, comparison = comparison_inputs
 
     mapping = read_json(mapping_path)
     dfg = read_json(dfg_path)
