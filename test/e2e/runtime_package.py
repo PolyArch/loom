@@ -93,6 +93,8 @@ def diagnostic_class(message: str) -> str:
         return "missing_runtime_input_layout"
     if "requires CGRA-sim report" in message or "requires DFG-sim report" in message:
         return "missing_simulator_report"
+    if "mapping artifact is not passing" in message:
+        return "mapping_artifact_failure"
     if "requires mapping artifact" in message or "mapping identity is missing" in message:
         return "missing_mapping_artifact"
     if "fabric ADG identity is missing" in message:
@@ -116,6 +118,7 @@ def failure_domain(message: str) -> str:
     diagnostic = diagnostic_class(message)
     if diagnostic in {
         "missing_mapping_artifact",
+        "mapping_artifact_failure",
         "missing_fabric_adg",
         "stale_artifact_fingerprint",
         "unsupported_target_profile",

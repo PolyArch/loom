@@ -922,6 +922,36 @@ def main() -> int:
         if not expected_diagnostics.issubset(diagnostics):
             raise AssertionError(f"mismatched CGRA-sim diagnostics are incomplete: {mismatched_package_data}")
 
+        blocked_mapping = out_dir / "blocked-pnr-mapping.json"
+        blocked_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        blocked_mapping_data["status"] = "blocked"
+        blocked_mapping.write_text(json.dumps(blocked_mapping_data, indent=2, sort_keys=True) + "\n")
+        blocked_mapping_package = out_dir / "blocked-mapping-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--output",
+                str(blocked_mapping_package),
+                "--artifact",
+                str(blocked_mapping),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with blocked mapping artifact unexpectedly passed")
+        blocked_mapping_data = json.loads(blocked_mapping_package.read_text())
+        blocked_mapping_records = blocked_mapping_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "mapping_artifact_failure"
+            and record.get("failure_domain") == "compiler_artifacts"
+            for record in blocked_mapping_records
+        ):
+            raise AssertionError(f"blocked mapping should be classified as compiler artifact failure: {blocked_mapping_data}")
+
         dfg_mapping_only = out_dir / "dfg-mapping-only-runtime-package.json"
         result = artifact_test_common.run_command(
             repo,
