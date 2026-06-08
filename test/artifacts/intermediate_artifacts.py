@@ -3808,6 +3808,49 @@ def validate_runtime_package_sim_comparison_reference(
         diagnostics.append("runtime package simulation comparison CGRA report does not match package")
 
 
+def validate_runtime_package_simulator_report_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("status") != "pass":
+        return
+    simulator_reports = data.get("simulator_report_identities")
+    if not isinstance(simulator_reports, list):
+        return
+    for identity in simulator_reports:
+        if not isinstance(identity, str) or not identity:
+            continue
+        report = read_resolved_json_reference(path, identity)
+        if report is None:
+            continue
+        kind = report.get("kind")
+        if kind == "cgra_sim_report":
+            if report.get("status") != "pass":
+                diagnostics.append(f"runtime package simulator report {identity!r} is not passing")
+            if report.get("workload") != data.get("workload"):
+                diagnostics.append(f"runtime package simulator report {identity!r} workload does not match package")
+            if not data.get("selected_mapping_artifact_identity"):
+                diagnostics.append("runtime package CGRA simulator report requires mapping artifact identity")
+            mapping = read_resolved_json_reference(path, data.get("selected_mapping_artifact_identity"))
+            if mapping is not None:
+                if mapping.get("kind") != "pnr_mapping":
+                    diagnostics.append("runtime package selected mapping reference has wrong kind")
+                elif report.get("mapping_id") != mapping.get("mapping_id"):
+                    diagnostics.append(f"runtime package simulator report {identity!r} mapping does not match package")
+        elif kind == "dfg_sim_report":
+            if report.get("status") != "pass":
+                diagnostics.append(f"runtime package simulator report {identity!r} is not passing")
+            if report.get("workload") != data.get("workload"):
+                diagnostics.append(f"runtime package simulator report {identity!r} workload does not match package")
+            if data.get("selected_mapping_artifact_identity"):
+                diagnostics.append("runtime package DFG simulator report must not require mapping artifact identity")
+        elif kind == "sim_comparison_report":
+            continue
+        else:
+            diagnostics.append(f"runtime package simulator report {identity!r} has wrong kind")
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -4369,6 +4412,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             argument_descriptors,
         )
         validate_runtime_package_sim_comparison_reference(path, data, diagnostics)
+        validate_runtime_package_simulator_report_references(path, data, diagnostics)
         for identity in input_fingerprints:
             if identity not in artifact_input_references:
                 diagnostics.append(

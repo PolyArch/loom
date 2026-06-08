@@ -1079,6 +1079,37 @@ def main() -> int:
         if not expected_diagnostics.issubset(diagnostics):
             raise AssertionError(f"mismatched CGRA-sim diagnostics are incomplete: {mismatched_package_data}")
 
+        stale_cgra_reference = out_dir / "stale-cgra-reference-runtime-package.json"
+        stale_cgra_reference_data = json.loads(package.read_text())
+        stale_cgra_reference_data["simulator_report_identities"] = ["mismatch-cgra-sim-report"]
+        stale_cgra_reference_data["runtime_report"]["simulator_report_identities"] = [
+            "mismatch-cgra-sim-report"
+        ]
+        for descriptor in stale_cgra_reference_data["argument_descriptors"]:
+            if descriptor.get("name") == "cgra_sim_report":
+                descriptor["identity"] = "mismatch-cgra-sim-report"
+        stale_cgra_reference_data["launch_descriptor"]["argument_descriptors"] = stale_cgra_reference_data[
+            "argument_descriptors"
+        ]
+        stale_cgra_reference_data["input_artifact_fingerprints"].pop("vecsum-cgra-sim-report", None)
+        stale_cgra_reference_data["input_artifact_fingerprints"][
+            "mismatch-cgra-sim-report"
+        ] = artifact_test_common.fingerprint(mismatched_cgra)
+        stale_cgra_reference.write_text(json.dumps(stale_cgra_reference_data, indent=2, sort_keys=True) + "\n")
+        stale_cgra_reference_audit = out_dir / "stale-cgra-reference-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_cgra_reference_audit),
+                str(stale_cgra_reference),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched CGRA report reference unexpectedly passed audit")
+
         blocked_mapping = out_dir / "blocked-pnr-mapping.json"
         blocked_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
         blocked_mapping_data["status"] = "blocked"
