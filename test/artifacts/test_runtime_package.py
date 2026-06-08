@@ -1105,6 +1105,61 @@ def main() -> int:
         if dfg_audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected DFG-sim runtime package audit pass: {dfg_audit_data}")
 
+        dfg_with_mapping_package = out_dir / "dfg-with-mapping-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "dfg-sim",
+                "--output",
+                str(dfg_with_mapping_package),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DFG-sim runtime package with mapping artifact unexpectedly passed")
+        dfg_with_mapping_data = json.loads(dfg_with_mapping_package.read_text())
+        if dfg_with_mapping_data.get("status") != "blocked":
+            raise AssertionError(f"DFG-sim package with mapping should be blocked: {dfg_with_mapping_data}")
+        if dfg_with_mapping_data.get("package_id") != "runtime-package::vecsum::dfg_sim":
+            raise AssertionError(f"DFG-sim package identity should not use mapping id: {dfg_with_mapping_data}")
+        if dfg_with_mapping_data.get("selected_mapping_artifact_identity") != "":
+            raise AssertionError(f"DFG-sim package must not select mapping artifact: {dfg_with_mapping_data}")
+        if dfg_with_mapping_data.get("fabric_adg_identity") != "":
+            raise AssertionError(f"DFG-sim package must not select Fabric ADG: {dfg_with_mapping_data}")
+        if dfg_with_mapping_data.get("input_artifact_fingerprints") != {
+            "vecsum-dfg-sim-report": artifact_test_common.fingerprint(out_dir / "vecsum-dfg-sim-report.json"),
+        }:
+            raise AssertionError(f"DFG-sim package should not consume mapping fingerprints: {dfg_with_mapping_data}")
+        dfg_with_mapping_arguments = dfg_with_mapping_data.get("argument_descriptors", [])
+        if any(
+            isinstance(descriptor, dict) and descriptor.get("name") == "mapping_artifact"
+            for descriptor in dfg_with_mapping_arguments
+        ):
+            raise AssertionError(f"DFG-sim package should not include mapping argument: {dfg_with_mapping_data}")
+        if dfg_with_mapping_data.get("launch_descriptor", {}).get("argument_descriptor_names") != [
+            "runtime_input",
+            "dfg_sim_report",
+        ]:
+            raise AssertionError(f"DFG-sim launch descriptor should only bind DFG inputs: {dfg_with_mapping_data}")
+        dfg_with_mapping_audit = out_dir / "dfg-with-mapping-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(dfg_with_mapping_audit),
+                str(dfg_with_mapping_package),
+            ],
+            "blocked DFG-sim runtime package with ignored mapping audit",
+        )
+
         rtl_package = out_dir / "rtl-runtime-package.json"
         result = artifact_test_common.run_command(
             repo,

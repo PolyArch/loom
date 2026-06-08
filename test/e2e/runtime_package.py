@@ -530,12 +530,25 @@ def build_package(
         if target in {"cgra-sim", "dfg-sim"}:
             diagnostics.append("simulator target requires simulated data movement policy")
 
-    package_id = f"runtime-package::{workload}::{mapping_id}" if workload != "unknown" else "runtime-package::blocked"
-    work_package_identity = f"work-package::{workload}::{mapping_id}" if workload != "unknown" else ""
+    consumed_mapping_path = mapping_path if target in {"cgra-sim", "rtl-sim", "hardware"} else None
+    consumed_dfg_path = dfg_path if target == "dfg-sim" else None
+    consumed_cgra_path = cgra_path if target == "cgra-sim" else None
+    consumed_comparison_path = comparison_path if target == "cgra-sim" else None
+    consumed_rtl_manifest_path = rtl_manifest_path if target == "rtl-sim" else None
+    package_mapping_id = (
+        string_field(mapping, "mapping_id")
+        if consumed_mapping_path is not None and string_field(mapping, "mapping_id")
+        else target.replace("-", "_")
+    )
+
+    package_id = (
+        f"runtime-package::{workload}::{package_mapping_id}" if workload != "unknown" else "runtime-package::blocked"
+    )
+    work_package_identity = f"work-package::{workload}::{package_mapping_id}" if workload != "unknown" else ""
     host_program_identity = f"test-app-host::{workload}::default" if workload != "unknown" else ""
-    host_wrapper_identity = f"runtime-wrapper::{workload}::{mapping_id}" if workload != "unknown" else ""
+    host_wrapper_identity = f"runtime-wrapper::{workload}::{package_mapping_id}" if workload != "unknown" else ""
     launch_descriptor_identity = (
-        f"launch::{workload}::{mapping_id}::{runtime_input}" if workload != "unknown" else ""
+        f"launch::{workload}::{package_mapping_id}::{runtime_input}" if workload != "unknown" else ""
     )
     memory_descriptors: list[dict[str, object]] = []
     if workload != "unknown" and runtime_input:
@@ -563,43 +576,43 @@ def build_package(
                 "descriptor_kind": "test_fixture",
             }
         )
-    if mapping_path is not None:
+    if consumed_mapping_path is not None:
         argument_descriptors.append(
             {
                 "name": "mapping_artifact",
-                "identity": artifact_id(mapping_path),
+                "identity": artifact_id(consumed_mapping_path),
                 "descriptor_kind": "pnr_mapping_artifact",
             }
         )
-    if dfg_path is not None:
+    if consumed_dfg_path is not None:
         argument_descriptors.append(
             {
                 "name": "dfg_sim_report",
-                "identity": artifact_id(dfg_path),
+                "identity": artifact_id(consumed_dfg_path),
                 "descriptor_kind": "dfg_sim_report",
             }
         )
-    if target == "cgra-sim" and cgra_path is not None:
+    if consumed_cgra_path is not None:
         argument_descriptors.append(
             {
                 "name": "cgra_sim_report",
-                "identity": artifact_id(cgra_path),
+                "identity": artifact_id(consumed_cgra_path),
                 "descriptor_kind": "cgra_sim_report",
             }
         )
-    if target == "cgra-sim" and comparison_path is not None:
+    if consumed_comparison_path is not None:
         argument_descriptors.append(
             {
                 "name": "sim_comparison_report",
-                "identity": artifact_id(comparison_path),
+                "identity": artifact_id(consumed_comparison_path),
                 "descriptor_kind": "sim_comparison_report",
             }
         )
-    if rtl_manifest_path is not None:
+    if consumed_rtl_manifest_path is not None:
         argument_descriptors.append(
             {
                 "name": "rtl_manifest",
-                "identity": artifact_id(rtl_manifest_path),
+                "identity": artifact_id(consumed_rtl_manifest_path),
                 "descriptor_kind": "rtl_manifest",
             }
         )
@@ -615,8 +628,8 @@ def build_package(
             "explicit_mapping_artifact",
             fallback_feature(fallback_policy),
         ]
-        simulator_report_identities = report_identities([cgra_path, comparison_path])
-        selected_mapping_identity = artifact_id(mapping_path)
+        simulator_report_identities = report_identities([consumed_cgra_path, consumed_comparison_path])
+        selected_mapping_identity = artifact_id(consumed_mapping_path)
         fabric_adg_identity = hardware
     elif target == "dfg-sim":
         target_profile = {
@@ -629,7 +642,7 @@ def build_package(
             "software_dataflow_report",
             fallback_feature(fallback_policy),
         ]
-        simulator_report_identities = report_identities([dfg_path])
+        simulator_report_identities = report_identities([consumed_dfg_path])
         selected_mapping_identity = ""
         fabric_adg_identity = ""
     elif target == "rtl-sim":
@@ -645,7 +658,7 @@ def build_package(
             fallback_feature(fallback_policy),
         ]
         simulator_report_identities = []
-        selected_mapping_identity = artifact_id(mapping_path)
+        selected_mapping_identity = artifact_id(consumed_mapping_path)
         fabric_adg_identity = hardware
     else:
         target_profile = {
@@ -660,7 +673,7 @@ def build_package(
             fallback_feature(fallback_policy),
         ]
         simulator_report_identities = []
-        selected_mapping_identity = artifact_id(mapping_path)
+        selected_mapping_identity = artifact_id(consumed_mapping_path)
         fabric_adg_identity = hardware
 
     status = "pass" if not diagnostics else "blocked"
@@ -685,7 +698,7 @@ def build_package(
     )
     runtime_report_data = runtime_report(
         workload=workload,
-        mapping_id=mapping_id,
+        mapping_id=package_mapping_id,
         host_program_identity=host_program_identity,
         host_wrapper_identity=host_wrapper_identity,
         work_package_identity=work_package_identity,
@@ -738,7 +751,13 @@ def build_package(
             synchronization_mode=synchronization_mode,
         ),
         "input_artifact_fingerprints": input_artifact_fingerprints(
-            [mapping_path, dfg_path, cgra_path, comparison_path, rtl_manifest_path]
+            [
+                consumed_mapping_path,
+                consumed_dfg_path,
+                consumed_cgra_path,
+                consumed_comparison_path,
+                consumed_rtl_manifest_path,
+            ]
         ),
         "runtime_report": runtime_report_data,
         "report_output_configuration": report_output_configuration(runtime_report_data, launch_descriptor),
