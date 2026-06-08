@@ -2172,6 +2172,24 @@ def main() -> int:
         alternate_mapping_data["runtime_evidence"]["launch_descriptor"][
             "selected_mapping_artifact_identity"
         ] = "alternate-mapping"
+        unselected_metric_id = "metric::vecsum::unselected_runtime"
+        alternate_mapping_data["metric_records"].append(
+            {
+                "metric_id": unselected_metric_id,
+                "metric_class": "estimated_runtime",
+                "value": 1.0,
+                "unit": "us",
+                "fidelity_level": "cgra_mapped",
+                "evidence_source_artifact_id": "alternate-mapping",
+                "producer_component": "workload-report-bundle",
+                "derivation_kind": "cycle_frequency_runtime",
+                "diagnostics": [],
+                "input_metric_ids": [
+                    "metric::vecsum::cgra_sim_cycles",
+                    "metric::shared_reduction_adg::frequency_mhz",
+                ],
+            }
+        )
         alternate_mapping_workload_report.write_text(
             json.dumps(alternate_mapping_data, indent=2, sort_keys=True) + "\n"
         )
@@ -2211,6 +2229,11 @@ def main() -> int:
         if filtered_mapping_summary_ids != ["workload-report-bundle"]:
             raise AssertionError(
                 f"DSE report should summarize selected mapping runtime evidence: {filtered_mapping_data}"
+            )
+        filtered_mapping_candidate = filtered_mapping_data.get("candidate_list", [])[0]
+        if unselected_metric_id in filtered_mapping_candidate.get("metric_records_used", []):
+            raise AssertionError(
+                f"DSE report should not cite metrics from unselected workload reports: {filtered_mapping_data}"
             )
 
         wrong_kind_workload_report = out_dir / "wrong-kind-workload-report-bundle.json"

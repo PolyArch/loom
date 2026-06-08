@@ -329,7 +329,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "diagnostics": diagnostics,
         }
 
-    workload_metric_ids = workload_metric_ids_by_workload(grouped.get("workload_report_bundle", []))
+    workload_metric_ids = workload_metric_ids_by_workload(workload_report_paths)
     candidates: list[dict[str, object]] = []
     selected_candidates: list[str] = []
     pareto_set: list[str] = []
