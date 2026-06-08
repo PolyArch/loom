@@ -43,11 +43,11 @@ def selected_dse_row(paths: list[Path]) -> tuple[Path, dict[str, str]] | None:
     return None
 
 
-def matching_row(paths: list[Path], key: str, value: str) -> dict[str, str] | None:
+def matching_row(paths: list[Path], key: str, value: str) -> tuple[Path, dict[str, str]] | None:
     for path in paths:
         for row in read_csv(path):
             if row.get(key) == value:
-                return row
+                return path, row
     return None
 
 
@@ -334,8 +334,18 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     workload = dse_row["workload"]
     hardware = dse_row["hardware"]
     mapping_id = dse_row["mapping_id"]
-    source_path = first_path(grouped, "source_compat")
-    compiler_path = first_path(grouped, "compiler_pipeline")
+    source_match = matching_row(grouped.get("source_compat", []), "case", workload)
+    if source_match is None:
+        source_path = None
+        source_row = None
+    else:
+        source_path, source_row = source_match
+    compiler_match = matching_row(grouped.get("compiler_pipeline", []), "case", workload)
+    if compiler_match is None:
+        compiler_path = None
+        compiler_row = None
+    else:
+        compiler_path, compiler_row = compiler_match
     mapping_path = matching_mapping_artifact_path(
         grouped.get("pnr_mapping_artifact", []),
         workload,
@@ -384,8 +394,6 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     runtime_host_interface = runtime_package.get("host_interface", {})
     if not isinstance(runtime_host_interface, dict):
         runtime_host_interface = {}
-    source_row = matching_row(grouped.get("source_compat", []), "case", workload)
-    compiler_row = matching_row(grouped.get("compiler_pipeline", []), "case", workload)
 
     diagnostics: list[str] = []
     if source_row is None:

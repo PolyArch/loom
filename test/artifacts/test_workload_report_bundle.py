@@ -534,6 +534,87 @@ def main() -> int:
         if "unrelated-rtl-fpa-summary" in filtered_fpa_data["input_artifact_fingerprints"]:
             raise AssertionError(f"workload report should not fingerprint unrelated FPA summary: {filtered_fpa_data}")
 
+        unrelated_source_summary = out_dir / "unrelated-source-compat-summary.csv"
+        with (out_dir / "source-compat-summary.csv").open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            unrelated_source_rows = list(reader)
+        for row in unrelated_source_rows:
+            row["case"] = "other_workload"
+        with unrelated_source_summary.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(unrelated_source_rows)
+        unrelated_compiler_summary = out_dir / "unrelated-compiler-pipeline-summary.csv"
+        with (out_dir / "compiler-pipeline-summary.csv").open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            unrelated_compiler_rows = list(reader)
+        for row in unrelated_compiler_rows:
+            row["case"] = "other_workload"
+        with unrelated_compiler_summary.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(unrelated_compiler_rows)
+        filtered_frontend_report = out_dir / "filtered-frontend-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_frontend_report),
+                "--artifact",
+                str(unrelated_source_summary),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(unrelated_compiler_summary),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unrelated frontend summaries",
+        )
+        filtered_frontend_data = json.loads(filtered_frontend_report.read_text())
+        if filtered_frontend_data["source_artifact_identity"] != "source-compat-summary":
+            raise AssertionError(
+                f"workload report should reference selected source summary: {filtered_frontend_data}"
+            )
+        if filtered_frontend_data["compiler_command_identity"] != "compiler-pipeline-summary":
+            raise AssertionError(
+                f"workload report should reference selected compiler summary: {filtered_frontend_data}"
+            )
+        if "unrelated-source-compat-summary" in filtered_frontend_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint unrelated source summary: {filtered_frontend_data}"
+            )
+        if "unrelated-compiler-pipeline-summary" in filtered_frontend_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint unrelated compiler summary: {filtered_frontend_data}"
+            )
+
         unrelated_dfg_report = out_dir / "unrelated-dfg-sim-report.json"
         unrelated_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
         unrelated_dfg_data["workload"] = "other_workload"
