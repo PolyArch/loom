@@ -2187,6 +2187,8 @@ EXPECTED_RUNTIME_ARGUMENT_DESCRIPTOR_KIND_BY_NAME = {
     "runtime_input": "test_fixture",
     "mapping_artifact": "pnr_mapping_artifact",
     "dfg_sim_report": "dfg_sim_report",
+    "cgra_sim_report": "cgra_sim_report",
+    "sim_comparison_report": "sim_comparison_report",
     "rtl_manifest": "rtl_manifest",
 }
 EXPECTED_REPORT_METRIC_UNIT_BY_CLASS = {
@@ -2256,6 +2258,17 @@ def runtime_argument_identity_expectations(context: dict[str, object]) -> dict[s
         mapping_identity = context.get("mapping_artifact_identity")
     if isinstance(mapping_identity, str) and mapping_identity:
         expectations["mapping_artifact"] = mapping_identity
+    simulator_report_identities = context.get("simulator_report_identities")
+    if isinstance(simulator_report_identities, list):
+        for identity in simulator_report_identities:
+            if not isinstance(identity, str) or not identity:
+                continue
+            if identity.endswith("dfg-sim-report"):
+                expectations["dfg_sim_report"] = identity
+            elif identity.endswith("cgra-sim-report"):
+                expectations["cgra_sim_report"] = identity
+            elif identity.endswith("sim-comparison-report"):
+                expectations["sim_comparison_report"] = identity
     return expectations
 
 

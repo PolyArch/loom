@@ -131,7 +131,13 @@ def main() -> int:
             raise AssertionError(f"launch descriptor missed target profile: {data}")
         if launch_descriptor.get("memory_descriptor_logical_arguments") != ["vecsum.default_input"]:
             raise AssertionError(f"launch descriptor missed memory descriptor bindings: {data}")
-        if launch_descriptor.get("argument_descriptor_names") != ["runtime_input", "mapping_artifact"]:
+        expected_argument_descriptor_names = [
+            "runtime_input",
+            "mapping_artifact",
+            "cgra_sim_report",
+            "sim_comparison_report",
+        ]
+        if launch_descriptor.get("argument_descriptor_names") != expected_argument_descriptor_names:
             raise AssertionError(f"launch descriptor missed argument descriptors: {data}")
         if launch_descriptor.get("argument_descriptors") != data["argument_descriptors"]:
             raise AssertionError(f"launch descriptor should embed argument descriptors: {data}")
@@ -411,8 +417,23 @@ def main() -> int:
             raise AssertionError(f"unexpected memory descriptor: {data}")
         arguments = data.get("argument_descriptors", [])
         argument_names = {item.get("name") for item in arguments if isinstance(item, dict)}
-        if argument_names != {"runtime_input", "mapping_artifact"}:
+        if argument_names != set(expected_argument_descriptor_names):
             raise AssertionError(f"unexpected argument descriptors: {data}")
+        expected_report_arguments = {
+            ("cgra_sim_report", "vecsum-cgra-sim-report", "cgra_sim_report"),
+            ("sim_comparison_report", "sim-comparison-report", "sim_comparison_report"),
+        }
+        actual_report_arguments = {
+            (
+                item.get("name"),
+                item.get("identity"),
+                item.get("descriptor_kind"),
+            )
+            for item in arguments
+            if isinstance(item, dict) and item.get("name") in {"cgra_sim_report", "sim_comparison_report"}
+        }
+        if actual_report_arguments != expected_report_arguments:
+            raise AssertionError(f"runtime package missed simulator report argument descriptors: {data}")
         required_features = set(data.get("required_runtime_features", []))
         if required_features != {"simulator_dispatch", "explicit_mapping_artifact", "report_only_fallback"}:
             raise AssertionError(f"unexpected runtime features: {data}")
@@ -620,6 +641,27 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched mapping argument unexpectedly passed audit")
+        mismatched_cgra_argument = out_dir / "mismatched-cgra-argument-runtime-package.json"
+        mismatched_cgra_argument_data = json.loads(package.read_text())
+        for descriptor in mismatched_cgra_argument_data["argument_descriptors"]:
+            if descriptor.get("name") == "cgra_sim_report":
+                descriptor["identity"] = "pnr-mapping"
+        mismatched_cgra_argument.write_text(
+            json.dumps(mismatched_cgra_argument_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_cgra_argument_audit = out_dir / "mismatched-cgra-argument-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_cgra_argument_audit),
+                str(mismatched_cgra_argument),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched CGRA simulator argument unexpectedly passed audit")
         fake_execution_package = out_dir / "fake-execution-runtime-package.json"
         fake_execution_data = json.loads(package.read_text())
         fake_execution_data["runtime_report"]["launch_status"] = "pass"

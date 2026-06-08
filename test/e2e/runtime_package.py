@@ -579,6 +579,22 @@ def build_package(
                 "descriptor_kind": "dfg_sim_report",
             }
         )
+    if target == "cgra-sim" and cgra_path is not None:
+        argument_descriptors.append(
+            {
+                "name": "cgra_sim_report",
+                "identity": artifact_id(cgra_path),
+                "descriptor_kind": "cgra_sim_report",
+            }
+        )
+    if target == "cgra-sim" and comparison_path is not None:
+        argument_descriptors.append(
+            {
+                "name": "sim_comparison_report",
+                "identity": artifact_id(comparison_path),
+                "descriptor_kind": "sim_comparison_report",
+            }
+        )
     if rtl_manifest_path is not None:
         argument_descriptors.append(
             {
