@@ -499,6 +499,53 @@ def main() -> int:
         }
         if data["report_output_configuration"] != expected_report_output_configuration:
             raise AssertionError(f"unexpected report output configuration: {data}")
+        requested_report_outputs = out_dir / "requested-report-outputs-runtime-package.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--enable-runtime-trace",
+                "--enable-runtime-profiling",
+                "--output",
+                str(requested_report_outputs),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+            ],
+            "runtime package with requested report outputs",
+        )
+        requested_report_data = json.loads(requested_report_outputs.read_text())
+        requested_launch = requested_report_data.get("launch_descriptor", {})
+        if requested_launch.get("trace_settings") != {"enabled": True}:
+            raise AssertionError(f"launch descriptor should preserve trace request: {requested_report_data}")
+        if requested_launch.get("profiling_settings") != {"enabled": True}:
+            raise AssertionError(f"launch descriptor should preserve profiling request: {requested_report_data}")
+        requested_report_configuration = requested_report_data.get("report_output_configuration", {})
+        if requested_report_configuration.get("trace_output_enabled") is not True:
+            raise AssertionError(f"report output should enable trace projection: {requested_report_data}")
+        if requested_report_configuration.get("profiling_output_enabled") is not True:
+            raise AssertionError(f"report output should enable profiling projection: {requested_report_data}")
+        requested_runtime_report = requested_report_data.get("runtime_report", {})
+        if requested_runtime_report.get("runtime_trace_identity") != "":
+            raise AssertionError(f"report-only runtime package must not claim trace output: {requested_report_data}")
+        if requested_runtime_report.get("profiling_record_identity") != "":
+            raise AssertionError(f"report-only runtime package must not claim profiling output: {requested_report_data}")
+        requested_report_outputs_audit = out_dir / "requested-report-outputs-runtime-package-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(requested_report_outputs_audit),
+                str(requested_report_outputs),
+            ],
+            "runtime package audit with requested report outputs",
+        )
         if data["synchronization_mode"] != "host_wait":
             raise AssertionError(f"unexpected synchronization mode: {data}")
         if data["data_movement_policy"] != "simulated":

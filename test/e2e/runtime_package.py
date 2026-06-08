@@ -54,6 +54,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--fallback-policy", choices=FALLBACK_POLICIES, default="report_only")
     parser.add_argument("--synchronization-mode", choices=SYNCHRONIZATION_MODES, default="host_wait")
     parser.add_argument("--platform-binding", default="")
+    parser.add_argument("--enable-runtime-trace", action="store_true")
+    parser.add_argument("--enable-runtime-profiling", action="store_true")
     parser.add_argument("--output", required=True)
     parser.add_argument("--artifact", action="append", default=[])
     return parser.parse_args(argv)
@@ -315,6 +317,8 @@ def build_launch_descriptor(
     argument_descriptors: list[dict[str, str]],
     fallback_policy: str,
     synchronization_mode: str,
+    runtime_trace_enabled: bool,
+    runtime_profiling_enabled: bool,
 ) -> dict[str, object]:
     return {
         "descriptor_id": descriptor_id,
@@ -338,8 +342,8 @@ def build_launch_descriptor(
         "target_profile_id": target_profile.get("profile_id", ""),
         "fallback_policy": fallback_policy,
         "synchronization_mode": synchronization_mode,
-        "profiling_settings": {"enabled": False},
-        "trace_settings": {"enabled": False},
+        "profiling_settings": {"enabled": runtime_profiling_enabled},
+        "trace_settings": {"enabled": runtime_trace_enabled},
     }
 
 
@@ -548,6 +552,8 @@ def build_package(
     platform_binding: str,
     fallback_policy: str,
     synchronization_mode: str,
+    runtime_trace_enabled: bool,
+    runtime_profiling_enabled: bool,
 ) -> dict[str, object]:
     grouped = group_paths(paths)
     mapping_path = first_path(grouped, "pnr_mapping_artifact")
@@ -827,6 +833,8 @@ def build_package(
         argument_descriptors=argument_descriptors,
         fallback_policy=fallback_policy,
         synchronization_mode=synchronization_mode,
+        runtime_trace_enabled=runtime_trace_enabled,
+        runtime_profiling_enabled=runtime_profiling_enabled,
     )
     runtime_report_data = runtime_report(
         workload=workload,
@@ -925,6 +933,8 @@ def main(argv: list[str]) -> int:
         args.platform_binding,
         args.fallback_policy,
         args.synchronization_mode,
+        args.enable_runtime_trace,
+        args.enable_runtime_profiling,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(package, indent=2, sort_keys=True) + "\n")
