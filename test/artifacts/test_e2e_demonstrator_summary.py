@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -154,6 +155,150 @@ def main() -> int:
                 raise AssertionError(f"{key}={row[key]!r}, expected {value!r}: {row}")
         if "workload report bundle is not available yet" not in row.get("diagnostic", ""):
             raise AssertionError(f"unexpected diagnostic: {row}")
+
+        unregistered_report = out_dir / "unregistered-workload-report-bundle.json"
+        unregistered_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "workload_report_bundle",
+                    "bundle_id": "workload::vecadd::test/fabric/unit/pe/valid.mlir::pe_two_pes",
+                    "workload": "vecadd",
+                    "selected_hardware_candidate_identity": "test/fabric/unit/pe/valid.mlir::pe_two_pes",
+                    "report_status": "pass",
+                    "diagnostics": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        unregistered_output = out_dir / "unregistered-report-e2e-demonstrator-summary.csv"
+        unregistered_rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/e2e/run_demonstrator_summary.sh",
+            unregistered_output,
+            HEADER,
+            "--artifact",
+            str(source),
+            "--artifact",
+            str(hardware),
+            "--artifact",
+            str(mapping),
+            "--artifact",
+            str(sim),
+            "--artifact",
+            str(rtl_fpa),
+            "--artifact",
+            str(unregistered_report),
+            "--artifact",
+            str(manifest),
+            label="unregistered report demonstrator summary",
+        )
+        matches = [
+            row
+            for row in unregistered_rows
+            if "vecadd" in row["demonstrator"] and row["demonstrator"].endswith("pe_two_pes")
+        ]
+        if len(matches) != 1:
+            raise AssertionError(f"expected one unregistered report row, got {unregistered_rows}")
+        if matches[0]["report_status"] != "blocked":
+            raise AssertionError(
+                "report bundles that are absent from the artifact manifest must not satisfy a demonstrator: "
+                f"{matches[0]}"
+            )
+        if "artifact manifest" not in matches[0].get("diagnostic", ""):
+            raise AssertionError(f"unregistered report diagnostic should name manifest membership: {matches[0]}")
+
+        no_manifest_output = out_dir / "no-manifest-report-e2e-demonstrator-summary.csv"
+        no_manifest_rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/e2e/run_demonstrator_summary.sh",
+            no_manifest_output,
+            HEADER,
+            "--artifact",
+            str(source),
+            "--artifact",
+            str(hardware),
+            "--artifact",
+            str(mapping),
+            "--artifact",
+            str(sim),
+            "--artifact",
+            str(rtl_fpa),
+            "--artifact",
+            str(unregistered_report),
+            label="no manifest report demonstrator summary",
+        )
+        matches = [
+            row
+            for row in no_manifest_rows
+            if "vecadd" in row["demonstrator"] and row["demonstrator"].endswith("pe_two_pes")
+        ]
+        if len(matches) != 1:
+            raise AssertionError(f"expected one no-manifest report row, got {no_manifest_rows}")
+        if matches[0]["report_status"] != "blocked":
+            raise AssertionError(
+                "report bundles must not satisfy a demonstrator without artifact manifest evidence: "
+                f"{matches[0]}"
+            )
+        if "artifact manifest" not in matches[0].get("diagnostic", ""):
+            raise AssertionError(f"no-manifest report diagnostic should name manifest membership: {matches[0]}")
+
+        unregistered_hardware_report = out_dir / "unregistered-hardware-report-bundle.json"
+        unregistered_hardware_report.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "hardware_report_bundle",
+                    "bundle_id": "hardware::test/fabric/unit/pe/valid.mlir::pe_two_pes",
+                    "hardware_candidate_identity": "test/fabric/unit/pe/valid.mlir::pe_two_pes",
+                    "report_status": "pass",
+                    "diagnostics": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        unregistered_hardware_output = out_dir / "unregistered-hardware-e2e-demonstrator-summary.csv"
+        unregistered_hardware_rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/e2e/run_demonstrator_summary.sh",
+            unregistered_hardware_output,
+            HEADER,
+            "--artifact",
+            str(source),
+            "--artifact",
+            str(hardware),
+            "--artifact",
+            str(mapping),
+            "--artifact",
+            str(sim),
+            "--artifact",
+            str(rtl_fpa),
+            "--artifact",
+            str(unregistered_hardware_report),
+            "--artifact",
+            str(manifest),
+            label="unregistered hardware demonstrator summary",
+        )
+        hardware_matches = [
+            row
+            for row in unregistered_hardware_rows
+            if row["demonstrator"] == "hardware::test/fabric/unit/pe/valid.mlir::pe_two_pes"
+        ]
+        if len(hardware_matches) != 1:
+            raise AssertionError(f"expected one unregistered hardware report row, got {unregistered_hardware_rows}")
+        if hardware_matches[0]["report_status"] != "blocked":
+            raise AssertionError(
+                "hardware report bundles that are absent from the artifact manifest must not satisfy a demonstrator: "
+                f"{hardware_matches[0]}"
+            )
+        if "artifact manifest" not in hardware_matches[0].get("diagnostic", ""):
+            raise AssertionError(
+                f"unregistered hardware report diagnostic should name manifest membership: {hardware_matches[0]}"
+            )
 
         hardware_matches = [
             row for row in rows

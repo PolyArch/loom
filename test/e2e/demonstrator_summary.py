@@ -92,6 +92,29 @@ def manifest_status(manifest_paths: list[Path]) -> str:
     return aggregate_statuses(statuses)
 
 
+def manifest_artifact_ids(manifest_paths: list[Path]) -> set[str]:
+    identities: set[str] = set()
+    for path in manifest_paths:
+        data = read_json(path)
+        artifacts = data.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            identity = artifact.get("id")
+            if isinstance(identity, str) and identity:
+                identities.add(identity)
+    return identities
+
+
+def report_bundle_is_registered(grouped: dict[str, list[Path]], path: Path) -> bool:
+    manifest_paths = grouped.get("artifact_manifest", [])
+    if not manifest_paths:
+        return False
+    return intermediate_artifacts.artifact_id_for_path(path) in manifest_artifact_ids(manifest_paths)
+
+
 def sim_status(sim_paths: list[Path], workload: str) -> str:
     statuses: list[str] = []
     for path in sim_paths:
@@ -146,7 +169,7 @@ def matching_report_bundle(
     workload: str,
     hardware: str,
     mapping_id: str,
-) -> dict[str, object] | None:
+) -> tuple[Path, dict[str, object]] | None:
     expected_suffix = f"::{mapping_id}" if mapping_id else ""
     for path in report_paths:
         data = read_json(path)
@@ -159,7 +182,7 @@ def matching_report_bundle(
         bundle_id = data.get("bundle_id", "")
         if expected_suffix and (not isinstance(bundle_id, str) or not bundle_id.endswith(expected_suffix)):
             continue
-        return data
+        return path, data
     return None
 
 
@@ -169,9 +192,12 @@ def report_bundle_status(
     hardware: str,
     mapping_id: str,
 ) -> tuple[str, str]:
-    bundle = matching_report_bundle(grouped.get("workload_report_bundle", []), workload, hardware, mapping_id)
-    if bundle is None:
+    match = matching_report_bundle(grouped.get("workload_report_bundle", []), workload, hardware, mapping_id)
+    if match is None:
         return "blocked", "workload report bundle is not available yet"
+    path, bundle = match
+    if not report_bundle_is_registered(grouped, path):
+        return "blocked", "workload report bundle is absent from the artifact manifest"
     status = bundle.get("report_status", "blocked")
     if not isinstance(status, str) or not status:
         return "blocked", "workload report bundle has no report status"
@@ -186,21 +212,24 @@ def report_bundle_status(
 def matching_hardware_report_bundle(
     report_paths: list[Path],
     hardware: str,
-) -> dict[str, object] | None:
+) -> tuple[Path, dict[str, object]] | None:
     for path in report_paths:
         data = read_json(path)
         if data.get("kind") != "hardware_report_bundle":
             continue
         if data.get("hardware_candidate_identity") != hardware:
             continue
-        return data
+        return path, data
     return None
 
 
 def hardware_report_status(grouped: dict[str, list[Path]], hardware: str) -> tuple[str, str]:
-    bundle = matching_hardware_report_bundle(grouped.get("hardware_report_bundle", []), hardware)
-    if bundle is None:
+    match = matching_hardware_report_bundle(grouped.get("hardware_report_bundle", []), hardware)
+    if match is None:
         return "blocked", "hardware candidate verified; hardware-only report bundle is not available yet"
+    path, bundle = match
+    if not report_bundle_is_registered(grouped, path):
+        return "blocked", "hardware report bundle is absent from the artifact manifest"
     status = bundle.get("report_status", "blocked")
     if not isinstance(status, str) or not status:
         return "blocked", "hardware report bundle has no report status"
