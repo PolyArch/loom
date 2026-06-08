@@ -357,6 +357,60 @@ def main() -> int:
                 f"workload report should summarize only selected runtime evidence: {filtered_runtime_data}"
             )
 
+        unrelated_mapping_artifact = out_dir / "unrelated-pnr-mapping.json"
+        unrelated_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        unrelated_mapping_data["workload"] = "other_workload"
+        unrelated_mapping_data["hardware"] = "other_hardware"
+        unrelated_mapping_data["mapping_id"] = "other_mapping"
+        unrelated_mapping_data["graph"] = "other_graph"
+        unrelated_mapping_artifact.write_text(json.dumps(unrelated_mapping_data, indent=2, sort_keys=True) + "\n")
+        filtered_mapping_report = out_dir / "filtered-mapping-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_mapping_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(unrelated_mapping_artifact),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unrelated mapping artifact",
+        )
+        filtered_mapping_data = json.loads(filtered_mapping_report.read_text())
+        if filtered_mapping_data["selected_mapping_artifact_identity"] != "pnr-mapping":
+            raise AssertionError(f"workload report should ignore unrelated mapping artifact: {filtered_mapping_data}")
+        if "unrelated-pnr-mapping" in filtered_mapping_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"workload report should not fingerprint unrelated mapping artifact: {filtered_mapping_data}"
+            )
+
         unrelated_dfg_report = out_dir / "unrelated-dfg-sim-report.json"
         unrelated_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
         unrelated_dfg_data["workload"] = "other_workload"

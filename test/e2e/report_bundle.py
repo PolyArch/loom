@@ -59,6 +59,33 @@ def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> dic
     return None
 
 
+def mapping_artifact_matches(data: dict[str, object], workload: str, hardware: str, mapping_id: str) -> bool:
+    if data.get("kind") != "pnr_mapping":
+        return False
+    report_workload = data.get("workload")
+    if isinstance(report_workload, str) and report_workload != workload:
+        return False
+    report_hardware = data.get("hardware")
+    if isinstance(report_hardware, str) and report_hardware and not hardware_matches(report_hardware, hardware):
+        return False
+    report_mapping = data.get("mapping_id")
+    if isinstance(report_mapping, str) and report_mapping and report_mapping != mapping_id:
+        return False
+    return True
+
+
+def matching_mapping_artifact_path(
+    paths: list[Path],
+    workload: str,
+    hardware: str,
+    mapping_id: str,
+) -> Path | None:
+    for path in paths:
+        if mapping_artifact_matches(read_json(path), workload, hardware, mapping_id):
+            return path
+    return None
+
+
 def dfg_report_matches(data: dict[str, object], workload: str, graph: str) -> bool:
     if data.get("kind") != "dfg_sim_report":
         return False
@@ -309,7 +336,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     mapping_id = dse_row["mapping_id"]
     source_path = first_path(grouped, "source_compat")
     compiler_path = first_path(grouped, "compiler_pipeline")
-    mapping_path = first_path(grouped, "pnr_mapping_artifact")
+    mapping_path = matching_mapping_artifact_path(
+        grouped.get("pnr_mapping_artifact", []),
+        workload,
+        hardware,
+        mapping_id,
+    )
     mapping_artifact = read_json(mapping_path) if mapping_path is not None else {}
     dfg_path = matching_dfg_report_path(
         grouped.get("dfg_sim_report", []),
