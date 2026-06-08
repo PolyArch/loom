@@ -1110,6 +1110,44 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("runtime package with mismatched CGRA report reference unexpectedly passed audit")
 
+        stale_cgra_hardware_identity = "stale-cgra-hardware-cgra-sim-report"
+        stale_cgra_hardware = out_dir / f"{stale_cgra_hardware_identity}.json"
+        stale_cgra_hardware_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
+        stale_cgra_hardware_data["hardware"] = "other_hardware"
+        stale_cgra_hardware.write_text(json.dumps(stale_cgra_hardware_data, indent=2, sort_keys=True) + "\n")
+        stale_cgra_hardware_package = out_dir / "stale-cgra-hardware-runtime-package.json"
+        stale_cgra_hardware_package_data = json.loads(package.read_text())
+        stale_cgra_hardware_package_data["simulator_report_identities"] = [stale_cgra_hardware_identity]
+        stale_cgra_hardware_package_data["runtime_report"]["simulator_report_identities"] = [
+            stale_cgra_hardware_identity
+        ]
+        for descriptor in stale_cgra_hardware_package_data["argument_descriptors"]:
+            if descriptor.get("name") == "cgra_sim_report":
+                descriptor["identity"] = stale_cgra_hardware_identity
+        stale_cgra_hardware_package_data["launch_descriptor"]["argument_descriptors"] = (
+            stale_cgra_hardware_package_data["argument_descriptors"]
+        )
+        stale_cgra_hardware_package_data["input_artifact_fingerprints"].pop("vecsum-cgra-sim-report", None)
+        stale_cgra_hardware_package_data["input_artifact_fingerprints"][
+            stale_cgra_hardware_identity
+        ] = artifact_test_common.fingerprint(stale_cgra_hardware)
+        stale_cgra_hardware_package.write_text(
+            json.dumps(stale_cgra_hardware_package_data, indent=2, sort_keys=True) + "\n"
+        )
+        stale_cgra_hardware_audit = out_dir / "stale-cgra-hardware-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_cgra_hardware_audit),
+                str(stale_cgra_hardware_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with mismatched CGRA hardware unexpectedly passed audit")
+
         stale_mapping_hardware = out_dir / "stale-mapping-hardware-runtime-package.json"
         stale_mapping_hardware_data = json.loads(package.read_text())
         stale_mapping_hardware_data["fabric_adg_identity"] = "other_hardware"

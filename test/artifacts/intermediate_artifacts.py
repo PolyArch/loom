@@ -3830,6 +3830,8 @@ def validate_runtime_package_simulator_report_references(
                 diagnostics.append(f"runtime package simulator report {identity!r} is not passing")
             if report.get("workload") != data.get("workload"):
                 diagnostics.append(f"runtime package simulator report {identity!r} workload does not match package")
+            if not hardware_identity_matches(report.get("hardware"), data.get("fabric_adg_identity")):
+                diagnostics.append(f"runtime package simulator report {identity!r} hardware does not match package")
             if not data.get("selected_mapping_artifact_identity"):
                 diagnostics.append("runtime package CGRA simulator report requires mapping artifact identity")
             mapping = read_resolved_json_reference(path, data.get("selected_mapping_artifact_identity"))
