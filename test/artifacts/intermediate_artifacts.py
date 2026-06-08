@@ -3393,6 +3393,29 @@ def validate_hardware_report_fpa_references(
             )
 
 
+def validate_hardware_report_rtl_manifest_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    manifest = read_resolved_json_reference(path, data.get("rtl_manifest_identity"))
+    if manifest is None:
+        return
+    if manifest.get("kind") != "rtl_manifest":
+        diagnostics.append("hardware report bundle RTL manifest reference has wrong kind")
+        return
+    if manifest.get("status") != "pass":
+        diagnostics.append("hardware report bundle RTL manifest reference is not passing")
+    source_fabric = manifest.get("source_fabric_adg_identity")
+    if not (
+        hardware_identity_matches(source_fabric, data.get("fabric_adg_identity"))
+        or hardware_identity_matches(source_fabric, data.get("hardware_candidate_identity"))
+    ):
+        diagnostics.append("hardware report bundle RTL manifest source does not match hardware candidate")
+
+
 def read_resolved_json_reference(path: Path, identity: object) -> dict[str, object] | None:
     if not isinstance(identity, str) or not identity:
         return None
@@ -4605,6 +4628,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append("hardware report bundle pass needs supported workload classes")
         validate_hardware_report_input_fingerprints(path, data, diagnostics)
         validate_hardware_report_fpa_references(path, data, diagnostics)
+        validate_hardware_report_rtl_manifest_reference(path, data, diagnostics)
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         if not isinstance(metrics, list) or not metrics:

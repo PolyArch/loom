@@ -183,6 +183,33 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("hardware report with mismatched FPA hardware unexpectedly passed audit")
+        mismatched_rtl_manifest = out_dir / "mismatched-hardware-rtl-manifest.json"
+        mismatched_rtl_manifest_data = json.loads((out_dir / "rtl-manifest.json").read_text())
+        mismatched_rtl_manifest_data["source_fabric_adg_identity"] = "other_fabric_adg"
+        mismatched_rtl_manifest.write_text(
+            json.dumps(mismatched_rtl_manifest_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_rtl_report = out_dir / "mismatched-rtl-hardware-report-bundle.json"
+        mismatched_rtl_data = json.loads(report.read_text())
+        mismatched_rtl_data["rtl_manifest_identity"] = "mismatched-hardware-rtl-manifest"
+        mismatched_rtl_data["input_artifact_fingerprints"].pop("rtl-manifest", None)
+        mismatched_rtl_data["input_artifact_fingerprints"][
+            "mismatched-hardware-rtl-manifest"
+        ] = artifact_test_common.fingerprint(mismatched_rtl_manifest)
+        mismatched_rtl_report.write_text(json.dumps(mismatched_rtl_data, indent=2, sort_keys=True) + "\n")
+        mismatched_rtl_audit = out_dir / "mismatched-rtl-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_rtl_audit),
+                str(mismatched_rtl_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with mismatched RTL manifest unexpectedly passed audit")
         stale_input_report = out_dir / "stale-input-hardware-report-bundle.json"
         stale_input_data = json.loads(report.read_text())
         stale_input_data["input_artifact_fingerprints"]["adg-hardware-summary"] = "0" * 64
