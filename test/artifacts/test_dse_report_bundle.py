@@ -2123,6 +2123,58 @@ def main() -> int:
         ) != artifact_test_common.fingerprint(custom_workload_report):
             raise AssertionError(f"custom workload report fingerprint was not preserved: {custom_name_data}")
 
+        alternate_mapping_workload_report = out_dir / "alternate-mapping-workload-report-bundle.json"
+        alternate_mapping_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
+        alternate_mapping_data["bundle_id"] = "workload::vecsum::shared_reduction_adg::alternate_mapping"
+        alternate_mapping_data["selected_mapping_artifact_identity"] = "alternate-mapping"
+        alternate_mapping_data["runtime_evidence"]["mapping_artifact_identity"] = "alternate-mapping"
+        alternate_mapping_data["runtime_evidence"]["work_package_metadata"][
+            "selected_mapping_artifact_identity"
+        ] = "alternate-mapping"
+        alternate_mapping_data["runtime_evidence"]["launch_descriptor"][
+            "selected_mapping_artifact_identity"
+        ] = "alternate-mapping"
+        alternate_mapping_workload_report.write_text(
+            json.dumps(alternate_mapping_data, indent=2, sort_keys=True) + "\n"
+        )
+        filtered_mapping_report = out_dir / "filtered-mapping-dse-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_dse_report_bundle.sh",
+                "--output",
+                str(filtered_mapping_report),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+                "--artifact",
+                str(alternate_mapping_workload_report),
+                "--artifact",
+                str(out_dir / "workload-report-bundle.json"),
+                "--artifact",
+                str(out_dir / "hardware-report-bundle.json"),
+            ],
+            "DSE report bundle with alternate mapping workload report",
+        )
+        filtered_mapping_data = json.loads(filtered_mapping_report.read_text())
+        if filtered_mapping_data["referenced_workload_report_bundle_identities"] != ["workload-report-bundle"]:
+            raise AssertionError(
+                f"DSE report should ignore workload reports for other mappings: {filtered_mapping_data}"
+            )
+        if "alternate-mapping-workload-report-bundle" in filtered_mapping_data["input_artifact_fingerprints"]:
+            raise AssertionError(
+                f"DSE report should not fingerprint alternate mapping workload report: {filtered_mapping_data}"
+            )
+        filtered_mapping_summary_ids = [
+            summary.get("workload_report_bundle_identity")
+            for summary in filtered_mapping_data.get("runtime_evidence_summaries", [])
+            if isinstance(summary, dict)
+        ]
+        if filtered_mapping_summary_ids != ["workload-report-bundle"]:
+            raise AssertionError(
+                f"DSE report should summarize selected mapping runtime evidence: {filtered_mapping_data}"
+            )
+
         wrong_kind_workload_report = out_dir / "wrong-kind-workload-report-bundle.json"
         wrong_kind_workload_report.write_text(
             json.dumps({"schema_version": 1, "kind": "runtime_package"}, indent=2, sort_keys=True) + "\n"

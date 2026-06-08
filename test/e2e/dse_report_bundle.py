@@ -210,10 +210,15 @@ def report_matches_selected_candidate(
     if expected_kind == "workload_report_bundle":
         report_workload = data.get("workload")
         report_hardware = data.get("selected_hardware_candidate_identity")
+        report_bundle_id = data.get("bundle_id")
+        mapping_id = selected_row.get("mapping_id", "")
         if isinstance(report_workload, str) and report_workload != workload:
             return False
         if isinstance(report_hardware, str) and report_hardware:
-            return artifact_io_helpers.hardware_matches(report_hardware, hardware)
+            if not artifact_io_helpers.hardware_matches(report_hardware, hardware):
+                return False
+        if isinstance(report_bundle_id, str) and report_bundle_id:
+            return report_bundle_id.rsplit("::", 1)[-1] == mapping_id
         return True
     if expected_kind == "hardware_report_bundle":
         for key in ("hardware_candidate_identity", "fabric_adg_identity"):
