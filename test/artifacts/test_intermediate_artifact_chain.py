@@ -157,13 +157,13 @@ def main() -> int:
         for key, value in expected_provenance.items():
             if vecsum_dse.get(key) != value:
                 raise AssertionError(f"unexpected vecsum DSE provenance {key}: {vecsum_dse}")
-        input_artifacts = vecsum_dse.get("input_artifacts", "")
+        input_artifacts = {entry for entry in vecsum_dse.get("input_artifacts", "").split(";") if entry}
         for artifact_name in (
-            "pnr-mapping-summary.csv",
-            "pnr-mapping.json",
-            "sim-cycle-summary.csv",
-            "vecsum-cgra-sim-report.json",
-            "rtl-fpa-summary.csv",
+            "pnr-mapping-summary",
+            "pnr-mapping",
+            "sim-cycle-summary",
+            "vecsum-cgra-sim-report",
+            "rtl-fpa-summary",
         ):
             if artifact_name not in input_artifacts:
                 raise AssertionError(f"vecsum DSE input artifacts missed {artifact_name}: {vecsum_dse}")

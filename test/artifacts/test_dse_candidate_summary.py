@@ -25,6 +25,14 @@ HEADER = [
     "selection_status",
 ]
 
+
+def artifact_id(path: Path) -> str:
+    for suffix in (".csv", ".json"):
+        if path.name.endswith(suffix):
+            return path.name[: -len(suffix)]
+    return path.stem
+
+
 def write_mapping_artifact(
     path: Path,
     workload: str,
@@ -321,26 +329,36 @@ def main() -> int:
         for column, value in provenance_expected.items():
             if row.get(column) != value:
                 raise AssertionError(f"unexpected selected-like {column}: {row}")
-        input_artifacts = row.get("input_artifacts", "")
-        for expected_path in (
-            selected_like_mapping_artifact.name,
-            selected_like_cgra_report.name,
-            selected_like_fpa.name,
+        leaked_out_dir = str(out_dir)
+        for provenance_column in (
+            "input_artifacts",
+            "input_artifact_fingerprints",
+            "output_artifacts",
         ):
-            if expected_path not in input_artifacts:
-                raise AssertionError(f"selected-like input artifacts missed {expected_path}: {row}")
+            if leaked_out_dir in row.get(provenance_column, ""):
+                raise AssertionError(f"selected-like {provenance_column} leaked local path: {row}")
+        input_artifacts = {entry for entry in row.get("input_artifacts", "").split(";") if entry}
+        expected_input_artifacts = {
+            "selected-like-pnr-mapping-summary",
+            "selected-like-pnr-mapping",
+            "selected-like-sim-cycle-summary",
+            "selected-like-cgra-sim-report",
+            "selected-like-rtl-fpa-summary",
+        }
+        if input_artifacts != expected_input_artifacts:
+            raise AssertionError(f"selected-like input artifacts missed identity provenance: {row}")
         input_fingerprints = artifact_test_common.semicolon_map(row.get("input_artifact_fingerprints", ""))
         expected_fingerprints = {
-            str(selected_like_mapping): artifact_test_common.fingerprint(selected_like_mapping),
-            str(selected_like_mapping_artifact): artifact_test_common.fingerprint(selected_like_mapping_artifact),
-            str(selected_like_sim): artifact_test_common.fingerprint(selected_like_sim),
-            str(selected_like_cgra_report): artifact_test_common.fingerprint(selected_like_cgra_report),
-            str(selected_like_fpa): artifact_test_common.fingerprint(selected_like_fpa),
+            "selected-like-pnr-mapping-summary": artifact_test_common.fingerprint(selected_like_mapping),
+            "selected-like-pnr-mapping": artifact_test_common.fingerprint(selected_like_mapping_artifact),
+            "selected-like-sim-cycle-summary": artifact_test_common.fingerprint(selected_like_sim),
+            "selected-like-cgra-sim-report": artifact_test_common.fingerprint(selected_like_cgra_report),
+            "selected-like-rtl-fpa-summary": artifact_test_common.fingerprint(selected_like_fpa),
         }
         if input_fingerprints != expected_fingerprints:
             raise AssertionError(f"selected-like input fingerprints are incomplete: {row}")
-        if selected_like_output.name not in row.get("output_artifacts", ""):
-            raise AssertionError(f"selected-like output artifacts missed summary path: {row}")
+        if row.get("output_artifacts", "") != "selected-like-dse-candidate-summary":
+            raise AssertionError(f"selected-like output artifacts missed summary identity: {row}")
         metric_records = row.get("metric_records", "")
         for metric in (
             "cgra_sim_cycles=12",
@@ -444,7 +462,7 @@ def main() -> int:
         for hardware, row in statuses.items():
             if row.get("candidate_kind") != "combined_full_stack_candidate":
                 raise AssertionError(f"{hardware} candidate missed kind provenance: {row}")
-            if two_candidate_output.name not in row.get("output_artifacts", ""):
+            if artifact_id(two_candidate_output) not in row.get("output_artifacts", ""):
                 raise AssertionError(f"{hardware} candidate missed output provenance: {row}")
             if "rejected by minimize_runtime deterministic ordering" in row["diagnostic"]:
                 continue
@@ -483,7 +501,7 @@ def main() -> int:
         if statuses["fabric1"]["selection_status"] != "rejected":
             raise AssertionError(f"manifest slow candidate should be rejected: {statuses['fabric1']}")
         for hardware, row in statuses.items():
-            if mapping_set_manifest.name not in row.get("input_artifacts", ""):
+            if artifact_id(mapping_set_manifest) not in row.get("input_artifacts", ""):
                 raise AssertionError(f"{hardware} candidate missed mapping-set manifest provenance: {row}")
             if row.get("policy_id") != "deterministic_minimize_runtime_v1":
                 raise AssertionError(f"{hardware} candidate missed manifest policy id: {row}")
@@ -826,7 +844,7 @@ def main() -> int:
             )
             if expected_metric not in metric_records:
                 raise AssertionError(f"{mapping_id} candidate missed diagnostic metric: {row}")
-            if unsupported_scope_ledger.name not in row.get("input_artifacts", ""):
+            if artifact_id(unsupported_scope_ledger) not in row.get("input_artifacts", ""):
                 raise AssertionError(f"{mapping_id} candidate missed ledger provenance: {row}")
 
     return 0

@@ -272,12 +272,29 @@ def artifact_ref(value: object) -> str:
     return str(value) if value not in {"", None} else ""
 
 
+def artifact_identity(ref: str) -> str:
+    return intermediate_artifacts.artifact_id_for_path(Path(ref)) if ref else ""
+
+
+def artifact_identity_list(refs: list[str]) -> list[str]:
+    identities: list[str] = []
+    seen: set[str] = set()
+    for ref in refs:
+        identity = artifact_identity(ref)
+        if identity == "" or identity in seen:
+            continue
+        identities.append(identity)
+        seen.add(identity)
+    return identities
+
+
 def input_artifact_fingerprints(refs: list[str]) -> str:
     entries: list[str] = []
     for ref in refs:
         path = Path(ref)
+        identity = artifact_identity(ref)
         if path.is_file():
-            entries.append(f"{ref}={intermediate_artifacts.artifact_fingerprint(path)}")
+            entries.append(f"{identity}={intermediate_artifacts.artifact_fingerprint(path)}")
     return ";".join(entries)
 
 
@@ -452,7 +469,7 @@ def candidate_row(
             if ref
         ]
         input_refs = unique_refs(input_refs + ledger_refs)
-        input_artifacts = ";".join(input_refs)
+        input_artifacts = ";".join(artifact_identity_list(input_refs))
         metric_record_values = [
             f"cgra_sim_cycles={cycle_text}",
             f"frequency_mhz={fpa['frequency_mhz']}",
@@ -480,7 +497,7 @@ def candidate_row(
             "candidate_kind": "combined_full_stack_candidate",
             "input_artifacts": input_artifacts,
             "input_artifact_fingerprints": input_artifact_fingerprints(input_refs),
-            "output_artifacts": str(output_artifact),
+            "output_artifacts": intermediate_artifacts.artifact_id_for_path(output_artifact),
             "objective_record": f"objective::{effective_objective}",
             "metric_records": metric_records,
             "policy_id": policy_id_for_objective(effective_objective, mapping),
@@ -511,7 +528,7 @@ def candidate_row(
         "candidate_kind": "combined_full_stack_candidate",
         "input_artifacts": "",
         "input_artifact_fingerprints": "",
-        "output_artifacts": str(output_artifact),
+        "output_artifacts": intermediate_artifacts.artifact_id_for_path(output_artifact),
         "objective_record": f"objective::{effective_objective}",
         "metric_records": "",
         "policy_id": policy_id_for_objective(effective_objective, mapping),

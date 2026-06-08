@@ -1099,18 +1099,42 @@ def validate_dse_candidate_uniqueness(rows: list[dict[str, str]], diagnostics: l
             )
 
 
-def artifact_reference_exists(anchor: Path, reference: str) -> bool:
+def artifact_reference_candidates(anchor: Path, reference: str) -> list[Path]:
     path = Path(reference)
     if path.is_absolute():
-        return path.is_file()
-    return path.is_file() or (anchor.parent / path).is_file()
+        return [path]
+    candidates = [path, anchor.parent / path]
+    if path.suffix == "":
+        candidates.extend(
+            [
+                Path(f"{reference}.csv"),
+                Path(f"{reference}.json"),
+                anchor.parent / f"{reference}.csv",
+                anchor.parent / f"{reference}.json",
+            ]
+        )
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        unique.append(candidate)
+        seen.add(key)
+    return unique
+
+
+def artifact_reference_exists(anchor: Path, reference: str) -> bool:
+    return any(candidate.is_file() for candidate in artifact_reference_candidates(anchor, reference))
 
 
 def resolve_artifact_reference(anchor: Path, reference: str) -> Path:
+    candidates = artifact_reference_candidates(anchor, reference)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
     path = Path(reference)
     if path.is_absolute():
-        return path.resolve()
-    if path.is_file():
         return path.resolve()
     return (anchor.parent / path).resolve()
 
