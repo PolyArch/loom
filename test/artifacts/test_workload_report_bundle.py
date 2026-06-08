@@ -184,6 +184,82 @@ def main() -> int:
         if data["runtime_evidence"] != expected_runtime_evidence:
             raise AssertionError(f"report should preserve runtime evidence references: {data}")
 
+        alternate_runtime_package = out_dir / "alternate-runtime-input-runtime-package.json"
+        alternate_runtime_data = json.loads((out_dir / "runtime-package.json").read_text())
+        alternate_runtime_input = "test-app-fixture::vecsum::alternate"
+        alternate_runtime_data["work_package_metadata"]["runtime_input_identity"] = alternate_runtime_input
+        alternate_runtime_data["host_interface"]["source_provenance"] = alternate_runtime_input
+        alternate_runtime_data["launch_descriptor_identity"] = (
+            "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::alternate"
+        )
+        alternate_runtime_data["runtime_report"]["launch_descriptor_identity"] = (
+            alternate_runtime_data["launch_descriptor_identity"]
+        )
+        for descriptor in alternate_runtime_data["argument_descriptors"]:
+            if descriptor.get("name") == "runtime_input":
+                descriptor["identity"] = alternate_runtime_input
+        for descriptor in alternate_runtime_data["memory_descriptors"]:
+            descriptor["runtime_input_identity"] = alternate_runtime_input
+        launch_descriptor = alternate_runtime_data["launch_descriptor"]
+        launch_descriptor["descriptor_id"] = alternate_runtime_data["launch_descriptor_identity"]
+        for descriptor in launch_descriptor["argument_descriptors"]:
+            if descriptor.get("name") == "runtime_input":
+                descriptor["identity"] = alternate_runtime_input
+        for descriptor in launch_descriptor["memory_descriptors"]:
+            descriptor["runtime_input_identity"] = alternate_runtime_input
+        alternate_runtime_package.write_text(json.dumps(alternate_runtime_data, indent=2, sort_keys=True) + "\n")
+        alternate_report = out_dir / "alternate-runtime-input-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(alternate_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(alternate_runtime_package),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with alternate runtime input",
+        )
+        alternate_data = json.loads(alternate_report.read_text())
+        if alternate_data.get("runtime_input_identity") != alternate_runtime_input:
+            raise AssertionError(f"report should use runtime package input identity: {alternate_data}")
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "alternate-runtime-input-workload-report-bundle-audit.json"),
+                str(alternate_report),
+            ],
+            "alternate runtime input workload report audit",
+        )
+
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:
             raise AssertionError(f"report should include metric records: {data}")

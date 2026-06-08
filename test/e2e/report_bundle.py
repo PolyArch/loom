@@ -109,6 +109,20 @@ def runtime_evidence(runtime_package: dict[str, object], runtime_path: Path | No
     )
 
 
+def runtime_input_identity_from_evidence(evidence: dict[str, object], workload: str) -> str:
+    metadata = evidence.get("work_package_metadata")
+    if isinstance(metadata, dict):
+        runtime_input = metadata.get("runtime_input_identity")
+        if isinstance(runtime_input, str) and runtime_input:
+            return runtime_input
+    host_interface = evidence.get("host_interface")
+    if isinstance(host_interface, dict):
+        runtime_input = host_interface.get("source_provenance")
+        if isinstance(runtime_input, str) and runtime_input:
+            return runtime_input
+    return f"test-app-fixture::{workload}::default"
+
+
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     dse_path = first_path(grouped, "dse_candidate")
@@ -153,6 +167,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     cgra_report = read_json(cgra_path) if cgra_path is not None else {}
     comparison_report = read_json(comparison_path) if comparison_path is not None else {}
     runtime_package = read_json(runtime_path) if runtime_path is not None else {}
+    runtime_evidence_data = runtime_evidence(runtime_package, runtime_path)
+    runtime_input_identity = runtime_input_identity_from_evidence(runtime_evidence_data, workload)
     runtime_fallback_decision = runtime_package.get("fallback_decision", {})
     if not isinstance(runtime_fallback_decision, dict):
         runtime_fallback_decision = {}
@@ -382,11 +398,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "workload": workload,
         "source_artifact_identity": artifact_id(source_path) if source_path is not None else "",
         "compiler_command_identity": artifact_id(compiler_path) if compiler_path is not None else "",
-        "runtime_input_identity": f"test-app-fixture::{workload}::default",
+        "runtime_input_identity": runtime_input_identity,
         "selected_hardware_candidate_identity": hardware,
         "selected_mapping_artifact_identity": artifact_id(mapping_path) if mapping_path is not None else "",
         "runtime_host_interface": runtime_host_interface,
-        "runtime_evidence": runtime_evidence(runtime_package, runtime_path),
+        "runtime_evidence": runtime_evidence_data,
         "runtime_fallback_decision": runtime_fallback_decision,
         "input_artifact_fingerprints": input_artifact_fingerprints(
             [
