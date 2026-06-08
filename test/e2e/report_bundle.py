@@ -146,6 +146,52 @@ def runtime_input_identity_from_evidence(evidence: dict[str, object], workload: 
     return f"test-app-fixture::{workload}::default"
 
 
+def runtime_package_matches(
+    data: dict[str, object],
+    *,
+    workload: str,
+    hardware: str,
+    mapping_identity: str,
+) -> bool:
+    if data.get("kind") != "runtime_package":
+        return False
+    if data.get("status") != "pass":
+        return True
+    package_workload = data.get("workload")
+    if isinstance(package_workload, str) and package_workload != workload:
+        return False
+    package_mapping = data.get("selected_mapping_artifact_identity")
+    if isinstance(package_mapping, str) and package_mapping and package_mapping != mapping_identity:
+        return False
+    package_hardware = data.get("fabric_adg_identity")
+    if isinstance(package_hardware, str) and package_hardware:
+        return hardware_matches(package_hardware, hardware)
+    metadata = data.get("work_package_metadata")
+    if isinstance(metadata, dict):
+        metadata_hardware = metadata.get("fabric_adg_identity")
+        if isinstance(metadata_hardware, str) and metadata_hardware:
+            return hardware_matches(metadata_hardware, hardware)
+    return True
+
+
+def matching_runtime_package_path(
+    paths: list[Path],
+    *,
+    workload: str,
+    hardware: str,
+    mapping_identity: str,
+) -> Path | None:
+    for path in paths:
+        if runtime_package_matches(
+            read_json(path),
+            workload=workload,
+            hardware=hardware,
+            mapping_identity=mapping_identity,
+        ):
+            return path
+    return None
+
+
 def build_bundle(paths: list[Path]) -> dict[str, object]:
     grouped = group_paths(paths)
     dse_path = first_path(grouped, "dse_candidate")
@@ -182,7 +228,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     dfg_path = first_path(grouped, "dfg_sim_report")
     cgra_path = first_path(grouped, "cgra_sim_report")
     comparison_path = first_path(grouped, "sim_comparison_report")
-    runtime_path = first_path(grouped, "runtime_package")
+    runtime_path = matching_runtime_package_path(
+        grouped.get("runtime_package", []),
+        workload=workload,
+        hardware=hardware,
+        mapping_identity=artifact_id(mapping_path) if mapping_path is not None else "",
+    )
     rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
     rtl_path = first_path(grouped, "rtl_fpa")
 

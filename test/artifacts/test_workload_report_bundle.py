@@ -286,6 +286,77 @@ def main() -> int:
             cgra_path.write_text(original_cgra_text)
             comparison_path.write_text(original_comparison_text)
 
+        unrelated_runtime_package = out_dir / "unrelated-runtime-package.json"
+        unrelated_runtime_data = json.loads((out_dir / "runtime-package.json").read_text())
+        unrelated_runtime_data["package_id"] = "runtime-package::other_workload::other_mapping"
+        unrelated_runtime_data["workload"] = "other_workload"
+        unrelated_runtime_data["work_package_identity"] = "work-package::other_workload::other_mapping"
+        unrelated_runtime_data["selected_mapping_artifact_identity"] = "other-mapping"
+        unrelated_runtime_data["fabric_adg_identity"] = "other_hardware"
+        unrelated_runtime_data["runtime_report"]["work_package_identity"] = unrelated_runtime_data[
+            "work_package_identity"
+        ]
+        unrelated_runtime_data["runtime_report"]["mapping_artifact_identity"] = "other-mapping"
+        unrelated_runtime_data["runtime_report"]["fabric_adg_identity"] = "other_hardware"
+        unrelated_runtime_data["work_package_metadata"]["workload"] = "other_workload"
+        unrelated_runtime_data["work_package_metadata"]["work_package_identity"] = unrelated_runtime_data[
+            "work_package_identity"
+        ]
+        unrelated_runtime_data["work_package_metadata"]["selected_mapping_artifact_identity"] = "other-mapping"
+        unrelated_runtime_data["work_package_metadata"]["fabric_adg_identity"] = "other_hardware"
+        unrelated_runtime_package.write_text(json.dumps(unrelated_runtime_data, indent=2, sort_keys=True) + "\n")
+        filtered_runtime_report = out_dir / "filtered-runtime-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(filtered_runtime_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(out_dir / "sim-comparison-report.json"),
+                "--artifact",
+                str(unrelated_runtime_package),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+            "workload report bundle with unrelated runtime package",
+        )
+        filtered_runtime_data = json.loads(filtered_runtime_report.read_text())
+        filtered_runtime_identities = filtered_runtime_data.get("optional_artifact_identities", {})
+        if filtered_runtime_identities.get("runtime_package") != "runtime-package":
+            raise AssertionError(f"workload report should ignore unrelated runtime package: {filtered_runtime_data}")
+        if sorted(filtered_runtime_data["input_artifact_fingerprints"]) != sorted(expected_input_fingerprints):
+            raise AssertionError(
+                f"workload report should fingerprint only selected runtime inputs: {filtered_runtime_data}"
+            )
+        if filtered_runtime_data["runtime_evidence"].get("runtime_package_identity") != "runtime-package":
+            raise AssertionError(
+                f"workload report should summarize only selected runtime evidence: {filtered_runtime_data}"
+            )
+
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:
             raise AssertionError(f"report should include metric records: {data}")
