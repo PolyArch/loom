@@ -1886,6 +1886,40 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with stale report input fingerprint unexpectedly passed audit")
 
+        mismatched_hardware_bundle = out_dir / "mismatched-hardware-report-bundle.json"
+        mismatched_hardware_bundle_data = json.loads((out_dir / "hardware-report-bundle.json").read_text())
+        mismatched_hardware_bundle_data["bundle_id"] = "hardware-report::other_hardware"
+        mismatched_hardware_bundle_data["hardware_candidate_identity"] = "other_hardware"
+        mismatched_hardware_bundle_data["fabric_adg_identity"] = "other_hardware"
+        mismatched_hardware_bundle.write_text(
+            json.dumps(mismatched_hardware_bundle_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_hardware_report = out_dir / "mismatched-hardware-dse-report-bundle.json"
+        mismatched_hardware_report_data = json.loads(report.read_text())
+        mismatched_hardware_report_data["referenced_hardware_candidate_report_bundle_identities"] = [
+            "mismatched-hardware-report-bundle"
+        ]
+        mismatched_hardware_report_data["input_artifact_fingerprints"].pop("hardware-report-bundle", None)
+        mismatched_hardware_report_data["input_artifact_fingerprints"][
+            "mismatched-hardware-report-bundle"
+        ] = artifact_test_common.fingerprint(mismatched_hardware_bundle)
+        mismatched_hardware_report.write_text(
+            json.dumps(mismatched_hardware_report_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_hardware_report_audit = out_dir / "mismatched-hardware-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_hardware_report_audit),
+                str(mismatched_hardware_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched hardware report bundle unexpectedly passed audit")
+
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
         custom_name_report = out_dir / "custom-name-dse-report-bundle.json"

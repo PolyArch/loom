@@ -3121,6 +3121,80 @@ def dse_report_referenced_metric_ids(
     return metric_ids
 
 
+def dse_report_candidate_rows(
+    path: Path,
+    data: dict[str, object],
+) -> list[dict[str, str]]:
+    candidates = data.get("candidate_list")
+    reported_candidate_ids = {
+        candidate.get("candidate_id")
+        for candidate in candidates
+        if isinstance(candidate, dict)
+        and isinstance(candidate.get("candidate_id"), str)
+        and candidate.get("candidate_id")
+    } if isinstance(candidates, list) else set()
+    rows: list[dict[str, str]] = []
+    references = data.get("referenced_dse_candidate_artifact_identities")
+    if not isinstance(references, list):
+        return rows
+    for identity in references:
+        if not isinstance(identity, str) or not identity:
+            continue
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is None or resolved.suffix != ".csv":
+            continue
+        try:
+            candidate_rows = read_csv_rows(resolved)
+        except OSError:
+            continue
+        for row in candidate_rows:
+            candidate_id = row.get("candidate", "")
+            if reported_candidate_ids and candidate_id not in reported_candidate_ids:
+                continue
+            if row.get("selection_status") in {"selected", "pareto", "rejected"}:
+                rows.append(row)
+    return rows
+
+
+def validate_dse_report_hardware_bundle_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    candidate_hardware = {
+        row["hardware"]
+        for row in dse_report_candidate_rows(path, data)
+        if valid_identity(row.get("hardware"))
+    }
+    if not candidate_hardware:
+        return
+    references = data.get("referenced_hardware_candidate_report_bundle_identities")
+    if not isinstance(references, list):
+        return
+    for identity in references:
+        if not isinstance(identity, str) or not identity:
+            continue
+        report = read_resolved_json_reference(path, identity)
+        if report is None:
+            continue
+        if report.get("kind") != "hardware_report_bundle":
+            diagnostics.append(f"DSE report bundle hardware report reference {identity!r} has wrong kind")
+            continue
+        if report.get("report_status") != "pass":
+            diagnostics.append(f"DSE report bundle hardware report reference {identity!r} is not passing")
+            continue
+        if not any(
+            hardware_identity_matches(candidate, report.get("hardware_candidate_identity"))
+            or hardware_identity_matches(candidate, report.get("fabric_adg_identity"))
+            for candidate in candidate_hardware
+        ):
+            diagnostics.append(
+                f"DSE report bundle hardware report reference {identity!r} does not match DSE candidates"
+            )
+
+
 def validate_dse_candidate_id_list(
     value: object,
     diagnostics: list[str],
@@ -4699,6 +4773,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if data.get("report_status") != "pass" and not diagnostic_records:
             diagnostics.append("DSE report bundle non-pass status needs diagnostic_records")
         validate_dse_report_input_fingerprints(path, data, diagnostics)
+        validate_dse_report_hardware_bundle_references(path, data, diagnostics)
         if not isinstance(data.get("policy_configuration"), dict):
             diagnostics.append("DSE report bundle policy_configuration must be an object")
             policy_configuration = {}
