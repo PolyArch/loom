@@ -1590,6 +1590,44 @@ def main() -> int:
             raise AssertionError(f"RTL-sim package should not report missing RTL manifest: {rtl_with_manifest_data}")
         if "unavailable_accelerator_target" not in rtl_with_manifest_classes:
             raise AssertionError(f"RTL-sim package should still report unavailable backend: {rtl_with_manifest_data}")
+        unrelated_rtl_mapping = out_dir / "unrelated-rtl-pnr-mapping.json"
+        unrelated_rtl_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        unrelated_rtl_mapping_data["workload"] = "other_workload"
+        unrelated_rtl_mapping_data["hardware"] = "other_hardware"
+        unrelated_rtl_mapping_data["mapping_id"] = "other_mapping"
+        unrelated_rtl_mapping.write_text(json.dumps(unrelated_rtl_mapping_data, indent=2, sort_keys=True) + "\n")
+        filtered_rtl_package = out_dir / "filtered-rtl-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "rtl-sim",
+                "--output",
+                str(filtered_rtl_package),
+                "--artifact",
+                str(unrelated_rtl_mapping),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL-sim runtime package with unavailable backend unexpectedly passed")
+        filtered_rtl_data = json.loads(filtered_rtl_package.read_text())
+        if filtered_rtl_data.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"RTL-sim package should select manifest mapping input: {filtered_rtl_data}")
+        if filtered_rtl_data.get("input_artifact_fingerprints") != expected_rtl_fingerprints:
+            raise AssertionError(f"RTL-sim package should fingerprint only manifest inputs: {filtered_rtl_data}")
+        filtered_rtl_arguments = filtered_rtl_data.get("argument_descriptors", [])
+        if {
+            "name": "mapping_artifact",
+            "identity": "pnr-mapping",
+            "descriptor_kind": "pnr_mapping_artifact",
+        } not in filtered_rtl_arguments:
+            raise AssertionError(f"RTL-sim package should bind selected mapping argument: {filtered_rtl_data}")
         rtl_with_manifest_audit = out_dir / "rtl-with-manifest-runtime-package-audit-summary.json"
         artifact_test_common.require_success(
             repo,

@@ -22,6 +22,7 @@ read_json = artifact_io_helpers.read_json
 group_paths = artifact_io_helpers.group_paths
 first_path = artifact_io_helpers.first_path
 matching_rtl_manifest_path = artifact_io_helpers.matching_rtl_manifest_path
+hardware_matches = artifact_io_helpers.hardware_matches
 
 
 DATA_MOVEMENT_POLICIES = (
@@ -108,6 +109,29 @@ def matching_cgra_comparison_inputs(
         )
         if mapping_path is not None and cgra_path is not None:
             return comparison_path, mapping_path, cgra_path, comparison
+    return None
+
+
+def matching_rtl_inputs(
+    grouped: dict[str, list[Path]],
+) -> tuple[Path, Path] | None:
+    mapping_paths = grouped.get("pnr_mapping_artifact", [])
+    for rtl_manifest_path in grouped.get("rtl_manifest", []):
+        rtl_manifest = read_json(rtl_manifest_path)
+        mapping_path = path_with_artifact_identity(
+            mapping_paths,
+            string_field(rtl_manifest, "mapping_artifact_identity"),
+        )
+        if mapping_path is not None:
+            return mapping_path, rtl_manifest_path
+        source_fabric = string_field(rtl_manifest, "source_fabric_adg_identity")
+        hardware_matches_manifest = [
+            path
+            for path in mapping_paths
+            if hardware_matches(source_fabric, string_field(read_json(path), "hardware"))
+        ]
+        if len(hardware_matches_manifest) == 1:
+            return hardware_matches_manifest[0], rtl_manifest_path
     return None
 
 
@@ -482,6 +506,10 @@ def build_package(
         comparison_inputs = matching_cgra_comparison_inputs(grouped)
         if comparison_inputs is not None:
             comparison_path, mapping_path, cgra_path, comparison = comparison_inputs
+    elif target == "rtl-sim":
+        rtl_inputs = matching_rtl_inputs(grouped)
+        if rtl_inputs is not None:
+            mapping_path, rtl_manifest_path = rtl_inputs
 
     mapping = read_json(mapping_path)
     dfg = read_json(dfg_path)
