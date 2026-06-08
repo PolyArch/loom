@@ -534,6 +534,11 @@ def main() -> int:
             raise AssertionError(f"report-only runtime package must not claim trace output: {requested_report_data}")
         if requested_runtime_report.get("profiling_record_identity") != "":
             raise AssertionError(f"report-only runtime package must not claim profiling output: {requested_report_data}")
+        requested_features = set(requested_report_data.get("required_runtime_features", []))
+        if "runtime_trace_output" not in requested_features:
+            raise AssertionError(f"trace output request should require runtime trace feature: {requested_report_data}")
+        if "runtime_profiling_output" not in requested_features:
+            raise AssertionError(f"profiling output request should require runtime profiling feature: {requested_report_data}")
         requested_report_outputs_audit = out_dir / "requested-report-outputs-runtime-package-audit.json"
         artifact_test_common.require_success(
             repo,
@@ -546,6 +551,29 @@ def main() -> int:
             ],
             "runtime package audit with requested report outputs",
         )
+        missing_trace_feature_package = out_dir / "missing-trace-feature-runtime-package.json"
+        missing_trace_feature_data = json.loads(requested_report_outputs.read_text())
+        missing_trace_feature_data["required_runtime_features"] = [
+            feature
+            for feature in missing_trace_feature_data["required_runtime_features"]
+            if feature != "runtime_trace_output"
+        ]
+        missing_trace_feature_package.write_text(
+            json.dumps(missing_trace_feature_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_trace_feature_audit = out_dir / "missing-trace-feature-runtime-package-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_trace_feature_audit),
+                str(missing_trace_feature_package),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package with trace output but no runtime feature unexpectedly passed audit")
         if data["synchronization_mode"] != "host_wait":
             raise AssertionError(f"unexpected synchronization mode: {data}")
         if data["data_movement_policy"] != "simulated":

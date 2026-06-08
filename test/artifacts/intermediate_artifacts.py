@@ -4537,6 +4537,18 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         for reference in artifact_input_references:
             if reference not in input_fingerprints:
                 diagnostics.append(f"runtime package input_artifact_fingerprints lacks {reference!r}")
+        report_output_configuration = data.get("report_output_configuration")
+        if isinstance(report_output_configuration, dict):
+            if (
+                report_output_configuration.get("trace_output_enabled") is True
+                and "runtime_trace_output" not in required_features
+            ):
+                diagnostics.append("runtime package trace output requires runtime_trace_output feature")
+            if (
+                report_output_configuration.get("profiling_output_enabled") is True
+                and "runtime_profiling_output" not in required_features
+            ):
+                diagnostics.append("runtime package profiling output requires runtime_profiling_output feature")
         if data_movement_policy not in required_data_movement_policies:
             diagnostics.append("runtime package required_data_movement_policies omits data_movement_policy")
         synchronization_mode = data.get("synchronization_mode")

@@ -814,6 +814,11 @@ def build_package(
         selected_mapping_identity = artifact_id(consumed_mapping_path)
         fabric_adg_identity = hardware
 
+    if runtime_trace_enabled:
+        required_runtime_features.append("runtime_trace_output")
+    if runtime_profiling_enabled:
+        required_runtime_features.append("runtime_profiling_output")
+
     status = "pass" if not diagnostics else "blocked"
     if status == "blocked" and fallback_policy == "require_acceleration":
         diagnostics.append("user-requested acceleration failed")
