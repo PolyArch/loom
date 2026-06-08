@@ -153,6 +153,36 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected hardware report audit pass: {audit_data}")
+        mismatched_fpa_summary = out_dir / "mismatched-hardware-rtl-fpa-summary.csv"
+        original_fpa_lines = (out_dir / "rtl-fpa-summary.csv").read_text().splitlines()
+        header = original_fpa_lines[0].split(",")
+        row = original_fpa_lines[1].split(",")
+        row[header.index("hardware")] = "other_hardware"
+        mismatched_fpa_summary.write_text(",".join(header) + "\n" + ",".join(row) + "\n")
+        mismatched_fpa_report = out_dir / "mismatched-fpa-hardware-report-bundle.json"
+        mismatched_fpa_data = json.loads(report.read_text())
+        mismatched_fpa_data["fpa_report_identities"] = ["mismatched-hardware-rtl-fpa-summary"]
+        mismatched_fpa_data["input_artifact_fingerprints"].pop("rtl-fpa-summary", None)
+        mismatched_fpa_data["input_artifact_fingerprints"][
+            "mismatched-hardware-rtl-fpa-summary"
+        ] = artifact_test_common.fingerprint(mismatched_fpa_summary)
+        for metric in mismatched_fpa_data["metric_records"]:
+            if metric.get("producer_component") == "rtl-fpa-summary":
+                metric["evidence_source_artifact_id"] = "mismatched-hardware-rtl-fpa-summary"
+        mismatched_fpa_report.write_text(json.dumps(mismatched_fpa_data, indent=2, sort_keys=True) + "\n")
+        mismatched_fpa_audit = out_dir / "mismatched-fpa-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_fpa_audit),
+                str(mismatched_fpa_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with mismatched FPA hardware unexpectedly passed audit")
         stale_input_report = out_dir / "stale-input-hardware-report-bundle.json"
         stale_input_data = json.loads(report.read_text())
         stale_input_data["input_artifact_fingerprints"]["adg-hardware-summary"] = "0" * 64

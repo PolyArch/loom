@@ -3332,6 +3332,67 @@ def validate_hardware_report_input_fingerprints(
             diagnostics.append(f"hardware report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
+def hardware_identity_matches(candidate: object, hardware: object) -> bool:
+    if not isinstance(candidate, str) or not isinstance(hardware, str):
+        return False
+    if not candidate or not hardware:
+        return False
+    return (
+        candidate == hardware
+        or candidate.rsplit("::", 1)[-1] == hardware
+        or hardware.rsplit("::", 1)[-1] == candidate
+    )
+
+
+def validate_hardware_report_fpa_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    hardware = data.get("hardware_candidate_identity")
+    fpa_identities = data.get("fpa_report_identities")
+    if not isinstance(fpa_identities, list):
+        return
+    matching_workloads: set[str] = set()
+    for identity in fpa_identities:
+        if not isinstance(identity, str) or not identity:
+            continue
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is None or resolved.suffix != ".csv":
+            continue
+        rows = read_csv_rows(resolved)
+        matching_rows = [
+            row
+            for row in rows
+            if row.get("status") == "pass"
+            and hardware_identity_matches(row.get("hardware"), hardware)
+        ]
+        if not matching_rows:
+            diagnostics.append(
+                f"hardware report bundle FPA reference {identity!r} does not match hardware candidate"
+            )
+            continue
+        matching_workloads.update(
+            row["workload"]
+            for row in matching_rows
+            if isinstance(row.get("workload"), str) and row.get("workload")
+        )
+    supported_workloads = data.get("supported_workload_classes")
+    if isinstance(supported_workloads, list) and matching_workloads:
+        missing_workloads = sorted(
+            workload
+            for workload in supported_workloads
+            if isinstance(workload, str) and workload and workload not in matching_workloads
+        )
+        if missing_workloads:
+            diagnostics.append(
+                "hardware report bundle supported workloads are absent from FPA evidence "
+                f"{missing_workloads}"
+            )
+
+
 def read_resolved_json_reference(path: Path, identity: object) -> dict[str, object] | None:
     if not isinstance(identity, str) or not identity:
         return None
@@ -4543,6 +4604,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if not data.get("supported_workload_classes"):
                 diagnostics.append("hardware report bundle pass needs supported workload classes")
         validate_hardware_report_input_fingerprints(path, data, diagnostics)
+        validate_hardware_report_fpa_references(path, data, diagnostics)
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         if not isinstance(metrics, list) or not metrics:
