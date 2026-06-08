@@ -76,13 +76,36 @@ def diagnostic_class(message: str) -> str:
         return "dfg_sim_missing"
     if "CGRA-sim report is missing" in message:
         return "cgra_sim_missing"
-    if "simulation comparison report is not passing" in message:
+    if "simulation comparison report" in message:
         return "simulation_comparison_failure"
     if "RTL/FPA row is missing" in message:
         return "rtl_fpa_missing"
     if "no selected DSE candidate artifact was provided" in message:
         return "dse_candidate_missing"
     return "report_bundle_failure"
+
+
+def comparison_diagnostics(
+    comparison: dict[str, object],
+    *,
+    dfg_identity: str,
+    cgra_identity: str,
+    mapping_identity: str,
+    runtime_input_identity: str,
+) -> list[str]:
+    diagnostics: list[str] = []
+    if not comparison:
+        return diagnostics
+    for key, expected, label in (
+        ("dfg_sim_report_identity", dfg_identity, "DFG-sim report identity"),
+        ("cgra_sim_report_identity", cgra_identity, "CGRA-sim report identity"),
+        ("mapping_artifact_identity", mapping_identity, "mapping artifact identity"),
+        ("runtime_input_identity", runtime_input_identity, "runtime input identity"),
+    ):
+        actual = comparison.get(key)
+        if expected and actual != expected:
+            diagnostics.append(f"simulation comparison report {label} does not match workload report inputs")
+    return diagnostics
 
 
 def diagnostic_record(index: int, message: str) -> dict[str, str]:
@@ -190,6 +213,15 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("CGRA-sim report is missing")
     if comparison_report and comparison_report.get("status") != "pass":
         diagnostics.append("simulation comparison report is not passing")
+    diagnostics.extend(
+        comparison_diagnostics(
+            comparison_report,
+            dfg_identity=artifact_id(dfg_path) if dfg_path is not None else "",
+            cgra_identity=artifact_id(cgra_path) if cgra_path is not None else "",
+            mapping_identity=artifact_id(mapping_path) if mapping_path is not None else "",
+            runtime_input_identity=runtime_input_identity,
+        )
+    )
     if runtime_path is None:
         diagnostics.append("runtime package is missing")
     if runtime_package and runtime_package.get("status") != "pass":

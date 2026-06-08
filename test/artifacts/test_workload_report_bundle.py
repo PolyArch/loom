@@ -207,58 +207,69 @@ def main() -> int:
                 descriptor["identity"] = alternate_runtime_input
         for descriptor in launch_descriptor["memory_descriptors"]:
             descriptor["runtime_input_identity"] = alternate_runtime_input
+        comparison_path = out_dir / "sim-comparison-report.json"
+        original_comparison_text = comparison_path.read_text()
+        alternate_comparison_data = json.loads(original_comparison_text)
+        alternate_comparison_data["runtime_input_identity"] = alternate_runtime_input
+        comparison_path.write_text(json.dumps(alternate_comparison_data, indent=2, sort_keys=True) + "\n")
+        alternate_runtime_data["input_artifact_fingerprints"][
+            "sim-comparison-report"
+        ] = artifact_test_common.fingerprint(comparison_path)
         alternate_runtime_package.write_text(json.dumps(alternate_runtime_data, indent=2, sort_keys=True) + "\n")
         alternate_report = out_dir / "alternate-runtime-input-workload-report-bundle.json"
-        artifact_test_common.require_success(
-            repo,
-            [
-                "bash",
-                "test/e2e/run_report_bundle.sh",
-                "--output",
-                str(alternate_report),
-                "--artifact",
-                str(out_dir / "source-compat-summary.csv"),
-                "--artifact",
-                str(out_dir / "compiler-pipeline-summary.csv"),
-                "--artifact",
-                str(out_dir / "dataflow-primitive-coverage.csv"),
-                "--artifact",
-                str(out_dir / "adg-hardware-summary.csv"),
-                "--artifact",
-                str(out_dir / "pnr-mapping.json"),
-                "--artifact",
-                str(out_dir / "vecsum-dfg-sim-report.json"),
-                "--artifact",
-                str(out_dir / "vecsum-cgra-sim-report.json"),
-                "--artifact",
-                str(out_dir / "sim-comparison-report.json"),
-                "--artifact",
-                str(alternate_runtime_package),
-                "--artifact",
-                str(out_dir / "sim-cycle-summary.csv"),
-                "--artifact",
-                str(out_dir / "rtl-manifest.json"),
-                "--artifact",
-                str(out_dir / "rtl-fpa-summary.csv"),
-                "--artifact",
-                str(out_dir / "dse-candidate-summary.csv"),
-            ],
-            "workload report bundle with alternate runtime input",
-        )
-        alternate_data = json.loads(alternate_report.read_text())
-        if alternate_data.get("runtime_input_identity") != alternate_runtime_input:
-            raise AssertionError(f"report should use runtime package input identity: {alternate_data}")
-        artifact_test_common.require_success(
-            repo,
-            [
-                "python3",
-                "test/e2e/audit_intermediate_artifacts.py",
-                "--output",
-                str(out_dir / "alternate-runtime-input-workload-report-bundle-audit.json"),
-                str(alternate_report),
-            ],
-            "alternate runtime input workload report audit",
-        )
+        try:
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_report_bundle.sh",
+                    "--output",
+                    str(alternate_report),
+                    "--artifact",
+                    str(out_dir / "source-compat-summary.csv"),
+                    "--artifact",
+                    str(out_dir / "compiler-pipeline-summary.csv"),
+                    "--artifact",
+                    str(out_dir / "dataflow-primitive-coverage.csv"),
+                    "--artifact",
+                    str(out_dir / "adg-hardware-summary.csv"),
+                    "--artifact",
+                    str(out_dir / "pnr-mapping.json"),
+                    "--artifact",
+                    str(out_dir / "vecsum-dfg-sim-report.json"),
+                    "--artifact",
+                    str(out_dir / "vecsum-cgra-sim-report.json"),
+                    "--artifact",
+                    str(out_dir / "sim-comparison-report.json"),
+                    "--artifact",
+                    str(alternate_runtime_package),
+                    "--artifact",
+                    str(out_dir / "sim-cycle-summary.csv"),
+                    "--artifact",
+                    str(out_dir / "rtl-manifest.json"),
+                    "--artifact",
+                    str(out_dir / "rtl-fpa-summary.csv"),
+                    "--artifact",
+                    str(out_dir / "dse-candidate-summary.csv"),
+                ],
+                "workload report bundle with alternate runtime input",
+            )
+            alternate_data = json.loads(alternate_report.read_text())
+            if alternate_data.get("runtime_input_identity") != alternate_runtime_input:
+                raise AssertionError(f"report should use runtime package input identity: {alternate_data}")
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "python3",
+                    "test/e2e/audit_intermediate_artifacts.py",
+                    "--output",
+                    str(out_dir / "alternate-runtime-input-workload-report-bundle-audit.json"),
+                    str(alternate_report),
+                ],
+                "alternate runtime input workload report audit",
+            )
+        finally:
+            comparison_path.write_text(original_comparison_text)
 
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:
@@ -587,6 +598,73 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("workload report with mismatched metric unit unexpectedly passed audit")
+
+        mismatched_comparison = out_dir / "mismatched-comparison-report.json"
+        mismatched_comparison_data = json.loads((out_dir / "sim-comparison-report.json").read_text())
+        mismatched_comparison_data["cgra_sim_report_identity"] = "other-cgra-sim-report"
+        mismatched_comparison.write_text(json.dumps(mismatched_comparison_data, indent=2, sort_keys=True) + "\n")
+        mismatched_comparison_report = out_dir / "mismatched-comparison-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_report_bundle.sh",
+                "--output",
+                str(mismatched_comparison_report),
+                "--artifact",
+                str(out_dir / "source-compat-summary.csv"),
+                "--artifact",
+                str(out_dir / "compiler-pipeline-summary.csv"),
+                "--artifact",
+                str(out_dir / "dataflow-primitive-coverage.csv"),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(out_dir / "vecsum-dfg-sim-report.json"),
+                "--artifact",
+                str(out_dir / "vecsum-cgra-sim-report.json"),
+                "--artifact",
+                str(mismatched_comparison),
+                "--artifact",
+                str(out_dir / "runtime-package.json"),
+                "--artifact",
+                str(out_dir / "sim-cycle-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "dse-candidate-summary.csv"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched comparison evidence unexpectedly passed")
+        mismatched_comparison_data = json.loads(mismatched_comparison_report.read_text())
+        records = mismatched_comparison_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "simulation_comparison_failure"
+            and "CGRA-sim report identity" in record.get("message", "")
+            for record in records
+        ):
+            raise AssertionError(
+                f"workload report should diagnose mismatched comparison evidence: {mismatched_comparison_data}"
+            )
+        mismatched_comparison_audit = out_dir / "mismatched-comparison-workload-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_comparison_audit),
+                str(mismatched_comparison_report),
+            ],
+            "mismatched comparison workload report audit",
+        )
+
         bad_host_report = out_dir / "bad-host-interface-workload-report-bundle.json"
         bad_host_data = json.loads(report.read_text())
         bad_host_data["runtime_host_interface"]["compatibility_mode_requires_runtime"] = True
