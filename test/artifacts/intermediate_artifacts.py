@@ -3195,6 +3195,42 @@ def validate_dse_report_hardware_bundle_references(
             )
 
 
+def validate_dse_report_workload_bundle_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    candidate_workloads = {
+        row["workload"]
+        for row in dse_report_candidate_rows(path, data)
+        if valid_identity(row.get("workload"))
+    }
+    if not candidate_workloads:
+        return
+    references = data.get("referenced_workload_report_bundle_identities")
+    if not isinstance(references, list):
+        return
+    for identity in references:
+        if not isinstance(identity, str) or not identity:
+            continue
+        report = read_resolved_json_reference(path, identity)
+        if report is None:
+            continue
+        if report.get("kind") != "workload_report_bundle":
+            diagnostics.append(f"DSE report bundle workload report reference {identity!r} has wrong kind")
+            continue
+        if report.get("report_status") != "pass":
+            diagnostics.append(f"DSE report bundle workload report reference {identity!r} is not passing")
+            continue
+        workload = report.get("workload")
+        if not isinstance(workload, str) or workload not in candidate_workloads:
+            diagnostics.append(
+                f"DSE report bundle workload report reference {identity!r} does not match DSE candidates"
+            )
+
+
 def validate_dse_candidate_id_list(
     value: object,
     diagnostics: list[str],
@@ -4773,6 +4809,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if data.get("report_status") != "pass" and not diagnostic_records:
             diagnostics.append("DSE report bundle non-pass status needs diagnostic_records")
         validate_dse_report_input_fingerprints(path, data, diagnostics)
+        validate_dse_report_workload_bundle_references(path, data, diagnostics)
         validate_dse_report_hardware_bundle_references(path, data, diagnostics)
         if not isinstance(data.get("policy_configuration"), dict):
             diagnostics.append("DSE report bundle policy_configuration must be an object")

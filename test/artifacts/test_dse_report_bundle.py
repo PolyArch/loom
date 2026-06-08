@@ -1920,6 +1920,44 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE report with mismatched hardware report bundle unexpectedly passed audit")
 
+        mismatched_workload_bundle = out_dir / "mismatched-workload-report-bundle.json"
+        mismatched_workload_bundle_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
+        mismatched_workload_bundle_data["bundle_id"] = (
+            "workload::other_workload::shared_reduction_adg::vecsum__shared_reduction_adg"
+        )
+        mismatched_workload_bundle_data["workload"] = "other_workload"
+        mismatched_workload_bundle.write_text(
+            json.dumps(mismatched_workload_bundle_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_workload_report = out_dir / "mismatched-workload-dse-report-bundle.json"
+        mismatched_workload_report_data = json.loads(report.read_text())
+        mismatched_workload_report_data["referenced_workload_report_bundle_identities"] = [
+            "mismatched-workload-report-bundle"
+        ]
+        mismatched_workload_report_data["runtime_evidence_summaries"][0][
+            "workload_report_bundle_identity"
+        ] = "mismatched-workload-report-bundle"
+        mismatched_workload_report_data["input_artifact_fingerprints"].pop("workload-report-bundle", None)
+        mismatched_workload_report_data["input_artifact_fingerprints"][
+            "mismatched-workload-report-bundle"
+        ] = artifact_test_common.fingerprint(mismatched_workload_bundle)
+        mismatched_workload_report.write_text(
+            json.dumps(mismatched_workload_report_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_workload_report_audit = out_dir / "mismatched-workload-dse-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_workload_report_audit),
+                str(mismatched_workload_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE report with mismatched workload report bundle unexpectedly passed audit")
+
         custom_workload_report = out_dir / "custom-workload-evidence.json"
         custom_workload_report.write_text((out_dir / "workload-report-bundle.json").read_text())
         custom_name_report = out_dir / "custom-name-dse-report-bundle.json"
