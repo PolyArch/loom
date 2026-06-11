@@ -67,6 +67,13 @@ workload-bound harnesses. A mapping artifact must not create new
 hardware nodes or links; it only configures or exercises the hardware
 already described by Fabric ADG.
 
+Architecture RTL is the first architectural target because it validates
+the reusable hardware description independent of any one workload.
+Mapped-workload RTL remains part of the same target universe, and its
+manifest schema must be defined alongside architecture RTL so later
+workload-bound harnesses can be added without changing the manifest
+identity model.
+
 ## SystemVerilog Structure
 
 The generated RTL source set should use stable naming derived from
@@ -165,8 +172,11 @@ evidence sources and must be labeled as such.
 
 An RTL manifest records:
 
+* manifest schema version;
+* manifest mode, either `architecture_rtl` or `mapped_workload_rtl`;
 * source Fabric ADG identity;
-* optional mapping artifact identity;
+* optional mapping artifact identity, required only for
+  `mapped_workload_rtl`;
 * lowering configuration;
 * emitted source files;
 * top-level module names;
@@ -179,6 +189,12 @@ An RTL manifest records:
 * diagnostics.
 
 The manifest is the stable input to EDA tooling profiles.
+
+`architecture_rtl` manifests must not pretend to have workload mapping
+evidence. `mapped_workload_rtl` manifests must identify the mapping
+artifact consumed for configuration, initialization, or harness
+generation, and that mapping artifact must resolve against the same
+Fabric ADG identity.
 
 ## Non-Goals
 
@@ -201,6 +217,9 @@ RTL lowering is complete at the target-spec level when:
 
 * a selected Fabric hardware root can emit deterministic SystemVerilog
   sources and an RTL manifest;
+* the RTL manifest declares `architecture_rtl` or
+  `mapped_workload_rtl` mode and enforces the corresponding mapping
+  artifact rule;
 * directed Fabric links lower to explicit RTL connectivity without
   implicit fanout or fan-in;
 * external ports become intentional top-level interfaces;

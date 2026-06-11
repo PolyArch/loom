@@ -19,6 +19,28 @@ DSE feedback is not a hidden side channel. A feedback decision must be
 represented by explicit records that reference the artifacts and
 metrics that motivated it.
 
+## Feedback Fidelity Taxonomy
+
+DSE feedback records use these fidelity classes:
+
+* `analytic_prefilter`: software static features and a default hardware
+  resource model, used for quick cost or performance screening;
+* `techmap_estimate`: graph or subgraph partitioning, FU configuration,
+  techmap cost, and calibrated structural estimates;
+* `dfg_sim_feedback`: input-driven DFG-sim results for software
+  semantics and dynamic execution baseline evidence;
+* `pnr_feedback`: mapping artifact evidence from placement, routing,
+  resource use, schedule, buffer, and memory-binding records;
+* `cgra_sim_feedback`: input-driven CGRA-sim evidence after mapping;
+* `eda_fpa_feedback`: RTL, EDA, backend report, or normalized FPA JSON
+  evidence.
+
+Low-fidelity feedback may be used for prefiltering. Formal ranking and
+selection must declare the fidelity used for every metric input, cite
+the evidence source, and record diagnostics when a required fidelity is
+missing or incompatible. An estimate must not be relabeled as simulator
+or backend evidence.
+
 ## Feedback Boundary
 
 DSE may consume:
@@ -55,6 +77,15 @@ artifacts, simulator reports, RTL manifests, EDA reports, or FPA
 reports. It creates new explicit artifacts when it explores new
 candidates.
 
+DSE candidates are immutable data points. A change to a candidate
+creates a new candidate with a new identity; it does not update the old
+candidate in place.
+
+The global evidence policy in `docs/spec-loom-stack.md` applies to DSE
+inputs. DSE-specific selection criteria must not treat unsupported,
+blocked, scaffold, fixture, or missing-metric records as passing
+candidate evidence.
+
 ## Objective Records
 
 An objective record has these required fields:
@@ -62,6 +93,7 @@ An objective record has these required fields:
 * objective id;
 * objective kind;
 * metric inputs;
+* feedback fidelity for each metric input;
 * priority or weight;
 * constraint or optimization mode;
 * comparison direction;
@@ -99,6 +131,7 @@ A candidate record identifies:
 * generated output artifacts;
 * objective records used;
 * metric records used;
+* feedback fidelity records used;
 * status;
 * diagnostics.
 
@@ -202,5 +235,8 @@ The DSE feedback target is complete when:
   policies;
 * selected candidates and Pareto sets cite the metrics that justify
   them;
+* selected candidates and Pareto sets declare the feedback fidelity and
+  provenance used for ranking;
+* DSE selection rejects records that violate the global evidence policy;
 * unsupported feedback targets and missing metrics produce structured
   diagnostics.

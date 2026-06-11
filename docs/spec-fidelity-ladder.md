@@ -21,6 +21,23 @@ useful when their limits are explicit.
 
 ## Fidelity Levels
 
+### `analytic`
+
+Analytic model evidence from Fabric ADG, mapping summaries, calibrated
+tables, or custom cost models. Analytic evidence may cite backend
+reports as calibration inputs, but it remains analytic unless the metric
+is directly produced by a backend evidence class.
+
+Inputs: Fabric ADG, optional mapping artifact, cost model identity,
+calibration identity, optional activity assumption.
+
+Outputs: estimated frequency, area, power, energy, confidence, and
+diagnostics.
+
+Unavailable metrics: direct backend timing closure, direct backend
+area, direct backend power, and measured workload activity unless an
+activity source is separately provided.
+
 ### `dfg_software`
 
 Software-only functional and optimistic performance evidence from
@@ -48,6 +65,20 @@ temporal reuse, diagnostics.
 
 Unavailable metrics: final RTL timing, backend area, backend power
 unless separately combined through FPA.
+
+### `mapped_activity`
+
+Analytic or calibrated FPA evidence that consumes mapping records and
+CGRA-sim activity. It is distinct from direct backend evidence.
+
+Inputs: Fabric ADG, mapping artifact, CGRA-sim report, activity
+summary, FPA model identity, calibration identity.
+
+Outputs: activity-aware estimated power, energy, resource activity
+breakdowns, confidence, and diagnostics.
+
+Unavailable metrics: direct RTL timing, direct backend area, direct
+backend power, and physical routing evidence.
 
 ### `rtl_functional`
 
@@ -136,15 +167,15 @@ and evidence source.
 |--------------|----------------------|
 | Functional result | DFG-sim, CGRA-sim, RTL functional, native app run, or CMSIS run. |
 | Steps or cycles | DFG-sim optimistic steps or CGRA-sim / RTL cycle evidence. |
-| Activity | CGRA-sim activity, RTL waveform/activity, backend activity, or custom model. |
-| Frequency | FPA analytic model, RTL structural timing, physical estimate, FPGA estimate, or custom model. |
-| Area | FPA analytic model, RTL structural report, physical estimate, FPGA estimate, or custom model. |
-| Dynamic power | FPA with explicit activity source, backend power, FPGA estimate, or custom model. |
-| Leakage power | FPA or backend evidence that supports leakage reporting. |
+| Activity | CGRA-sim activity, RTL waveform/activity, backend activity, mapped activity, or custom model. |
+| Frequency | Analytic FPA model, RTL structural timing, physical estimate, FPGA estimate, or custom model. |
+| Area | Analytic FPA model, RTL structural report, physical estimate, FPGA estimate, or custom model. |
+| Dynamic power | Analytic FPA with explicit activity source, mapped activity, backend power, FPGA estimate, or custom model. |
+| Leakage power | Analytic FPA, mapped activity, or backend evidence that supports leakage reporting. |
 | Energy | Derived from runtime and power with both source records visible. |
 | Throughput | Derived from workload size and runtime or cycles plus frequency. |
 | Latency | Derived from functional execution, cycles, or runtime evidence. |
-| Confidence | Required for analytic and custom models, optional for direct backend evidence. |
+| Confidence | Required for analytic, mapped activity, and custom models, optional for direct backend evidence. |
 
 Unsupported metrics must be absent or marked unsupported with a
 diagnostic. A report must not fill unsupported hardware metrics with

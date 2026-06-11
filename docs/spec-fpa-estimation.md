@@ -50,11 +50,17 @@ Baseline fidelity levels are:
 * `physical_estimate`: estimate from physical or floorplan-aware
   backend evidence;
 * `fpga_estimate`: estimate from FPGA-oriented backend evidence;
-* `custom`: user-defined estimation adapter with an explicit model
-  name.
+* `custom_calibrated`: user-defined estimation adapter with an explicit
+  model name and calibration identity.
 
 Reports must state the fidelity level for every frequency, power, and
 area number.
+
+Backend reports may calibrate analytic models, tables, or interpolation
+layers. A calibrated analytic estimate remains `analytic` unless the
+reported metric is directly produced by a backend evidence class. The
+report must cite calibration source identities and must not relabel
+analytic outputs as backend evidence.
 
 ## Frequency
 
@@ -139,6 +145,9 @@ are compatible evidence, but they are not produced by the same tool.
 
 A normalized FPA report must identify:
 
+* `kind = "fpa_report"`;
+* schema version;
+* report identity;
 * hardware candidate identity;
 * optional mapping artifact identity;
 * optional CGRA-sim report identity;
@@ -146,13 +155,29 @@ A normalized FPA report must identify:
 * selected tool profile id;
 * selected library profile id;
 * estimation configuration;
-* fidelity level;
+* calibration identity when a calibrated model is used;
 * frequency results;
 * area results;
 * power results;
 * combined cycle-frequency-power-area metrics when enough inputs exist;
 * backend report references;
 * diagnostics.
+
+Every metric record in the normalized FPA JSON report must identify:
+
+* metric id;
+* metric class;
+* value and unit;
+* fidelity level;
+* evidence source;
+* activity source when power or energy is workload-dependent;
+* derivation kind;
+* confidence when the evidence is analytic or custom-calibrated;
+* diagnostics.
+
+The normalized FPA JSON report is the stable program-to-program
+interface. CSV summaries are projections of this report and must not be
+used as the source of FPA truth.
 
 Reports should prefer portable artifact ids and profile ids over local
 paths. Private local run logs may contain local paths, but portable

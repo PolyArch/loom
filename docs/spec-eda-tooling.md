@@ -71,6 +71,36 @@ entry, but public example profiles must use placeholders or portable
 open-source commands. Private profiles may contain site-specific
 activation commands outside the public repository.
 
+## Target Universe And Layering
+
+The EDA target universe includes every backend profile class that Loom
+can discover, describe, activate, execute, parse, normalize, calibrate,
+and report without embedding private machine details in public specs.
+This includes open-source RTL tools, FPGA flows, ASIC logic synthesis
+flows, timing and power analysis tools, physical-estimate flows, formal
+or structural checkers, and custom adapters.
+
+Implementation may be layered by capability, but the profile contract is
+not limited to the profiles that are currently executable on one
+machine. Each profile class has the same objective completion ladder:
+
+* discovery: Loom can identify that the profile exists and which
+  capabilities it claims;
+* activation: Loom can apply the selected local activation recipe
+  without exposing private details in public reports;
+* execution: Loom can invoke the backend role on declared inputs;
+* parsing: Loom can parse backend-specific logs or reports;
+* normalization: Loom can emit stable Loom report records;
+* calibration: Loom can use backend reports as calibration inputs when
+  the selected FPA model supports calibration;
+* reporting: Loom can reference the normalized evidence from report
+  bundles and DSE records.
+
+An example or descriptor may declare a target profile class before the
+corresponding execution adapter is complete, but it must not count as
+passing backend evidence until the required activation, execution,
+parsing, normalization, and reporting records exist.
+
 ## Tool Classes
 
 Baseline tool classes are:
@@ -131,6 +161,10 @@ kinds are:
 Adapters normalize backend-specific output into Loom reports. Backend
 log text is evidence, but normalized reports are the stable interface
 used by DSE and user-facing summaries.
+
+The global evidence policy in `docs/spec-loom-stack.md` applies to EDA
+outputs. In particular, schema fixtures or scaffold descriptors must not
+be consumed as backend pass records by FPA, reporting, or DSE.
 
 ## Reproducibility
 
