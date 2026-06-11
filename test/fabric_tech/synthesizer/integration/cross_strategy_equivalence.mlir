@@ -13,9 +13,8 @@
 // per group; using `--check-prefix=ANY` lets the same FileCheck spec
 // validate every strategy.
 //
-// Acceptance criterion 4 of the spec ("strategy-agnostic coverage"):
-// every supported strategy must report `covered=N/N` on a tier-A
-// input. This test pins that contract.
+// Objective verification contract: every supported strategy must report
+// `covered=N/N` on a tier-A input. This test pins that contract.
 //
 // ANY: synth-stat group=alu_int_32
 // ANY-SAME: reason=success

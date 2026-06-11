@@ -3,9 +3,9 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/mcs.yaml dump-stats=true' 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=MCS
 
-// Acceptance criterion 1 (mcs): on a tier-A workload (all inputs
-// isomorphic), mcs produces a FU whose CostModel score is `<=` the
-// anchor strategy's score on the same input.
+// MCS strategy contract: on a tier-A workload (all inputs isomorphic),
+// mcs produces a FU whose CostModel score is `<=` the anchor strategy's
+// score on the same input.
 //
 // Two arith.addi/subi subgraphs of identical topology and width 32
 // share one fabric.op{op_list=[addi,subi]}. Both strategies converge

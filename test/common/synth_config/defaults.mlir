@@ -1,8 +1,8 @@
 // RUN: loom-synth-config-test | FileCheck %s
 
 // With no path supplied, the helper dumps the built-in defaults verbatim.
-// These must match the documented values in the SynthConfig schema section
-// of docs/spec-generalize-subgraphs-to-fu.md.
+// The public spec owns the semantic config axes; this regression owns the
+// current built-in default values.
 
 // CHECK: strategy=incremental_random
 // CHECK-NEXT: parallelism.cross_group=true

@@ -2,7 +2,7 @@
 
 // The factory dispatches on `SynthConfig.strategy`. The four canonical
 // names are documented in `docs/spec-generalize-subgraphs-to-fu.md`'s
-// "SynthConfig schema" section and listed by the helper in spec order.
+// "Configuration Surface" section and listed by the helper in spec order.
 
 // CHECK: anchor
 // CHECK-NEXT: mcs

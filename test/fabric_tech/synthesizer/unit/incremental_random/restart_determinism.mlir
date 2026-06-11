@@ -9,8 +9,8 @@
 // asserts byte equality and the FileCheck on run1 confirms a wrapper
 // was synthesized (so the equality check is meaningful).
 //
-// Acceptance criterion 1 (incremental_random): same `seed` produces
-// the same set of permutations and thus the same chosen FU.
+// Incremental-random strategy contract: same `seed` and config produce
+// the same chosen FU.
 
 // CHECK-LABEL: fabric.module @fu_det_demo
 // CHECK-SAME: loom.synthesized_for = "det_demo"

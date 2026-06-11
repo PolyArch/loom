@@ -3,9 +3,9 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/cost_random.yaml dump-stats=true' 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=RAND
 
-// Acceptance criterion 2 (incremental_random): on a workload where
-// input ordering matters, the chosen FU has cost <= the cost of
-// `incremental` with the default `largest_first` heuristic.
+// Incremental-random strategy contract: on a workload where input
+// ordering matters, the chosen FU has cost <= the cost of `incremental`
+// with the default `largest_first` heuristic.
 //
 // We pick a tier-B-friendly workload (mixed prefix lengths sharing the
 // arith.addi/subi share group) that the deterministic Incremental
@@ -14,8 +14,7 @@
 // the same magnitude (any cost-equivalent best-cost permutation is
 // fine, since the `<=` bound is trivially satisfied by equality). The
 // magnitude `194` mirrors the canonical wrapper produced by the
-// largest_first heuristic on this input; see
-// `IncrementalRandomSynthesizer::run` for the cost ranking rule.
+// largest_first heuristic on this input.
 
 // BASE: synth-stat group=cost_demo strategy=incremental reason=success
 // BASE-SAME: cost=1.940000e+02

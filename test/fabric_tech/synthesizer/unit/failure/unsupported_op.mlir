@@ -1,10 +1,9 @@
 // RUN: not loom %s -loom-generalize-subgraphs-to-fu 2>&1 | FileCheck %s
 
-// Per spec section "Failure reasons (closed enumeration)":
+// Per spec section "Failure Reasons":
 //   `unsupported_op` -- an input subgraph contains a software op not
-//   supported by `fabric.op` (per `opSchemas()` in
-//   `lib/Fabric/IR/FabricOps.cpp`); for example `dataflow.load`,
-//   `dataflow.store`, `dataflow.graph`, `arith.constant`, `ub.poison`.
+//   supported by `fabric.op`; for example `dataflow.load`,
+//   `dataflow.store`, or a nested `dataflow.graph`.
 //
 // Reachability note: the dataflow.subgraph dialect verifier shares the
 // same allowlist (`isAllowedInDataflowSubgraph` -> `isFabricOpSupported`)

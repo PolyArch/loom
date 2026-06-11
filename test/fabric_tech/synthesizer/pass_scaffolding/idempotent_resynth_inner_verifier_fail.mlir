@@ -14,10 +14,8 @@
 // `idempotent_resynth_signature_mismatch.mlir` cover the failure
 // paths that ARE constructible. The inner-fu-verifier logic itself
 // reuses the `mlir::verify` machinery exercised by every other
-// FU-emitting test in the synthesizer suite (and the C++
-// implementation captures the diagnostic via a
-// `ScopedDiagnosticHandler`; see `validateMarkerWrapper` in
-// `lib/Fabric/Tech/Synthesizer/GeneralizeSubgraphsToFuPass.cpp`).
+// FU-emitting test in the synthesizer suite and must report a structured
+// diagnostic if a post-parse mutation ever makes this path reachable.
 
 // RUN: echo "inner-fu-verifier-not-constructible" | FileCheck %s
 // CHECK: inner-fu-verifier-not-constructible

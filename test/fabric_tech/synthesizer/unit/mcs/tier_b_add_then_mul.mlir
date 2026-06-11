@@ -1,9 +1,9 @@
 // RUN: loom %s -loom-generalize-subgraphs-to-fu='config=%p/mcs.yaml dump-stats=true' 2>&1 | FileCheck %s
 
-// Acceptance criterion 2 (mcs): on `(a+b)*c` and `(a+b)` mixed inputs,
-// mcs identifies the shared `arith.addi` skeleton and bypasses the
-// multiplication via a single `fabric.mux` (and a `fabric.demux` on
-// the addi's downstream branches).
+// MCS strategy contract: on `(a+b)*c` and `(a+b)` mixed inputs, mcs
+// identifies the shared `arith.addi` skeleton and bypasses the
+// multiplication via a single `fabric.mux` (and a `fabric.demux` on the
+// addi's downstream branches).
 //
 // Same input shape as the incremental strategy's tier-B test, so the
 // strategies should converge on a structurally equivalent wrapper:
