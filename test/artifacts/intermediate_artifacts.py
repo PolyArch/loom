@@ -3687,6 +3687,35 @@ def validate_hardware_report_fpa_references(
             )
 
 
+def validate_hardware_report_adg_builder_recipe_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    input_fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict) or "adg-hardware-summary" not in input_fingerprints:
+        return
+    resolved = resolve_artifact_identity_reference(path, "adg-hardware-summary")
+    if resolved is None or resolved.suffix != ".csv":
+        return
+    hardware = data.get("hardware_candidate_identity")
+    matching_rows = [
+        row
+        for row in read_csv_rows(resolved)
+        if row.get("verify_status") == "pass"
+        and hardware_identity_matches(row.get("hardware"), hardware)
+    ]
+    if not matching_rows:
+        return
+    expected = matching_rows[0].get("adg_builder_recipe_identity", "")
+    if data.get("adg_builder_recipe_identity") != expected:
+        diagnostics.append(
+            "hardware report bundle ADG builder recipe identity does not match ADG hardware summary"
+        )
+
+
 def validate_hardware_report_rtl_manifest_reference(
     path: Path,
     data: dict[str, object],
@@ -5014,6 +5043,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append("hardware report bundle pass needs supported workload classes")
         validate_hardware_report_input_fingerprints(path, data, diagnostics)
         validate_hardware_report_fpa_references(path, data, diagnostics)
+        validate_hardware_report_adg_builder_recipe_reference(path, data, diagnostics)
         validate_hardware_report_rtl_manifest_reference(path, data, diagnostics)
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()

@@ -76,6 +76,13 @@ Required fields:
 * structured diagnostic records;
 * diagnostics summary.
 
+Rules:
+
+* When the report references an ADG hardware summary, its ADG Builder
+  recipe identity must match the selected ADG hardware summary row for
+  the hardware candidate. Empty identities are legal only when the
+  selected row has no known ADG Builder recipe.
+
 ### DSE Report Bundle
 
 One DSE report bundle summarizes a set of software placement,

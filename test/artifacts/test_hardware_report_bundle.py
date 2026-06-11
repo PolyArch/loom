@@ -269,6 +269,26 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("hardware report with malformed ADG builder recipe unexpectedly passed audit")
 
+        mismatched_builder_recipe_report = out_dir / "mismatched-builder-recipe-hardware-report-bundle.json"
+        mismatched_builder_recipe_data = json.loads(report.read_text())
+        mismatched_builder_recipe_data["adg_builder_recipe_identity"] = "adg-builder::other"
+        mismatched_builder_recipe_report.write_text(
+            json.dumps(mismatched_builder_recipe_data, indent=2, sort_keys=True) + "\n"
+        )
+        mismatched_builder_recipe_audit = out_dir / "mismatched-builder-recipe-hardware-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mismatched_builder_recipe_audit),
+                str(mismatched_builder_recipe_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("hardware report with mismatched ADG builder recipe unexpectedly passed audit")
+
         bad_rtl_identity_report = out_dir / "bad-rtl-identity-hardware-report-bundle.json"
         bad_rtl_identity_data = json.loads(report.read_text())
         bad_rtl_identity_data["rtl_manifest_identity"] = 7
