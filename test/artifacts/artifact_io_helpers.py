@@ -59,3 +59,17 @@ def matching_rtl_manifest_path(paths: list[Path], hardware: str) -> Path | None:
         if isinstance(source, str) and hardware_matches(source, hardware):
             return path
     return None
+
+
+def matching_eda_report_paths(paths: list[Path], rtl_manifest_identity: str) -> list[Path]:
+    matches: list[Path] = []
+    for path in paths:
+        data = read_json_or_empty(path)
+        if data.get("kind") != "eda_report" or data.get("status") != "pass":
+            continue
+        if data.get("capability_class") != "rtl_lint":
+            continue
+        if data.get("rtl_manifest_identity") != rtl_manifest_identity:
+            continue
+        matches.append(path)
+    return select_by_artifact_id(matches, lambda item: item, limit=1)

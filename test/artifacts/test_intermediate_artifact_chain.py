@@ -28,6 +28,7 @@ EXPECTED_FILES = [
     "runtime-package.json",
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
+    "rtl-eda-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
     "hardware-report-bundle.json",
@@ -234,6 +235,17 @@ def main() -> int:
             raise AssertionError(f"hardware report bundle should pass with ADG and FPA evidence: {hardware_bundle}")
         if hardware_bundle.get("supported_workload_classes") != ["vecsum"]:
             raise AssertionError(f"unexpected hardware report supported workloads: {hardware_bundle}")
+        eda_report = json.loads((out_dir / "rtl-eda-report.json").read_text())
+        if eda_report.get("kind") != "eda_report" or eda_report.get("capability_class") != "rtl_lint":
+            raise AssertionError(f"unexpected RTL EDA report: {eda_report}")
+        if eda_report.get("status") == "pass":
+            if hardware_bundle.get("eda_report_identities") != ["rtl-eda-report"]:
+                raise AssertionError(f"hardware report missed passing EDA report: {hardware_bundle}")
+        elif eda_report.get("status") == "blocked":
+            if hardware_bundle.get("eda_report_identities") != []:
+                raise AssertionError(f"hardware report should not consume blocked EDA report: {hardware_bundle}")
+        else:
+            raise AssertionError(f"unexpected RTL EDA report status: {eda_report}")
 
         dse_bundle = json.loads((out_dir / "dse-report-bundle.json").read_text())
         if dse_bundle.get("kind") != "dse_report_bundle":
@@ -324,6 +336,7 @@ def main() -> int:
             ("vecsum-cgra-sim-report", "runtime-package"),
             ("sim-comparison-report", "runtime-package"),
             ("adg-hardware-summary", "rtl-manifest"),
+            ("rtl-manifest", "rtl-eda-report"),
             ("rtl-manifest", "rtl-fpa-summary"),
             ("runtime-package", "workload-report-bundle"),
             ("pnr-mapping", "workload-report-bundle"),
@@ -334,6 +347,7 @@ def main() -> int:
             ("dse-candidate-summary", "workload-report-bundle"),
             ("adg-hardware-summary", "hardware-report-bundle"),
             ("rtl-manifest", "hardware-report-bundle"),
+            ("rtl-eda-report", "hardware-report-bundle"),
             ("rtl-fpa-summary", "hardware-report-bundle"),
             ("hardware-report-bundle", "e2e-demonstrator-summary"),
             ("dse-candidate-summary", "dse-report-bundle"),

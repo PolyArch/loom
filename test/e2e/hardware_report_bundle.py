@@ -23,6 +23,7 @@ read_csv = artifact_io_helpers.read_csv
 group_paths = artifact_io_helpers.group_paths
 hardware_matches = artifact_io_helpers.hardware_matches
 matching_rtl_manifest = artifact_io_helpers.matching_rtl_manifest_path
+matching_eda_reports = artifact_io_helpers.matching_eda_report_paths
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -109,6 +110,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     hardware_path, hardware_row = selected
     hardware = hardware_row["hardware"]
     rtl_manifest_path = matching_rtl_manifest(grouped.get("rtl_manifest", []), hardware)
+    rtl_manifest_identity = artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else ""
+    eda_report_paths = matching_eda_reports(grouped.get("eda_report", []), rtl_manifest_identity)
     fpa_rows = matching_fpa_rows(grouped.get("rtl_fpa", []), hardware)
     diagnostics: list[str] = []
     if rtl_manifest_path is None:
@@ -145,6 +148,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     )
 
     fpa_report_ids = sorted({artifact_id(path) for path, _ in fpa_rows})
+    eda_report_ids = [artifact_id(path) for path in eda_report_paths]
     supported_workloads = sorted({row.get("workload", "") for _, row in fpa_rows if row.get("workload")})
     if fpa_rows:
         fpa_path, fpa_row = fpa_rows[0]
@@ -177,11 +181,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "fabric_adg_identity": fabric_adg_identity(hardware),
         "adg_builder_recipe_identity": hardware_row.get("adg_builder_recipe_identity", ""),
         "rtl_manifest_identity": artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
-        "eda_report_identities": [],
+        "eda_report_identities": eda_report_ids,
         "fpa_report_identities": fpa_report_ids,
         "supported_workload_classes": supported_workloads,
         "input_artifact_fingerprints": input_artifact_fingerprints(
-            [hardware_path, rtl_manifest_path, *(path for path, _ in fpa_rows)]
+            [hardware_path, rtl_manifest_path, *eda_report_paths, *(path for path, _ in fpa_rows)]
         ),
         "report_status": "pass" if not diagnostics else "blocked",
         "diagnostic_records": diagnostic_records(diagnostics),

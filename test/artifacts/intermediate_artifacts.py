@@ -543,6 +543,28 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "status",
         },
     },
+    "eda_report": {
+        "filename": "rtl-eda-report.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "report_id",
+            "capability_class",
+            "rtl_manifest_identity",
+            "tool_profile_id",
+            "tool_name",
+            "tool_version",
+            "command_role",
+            "checked_top_modules",
+            "checked_source_files",
+            "input_artifact_fingerprints",
+            "source_file_fingerprints",
+            "returncode",
+            "diagnostic_records",
+            "diagnostics",
+            "status",
+        },
+    },
     "pnr_mapping_artifact": {
         "filename": "pnr-mapping.json",
         "required_keys": {
@@ -682,6 +704,7 @@ STANDARD_ARTIFACT_PATHS = (
     ("runtime_package", "temp/runtime-package.json"),
     ("sim_cycle", "temp/sim-cycle-summary.csv"),
     ("rtl_manifest", "temp/rtl-manifest.json"),
+    ("eda_report", "temp/rtl-eda-report.json"),
     ("rtl_fpa", "temp/rtl-fpa-summary.csv"),
     ("workload_report_bundle", "temp/workload-report-bundle.json"),
     ("hardware_report_bundle", "temp/hardware-report-bundle.json"),
@@ -696,6 +719,7 @@ EMBEDDED_JSON_KIND_ALIASES = {
     "cgra_sim_report": "cgra_sim_report",
     "sim_comparison_report": "sim_comparison_report",
     "rtl_manifest": "rtl_manifest",
+    "eda_report": "eda_report",
     "pnr_mapping": "pnr_mapping_artifact",
     "runtime_package": "runtime_package",
     "workload_report_bundle": "workload_report_bundle",
@@ -1382,6 +1406,8 @@ def iter_artifact_manifest_required_edges(
     for rtl_manifest_id in ids_by_kind.get("rtl_manifest", []):
         for hardware_id in ids_by_kind.get("adg_hardware", []):
             yield hardware_id, rtl_manifest_id
+        for eda_id in ids_by_kind.get("eda_report", []):
+            yield rtl_manifest_id, eda_id
         for rtl_fpa_id in ids_by_kind.get("rtl_fpa", []):
             yield rtl_manifest_id, rtl_fpa_id
 
@@ -1417,7 +1443,7 @@ def iter_artifact_manifest_required_edges(
             yield report_id, demonstrator_id
 
     for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
-        for source_kind in ("adg_hardware", "rtl_manifest", "rtl_fpa"):
+        for source_kind in ("adg_hardware", "rtl_manifest", "eda_report", "rtl_fpa"):
             for source_id in ids_by_kind.get(source_kind, []):
                 yield source_id, hardware_report_id
         for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
@@ -3739,6 +3765,130 @@ def validate_hardware_report_rtl_manifest_reference(
         diagnostics.append("hardware report bundle RTL manifest source does not match hardware candidate")
 
 
+def validate_hardware_report_eda_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("report_status") != "pass":
+        return
+    rtl_manifest_identity = data.get("rtl_manifest_identity")
+    eda_identities = data.get("eda_report_identities")
+    if not isinstance(eda_identities, list):
+        return
+    for identity in eda_identities:
+        if not isinstance(identity, str) or not identity:
+            continue
+        report = read_resolved_json_reference(path, identity)
+        if report is None:
+            continue
+        if report.get("kind") != "eda_report":
+            diagnostics.append(f"hardware report bundle EDA reference {identity!r} has wrong kind")
+            continue
+        if report.get("status") != "pass":
+            diagnostics.append(f"hardware report bundle EDA reference {identity!r} is not passing")
+            continue
+        if report.get("capability_class") != "rtl_lint":
+            diagnostics.append(f"hardware report bundle EDA reference {identity!r} has wrong capability class")
+            continue
+        if report.get("rtl_manifest_identity") != rtl_manifest_identity:
+            diagnostics.append(
+                f"hardware report bundle EDA reference {identity!r} does not match RTL manifest"
+            )
+
+
+def validate_eda_report_input_fingerprints(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    reference_ids: set[str] = set()
+    rtl_manifest_identity = data.get("rtl_manifest_identity")
+    if isinstance(rtl_manifest_identity, str) and rtl_manifest_identity:
+        reference_ids.add(rtl_manifest_identity)
+    input_fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        diagnostics.append("EDA report input_artifact_fingerprints must be an object")
+        input_fingerprints = {}
+    if data.get("status") in {"pass", "fail", "blocked"} and not input_fingerprints:
+        diagnostics.append("EDA report needs input_artifact_fingerprints")
+    for identity, fingerprint in input_fingerprints.items():
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append("EDA report input_artifact_fingerprints has invalid identity")
+            continue
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(f"EDA report input_artifact_fingerprints has invalid fingerprint for {identity}")
+            continue
+        if identity not in reference_ids:
+            diagnostics.append(
+                f"EDA report input_artifact_fingerprints references {identity!r} outside report inputs"
+            )
+            continue
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"EDA report input_artifact_fingerprints stale for {identity!r}")
+    for reference in reference_ids:
+        if reference not in input_fingerprints:
+            diagnostics.append(f"EDA report input_artifact_fingerprints lacks {reference!r}")
+
+
+def validate_eda_report_source_fingerprints(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    source_files = data.get("checked_source_files")
+    source_fingerprints = data.get("source_file_fingerprints")
+    if not isinstance(source_files, list):
+        diagnostics.append("EDA report checked_source_files must be a list")
+        source_files = []
+    if not isinstance(source_fingerprints, dict):
+        diagnostics.append("EDA report source_file_fingerprints must be an object")
+        source_fingerprints = {}
+    for source in source_files:
+        if not isinstance(source, str) or not source:
+            diagnostics.append("EDA report checked_source_files contains invalid path")
+            continue
+        fingerprint = source_fingerprints.get(source)
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(f"EDA report source_file_fingerprints has invalid fingerprint for {source!r}")
+            continue
+        resolved = resolve_artifact_reference(path, source)
+        if not resolved.is_file():
+            diagnostics.append(f"EDA report checked source {source!r} does not exist")
+            continue
+        if fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"EDA report source_file_fingerprints stale for {source!r}")
+    for source in source_fingerprints:
+        if source not in source_files:
+            diagnostics.append(f"EDA report source_file_fingerprints references unchecked source {source!r}")
+
+
+def validate_eda_report_rtl_manifest_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    manifest = read_resolved_json_reference(path, data.get("rtl_manifest_identity"))
+    if manifest is None:
+        return
+    if manifest.get("kind") != "rtl_manifest":
+        diagnostics.append("EDA report RTL manifest reference has wrong kind")
+        return
+    if data.get("status") == "pass" and manifest.get("status") != "pass":
+        diagnostics.append("EDA report pass references a non-passing RTL manifest")
+    manifest_tops = manifest.get("top_level_modules")
+    checked_tops = data.get("checked_top_modules")
+    if isinstance(manifest_tops, list) and isinstance(checked_tops, list):
+        missing = [
+            top
+            for top in manifest_tops
+            if isinstance(top, str) and top and top not in checked_tops
+        ]
+        if data.get("status") == "pass" and missing:
+            diagnostics.append(f"EDA report pass missed RTL manifest top modules {missing}")
+
+
 def read_resolved_json_reference(path: Path, identity: object) -> dict[str, object] | None:
     if not isinstance(identity, str) or not identity:
         return None
@@ -4665,6 +4815,52 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                         diagnostics.append(f"runtime package lacks input fingerprint for {identity}")
         elif not diagnostic_records:
             diagnostics.append("runtime package non-pass status needs diagnostic_records")
+    if kind == "eda_report":
+        if data.get("kind") != "eda_report":
+            diagnostics.append("EDA report kind must be eda_report")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("EDA report status must be a known status")
+        for key in ("report_id", "rtl_manifest_identity", "tool_profile_id", "tool_name", "command_role"):
+            if not isinstance(data.get(key), str) or not data.get(key):
+                diagnostics.append(f"EDA report lacks {key}")
+        if data.get("capability_class") != "rtl_lint":
+            diagnostics.append("EDA report capability_class must be rtl_lint")
+        if data.get("command_role") != "rtl lint":
+            diagnostics.append("EDA report command_role must be rtl lint")
+        if not isinstance(data.get("tool_version"), str):
+            diagnostics.append("EDA report tool_version must be a string")
+        for key in ("checked_top_modules", "checked_source_files", "diagnostics"):
+            if not isinstance(data.get(key), list):
+                diagnostics.append(f"EDA report {key} must be a list")
+        diagnostic_records = validate_diagnostic_records(
+            data.get("diagnostic_records"),
+            diagnostics,
+            "EDA report",
+        )
+        returncode = data.get("returncode")
+        if returncode is not None and not isinstance(returncode, int):
+            diagnostics.append("EDA report returncode must be an integer or null")
+        if data.get("status") == "pass":
+            if not data.get("tool_version"):
+                diagnostics.append("EDA report pass needs tool_version")
+            if returncode != 0:
+                diagnostics.append("EDA report pass needs zero returncode")
+            if diagnostic_records:
+                diagnostics.append("EDA report pass must not carry diagnostic_records")
+            if not data.get("checked_top_modules"):
+                diagnostics.append("EDA report pass needs checked_top_modules")
+            if not data.get("checked_source_files"):
+                diagnostics.append("EDA report pass needs checked_source_files")
+        elif data.get("status") == "fail":
+            if not isinstance(returncode, int) or returncode == 0:
+                diagnostics.append("EDA report fail needs non-zero returncode")
+            if not diagnostic_records:
+                diagnostics.append("EDA report fail needs diagnostic_records")
+        elif data.get("status") in {"blocked", "unsupported", "not_run"} and not diagnostic_records:
+            diagnostics.append("EDA report non-pass status needs diagnostic_records")
+        validate_eda_report_input_fingerprints(path, data, diagnostics)
+        validate_eda_report_source_fingerprints(path, data, diagnostics)
+        validate_eda_report_rtl_manifest_reference(path, data, diagnostics)
     if kind == "workload_report_bundle":
         if data.get("kind") != "workload_report_bundle":
             diagnostics.append("workload report bundle kind must be workload_report_bundle")
@@ -5045,6 +5241,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         validate_hardware_report_fpa_references(path, data, diagnostics)
         validate_hardware_report_adg_builder_recipe_reference(path, data, diagnostics)
         validate_hardware_report_rtl_manifest_reference(path, data, diagnostics)
+        validate_hardware_report_eda_references(path, data, diagnostics)
         metrics = data.get("metric_records")
         metric_ids: set[str] = set()
         if not isinstance(metrics, list) or not metrics:

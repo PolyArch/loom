@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -85,6 +86,8 @@ def main() -> int:
             raise AssertionError(f"unexpected RTL manifest identity: {data}")
         if data["fpa_report_identities"] != ["rtl-fpa-summary"]:
             raise AssertionError(f"unexpected FPA report identities: {data}")
+        if data["eda_report_identities"] != []:
+            raise AssertionError(f"hardware report should not invent EDA report identities: {data}")
         if data["supported_workload_classes"] != ["vecsum"]:
             raise AssertionError(f"unexpected supported workload classes: {data}")
         expected_input_fingerprints = {
@@ -96,6 +99,127 @@ def main() -> int:
             raise AssertionError(f"unexpected hardware report input fingerprints: {data}")
         if data["diagnostic_records"] != []:
             raise AssertionError(f"passing hardware report should have no diagnostic records: {data}")
+
+        blocked_eda = out_dir / "rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(out_dir / "rtl-manifest.json"),
+                "--tool",
+                "definitely-missing-verilator",
+                "--output",
+                str(blocked_eda),
+            ],
+            "blocked RTL EDA report",
+        )
+        blocked_eda_report = out_dir / "blocked-eda-hardware-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_hardware_report_bundle.sh",
+                "--output",
+                str(blocked_eda_report),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(blocked_eda),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "hardware report bundle with blocked EDA report",
+        )
+        blocked_eda_data = json.loads(blocked_eda_report.read_text())
+        if blocked_eda_data["eda_report_identities"] != []:
+            raise AssertionError(f"hardware report should ignore blocked EDA report: {blocked_eda_data}")
+
+        verilator = shutil.which("verilator")
+        if verilator is not None:
+            passing_eda = out_dir / "passing-rtl-eda-report.json"
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "bash",
+                    "test/rtl/run_rtl_eda_report.sh",
+                    "--manifest",
+                    str(out_dir / "rtl-manifest.json"),
+                    "--tool",
+                    verilator,
+                    "--output",
+                    str(passing_eda),
+                ],
+                "passing RTL EDA report",
+            )
+            passing_eda_report = out_dir / "passing-eda-hardware-report-bundle.json"
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_hardware_report_bundle.sh",
+                    "--output",
+                    str(passing_eda_report),
+                    "--artifact",
+                    str(out_dir / "adg-hardware-summary.csv"),
+                    "--artifact",
+                    str(out_dir / "rtl-manifest.json"),
+                    "--artifact",
+                    str(passing_eda),
+                    "--artifact",
+                    str(out_dir / "rtl-fpa-summary.csv"),
+                ],
+                "hardware report bundle with passing EDA report",
+            )
+            passing_eda_data = json.loads(passing_eda_report.read_text())
+            if passing_eda_data["eda_report_identities"] != ["passing-rtl-eda-report"]:
+                raise AssertionError(f"hardware report should consume passing EDA report: {passing_eda_data}")
+            if "passing-rtl-eda-report" not in passing_eda_data["input_artifact_fingerprints"]:
+                raise AssertionError(f"hardware report should fingerprint passing EDA report: {passing_eda_data}")
+            passing_eda_audit = out_dir / "passing-eda-hardware-report-bundle-audit.json"
+            artifact_test_common.require_success(
+                repo,
+                [
+                    "python3",
+                    "test/e2e/audit_intermediate_artifacts.py",
+                    "--output",
+                    str(passing_eda_audit),
+                    str(passing_eda_report),
+                ],
+                "hardware report bundle audit with EDA report",
+            )
+            mismatched_eda = out_dir / "mismatched-rtl-eda-report.json"
+            mismatched_eda_data = json.loads(passing_eda.read_text())
+            mismatched_eda_data["rtl_manifest_identity"] = "other-rtl-manifest"
+            mismatched_eda.write_text(json.dumps(mismatched_eda_data, indent=2, sort_keys=True) + "\n")
+            mismatched_eda_report = out_dir / "mismatched-eda-hardware-report-bundle.json"
+            mismatched_eda_hardware_data = json.loads(passing_eda_report.read_text())
+            mismatched_eda_hardware_data["eda_report_identities"] = ["mismatched-rtl-eda-report"]
+            mismatched_eda_hardware_data["input_artifact_fingerprints"].pop(
+                "passing-rtl-eda-report",
+                None,
+            )
+            mismatched_eda_hardware_data["input_artifact_fingerprints"][
+                "mismatched-rtl-eda-report"
+            ] = artifact_test_common.fingerprint(mismatched_eda)
+            mismatched_eda_report.write_text(
+                json.dumps(mismatched_eda_hardware_data, indent=2, sort_keys=True) + "\n"
+            )
+            result = artifact_test_common.run_command(
+                repo,
+                [
+                    "python3",
+                    "test/e2e/audit_intermediate_artifacts.py",
+                    "--output",
+                    str(out_dir / "mismatched-eda-hardware-report-bundle-audit.json"),
+                    str(mismatched_eda_report),
+                ],
+            )
+            if result.returncode == 0:
+                raise AssertionError("hardware report with mismatched EDA report unexpectedly passed audit")
 
         metrics = data.get("metric_records", [])
         if not isinstance(metrics, list) or not metrics:

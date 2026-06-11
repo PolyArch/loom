@@ -580,6 +580,57 @@ Rules:
   interfaces, constraints, and activity hooks must be recorded
   explicitly when present.
 
+### EDA Report
+
+Purpose: content-audit normalized EDA tooling output specified by
+`docs/spec-eda-tooling.md`. This report records a concrete backend
+execution such as `rtl_lint` and gives reporting, FPA, and DSE flows a
+stable artifact identity instead of consuming private tool logs.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `report_id`;
+* `capability_class`;
+* `rtl_manifest_identity`;
+* `tool_profile_id`;
+* `tool_name`;
+* `tool_version`;
+* `command_role`;
+* `checked_top_modules`;
+* `checked_source_files`;
+* `input_artifact_fingerprints`;
+* `source_file_fingerprints`;
+* `returncode`;
+* `diagnostic_records`;
+* `diagnostics`;
+* `status`.
+
+Rules:
+
+* `kind` must be `eda_report`.
+* `capability_class` identifies the EDA role from
+  `docs/spec-eda-tooling.md`; the first required backend role is
+  `rtl_lint`.
+* `rtl_manifest_identity` must resolve to the RTL manifest consumed by
+  the backend run, and the report must fingerprint that manifest.
+* Source file fingerprints must match the checked source files recorded
+  in the referenced RTL manifest.
+* `status = pass` requires an activated backend tool, non-empty
+  `tool_version`, zero `returncode`, checked top modules, checked
+  source files, and no diagnostic records.
+* Missing tools, activation failures, missing sources, backend
+  execution failures, and parser failures must be represented as
+  structured diagnostic records, not as passing backend evidence.
+* Report bundles may consume passing EDA report identities. Blocked,
+  unsupported, skipped, or failed EDA reports remain auditable
+  artifacts but must not be counted as backend pass evidence.
+* EDA lint evidence is not FPA evidence. Analytic FPA estimates remain
+  labeled as analytic unless a later normalized FPA report directly
+  consumes backend metric evidence according to
+  `docs/spec-fpa-estimation.md`.
+
 ### Normalized FPA Report
 
 Purpose: content-audit the normalized FPA report specified by

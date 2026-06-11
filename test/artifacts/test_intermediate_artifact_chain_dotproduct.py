@@ -25,6 +25,7 @@ EXPECTED_FILES = [
     "runtime-package.json",
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
+    "rtl-eda-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
     "hardware-report-bundle.json",
@@ -179,6 +180,17 @@ def main() -> int:
         hardware_bundle = json.loads((out_dir / "hardware-report-bundle.json").read_text())
         if hardware_bundle.get("supported_workload_classes") != ["dotproduct"]:
             raise AssertionError(f"hardware report should cite dotproduct FPA support: {hardware_bundle}")
+        eda_report = json.loads((out_dir / "rtl-eda-report.json").read_text())
+        if eda_report.get("kind") != "eda_report" or eda_report.get("capability_class") != "rtl_lint":
+            raise AssertionError(f"unexpected dotproduct RTL EDA report: {eda_report}")
+        if eda_report.get("status") == "pass":
+            if hardware_bundle.get("eda_report_identities") != ["rtl-eda-report"]:
+                raise AssertionError(f"hardware report missed passing EDA report: {hardware_bundle}")
+        elif eda_report.get("status") == "blocked":
+            if hardware_bundle.get("eda_report_identities") != []:
+                raise AssertionError(f"hardware report should not consume blocked EDA report: {hardware_bundle}")
+        else:
+            raise AssertionError(f"unexpected dotproduct RTL EDA report status: {eda_report}")
 
         audit = json.loads((out_dir / "artifact-audit-summary.json").read_text())
         if audit.get("verdict") != "pass":
