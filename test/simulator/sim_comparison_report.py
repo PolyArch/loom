@@ -129,13 +129,19 @@ def build_report(
 
     dfg_status = string_field(dfg, "status")
     cgra_status = string_field(cgra, "status")
-    if dfg_status and dfg_status != "pass":
-        diagnostics.append(f"DFG-sim report status {dfg_status} blocks simulation comparison")
+    if dfg_status != "pass":
+        if dfg_status:
+            diagnostics.append(f"DFG-sim report status {dfg_status} blocks simulation comparison")
+        else:
+            diagnostics.append("DFG-sim report status missing blocks simulation comparison")
         input_status_blocked = True
-    if cgra_status and cgra_status != "pass":
-        diagnostics.append(f"CGRA-sim report status {cgra_status} blocks performance comparison")
+    if cgra_status != "pass":
+        if cgra_status:
+            diagnostics.append(f"CGRA-sim report status {cgra_status} blocks performance comparison")
+            input_status_classification = string_field(cgra, "difference_classification") or "unsupported_scope"
+        else:
+            diagnostics.append("CGRA-sim report status missing blocks performance comparison")
         input_status_blocked = True
-        input_status_classification = string_field(cgra, "difference_classification") or "unsupported_scope"
 
     dfg_cycles = int_field(dfg, "optimistic_cycles")
     cgra_cycles = int_field(cgra, "hardware_aware_cycles")

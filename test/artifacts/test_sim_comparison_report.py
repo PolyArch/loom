@@ -77,6 +77,46 @@ def assert_generator_blocks_missing_final_state(
         raise AssertionError(f"{label} comparison must not silently skip final-state checks: {data}")
 
 
+def assert_generator_blocks_missing_input_status(
+    repo: Path,
+    out_dir: Path,
+    dfg_data: dict[str, object],
+    cgra_data: dict[str, object],
+    *,
+    label: str,
+) -> None:
+    dfg_report = out_dir / f"{label}-dfg-sim-report.json"
+    cgra_report = out_dir / f"{label}-cgra-sim-report.json"
+    comparison_report = out_dir / f"{label}-sim-comparison-report.json"
+    write_json(dfg_report, dfg_data)
+    write_json(cgra_report, cgra_data)
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "bash",
+            "test/simulator/run_sim_comparison_report.sh",
+            "--dfg-report",
+            str(dfg_report),
+            "--cgra-report",
+            str(cgra_report),
+            "--output",
+            str(comparison_report),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{label} comparison unexpectedly passed")
+    data = json.loads(comparison_report.read_text())
+    if data.get("status") != "blocked":
+        raise AssertionError(f"{label} comparison should be blocked: {data}")
+    if data.get("performance_comparison_status") != "blocked":
+        raise AssertionError(f"{label} comparison should block performance checks: {data}")
+    if data.get("difference_classification") != "unsupported_scope":
+        raise AssertionError(f"{label} comparison should classify unsupported scope: {data}")
+    diagnostics = data.get("diagnostics", [])
+    if not any("status" in str(item) for item in diagnostics):
+        raise AssertionError(f"{label} comparison should diagnose missing status: {data}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-comparison-") as tmp:
@@ -296,6 +336,31 @@ def main() -> int:
             missing_memory_cgra,
             label="missing-final-memory",
             expected_status_key="memory_comparison_status",
+        )
+
+        pass_like_cgra_data = json.loads(json.dumps(cgra_data))
+        pass_like_cgra_data["status"] = "pass"
+        pass_like_cgra_data["difference_classification"] = "expected_hardware_constraint"
+        pass_like_cgra_data["hardware_aware_cycles"] = 589
+        pass_like_cgra_data["performance_delta_cycles"] = 10
+        missing_status_dfg = json.loads(json.dumps(dfg_data))
+        missing_status_dfg.pop("status", None)
+        assert_generator_blocks_missing_input_status(
+            repo,
+            out_dir,
+            missing_status_dfg,
+            pass_like_cgra_data,
+            label="missing-dfg-status",
+        )
+
+        missing_status_cgra = json.loads(json.dumps(pass_like_cgra_data))
+        missing_status_cgra.pop("status", None)
+        assert_generator_blocks_missing_input_status(
+            repo,
+            out_dir,
+            dfg_data,
+            missing_status_cgra,
+            label="missing-cgra-status",
         )
 
         mismatched_runtime_input = out_dir / "mismatch-runtime-input-sim-comparison-report.json"
