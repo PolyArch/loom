@@ -138,7 +138,7 @@ def summarize_module(
     input_path: Path,
     name: str,
     body: list[str],
-    explicit_recipes: dict[str, str],
+    recipe_identity: str,
 ) -> dict[str, str]:
     node_count = sum(1 for line in body if NODE_RE.search(line))
     link_count = sum(1 for line in body if LINK_RE.search(line))
@@ -160,11 +160,11 @@ def summarize_module(
         "diagnostic": "fabric.module template verified; link_count counts explicit fabric.link records only",
         "tile_kinds": ";".join(sorted(tile_kinds)),
         "schedule_kinds": ";".join(sorted(schedule_kinds)),
-        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path, explicit_recipes),
+        "adg_builder_recipe_identity": recipe_identity,
     }
 
 
-def failed_row(input_path: Path, diagnostic: str, explicit_recipes: dict[str, str]) -> dict[str, str]:
+def failed_row(input_path: Path, diagnostic: str, recipe_identity: str) -> dict[str, str]:
     return {
         "hardware": relative_id(input_path),
         "topology_class": "fabric_module_template",
@@ -174,7 +174,7 @@ def failed_row(input_path: Path, diagnostic: str, explicit_recipes: dict[str, st
         "diagnostic": diagnostic,
         "tile_kinds": "",
         "schedule_kinds": "",
-        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path, explicit_recipes),
+        "adg_builder_recipe_identity": recipe_identity,
     }
 
 
@@ -183,9 +183,10 @@ def summarize_input(
     input_path: Path,
     explicit_recipes: dict[str, str],
 ) -> tuple[list[dict[str, str]], bool]:
+    recipe_identity = adg_builder_recipe_identity(input_path, explicit_recipes)
     text, diagnostic = run_loom(tool, input_path)
     if text is None:
-        return [failed_row(input_path, diagnostic, explicit_recipes)], False
+        return [failed_row(input_path, diagnostic, recipe_identity)], False
 
     modules = iter_module_bodies(text)
     if not modules:
@@ -193,11 +194,11 @@ def summarize_input(
             failed_row(
                 input_path,
                 "verified file contains no fabric.module hardware template",
-                explicit_recipes,
+                recipe_identity,
             )
         ], False
     return [
-        summarize_module(input_path, name, body, explicit_recipes)
+        summarize_module(input_path, name, body, recipe_identity)
         for name, body in modules
     ], True
 
