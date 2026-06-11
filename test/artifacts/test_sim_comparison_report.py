@@ -117,6 +117,35 @@ def assert_generator_blocks_missing_input_status(
         raise AssertionError(f"{label} comparison should diagnose missing status: {data}")
 
 
+def assert_comparison_audit_fails(
+    repo: Path,
+    out_dir: Path,
+    comparison_data: dict[str, object],
+    *,
+    label: str,
+    expected_fragment: str,
+) -> None:
+    comparison_report = out_dir / f"{label}-sim-comparison-report.json"
+    write_json(comparison_report, comparison_data)
+    summary = out_dir / f"{label}-sim-comparison-audit-summary.json"
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/e2e/audit_intermediate_artifacts.py",
+            "--output",
+            str(summary),
+            str(comparison_report),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{label} comparison unexpectedly passed audit")
+    audit_data = json.loads(summary.read_text())
+    diagnostics = json.dumps(audit_data, sort_keys=True)
+    if expected_fragment not in diagnostics:
+        raise AssertionError(f"{label} audit missed {expected_fragment!r}: {audit_data}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-comparison-") as tmp:
@@ -313,6 +342,90 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("pass comparison with skipped functional or memory checks passed audit")
 
+        pass_dfg = json.loads(json.dumps(dfg_data))
+        pass_cgra = json.loads(json.dumps(cgra_data))
+        pass_cgra["status"] = "pass"
+        pass_cgra["hardware_bound_classification"] = "within_modeled_bounds"
+        pass_cgra["difference_classification"] = "no_modeled_hardware_constraints"
+        pass_cgra["performance_delta_cycles"] = 0
+        pass_cgra["route_latency_cycles"] = 0
+        pass_cgra["memory_latency_cycles"] = 0
+        pass_cgra["temporal_penalty_cycles"] = 0
+        pass_cgra["hardware_aware_cycles"] = pass_cgra.get("dfg_cycles", data.get("dfg_sim_cycles", 0))
+        pass_dfg_report = out_dir / "pass-source-dfg-sim-report.json"
+        pass_cgra_report = out_dir / "pass-source-cgra-sim-report.json"
+        write_json(pass_dfg_report, pass_dfg)
+        write_json(pass_cgra_report, pass_cgra)
+        claimed_pass_comparison = json.loads(json.dumps(data))
+        claimed_pass_comparison.update(
+            {
+                "status": "pass",
+                "difference_classification": "match",
+                "functional_comparison_status": "pass",
+                "memory_comparison_status": "pass",
+                "performance_comparison_status": "pass",
+                "dfg_sim_report_identity": "pass-source-dfg-sim-report",
+                "cgra_sim_report_identity": "pass-source-cgra-sim-report",
+                "mapping_artifact_identity": "",
+                "dfg_sim_cycles": pass_dfg.get("optimistic_cycles"),
+                "cgra_sim_cycles": pass_cgra.get("hardware_aware_cycles"),
+                "performance_delta_cycles": 0,
+                "diagnostics": [],
+            }
+        )
+
+        mismatched_outputs_cgra = json.loads(json.dumps(pass_cgra))
+        mismatched_outputs_cgra["final_outputs"] = ["simulated-output-mismatch"]
+        write_json(out_dir / "mismatched-outputs-cgra-sim-report.json", mismatched_outputs_cgra)
+        mismatched_outputs_comparison = json.loads(json.dumps(claimed_pass_comparison))
+        mismatched_outputs_comparison["cgra_sim_report_identity"] = "mismatched-outputs-cgra-sim-report"
+        assert_comparison_audit_fails(
+            repo,
+            out_dir,
+            mismatched_outputs_comparison,
+            label="mismatched-source-outputs",
+            expected_fragment="functional comparison pass contradicts source reports",
+        )
+
+        mismatched_memory_cgra = json.loads(json.dumps(pass_cgra))
+        mismatched_memory_cgra["final_memory_state"] = {"visible": ["simulated-memory-mismatch"]}
+        write_json(out_dir / "mismatched-memory-cgra-sim-report.json", mismatched_memory_cgra)
+        mismatched_memory_comparison = json.loads(json.dumps(claimed_pass_comparison))
+        mismatched_memory_comparison["cgra_sim_report_identity"] = "mismatched-memory-cgra-sim-report"
+        assert_comparison_audit_fails(
+            repo,
+            out_dir,
+            mismatched_memory_comparison,
+            label="mismatched-source-memory",
+            expected_fragment="memory comparison pass contradicts source reports",
+        )
+
+        missing_source_comparison = json.loads(json.dumps(claimed_pass_comparison))
+        missing_source_comparison["dfg_sim_report_identity"] = "missing-source-dfg-sim-report"
+        missing_source_comparison["cgra_sim_report_identity"] = "missing-source-cgra-sim-report"
+        assert_comparison_audit_fails(
+            repo,
+            out_dir,
+            missing_source_comparison,
+            label="missing-source-references",
+            expected_fragment="DFG reference does not resolve",
+        )
+
+        missing_provenance_pass_cgra = json.loads(json.dumps(pass_cgra))
+        missing_provenance_pass_cgra.pop("functional_state_source", None)
+        write_json(out_dir / "missing-pass-provenance-cgra-sim-report.json", missing_provenance_pass_cgra)
+        missing_provenance_comparison = json.loads(json.dumps(claimed_pass_comparison))
+        missing_provenance_comparison["cgra_sim_report_identity"] = (
+            "missing-pass-provenance-cgra-sim-report"
+        )
+        assert_comparison_audit_fails(
+            repo,
+            out_dir,
+            missing_provenance_comparison,
+            label="missing-source-provenance",
+            expected_fragment="CGRA reference lacks functional state provenance",
+        )
+
         missing_outputs_dfg = json.loads(json.dumps(dfg_data))
         missing_outputs_cgra = json.loads(json.dumps(cgra_data))
         missing_outputs_dfg.pop("final_outputs", None)
@@ -336,6 +449,19 @@ def main() -> int:
             missing_memory_cgra,
             label="missing-final-memory",
             expected_status_key="memory_comparison_status",
+        )
+
+        malformed_outputs_dfg = json.loads(json.dumps(dfg_data))
+        malformed_outputs_cgra = json.loads(json.dumps(pass_cgra))
+        malformed_outputs_dfg["final_outputs"] = [7]
+        malformed_outputs_cgra["final_outputs"] = ["7"]
+        assert_generator_blocks_missing_final_state(
+            repo,
+            out_dir,
+            malformed_outputs_dfg,
+            malformed_outputs_cgra,
+            label="malformed-final-outputs",
+            expected_status_key="functional_comparison_status",
         )
 
         pass_like_cgra_data = json.loads(json.dumps(cgra_data))

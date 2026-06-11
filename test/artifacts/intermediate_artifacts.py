@@ -4504,6 +4504,16 @@ def validate_string_array_object_field(
                 diagnostics.append(f"{label} {key}.{name} entry {index} must be a string")
 
 
+def is_string_array(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def is_string_array_object(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return all(isinstance(name, str) and is_string_array(values) for name, values in value.items())
+
+
 def prefer_workload_graph_set_aggregates(
     grouped: dict[str, list[dict[str, object]]],
 ) -> dict[str, list[dict[str, object]]]:
@@ -4531,10 +4541,16 @@ def validate_sim_comparison_references(
 ) -> None:
     workload = data.get("workload")
     runtime_input_identity = data.get("runtime_input_identity")
+    comparison_status = data.get("status")
     dfg_report = read_resolved_json_reference(path, data.get("dfg_sim_report_identity"))
-    if dfg_report is not None:
+    if dfg_report is None:
+        if comparison_status == "pass":
+            diagnostics.append(f"{label} DFG reference does not resolve")
+    else:
         if dfg_report.get("kind") != "dfg_sim_report":
             diagnostics.append(f"{label} DFG reference is not a DFG simulator report")
+        if comparison_status == "pass" and dfg_report.get("status") != "pass":
+            diagnostics.append(f"{label} DFG reference is not passing")
         if isinstance(workload, str) and workload and dfg_report.get("workload") != workload:
             diagnostics.append(f"{label} DFG reference workload does not match report")
         expected_runtime_input = simulator_report_runtime_input_identity(dfg_report, workload)
@@ -4547,9 +4563,19 @@ def validate_sim_comparison_references(
             diagnostics.append(f"{label} DFG reference runtime input does not match report")
 
     cgra_report = read_resolved_json_reference(path, data.get("cgra_sim_report_identity"))
-    if cgra_report is not None:
+    if cgra_report is None:
+        if comparison_status == "pass":
+            diagnostics.append(f"{label} CGRA reference does not resolve")
+    else:
         if cgra_report.get("kind") != "cgra_sim_report":
             diagnostics.append(f"{label} CGRA reference is not a CGRA simulator report")
+        if comparison_status == "pass" and cgra_report.get("status") != "pass":
+            diagnostics.append(f"{label} CGRA reference is not passing")
+        if (
+            comparison_status == "pass"
+            and cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+        ):
+            diagnostics.append(f"{label} CGRA reference lacks functional state provenance")
         if isinstance(workload, str) and workload and cgra_report.get("workload") != workload:
             diagnostics.append(f"{label} CGRA reference workload does not match report")
         expected_runtime_input = simulator_report_runtime_input_identity(cgra_report, workload)
@@ -4560,6 +4586,31 @@ def validate_sim_comparison_references(
             and expected_runtime_input != runtime_input_identity
         ):
             diagnostics.append(f"{label} CGRA reference runtime input does not match report")
+    if comparison_status == "pass" and dfg_report is not None and cgra_report is not None:
+        dfg_outputs = dfg_report.get("final_outputs")
+        cgra_outputs = cgra_report.get("final_outputs")
+        if not is_string_array(dfg_outputs):
+            diagnostics.append(f"{label} DFG reference final_outputs is invalid")
+        if not is_string_array(cgra_outputs):
+            diagnostics.append(f"{label} CGRA reference final_outputs is invalid")
+        if data.get("functional_comparison_status") == "pass" and (
+            not is_string_array(dfg_outputs)
+            or not is_string_array(cgra_outputs)
+            or dfg_outputs != cgra_outputs
+        ):
+            diagnostics.append(f"{label} functional comparison pass contradicts source reports")
+        dfg_memory = dfg_report.get("final_memory_state")
+        cgra_memory = cgra_report.get("final_memory_state")
+        if not is_string_array_object(dfg_memory):
+            diagnostics.append(f"{label} DFG reference final_memory_state is invalid")
+        if not is_string_array_object(cgra_memory):
+            diagnostics.append(f"{label} CGRA reference final_memory_state is invalid")
+        if data.get("memory_comparison_status") == "pass" and (
+            not is_string_array_object(dfg_memory)
+            or not is_string_array_object(cgra_memory)
+            or dfg_memory != cgra_memory
+        ):
+            diagnostics.append(f"{label} memory comparison pass contradicts source reports")
 
     mapping_report = read_resolved_json_reference(path, data.get("mapping_artifact_identity"))
     if mapping_report is not None:

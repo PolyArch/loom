@@ -48,6 +48,19 @@ def list_strings(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
+def is_string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def is_string_array_object(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for key, values in value.items():
+        if not isinstance(key, str) or not is_string_list(values):
+            return False
+    return True
+
+
 def cycle_breakdown_categories(cgra: dict[str, object]) -> list[str]:
     breakdown = cgra.get("cycle_breakdown")
     if not isinstance(breakdown, list):
@@ -65,9 +78,9 @@ def cycle_breakdown_categories(cgra: dict[str, object]) -> list[str]:
 def compare_final_outputs(dfg: dict[str, object], cgra: dict[str, object]) -> tuple[str, list[str]]:
     dfg_outputs = dfg.get("final_outputs")
     cgra_outputs = cgra.get("final_outputs")
-    if not isinstance(dfg_outputs, list) or not isinstance(cgra_outputs, list):
-        return "blocked", ["functional output comparison blocked because one report lacks final_outputs"]
-    if [str(item) for item in dfg_outputs] == [str(item) for item in cgra_outputs]:
+    if not is_string_list(dfg_outputs) or not is_string_list(cgra_outputs):
+        return "blocked", ["functional output comparison blocked because one report lacks valid final_outputs"]
+    if dfg_outputs == cgra_outputs:
         return "pass", []
     return "fail", ["functional output mismatch between DFG-sim and CGRA-sim reports"]
 
@@ -75,8 +88,8 @@ def compare_final_outputs(dfg: dict[str, object], cgra: dict[str, object]) -> tu
 def compare_memory_state(dfg: dict[str, object], cgra: dict[str, object]) -> tuple[str, list[str]]:
     dfg_memory = dfg.get("final_memory_state")
     cgra_memory = cgra.get("final_memory_state")
-    if not isinstance(dfg_memory, dict) or not isinstance(cgra_memory, dict):
-        return "blocked", ["visible memory-state comparison blocked because one report lacks final_memory_state"]
+    if not is_string_array_object(dfg_memory) or not is_string_array_object(cgra_memory):
+        return "blocked", ["visible memory-state comparison blocked because one report lacks valid final_memory_state"]
     if dfg_memory == cgra_memory:
         return "pass", []
     return "fail", ["visible memory-state mismatch between DFG-sim and CGRA-sim reports"]
@@ -186,6 +199,16 @@ def build_report(
     memory_status, memory_diagnostics = compare_memory_state(dfg, cgra)
     diagnostics.extend(functional_diagnostics)
     diagnostics.extend(memory_diagnostics)
+    if (
+        cgra_status == "pass"
+        and (functional_status == "pass" or memory_status == "pass")
+        and string_field(cgra, "functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        diagnostics.append("CGRA-sim report lacks functional state provenance")
+        if functional_status == "pass":
+            functional_status = "blocked"
+        if memory_status == "pass":
+            memory_status = "blocked"
     if functional_status == "fail" and not identity_or_mapping_failure:
         status = "fail"
         difference_classification = "functional_mismatch"
