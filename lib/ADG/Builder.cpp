@@ -310,13 +310,14 @@ llvm::Error validateSwitch(const SwitchSpec &sw,
   return llvm::Error::success();
 }
 
-PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
+PeSpec makeMinimalAddPe(Schedule schedule, std::string lhsSource,
+                        std::string rhsSource, std::string boundaryType,
                         std::string fuType,
                         TemporalPeConfig temporal = TemporalPeConfig()) {
   PeSpec pe;
   pe.schedule = schedule;
-  pe.inputs = {{"pa", "lhs", boundaryType, ""},
-               {"pb", "rhs", boundaryType, ""}};
+  pe.inputs = {{"pa", std::move(lhsSource), boundaryType, ""},
+               {"pb", std::move(rhsSource), boundaryType, ""}};
   pe.resultTypes = {boundaryType};
   pe.temporal = std::move(temporal);
 
@@ -333,6 +334,13 @@ PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
   addFu.yieldValues = {"sum"};
   pe.fus.push_back(std::move(addFu));
   return pe;
+}
+
+PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
+                        std::string fuType,
+                        TemporalPeConfig temporal = TemporalPeConfig()) {
+  return makeMinimalAddPe(schedule, "lhs", "rhs", std::move(boundaryType),
+                          std::move(fuType), std::move(temporal));
 }
 
 } // namespace
@@ -864,27 +872,9 @@ ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   temporal.numRegFifo = 2;
   temporal.regFifoDepth = 4;
   temporal.regFifoPorts = 1;
-  PeSpec temporalPe;
-  temporalPe.schedule = Schedule::Temporal;
-  temporalPe.inputs = {{"pa", "lhs_t", "!fabric.bits_tag<32, 4>", ""},
-                       {"pb", "rhs_t", "!fabric.bits_tag<32, 4>", ""}};
-  temporalPe.resultTypes = {"!fabric.bits_tag<32, 4>"};
-  temporalPe.temporal = std::move(temporal);
-  FuSpec temporalFu;
-  temporalFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                       {"fb", "pb", "!fabric.bits<32>", ""}};
-  temporalFu.resultTypes = {"!fabric.bits<32>"};
-  temporalFu.operations.push_back(FabricOpSpec{{"sum"},
-                                               {"arith.addi"},
-                                               {"fa", "fb"},
-                                               {"!fabric.bits<32>",
-                                                "!fabric.bits<32>"},
-                                               {"!fabric.bits<32>"},
-                                               {},
-                                               {}});
-  temporalFu.yieldValues = {"sum"};
-  temporalPe.fus.push_back(std::move(temporalFu));
-  module.addPe(std::move(temporalPe));
+  module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
+                                "!fabric.bits_tag<32, 4>",
+                                "!fabric.bits<32>", std::move(temporal)));
 
   module.addSwitch(SwitchSpec{Schedule::Spatial,
                               {"lhs", "rhs"},
