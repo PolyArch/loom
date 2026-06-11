@@ -59,6 +59,9 @@ case "${CASE}" in
   xor_block)
     case_graph="g_t_xor_block_0_0"
     ;;
+  relu)
+    case_graph="g_t_relu_0_0"
+    ;;
   vecadd)
     case_graph="g_t_vecadd_0_0"
     ;;
@@ -218,6 +221,71 @@ if [[ "${CASE}" == "vecadd" ]]; then
     "${mapping_reduction_artifact}"
     "${cgra_main_report}"
     "${cgra_reduction_report}"
+  )
+elif [[ "${CASE}" == "relu" ]]; then
+  dfg_main_report="${OUT_DIR}/relu-dfg-sim-main.report.json"
+  dfg_checksum_report="${OUT_DIR}/relu-dfg-sim-checksum.report.json"
+  dfg_checksum_generated_report="${OUT_DIR}/relu-dfg-sim-main.checksum.report.json"
+  mapping_main_artifact="${OUT_DIR}/pnr-mapping-main.json"
+  mapping_checksum_artifact="${OUT_DIR}/pnr-mapping-checksum.json"
+  mapping_main_summary="${OUT_DIR}/pnr-mapping-main-summary.csv"
+  mapping_checksum_summary="${OUT_DIR}/pnr-mapping-checksum-summary.csv"
+  cgra_main_report="${OUT_DIR}/relu-cgra-sim-main-report.json"
+  cgra_checksum_report="${OUT_DIR}/relu-cgra-sim-checksum-report.json"
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_main_report}" \
+    "${dfg_cycle}"
+  mv "${dfg_checksum_generated_report}" "${dfg_checksum_report}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_relu_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_main_artifact}" \
+    --output "${mapping_main_summary}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_main_red_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_checksum_artifact}" \
+    --output "${mapping_checksum_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_main_report}" \
+    --mapping-artifact "${mapping_main_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_main_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_checksum_report}" \
+    --mapping-artifact "${mapping_checksum_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_checksum_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "relu__workload_graph_set__shared_reduction_adg" \
+    --dfg-report "${dfg_main_report}" \
+    --dfg-report "${dfg_checksum_report}" \
+    --mapping-artifact "${mapping_main_artifact}" \
+    --mapping-artifact "${mapping_checksum_artifact}" \
+    --cgra-report "${cgra_main_report}" \
+    --cgra-report "${cgra_checksum_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${dfg_main_report}"
+    "${dfg_checksum_report}"
+    "${mapping_main_artifact}"
+    "${mapping_checksum_artifact}"
+    "${cgra_main_report}"
+    "${cgra_checksum_report}"
   )
 elif [[ "${CASE}" == "variance" ]]; then
   dfg_mean_report="${OUT_DIR}/variance-dfg-sim-mean.report.json"
