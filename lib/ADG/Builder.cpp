@@ -309,6 +309,30 @@ llvm::Error validateSwitch(const SwitchSpec &sw,
   return llvm::Error::success();
 }
 
+PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
+                        std::string fuType,
+                        TemporalPeConfig temporal = TemporalPeConfig()) {
+  PeSpec pe;
+  pe.schedule = schedule;
+  pe.inputs = {{"pa", "lhs", boundaryType, ""}, {"pb", "rhs", boundaryType, ""}};
+  pe.resultTypes = {boundaryType};
+  pe.temporal = std::move(temporal);
+
+  FuSpec addFu;
+  addFu.inputs = {{"fa", "pa", fuType, ""}, {"fb", "pb", fuType, ""}};
+  addFu.resultTypes = {fuType};
+  addFu.operations.push_back(FabricOpSpec{{"sum"},
+                                          {"arith.addi"},
+                                          {"fa", "fb"},
+                                          {fuType, fuType},
+                                          {fuType},
+                                          {},
+                                          {}});
+  addFu.yieldValues = {"sum"};
+  pe.fus.push_back(std::move(addFu));
+  return pe;
+}
+
 } // namespace
 
 ModuleBuilder::ModuleBuilder(std::string name) : name(std::move(name)) {}
@@ -453,25 +477,9 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
       .addInput("addr", "!fabric.bits<32>")
       .addInput("ctrl", "!fabric.bits<0>");
 
-  PeSpec aluPe;
-  aluPe.inputs = {{"pa", "lhs", "!fabric.bits<32>", ""},
-                  {"pb", "rhs", "!fabric.bits<32>", ""}};
-  aluPe.resultTypes = {"!fabric.bits<32>"};
-  FuSpec addFu;
-  addFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                  {"fb", "pb", "!fabric.bits<32>", ""}};
-  addFu.resultTypes = {"!fabric.bits<32>"};
-  addFu.operations.push_back(
-      FabricOpSpec{{"sum"},
-                   {"arith.addi"},
-                   {"fa", "fb"},
-                   {"!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>"},
-                   {},
-                   {}});
-  addFu.yieldValues = {"sum"};
-  aluPe.fus.push_back(std::move(addFu));
-  module.addPe(std::move(aluPe));
+  module.addPe(
+      makeMinimalAddPe(Schedule::Spatial, "!fabric.bits<32>",
+                       "!fabric.bits<32>"));
 
   module.addSwitch(SwitchSpec{Schedule::Spatial,
                               {"lhs", "rhs"},
@@ -490,31 +498,14 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
       .addInput("addr", "!fabric.bits_tag<32, 4>")
       .addInput("ctrl", "!fabric.bits_tag<0, 4>");
 
-  PeSpec aluPe;
-  aluPe.schedule = Schedule::Temporal;
-  aluPe.inputs = {{"pa", "lhs", "!fabric.bits_tag<32, 4>", ""},
-                  {"pb", "rhs", "!fabric.bits_tag<32, 4>", ""}};
-  aluPe.resultTypes = {"!fabric.bits_tag<32, 4>"};
-  aluPe.temporal.tagWidth = 4;
-  aluPe.temporal.numInstruction = 1;
-  aluPe.temporal.fuConfigMode = "per_fu_config";
-  aluPe.temporal.operandBufferMode = "per_instruction";
-
-  FuSpec addFu;
-  addFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
-                  {"fb", "pb", "!fabric.bits<32>", ""}};
-  addFu.resultTypes = {"!fabric.bits<32>"};
-  addFu.operations.push_back(
-      FabricOpSpec{{"sum"},
-                   {"arith.addi"},
-                   {"fa", "fb"},
-                   {"!fabric.bits<32>", "!fabric.bits<32>"},
-                   {"!fabric.bits<32>"},
-                   {},
-                   {}});
-  addFu.yieldValues = {"sum"};
-  aluPe.fus.push_back(std::move(addFu));
-  module.addPe(std::move(aluPe));
+  TemporalPeConfig temporal;
+  temporal.tagWidth = 4;
+  temporal.numInstruction = 1;
+  temporal.fuConfigMode = "per_fu_config";
+  temporal.operandBufferMode = "per_instruction";
+  module.addPe(makeMinimalAddPe(Schedule::Temporal,
+                                "!fabric.bits_tag<32, 4>",
+                                "!fabric.bits<32>", std::move(temporal)));
 
   module.addSwitch(SwitchSpec{Schedule::Temporal,
                               {"lhs", "rhs"},
