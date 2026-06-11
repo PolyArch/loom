@@ -165,7 +165,8 @@ Required first columns:
 Additional required columns:
 
 * `tile_kinds`;
-* `schedule_kinds`.
+* `schedule_kinds`;
+* `adg_builder_recipe_identity`.
 
 Rules:
 
@@ -178,6 +179,9 @@ Rules:
 * `schedule_kinds` is a semicolon-separated, deterministic set of
   schedule predicates observed on those tile kinds. The baseline
   schedule kinds are `spatial` and `temporal`.
+* `adg_builder_recipe_identity` is empty when no ADG Builder recipe is
+  known for the candidate. When present, it is a stable identity for the
+  recipe that generated the candidate Fabric ADG.
 * `verify_status = pass` requires positive node count and legal link
   evidence for hardware candidates that are not intentionally empty.
 * Coordinates or visualization metadata must not be counted as links.

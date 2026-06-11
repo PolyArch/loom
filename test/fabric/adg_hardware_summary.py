@@ -24,6 +24,11 @@ DEFAULT_INPUTS = (
     ROOT / "test" / "pnr" / "minimal_temporal_adg.mlir.inc",
     ROOT / "test" / "pnr" / "shared_reduction_adg.mlir",
 )
+ADG_BUILDER_RECIPES = {
+    "test/pnr/minimal_spatial_adg.mlir.inc": "adg-builder::minimal-spatial",
+    "test/pnr/minimal_temporal_adg.mlir.inc": "adg-builder::minimal-temporal",
+    "test/pnr/shared_reduction_adg.mlir": "adg-builder::shared-reduction",
+}
 SYMBOL_PATTERN = r'"(?:\\.|[^"\\])*"|[A-Za-z_.$-][A-Za-z0-9_.$-]*'
 MODULE_RE = re.compile(rf"^\s*fabric\.module @(?P<name>{SYMBOL_PATTERN})")
 NODE_RE = re.compile(r"\bfabric\.(pe|switch|mem|fifo|instantiate)\b")
@@ -54,6 +59,10 @@ def relative_id(path: Path) -> str:
         return path.resolve().relative_to(ROOT).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def adg_builder_recipe_identity(path: Path) -> str:
+    return ADG_BUILDER_RECIPES.get(relative_id(path), "")
 
 
 def first_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
@@ -132,6 +141,7 @@ def summarize_module(input_path: Path, name: str, body: list[str]) -> dict[str, 
         "diagnostic": "fabric.module template verified; link_count counts explicit fabric.link records only",
         "tile_kinds": ";".join(sorted(tile_kinds)),
         "schedule_kinds": ";".join(sorted(schedule_kinds)),
+        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path),
     }
 
 
@@ -145,6 +155,7 @@ def failed_row(input_path: Path, diagnostic: str) -> dict[str, str]:
         "diagnostic": diagnostic,
         "tile_kinds": "",
         "schedule_kinds": "",
+        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path),
     }
 
 

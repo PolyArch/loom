@@ -79,6 +79,8 @@ def main() -> int:
             raise AssertionError(f"unexpected hardware identity: {data}")
         if data["fabric_adg_identity"] != "test/pnr/shared_reduction_adg.mlir":
             raise AssertionError(f"unexpected Fabric ADG identity: {data}")
+        if data["adg_builder_recipe_identity"] != "adg-builder::shared-reduction":
+            raise AssertionError(f"unexpected ADG builder recipe identity: {data}")
         if data["rtl_manifest_identity"] != "rtl-manifest":
             raise AssertionError(f"unexpected RTL manifest identity: {data}")
         if data["fpa_report_identities"] != ["rtl-fpa-summary"]:

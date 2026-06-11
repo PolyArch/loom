@@ -175,7 +175,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         "bundle_id": f"hardware::{hardware}",
         "hardware_candidate_identity": hardware,
         "fabric_adg_identity": fabric_adg_identity(hardware),
-        "adg_builder_recipe_identity": "",
+        "adg_builder_recipe_identity": hardware_row.get("adg_builder_recipe_identity", ""),
         "rtl_manifest_identity": artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
         "eda_report_identities": [],
         "fpa_report_identities": fpa_report_ids,

@@ -560,8 +560,9 @@ def main() -> int:
         )
         valid_hardware = out_dir / "valid-adg-hardware-summary.csv"
         valid_hardware.write_text(
-            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,tile_kinds,schedule_kinds\n"
-            "fabric0,fabric_module_template,1,0,pass,verified,pe,spatial\n"
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,"
+            "tile_kinds,schedule_kinds,adg_builder_recipe_identity\n"
+            "fabric0,fabric_module_template,1,0,pass,verified,pe,spatial,\n"
         )
         stale_mapping = out_dir / "stale-pnr-mapping-summary.csv"
         stale_mapping.write_text(
@@ -1085,9 +1086,10 @@ def main() -> int:
 
         ambiguous_hardware = out_dir / "ambiguous-adg-hardware-summary.csv"
         ambiguous_hardware.write_text(
-            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,tile_kinds,schedule_kinds\n"
-            "test/a.mlir::fabric0,fabric_module_template,1,0,pass,verified,pe,spatial\n"
-            "test/b.mlir::fabric0,fabric_module_template,1,0,pass,verified,pe,spatial\n"
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,"
+            "tile_kinds,schedule_kinds,adg_builder_recipe_identity\n"
+            "test/a.mlir::fabric0,fabric_module_template,1,0,pass,verified,pe,spatial,\n"
+            "test/b.mlir::fabric0,fabric_module_template,1,0,pass,verified,pe,spatial,\n"
         )
         result = run_command(
             repo,
@@ -1906,8 +1908,9 @@ def main() -> int:
 
         invalid_hardware = out_dir / "invalid-adg-hardware-summary.csv"
         invalid_hardware.write_text(
-            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,tile_kinds,schedule_kinds\n"
-            "fabric0,arbitrary_graph,0,1,pass,,pe,spatial\n"
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,"
+            "tile_kinds,schedule_kinds,adg_builder_recipe_identity\n"
+            "fabric0,arbitrary_graph,0,1,pass,,pe,spatial,\n"
         )
         result = run_command(
             repo,

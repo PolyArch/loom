@@ -18,6 +18,7 @@ HEADER = [
     "diagnostic",
     "tile_kinds",
     "schedule_kinds",
+    "adg_builder_recipe_identity",
 ]
 
 
@@ -33,6 +34,7 @@ def assert_pe_two_pes(rows: list[dict[str, str]]) -> None:
         "verify_status": "pass",
         "tile_kinds": "pe",
         "schedule_kinds": "spatial",
+        "adg_builder_recipe_identity": "",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -53,6 +55,7 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
         "verify_status": "pass",
         "tile_kinds": "mem;pe",
         "schedule_kinds": "spatial",
+        "adg_builder_recipe_identity": "adg-builder::shared-reduction",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -73,6 +76,7 @@ def assert_minimal_spatial_adg(rows: list[dict[str, str]]) -> None:
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",
         "schedule_kinds": "spatial",
+        "adg_builder_recipe_identity": "adg-builder::minimal-spatial",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -93,6 +97,7 @@ def assert_minimal_temporal_adg(rows: list[dict[str, str]]) -> None:
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",
         "schedule_kinds": "temporal",
+        "adg_builder_recipe_identity": "adg-builder::minimal-temporal",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -113,6 +118,7 @@ def assert_quoted_named_pe(rows: list[dict[str, str]]) -> None:
         "verify_status": "pass",
         "tile_kinds": "pe",
         "schedule_kinds": "spatial",
+        "adg_builder_recipe_identity": "",
     }
     for key, value in expected.items():
         if row[key] != value:
