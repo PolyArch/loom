@@ -59,6 +59,9 @@ case "${CASE}" in
   xor_block)
     case_graph="g_t_xor_block_0_0"
     ;;
+  vecadd)
+    case_graph="g_t_vecadd_0_0"
+    ;;
   *)
     echo "case ${CASE} is not wired for the full-stack artifact chain" >&2
     exit 2
@@ -119,6 +122,7 @@ demonstrator="${OUT_DIR}/e2e-demonstrator-summary.csv"
 dse_candidate="${OUT_DIR}/dse-candidate-summary.csv"
 unsupported="${OUT_DIR}/unsupported-scope-ledger.csv"
 audit="${OUT_DIR}/artifact-audit-summary.json"
+component_artifacts=()
 
 python3 "${ROOT}/test/app/old_app_corpus_inventory.py" \
   --source-root "${LEGACY_APP_ROOT}" \
@@ -149,25 +153,91 @@ env BUILD_DIR="${case_dfg_dir}" \
   LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
   LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
   bash "${ROOT}/test/app/${CASE}/dfg_check.sh"
-env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
-  bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
-  "${CASE}" \
-  "${case_dfg_dir}/main_func.dfg.mlir" \
-  "${dfg_report}" \
-  "${dfg_cycle}"
-bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
-  --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
-  --graph "${case_graph}" \
-  --hardware-mlir "${hardware_mlir}" \
-  --hardware "${hardware_name}" \
-  --workload "${CASE}" \
-  --artifact "${mapping_artifact}" \
-  --output "${mapping}"
-${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
-  --dfg-report "${dfg_report}" \
-  --mapping-artifact "${mapping_artifact}" \
-  --hardware-mlir "${hardware_mlir}" \
-  --output "${cgra_report}"
+if [[ "${CASE}" == "vecadd" ]]; then
+  dfg_main_report="${OUT_DIR}/vecadd-dfg-sim-main.report.json"
+  dfg_reduction_report="${OUT_DIR}/vecadd-dfg-sim-main.reduction.report.json"
+  mapping_main_artifact="${OUT_DIR}/pnr-mapping-main.json"
+  mapping_reduction_artifact="${OUT_DIR}/pnr-mapping-reduction.json"
+  mapping_main_summary="${OUT_DIR}/pnr-mapping-main-summary.csv"
+  mapping_reduction_summary="${OUT_DIR}/pnr-mapping-reduction-summary.csv"
+  cgra_main_report="${OUT_DIR}/vecadd-cgra-sim-main-report.json"
+  cgra_reduction_report="${OUT_DIR}/vecadd-cgra-sim-reduction-report.json"
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_main_report}" \
+    "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_vecadd_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_main_artifact}" \
+    --output "${mapping_main_summary}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_main_red_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_reduction_artifact}" \
+    --output "${mapping_reduction_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_main_report}" \
+    --mapping-artifact "${mapping_main_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_main_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_reduction_report}" \
+    --mapping-artifact "${mapping_reduction_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_reduction_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "vecadd__workload_graph_set__shared_reduction_adg" \
+    --dfg-report "${dfg_main_report}" \
+    --dfg-report "${dfg_reduction_report}" \
+    --mapping-artifact "${mapping_main_artifact}" \
+    --mapping-artifact "${mapping_reduction_artifact}" \
+    --cgra-report "${cgra_main_report}" \
+    --cgra-report "${cgra_reduction_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${dfg_main_report}"
+    "${dfg_reduction_report}"
+    "${mapping_main_artifact}"
+    "${mapping_reduction_artifact}"
+    "${cgra_main_report}"
+    "${cgra_reduction_report}"
+  )
+else
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_report}" \
+    "${dfg_cycle}" \
+    --primary-only
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+fi
 bash "${ROOT}/test/simulator/run_sim_comparison_report.sh" \
   --dfg-report "${dfg_report}" \
   --cgra-report "${cgra_report}" \
@@ -226,6 +296,10 @@ bash "${ROOT}/test/e2e/run_dse_report_bundle.sh" \
   --artifact "${report_bundle}" \
   --artifact "${hardware_bundle}" \
   --output "${dse_bundle}"
+component_artifact_args=()
+for artifact in "${component_artifacts[@]}"; do
+  component_artifact_args+=(--artifact "${artifact}")
+done
 bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${old_app_inventory}" \
   --artifact "${app_import_status}" \
@@ -235,6 +309,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${primitive}" \
   --artifact "${hardware}" \
   --artifact "${mapping}" \
+  "${component_artifact_args[@]}" \
   --artifact "${mapping_artifact}" \
   --artifact "${dfg_report}" \
   --artifact "${dfg_cycle}" \
@@ -278,6 +353,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${primitive}" \
   --artifact "${hardware}" \
   --artifact "${mapping}" \
+  "${component_artifact_args[@]}" \
   --artifact "${mapping_artifact}" \
   --artifact "${dfg_report}" \
   --artifact "${dfg_cycle}" \
@@ -305,6 +381,7 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${primitive}" \
   "${hardware}" \
   "${mapping}" \
+  "${component_artifacts[@]}" \
   "${mapping_artifact}" \
   "${dfg_report}" \
   "${dfg_cycle}" \

@@ -82,8 +82,15 @@ explicit placement and routing records.
 
 ## Artifact Granularity
 
-One mapping artifact represents one concrete mapping candidate for one
-software workload shape against one hardware system.
+One ordinary mapping artifact represents one concrete mapping candidate
+for one software workload shape against one hardware system.
+
+A workload graph-set aggregate mapping artifact represents one derived
+candidate assembled from multiple passing component mapping artifacts
+for the same workload and hardware system. It is legal only when it
+preserves the component artifact identities and fingerprints and all
+placement, route, unrouted, unplaced, and config counts equal the
+component sums.
 
 A DSE run may produce many mapping artifacts. A mapping-set manifest may
 reference those artifacts and record objective functions, search

@@ -1369,6 +1369,38 @@ def iter_manifest_json_identity_references(
             yield reference
 
 
+def iter_manifest_json_string_reference(
+    data: dict[str, object] | None,
+    key: str,
+    artifact_id_set: set[str],
+) -> Iterable[str]:
+    if data is None:
+        return
+    reference = data.get(key)
+    if isinstance(reference, str) and reference in artifact_id_set:
+        yield reference
+
+
+def iter_manifest_optional_artifact_references(
+    data: dict[str, object] | None,
+    artifact_id_set: set[str],
+) -> Iterable[str]:
+    if data is None:
+        return
+    optional = data.get("optional_artifact_identities")
+    if isinstance(optional, dict):
+        for reference in optional.values():
+            if isinstance(reference, str) and reference in artifact_id_set:
+                yield reference
+    for key in (
+        "source_artifact_identity",
+        "compiler_command_identity",
+        "selected_mapping_artifact_identity",
+    ):
+        for reference in iter_manifest_json_string_reference(data, key, artifact_id_set):
+            yield reference
+
+
 def iter_artifact_manifest_required_edges(
     artifact_ids: Iterable[str],
     ids_by_kind: dict[str, list[str]],
@@ -1380,11 +1412,29 @@ def iter_artifact_manifest_required_edges(
             yield left, right
 
     for mapping_id in ids_by_kind.get("pnr_mapping_artifact", []):
+        mapping = read_manifest_json_artifact(artifact_paths_by_id.get(mapping_id)) if artifact_paths_by_id else None
         for source_kind in ("dataflow_primitive_coverage", "adg_hardware", "pnr_mapping"):
             for source_id in ids_by_kind.get(source_kind, []):
                 yield source_id, mapping_id
-        for cgra_id in ids_by_kind.get("cgra_sim_report", []):
-            yield mapping_id, cgra_id
+        if mapping is not None and is_workload_graph_set_aggregate(mapping):
+            for source_id in iter_manifest_json_identity_references(
+                mapping,
+                "component_mapping_artifact_identities",
+                artifact_id_set,
+            ):
+                yield source_id, mapping_id
+        if artifact_paths_by_id is None:
+            for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+                yield mapping_id, cgra_id
+        else:
+            for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+                cgra = read_manifest_json_artifact(artifact_paths_by_id.get(cgra_id))
+                if cgra is None:
+                    continue
+                if (
+                    cgra.get("mapping_id") == mapping.get("mapping_id") if mapping is not None else False
+                ):
+                    yield mapping_id, cgra_id
         for dse_id in ids_by_kind.get("dse_candidate", []):
             yield mapping_id, dse_id
 
@@ -1396,10 +1446,26 @@ def iter_artifact_manifest_required_edges(
                 yield cgra_id, sim_id
 
     for dfg_id in ids_by_kind.get("dfg_sim_report", []):
+        dfg_report = read_manifest_json_artifact(artifact_paths_by_id.get(dfg_id)) if artifact_paths_by_id else None
         for source_id in ids_by_kind.get("dataflow_primitive_coverage", []):
             yield source_id, dfg_id
+        if dfg_report is not None and is_workload_graph_set_aggregate(dfg_report):
+            for source_id in iter_manifest_json_identity_references(
+                dfg_report,
+                "component_dfg_sim_report_identities",
+                artifact_id_set,
+            ):
+                yield source_id, dfg_id
 
     for cgra_id in ids_by_kind.get("cgra_sim_report", []):
+        cgra_report = read_manifest_json_artifact(artifact_paths_by_id.get(cgra_id)) if artifact_paths_by_id else None
+        if cgra_report is not None and is_workload_graph_set_aggregate(cgra_report):
+            for key in (
+                "component_dfg_sim_report_identities",
+                "component_cgra_sim_report_identities",
+            ):
+                for source_id in iter_manifest_json_identity_references(cgra_report, key, artifact_id_set):
+                    yield source_id, cgra_id
         for dse_id in ids_by_kind.get("dse_candidate", []):
             yield cgra_id, dse_id
 
@@ -1412,32 +1478,62 @@ def iter_artifact_manifest_required_edges(
             yield rtl_manifest_id, rtl_fpa_id
 
     for comparison_id in ids_by_kind.get("sim_comparison_report", []):
-        for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
-            for source_id in ids_by_kind.get(source_kind, []):
+        if artifact_paths_by_id is None:
+            for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
+                for source_id in ids_by_kind.get(source_kind, []):
+                    yield source_id, comparison_id
+            continue
+        comparison = read_manifest_json_artifact(artifact_paths_by_id.get(comparison_id))
+        for key in (
+            "dfg_sim_report_identity",
+            "cgra_sim_report_identity",
+            "mapping_artifact_identity",
+        ):
+            for source_id in iter_manifest_json_string_reference(comparison, key, artifact_id_set):
                 yield source_id, comparison_id
 
     for runtime_id in ids_by_kind.get("runtime_package", []):
-        for source_kind in ("pnr_mapping_artifact", "cgra_sim_report", "sim_comparison_report"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                yield source_id, runtime_id
+        if artifact_paths_by_id is None:
+            for source_kind in ("pnr_mapping_artifact", "cgra_sim_report", "sim_comparison_report"):
+                for source_id in ids_by_kind.get(source_kind, []):
+                    yield source_id, runtime_id
+            continue
+        runtime = read_manifest_json_artifact(artifact_paths_by_id.get(runtime_id))
+        for source_id in iter_manifest_json_string_reference(
+            runtime,
+            "selected_mapping_artifact_identity",
+            artifact_id_set,
+        ):
+            yield source_id, runtime_id
+        for source_id in iter_manifest_json_identity_references(
+            runtime,
+            "simulator_report_identities",
+            artifact_id_set,
+        ):
+            yield source_id, runtime_id
 
     for report_id in ids_by_kind.get("workload_report_bundle", []):
-        for source_kind in (
-            "source_compat",
-            "compiler_pipeline",
-            "dataflow_primitive_coverage",
-            "adg_hardware",
-            "pnr_mapping_artifact",
-            "dfg_sim_report",
-            "cgra_sim_report",
-            "sim_comparison_report",
-            "runtime_package",
-            "sim_cycle",
-            "rtl_manifest",
-            "rtl_fpa",
-            "dse_candidate",
-        ):
-            for source_id in ids_by_kind.get(source_kind, []):
+        if artifact_paths_by_id is None:
+            for source_kind in (
+                "source_compat",
+                "compiler_pipeline",
+                "dataflow_primitive_coverage",
+                "adg_hardware",
+                "pnr_mapping_artifact",
+                "dfg_sim_report",
+                "cgra_sim_report",
+                "sim_comparison_report",
+                "runtime_package",
+                "sim_cycle",
+                "rtl_manifest",
+                "rtl_fpa",
+                "dse_candidate",
+            ):
+                for source_id in ids_by_kind.get(source_kind, []):
+                    yield source_id, report_id
+        else:
+            report = read_manifest_json_artifact(artifact_paths_by_id.get(report_id))
+            for source_id in iter_manifest_optional_artifact_references(report, artifact_id_set):
                 yield source_id, report_id
         for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
             yield report_id, demonstrator_id
@@ -3910,6 +4006,68 @@ def read_resolved_json_reference(path: Path, identity: object) -> dict[str, obje
     return value if isinstance(value, dict) else None
 
 
+def is_workload_graph_set_aggregate(data: dict[str, object]) -> bool:
+    return data.get("aggregation_kind") == "workload_graph_set"
+
+
+def aggregate_component_identities(data: dict[str, object], key: str) -> list[str]:
+    value = data.get(key)
+    if not isinstance(value, list):
+        return []
+    return [identity for identity in value if isinstance(identity, str) and identity]
+
+
+def aggregate_component_reports(
+    path: Path,
+    data: dict[str, object],
+    key: str,
+    expected_kind: str,
+    diagnostics: list[str],
+    label: str,
+) -> list[dict[str, object]]:
+    identities = aggregate_component_identities(data, key)
+    if not identities:
+        diagnostics.append(f"{label} needs non-empty {key}")
+        return []
+    reports: list[dict[str, object]] = []
+    fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(fingerprints, dict):
+        diagnostics.append(f"{label} input_artifact_fingerprints must be an object")
+        fingerprints = {}
+    for identity in identities:
+        resolved = resolve_artifact_identity_reference(path, identity)
+        if resolved is None:
+            diagnostics.append(f"{label} component reference {identity!r} does not resolve")
+            continue
+        try:
+            report = json.loads(resolved.read_text())
+        except json.JSONDecodeError:
+            diagnostics.append(f"{label} component reference {identity!r} is not JSON")
+            continue
+        if not isinstance(report, dict) or json_kind_for_path(resolved) != expected_kind:
+            diagnostics.append(f"{label} component reference {identity!r} has wrong artifact kind")
+            continue
+        if report.get("status") != "pass":
+            diagnostics.append(f"{label} component reference {identity!r} is not passing")
+        fingerprint = fingerprints.get(identity)
+        if not valid_sha256_hex(fingerprint):
+            diagnostics.append(f"{label} input_artifact_fingerprints lacks valid fingerprint for {identity!r}")
+        elif fingerprint != artifact_fingerprint(resolved):
+            diagnostics.append(f"{label} input_artifact_fingerprints stale for {identity!r}")
+        reports.append(report)
+    return reports
+
+
+def prefer_workload_graph_set_aggregates(
+    grouped: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    preferred: dict[str, list[dict[str, object]]] = {}
+    for workload, reports in grouped.items():
+        aggregates = [report for report in reports if is_workload_graph_set_aggregate(report)]
+        preferred[workload] = aggregates if aggregates else reports
+    return preferred
+
+
 def simulator_report_runtime_input_identity(report: dict[str, object], workload: object) -> str:
     identity = report.get("runtime_input_identity")
     if isinstance(identity, str) and identity:
@@ -4293,6 +4451,36 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DFG simulator report operation_fire_counts must map op names to non-negative integers")
         if isinstance(cycles, int) and isinstance(event_count, int) and cycles < event_count:
             diagnostics.append("DFG simulator optimistic_cycles must not be below event_count")
+        if is_workload_graph_set_aggregate(data):
+            components = aggregate_component_reports(
+                path,
+                data,
+                "component_dfg_sim_report_identities",
+                "dfg_sim_report",
+                diagnostics,
+                "DFG simulator aggregate report",
+            )
+            if components:
+                workload = data.get("workload")
+                if any(component.get("workload") != workload for component in components):
+                    diagnostics.append("DFG simulator aggregate components have mismatched workload")
+                component_graphs = {
+                    component.get("graph")
+                    for component in components
+                    if isinstance(component.get("graph"), str)
+                }
+                declared_graphs = set(aggregate_component_identities(data, "component_graphs"))
+                if declared_graphs and declared_graphs != component_graphs:
+                    diagnostics.append("DFG simulator aggregate component_graphs do not match components")
+                for key in ("optimistic_cycles", "wavefront_steps", "event_count", "dynamic_work_items"):
+                    value = data.get(key)
+                    component_sum = sum(
+                        int(component[key])
+                        for component in components
+                        if isinstance(component.get(key), int)
+                    )
+                    if isinstance(value, int) and value != component_sum:
+                        diagnostics.append(f"DFG simulator aggregate {key} does not match component sum")
     if kind == "cgra_sim_report":
         if data.get("kind") != "cgra_sim_report":
             diagnostics.append("CGRA simulator report kind must be cgra_sim_report")
@@ -4359,6 +4547,68 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report needs first_principles_checks")
         elif any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
             diagnostics.append("CGRA simulator report has failing first-principles check")
+        if is_workload_graph_set_aggregate(data):
+            dfg_components = aggregate_component_reports(
+                path,
+                data,
+                "component_dfg_sim_report_identities",
+                "dfg_sim_report",
+                diagnostics,
+                "CGRA simulator aggregate report",
+            )
+            if dfg_components:
+                workload = data.get("workload")
+                if any(component.get("workload") != workload for component in dfg_components):
+                    diagnostics.append("CGRA simulator aggregate DFG components have mismatched workload")
+                component_dfg_cycles = sum(
+                    int(component["optimistic_cycles"])
+                    for component in dfg_components
+                    if isinstance(component.get("optimistic_cycles"), int)
+                )
+                if isinstance(dfg_cycles, int) and dfg_cycles != component_dfg_cycles:
+                    diagnostics.append("CGRA simulator aggregate dfg_cycles do not match DFG component sum")
+            components = aggregate_component_reports(
+                path,
+                data,
+                "component_cgra_sim_report_identities",
+                "cgra_sim_report",
+                diagnostics,
+                "CGRA simulator aggregate report",
+            )
+            if components:
+                workload = data.get("workload")
+                hardware = data.get("hardware")
+                if any(component.get("workload") != workload for component in components):
+                    diagnostics.append("CGRA simulator aggregate components have mismatched workload")
+                if any(component.get("hardware") != hardware for component in components):
+                    diagnostics.append("CGRA simulator aggregate components have mismatched hardware")
+                component_mapping_ids = {
+                    component.get("mapping_id")
+                    for component in components
+                    if isinstance(component.get("mapping_id"), str)
+                }
+                declared_mapping_ids = set(aggregate_component_identities(data, "component_mapping_ids"))
+                if declared_mapping_ids != component_mapping_ids:
+                    diagnostics.append("CGRA simulator aggregate component_mapping_ids do not match components")
+                for key in (
+                    "dfg_cycles",
+                    "hardware_aware_cycles",
+                    "route_latency_cycles",
+                    "memory_latency_cycles",
+                    "temporal_penalty_cycles",
+                    "performance_delta_cycles",
+                    "route_segments",
+                    "config_records",
+                    "routed_edges",
+                ):
+                    value = data.get(key)
+                    component_sum = sum(
+                        int(component[key])
+                        for component in components
+                        if isinstance(component.get(key), int)
+                    )
+                    if isinstance(value, int) and value != component_sum:
+                        diagnostics.append(f"CGRA simulator aggregate {key} does not match component sum")
     if kind == "sim_comparison_report":
         if data.get("kind") != "sim_comparison_report":
             diagnostics.append("simulation comparison report kind must be sim_comparison_report")
@@ -4492,6 +4742,45 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                             )
         if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
             diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
+        if is_workload_graph_set_aggregate(data):
+            components = aggregate_component_reports(
+                path,
+                data,
+                "component_mapping_artifact_identities",
+                "pnr_mapping_artifact",
+                diagnostics,
+                "PnR mapping aggregate artifact",
+            )
+            if components:
+                workload = data.get("workload")
+                hardware = data.get("hardware")
+                if any(component.get("workload") != workload for component in components):
+                    diagnostics.append("PnR mapping aggregate components have mismatched workload")
+                if any(component.get("hardware") != hardware for component in components):
+                    diagnostics.append("PnR mapping aggregate components have mismatched hardware")
+                component_mapping_ids = {
+                    component.get("mapping_id")
+                    for component in components
+                    if isinstance(component.get("mapping_id"), str)
+                }
+                declared_mapping_ids = set(aggregate_component_identities(data, "component_mapping_ids"))
+                if declared_mapping_ids != component_mapping_ids:
+                    diagnostics.append("PnR mapping aggregate component_mapping_ids do not match components")
+                for key in (
+                    "placed_records",
+                    "routed_edges",
+                    "unrouted_edges",
+                    "unplaced_records",
+                    "config_records",
+                ):
+                    value = data.get(key)
+                    component_sum = sum(
+                        int(component[key])
+                        for component in components
+                        if isinstance(component.get(key), int)
+                    )
+                    if isinstance(value, int) and value != component_sum:
+                        diagnostics.append(f"PnR mapping aggregate {key} does not match component sum")
     if kind == "runtime_package":
         if data.get("kind") != "runtime_package":
             diagnostics.append("runtime package kind must be runtime_package")
@@ -5760,7 +6049,7 @@ def build_pass_dfg_reports_by_workload(
             and cycles >= 0
         ):
             grouped.setdefault(workload, []).append(report)
-    return grouped
+    return prefer_workload_graph_set_aggregates(grouped)
 
 
 def build_pass_cgra_reports_by_workload(
@@ -5775,7 +6064,7 @@ def build_pass_cgra_reports_by_workload(
             and report.get("status") == "pass"
         ):
             grouped.setdefault(workload, []).append(report)
-    return grouped
+    return prefer_workload_graph_set_aggregates(grouped)
 
 
 def route_segment_count(routes: object) -> int | None:
@@ -6575,6 +6864,7 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
         if not cgra_report_cycles or sum(cgra_report_cycles) != cgra_cycles:
             continue
         mapping_ids: list[str] = []
+        component_mapping_ids: list[str] = []
         hardware_refs: list[str] = []
         route_segments = 0
         performance_delta_cycles = 0
@@ -6610,6 +6900,8 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
                 matched_all_mappings = False
                 break
             mapping_ids.append(mapping_id)
+            for component_mapping_id in aggregate_component_identities(report, "component_mapping_ids"):
+                component_mapping_ids.append(component_mapping_id)
             hardware_refs.append(hardware)
             if isinstance(report.get("route_segments"), int):
                 route_segments += int(report["route_segments"])
@@ -6628,6 +6920,7 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
                 "cgra_report_cycles": cgra_report_cycles,
                 "dynamic_work_items": dynamic_work_items,
                 "mapping_ids": sorted(mapping_ids),
+                "component_mapping_ids": sorted(set(component_mapping_ids)),
                 "hardware": sorted(set(hardware_refs)),
                 "route_segments": route_segments,
                 "performance_delta_cycles": performance_delta_cycles,

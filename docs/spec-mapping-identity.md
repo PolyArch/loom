@@ -131,8 +131,10 @@ Optional fields:
   memory_context, or diagnostic subject.
 
 Mapping references are allowed only within one artifact. A mapping-set
-manifest may reference many artifacts, but per-candidate records must
-not point into sibling artifacts.
+manifest may reference many artifacts. A workload graph-set aggregate
+mapping artifact may reference component mapping artifacts only through
+top-level component identity and fingerprint fields; per-record
+references must still point inside the aggregate artifact.
 
 ## Workload Shape References
 

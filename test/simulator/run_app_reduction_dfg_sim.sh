@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 && $# -ne 5 ]]; then
-    echo "usage: run_app_reduction_dfg_sim.sh <case> <dfg.mlir> <report.json> <summary.csv> [--append]" >&2
+if [[ $# -lt 4 ]]; then
+    echo "usage: run_app_reduction_dfg_sim.sh <case> <dfg.mlir> <report.json> <summary.csv> [--append] [--primary-only]" >&2
     exit 2
 fi
 
@@ -10,12 +10,25 @@ CASE="$1"
 DFG_MLIR="$2"
 REPORT_JSON="$3"
 SUMMARY_CSV="$4"
-APPEND="${5:-}"
+shift 4
 
-if [[ -n "${APPEND}" && "${APPEND}" != "--append" ]]; then
-    echo "unknown option: ${APPEND}" >&2
-    exit 2
-fi
+APPEND=""
+PRIMARY_ONLY="0"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --append)
+            APPEND="--append"
+            ;;
+        --primary-only)
+            PRIMARY_ONLY="1"
+            ;;
+        *)
+            echo "unknown option: $1" >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../.." && pwd)"
@@ -752,7 +765,7 @@ esac
 
 declare -a extra_reports=()
 "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
-if [[ "${CASE}" == "vecadd" ]]; then
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "vecadd" ]]; then
     extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
     sim_args=()
     append_ctrl_tokens 64
@@ -769,7 +782,7 @@ if [[ "${CASE}" == "vecadd" ]]; then
     extra_reports+=("${extra_report}")
 fi
 
-if [[ "${CASE}" == "matvec" ]]; then
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "matvec" ]]; then
     for row in 1 2 3; do
         row_report="${REPORT_JSON%.report.json}.row${row}.report.json"
         sim_args=()
@@ -794,7 +807,7 @@ if [[ "${CASE}" == "matvec" ]]; then
     extra_reports+=("${checksum_report}")
 fi
 
-if [[ "${CASE}" == "gemv" ]]; then
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "gemv" ]]; then
     for row in 1 2 3; do
         row_report="${REPORT_JSON%.report.json}.row${row}.report.json"
         sim_args=()
@@ -819,7 +832,7 @@ if [[ "${CASE}" == "gemv" ]]; then
     extra_reports+=("${checksum_report}")
 fi
 
-if [[ "${CASE}" == "downsample_avg" ]]; then
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "downsample_avg" ]]; then
     init_report="${REPORT_JSON%.report.json}.init.report.json"
     sim_args=()
     configure_downsample_avg_init_args
@@ -835,7 +848,7 @@ if [[ "${CASE}" == "downsample_avg" ]]; then
     done
 fi
 
-if [[ "${CASE}" == "relu" ]]; then
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "relu" ]]; then
     checksum_report="${REPORT_JSON%.report.json}.checksum.report.json"
     sim_args=()
     configure_relu_checksum_args
@@ -843,7 +856,7 @@ if [[ "${CASE}" == "relu" ]]; then
     extra_reports+=("${checksum_report}")
 fi
 
-if [[ "${CASE}" == "variance" ]]; then
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "variance" ]]; then
     variance_report="${REPORT_JSON%.report.json}.var.report.json"
     sim_args=()
     configure_variance_var_args

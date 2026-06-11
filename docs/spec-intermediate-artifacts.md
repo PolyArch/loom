@@ -352,6 +352,11 @@ Rules:
   in optional columns or referenced reports.
 * Candidate rows must refer to immutable candidate artifacts. They must
   not describe mutable search state as final evidence.
+* For a workload made of multiple dataflow graphs, `mapping_id` may
+  identify a workload graph-set aggregate mapping artifact. The selected
+  row's cycle and energy values must match the aggregate CGRA-sim report
+  and simulator cycle summary, while the aggregate artifact preserves
+  component graph identities and fingerprints.
 
 ### Unsupported Scope Ledger
 
@@ -417,6 +422,12 @@ Rules:
   primitive operation behavior.
 * `wavefront_steps` and `event_count` are supporting diagnostics; they
   must not replace `optimistic_cycles` in simulator cycle summaries.
+* A derived workload graph-set DFG report is legal only when
+  `aggregation_kind = workload_graph_set`, `graph = workload_graph_set`,
+  and the report carries `component_dfg_sim_report_identities` plus
+  input fingerprints for those components. Its dynamic counts and cycle
+  fields are sums of passing per-graph DFG-sim reports. It must not hide
+  or replace the component reports used to derive it.
 
 ### PnR Mapping Artifact
 
@@ -463,6 +474,13 @@ Rules:
   invalid, even if `routed_edges` matches the route list size.
 * The config bitstream must cover placement configuration and route
   endpoint or segment configuration required by downstream consumers.
+* A workload graph-set aggregate mapping artifact is a derived mapping
+  candidate for a workload composed of multiple mapped dataflow graphs.
+  It must carry `aggregation_kind = workload_graph_set`, a stable
+  aggregate `mapping_id`, `component_mapping_ids`,
+  `component_mapping_artifact_identities`, and input fingerprints for
+  the component mapping artifacts. Placement, route, unrouted,
+  unplaced, and config counts must equal the component sums.
 
 ### CGRA-Sim Report
 
@@ -509,6 +527,14 @@ Rules:
   records and the selected fidelity model.
 * `hardware_aware_cycles` must not be smaller than comparable
   `dfg_cycles`.
+* A derived workload graph-set CGRA-sim report is legal only when
+  `aggregation_kind = workload_graph_set`, `mapping_id` names the
+  aggregate mapping artifact, and `component_cgra_sim_report_identities`
+  plus `component_mapping_ids` identify the passing component reports.
+  `dfg_cycles`, `hardware_aware_cycles`, route latency, memory latency,
+  temporal penalty, route segment, and config counts must equal the
+  component sums. The aggregate report is a consumer-facing workload
+  view; the per-graph reports remain the simulator evidence source.
 
 ### Full-Stack Artifact Manifest
 
