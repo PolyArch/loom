@@ -98,70 +98,70 @@
 // RUN: FileCheck %s --check-prefixes=CSV,TRAPZ < %t.dir/integrate_trapz.mapping.csv
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// AXPY-NEXT: axpy,shared_reduction_adg,axpy__shared_reduction_adg,6,7,0,0,pass
+// AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,7,0,0,pass
 
-// RELU-NEXT: relu,shared_reduction_adg,relu__shared_reduction_adg,5,6,0,0,pass
+// RELU-NEXT: relu,shared_reduction_adg,relu__g_t_relu_0_0__shared_reduction_adg,5,6,0,0,pass
 
-// RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__shared_reduction_adg,5,6,0,0,pass
+// RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass
 
-// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__shared_reduction_adg,8,12,0,0,pass
+// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,12,0,0,pass
 
-// VARIANCE-MEAN-NEXT: variance,shared_reduction_adg,variance__shared_reduction_adg,7,9,0,0,pass
+// VARIANCE-MEAN-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_0_0__shared_reduction_adg,7,9,0,0,pass
 
-// VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__shared_reduction_adg,9,13,0,0,pass
+// VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,13,0,0,pass
 
-// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__shared_reduction_adg,4,4,0,0,pass
+// BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,4,0,0,pass
 
-// DOWNSAMPLE-AVG-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__shared_reduction_adg,7,9,0,0,pass
+// DOWNSAMPLE-AVG-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_downsample_avg_0_0__shared_reduction_adg,7,9,0,0,pass
 
-// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__shared_reduction_adg,6,5,0,0,pass
+// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,6,5,0,0,pass
 
-// CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__g_t_convolve_1d_kernel_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__g_t_correlation_kernel_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__shared_reduction_adg,8,14,0,0,pass
+// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,14,0,0,pass
 
-// HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__shared_reduction_adg,9,13,0,0,pass
+// HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,13,0,0,pass
 
-// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__shared_reduction_adg,5,6,0,0,pass
+// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,6,0,0,pass
 
-// MATVEC-NEXT: matvec,shared_reduction_adg,matvec__shared_reduction_adg,7,10,0,0,pass
+// MATVEC-NEXT: matvec,shared_reduction_adg,matvec__g_t_matvec_kernel_0_0__shared_reduction_adg,7,10,0,0,pass
 
-// MATVEC-CHECKSUM-NEXT: matvec,shared_reduction_adg,matvec__shared_reduction_adg,5,6,0,0,pass
+// MATVEC-CHECKSUM-NEXT: matvec,shared_reduction_adg,matvec__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass
 
-// GEMV-NEXT: gemv,shared_reduction_adg,gemv__shared_reduction_adg,9,13,0,0,pass
+// GEMV-NEXT: gemv,shared_reduction_adg,gemv__g_t_gemv_kernel_0_0__shared_reduction_adg,9,13,0,0,pass
 
-// GEMV-CHECKSUM-NEXT: gemv,shared_reduction_adg,gemv__shared_reduction_adg,5,6,0,0,pass
+// GEMV-CHECKSUM-NEXT: gemv,shared_reduction_adg,gemv__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass
 
-// VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__g_t_main_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__shared_reduction_adg,5,6,0,0,pass
+// VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg,5,6,0,0,pass
 
-// VECSCALE-NEXT: vecscale,shared_reduction_adg,vecscale__shared_reduction_adg,4,4,0,0,pass
+// VECSCALE-NEXT: vecscale,shared_reduction_adg,vecscale__g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0__shared_reduction_adg,4,4,0,0,pass
 
-// MEAN-NEXT: mean,shared_reduction_adg,mean__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// MEAN-NEXT: mean,shared_reduction_adg,mean__g_t_mean_kernel_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECNORM-L1-NEXT: vecnorm_l1,shared_reduction_adg,vecnorm_l1__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// VECNORM-L1-NEXT: vecnorm_l1,shared_reduction_adg,vecnorm_l1__g_t_vecnorm_l1_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECNORM-L2-NEXT: vecnorm_l2,shared_reduction_adg,vecnorm_l2__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// VECNORM-L2-NEXT: vecnorm_l2,shared_reduction_adg,vecnorm_l2__g_t_vecnorm_l2_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// REDUCTION-NEXT: reduction,shared_reduction_adg,reduction__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// REDUCTION-NEXT: reduction,shared_reduction_adg,reduction__g_t_reduce_sum_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// VECSUM-NEXT: vecsum,shared_reduction_adg,vecsum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// VECSUM-NEXT: vecsum,shared_reduction_adg,vecsum__g_t_vecsum_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// SPMV-NEXT: spmv,shared_reduction_adg,spmv__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// SPMV-NEXT: spmv,shared_reduction_adg,spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// PREFIX-SUM-NEXT: prefix_sum,shared_reduction_adg,prefix_sum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// PREFIX-SUM-NEXT: prefix_sum,shared_reduction_adg,prefix_sum__g_t_prefix_sum_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// PREFIX-SUM-INCLUSIVE-NEXT: prefix_sum_inclusive,shared_reduction_adg,prefix_sum_inclusive__shared_reduction_adg,6,9,0,0,pass
+// PREFIX-SUM-INCLUSIVE-NEXT: prefix_sum_inclusive,shared_reduction_adg,prefix_sum_inclusive__g_t_prefix_sum_inclusive_kernel_red_0_0__shared_reduction_adg,6,9,0,0,pass
 
-// CUMSUM-NEXT: cumsum,shared_reduction_adg,cumsum__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// CUMSUM-NEXT: cumsum,shared_reduction_adg,cumsum__g_t_cumsum_kernel_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
 
-// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass

@@ -69,7 +69,7 @@ def main() -> int:
         mapping = dotproduct_mapping_rows[0]
         expected_mapping = {
             "hardware": "shared_reduction_adg",
-            "mapping_id": "dotproduct__shared_reduction_adg",
+            "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
             "placed_records": "6",
             "routed_edges": "9",
             "unrouted_edges": "0",
@@ -97,7 +97,7 @@ def main() -> int:
         cgra_report = json.loads((out_dir / "dotproduct-cgra-sim-report.json").read_text())
         if cgra_report.get("status") != "pass" or cgra_report.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct CGRA-sim report: {cgra_report}")
-        if cgra_report.get("mapping_id") != "dotproduct__shared_reduction_adg":
+        if cgra_report.get("mapping_id") != "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected dotproduct CGRA mapping identity: {cgra_report}")
         if cgra_report.get("hardware_aware_cycles") != 1044:
             raise AssertionError(f"unexpected dotproduct CGRA-sim cycles: {cgra_report}")
@@ -124,7 +124,7 @@ def main() -> int:
         if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != (
-            "work-package::dotproduct::dotproduct__shared_reduction_adg"
+            "work-package::dotproduct::dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg"
         ):
             raise AssertionError(f"unexpected dotproduct work package identity: {runtime_package}")
         memory_descriptors = runtime_package.get("memory_descriptors")
@@ -153,7 +153,7 @@ def main() -> int:
             raise AssertionError(f"expected one dotproduct DSE row, got {dse_rows}")
         dotproduct_dse = dotproduct_dse_rows[0]
         expected_dse = {
-            "mapping_id": "dotproduct__shared_reduction_adg",
+            "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
             "cgra_sim_cycles": "1044",
             "selection_status": "selected",
         }

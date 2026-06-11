@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -98,7 +99,7 @@ def main() -> int:
         expected = {
             "workload": "vecsum",
             "hardware": "shared_reduction_adg",
-            "mapping_id": "vecsum__shared_reduction_adg",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "placed_records": "5",
             "routed_edges": "6",
             "unrouted_edges": "0",
@@ -110,6 +111,154 @@ def main() -> int:
                 raise AssertionError(f"explicit mapping {key}={row[key]!r}, expected {value!r}")
         if not artifact.is_file():
             raise AssertionError("explicit mapping did not emit JSON artifact")
+
+        vecadd_dir = out_dir / "vecadd-dfg"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "env",
+                f"BUILD_DIR={vecadd_dir}",
+                "bash",
+                "test/app/vecadd/dfg_check.sh",
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "vecadd DFG check with explicit build dir failed\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+
+        graph_mapping_ids: dict[str, str] = {}
+        for graph_name in ("g_t_vecadd_0_0", "g_t_main_red_0_0"):
+            graph_csv = out_dir / f"{graph_name}.mapping.csv"
+            graph_artifact = out_dir / f"{graph_name}.mapping.json"
+            graph_rows = artifact_test_common.run_csv_summary(
+                repo,
+                "test/pnr/run_mapping_summary.sh",
+                graph_csv,
+                HEADER,
+                "--dfg-mlir",
+                str(vecadd_dir / "main_func.dfg.mlir"),
+                "--graph",
+                graph_name,
+                "--hardware-mlir",
+                "test/pnr/shared_reduction_adg.mlir",
+                "--hardware",
+                "shared_reduction_adg",
+                "--workload",
+                "vecadd",
+                "--artifact",
+                str(graph_artifact),
+                label=f"PnR mapping summary for {graph_name}",
+            )
+            if len(graph_rows) != 1:
+                raise AssertionError(f"expected one mapping row for {graph_name}, got {graph_rows}")
+            graph_row = graph_rows[0]
+            if graph_row["status"] != "pass":
+                raise AssertionError(f"mapping row for {graph_name} should pass: {graph_row}")
+            mapping_id = graph_row["mapping_id"]
+            if graph_name not in mapping_id:
+                raise AssertionError(
+                    f"mapping id must include graph identity {graph_name!r}: {mapping_id!r}"
+                )
+            graph_data = json.loads(graph_artifact.read_text())
+            expected_json = {
+                "kind": "pnr_mapping",
+                "workload": "vecadd",
+                "graph": graph_name,
+                "hardware": "shared_reduction_adg",
+                "mapping_id": mapping_id,
+            }
+            for key, value in expected_json.items():
+                if graph_data.get(key) != value:
+                    raise AssertionError(
+                        f"{graph_name} mapping artifact {key}={graph_data.get(key)!r}, expected {value!r}"
+                    )
+            graph_mapping_ids[graph_name] = mapping_id
+
+        if len(set(graph_mapping_ids.values())) != len(graph_mapping_ids):
+            raise AssertionError(f"multi-graph workload mapping ids collided: {graph_mapping_ids}")
+
+        punctuation_mlir = out_dir / "mapping-punctuation.mlir"
+        punctuation_mlir.write_text(
+            """module {
+  dataflow.graph.func private @"punct.foo"(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (none, i32) {
+    %sum = arith.addi %lhs, %rhs : i32
+    dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @"punct-foo"(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (none, i32) {
+    %sum = arith.addi %lhs, %rhs : i32
+    dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  fabric.module @punctuation_adg(%i32a : !fabric.bits<32>,
+                                 %i32b : !fabric.bits<32>) {
+    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                         %pb = %i32b : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%lhs = %pa : !fabric.bits<32>,
+                %rhs = %pb : !fabric.bits<32>) -> () {
+        %sum = fabric.op [@arith.addi] (%lhs, %rhs)
+               : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield
+      }
+    }
+    fabric.yield
+  }
+}
+"""
+        )
+        punctuation_mapping_ids: dict[str, str] = {}
+        for graph_name in ("punct.foo", "punct-foo"):
+            graph_csv = out_dir / f"{graph_name}.csv"
+            graph_artifact = out_dir / f"{graph_name}.json"
+            graph_rows = artifact_test_common.run_csv_summary(
+                repo,
+                "test/pnr/run_mapping_summary.sh",
+                graph_csv,
+                HEADER,
+                "--dfg-mlir",
+                str(punctuation_mlir),
+                "--graph",
+                graph_name,
+                "--hardware-mlir",
+                str(punctuation_mlir),
+                "--hardware",
+                "punctuation_adg",
+                "--workload",
+                "punctuation",
+                "--artifact",
+                str(graph_artifact),
+                label=f"PnR mapping summary for quoted graph {graph_name}",
+            )
+            if len(graph_rows) != 1:
+                raise AssertionError(f"expected one mapping row for {graph_name}, got {graph_rows}")
+            graph_row = graph_rows[0]
+            if graph_row["status"] != "pass":
+                raise AssertionError(f"quoted graph mapping should pass: {graph_row}")
+            graph_data = json.loads(graph_artifact.read_text())
+            mapping_id = graph_row["mapping_id"]
+            if graph_data.get("graph") != graph_name:
+                raise AssertionError(f"quoted graph artifact lost graph identity: {graph_data}")
+            if graph_data.get("mapping_id") != mapping_id:
+                raise AssertionError(f"quoted graph artifact disagrees with CSV row: {graph_data}")
+            punctuation_mapping_ids[graph_name] = mapping_id
+
+        if len(set(punctuation_mapping_ids.values())) != len(punctuation_mapping_ids):
+            raise AssertionError(
+                f"punctuated graph mapping ids collided: {punctuation_mapping_ids}"
+            )
+        expected_punctuation_ids = {
+            "punct.foo": "punctuation__punct%2Efoo__punctuation_adg",
+            "punct-foo": "punctuation__punct%2Dfoo__punctuation_adg",
+        }
+        if punctuation_mapping_ids != expected_punctuation_ids:
+            raise AssertionError(
+                f"punctuated graph mapping ids changed: {punctuation_mapping_ids}"
+            )
 
     return 0
 

@@ -71,7 +71,7 @@ def main() -> int:
             mapping_row,
             {
                 "hardware": "shared_reduction_adg",
-                "mapping_id": "xor_block__shared_reduction_adg",
+                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
                 "status": "pass",
             },
             label="xor_block mapping",
@@ -83,7 +83,7 @@ def main() -> int:
             {
                 "workload": "xor_block",
                 "hardware": "shared_reduction_adg",
-                "mapping_id": "xor_block__shared_reduction_adg",
+                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
                 "status": "pass",
                 "dfg_cycles": 448,
                 "hardware_aware_cycles": 466,

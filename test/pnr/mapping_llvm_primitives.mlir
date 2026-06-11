@@ -10,19 +10,19 @@
 // RUN: FileCheck %s --check-prefix=BSWAP < %t.bswap.csv
 
 // ZEXT: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// ZEXT-NEXT: zext_graph,llvm_primitive_adg,zext_graph__llvm_primitive_adg,1,0,0,0,pass
+// ZEXT-NEXT: zext_graph,llvm_primitive_adg,zext_graph__zext_graph__llvm_primitive_adg,1,0,0,0,pass
 
 // ABS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// ABS-NEXT: abs_graph,llvm_primitive_adg,abs_graph__llvm_primitive_adg,1,0,0,0,pass
+// ABS-NEXT: abs_graph,llvm_primitive_adg,abs_graph__abs_graph__llvm_primitive_adg,1,0,0,0,pass
 
 // FMULADD: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// FMULADD-NEXT: fmuladd_graph,llvm_primitive_adg,fmuladd_graph__llvm_primitive_adg,1,0,0,0,pass
+// FMULADD-NEXT: fmuladd_graph,llvm_primitive_adg,fmuladd_graph__fmuladd_graph__llvm_primitive_adg,1,0,0,0,pass
 
 // FSHL: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// FSHL-NEXT: fshl_graph,llvm_primitive_adg,fshl_graph__llvm_primitive_adg,1,0,0,0,pass
+// FSHL-NEXT: fshl_graph,llvm_primitive_adg,fshl_graph__fshl_graph__llvm_primitive_adg,1,0,0,0,pass
 
 // BSWAP: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// BSWAP-NEXT: bswap_graph,llvm_primitive_adg,bswap_graph__llvm_primitive_adg,1,0,0,0,pass
+// BSWAP-NEXT: bswap_graph,llvm_primitive_adg,bswap_graph__bswap_graph__llvm_primitive_adg,1,0,0,0,pass
 
 module {
   dataflow.graph.func private @zext_graph(%ctrl: none, %narrow: i32)

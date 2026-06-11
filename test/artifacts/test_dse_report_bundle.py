@@ -135,7 +135,7 @@ def main() -> int:
             {
                 "workload_report_bundle_identity": "workload-report-bundle",
                 "runtime_package_identity": "runtime-package",
-                "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+                "runtime_report_identity": "runtime-report::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::report_only",
                 "host_program_identity": workload_runtime_evidence["host_program_identity"],
                 "host_wrapper_identity": workload_runtime_evidence["host_wrapper_identity"],
                 "host_interface": workload_runtime_evidence["host_interface"],
@@ -199,7 +199,7 @@ def main() -> int:
         if len(candidates) != 1:
             raise AssertionError(f"expected one DSE candidate record: {data}")
         candidate = candidates[0]
-        candidate_id = "candidate::vecsum::shared_reduction_adg::vecsum__shared_reduction_adg"
+        candidate_id = "candidate::vecsum::shared_reduction_adg::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
         if candidate.get("candidate_id") != candidate_id:
             raise AssertionError(f"unexpected candidate id: {candidate}")
         if candidate.get("candidate_kind") != "combined_full_stack_candidate":
@@ -711,7 +711,7 @@ def main() -> int:
         unsupported_scope_ledger = out_dir / "dse-objective-unsupported-scope-ledger.csv"
         unsupported_scope_ledger.write_text(
             "stage,case,artifact,reason,owner,blocking_input\n"
-            "dse,candidate::vecsum::shared_reduction_adg::vecsum__shared_reduction_adg,"
+            "dse,candidate::vecsum::shared_reduction_adg::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg,"
             f"dse-candidate-summary,synthetic candidate diagnostic,implementation,{out_dir / 'pnr-mapping.json'}\n"
         )
         unsupported_scope_candidate_summary = out_dir / "unsupported-scope-dse-candidate-summary.csv"
@@ -772,7 +772,7 @@ def main() -> int:
                 )
         expected_unsupported_scope_metric = (
             "metric::vecsum::shared_reduction_adg::"
-            "vecsum__shared_reduction_adg::unsupported_scope_diagnostics_count"
+            "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::unsupported_scope_diagnostics_count"
         )
         if unsupported_scope_objective.get("metric_inputs") != [expected_unsupported_scope_metric]:
             raise AssertionError(
@@ -1959,7 +1959,7 @@ def main() -> int:
         mismatched_workload_bundle = out_dir / "mismatched-workload-report-bundle.json"
         mismatched_workload_bundle_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
         mismatched_workload_bundle_data["bundle_id"] = (
-            "workload::other_workload::shared_reduction_adg::vecsum__shared_reduction_adg"
+            "workload::other_workload::shared_reduction_adg::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
         )
         mismatched_workload_bundle_data["workload"] = "other_workload"
         mismatched_workload_bundle.write_text(
@@ -1997,7 +1997,7 @@ def main() -> int:
         mismatched_workload_hardware_bundle = out_dir / "mismatched-workload-hardware-report-bundle.json"
         mismatched_workload_hardware_bundle_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
         mismatched_workload_hardware_bundle_data["bundle_id"] = (
-            "workload::vecsum::other_hardware::vecsum__shared_reduction_adg"
+            "workload::vecsum::other_hardware::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
         )
         mismatched_workload_hardware_bundle_data["selected_hardware_candidate_identity"] = "other_hardware"
         mismatched_workload_hardware_bundle.write_text(
@@ -2040,7 +2040,7 @@ def main() -> int:
         unrelated_workload_report = out_dir / "unrelated-workload-report-bundle.json"
         unrelated_workload_report_data = json.loads((out_dir / "workload-report-bundle.json").read_text())
         unrelated_workload_report_data["bundle_id"] = (
-            "workload::other_workload::shared_reduction_adg::vecsum__shared_reduction_adg"
+            "workload::other_workload::shared_reduction_adg::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
         )
         unrelated_workload_report_data["workload"] = "other_workload"
         unrelated_workload_report.write_text(

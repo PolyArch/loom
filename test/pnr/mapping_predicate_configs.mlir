@@ -5,14 +5,14 @@
 // RUN: FileCheck %s --check-prefix=CSV-FAIL < %t.fail.csv
 
 // CSV-PASS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-PASS-NEXT: cmpf_graph,predicate_adg,cmpf_graph__predicate_adg,1,0,0,0,pass
+// CSV-PASS-NEXT: cmpf_graph,predicate_adg,cmpf_graph__cmpf_graph__predicate_adg,1,0,0,0,pass
 
 // JSON-PASS-DAG: "register": "sw_configs.predicate"
 // JSON-PASS-DAG: "value": "ugt"
 // JSON-PASS-DAG: "source": "placement:arith.cmpf#0"
 
 // CSV-FAIL: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-FAIL-NEXT: cmpf_graph,predicate_mismatch_adg,cmpf_graph__predicate_mismatch_adg,0,0,0,1,fail,missing hardware resource for software op arith.cmpf
+// CSV-FAIL-NEXT: cmpf_graph,predicate_mismatch_adg,cmpf_graph__cmpf_graph__predicate_mismatch_adg,0,0,0,1,fail,missing hardware resource for software op arith.cmpf
 
 module {
   dataflow.graph.func private @cmpf_graph(%ctrl: none, %lhs: f32,

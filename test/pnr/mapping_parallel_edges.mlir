@@ -3,13 +3,13 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: parallel_edges,parallel_adg,parallel_edges__parallel_adg,2,2,0,0,pass
+// CSV-NEXT: parallel_edges,parallel_adg,parallel_edges__parallel_edges__parallel_adg,2,2,0,0,pass
 
 // JSON-DAG: "routed_edges": 2
 // JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.addi#1.operand0"
 // JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.addi#1.operand1"
-// JSON-DAG: "target": "parallel_edges__parallel_adg::route#0"
-// JSON-DAG: "target": "parallel_edges__parallel_adg::route#1"
+// JSON-DAG: "target": "parallel_edges__parallel_edges__parallel_adg::route#0"
+// JSON-DAG: "target": "parallel_edges__parallel_edges__parallel_adg::route#1"
 
 module {
   dataflow.graph.func private @parallel_edges(%ctrl: none, %lhs: i32, %rhs: i32)

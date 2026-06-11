@@ -105,7 +105,7 @@ def main() -> int:
             mapping,
             {
                 "hardware": "shared_reduction_adg",
-                "mapping_id": "xor_block__shared_reduction_adg",
+                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
                 "placed_records": "5",
                 "routed_edges": "6",
                 "unrouted_edges": "0",
@@ -121,7 +121,7 @@ def main() -> int:
             {
                 "workload": "xor_block",
                 "graph": "g_t_xor_block_0_0",
-                "mapping_id": "xor_block__shared_reduction_adg",
+                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
             },
             label="xor_block mapping artifact",
         )
@@ -147,7 +147,7 @@ def main() -> int:
         cgra_report = read_json_object(out_dir / "xor_block-cgra-sim-report.json")
         if cgra_report.get("status") != "pass" or cgra_report.get("workload") != "xor_block":
             raise AssertionError(f"unexpected xor_block CGRA-sim report: {cgra_report}")
-        if cgra_report.get("mapping_id") != "xor_block__shared_reduction_adg":
+        if cgra_report.get("mapping_id") != "xor_block__g_t_xor_block_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected xor_block CGRA mapping identity: {cgra_report}")
         if cgra_report.get("hardware_aware_cycles") != 466:
             raise AssertionError(f"unexpected xor_block CGRA-sim cycles: {cgra_report}")
@@ -180,7 +180,7 @@ def main() -> int:
         if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "xor_block":
             raise AssertionError(f"unexpected xor_block runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != (
-            "work-package::xor_block::xor_block__shared_reduction_adg"
+            "work-package::xor_block::xor_block__g_t_xor_block_0_0__shared_reduction_adg"
         ):
             raise AssertionError(f"unexpected xor_block work package identity: {runtime_package}")
         memory_descriptors = runtime_package.get("memory_descriptors")
@@ -214,7 +214,7 @@ def main() -> int:
         assert_fields(
             xor_dse,
             {
-                "mapping_id": "xor_block__shared_reduction_adg",
+                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
                 "cgra_sim_cycles": "466",
                 "frequency_mhz": "250.000",
                 "area_um2": "7250.000",

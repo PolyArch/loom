@@ -84,15 +84,29 @@ llvm::Error createParentDirectories(llvm::StringRef outputPath) {
   return llvm::Error::success();
 }
 
-std::string mappingId(llvm::StringRef workload, llvm::StringRef hardware) {
-  std::string id = workload.str();
-  id += "__";
-  for (char ch : hardware) {
-    if (llvm::isAlnum(ch) || ch == '_')
-      id.push_back(ch);
-    else
-      id.push_back('_');
+std::string escapedIdentityPart(llvm::StringRef value) {
+  std::string part;
+  constexpr char hex[] = "0123456789ABCDEF";
+  for (char ch : value) {
+    unsigned char byte = static_cast<unsigned char>(ch);
+    if (llvm::isAlnum(ch) || ch == '_') {
+      part.push_back(ch);
+      continue;
+    }
+    part.push_back('%');
+    part.push_back(hex[(byte >> 4) & 0xF]);
+    part.push_back(hex[byte & 0xF]);
   }
+  return part;
+}
+
+std::string mappingId(llvm::StringRef workload, llvm::StringRef graph,
+                      llvm::StringRef hardware) {
+  std::string id = escapedIdentityPart(workload);
+  id += "__";
+  id += escapedIdentityPart(graph);
+  id += "__";
+  id += escapedIdentityPart(hardware);
   return id;
 }
 
@@ -775,7 +789,8 @@ loom::pnr::createMapping(const MappingOptions &options) {
       options.workload.empty() ? options.graphName : options.workload;
   summary.hardware = options.hardwareName;
   summary.graph = options.graphName;
-  summary.mappingId = mappingId(summary.workload, summary.hardware);
+  summary.mappingId =
+      mappingId(summary.workload, summary.graph, summary.hardware);
   summary.status = "pass";
 
   for (SoftwareNode &node : *nodesOrErr) {

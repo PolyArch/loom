@@ -88,12 +88,12 @@ def main() -> int:
             raise AssertionError(f"runtime package should pass with mapping and simulator evidence: {data}")
         if data["workload"] != "vecsum":
             raise AssertionError(f"unexpected runtime package workload: {data}")
-        if data["package_id"] != "runtime-package::vecsum::vecsum__shared_reduction_adg":
+        if data["package_id"] != "runtime-package::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected runtime package identity: {data}")
-        if data["work_package_identity"] != "work-package::vecsum::vecsum__shared_reduction_adg":
+        if data["work_package_identity"] != "work-package::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected work package identity: {data}")
         expected_work_package_metadata = {
-            "work_package_identity": "work-package::vecsum::vecsum__shared_reduction_adg",
+            "work_package_identity": "work-package::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "workload": "vecsum",
             "selected_accelerator_region": "accelerator-region::vecsum",
             "logical_thread_domain": "thread-domain::vecsum",
@@ -105,11 +105,11 @@ def main() -> int:
             raise AssertionError(f"unexpected work package metadata: {data}")
         if data["host_program_identity"] != "test-app-host::vecsum::default":
             raise AssertionError(f"unexpected host program identity: {data}")
-        if data["host_wrapper_identity"] != "runtime-wrapper::vecsum::vecsum__shared_reduction_adg":
+        if data["host_wrapper_identity"] != "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected host wrapper identity: {data}")
         expected_host_interface = {
             "host_program_identity": "test-app-host::vecsum::default",
-            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
+            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "invocation_abi": "loom_runtime_package_v1",
             "compatibility_mode_requires_runtime": False,
             "acceleration_mode_requires_runtime_package": True,
@@ -117,7 +117,7 @@ def main() -> int:
         }
         if data["host_interface"] != expected_host_interface:
             raise AssertionError(f"unexpected host interface metadata: {data}")
-        expected_launch = "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::default"
+        expected_launch = "launch::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::test-app-fixture::vecsum::default"
         if data["launch_descriptor_identity"] != expected_launch:
             raise AssertionError(f"unexpected launch descriptor identity: {data}")
         launch_descriptor = data["launch_descriptor"]
@@ -350,7 +350,7 @@ def main() -> int:
             if policy_data.get("launch_descriptor", {}).get("fallback_policy") != fallback_policy:
                 raise AssertionError(f"launch descriptor should include fallback policy: {policy_data}")
             runtime_report = policy_data.get("runtime_report", {})
-            expected_report_id = f"runtime-report::vecsum::vecsum__shared_reduction_adg::{fallback_policy}"
+            expected_report_id = f"runtime-report::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::{fallback_policy}"
             if runtime_report.get("report_id") != expected_report_id:
                 raise AssertionError(f"runtime report id should include fallback policy: {policy_data}")
             if runtime_report.get("fallback_decision") != expected_policy_fallback:
@@ -470,10 +470,10 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("runtime package with unsupported synchronization mode unexpectedly passed audit")
         expected_runtime_report = {
-            "report_id": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "report_id": "runtime-report::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::report_only",
             "host_program_identity": "test-app-host::vecsum::default",
-            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
-            "work_package_identity": "work-package::vecsum::vecsum__shared_reduction_adg",
+            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
+            "work_package_identity": "work-package::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "launch_descriptor_identity": expected_launch,
             "mapping_artifact_identity": "pnr-mapping",
             "fabric_adg_identity": "shared_reduction_adg",
@@ -492,7 +492,7 @@ def main() -> int:
         if data["runtime_report"] != expected_runtime_report:
             raise AssertionError(f"unexpected runtime report: {data}")
         expected_report_output_configuration = {
-            "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "runtime_report_identity": "runtime-report::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::report_only",
             "diagnostic_output_enabled": True,
             "trace_output_enabled": False,
             "profiling_output_enabled": False,
@@ -1043,7 +1043,7 @@ def main() -> int:
             and record.get("diagnostic_class") == "missing_platform_memory_binding"
             and record.get("component") == "runtime_package"
             and record.get("source_provenance") == "test-app-fixture::vecsum::default"
-            and record.get("host_wrapper_identity") == "runtime-wrapper::vecsum::vecsum__shared_reduction_adg"
+            and record.get("host_wrapper_identity") == "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
             and record.get("failure_domain") == "platform_services"
             for record in records
         ):
@@ -1053,7 +1053,7 @@ def main() -> int:
             isinstance(record, dict)
             and record.get("diagnostic_class") == "missing_platform_memory_binding"
             and record.get("source_provenance") == "test-app-fixture::vecsum::default"
-            and record.get("host_wrapper_identity") == "runtime-wrapper::vecsum::vecsum__shared_reduction_adg"
+            and record.get("host_wrapper_identity") == "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
             and record.get("failure_domain") == "platform_services"
             for record in runtime_report_records
         ):

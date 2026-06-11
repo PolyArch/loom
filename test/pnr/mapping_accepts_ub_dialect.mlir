@@ -3,7 +3,7 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: add_graph,add_adg,add_graph__add_adg,1,0,0,0,pass
+// CSV-NEXT: add_graph,add_adg,add_graph__add_graph__add_adg,1,0,0,0,pass
 
 // JSON-DAG: "kind": "pnr_mapping"
 // JSON-DAG: "workload": "add_graph"

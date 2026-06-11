@@ -5,7 +5,7 @@
 // RUN: FileCheck %s --check-prefix=JSON < %t.dir/mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: vecsum,shared_reduction_adg,vecsum__shared_reduction_adg,5,6,0,0,pass
+// CSV-NEXT: vecsum,shared_reduction_adg,vecsum__g_t_vecsum_red_0_0__shared_reduction_adg,5,6,0,0,pass
 
 // JSON-DAG: "kind": "pnr_mapping"
 // JSON-DAG: "workload": "vecsum"

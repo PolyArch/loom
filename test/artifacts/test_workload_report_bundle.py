@@ -137,7 +137,7 @@ def main() -> int:
             raise AssertionError(f"report should reference RTL manifest evidence: {data}")
         expected_host_interface = {
             "host_program_identity": "test-app-host::vecsum::default",
-            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
+            "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "invocation_abi": "loom_runtime_package_v1",
             "compatibility_mode_requires_runtime": False,
             "acceleration_mode_requires_runtime_package": True,
@@ -158,7 +158,7 @@ def main() -> int:
         runtime_report = runtime_package_data["runtime_report"]
         expected_runtime_evidence = {
             "runtime_package_identity": "runtime-package",
-            "runtime_report_identity": "runtime-report::vecsum::vecsum__shared_reduction_adg::report_only",
+            "runtime_report_identity": "runtime-report::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::report_only",
             "host_program_identity": runtime_report["host_program_identity"],
             "host_wrapper_identity": runtime_report["host_wrapper_identity"],
             "host_interface": runtime_package_data["host_interface"],
@@ -200,7 +200,7 @@ def main() -> int:
         alternate_runtime_data["work_package_metadata"]["runtime_input_identity"] = alternate_runtime_input
         alternate_runtime_data["host_interface"]["source_provenance"] = alternate_runtime_input
         alternate_runtime_data["launch_descriptor_identity"] = (
-            "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::alternate"
+            "launch::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::test-app-fixture::vecsum::alternate"
         )
         alternate_runtime_data["runtime_report"]["launch_descriptor_identity"] = (
             alternate_runtime_data["launch_descriptor_identity"]
@@ -513,7 +513,7 @@ def main() -> int:
                 "message": "matching runtime package is blocked",
                 "failure_domain": "runtime_configuration",
                 "source_provenance": "test-app-fixture::vecsum::default",
-                "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__shared_reduction_adg",
+                "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             }
         ]
         blocked_matching_runtime_data["runtime_report"]["diagnostic_records"] = list(

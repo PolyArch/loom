@@ -83,7 +83,7 @@ def main() -> int:
         if len(vecsum_mapping_rows) != 1:
             raise AssertionError(f"expected one vecsum mapping row, got {mapping_rows}")
         if (
-            vecsum_mapping_rows[0]["mapping_id"] != "vecsum__shared_reduction_adg"
+            vecsum_mapping_rows[0]["mapping_id"] != "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
             or vecsum_mapping_rows[0]["placed_records"] != "5"
             or vecsum_mapping_rows[0]["routed_edges"] != "6"
             or vecsum_mapping_rows[0].get("status") != "pass"
@@ -120,9 +120,9 @@ def main() -> int:
             raise AssertionError(f"unexpected runtime package kind: {runtime_package}")
         if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "vecsum":
             raise AssertionError(f"unexpected runtime package status: {runtime_package}")
-        if runtime_package.get("work_package_identity") != "work-package::vecsum::vecsum__shared_reduction_adg":
+        if runtime_package.get("work_package_identity") != "work-package::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected runtime work package identity: {runtime_package}")
-        expected_launch = "launch::vecsum::vecsum__shared_reduction_adg::test-app-fixture::vecsum::default"
+        expected_launch = "launch::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg::test-app-fixture::vecsum::default"
         if runtime_package.get("launch_descriptor_identity") != expected_launch:
             raise AssertionError(f"unexpected runtime launch descriptor identity: {runtime_package}")
         if runtime_package.get("selected_mapping_artifact_identity") != "pnr-mapping":
@@ -138,7 +138,7 @@ def main() -> int:
             raise AssertionError(f"expected one vecsum DSE row, got {dse_rows}")
         vecsum_dse = vecsum_dse_rows[0]
         expected_dse = {
-            "mapping_id": "vecsum__shared_reduction_adg",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "cgra_sim_cycles": "589",
             "frequency_mhz": "250.000",
             "area_um2": "7250.000",
@@ -253,7 +253,7 @@ def main() -> int:
         if dse_bundle.get("report_status") != "pass":
             raise AssertionError(f"DSE report bundle should pass with selected candidate evidence: {dse_bundle}")
         if dse_bundle.get("selected_candidates") != [
-            "candidate::vecsum::shared_reduction_adg::vecsum__shared_reduction_adg"
+            "candidate::vecsum::shared_reduction_adg::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
         ]:
             raise AssertionError(f"unexpected DSE selected candidates: {dse_bundle}")
         if dse_bundle.get("referenced_workload_report_bundle_identities") != ["workload-report-bundle"]:
