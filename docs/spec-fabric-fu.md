@@ -2,10 +2,11 @@
 
 This document specifies `fabric.fu`, the CGRA-style functional-unit
 container that wraps `fabric.op`, `fabric.mux`, and `fabric.demux` ops
-into a single tile and presents a fixed external port interface to the
-enclosing `fabric.pe`. The canonical IR source is `Fabric_FuOp` in
-`include/Fabric/IR/FabricOps.td`; verifier rules live in
-`lib/Fabric/IR/FabricOps.cpp`.
+into one PE-internal resource and presents a fixed external port
+interface to the enclosing `fabric.pe`. Implementation locations that
+must mirror this spec include `Fabric_FuOp` in
+`include/Fabric/IR/FabricOps.td` and the parser, printer, and verifier
+logic in `lib/Fabric/IR/FabricOps.cpp`.
 
 `fabric.mux` and `fabric.demux` are FU-local configurable connectivity
 ops. They are part of a SpatialCore template inside `fabric.module`;
@@ -42,6 +43,9 @@ on whether `@sym` appears right after the op keyword.
 
 ### Named template form (declaration only)
 
+This snippet shows the PE-body fragment for a named FU template; a
+complete Fabric module must nest it inside a `fabric.pe` body.
+
 ```mlir
 fabric.fu @F (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W> {
 ^bb0(%fa: !fabric.bits<W>, %fb: !fabric.bits<W>):
@@ -51,7 +55,8 @@ fabric.fu @F (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W> {
 }
 ```
 
-* Zero SSA operands, zero SSA results in the host scope.
+* Zero SSA operands, zero SSA results in the enclosing `fabric.pe`
+  body.
 * Port signature captured in a `function_type : FunctionType`
   attribute.
 * Body's entry block carries the input port types as block arguments;
@@ -61,7 +66,7 @@ fabric.fu @F (!fabric.bits<W>, !fabric.bits<W>) -> !fabric.bits<W> {
   symbol-table lookup applies.
 * Actual use goes through `fabric.instantiate @F(...)` (see
   `docs/spec-fabric-instantiate.md`).
-* May live inside a `fabric.module` body or a `fabric.pe` body.
+* Must live inside a `fabric.pe` body.
 
 ## Body whitelist
 
@@ -143,7 +148,7 @@ Named template form:
   SSA operands / zero SSA results.
 * Block-argument types equal `function_type.getInputs()`.
 * Yield value types equal `function_type.getResults()`.
-* Parent must be a `fabric.module` body or `fabric.pe` body.
+* Parent must be a `fabric.pe` body.
 
 ## Cross-references
 

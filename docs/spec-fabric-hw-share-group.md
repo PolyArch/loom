@@ -2,8 +2,8 @@
 
 This document specifies the set of software op kinds that may legally co-occur
 in the `op_list` of a single `fabric.op`. The list is enforced by
-`FuOp::verify` and the canonical source is `hwShareGroups()` in
-`lib/Fabric/IR/FabricOps.cpp`.
+`FuOp::verify`. The table in this spec is normative, and
+`hwShareGroups()` in `lib/Fabric/IR/FabricOps.cpp` must mirror it.
 
 ## Why share groups exist
 
@@ -69,9 +69,9 @@ share group is active in the current configuration.
 | 18 | `math.sqrt`, `math.rsqrt` | Same Newton iteration; reciprocal is one extra division step shared with the iteration result. |
 | 19 | `math.tanh`, `math.erf` | Same Pade or LUT-based approximation core within shared input ranges. |
 
-The canonical source of truth is `hwShareGroups()` in
-`lib/Fabric/IR/FabricOps.cpp`. If you ever need to update this document,
-mirror that table.
+The table above is the normative target. If you update it,
+`hwShareGroups()` in `lib/Fabric/IR/FabricOps.cpp` must be updated to
+mirror the spec.
 
 ## How to extend
 

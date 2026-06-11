@@ -1,22 +1,31 @@
 # ADG Builder
 
 This document specifies the target C++ ADG Builder API for constructing
-Fabric system Architecture Description Graphs. The ADG Builder is a
-human-facing construction frontend for hardware and system architects.
-Its only persistent output is Fabric dialect IR that satisfies
-`docs/spec-fabric-system-adg.md`.
+Fabric Architecture Description Graphs at two hardware levels:
+
+* SpatialCore or CGRA templates emitted as `fabric.module`;
+* system-level heterogeneous SoCs emitted as `fabric.system`.
+
+The ADG Builder is a human-facing construction frontend for hardware and
+system architects. Its only persistent output is Fabric dialect IR that
+satisfies the relevant Fabric specs.
 
 ## Purpose
 
-The ADG Builder must make it ergonomic to describe heterogeneous
-multi-core spatial-accelerator SoCs:
+The ADG Builder must make it ergonomic to describe both individual
+SpatialCore templates and heterogeneous multi-core spatial-accelerator
+SoCs:
 
 ```text
+SpatialCore = fabric.module over fabric.{pe,switch,mem} [spatial|temporal]
 HostCore + AccCore x M + cache hierarchy + interconnect + external memory
 ```
 
-The API must support two equally important use modes:
+The API must support three equally important use modes:
 
+* SpatialCore construction, where users describe CGRA modules with PE,
+  switch, memory, FIFO, boundary, instantiate, and FU-template
+  structure;
 * high-level architectural construction, where users describe common
   structures such as heterogeneous accelerator clusters, cache
   hierarchies, crossbar-like fabrics, mesh-like router graphs, NoCs,
@@ -33,7 +42,20 @@ the emitted Fabric MLIR.
 
 The Builder is a pure construction frontend. It must not define
 hardware semantics outside Fabric ADG. Every high-level helper must
-deterministically lower to explicit `fabric.system` IR:
+deterministically lower to explicit `fabric.module` or `fabric.system`
+IR as appropriate.
+
+SpatialCore helpers must lower to:
+
+* a `fabric.module` body represented by Graph-region SSA values;
+* `fabric.pe`, `fabric.switch`, and `fabric.mem` tiles with explicit
+  `[spatial|temporal]` schedules;
+* `fabric.fifo`, `fabric.boundary`, and `fabric.instantiate` support
+  constructs when required;
+* `fabric.fu` templates or instances only as PE-contained functional
+  units.
+
+System helpers must lower to:
 
 * physical `fabric.node` operations;
 * complete `#fabric.port` attributes;
@@ -46,8 +68,10 @@ deterministically lower to explicit `fabric.system` IR:
 Builder-only concepts may exist while the C++ program is running, but
 they must not survive as required semantics in the emitted MLIR. If a
 downstream verifier, PnR tool, simulator, RTL generator, or FPA tool
-needs a fact, that fact must be present in Fabric ADG or in a separate
-explicit mapping artifact.
+needs a fact, that fact must be present in Fabric ADG or in the explicit
+artifact that owns that fact, such as a mapping artifact or manifest,
+normalized FPA JSON report, report bundle, artifact manifest, runtime
+descriptor, or another named contract.
 
 ## Audience
 
@@ -58,12 +82,44 @@ common path compact while preserving an escape hatch for exact control.
 
 The Builder must not require users to think in mesh coordinates, PE
 indices, Manhattan distance, or fixed topology templates. Coordinates
-are optional metadata. Graph links are the topology source of truth.
+are optional metadata. Inside a `fabric.module`, SSA value flow is the
+SpatialCore connectivity source of truth. Inside a `fabric.system`,
+explicit `fabric.link` operations are the system topology source of
+truth.
 
 ## API Layers
 
-The ADG Builder has three API layers. All layers write into the same
-underlying system graph.
+The ADG Builder has three API layers. All layers write into explicit
+Fabric IR objects. A builder instance may construct a `fabric.module`, a
+`fabric.system`, or an MLIR module containing both.
+
+### SpatialCore Layer
+
+The SpatialCore layer owns a `fabric.module` being constructed. It
+provides entry points for module identity, module ports, spatial and
+temporal tiles, boundary conversions, FIFO resources, named templates,
+and MLIR emission.
+
+Required interface shape:
+
+```cpp
+class ModuleBuilder;
+class TileRef;
+class PeRef;
+class SwitchRef;
+class MemRef;
+class FuRef;
+class BoundaryRef;
+class FifoRef;
+class ModuleValueRef;
+```
+
+The core tile matrix is `fabric.{pe,switch,mem}` crossed with
+`[spatial|temporal]`. The Builder must expose that matrix directly. It
+must not model `fabric.fu` as a module-level tile parallel to PE,
+switch, or memory; FUs belong inside PEs. It must not introduce
+module-level `fabric.link` semantics; module connectivity is expressed
+by the SSA values in the emitted graph region.
 
 ### System Layer
 
@@ -121,7 +177,11 @@ It must lower into exact-layer calls before emission.
 
 Required helper families:
 
+* SpatialCore PE, switch, and memory-tile construction;
+* spatial/temporal boundary and FIFO construction;
+* PE-local FU-template construction;
 * host and accelerator construction;
+* fixed-function accelerator construction;
 * cache and memory construction;
 * address-space and memory-map construction;
 * cache-coherence domain construction;
@@ -228,8 +288,17 @@ target Fabric object when one exists.
 
 The implementation must provide example programs for these cases:
 
+* minimal SpatialCore with spatial PE, switch, and memory tile;
+* temporal SpatialCore with temporal PE, temporal switch, temporal
+  memory tile, and required spatial/temporal boundaries;
+* SpatialCore using named PE templates, PE-local FU templates, and
+  `fabric.instantiate`;
+* mixed spatial and temporal resources connected through SSA values and
+  boundary ops inside one `fabric.module`;
 * minimal host plus one accelerator plus one memory target;
 * heterogeneous host plus two different accelerator cores;
+* heterogeneous system with one SpatialCore-backed accelerator and one
+  fixed-function accelerator;
 * cache-coherent host/cache/accelerator/memory system;
 * arbitrary non-mesh topology using exact links;
 * mesh-like router graph built through convenience helpers;
@@ -241,6 +310,75 @@ The implementation must provide example programs for these cases:
 
 Each example must emit MLIR and run the Fabric ADG verifier. The
 examples are part of the API contract, not incidental demos.
+
+## Target Universe
+
+The ADG Builder target universe covers both construction levels.
+
+SpatialCore Builder coverage includes:
+
+* every verifier-legal `fabric.module` port shape;
+* `fabric.pe [spatial]` and `fabric.pe [temporal]`;
+* `fabric.switch [spatial]` and `fabric.switch [temporal]`;
+* `fabric.mem [spatial]` and `fabric.mem [temporal]`;
+* PE-contained `fabric.fu` templates and instances;
+* `fabric.fifo`, `fabric.boundary`, and `fabric.instantiate`;
+* named and anonymous forms where the Fabric specs allow both;
+* deterministic emission, validation, and diagnostics.
+
+System Builder coverage includes every verifier-legal `fabric.system`
+construct from `docs/spec-fabric-system-adg.md`, including nodes, ports,
+channels, external ports, explicit links, domains, address spaces,
+memory regions, memory model, and coherence domains.
+
+## Required Evidence
+
+Builder evidence consists of emitted MLIR, verifier results, and
+example-run reports. Each example must identify:
+
+* the builder entry point used;
+* the emitted Fabric root symbol;
+* whether the root is a `fabric.module`, a `fabric.system`, or both;
+* verifier status and diagnostics;
+* stable output identity or fingerprint when used by later artifacts.
+
+## Objective Verification
+
+The Builder target is objectively verifiable when:
+
+* each required example emits deterministic MLIR;
+* each emitted MLIR artifact verifies;
+* every target Fabric construct has at least one builder-positive test
+  or example;
+* invalid builder inputs produce structured diagnostics before or during
+  emission;
+* downstream tools can consume emitted Fabric IR without reading
+  builder-only state.
+
+## Unsupported Scope Policy
+
+A Builder helper may be absent only when the corresponding exact Fabric
+construction path can still emit the target IR and the missing helper is
+recorded as unsupported convenience scope. Missing exact-layer support
+for a verifier-legal target construct is a Builder target gap.
+
+## Relationships To Other Contracts
+
+SpatialCore Builder output follows `docs/spec-fabric-module.md` and the
+SpatialCore fabric specs. System Builder output follows
+`docs/spec-fabric-system-adg.md`. PnR, simulators, RTL lowering, FPA,
+reports, and DSE consume the emitted Fabric IR through those specs, not
+through Builder internals.
+
+## Current Implementation Notes
+
+This section is non-normative. It records current repository facts for
+orientation only and is not part of target acceptance.
+
+The current implementation contains a `ModuleBuilder` seed and a
+`shared_reduction_adg` example that emits a `fabric.module`. The
+system-level `SystemBuilder` and broad SpatialCore tile-matrix helpers
+are target contracts and are not yet fully implemented.
 
 ## Non-Goals
 
@@ -263,6 +401,8 @@ ADG.
 
 The ADG Builder target is complete when:
 
+* the SpatialCore layer can emit every verifier-legal target
+  `fabric.module` construct;
 * the exact layer can emit every verifier-legal `fabric.system` construct;
 * high-level helpers lower only to explicit Fabric ADG constructs;
 * all required examples emit deterministic MLIR;

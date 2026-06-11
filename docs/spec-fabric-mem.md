@@ -137,6 +137,12 @@ and `mem_enable` (BoolAttr, the PE/clock/power-gating equivalent),
 printed in `{ ... }`. They follow the fabric all-or-nothing rule:
 both present (programmed) or both absent (hw-only).
 
+`addr_table.base_addr` is a physical address or a physical-region
+offset after mapping/runtime binding. It never encodes a virtual
+address. Region identity and host pointer translation belong to
+`fabric.system`, mapping artifacts, runtime descriptors, or platform
+adapters, not to `fabric.mem`.
+
 ### Spatial entry shape
 
 One entry per port, total `load_group_size + store_group_size`. Entry
@@ -270,9 +276,9 @@ fabric.mem @MyMem [spatial]
 ```
 
 The named form has zero SSA operands and zero SSA results in the
-host scope; the port signature is captured in a `function_type`
-attribute. Actual usage of a named `fabric.mem` goes through
-`fabric.instantiate`.
+enclosing `fabric.module` body; the port signature is captured in a
+`function_type` attribute. Actual usage of a named `fabric.mem` goes
+through `fabric.instantiate`.
 
 ## Verifier checklist
 
@@ -330,7 +336,7 @@ The verifier exercises the following rejections (see
 
 ## Cross-references
 
-* `spec-fabric-module.md` -- top-level container and the body
+* `spec-fabric-module.md` -- SpatialCore/CGRA template container and the body
   whitelist.
 * `spec-fabric-pe.md` -- schedule predicate `[spatial] | [temporal]`.
 * `spec-fabric-pe-temporal.md` -- temporal-domain background and
@@ -339,11 +345,11 @@ The verifier exercises the following rejections (see
   schedule-predicate / hw-params / sw-configs / function-type
   pattern.
 * `spec-fabric-instantiate.md` -- instantiation of a named
-  `fabric.mem` template into a host scope.
+  `fabric.mem` template into a `fabric.module` body.
 
 ## Maintenance
 
-The canonical sources of truth are:
+Implementation locations that must mirror this spec are:
 
 * `Fabric_MemOp` in `include/Fabric/IR/FabricOps.td` for the IR shape;
 * `MemOp::parse`, `MemOp::print`, and `MemOp::verify` in

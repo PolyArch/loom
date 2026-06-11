@@ -45,22 +45,23 @@ fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
   configuration record are documented in
   `spec-fabric-pe-temporal.md`.
 
-The `schedule` predicate is orthogonal to the container kind. Once
-`fabric.switch` and `fabric.mem` land they will follow the same
-`[spatial] | [temporal]` predicate convention. Cross-reference
-`docs/spec-fabric-module.md` for module-level placement of
-`fabric.pe`.
+The `schedule` predicate is orthogonal to the container kind.
+`fabric.pe`, `fabric.switch`, and `fabric.mem` share the same
+`[spatial] | [temporal]` predicate convention in the SpatialCore tile
+matrix. Cross-reference `docs/spec-fabric-module.md` for SpatialCore
+placement of `fabric.pe`.
 
 In any given configuration of a `fabric.pe [spatial]`, the inner FU
 selects exactly zero or one of its FUs as architecturally active.
 
 ## Background
 
-`fabric.fu` already models a CGRA-style functional unit: a graph-region
-tile of `fabric.op` / `fabric.mux` / `fabric.demux` whose inner sw_configs
-materialize different software graphs. `fabric.pe [spatial]` wraps a *set*
-of such FUs so that one PE-level configuration picks which FU is active
-and how the PE's external ports are wired to that FU's ports.
+`fabric.fu` already models a CGRA-style functional unit: a PE-internal
+graph-region container of `fabric.op` / `fabric.mux` / `fabric.demux`
+whose inner sw_configs materialize different software graphs.
+`fabric.pe [spatial]` wraps a *set* of such FUs so that one PE-level
+configuration picks which FU is active and how the PE's external ports
+are wired to that FU's ports.
 
 Compared to a bare `fabric.fu`:
 
@@ -92,10 +93,10 @@ disjoint:
   op has variadic SSA operands and variadic SSA results, the body has
   no terminator (per the PE-level routing model below).
 * **Named template form** (with `sym_name`). Template-only: zero SSA
-  operands, zero SSA results in the host scope; signature recorded in
-  a `function_type : FunctionType` attribute. Body's entry block
-  arguments match `function_type.getInputs()`. Body terminator is
-  `fabric.yield` whose value list matches
+  operands, zero SSA results in the enclosing `fabric.module` body;
+  signature recorded in a `function_type : FunctionType` attribute.
+  Body's entry block arguments match `function_type.getInputs()`.
+  Body terminator is `fabric.yield` whose value list matches
   `function_type.getResults()`. Actual usage goes through
   `fabric.instantiate @sym(...)`. See `docs/spec-fabric-instantiate.md`
   for symbol resolution and the per-form `fabric.instantiate` rules.
@@ -137,12 +138,13 @@ what may be placed in their bodies.
 
 ### Body shape
 
-A `fabric.pe [spatial]` body holds one or more `fabric.fu` instances --
-the PE's FU set. The body has no terminator: there is no `fabric.yield`
-inside `fabric.pe [spatial]`. The PE's external inputs and outputs are
-not wired by SSA values that flow through a yield; instead they are
-implicitly wired to inner FU ports through the PE-level input-mux and
-output-demux fields (see "Software configuration").
+An anonymous-form `fabric.pe [spatial]` body holds one or more
+`fabric.fu` instances -- the PE's FU set. The anonymous-form body has
+no terminator: there is no `fabric.yield` directly inside that PE body.
+The PE's external inputs and outputs are not wired by SSA values that
+flow through a yield; instead they are implicitly wired to inner FU
+ports through the PE-level input-mux and output-demux fields (see
+"Software configuration").
 
 Inner `fabric.fu` instances may be homogeneous (every FU has the same
 op_list / hw_params shape) or heterogeneous. The PE imposes no rule on
@@ -272,10 +274,10 @@ external port widths.
   PE's port-list types and the FU's outer (op-level) input/result
   types only -- inner FU-body block-arg types and inner yield value
   types are not constrained by the PE's `W`.
-* The body contains only `fabric.fu` ops. There is no terminator: the
-  region uses MLIR's no-terminator form. Placing `fabric.op` / mux /
-  demux / fifo / yield directly in the PE body, or nesting another
-  `fabric.pe [spatial]`, is rejected.
+* The anonymous-form body contains only `fabric.fu` ops. There is no
+  terminator: the region uses MLIR's no-terminator form. Placing
+  `fabric.op` / mux / demux / fifo / yield directly in the anonymous
+  PE body, or nesting another `fabric.pe [spatial]`, is rejected.
 
 ## Software configuration (the PE instruction word)
 
@@ -469,7 +471,7 @@ The mapper and tech-mapping passes must respect the following:
 
 ## Placement rules
 
-The fabric dialect's top-level container is `fabric.module`. See
+The SpatialCore/CGRA template container is `fabric.module`. See
 `spec-fabric-module.md` for the full module-side specification:
 declared inputs/outputs, body whitelist, the three connection points
 that admit width relaxation (module-input -> sub-module-operand,
@@ -477,13 +479,14 @@ sub-module-result -> sub-module-operand, sub-module-result ->
 module-yield), and the `IsolatedFromAbove` requirement that bars
 external SSA leakage.
 
-Three ops carry a body region: `fabric.module`, `fabric.pe [spatial]`,
-and `fabric.pe [temporal]`. Of these, only `fabric.module` and
-`fabric.fu` (which is itself a body-bearing op nested inside a PE)
-have an internal `fabric.yield` terminator. `fabric.pe [spatial]` and
-`fabric.pe [temporal]` do not have a terminator: their inner FUs are
-implicitly connected to the PE's external ports through the PE-level
-input-mux and output-demux fields.
+Four fabric ops carry body regions at the SpatialCore level:
+`fabric.module`, `fabric.pe [spatial]`, `fabric.pe [temporal]`, and
+`fabric.fu`. Anonymous PEs contain FU resources or FU instantiations
+and have no terminator. Named PE templates contain the same resource
+forms and use `fabric.yield` to match their declared function type.
+Inner FUs are connected to PE external ports through PE-level input-mux
+and output-demux fields rather than through PE-body SSA yields in the
+anonymous form.
 
 `fabric.pe [spatial]` placement rules:
 
@@ -504,8 +507,9 @@ The verifier emits free-form diagnostics for the following conditions:
 * PE port type or width violations (mixed types, mixed widths,
   non-`bits` types, `K < 1` or `L < 1`).
 * Empty body (no `fabric.fu`).
-* Body contains an op other than `fabric.fu` (in particular, no
-  `fabric.yield` may appear inside a `fabric.pe [spatial]`).
+* Anonymous-form body contains an op other than `fabric.fu` (in
+  particular, no `fabric.yield` may appear directly inside an
+  anonymous-form `fabric.pe [spatial]`).
 * `max_fu_inputs > K` or `max_fu_outputs > L`.
 * An inner FU's outer port width does not match the PE's `W` (input
   or output). Inner block-arg widths narrower than the outer operand
@@ -522,7 +526,7 @@ document fixes the set of conditions that must trigger a diagnostic.
 
 ## Maintenance
 
-The canonical source of truth is:
+Implementation locations that must mirror this spec are:
 
 * `Fabric_PeOp` in `include/Fabric/IR/FabricOps.td` for the IR
   shape;

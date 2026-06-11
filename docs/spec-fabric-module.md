@@ -1,9 +1,14 @@
 # Fabric Module
 
-This document specifies `fabric.module`, the top-level container of the
-fabric dialect. The canonical IR source is `Fabric_ModuleOp` in
-`include/Fabric/IR/FabricOps.td`; verifier rules live in
-`lib/Fabric/IR/FabricOps.cpp`.
+This document specifies `fabric.module`, the SpatialCore or CGRA
+template container of the fabric dialect. `fabric.system` is the
+SoC/system container. Implementation locations that must mirror this
+spec include `Fabric_ModuleOp` in `include/Fabric/IR/FabricOps.td` and
+the parser, printer, and verifier logic in `lib/Fabric/IR/FabricOps.cpp`.
+
+`fabric.module` is the SpatialCore or CGRA-level ADG container. It is
+not a system-level SoC container and it does not use `fabric.link` for
+internal connectivity.
 
 ## Identity
 
@@ -91,6 +96,24 @@ A module may have zero outputs (`-> ()`) or zero inputs
 `builtin.unrealized_conversion_cast` is **not** in the whitelist. All
 fabric module values must come from a real fabric producer (a sub-
 module result) or from the module's entry-block arguments.
+
+The core SpatialCore tile matrix is:
+
+| Tile kind | Spatial schedule | Temporal schedule |
+|-----------|------------------|-------------------|
+| `fabric.pe` | `fabric.pe [spatial]` | `fabric.pe [temporal]` |
+| `fabric.switch` | `fabric.switch [spatial]` | `fabric.switch [temporal]` |
+| `fabric.mem` | `fabric.mem [spatial]` | `fabric.mem [temporal]` |
+
+`fabric.fu` is not a module-level tile kind. A FU is a functional-unit
+container owned by a PE. Named FU templates may be visible through symbol
+tables where the FU spec permits them, but that symbol placement does
+not make FU a peer of PE, switch, or memory at the SpatialCore tile
+level.
+
+`fabric.fifo`, `fabric.boundary`, and `fabric.instantiate` are required
+support constructs for buffering, spatial/temporal domain conversion,
+and template reuse. They do not replace the core tile matrix.
 
 ## Width-relaxation rule (three connection points)
 
@@ -208,6 +231,78 @@ The attributes round-trip through the standard
   must satisfy the width-relaxation rule against the corresponding
   module result type.
 
+## Target Universe
+
+The `fabric.module` target universe includes:
+
+* all legal module input and output type combinations;
+* the full `fabric.{pe,switch,mem} [spatial|temporal]` tile matrix;
+* FIFO resources;
+* spatial-to-temporal, temporal-to-temporal, and temporal-to-spatial
+  boundary ops;
+* named and anonymous forms for supported module-body constructs;
+* template instantiation rules for module, PE, and FU symbols;
+* Graph-region SSA connectivity and width-relaxation points;
+* optional module-level Loom address and memory-bus overrides.
+
+The target universe does not include module-internal `fabric.link`.
+System-level links belong to `fabric.system`.
+
+## Required Evidence
+
+Evidence for this spec includes verifier-positive and
+verifier-negative MLIR tests, builder-emitted examples, and downstream
+artifact rows that identify the selected `fabric.module` symbol.
+
+Every supported module-body construct must have at least one positive
+test and at least one diagnostic or unsupported-scope test for invalid
+shape, invalid type, invalid schedule, invalid symbol use, or invalid
+width-relaxation form.
+
+## Objective Verification
+
+The `fabric.module` target is objectively verifiable when:
+
+* every construct in the target universe round-trips through parser and
+  printer;
+* every legal tile kind and schedule combination can appear in a
+  verifying module;
+* module connectivity is recoverable from SSA values, not from external
+  route metadata;
+* invalid non-whitelisted ops, external SSA leakage, illegal port types,
+  and illegal yield forms are rejected;
+* PnR, CGRA-sim, RTL lowering, FPA, and reporting can reference the
+  module by stable symbol identity.
+
+## Unsupported Scope Policy
+
+Unsupported module constructs must produce verifier diagnostics or
+structured unsupported-scope records in downstream tools. A downstream
+tool must not invent a missing module resource or replace module
+connectivity with an implicit mesh, coordinate rule, or module-internal
+link model.
+
+## Relationships To Other Contracts
+
+`fabric.module` is referenced by `fabric.system` `acc_core` nodes and by
+mapping artifacts. It is produced directly by the SpatialCore ADG
+Builder layer and consumed by PnR, CGRA-sim, RTL lowering, FPA, and
+reporting. System-level connectivity belongs to
+`docs/spec-fabric-system-adg.md`; software-to-hardware binding belongs
+to `docs/spec-mapping-artifact.md`.
+
+## Current Implementation Notes
+
+This section is non-normative. It records current repository facts for
+orientation only and is not part of target acceptance.
+
+The current implementation already supports a substantial subset of the
+SpatialCore-level Fabric dialect, including `fabric.module`,
+`fabric.pe`, `fabric.fu`, `fabric.switch`, `fabric.mem`, FIFO,
+boundary, instantiate, and related verifier tests. Coverage still needs
+to be audited against the complete target universe and downstream
+consumer requirements.
+
 ## Negative tests
 
 The verifier exercises the following rejections (see
@@ -237,7 +332,7 @@ The verifier exercises the following rejections (see
 
 ## Maintenance
 
-The canonical sources of truth are:
+Implementation locations that must mirror this spec are:
 
 * `Fabric_ModuleOp` in `include/Fabric/IR/FabricOps.td` for the IR
   shape;

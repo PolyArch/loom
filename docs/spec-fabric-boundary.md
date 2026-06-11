@@ -102,7 +102,7 @@ dictionary instead:
 The two-operand form must not carry `sw_configs.tag`; the tag is
 already supplied by SSA.
 
-### Verifier rules
+### S2T Verifier Rules
 
 * Operand count is 1 or 2; result count is 1.
 * Result type is `!fabric.bits_tag<BW, TW>`.
@@ -140,7 +140,7 @@ materialized in `lookup_table`. The hardware-side LUT capacity is
 declared via `hw_params[0].lut_size` and the runtime selection is
 described by `sw_configs.lookup_table`.
 
-### Verifier rules
+### T2T Verifier Rules
 
 * Operand count is 1; result count is 1.
 * Operand and result are both `!fabric.bits_tag<...>`.
@@ -208,7 +208,7 @@ tag field as a `bits<TW>`. Both follow the operand's widths exactly.
 The tag field is consumed by the op and not surfaced. This is the
 canonical "exit the temporal domain and discard the tag" form.
 
-### Verifier rules
+### T2S Verifier Rules
 
 * Operand count is 1; result count is 1 or 2.
 * Operand is `!fabric.bits_tag<BW, TW>`.

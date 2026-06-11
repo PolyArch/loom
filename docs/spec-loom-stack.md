@@ -56,26 +56,186 @@ simulation evidence is specified in
 `docs/spec-core-dialect-boundary.md`. That boundary is authoritative
 when a fact could otherwise be assigned to more than one subsystem.
 
+## Contract Map
+
+Loom specs are the natural-language target corpus for the project. They
+describe final behavior, evidence, and verification surfaces. They may
+lead the current implementation. Execution guides under `temp/` describe
+how the current repository moves toward those targets; they are not
+target specs.
+
+The highest-priority shared contracts are:
+
+* `dataflow` MLIR for software dataflow semantics;
+* `fabric` MLIR for SpatialCore and system hardware semantics.
+
+Every compiler, mapping, simulator, runtime, RTL, FPA, reporting, or DSE
+component must preserve those contracts instead of creating a private
+side channel. Tool logs, temporary CSV files, generated summaries, and
+builder-only state are not semantic sources of truth.
+
+The second-layer stable artifact contracts are:
+
+* mapping artifacts and mapping-set manifests;
+* normalized FPA JSON reports;
+* full-stack report bundles;
+* full-stack artifact manifests.
+
+CSV files, tables, dashboards, and visualization files are projections
+or exports. They may help humans inspect a run, but program-to-program
+exchange should use MLIR or JSON contracts unless a spec explicitly
+declares another structured format for that boundary.
+
+The spec corpus itself follows the same source-of-truth rule. A common
+policy should be defined once in its owning spec and referenced by other
+specs. Component specs may repeat a short local consequence only when
+the local consequence is component-specific and the owning spec remains
+the authority.
+
+## Target Universe
+
+The target Loom product is a complete, robust, modular, flexible,
+high-performance full-stack framework for multi-core heterogeneous
+spatial accelerators. The target universe includes:
+
+* C and C++ drop-in compilation through `loom-cc` and `loom-c++`;
+* the repository app corpus, CMSIS-DSP, CMSIS-NN, and the Loom-owned
+  `loombench` benchmark family;
+* architecture-aware compiler strategies including graph partitioning,
+  fusion, tiling, memory placement, and operator specialization;
+* SpatialCore construction through `fabric.module`;
+* system-level SoC construction through `fabric.system`;
+* mapping artifacts, PnR legality, routing, scheduling, memory binding,
+  and mapping search;
+* DFG-sim, CGRA-sim, and simulation comparison;
+* architecture RTL, mapped-workload RTL metadata, EDA profiles, and FPA
+  evidence;
+* runtime ABI, report bundles, artifact manifests, and DSE feedback.
+
+All workload families target the full validation ladder from native or
+drop-in compile/run through RTL/FPA evidence. A missing intermediate or
+backend capability must be represented by a structured unsupported-scope
+or diagnostic record rather than a silent skip.
+
+The default development method is balanced advancement around the common
+contracts. A narrow change may touch one component, but it must provide
+the producer, consumer, and audit evidence needed to prevent local-only
+success. Larger milestones must advance hardware, compiler, mapping,
+simulation, RTL/FPA, and DSE/reporting evidence together.
+
+## Required Evidence
+
+Evidence that counts toward target completion must be explicit,
+fingerprinted when practical, and consumable by downstream tools without
+reading private state. Required evidence classes include:
+
+* source, LLVM IR, raised MLIR, and dataflow artifacts for supported
+  workloads;
+* Fabric ADG artifacts for SpatialCore modules and system SoCs;
+* mapping artifacts and mapping-set manifests for mapped candidates;
+* DFG-sim, CGRA-sim, and comparison reports with functional output and
+  memory-diff evidence for passing runs;
+* runtime packages and runtime reports when the runtime boundary is
+  exercised;
+* RTL manifests, EDA reports, normalized FPA JSON reports, and derived
+  metric records;
+* full-stack report bundles and artifact manifests for traceability;
+* DSE candidate, objective, selection, and rejection records.
+
+Fake or stub artifacts must not satisfy any target requirement. Scaffold
+artifacts may exist while a component is being built, but they must be
+explicitly marked and must not be counted as target completion. Analytic
+FPA evidence must remain labeled as analytic and must not be presented as
+backend evidence.
+
+## Objective Verification
+
+Each component spec owns its detailed verification surface. The global
+verification policy is:
+
+* each accepted workload row must have a manifest or report row naming
+  its status;
+* each target boundary must have positive and negative tests or audit
+  checks;
+* every machine-consumed report must identify schema version, producer,
+  input artifact identities, and diagnostics;
+* each DSE candidate must be immutable and must carry artifact identity
+  and fingerprint records for its inputs and outputs;
+* cross-artifact contradictions must block acceptance rather than being
+  reduced to warnings.
+
+Verification commands in execution guides must declare timeouts. Default
+timeouts are 120 seconds for focused or unit checks, 900 seconds for
+integration and artifact-chain checks, and 7200 seconds for EDA or other
+long-running checks. A timeout is a failure or blocked condition, not an
+implicit skip.
+
+## Unsupported Scope Policy
+
+Unsupported scope is allowed only when it is explicit, structured, and
+auditable. A record must name the case, component, missing capability,
+owner category, selected profile, and diagnostic class. Optional stages
+may be unsupported for a candidate, but a required stage cannot be
+treated as passing through a missing file, empty corpus, default zero
+metric, or uninspected scaffold output.
+
+## Relationships To Other Contracts
+
+Detailed contracts live in the component specs. This document is the
+index that ties them together. When two specs disagree, resolve the
+conflict by preserving the ownership boundary in
+`docs/spec-core-dialect-boundary.md`, then update the affected component
+specs so the corpus is internally consistent.
+
+## Current Implementation Notes
+
+This section is non-normative. It records current repository facts for
+orientation only and is not part of target acceptance. Migration routes
+belong in ignored execution guides under `temp/`.
+
+The current repository already contains substantial dataflow, fabric,
+mapping, simulator, report, and audit scaffolding, but implementation
+coverage is uneven. `fabric.module` and several SpatialCore-level fabric
+ops are implemented. The system-level `fabric.system` target and the
+full `SystemBuilder` API are still mostly specified rather than
+implemented. Current PnR and CGRA-sim evidence is useful for plumbing but
+does not yet represent the full target mapping and hardware-aware
+execution universe.
+
 ## Hardware Model
 
 The target machine model is:
 
 ```text
-System = HostCore + AccCore x M + memory hierarchy + interconnect
-AccCore = ScalarCore + SpatialCore
-SpatialCore = CGRA-like fabric described through fabric IR
+System = HostCore + heterogeneous cores + memory hierarchy + interconnect
+SpatialCore = CGRA-like fabric described by fabric.module
+SoC = fabric.system referencing SpatialCore templates and system nodes
 ```
 
-AccCores may be heterogeneous. The system must not assume that all
-AccCores share the same ScalarCore, SpatialCore, memory attachment, or
-interconnect cost.
+The heterogeneous system universe includes `host_core` nodes,
+`acc_core` nodes, `fixed_accelerator` nodes, `dma_engine` nodes, and
+memory nodes. An `acc_core` node is the physical accelerator-core
+instance: it carries ScalarCore metadata and references a
+`fabric.module` symbol as its SpatialCore template. ScalarCore and
+SpatialCore are not separate baseline `fabric.system` node kinds. IO is
+represented by external ports, protocol endpoints, DMA engines, memory
+nodes, or explicit system node ports rather than by a default
+`io_engine` core kind.
+
+Loom does not model virtual addresses in Fabric ADG. System memory
+semantics start from physical address spaces, memory regions,
+DMA/scratchpad resources, coherent domains, and shared-memory
+coherence. The final target includes cache hierarchy and coherence
+protocol evidence for multi-core heterogeneous SoCs.
 
 Arbitrary topology is the default. Meshes, arrays, x/y coordinates, and
 Manhattan-distance routing are optional conveniences supplied by an
 architecture builder or by user metadata. They are never the baseline
-semantic assumption. Hardware connectivity is represented as graph
-connectivity through explicit links, directed channel endpoints, and
-connectivity tables or matrices.
+semantic assumption. `fabric.module` connectivity is represented by
+Graph-region SSA values plus tile connectivity tables or matrices where
+those tile specs define them. `fabric.system` connectivity is
+represented by directed channel endpoints and explicit `fabric.link`
+operations.
 
 ## Software Representation
 
@@ -170,10 +330,14 @@ binding, PnR, or fabric-side IR.
 The fabric dialect is the hardware-side representation for both CGRA
 SpatialCore templates and system-level architecture graphs.
 `fabric.module` remains the SpatialCore or CGRA fabric template.
-Existing concepts such as `fabric.pe`, `fabric.fu`, `fabric.switch`,
-`fabric.mem`, `fabric.fifo`, `fabric.boundary`, and
-`fabric.instantiate` form the starting point for SpatialCore
-descriptions.
+The core SpatialCore tile matrix is `fabric.{pe,switch,mem}` crossed
+with `[spatial|temporal]` schedules. A `fabric.module` body is a graph
+region whose connectivity is represented by SSA values. It does not use
+`fabric.link` for internal connectivity. `fabric.fu` is a functional
+unit container inside `fabric.pe`; it is not a module-level tile
+parallel to PE, switch, or memory. `fabric.fifo`, `fabric.boundary`, and
+`fabric.instantiate` are required SpatialCore support constructs for
+buffering, spatial/temporal boundary conversion, and template reuse.
 
 `fabric.system` is the system-level architecture description graph for
 `HostCore + AccCore x M` systems, memory hierarchy, external memory,

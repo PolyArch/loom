@@ -12,6 +12,12 @@ The system ADG is hardware architecture IR. It is not a software
 mapping artifact, not an RTL netlist, and not a replacement for
 `fabric.module`.
 
+Loom system ADG uses physical address spaces. Virtual address
+translation, MMU state, and virtual-memory page tables are outside the
+Fabric ADG target. A runtime or platform adapter may translate host
+pointers into accelerator-accessible physical or device addresses, but
+that is not a Fabric system virtual-address feature.
+
 ## Design Principles
 
 The system ADG follows the same minimal, RISC-style design principle as
@@ -48,6 +54,11 @@ An `acc_core` node may reference a `fabric.module` symbol as its
 SpatialCore template. Every `acc_core` node is an independent physical
 instance even when multiple nodes reference the same `fabric.module`
 symbol.
+
+`fabric.module` connectivity is represented by Graph-region SSA values.
+`fabric.system` connectivity is represented by `fabric.link`
+operations. These are different hardware levels and remain long-term
+parallel contracts.
 
 ## `fabric.system`
 
@@ -86,8 +97,10 @@ is a fixed enum, not a free-form string. The baseline node kinds are:
 |------|---------|
 | `host_core` | Host processor core. |
 | `acc_core` | Accelerator core containing ScalarCore parameters and a SpatialCore template reference. |
+| `fixed_accelerator` | Fixed-function or narrowly programmable accelerator with explicit control, data, stream, or memory ports. |
 | `cache` | Cache or cache-like coherent memory hierarchy node. |
 | `memory` | Terminal storage service such as external memory, scratchpad, SRAM, or MMIO endpoint. |
+| `dma_engine` | Explicit data-movement engine with control or descriptor ports and memory-beat ports. |
 | `router` | Packet routing primitive. |
 | `network_endpoint` | Interface between a non-network node and a router network. |
 | `arbiter` | N-to-1 contention-resolution primitive. |
@@ -100,6 +113,10 @@ is a fixed enum, not a free-form string. The baseline node kinds are:
 
 Core invariants are strongly typed through dedicated attributes. Other
 node-specific data lives in an open `params` dictionary.
+
+There is no default `io_engine` core kind. IO-facing behavior is
+represented through external ports, protocol endpoints, DMA or memory
+engines, or explicit system node ports.
 
 ### Node Attribute Contract
 
@@ -133,8 +150,10 @@ the transaction-flow classification from channel directions.
 |------|---------------------|----------------|-----------------|
 | `host_core` | none | At least one memory-capable manager port. | none |
 | `acc_core` | `spatial`, `scalar` | At least one memory-capable port. | none |
+| `fixed_accelerator` | none | Non-empty explicit ports for its control, data, stream, or memory interfaces. | `function` |
 | `cache` | none | At least one upstream memory-capable subordinate port and at least one downstream memory-capable manager port. | `line_bytes`, `capacity_bytes` |
 | `memory` | none | At least one terminal memory target port. | none |
+| `dma_engine` | none | At least one control or descriptor port and at least one memory-capable manager port. | `policy` |
 | `router` | none | At least two network-facing packet ports. | `routing` |
 | `network_endpoint` | none | At least one local-facing port and at least one network-facing port. | `network_protocol` |
 | `arbiter` | none | At least two input-side ports and exactly one output-side port for the arbitrated transaction class. | `policy` |
@@ -176,6 +195,7 @@ Required node params have these baseline verifier rules:
 | `in_width` | Positive data width in bits. |
 | `out_width` | Positive data width in bits and unequal to `in_width`. |
 | `kind_name` | Non-empty stable identifier for the custom node semantics. |
+| `function` | Non-empty stable identifier for the fixed-function accelerator semantics. |
 
 ### Host Core
 
@@ -195,6 +215,26 @@ An `acc_core` node must define:
 Control, configuration, debug, interrupt, and local-memory ports are
 optional. Scratchpad or local SRAM is represented as a separate
 `memory` node, not as hidden storage inside the `acc_core` node.
+
+### Fixed-Function Accelerator
+
+A `fixed_accelerator` node represents a concrete accelerator block whose
+hardware behavior is not described by a `fabric.module` SpatialCore
+template. It may be a fixed-function engine or a narrowly programmable
+block. It remains a system node with explicit ports, channels, params,
+domains, address-space participation, and optional coherence-domain
+membership.
+
+The `function` param names the block semantics. Recommended params
+include supported operation family, data widths, descriptor format,
+configuration registers, queue depth, latency model, throughput model,
+and supported memory or stream protocols. Memory-capable ports follow
+the same address-space and range rules as other system nodes.
+
+A fixed-function accelerator must not hide DMA, memory movement,
+coherence participation, interrupts, or external interfaces. Those facts
+remain explicit ports, links, DMA engines, memory nodes, coherence
+memberships, runtime descriptors, or mapping records.
 
 ### Cache
 
@@ -228,6 +268,20 @@ Caches, interconnect nodes, arbiters, routers, `route_decoder` nodes,
 and DMA manager ports are not terminal memory targets for address-range
 overlap checking.
 
+### DMA Engine
+
+A `dma_engine` node represents explicit data movement. It must expose
+control or descriptor-facing ports and memory-capable manager ports. A
+DMA engine may connect host-visible memory, accelerator-local memory,
+scratchpads, external memory, or simulator memory models, but every
+reachable memory target still comes from explicit ports, links, address
+spaces, and mapping or runtime descriptors.
+
+DMA descriptors, queue depth, burst support, ordering policy, and
+coherence participation are represented by node params and port
+metadata. A DMA engine is not an implicit IO core and must not hide
+memory movement from mapping, runtime, simulation, RTL, or FPA evidence.
+
 ## Ports and Channels
 
 System-level connectivity is expressed through protocol ports and
@@ -250,7 +304,7 @@ output request channels such as `aw`, `w`, and `ar`, and input response
 channels such as `b` and `r`. The corresponding subordinate port has the
 opposite directions.
 
-The first target form stores port and channel declarations as structured
+The target form stores port and channel declarations as structured
 attributes on `fabric.node` and `fabric.external_port`. The target does
 not introduce `fabric.port` or `fabric.channel` child ops.
 
@@ -628,8 +682,8 @@ synchronizers solely because reset or power domains differ.
 ## Address Spaces
 
 Memory-capable ports may declare physical address ranges. Loom does not
-model MMUs or virtual memory in the first system ADG target. Address
-ranges are physical.
+model MMUs or virtual memory in the Fabric system ADG. Address ranges
+are physical.
 
 `#fabric.addr_range<base, size>` denotes the half-open unsigned 64-bit
 range:
@@ -647,6 +701,13 @@ The overlap rule applies only to terminal memory target ports.
 Non-terminal memory-capable manager, upstream, cache, and interconnect
 ports may cover aggregate ranges and are excluded from terminal-overlap
 checking.
+
+Named memory regions are physical subranges associated with an address
+space. A region may describe DRAM, scratchpad, SRAM, MMIO, or another
+terminal memory service. Region identity is used by mapping, runtime,
+simulation, RTL, FPA, and reports to explain which physical storage a
+workload used. Region binding belongs in mapping and runtime artifacts;
+`fabric.system` declares the physical address ranges and memory targets.
 
 ## Coherence and Consistency
 
@@ -730,8 +791,8 @@ group. It may contain memory-capable ports in the domain address space,
 but it must not contain cache node ports. Coherent cache membership uses
 one of the coherent protocols.
 
-A memory-capable port may participate in at most one coherence domain in
-the first target design.
+A memory-capable port may participate in at most one coherence domain.
+This is a baseline verifier rule for the target contract.
 
 If a cache is in a coherence domain, its line size must match the
 domain line size. All cache member ports must belong to a cache node in
@@ -787,6 +848,85 @@ the explicit Fabric links remain the topology source of truth.
 
 Tools that do not render visualizations must be able to ignore
 visualization metadata without changing any hardware or mapping result.
+
+## Target Universe
+
+The `fabric.system` target universe includes:
+
+* `host_core` nodes, `acc_core` nodes, `fixed_accelerator` nodes,
+  `dma_engine` nodes, `memory` nodes, caches, routers, network
+  endpoints, arbiters, route decoders, broadcasts, width converters,
+  clock converters, protocol converters, external ports, and custom
+  explicit nodes;
+* `acc_core` nodes that carry ScalarCore metadata and reference
+  `fabric.module` symbols as SpatialCore templates. ScalarCore and
+  SpatialCore are not separate baseline `fabric.system` node kinds;
+* physical address spaces, memory regions, memory targets, and memory
+  consistency declarations;
+* coherence domains and cache hierarchy metadata;
+* clock, reset, and power domains;
+* protocol schemas and directed channel endpoints;
+* explicit one-to-one `fabric.link` connectivity;
+* optional visualization metadata that never defines topology.
+
+The first verifiable memory/coherence baseline is physical address space
+plus memory regions, DMA or scratchpad resources, coherent domains, and
+a simplified shared-memory coherence model. The final target includes
+complete cache hierarchy and coherence protocol evidence for
+heterogeneous multi-core SoCs, including L1/L2/LLC-like structures,
+ordering rules, coherence events, and multi-core consistency checks.
+
+## Required Evidence
+
+Evidence for this spec includes verifier-positive and verifier-negative
+system MLIR tests, ADG Builder examples, hardware summary artifacts, and
+downstream references from mapping, simulation, RTL, FPA, and report
+bundles.
+
+Each supported node kind, port schema, link legality class,
+address-space case, domain relation, and coherence-domain rule must have
+positive and negative evidence.
+
+## Objective Verification
+
+The `fabric.system` target is objectively verifiable when:
+
+* every target node kind and protocol class can be emitted and verified;
+* every topology edge is represented by explicit endpoints and
+  `fabric.link` operations;
+* memory address ranges, address spaces, and coherence domains are
+  checked for consistency;
+* illegal protocol, domain, address-range, and coherence relationships
+  are rejected;
+* downstream tools can identify the selected `fabric.system` and
+  referenced `fabric.module` templates without reading builder-only
+  state.
+
+## Unsupported Scope Policy
+
+Unsupported system features must be represented by structured
+diagnostics or unsupported-scope records. A tool must not silently
+replace a missing cache, coherence behavior, router, DMA path, external
+port, or protocol adapter with an implicit default. Visualization
+coordinates must not make missing connectivity legal.
+
+## Relationships To Other Contracts
+
+`fabric.system` is produced by the system-level ADG Builder layer and
+consumed by PnR, CGRA-sim, RTL lowering, FPA, report bundles, runtime
+profiles, and DSE. SpatialCore templates referenced by `acc_core` nodes
+are specified by `docs/spec-fabric-module.md`. Mapping choices belong
+to `docs/spec-mapping-artifact.md`, not to this hardware description.
+
+## Current Implementation Notes
+
+This section is non-normative. It records current repository facts for
+orientation only and is not part of target acceptance.
+
+This document is ahead of the current implementation. The system-level
+IR, verifier, and SystemBuilder API are target contracts that still need
+implementation coverage. Existing SpatialCore `fabric.module` support
+does not satisfy the system-level target by itself.
 
 ## Mapping Boundary
 
@@ -896,7 +1036,6 @@ The target verifier enforces:
 * coherence-domain `home` is legal only for directory-style protocols;
 * a `protocol = none` coherence domain does not include cache node
   ports;
-* a memory-capable port participates in at most one coherence domain in
-  the first target design;
+* a memory-capable port participates in at most one coherence domain;
 * caches in a coherence domain use the domain line size;
 * member port ranges, when present, belong to the domain address space.

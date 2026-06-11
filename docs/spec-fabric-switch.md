@@ -253,7 +253,7 @@ greps for stable diagnostic anchors):
 
 ## Maintenance
 
-The canonical sources of truth are:
+Implementation locations that must mirror this spec are:
 
 * `Fabric_SwitchOp` in `include/Fabric/IR/FabricOps.td` for the IR shape;
 * `SwitchOp::parse`, `SwitchOp::print`, and `SwitchOp::verify` in

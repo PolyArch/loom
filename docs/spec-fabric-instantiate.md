@@ -1,8 +1,8 @@
 # Fabric Instantiate
 
 This document specifies `fabric.instantiate`, the op that binds a
-previously-defined `fabric.{module, pe, fu}` symbol into the current
-scope as a fresh hardware instance with its own SSA inputs and outputs.
+previously-defined fabric template symbol into a legal parent scope as a
+fresh hardware instance with its own SSA inputs and outputs.
 The canonical IR source is `Fabric_InstantiateOp` in
 `include/Fabric/IR/FabricOps.td`; verifier rules live in
 `lib/Fabric/IR/FabricOps.cpp`.
@@ -19,7 +19,8 @@ The canonical IR source is `Fabric_InstantiateOp` in
 Operands form:
 
 * `@callee` -- a flat symbol reference to a previously-defined
-  `fabric.module`, `fabric.pe`, or `fabric.fu`.
+  `fabric.module`, `fabric.pe`, `fabric.switch`, `fabric.mem`, or
+  PE-local `fabric.fu`, subject to the parent/target table below.
 * `(%v : T_outer [to T_inner], ...)` -- per-operand SSA value plus the
   operand's outer (SSA source) type and an optional `to T_inner` clause
   that names the target's declared input port type at this position.
@@ -43,48 +44,50 @@ table verifier dispatches `verifySymbolUses` automatically.
 | Parent of `fabric.instantiate` | Legal target kinds                                |
 | ------------------------------ | ------------------------------------------------- |
 | `builtin.module` (top-level)   | `fabric.module` only                              |
-| `fabric.module` body           | `fabric.module` (sibling top-level) or `fabric.pe`|
+| `fabric.module` body           | `fabric.module`, `fabric.pe`, `fabric.switch`, or `fabric.mem` |
 | `fabric.pe` body               | `fabric.fu` only                                  |
 | Anywhere else                  | rejected                                          |
-
-Future container ops (`fabric.switch`, `fabric.mem`) will be added to
-the table when they land.
 
 The verifier dispatches on the resolved target's op kind; mismatch
 emits a parent-site-specific diagnostic that names the unsupported
 target kind and the offending symbol.
 
-## Named definitions for fabric.pe and fabric.fu
+## Named definitions
 
-`fabric.pe` and `fabric.fu` exist in two disjoint syntactic forms by
-`sym_name` presence; the parser branches on whether `@sym` appears
-right after the op keyword.
+`fabric.pe`, `fabric.switch`, `fabric.mem`, and `fabric.fu` exist in
+two disjoint syntactic forms by `sym_name` presence; the parser branches
+on whether `@sym` appears right after the op keyword.
 
 * **Anonymous form** (definition + use combined): variadic SSA operands
   bound via `(%pa = %a : T [to T_inner], ...)` plus variadic SSA
   results via `-> T` / `-> (T0, T1, ...)`. Same shape as before. The
   op produces SSA values in the enclosing scope.
 * **Named template form** (declaration only): zero SSA operands, zero
-  SSA results in the host scope. The port signature is captured in a
-  `function_type : FunctionType` attribute and the body's entry block
-  carries the input port types as block-arguments. The body
-  terminator is `fabric.yield`, whose value list matches
-  `function_type.getResults()`. Actual usage of a named pe/fu goes
-  through `fabric.instantiate @sym(...)`.
+  SSA results in the enclosing legal parent scope. The port signature
+  is captured in a `function_type : FunctionType` attribute and the
+  body's entry block carries the input port types as block-arguments.
+  The body terminator is `fabric.yield`, whose value list matches
+  `function_type.getResults()` for body-bearing ops. Actual usage of a
+  named template goes through `fabric.instantiate @sym(...)`.
 
 ```mlir
-fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
-                         -> (!fabric.bits<32>) {
-^bb0(%pa: !fabric.bits<32>, %pb: !fabric.bits<32>):
-  fabric.fu(%fa = %pa : !fabric.bits<32>) -> !fabric.bits<32> { ... }
-  fabric.yield %pa : !fabric.bits<32>
-}
+fabric.module @Core() -> () {
+  fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
+                           -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>, %pb: !fabric.bits<32>):
+    fabric.fu @F (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32> {
+    ^bb0(%fa: !fabric.bits<32>, %fb: !fabric.bits<32>):
+      %v = fabric.op [@arith.muli] (%fa, %fb)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
 
-fabric.fu @F (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32> {
-^bb0(%fa: !fabric.bits<32>, %fb: !fabric.bits<32>):
-  %v = fabric.op [@arith.muli] (%fa, %fb)
-       : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  fabric.yield %v : !fabric.bits<32>
+    %y = fabric.instantiate @F(%pa : !fabric.bits<32>,
+                               %pb : !fabric.bits<32>)
+         -> (!fabric.bits<32>)
+    fabric.yield %y : !fabric.bits<32>
+  }
+  fabric.yield
 }
 ```
 
@@ -99,9 +102,11 @@ function-type signature (any anonymous-form operand binding is a
 parser error).
 
 `fabric.pe` carries the `SymbolTable` trait so its body can host named
-`fabric.fu` definitions. `fabric.module` already carries `Symbol` and
-`SymbolTable` traits, so its body can host named `fabric.pe`
-definitions in addition to its own role as a fabric symbol.
+`fabric.fu` definitions. `fabric.module` carries `Symbol` and
+`SymbolTable` traits, so its body can host named `fabric.pe`,
+`fabric.switch`, and `fabric.mem` templates in addition to its own role
+as a fabric symbol. FU definitions remain PE-local resources; they are
+not module-level tiles.
 
 ## Width-relaxation rules at the instantiate boundaries
 
@@ -117,10 +122,9 @@ The instantiate op has two connection points:
    The `to T_inner` clause expresses the relaxation explicitly. Without
    the clause, outer == inner.
 2. **Result SSA type vs. target's declared output port type (output
-   direction).** Strict equality in this iteration; the result type
-   must equal the target's output port type. A future iteration will
-   extend the relaxation to the output direction; until then attempts
-   to relax the output type are diagnosed as
+   direction).** Strict equality is the target contract; the result type
+   must equal the target's output port type. Attempts to relax the
+   output type are diagnosed as
    "result #N type ... must equal callee '@<sym>' output port type
    ... (output direction is strict; no width relaxation)".
 
@@ -185,7 +189,8 @@ rejected on `memref` operands.
 
 ## Cross-references
 
-* `spec-fabric-module.md` -- module-level container, port types,
-  width-relaxation rule at the three intra-module connection points.
+* `spec-fabric-module.md` -- SpatialCore/CGRA template container, port
+  types, and width-relaxation rule at the three intra-module
+  connection points.
 * `spec-fabric-pe.md` -- PE container, schedule predicate, body
   whitelist.
