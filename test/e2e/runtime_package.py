@@ -61,6 +61,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "f32[64];f32[64];f32[64]",
         "alignment_bytes": 4,
     },
+    "vecmul": {
+        "byte_size": 192,
+        "element_layout": "f32[16];f32[16];f32[16]",
+        "alignment_bytes": 4,
+    },
     "xor_block": {
         "byte_size": 384,
         "element_layout": "u32[32];u32[32];u32[32]",

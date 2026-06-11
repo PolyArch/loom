@@ -104,6 +104,9 @@ case "${CASE}" in
   vecadd)
     case_graph="g_t_vecadd_0_0"
     ;;
+  vecmul)
+    case_graph="g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0"
+    ;;
   variance)
     case_graph="g_t_variance_red_0_0"
     ;;

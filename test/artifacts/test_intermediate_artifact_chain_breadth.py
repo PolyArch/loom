@@ -184,6 +184,18 @@ CASES = {
         "byte_size": 116,
         "element_layout": "u32[20];u32[5];u32[4]",
     },
+    "vecmul": {
+        "graph": "g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0",
+        "mapping_id": "vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg",
+        "placed_records": "5",
+        "routed_edges": "6",
+        "config_records": 63,
+        "dfg_cycles": 256,
+        "dynamic_work_items": 16,
+        "cgra_cycles": 274,
+        "byte_size": 192,
+        "element_layout": "f32[16];f32[16];f32[16]",
+    },
 }
 
 
@@ -221,6 +233,101 @@ def assert_fields(
     for key, value in expected.items():
         if record.get(key) != value:
             raise AssertionError(f"unexpected {label} {key}: {record}")
+
+
+def assert_runtime_evidence(
+    runtime_evidence: Mapping[str, object],
+    *,
+    case_name: str,
+    expected: Mapping[str, object],
+) -> None:
+    runtime_report_identity = (
+        f"runtime-report::{case_name}::{expected['mapping_id']}::report_only"
+    )
+    assert_fields(
+        runtime_evidence,
+        {
+            "runtime_package_identity": "runtime-package",
+            "runtime_report_identity": runtime_report_identity,
+            "host_program_identity": f"test-app-host::{case_name}::default",
+            "host_wrapper_identity": f"runtime-wrapper::{case_name}::{expected['mapping_id']}",
+            "work_package_identity": f"work-package::{case_name}::{expected['mapping_id']}",
+            "launch_descriptor_identity": (
+                f"launch::{case_name}::{expected['mapping_id']}::"
+                f"test-app-fixture::{case_name}::default"
+            ),
+            "mapping_artifact_identity": "pnr-mapping",
+            "fabric_adg_identity": "shared_reduction_adg",
+            "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
+            "data_movement_policy": "simulated",
+            "synchronization_mode": "host_wait",
+            "launch_status": "not_run",
+            "target_status": "not_run",
+        },
+        label=f"{case_name} runtime evidence",
+    )
+    if runtime_evidence.get("simulator_report_identities") != [
+        f"{case_name}-cgra-sim-report",
+        "sim-comparison-report",
+    ]:
+        raise AssertionError(f"unexpected {case_name} runtime simulator identities: {runtime_evidence}")
+    argument_descriptors = runtime_evidence.get("argument_descriptors")
+    expected_arguments = [
+        {
+            "name": "runtime_input",
+            "descriptor_kind": "test_fixture",
+            "identity": f"test-app-fixture::{case_name}::default",
+        },
+        {
+            "name": "mapping_artifact",
+            "descriptor_kind": "pnr_mapping_artifact",
+            "identity": "pnr-mapping",
+        },
+        {
+            "name": "cgra_sim_report",
+            "descriptor_kind": "cgra_sim_report",
+            "identity": f"{case_name}-cgra-sim-report",
+        },
+        {
+            "name": "sim_comparison_report",
+            "descriptor_kind": "sim_comparison_report",
+            "identity": "sim-comparison-report",
+        },
+    ]
+    if argument_descriptors != expected_arguments:
+        raise AssertionError(f"unexpected {case_name} runtime arguments: {runtime_evidence}")
+    report_configuration = runtime_evidence.get("report_output_configuration")
+    if not isinstance(report_configuration, dict):
+        raise AssertionError(f"missing {case_name} runtime report configuration: {runtime_evidence}")
+    assert_fields(
+        report_configuration,
+        {
+            "runtime_report_identity": runtime_report_identity,
+            "diagnostic_output_enabled": True,
+            "trace_output_enabled": False,
+            "profiling_output_enabled": False,
+        },
+        label=f"{case_name} runtime report configuration",
+    )
+    memory_descriptors = runtime_evidence.get("memory_descriptors")
+    if not isinstance(memory_descriptors, list) or len(memory_descriptors) != 1:
+        raise AssertionError(f"{case_name} runtime evidence needs one memory descriptor: {runtime_evidence}")
+    assert_fields(
+        memory_descriptors[0],
+        {
+            "logical_argument": f"{case_name}.default_input",
+            "host_buffer_identity": f"runtime-buffer::{case_name}::default_input",
+            "policy": "simulated",
+            "runtime_input_identity": f"test-app-fixture::{case_name}::default",
+            "byte_size": expected["byte_size"],
+            "element_layout": expected["element_layout"],
+            "alignment_bytes": 4,
+            "address_space": "simulator::memory_model",
+            "coherence_requirement": "simulator_consistent",
+            "transfer_policy": "simulated",
+        },
+        label=f"{case_name} runtime evidence memory descriptor",
+    )
 
 
 def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> None:
@@ -388,6 +495,10 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         workload_bundle = read_json_object(out_dir / "workload-report-bundle.json")
         if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != case_name:
             raise AssertionError(f"unexpected {case_name} workload report bundle: {workload_bundle}")
+        runtime_evidence = workload_bundle.get("runtime_evidence")
+        if not isinstance(runtime_evidence, dict):
+            raise AssertionError(f"missing {case_name} runtime evidence: {workload_bundle}")
+        assert_runtime_evidence(runtime_evidence, case_name=case_name, expected=expected)
         metric_ids = {
             metric.get("metric_id")
             for metric in workload_bundle.get("metric_records", [])
