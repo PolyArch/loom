@@ -44,6 +44,19 @@ if [[ -z "${OUT_DIR}" ]]; then
   exit 2
 fi
 
+case "${CASE}" in
+  vecsum)
+    case_graph="g_t_vecsum_red_0_0"
+    ;;
+  dotproduct)
+    case_graph="g_t_dotproduct_red_0_0"
+    ;;
+  *)
+    echo "case ${CASE} is not wired for the full-stack artifact chain" >&2
+    exit 2
+    ;;
+esac
+
 mkdir -p "${OUT_DIR}"
 
 old_app_inventory="${OUT_DIR}/old-app-corpus-inventory.csv"
@@ -55,9 +68,9 @@ primitive="${OUT_DIR}/dataflow-primitive-coverage.csv"
 hardware="${OUT_DIR}/adg-hardware-summary.csv"
 mapping="${OUT_DIR}/pnr-mapping-summary.csv"
 mapping_artifact="${OUT_DIR}/pnr-mapping.json"
-dfg_report="${OUT_DIR}/vecsum-dfg-sim-report.json"
-dfg_cycle="${OUT_DIR}/vecsum-dfg-sim-cycle-summary.csv"
-cgra_report="${OUT_DIR}/vecsum-cgra-sim-report.json"
+dfg_report="${OUT_DIR}/${CASE}-dfg-sim-report.json"
+dfg_cycle="${OUT_DIR}/${CASE}-dfg-sim-cycle-summary.csv"
+cgra_report="${OUT_DIR}/${CASE}-cgra-sim-report.json"
 sim_comparison="${OUT_DIR}/sim-comparison-report.json"
 runtime_package="${OUT_DIR}/runtime-package.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
@@ -93,25 +106,25 @@ bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
 bash "${ROOT}/test/fabric/run_adg_hardware_summary.sh" \
   --input "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
   --output "${hardware}"
-vecsum_dfg_dir="${OUT_DIR}/vecsum-dfg"
-env BUILD_DIR="${vecsum_dfg_dir}" \
+case_dfg_dir="${OUT_DIR}/${CASE}-dfg"
+env BUILD_DIR="${case_dfg_dir}" \
   LOOM_CC="${ROOT}/build/bin/loom-cc" \
   LOOM_RAISE="${ROOT}/build/bin/loom-raise" \
   LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
   LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
-  bash "${ROOT}/test/app/vecsum/dfg_check.sh"
+  bash "${ROOT}/test/app/${CASE}/dfg_check.sh"
 env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
   bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
-  vecsum \
-  "${vecsum_dfg_dir}/main_func.dfg.mlir" \
+  "${CASE}" \
+  "${case_dfg_dir}/main_func.dfg.mlir" \
   "${dfg_report}" \
   "${dfg_cycle}"
 bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
-  --dfg-mlir "${vecsum_dfg_dir}/main_func.dfg.mlir" \
-  --graph g_t_vecsum_red_0_0 \
+  --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+  --graph "${case_graph}" \
   --hardware-mlir "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
   --hardware shared_reduction_adg \
-  --workload vecsum \
+  --workload "${CASE}" \
   --artifact "${mapping_artifact}" \
   --output "${mapping}"
 ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \

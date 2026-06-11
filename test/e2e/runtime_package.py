@@ -428,6 +428,12 @@ def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
             "element_layout": "u32[64]",
             "alignment_bytes": 4,
         }
+    if workload == "dotproduct":
+        return {
+            "byte_size": 512,
+            "element_layout": "f32[64];f32[64]",
+            "alignment_bytes": 4,
+        }
     return None
 
 

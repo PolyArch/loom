@@ -32,7 +32,7 @@ PRIMITIVES = (
     "mux",
     "demux",
 )
-DFG_SIM_CASES = {"vecsum"}
+DFG_SIM_CASES = {"dotproduct", "vecsum"}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
