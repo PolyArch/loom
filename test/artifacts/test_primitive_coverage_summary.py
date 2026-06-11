@@ -13,6 +13,8 @@ HEADER = ["workload", "primitive", "op_count", "dfg_sim_status", "diagnostic"]
 EXPECTED_POSITIVE = {"stream", "carry", "load"}
 EXPECTED_VECSUM_SIMULATED = {"stream", "carry", "load", "sync"}
 EXPECTED_DOTPRODUCT_SIMULATED = {"stream", "carry", "load", "sync"}
+EXPECTED_XOR_BLOCK_SIMULATED = {"load", "store", "sync"}
+EXPECTED_XOR_BLOCK_STATIC_ONLY = {"stream", "carry"}
 
 
 def run_summary(repo: Path, output: Path, *args: str) -> list[dict[str, str]]:
@@ -71,6 +73,30 @@ def assert_dotproduct_simulated_rows(rows: list[dict[str, str]]) -> None:
             raise AssertionError(f"unexpected dotproduct diagnostic for {primitive}: {row}")
 
 
+def assert_xor_block_simulated_rows(rows: list[dict[str, str]]) -> None:
+    by_primitive = {row["primitive"]: row for row in rows if row["workload"] == "xor_block"}
+    expected_primitives = EXPECTED_XOR_BLOCK_SIMULATED | EXPECTED_XOR_BLOCK_STATIC_ONLY
+    missing = sorted(expected_primitives - set(by_primitive))
+    if missing:
+        raise AssertionError(f"missing xor_block primitive rows: {missing}; rows={rows}")
+    for primitive in sorted(EXPECTED_XOR_BLOCK_SIMULATED):
+        row = by_primitive[primitive]
+        if int(row["op_count"]) <= 0:
+            raise AssertionError(f"xor_block {primitive} count is not positive: {row}")
+        if row["dfg_sim_status"] != "pass":
+            raise AssertionError(f"xor_block {primitive} should have DFG-sim pass evidence: {row}")
+        if "DFG-sim report" not in row["diagnostic"]:
+            raise AssertionError(f"unexpected xor_block diagnostic for {primitive}: {row}")
+    for primitive in sorted(EXPECTED_XOR_BLOCK_STATIC_ONLY):
+        row = by_primitive[primitive]
+        if int(row["op_count"]) <= 0:
+            raise AssertionError(f"xor_block {primitive} static count is not positive: {row}")
+        if row["dfg_sim_status"] != "blocked":
+            raise AssertionError(f"xor_block {primitive} should stay static-only evidence: {row}")
+        if "op-count coverage only" not in row["diagnostic"]:
+            raise AssertionError(f"unexpected xor_block static-only diagnostic for {primitive}: {row}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-primitive-coverage-") as tmp:
@@ -82,6 +108,9 @@ def main() -> int:
 
         dotproduct_output = Path(tmp) / "dataflow-primitive-coverage-dotproduct.csv"
         assert_dotproduct_simulated_rows(run_summary(repo, dotproduct_output, "--case", "dotproduct"))
+
+        xor_block_output = Path(tmp) / "dataflow-primitive-coverage-xor-block.csv"
+        assert_xor_block_simulated_rows(run_summary(repo, xor_block_output, "--case", "xor_block"))
 
         default_output = Path(tmp) / "dataflow-primitive-coverage-default.csv"
         rows = run_summary(repo, default_output)
@@ -96,6 +125,7 @@ def main() -> int:
         assert_vecadd_rows(rows)
         assert_vecsum_simulated_rows(rows)
         assert_dotproduct_simulated_rows(rows)
+        assert_xor_block_simulated_rows(rows)
 
     return 0
 

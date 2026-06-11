@@ -51,6 +51,9 @@ case "${CASE}" in
   dotproduct)
     case_graph="g_t_dotproduct_red_0_0"
     ;;
+  xor_block)
+    case_graph="g_t_xor_block_0_0"
+    ;;
   *)
     echo "case ${CASE} is not wired for the full-stack artifact chain" >&2
     exit 2

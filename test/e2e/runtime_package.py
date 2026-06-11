@@ -434,6 +434,12 @@ def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
             "element_layout": "f32[64];f32[64]",
             "alignment_bytes": 4,
         }
+    if workload == "xor_block":
+        return {
+            "byte_size": 384,
+            "element_layout": "u32[32];u32[32];u32[32]",
+            "alignment_bytes": 4,
+        }
     return None
 
 
