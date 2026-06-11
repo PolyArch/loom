@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-rtl-fpa-") as tmp:
         out_dir = Path(tmp)
         fpa = out_dir / "rtl-fpa-summary.csv"
+        fpa_report = out_dir / "rtl-fpa-report.json"
         primitive, hardware = artifact_test_common.prepare_candidate_inputs(repo, out_dir)
         rows = artifact_test_common.run_csv_summary(
             repo,
@@ -42,8 +44,36 @@ def main() -> int:
             str(primitive),
             "--hardware-summary",
             str(hardware),
+            "--report-output",
+            str(fpa_report),
             label="RTL/FPA summary",
         )
+        report_data = json.loads(fpa_report.read_text())
+        expected_report_keys = {
+            "schema_version",
+            "kind",
+            "report_id",
+            "hardware_candidate_identity",
+            "rtl_manifest_identity",
+            "tool_profile_id",
+            "metric_records",
+            "input_artifact_fingerprints",
+            "diagnostic_records",
+            "diagnostics",
+            "status",
+        }
+        missing_report_keys = expected_report_keys - set(report_data)
+        if missing_report_keys:
+            raise AssertionError(f"FPA report missing keys: {sorted(missing_report_keys)}")
+        if report_data.get("kind") != "fpa_report" or report_data.get("report_id") != "rtl-fpa-report":
+            raise AssertionError(f"unexpected FPA report identity: {report_data}")
+        if report_data.get("status") != "pass":
+            raise AssertionError(f"FPA report should pass: {report_data}")
+        if report_data.get("tool_profile_id") != "analytic_fpa_model":
+            raise AssertionError(f"unexpected FPA tool profile: {report_data}")
+        report_metrics = report_data.get("metric_records")
+        if not isinstance(report_metrics, list) or not report_metrics:
+            raise AssertionError(f"FPA report needs metric records: {report_data}")
 
         matches = [
             row
@@ -58,6 +88,8 @@ def main() -> int:
                 raise AssertionError(f"{column} should be skipped for analytic FPA: {row}")
         if row["status"] != "pass":
             raise AssertionError(f"analytic FPA row should pass: {row}")
+        if row.get("fpa_report_identity") != "rtl-fpa-report":
+            raise AssertionError(f"FPA summary row should cite JSON report: {row}")
         expected = {
             "frequency_mhz": "480.000",
             "area_um2": "1500.000",
@@ -82,6 +114,7 @@ def main() -> int:
                 "test/e2e/audit_intermediate_artifacts.py",
                 "--output",
                 str(audit),
+                str(fpa_report),
                 str(fpa),
             ],
             "RTL/FPA summary audit",

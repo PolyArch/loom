@@ -283,15 +283,16 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "activity_source",
         ),
         status_columns=("rtl_lint_status", "rtl_sim_status", "synth_status", "status"),
-        extra_columns=("status", "diagnostic"),
+        extra_columns=("fpa_report_identity", "status", "diagnostic"),
         numeric_columns=("frequency_mhz", "area_um2", "dynamic_power_mw", "leakage_power_mw"),
-        identity_columns=("hardware", "workload"),
+        identity_columns=("hardware", "workload", "fpa_report_identity"),
         scaffold_row=(
             "scaffold",
             "scaffold",
             "blocked",
             "blocked",
             "blocked",
+            "",
             "",
             "",
             "",
@@ -568,6 +569,63 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "status",
         },
     },
+    "fpa_report": {
+        "filename": "rtl-fpa-report.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "report_id",
+            "hardware_candidate_identity",
+            "rtl_manifest_identity",
+            "tool_profile_id",
+            "selected_library_profile_id",
+            "estimation_configuration",
+            "calibration_identity",
+            "frequency_results",
+            "area_results",
+            "power_results",
+            "combined_metric_records",
+            "backend_report_identities",
+            "metric_records",
+            "input_artifact_fingerprints",
+            "diagnostic_records",
+            "diagnostics",
+            "status",
+        },
+        "scaffold": {
+            "schema_version": 1,
+            "kind": "fpa_report",
+            "report_id": "rtl-fpa-report",
+            "hardware_candidate_identity": "unknown",
+            "hardware_candidate_identities": [],
+            "workload_identities": [],
+            "mapping_artifact_identity": "",
+            "cgra_sim_report_identity": "",
+            "rtl_manifest_identity": "",
+            "tool_profile_id": "analytic_fpa_model",
+            "selected_library_profile_id": "",
+            "estimation_configuration": {},
+            "calibration_identity": "",
+            "frequency_results": [],
+            "area_results": [],
+            "power_results": [],
+            "combined_metric_records": [],
+            "backend_report_identities": [],
+            "metric_records": [],
+            "input_artifact_fingerprints": {},
+            "diagnostic_records": [
+                {
+                    "diagnostic_id": "fpa-report::1",
+                    "diagnostic_class": "missing_fpa_inputs",
+                    "component": "fpa_report",
+                    "severity": "error",
+                    "message": "FPA report scaffold has no frequency, power, or area evidence",
+                }
+            ],
+            "diagnostics": ["FPA report scaffold has no frequency, power, or area evidence"],
+            "status": "blocked",
+        },
+    },
     "pnr_mapping_artifact": {
         "filename": "pnr-mapping.json",
         "required_keys": {
@@ -708,6 +766,7 @@ STANDARD_ARTIFACT_PATHS = (
     ("sim_cycle", "temp/sim-cycle-summary.csv"),
     ("rtl_manifest", "temp/rtl-manifest.json"),
     ("eda_report", "temp/rtl-eda-report.json"),
+    ("fpa_report", "temp/rtl-fpa-report.json"),
     ("rtl_fpa", "temp/rtl-fpa-summary.csv"),
     ("workload_report_bundle", "temp/workload-report-bundle.json"),
     ("hardware_report_bundle", "temp/hardware-report-bundle.json"),
@@ -723,6 +782,7 @@ EMBEDDED_JSON_KIND_ALIASES = {
     "sim_comparison_report": "sim_comparison_report",
     "rtl_manifest": "rtl_manifest",
     "eda_report": "eda_report",
+    "fpa_report": "fpa_report",
     "pnr_mapping": "pnr_mapping_artifact",
     "runtime_package": "runtime_package",
     "workload_report_bundle": "workload_report_bundle",
@@ -989,6 +1049,8 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             row.get("dynamic_power_mw", "") or row.get("leakage_power_mw", "")
         ) and not activity_source:
             diagnostics.append(f"row {row_index}: RTL/FPA power evidence has no activity_source")
+        if not row.get("fpa_report_identity", ""):
+            diagnostics.append(f"row {row_index}: RTL/FPA pass row has no fpa_report_identity")
     if schema.kind == "dse_candidate" and statuses.get("selection_status") in {"selected", "pareto", "rejected"}:
         required_provenance = (
             "candidate_kind",
@@ -1413,6 +1475,20 @@ def iter_manifest_optional_artifact_references(
             yield reference
 
 
+def iter_manifest_input_fingerprint_references(
+    data: dict[str, object] | None,
+    artifact_id_set: set[str],
+) -> Iterable[str]:
+    if data is None:
+        return
+    input_fingerprints = data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict):
+        return
+    for reference in input_fingerprints:
+        if isinstance(reference, str) and reference in artifact_id_set:
+            yield reference
+
+
 def normalize_manifest_artifact_reference(reference: str, artifact_id_set: set[str]) -> str:
     if reference in artifact_id_set:
         return reference
@@ -1582,6 +1658,33 @@ def iter_artifact_manifest_required_edges(
                 if eda_id in consumed_lint_artifact_ids:
                     yield eda_id, rtl_fpa_id
 
+    for fpa_report_id in ids_by_kind.get("fpa_report", []):
+        if artifact_paths_by_id is None:
+            for source_kind in (
+                "dataflow_primitive_coverage",
+                "adg_hardware",
+                "rtl_manifest",
+                "eda_report",
+            ):
+                for source_id in ids_by_kind.get(source_kind, []):
+                    yield source_id, fpa_report_id
+            continue
+        report = read_manifest_json_artifact(artifact_paths_by_id.get(fpa_report_id))
+        for source_id in iter_manifest_input_fingerprint_references(report, artifact_id_set):
+            yield source_id, fpa_report_id
+        for source_id in iter_manifest_json_string_reference(
+            report,
+            "rtl_manifest_identity",
+            artifact_id_set,
+        ):
+            yield source_id, fpa_report_id
+        for source_id in iter_manifest_json_identity_references(
+            report,
+            "backend_report_identities",
+            artifact_id_set,
+        ):
+            yield source_id, fpa_report_id
+
     for comparison_id in ids_by_kind.get("sim_comparison_report", []):
         if artifact_paths_by_id is None:
             for source_kind in ("dfg_sim_report", "cgra_sim_report", "pnr_mapping_artifact"):
@@ -1644,14 +1747,29 @@ def iter_artifact_manifest_required_edges(
             yield report_id, demonstrator_id
 
     for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
-        for source_kind in ("adg_hardware", "rtl_manifest", "rtl_fpa"):
-            for source_id in ids_by_kind.get(source_kind, []):
-                yield source_id, hardware_report_id
-        if artifact_paths_by_id is not None and hardware_report_id in artifact_paths_by_id:
+        if artifact_paths_by_id is None or hardware_report_id not in artifact_paths_by_id:
+            for source_kind in ("adg_hardware", "rtl_manifest", "fpa_report", "rtl_fpa"):
+                for source_id in ids_by_kind.get(source_kind, []):
+                    yield source_id, hardware_report_id
+        else:
             report = read_manifest_json_artifact(artifact_paths_by_id.get(hardware_report_id))
+            for source_id in iter_manifest_input_fingerprint_references(report, artifact_id_set):
+                yield source_id, hardware_report_id
+            for source_id in iter_manifest_json_string_reference(
+                report,
+                "rtl_manifest_identity",
+                artifact_id_set,
+            ):
+                yield source_id, hardware_report_id
             for source_id in iter_manifest_json_identity_references(
                 report,
                 "eda_report_identities",
+                artifact_id_set,
+            ):
+                yield source_id, hardware_report_id
+            for source_id in iter_manifest_json_identity_references(
+                report,
+                "fpa_report_identities",
                 artifact_id_set,
             ):
                 yield source_id, hardware_report_id
@@ -3941,25 +4059,51 @@ def validate_hardware_report_fpa_references(
         if not isinstance(identity, str) or not identity:
             continue
         resolved = resolve_artifact_identity_reference(path, identity)
-        if resolved is None or resolved.suffix != ".csv":
+        if resolved is None:
             continue
-        rows = read_csv_rows(resolved)
-        matching_rows = [
-            row
-            for row in rows
-            if row.get("status") == "pass"
-            and hardware_identity_matches(row.get("hardware"), hardware)
-        ]
+        if resolved.suffix == ".json":
+            report = read_manifest_json_artifact(resolved)
+            if report is None or report.get("kind") != "fpa_report":
+                diagnostics.append(f"hardware report bundle FPA reference {identity!r} has wrong kind")
+                continue
+            if report.get("status") != "pass":
+                diagnostics.append(f"hardware report bundle FPA reference {identity!r} is not passing")
+                continue
+            metrics = report.get("metric_records")
+            if not isinstance(metrics, list):
+                diagnostics.append(f"hardware report bundle FPA reference {identity!r} lacks metric records")
+                continue
+            matching_rows = [
+                metric
+                for metric in metrics
+                if isinstance(metric, dict)
+                and hardware_identity_matches(metric.get("hardware_candidate_identity"), hardware)
+            ]
+            matching_workloads.update(
+                str(metric["workload"])
+                for metric in matching_rows
+                if isinstance(metric.get("workload"), str) and metric.get("workload")
+            )
+        elif resolved.suffix == ".csv":
+            rows = read_csv_rows(resolved)
+            matching_rows = [
+                row
+                for row in rows
+                if row.get("status") == "pass"
+                and hardware_identity_matches(row.get("hardware"), hardware)
+            ]
+            matching_workloads.update(
+                row["workload"]
+                for row in matching_rows
+                if isinstance(row.get("workload"), str) and row.get("workload")
+            )
+        else:
+            continue
         if not matching_rows:
             diagnostics.append(
                 f"hardware report bundle FPA reference {identity!r} does not match hardware candidate"
             )
             continue
-        matching_workloads.update(
-            row["workload"]
-            for row in matching_rows
-            if isinstance(row.get("workload"), str) and row.get("workload")
-        )
     supported_workloads = data.get("supported_workload_classes")
     if isinstance(supported_workloads, list) and matching_workloads:
         missing_workloads = sorted(
@@ -5363,6 +5507,120 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         validate_eda_report_input_fingerprints(path, data, diagnostics)
         validate_eda_report_source_fingerprints(path, data, diagnostics)
         validate_eda_report_rtl_manifest_reference(path, data, diagnostics)
+    if kind == "fpa_report":
+        if data.get("kind") != "fpa_report":
+            diagnostics.append("FPA report kind must be fpa_report")
+        if data.get("status") not in BASE_STATUSES:
+            diagnostics.append("FPA report status must be a known status")
+        for key in (
+            "report_id",
+            "hardware_candidate_identity",
+            "rtl_manifest_identity",
+            "tool_profile_id",
+            "selected_library_profile_id",
+            "calibration_identity",
+        ):
+            if not isinstance(data.get(key), str):
+                diagnostics.append(f"FPA report {key} must be a string")
+        if data.get("status") == "pass" and not data.get("tool_profile_id"):
+            diagnostics.append("FPA report pass needs tool_profile_id")
+        if not isinstance(data.get("estimation_configuration"), dict):
+            diagnostics.append("FPA report estimation_configuration must be an object")
+        for key in (
+            "frequency_results",
+            "area_results",
+            "power_results",
+            "combined_metric_records",
+            "backend_report_identities",
+            "diagnostic_records",
+            "diagnostics",
+        ):
+            if not isinstance(data.get(key), list):
+                diagnostics.append(f"FPA report {key} must be a list")
+        diagnostic_records = validate_diagnostic_records(
+            data.get("diagnostic_records"),
+            diagnostics,
+            "FPA report",
+        )
+        if data.get("status") != "pass" and not diagnostic_records:
+            diagnostics.append("FPA report non-pass status needs diagnostic_records")
+        input_fingerprints = data.get("input_artifact_fingerprints")
+        if not isinstance(input_fingerprints, dict):
+            diagnostics.append("FPA report input_artifact_fingerprints must be an object")
+            input_fingerprints = {}
+        if data.get("status") == "pass" and not input_fingerprints:
+            diagnostics.append("FPA report pass needs input_artifact_fingerprints")
+        for identity, fingerprint in input_fingerprints.items():
+            if not isinstance(identity, str) or not identity:
+                diagnostics.append("FPA report input_artifact_fingerprints has invalid identity")
+                continue
+            if not valid_sha256_hex(fingerprint):
+                diagnostics.append(f"FPA report input_artifact_fingerprints has invalid fingerprint for {identity}")
+                continue
+            resolved = resolve_artifact_identity_reference(path, identity)
+            if resolved is not None and fingerprint != artifact_fingerprint(resolved):
+                diagnostics.append(f"FPA report input_artifact_fingerprints stale for {identity!r}")
+        metrics = data.get("metric_records")
+        metric_ids: set[str] = set()
+        if not isinstance(metrics, list):
+            diagnostics.append("FPA report metric_records must be a list")
+            metrics = []
+        if data.get("status") == "pass" and not metrics:
+            diagnostics.append("FPA report pass needs metric_records")
+        report_id = data.get("report_id")
+        for index, metric in enumerate(metrics, start=1):
+            if not isinstance(metric, dict):
+                diagnostics.append(f"FPA report metric {index} must be an object")
+                continue
+            metric_id = metric.get("metric_id")
+            if not isinstance(metric_id, str) or not metric_id:
+                diagnostics.append(f"FPA report metric {index} lacks metric_id")
+            elif metric_id in metric_ids:
+                diagnostics.append(f"FPA report repeats metric_id {metric_id}")
+            else:
+                metric_ids.add(metric_id)
+            for key in (
+                "metric_class",
+                "unit",
+                "fidelity_level",
+                "evidence_source_artifact_id",
+                "producer_component",
+                "derivation_kind",
+                "hardware_candidate_identity",
+                "workload",
+                "source_column",
+            ):
+                if not isinstance(metric.get(key), str) or not metric.get(key):
+                    diagnostics.append(f"FPA report metric {index} lacks {key}")
+            if metric.get("evidence_source_artifact_id") != report_id:
+                diagnostics.append(f"FPA report metric {index} evidence source must be the FPA report")
+            metric_class = metric.get("metric_class")
+            if metric_class not in {"frequency", "area", "dynamic_power", "leakage_power"}:
+                diagnostics.append(f"FPA report metric {index} has invalid metric_class")
+            fidelity = metric.get("fidelity_level")
+            if fidelity not in FPA_FIDELITY_LEVELS:
+                diagnostics.append(f"FPA report metric {index} has unknown fidelity_level")
+            value = metric.get("value")
+            if not isinstance(value, (int, float)) or value < 0:
+                diagnostics.append(f"FPA report metric {index} has invalid value")
+            if metric_class in {"dynamic_power", "leakage_power"}:
+                activity_source = metric.get("activity_source")
+                if activity_source not in FPA_ACTIVITY_SOURCES:
+                    diagnostics.append(f"FPA report metric {index} has invalid activity_source")
+            metric_diagnostics = metric.get("diagnostics")
+            if not isinstance(metric_diagnostics, list):
+                diagnostics.append(f"FPA report metric {index} diagnostics must be a list")
+        for key in ("frequency_results", "area_results", "power_results"):
+            value = data.get(key)
+            if not isinstance(value, list):
+                continue
+            missing_metric_ids = sorted(
+                entry
+                for entry in value
+                if isinstance(entry, str) and entry not in metric_ids
+            )
+            if missing_metric_ids:
+                diagnostics.append(f"FPA report {key} references missing metric ids {missing_metric_ids}")
     if kind == "workload_report_bundle":
         if data.get("kind") != "workload_report_bundle":
             diagnostics.append("workload report bundle kind must be workload_report_bundle")

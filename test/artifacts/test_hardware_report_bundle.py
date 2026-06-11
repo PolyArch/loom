@@ -62,6 +62,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
             ],
             "hardware candidate report bundle",
@@ -84,7 +86,7 @@ def main() -> int:
             raise AssertionError(f"unexpected ADG builder recipe identity: {data}")
         if data["rtl_manifest_identity"] != "rtl-manifest":
             raise AssertionError(f"unexpected RTL manifest identity: {data}")
-        if data["fpa_report_identities"] != ["rtl-fpa-summary"]:
+        if data["fpa_report_identities"] != ["rtl-fpa-report"]:
             raise AssertionError(f"unexpected FPA report identities: {data}")
         if data["eda_report_identities"] != []:
             raise AssertionError(f"hardware report should not invent EDA report identities: {data}")
@@ -93,7 +95,7 @@ def main() -> int:
         expected_input_fingerprints = {
             "adg-hardware-summary": artifact_test_common.fingerprint(out_dir / "adg-hardware-summary.csv"),
             "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
-            "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
+            "rtl-fpa-report": artifact_test_common.fingerprint(out_dir / "rtl-fpa-report.json"),
         }
         if data["input_artifact_fingerprints"] != expected_input_fingerprints:
             raise AssertionError(f"unexpected hardware report input fingerprints: {data}")
@@ -129,6 +131,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(blocked_eda),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
             ],
@@ -169,6 +173,8 @@ def main() -> int:
                     str(out_dir / "rtl-manifest.json"),
                     "--artifact",
                     str(passing_eda),
+                    "--artifact",
+                    str(out_dir / "rtl-fpa-report.json"),
                     "--artifact",
                     str(out_dir / "rtl-fpa-summary.csv"),
                 ],
@@ -288,12 +294,12 @@ def main() -> int:
         mismatched_fpa_report = out_dir / "mismatched-fpa-hardware-report-bundle.json"
         mismatched_fpa_data = json.loads(report.read_text())
         mismatched_fpa_data["fpa_report_identities"] = ["mismatched-hardware-rtl-fpa-summary"]
-        mismatched_fpa_data["input_artifact_fingerprints"].pop("rtl-fpa-summary", None)
+        mismatched_fpa_data["input_artifact_fingerprints"].pop("rtl-fpa-report", None)
         mismatched_fpa_data["input_artifact_fingerprints"][
             "mismatched-hardware-rtl-fpa-summary"
         ] = artifact_test_common.fingerprint(mismatched_fpa_summary)
         for metric in mismatched_fpa_data["metric_records"]:
-            if metric.get("producer_component") == "rtl-fpa-summary":
+            if metric.get("producer_component") in {"rtl-fpa-summary", "fpa-report"}:
                 metric["evidence_source_artifact_id"] = "mismatched-hardware-rtl-fpa-summary"
         mismatched_fpa_report.write_text(json.dumps(mismatched_fpa_data, indent=2, sort_keys=True) + "\n")
         mismatched_fpa_audit = out_dir / "mismatched-fpa-hardware-report-bundle-audit.json"

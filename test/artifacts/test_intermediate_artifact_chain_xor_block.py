@@ -27,6 +27,7 @@ EXPECTED_FILES = [
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
     "rtl-eda-report.json",
+    "rtl-fpa-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
     "hardware-report-bundle.json",
@@ -279,7 +280,7 @@ def main() -> int:
             ("xor_block-cgra-sim-report", "sim-cycle-summary"),
             ("pnr-mapping", "rtl-manifest"),
             ("runtime-package", "workload-report-bundle"),
-            ("rtl-fpa-summary", "hardware-report-bundle"),
+            ("rtl-fpa-report", "hardware-report-bundle"),
         }
         missing_edges = required_edges - edges
         if missing_edges:

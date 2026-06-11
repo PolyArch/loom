@@ -512,9 +512,9 @@ def main() -> int:
         prefix_fpa.write_text(
             "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
             "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
-            "activity_source,status,diagnostic\n"
+            "activity_source,fpa_report_identity,status,diagnostic\n"
             "fabric0,vecadd,blocked,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
-            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,prefix-edge-rtl-fpa-report,pass,"
             f"RTL lint evidence status=blocked; artifact={consumed_eda_id}; diagnostic=tool unavailable\n"
         )
         prefix_manifest_output = out_dir / "prefix-edge-full-stack-artifact-manifest.json"
@@ -1269,9 +1269,9 @@ def main() -> int:
         valid_rtl_fpa.write_text(
             "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
             "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
-            "activity_source,status,diagnostic\n"
+            "activity_source,fpa_report_identity,status,diagnostic\n"
             "fabric0,vecadd,skipped,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
-            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,analytic FPA evidence\n"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,valid-rtl-fpa-report,pass,analytic FPA evidence\n"
         )
         dse_provenance_header = (
             "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"

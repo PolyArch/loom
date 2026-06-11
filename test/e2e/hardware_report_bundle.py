@@ -20,6 +20,7 @@ import report_metric_helpers  # noqa: E402
 artifact_id = intermediate_artifacts.artifact_id_for_path
 input_artifact_fingerprints = intermediate_artifacts.input_artifact_fingerprints
 read_csv = artifact_io_helpers.read_csv
+read_json = artifact_io_helpers.read_json
 group_paths = artifact_io_helpers.group_paths
 hardware_matches = artifact_io_helpers.hardware_matches
 matching_rtl_manifest = artifact_io_helpers.matching_rtl_manifest_path
@@ -50,6 +51,76 @@ def matching_fpa_rows(paths: list[Path], hardware: str) -> list[tuple[Path, dict
             if hardware_matches(row.get("hardware", ""), hardware):
                 rows.append((path, row))
     return artifact_io_helpers.select_by_artifact_id(rows, lambda entry: entry[0])
+
+
+def fpa_rows_from_report(path: Path) -> list[dict[str, str]]:
+    data = read_json(path)
+    if data.get("kind") != "fpa_report" or data.get("status") != "pass":
+        return []
+    rows_by_key: dict[tuple[str, str], dict[str, str]] = {}
+    for metric in data.get("metric_records", []):
+        if not isinstance(metric, dict):
+            continue
+        hardware = metric.get("hardware_candidate_identity")
+        workload = metric.get("workload")
+        source_column = metric.get("source_column")
+        value = metric.get("value")
+        if not (
+            isinstance(hardware, str)
+            and hardware
+            and isinstance(workload, str)
+            and workload
+            and isinstance(source_column, str)
+            and isinstance(value, (int, float))
+        ):
+            continue
+        key = (hardware, workload)
+        row = rows_by_key.setdefault(
+            key,
+            {
+                "hardware": hardware,
+                "workload": workload,
+                "status": "pass",
+                "fidelity_level": str(metric.get("fidelity_level", "")),
+                "frequency_source": "analytic_fpa_model",
+                "area_source": "analytic_fpa_model",
+                "power_source": "analytic_fpa_model",
+                "activity_source": str(metric.get("activity_source", "")),
+                "diagnostic": "; ".join(str(item) for item in data.get("diagnostics", []) if item),
+            },
+        )
+        if not row.get("activity_source") and isinstance(metric.get("activity_source"), str):
+            row["activity_source"] = str(metric.get("activity_source"))
+        row[source_column] = f"{float(value):.3f}"
+    required = {"frequency_mhz", "area_um2", "dynamic_power_mw", "leakage_power_mw"}
+    return [
+        row
+        for row in rows_by_key.values()
+        if required <= set(row)
+    ]
+
+
+def matching_fpa_report_rows(paths: list[Path], hardware: str) -> list[tuple[Path, dict[str, str]]]:
+    rows: list[tuple[Path, dict[str, str]]] = []
+    for path in paths:
+        for row in fpa_rows_from_report(path):
+            if hardware_matches(row.get("hardware", ""), hardware):
+                rows.append((path, row))
+    if not rows:
+        return []
+    selected_id = sorted({artifact_id(path) for path, _ in rows})[0]
+    return [(path, row) for path, row in rows if artifact_id(path) == selected_id]
+
+
+def matching_fpa_evidence(
+    report_paths: list[Path],
+    summary_paths: list[Path],
+    hardware: str,
+) -> list[tuple[Path, dict[str, str]]]:
+    report_rows = matching_fpa_report_rows(report_paths, hardware)
+    if report_rows:
+        return report_rows
+    return matching_fpa_rows(summary_paths, hardware)
 
 
 def numeric(row: dict[str, str], key: str) -> float:
@@ -112,7 +183,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
     rtl_manifest_path = matching_rtl_manifest(grouped.get("rtl_manifest", []), hardware)
     rtl_manifest_identity = artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else ""
     eda_report_paths = matching_eda_reports(grouped.get("eda_report", []), rtl_manifest_identity)
-    fpa_rows = matching_fpa_rows(grouped.get("rtl_fpa", []), hardware)
+    fpa_rows = matching_fpa_evidence(
+        grouped.get("fpa_report", []),
+        grouped.get("rtl_fpa", []),
+        hardware,
+    )
     diagnostics: list[str] = []
     if rtl_manifest_path is None:
         diagnostics.append("no passing RTL manifest matched the hardware candidate")
@@ -159,6 +234,11 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             ("dynamic_power_mw", "dynamic_power", "mW"),
             ("leakage_power_mw", "leakage_power", "mW"),
         ):
+            producer_component = (
+                "fpa-report"
+                if intermediate_artifacts.artifact_kind_for_path(fpa_path) == "fpa_report"
+                else "rtl-fpa-summary"
+            )
             metric_records.append(
                 report_metric_helpers.metric_record(
                     metric_id=f"metric::{hardware}::{key}",
@@ -167,7 +247,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                     unit=unit,
                     fidelity_level=fpa_fidelity,
                     evidence_source_artifact_id=artifact_id(fpa_path),
-                    producer_component="rtl-fpa-summary",
+                    producer_component=producer_component,
                     derivation_kind="analytic_fpa",
                     diagnostics=[fpa_row.get("diagnostic", "")],
                 )

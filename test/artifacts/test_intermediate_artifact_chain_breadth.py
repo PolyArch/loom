@@ -27,6 +27,7 @@ COMMON_FILES = [
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
     "rtl-eda-report.json",
+    "rtl-fpa-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
     "hardware-report-bundle.json",

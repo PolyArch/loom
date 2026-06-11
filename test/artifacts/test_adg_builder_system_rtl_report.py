@@ -256,6 +256,7 @@ def main() -> int:
             "vecadd primitive coverage",
         )
         fpa = out_dir / "system-rtl-fpa-summary.csv"
+        fpa_report = out_dir / "system-rtl-fpa-report.json"
         fpa_rows = artifact_test_common.run_csv_summary(
             repo,
             "test/rtl/run_rtl_fpa_summary.sh",
@@ -296,6 +297,8 @@ def main() -> int:
             raise AssertionError(f"system FPA row should stay analytic: {fpa_row}")
         if "artifact=system-rtl-eda-report" not in fpa_row.get("diagnostic", ""):
             raise AssertionError(f"system FPA row should cite consumed EDA evidence: {fpa_row}")
+        if fpa_row.get("fpa_report_identity") != "system-rtl-fpa-report":
+            raise AssertionError(f"system FPA row should cite JSON report: {fpa_row}")
 
         hardware_bundle = out_dir / "system-hardware-report-bundle.json"
         artifact_test_common.require_success(
@@ -309,6 +312,8 @@ def main() -> int:
                 str(system_only_hardware),
                 "--artifact",
                 str(rtl_manifest),
+                "--artifact",
+                str(fpa_report),
                 "--artifact",
                 str(fpa),
             ],
@@ -327,7 +332,7 @@ def main() -> int:
             },
             label="system hardware report bundle",
         )
-        if bundle.get("fpa_report_identities") != ["system-rtl-fpa-summary"]:
+        if bundle.get("fpa_report_identities") != ["system-rtl-fpa-report"]:
             raise AssertionError(f"system hardware bundle missed FPA report identity: {bundle}")
         if bundle.get("supported_workload_classes") != ["vecadd"]:
             raise AssertionError(f"system hardware bundle should cite vecadd FPA support: {bundle}")
@@ -335,7 +340,7 @@ def main() -> int:
         expected_fingerprints = {
             "system-only-adg-hardware-summary": artifact_test_common.fingerprint(system_only_hardware),
             "system-rtl-manifest": artifact_test_common.fingerprint(rtl_manifest),
-            "system-rtl-fpa-summary": artifact_test_common.fingerprint(fpa),
+            "system-rtl-fpa-report": artifact_test_common.fingerprint(fpa_report),
         }
         if fingerprints != expected_fingerprints:
             raise AssertionError(f"system hardware bundle fingerprint drift: {bundle}")

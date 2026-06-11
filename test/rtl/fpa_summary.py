@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
 import candidate_summary_common  # noqa: E402
+import report_metric_helpers  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--hardware-summary")
     parser.add_argument("--rtl-manifest")
     parser.add_argument("--eda-report")
+    parser.add_argument("--report-output")
     return parser.parse_args(argv)
 
 
@@ -82,6 +84,14 @@ def read_json(path: Path) -> dict[str, object]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def default_fpa_report_output(summary_output: Path) -> Path:
+    suffix = "rtl-fpa-summary.csv"
+    if summary_output.name.endswith(suffix):
+        prefix = summary_output.name[: -len(suffix)]
+        return summary_output.with_name(f"{prefix}rtl-fpa-report.json")
+    return summary_output.with_suffix(".fpa-report.json")
 
 
 def hardware_matches(candidate: str, hardware: str) -> bool:
@@ -175,6 +185,8 @@ def analytic_fpa_row(
     workload: str,
     hardware: HardwareCandidate,
     lint_evidence: RtlLintEvidence | None,
+    *,
+    fpa_report_identity: str,
 ) -> dict[str, str]:
     node_count = hardware.node_count
     link_count = hardware.link_count
@@ -212,6 +224,7 @@ def analytic_fpa_row(
         "area_source": "analytic_fpa_model",
         "power_source": "analytic_fpa_model",
         "activity_source": "default_toggle",
+        "fpa_report_identity": fpa_report_identity,
         "status": "pass",
         "diagnostic": (
             "analytic FPA estimate; fidelity=analytic; "
@@ -219,6 +232,112 @@ def analytic_fpa_row(
             "RTL simulation and synthesis backends not run"
         ),
     }
+
+
+def fpa_metric_records(rows: list[dict[str, str]], report_identity: str) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    metric_specs = (
+        ("frequency_mhz", "frequency", "MHz"),
+        ("area_um2", "area", "um2"),
+        ("dynamic_power_mw", "dynamic_power", "mW"),
+        ("leakage_power_mw", "leakage_power", "mW"),
+    )
+    for row in rows:
+        if row.get("status") != "pass":
+            continue
+        hardware = row.get("hardware", "")
+        workload = row.get("workload", "")
+        for key, metric_class, unit in metric_specs:
+            record = report_metric_helpers.metric_record(
+                metric_id=f"metric::{hardware}::{workload}::{key}",
+                metric_class=metric_class,
+                value=float(row[key]),
+                unit=unit,
+                fidelity_level=row.get("fidelity_level", "") or "analytic",
+                evidence_source_artifact_id=report_identity,
+                producer_component="fpa-report",
+                derivation_kind="analytic_fpa",
+                diagnostics=[row.get("diagnostic", "")],
+            )
+            record["hardware_candidate_identity"] = hardware
+            record["workload"] = workload
+            record["source_column"] = key
+            if metric_class in {"dynamic_power", "leakage_power"}:
+                record["activity_source"] = row.get("activity_source", "")
+            if record["fidelity_level"] in {"analytic", "custom_calibrated"}:
+                record["confidence"] = "model_default"
+            records.append(record)
+    return records
+
+
+def write_fpa_report(
+    *,
+    output: Path,
+    rows: list[dict[str, str]],
+    primitive_path: Path,
+    hardware_path: Path,
+    rtl_manifest_path: Path | None,
+    eda_report_path: Path | None,
+) -> None:
+    report_identity = intermediate_artifacts.artifact_id_for_path(output)
+    hardware_identities = sorted({row["hardware"] for row in rows if row.get("hardware")})
+    workload_identities = sorted({row["workload"] for row in rows if row.get("workload")})
+    metric_records = fpa_metric_records(rows, report_identity)
+    backend_report_identities = [
+        identity
+        for identity in [
+            intermediate_artifacts.artifact_id_for_path(eda_report_path),
+        ]
+        if identity
+    ]
+    diagnostics = sorted({row.get("diagnostic", "") for row in rows if row.get("status") != "pass"})
+    output.parent.mkdir(parents=True, exist_ok=True)
+    report = {
+        "schema_version": 1,
+        "kind": "fpa_report",
+        "report_id": report_identity,
+        "hardware_candidate_identity": hardware_identities[0] if len(hardware_identities) == 1 else "multiple",
+        "hardware_candidate_identities": hardware_identities,
+        "workload_identities": workload_identities,
+        "mapping_artifact_identity": "",
+        "cgra_sim_report_identity": "",
+        "rtl_manifest_identity": intermediate_artifacts.artifact_id_for_path(rtl_manifest_path),
+        "tool_profile_id": "analytic_fpa_model",
+        "selected_library_profile_id": "",
+        "estimation_configuration": {
+            "model_id": "analytic_fpa_model",
+            "activity_source": "default_toggle",
+            "frequency_source": "analytic_fpa_model",
+            "area_source": "analytic_fpa_model",
+            "power_source": "analytic_fpa_model",
+        },
+        "calibration_identity": "",
+        "frequency_results": [
+            record["metric_id"]
+            for record in metric_records
+            if record.get("metric_class") == "frequency"
+        ],
+        "area_results": [
+            record["metric_id"]
+            for record in metric_records
+            if record.get("metric_class") == "area"
+        ],
+        "power_results": [
+            record["metric_id"]
+            for record in metric_records
+            if record.get("metric_class") in {"dynamic_power", "leakage_power"}
+        ],
+        "combined_metric_records": [],
+        "metric_records": metric_records,
+        "backend_report_identities": backend_report_identities,
+        "input_artifact_fingerprints": intermediate_artifacts.input_artifact_fingerprints(
+            [primitive_path, hardware_path, rtl_manifest_path, eda_report_path]
+        ),
+        "diagnostic_records": [],
+        "diagnostics": diagnostics,
+        "status": "pass" if rows and not diagnostics else "blocked",
+    }
+    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 
 def main(argv: list[str]) -> int:
@@ -243,20 +362,40 @@ def main(argv: list[str]) -> int:
         Path(args.rtl_manifest) if args.rtl_manifest else None,
         Path(args.eda_report) if args.eda_report else None,
     )
+    report_output = (
+        Path(args.report_output)
+        if args.report_output
+        else default_fpa_report_output(output)
+    )
+    fpa_report_identity = intermediate_artifacts.artifact_id_for_path(report_output)
 
     workloads = candidate_summary_common.workloads_from_primitive_coverage(primitive_path)
     hardware = read_hardware_candidates(hardware_path)
     if not workloads or not hardware:
         intermediate_artifacts.write_csv("rtl_fpa", intermediate_artifacts.output_path(args.output))
+        intermediate_artifacts.write_json("fpa_report", intermediate_artifacts.output_path(str(report_output)))
         return 0
 
     rows = [
-        analytic_fpa_row(workload, candidate, lint_evidence)
+        analytic_fpa_row(
+            workload,
+            candidate,
+            lint_evidence,
+            fpa_report_identity=fpa_report_identity,
+        )
         for workload in workloads
         for candidate in hardware
     ]
     output.parent.mkdir(parents=True, exist_ok=True)
     intermediate_artifacts.write_csv_rows("rtl_fpa", output, rows)
+    write_fpa_report(
+        output=report_output,
+        rows=rows,
+        primitive_path=primitive_path,
+        hardware_path=hardware_path,
+        rtl_manifest_path=Path(args.rtl_manifest) if args.rtl_manifest else None,
+        eda_report_path=Path(args.eda_report) if args.eda_report else None,
+    )
     return 0
 
 
