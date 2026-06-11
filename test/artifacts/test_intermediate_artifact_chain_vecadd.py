@@ -168,6 +168,12 @@ def main() -> int:
             raise AssertionError(f"vecadd aggregate DFG cycles should include checksum reduction tail: {dfg_report}")
         if set(dfg_report.get("component_graphs", [])) != {"g_t_vecadd_0_0", "g_t_main_red_0_0"}:
             raise AssertionError(f"aggregate DFG report must cite both component graphs: {dfg_report}")
+        dfg_final_outputs = dfg_report.get("final_outputs")
+        if not isinstance(dfg_final_outputs, list) or not dfg_final_outputs:
+            raise AssertionError(f"aggregate DFG report must expose final outputs: {dfg_report}")
+        dfg_final_memory = dfg_report.get("final_memory_state")
+        if not isinstance(dfg_final_memory, dict):
+            raise AssertionError(f"aggregate DFG report must expose final memory state: {dfg_report}")
 
         cgra_report = json.loads((out_dir / "vecadd-cgra-sim-report.json").read_text())
         if cgra_report.get("status") != "pass" or cgra_report.get("workload") != "vecadd":
@@ -183,6 +189,15 @@ def main() -> int:
             raise AssertionError(f"vecadd cycles should differ from vecsum/dotproduct/xor_block evidence")
         if set(cgra_report.get("component_mapping_ids", [])) != EXPECTED_MAPPING_IDS:
             raise AssertionError(f"aggregate CGRA report must cite both component mappings: {cgra_report}")
+        if (
+            cgra_report.get("functional_state_source")
+            != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+        ):
+            raise AssertionError(f"aggregate CGRA report must label carried functional state: {cgra_report}")
+        if cgra_report.get("final_outputs") != dfg_final_outputs:
+            raise AssertionError(f"aggregate CGRA report must expose matching final outputs: {cgra_report}")
+        if cgra_report.get("final_memory_state") != dfg_final_memory:
+            raise AssertionError(f"aggregate CGRA report must expose matching final memory state: {cgra_report}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
         if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "vecadd":

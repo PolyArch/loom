@@ -5,7 +5,9 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <vector>
 
 namespace loom {
 namespace sim {
@@ -38,6 +40,9 @@ struct CGRASimReport {
   std::uint64_t configRecords = 0;
   std::uint64_t spatialPlacements = 0;
   std::uint64_t temporalPlacements = 0;
+  std::string functionalStateSource;
+  std::vector<std::string> finalOutputs;
+  std::map<std::string, std::vector<std::string>> finalMemoryState;
 };
 
 llvm::Expected<CGRASimReport> runCGRASimulation(const CGRASimOptions &options);

@@ -18,9 +18,11 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <vector>
 
 using namespace loom::sim;
 
@@ -287,6 +289,58 @@ requireNonNegativeInteger(const llvm::json::Object &object, llvm::StringRef key,
                                    "%s lacks non-negative integer field %s",
                                    path.str().c_str(), key.str().c_str());
   return static_cast<std::uint64_t>(*value);
+}
+
+llvm::Expected<std::vector<std::string>>
+requireStringArrayField(const llvm::json::Object &object, llvm::StringRef key,
+                        llvm::StringRef path) {
+  std::vector<std::string> values;
+  const llvm::json::Array *array = object.getArray(key);
+  if (!array)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s lacks array field %s",
+                                   path.str().c_str(), key.str().c_str());
+  for (auto [index, value] : llvm::enumerate(*array)) {
+    std::optional<llvm::StringRef> string = value.getAsString();
+    if (!string)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s field %s entry %u is not a string", path.str().c_str(),
+          key.str().c_str(), static_cast<unsigned>(index));
+    values.push_back(string->str());
+  }
+  return values;
+}
+
+llvm::Expected<std::map<std::string, std::vector<std::string>>>
+requireStringArrayObjectField(const llvm::json::Object &object,
+                              llvm::StringRef key, llvm::StringRef path) {
+  std::map<std::string, std::vector<std::string>> result;
+  const llvm::json::Object *state = object.getObject(key);
+  if (!state)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s lacks object field %s",
+                                   path.str().c_str(), key.str().c_str());
+  for (const auto &[name, value] : *state) {
+    std::vector<std::string> values;
+    const llvm::json::Array *array = value.getAsArray();
+    if (!array) {
+      return llvm::createStringError(
+          std::errc::invalid_argument, "%s field %s.%s is not an array",
+          path.str().c_str(), key.str().c_str(), name.str().c_str());
+    }
+    for (auto [index, entry] : llvm::enumerate(*array)) {
+      std::optional<llvm::StringRef> string = entry.getAsString();
+      if (!string)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "%s field %s.%s entry %u is not a string", path.str().c_str(),
+            key.str().c_str(), name.str().c_str(), static_cast<unsigned>(index));
+      values.push_back(string->str());
+    }
+    result[name.str()] = std::move(values);
+  }
+  return result;
 }
 
 llvm::Expected<std::string> requireString(const llvm::json::Object &object,
@@ -735,6 +789,17 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (!costModelOrErr)
     return costModelOrErr.takeError();
   report.operationCostModelSource = *costModelOrErr;
+  auto finalOutputsOrErr =
+      requireStringArrayField(*dfgOrErr, "final_outputs", options.dfgReportPath);
+  if (!finalOutputsOrErr)
+    return finalOutputsOrErr.takeError();
+  report.finalOutputs = *finalOutputsOrErr;
+  auto finalMemoryStateOrErr = requireStringArrayObjectField(
+      *dfgOrErr, "final_memory_state", options.dfgReportPath);
+  if (!finalMemoryStateOrErr)
+    return finalMemoryStateOrErr.takeError();
+  report.finalMemoryState = *finalMemoryStateOrErr;
+  report.functionalStateSource = "carried_from_dfg_sim_report";
   auto routeStatsOrErr =
       collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
   if (!routeStatsOrErr)
@@ -860,6 +925,20 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"unmodeled_constraints", std::move(unmodeledConstraints)},
       {"first_principles_checks", std::move(firstPrinciplesChecks)},
   };
+  llvm::json::Array finalOutputs;
+  for (const std::string &value : report.finalOutputs)
+    finalOutputs.push_back(value);
+  root.try_emplace("final_outputs", std::move(finalOutputs));
+
+  llvm::json::Object finalMemoryState;
+  for (const auto &[argument, values] : report.finalMemoryState) {
+    llvm::json::Array memoryValues;
+    for (const std::string &value : values)
+      memoryValues.push_back(value);
+    finalMemoryState[argument] = std::move(memoryValues);
+  }
+  root.try_emplace("final_memory_state", std::move(finalMemoryState));
+  root.try_emplace("functional_state_source", report.functionalStateSource);
   if (!report.diagnostic.empty()) {
     llvm::json::Array diagnostics;
     diagnostics.push_back(report.diagnostic);

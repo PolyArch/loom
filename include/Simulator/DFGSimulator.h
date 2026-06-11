@@ -49,6 +49,7 @@ struct DFGSimulationReport {
   std::uint64_t dynamicWorkItems = 0;
   std::map<std::string, std::uint64_t> operationFireCounts;
   llvm::SmallVector<std::string> finalOutputs;
+  std::map<std::string, llvm::SmallVector<std::string>> finalMemoryState;
   llvm::SmallVector<std::string> diagnostics;
 };
 

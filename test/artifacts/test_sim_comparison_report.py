@@ -82,14 +82,51 @@ def main() -> int:
         if data["mapping_artifact_identity"] != "pnr-mapping":
             raise AssertionError(f"unexpected mapping artifact identity: {data}")
         expected_statuses = {
-            "functional_comparison_status": "skipped",
-            "memory_comparison_status": "skipped",
+            "functional_comparison_status": "pass",
+            "memory_comparison_status": "pass",
             "performance_comparison_status": "pass",
             "difference_classification": "expected_hardware_constraint",
         }
         for key, value in expected_statuses.items():
             if data[key] != value:
                 raise AssertionError(f"unexpected {key}: {data}")
+        dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
+        cgra_data = json.loads((out_dir / "vecsum-cgra-sim-report.json").read_text())
+        if not isinstance(dfg_data.get("final_memory_state"), dict):
+            raise AssertionError(f"DFG-sim report must expose final_memory_state: {dfg_data}")
+        if not isinstance(cgra_data.get("final_outputs"), list):
+            raise AssertionError(f"CGRA-sim report must expose final_outputs: {cgra_data}")
+        if not isinstance(cgra_data.get("final_memory_state"), dict):
+            raise AssertionError(f"CGRA-sim report must expose final_memory_state: {cgra_data}")
+        if cgra_data.get("functional_state_source") != "carried_from_dfg_sim_report":
+            raise AssertionError(f"CGRA-sim must label carried functional state: {cgra_data}")
+        if cgra_data["final_outputs"] != dfg_data.get("final_outputs"):
+            raise AssertionError(f"CGRA-sim final outputs should match DFG-sim: {cgra_data}")
+        if cgra_data["final_memory_state"] != dfg_data["final_memory_state"]:
+            raise AssertionError(f"CGRA-sim final memory should match DFG-sim: {cgra_data}")
+        missing_state_dfg = out_dir / "missing-state-dfg-sim-report.json"
+        missing_state_dfg_data = json.loads(json.dumps(dfg_data))
+        del missing_state_dfg_data["final_memory_state"]
+        missing_state_dfg.write_text(
+            json.dumps(missing_state_dfg_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_state_cgra = out_dir / "missing-state-cgra-sim-report.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                str(repo / "build/tools/loom-cgra-sim/loom-cgra-sim"),
+                "--dfg-report",
+                str(missing_state_dfg),
+                "--mapping-artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--hardware-mlir",
+                str(repo / "test/pnr/shared_reduction_adg.mlir"),
+                "--output",
+                str(missing_state_cgra),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA-sim accepted a DFG report without final_memory_state")
         definitions = data.get("performance_metric_definitions", {})
         expected_definitions = {
             "dfg": "optimistic_pipeline_latency_throughput_sum",
@@ -119,6 +156,29 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected comparison report audit pass: {audit_data}")
+
+        skipped_comparison = out_dir / "skipped-sim-comparison-report.json"
+        skipped_data = json.loads(json.dumps(data))
+        skipped_data["functional_comparison_status"] = "skipped"
+        skipped_data["memory_comparison_status"] = "skipped"
+        skipped_data["diagnostics"] = [
+            "functional output comparison skipped because one report lacks final_outputs",
+            "visible memory-state comparison skipped because reports expose no final memory state",
+        ]
+        skipped_comparison.write_text(json.dumps(skipped_data, indent=2, sort_keys=True) + "\n")
+        skipped_audit = out_dir / "skipped-comparison-artifact-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(skipped_audit),
+                str(skipped_comparison),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("pass comparison with skipped functional or memory checks passed audit")
 
         mismatched_runtime_input = out_dir / "mismatch-runtime-input-sim-comparison-report.json"
         mismatched_runtime_input_data = json.loads(json.dumps(data))

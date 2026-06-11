@@ -4965,6 +4965,10 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("simulation comparison report status must be a known status")
         elif data.get("status") != "pass":
             diagnostics.append("simulation comparison report status must be pass")
+        if data.get("status") == "pass":
+            for key in ("functional_comparison_status", "memory_comparison_status"):
+                if data.get(key) != "pass":
+                    diagnostics.append(f"simulation comparison report pass needs {key}=pass")
         for key in (
             "comparison_id",
             "workload",

@@ -764,6 +764,24 @@ bool hasIncompleteStreamLoads(mlir::Block &entry, SimulatorState &state) {
   return incomplete;
 }
 
+llvm::SmallVector<std::string> serializeMemoryValue(const MemoryValue &memory) {
+  llvm::SmallVector<std::string> values;
+  for (const Token &token : memory.elements)
+    values.push_back(tokenToString(token, memory.elementType));
+  return values;
+}
+
+void captureFinalMemoryState(mlir::Block &entry, SimulatorState &state,
+                             DFGSimulationReport &report) {
+  for (auto [index, arg] : llvm::enumerate(entry.getArguments())) {
+    auto memory = state.memories.find(arg);
+    if (memory == state.memories.end())
+      continue;
+    report.finalMemoryState[llvm::formatv("arg{0}", index).str()] =
+        serializeMemoryValue(*memory->second);
+  }
+}
+
 } // namespace
 
 llvm::Expected<DFGSimulationReport>
@@ -903,6 +921,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
     report.finalOutputs.push_back(
         tokenToString(it->second.back(), value.getType()));
   }
+  captureFinalMemoryState(entry, state, report);
   const bool incompleteLoads = hasIncompleteStreamLoads(entry, state);
   if (report.status == "pass" && !state.diagnostics.empty()) {
     report.status = "blocked";
@@ -957,6 +976,15 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   for (const std::string &value : report.finalOutputs)
     outputs.push_back(value);
   root["final_outputs"] = std::move(outputs);
+
+  llvm::json::Object finalMemoryState;
+  for (const auto &[argument, values] : report.finalMemoryState) {
+    llvm::json::Array memoryValues;
+    for (const std::string &value : values)
+      memoryValues.push_back(value);
+    finalMemoryState[argument] = std::move(memoryValues);
+  }
+  root["final_memory_state"] = std::move(finalMemoryState);
 
   llvm::json::Array diagnostics;
   for (const std::string &diagnostic : report.diagnostics)

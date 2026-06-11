@@ -151,6 +151,8 @@ def aggregate_dfg(
     dfg_reports: list[dict[str, Any]],
 ) -> dict[str, Any]:
     graphs = [str(report["graph"]) for report in dfg_reports]
+    final_outputs = merge_final_outputs(dfg_reports)
+    final_memory_state = merge_final_memory_state(dfg_reports, graphs)
     return {
         "schema_version": 1,
         "kind": "dfg_sim_report",
@@ -169,14 +171,41 @@ def aggregate_dfg(
         "event_count": sum_int(dfg_reports, "event_count"),
         "dynamic_work_items": sum_int(dfg_reports, "dynamic_work_items"),
         "operation_fire_counts": merge_counts(dfg_reports, "operation_fire_counts"),
-        "final_outputs": [
-            output
-            for report in dfg_reports
-            for output in report.get("final_outputs", [])
-            if isinstance(report.get("final_outputs"), list)
-        ],
+        "final_outputs": final_outputs,
+        "final_memory_state": final_memory_state,
         "diagnostics": ["derived workload graph-set DFG report from component DFG simulator reports"],
     }
+
+
+def merge_final_outputs(reports: list[dict[str, Any]]) -> list[str]:
+    outputs: list[str] = []
+    for report in reports:
+        report_outputs = report.get("final_outputs")
+        require(isinstance(report_outputs, list), "component simulator report lacks final_outputs")
+        for output in report_outputs:
+            require(isinstance(output, str), "component final output must be a string")
+            outputs.append(output)
+    return outputs
+
+
+def merge_final_memory_state(
+    reports: list[dict[str, Any]],
+    component_names: list[str],
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    require(len(reports) == len(component_names), "component memory-state labels must match reports")
+    for component_name, report in zip(component_names, reports):
+        memory_state = report.get("final_memory_state")
+        require(isinstance(memory_state, dict), "component simulator report lacks final_memory_state")
+        for memory_name, values in memory_state.items():
+            require(isinstance(memory_name, str), "component memory-state key must be a string")
+            require(isinstance(values, list), "component memory-state value must be an array")
+            serialized_values: list[str] = []
+            for value in values:
+                require(isinstance(value, str), "component memory-state element must be a string")
+                serialized_values.append(value)
+            merged[f"{component_name}:{memory_name}"] = serialized_values
+    return merged
 
 
 def aggregate_mapping(
@@ -244,10 +273,12 @@ def aggregate_cgra(
     cgra_reports: list[dict[str, Any]],
     mapping_artifact: dict[str, Any],
     dfg_paths: list[Path],
+    dfg_reports: list[dict[str, Any]],
 ) -> dict[str, Any]:
     dfg_cycles = sum_int(cgra_reports, "dfg_cycles")
     hardware_aware_cycles = sum_int(cgra_reports, "hardware_aware_cycles")
     mapping_ids = [str(report["mapping_id"]) for report in cgra_reports]
+    graphs = [str(report["graph"]) for report in dfg_reports]
     performance_delta = hardware_aware_cycles - dfg_cycles
     return {
         "schema_version": 1,
@@ -269,6 +300,9 @@ def aggregate_cgra(
         "metric_definition": same_string(cgra_reports, "metric_definition"),
         "operation_semantics_source": same_string(cgra_reports, "operation_semantics_source"),
         "operation_cost_model_source": same_string(cgra_reports, "operation_cost_model_source"),
+        "functional_state_source": "component_cgra_sim_reports_carried_from_dfg_sim_reports",
+        "final_outputs": merge_final_outputs(cgra_reports),
+        "final_memory_state": merge_final_memory_state(cgra_reports, graphs),
         "difference_classification": (
             "match" if hardware_aware_cycles == dfg_cycles else "expected_hardware_constraint"
         ),
@@ -361,7 +395,7 @@ def main(argv: list[str]) -> int:
 
     dfg = aggregate_dfg(args, dfg_paths, dfg_reports)
     mapping = aggregate_mapping(args, mapping_paths, mapping_artifacts)
-    cgra = aggregate_cgra(args, cgra_paths, cgra_reports, mapping, dfg_paths)
+    cgra = aggregate_cgra(args, cgra_paths, cgra_reports, mapping, dfg_paths, dfg_reports)
     require(cgra["route_segments"] == mapping["routed_edges"], "aggregate CGRA route segments do not match mapping")
     require(cgra["config_records"] == mapping["config_records"], "aggregate CGRA config records do not match mapping")
     require(cgra["hardware_aware_cycles"] >= dfg["optimistic_cycles"], "aggregate CGRA cycles are too optimistic")
