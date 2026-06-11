@@ -67,6 +67,13 @@ FPA_ACTIVITY_SOURCES = {
     "backend_internal",
     "custom",
 }
+DSE_HARDWARE_EVIDENCE_KINDS = {
+    "analytic_model_only",
+    "sim_activity_model",
+    "backend_evidence",
+    "custom_model",
+    "unknown",
+}
 ARTIFACT_EDGE_PAIRS = (
     ("old-app-corpus-inventory", "app-corpus-import-status"),
     ("app-corpus-import-status", "source-compat-summary"),
@@ -366,6 +373,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         extra_columns=(
             "unsupported_scope_diagnostics_count",
             "candidate_kind",
+            "hardware_evidence_kind",
             "input_artifacts",
             "input_artifact_fingerprints",
             "output_artifacts",
@@ -398,6 +406,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "",
             "blocked",
+            "",
             "",
             "",
             "",
@@ -1086,6 +1095,7 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
     if schema.kind == "dse_candidate" and statuses.get("selection_status") in {"selected", "pareto", "rejected"}:
         required_provenance = (
             "candidate_kind",
+            "hardware_evidence_kind",
             "input_artifacts",
             "input_artifact_fingerprints",
             "output_artifacts",
@@ -1102,6 +1112,9 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
         mapping_id = row.get("mapping_id", "")
         if candidate_id and mapping_id and not candidate_id.endswith(f"::{mapping_id}"):
             diagnostics.append(f"row {row_index}: DSE candidate id does not include mapping_id")
+        hardware_evidence_kind = row.get("hardware_evidence_kind", "")
+        if hardware_evidence_kind and hardware_evidence_kind not in DSE_HARDWARE_EVIDENCE_KINDS:
+            diagnostics.append(f"row {row_index}: DSE candidate has unknown hardware_evidence_kind")
         objective_record = row.get("objective_record", "")
         if objective_record and not objective_record.startswith("objective::"):
             diagnostics.append(f"row {row_index}: objective_record must use objective:: identity")

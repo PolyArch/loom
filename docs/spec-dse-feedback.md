@@ -39,7 +39,9 @@ Low-fidelity feedback may be used for prefiltering. Formal ranking and
 selection must declare the fidelity used for every metric input, cite
 the evidence source, and record diagnostics when a required fidelity is
 missing or incompatible. An estimate must not be relabeled as simulator
-or backend evidence.
+or backend evidence. Candidate summaries must expose a
+`hardware_evidence_kind` so analytic model-only candidates remain
+distinguishable from backend-backed hardware evidence.
 
 ## Feedback Boundary
 

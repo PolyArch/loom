@@ -425,6 +425,19 @@ def metric_fidelity_record_values(fpa: dict[str, str]) -> list[str]:
     ]
 
 
+def hardware_evidence_kind_for_fpa(fpa: dict[str, str]) -> str:
+    fidelity = fpa.get("fidelity_level", "")
+    if fidelity == "analytic":
+        return "analytic_model_only"
+    if fidelity == "mapped_activity":
+        return "sim_activity_model"
+    if fidelity in {"rtl_structural", "rtl_activity", "physical_estimate", "fpga_estimate"}:
+        return "backend_evidence"
+    if fidelity in {"custom", "custom_calibrated"}:
+        return "custom_model"
+    return "unknown"
+
+
 def candidate_row(
     mapping: dict[str, str],
     sim: dict[str, str],
@@ -508,6 +521,7 @@ def candidate_row(
             "energy_nj": f"{energy_nj:.3f}",
             "selection_status": "selected",
             "candidate_kind": "combined_full_stack_candidate",
+            "hardware_evidence_kind": hardware_evidence_kind_for_fpa(fpa),
             "input_artifacts": input_artifacts,
             "input_artifact_fingerprints": input_artifact_fingerprints(input_refs),
             "output_artifacts": intermediate_artifacts.artifact_id_for_path(output_artifact),

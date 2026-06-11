@@ -322,6 +322,7 @@ def main() -> int:
             raise AssertionError(f"unexpected selected-like diagnostic: {row}")
         provenance_expected = {
             "candidate_kind": "combined_full_stack_candidate",
+            "hardware_evidence_kind": "analytic_model_only",
             "objective_record": "objective::minimize_runtime",
             "policy_id": "deterministic_minimize_runtime_v1",
             "ordering_rule": "runtime_score_then_candidate_id",

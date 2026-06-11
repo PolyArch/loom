@@ -1379,8 +1379,8 @@ def main() -> int:
         dse_provenance_header = (
             "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"
             "area_um2,dynamic_power_mw,leakage_power_mw,energy_nj,selection_status,candidate_kind,"
-            "input_artifacts,input_artifact_fingerprints,output_artifacts,objective_record,metric_records,"
-            "feedback_fidelity_records,policy_id,ordering_rule,diagnostic\n"
+            "hardware_evidence_kind,input_artifacts,input_artifact_fingerprints,output_artifacts,"
+            "objective_record,metric_records,feedback_fidelity_records,policy_id,ordering_rule,diagnostic\n"
         )
         valid_dse_inputs = [
             valid_mapping,
@@ -1413,6 +1413,7 @@ def main() -> int:
         valid_dse = out_dir / "valid-dse-candidate-summary.csv"
         valid_dse_provenance = (
             "combined_full_stack_candidate,"
+            "analytic_model_only,"
             f"{valid_dse_input_artifacts},{valid_dse_input_fingerprints},{valid_dse},"
             "objective::minimize_runtime,"
             f"{valid_dse_metric_records},"

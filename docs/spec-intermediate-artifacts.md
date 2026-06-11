@@ -369,6 +369,10 @@ Rules:
   in optional columns or referenced reports.
 * Candidate rows must refer to immutable candidate artifacts. They must
   not describe mutable search state as final evidence.
+* Selected, Pareto, and rejected candidate rows must carry
+  `hardware_evidence_kind`. Analytic FPA rows use
+  `analytic_model_only`; they may participate in declared low-fidelity
+  ranking but must not be counted as backend hardware evidence.
 * For a workload made of multiple dataflow graphs, `mapping_id` may
   identify a workload graph-set aggregate mapping artifact. The selected
   row's cycle and energy values must match the aggregate CGRA-sim report
