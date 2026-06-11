@@ -85,18 +85,19 @@ The target is verifiable when:
 
 ## Unsupported Scope Policy
 
-Unsupported `loombench` tiers must name the benchmark, tier, missing
-capability, selected profile, and diagnostic class. A benchmark may be
+Unsupported `loombench` tiers must satisfy the Unsupported Scope Policy
+in `docs/spec-loom-stack.md`. `benchmark` may be the workload case
+value, and `tier` may be component-specific context. A benchmark may be
 accepted before every tier is implemented only when the unsupported
 tiers are explicit and auditable.
 
 ## Relationships To Other Contracts
 
-`loombench` uses the validation ladder defined by
-`docs/spec-app-dropin-test-corpus.md` and the report and artifact
-contracts in `docs/spec-full-stack-reporting.md` and
-`docs/spec-intermediate-artifacts.md`. It participates in DSE through
-`docs/spec-dse-feedback.md`.
+`loombench` follows the global workload/evidence policy and
+unsupported-scope policy in `docs/spec-loom-stack.md`. It uses the
+report and artifact contracts in `docs/spec-full-stack-reporting.md`
+and `docs/spec-intermediate-artifacts.md`. It participates in DSE
+through `docs/spec-dse-feedback.md`.
 
 Compiler behavior still follows the source, raise, and dataflow specs.
 Hardware behavior still follows the Fabric specs. `loombench` does not

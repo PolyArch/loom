@@ -179,10 +179,9 @@ Skip budgets are allowed only as explicit manifest policy. A skip must
 name the case, tier, reason, and owner category. Silent skip-by-missing
 file or skip-by-empty-corpus behavior is illegal.
 
-Unsupported-scope rows must include the shared fields required by
-`docs/spec-loom-stack.md`: case, component, missing capability, owner
-category, selected profile, and diagnostic class. Component-specific
-fields may be added, but the shared fields must not be omitted.
+Unsupported-scope rows must satisfy the Unsupported Scope Policy in
+`docs/spec-loom-stack.md`. App-corpus rows may add component-specific
+case, tier, runner, or expected-output fields.
 
 ## Artifact Requirements
 

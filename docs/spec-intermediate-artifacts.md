@@ -567,27 +567,17 @@ Rules:
 
 ### Normalized FPA Report
 
-Purpose: record frequency, power, and area evidence in the stable JSON
-contract consumed by reports and DSE.
-
-Required top-level keys:
-
-* `schema_version`;
-* `kind`;
-* `report_id`;
-* `fidelity_level`;
-* `source_artifacts`;
-* `model_identity`;
-* `calibration_identity`;
-* `metrics`;
-* `diagnostics`.
+Purpose: content-audit the normalized FPA report specified by
+`docs/spec-fpa-estimation.md` and prove it can be consumed by reports
+and DSE.
 
 Rules:
 
+* Required top-level keys and metric fields are owned by the Report
+  Contract section of `docs/spec-fpa-estimation.md`. This gate must not
+  define a second FPA JSON schema.
 * `kind` must be `fpa_report`.
 * `fidelity_level` follows `docs/spec-fidelity-ladder.md`.
-* Each metric records value, unit, source artifact identity, derivation
-  kind, confidence when required by the fidelity level, and diagnostics.
 * Backend reports may calibrate an analytic model, but calibrated
   analytic output remains analytic unless the metric is directly
   produced by a backend evidence class.

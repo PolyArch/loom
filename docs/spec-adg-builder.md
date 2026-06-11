@@ -148,9 +148,10 @@ attach metadata, but they must not bypass verifier rules.
 
 ### Exact Fabric Layer
 
-The exact layer mirrors Fabric ADG one-for-one. Every call in this
-layer corresponds to one target Fabric concept. This is the required
-escape hatch for precise control.
+The exact layer mirrors the system-level `fabric.system` construction
+surface one-for-one. Every call in this layer corresponds to one target
+system Fabric concept. This is the required escape hatch for precise
+system-level control.
 
 Required interface shape:
 
@@ -167,8 +168,9 @@ CoherenceDomainRef addCoherenceDomain(Symbol name,
 
 `NodeSpec`, `PortSpec`, `ChannelSpec`, `LinkSpec`, and domain specs must
 map directly to the Fabric ADG fields in `docs/spec-fabric-system-adg.md`.
-The exact layer must let a user produce any verifier-legal Fabric ADG.
-It must also reject or diagnose invalid ADG before or during emission.
+The exact layer must let a user produce any verifier-legal
+`fabric.system` construct. It must also reject or diagnose invalid
+system ADG before or during emission.
 
 ### Convenience Layer
 
@@ -277,8 +279,9 @@ emission:
 * pre-emission validation checks builder handle consistency, unresolved
   symbols, duplicate names, and helper expansion completeness;
 * emission produces Fabric ADG;
-* post-emission validation invokes the Fabric ADG verifier contract from
-  `docs/spec-fabric-system-adg.md`.
+* post-emission validation invokes the relevant Fabric verifier
+  contracts, including `docs/spec-fabric-module.md` for `fabric.module`
+  roots and `docs/spec-fabric-system-adg.md` for `fabric.system` roots.
 
 Builder diagnostics must identify the user-level helper call or exact
 object that introduced the problem. Diagnostics should also identify the

@@ -239,10 +239,9 @@ Diagnostics must distinguish:
 Diagnostics should preserve source locations when available and should
 identify the relevant pipeline component.
 
-Unsupported-scope diagnostics must include the shared fields required by
-`docs/spec-loom-stack.md`: case, component, missing capability, owner
-category, selected profile, and diagnostic class. CMSIS-specific
-diagnostics may add source-tree, target-triple, or intrinsic details.
+Unsupported-scope diagnostics must satisfy the Unsupported Scope Policy
+in `docs/spec-loom-stack.md`. CMSIS-specific diagnostics may add
+source-tree, target-triple, intrinsic, or source-row details.
 
 ## Reports
 
