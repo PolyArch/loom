@@ -118,6 +118,7 @@ A memory descriptor records:
 * logical argument identity;
 * host-visible address or buffer handle;
 * size and element layout;
+* layout source kind and source identity;
 * access direction;
 * alignment;
 * address-space or memory binding when known;
@@ -129,6 +130,13 @@ runtime may receive ordinary host pointers, but a platform adapter must
 translate or bind them to memory that the selected accelerator target
 can legally access. This translation is a runtime/platform service, not
 a Fabric ADG virtual-memory feature.
+
+The layout source fields identify where the runtime obtained the
+element layout and extent. For test fixtures this may be a static
+workload fixture identity; for compiled host wrappers or platform
+profiles it must identify the explicit artifact or profile that
+provided the layout. The runtime must not silently infer layout from a
+workload name without recording that source.
 
 ## Data Movement Policies
 

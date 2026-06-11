@@ -45,6 +45,9 @@ SYNCHRONIZATION_POLICIES = {
     "device_poll",
 }
 RUNTIME_INVOCATION_ABI = "loom_runtime_package_v1"
+RUNTIME_MEMORY_LAYOUT_SOURCE_KINDS = {
+    "static_workload_fixture",
+}
 FPA_FIDELITY_LEVELS = {
     "analytic",
     "mapped_activity",
@@ -5443,6 +5446,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "direction",
                 "policy",
                 "runtime_input_identity",
+                "layout_source_kind",
+                "layout_source_identity",
                 "element_layout",
                 "address_space",
                 "coherence_requirement",
@@ -5450,6 +5455,15 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             ):
                 if not isinstance(descriptor.get(key), str) or not descriptor.get(key):
                     diagnostics.append(f"runtime package memory descriptor {index} lacks {key}")
+            if descriptor.get("layout_source_kind") not in RUNTIME_MEMORY_LAYOUT_SOURCE_KINDS:
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} has unknown layout_source_kind"
+                )
+            if descriptor.get("layout_source_identity") != descriptor.get("runtime_input_identity"):
+                diagnostics.append(
+                    f"runtime package memory descriptor {index} layout_source_identity "
+                    "does not match runtime_input_identity"
+                )
             for key in ("byte_size", "alignment_bytes"):
                 if not isinstance(descriptor.get(key), int) or descriptor.get(key) <= 0:
                     diagnostics.append(f"runtime package memory descriptor {index} has invalid {key}")

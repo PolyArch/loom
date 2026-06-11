@@ -566,6 +566,8 @@ def memory_descriptor(
         "direction": "read_write",
         "policy": data_movement_policy,
         "runtime_input_identity": runtime_input,
+        "layout_source_kind": "static_workload_fixture",
+        "layout_source_identity": runtime_input,
         **layout,
         "address_space": address_space_for_policy(data_movement_policy, platform_binding),
         "coherence_requirement": coherence_requirement_for_policy(data_movement_policy),

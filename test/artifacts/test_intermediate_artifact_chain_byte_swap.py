@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -219,6 +220,8 @@ def main() -> int:
                 "host_buffer_identity": "runtime-buffer::byte_swap::default_input",
                 "policy": "simulated",
                 "runtime_input_identity": "test-app-fixture::byte_swap::default",
+                "layout_source_kind": "static_workload_fixture",
+                "layout_source_identity": "test-app-fixture::byte_swap::default",
                 "byte_size": 256,
                 "element_layout": "u32[32];u32[32]",
                 "alignment_bytes": 4,
@@ -321,6 +324,29 @@ def main() -> int:
             raise AssertionError(
                 f"audit missed byte_swap cross-artifact checks {expected_cross_checks - cross_checks}: {audit}"
             )
+
+        missing_layout_source = out_dir / "missing-layout-source-runtime-package.json"
+        missing_layout_source_data = read_json_object(out_dir / "runtime-package.json")
+        missing_layout_source_data["memory_descriptors"][0].pop("layout_source_identity", None)
+        missing_layout_source.write_text(
+            json.dumps(missing_layout_source_data, indent=2, sort_keys=True) + "\n"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "missing-layout-source-audit.json"),
+                str(missing_layout_source),
+            ],
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode == 0:
+            raise AssertionError("runtime package without memory layout source unexpectedly passed audit")
 
     return 0
 

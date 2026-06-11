@@ -592,6 +592,8 @@ def main() -> int:
             "direction": "read_write",
             "policy": "simulated",
             "runtime_input_identity": "test-app-fixture::vecsum::default",
+            "layout_source_kind": "static_workload_fixture",
+            "layout_source_identity": "test-app-fixture::vecsum::default",
             "byte_size": 256,
             "element_layout": "u32[64]",
             "alignment_bytes": 4,
