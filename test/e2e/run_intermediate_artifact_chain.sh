@@ -59,6 +59,9 @@ case "${CASE}" in
   prefix_sum)
     case_graph="g_t_prefix_sum_red_0_0"
     ;;
+  cumsum)
+    case_graph="g_t_cumsum_kernel_red_0_0"
+    ;;
   integrate_trapz)
     case_graph="g_t_integrate_trapz_red_0_0"
     ;;

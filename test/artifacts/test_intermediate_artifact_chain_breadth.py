@@ -112,6 +112,18 @@ CASES = {
         "byte_size": 512,
         "element_layout": "i32[64];i32[64]",
     },
+    "cumsum": {
+        "graph": "g_t_cumsum_kernel_red_0_0",
+        "mapping_id": "cumsum__g_t_cumsum_kernel_red_0_0__shared_reduction_adg",
+        "placed_records": "6",
+        "routed_edges": "9",
+        "config_records": 90,
+        "dfg_cycles": 14339,
+        "dynamic_work_items": 1024,
+        "cgra_cycles": 14356,
+        "byte_size": 8192,
+        "element_layout": "f32[1024];f32[1024]",
+    },
     "integrate_trapz": {
         "graph": "g_t_integrate_trapz_red_0_0",
         "mapping_id": "integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg",
