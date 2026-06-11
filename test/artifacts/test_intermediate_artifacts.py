@@ -347,9 +347,9 @@ def write_mapping_artifact(path: Path, workload: str, graph: str, mapping_id: st
                         "segments": [
                             {
                                 "segment_id": "seg0",
-                                "segment_kind": "module_path",
-                                "source_endpoint": "fabric0::fabric.op#0.out",
-                                "sink_endpoint": "fabric0::fabric.op#1.in",
+                                "segment_kind": "resource_edge",
+                                "source_endpoint": "fabric0::fabric.op#0.result0",
+                                "sink_endpoint": "fabric0::fabric.op#1.operand0",
                             }
                         ],
                     }
@@ -423,6 +423,37 @@ def write_cgra_report(
                 "final_memory_state": {},
                 "functional_state_source": "carried_from_dfg_sim_report",
                 "diagnostics": ["synthetic checked CGRA report"],
+            }
+        )
+    )
+
+
+def write_blocked_sim_comparison_report(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "sim_comparison_report",
+                "comparison_id": "sim-comparison::vecadd::blocked-cgra",
+                "workload": "vecadd",
+                "runtime_input_identity": "test-app-fixture::vecadd::default",
+                "dfg_sim_report_identity": "vecadd-dfg-sim-report",
+                "cgra_sim_report_identity": "vecadd-cgra-sim-report",
+                "mapping_artifact_identity": "vecadd-pnr-mapping",
+                "functional_comparison_status": "pass",
+                "memory_comparison_status": "pass",
+                "performance_comparison_status": "blocked",
+                "performance_metric_definitions": {
+                    "dfg": "optimistic_pipeline_latency_throughput_sum",
+                    "cgra": "mapping_constraint_estimate",
+                },
+                "dfg_sim_cycles": 10,
+                "cgra_sim_cycles": 10,
+                "performance_delta_cycles": 0,
+                "difference_classification": "unsupported_scope",
+                "explanation_categories": ["explicit_fabric_route_paths"],
+                "diagnostics": ["CGRA-sim report status blocked blocks performance comparison"],
+                "status": "blocked",
             }
         )
     )
@@ -597,6 +628,74 @@ def main() -> int:
         audit_data = json.loads(audit_fail.read_text())
         if audit_data.get("verdict") != "fail":
             raise AssertionError(f"expected fail audit, got {audit_data}")
+
+        placeholder_endpoint_mapping = out_dir / "placeholder-endpoint-pnr-mapping.json"
+        write_mapping_artifact(placeholder_endpoint_mapping, "placeholder", "g_placeholder", "map_placeholder")
+        placeholder_data = json.loads(placeholder_endpoint_mapping.read_text())
+        placeholder_data["routes"][0]["segments"][0]["source_endpoint"] = "fabric0::fabric.op#0.out"
+        placeholder_data["routes"][0]["segments"][0]["sink_endpoint"] = "fabric0::fabric.op#1.in"
+        placeholder_endpoint_mapping.write_text(json.dumps(placeholder_data))
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-placeholder-route.json"),
+                str(placeholder_endpoint_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("placeholder route endpoints unexpectedly passed audit")
+
+        noncontiguous_mapping = out_dir / "noncontiguous-pnr-mapping.json"
+        write_mapping_artifact(noncontiguous_mapping, "noncontiguous", "g_noncontiguous", "map_noncontiguous")
+        noncontiguous_data = json.loads(noncontiguous_mapping.read_text())
+        noncontiguous_data["routes"][0]["segments"] = [
+            {
+                "segment_id": "seg0",
+                "segment_kind": "resource_edge",
+                "source_endpoint": "fabric0::fabric.op#0.result0",
+                "sink_endpoint": "fabric0::fabric.switch#0.operand0",
+            },
+            {
+                "segment_id": "seg1",
+                "segment_kind": "resource_edge",
+                "source_endpoint": "fabric0::fabric.switch#0.result0",
+                "sink_endpoint": "fabric0::fabric.op#1.operand0",
+            },
+        ]
+        noncontiguous_mapping.write_text(json.dumps(noncontiguous_data))
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-noncontiguous-route.json"),
+                str(noncontiguous_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("noncontiguous route segments unexpectedly passed audit")
+
+        blocked_comparison = out_dir / "blocked-sim-comparison-report.json"
+        write_blocked_sim_comparison_report(blocked_comparison)
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-blocked-sim-comparison.json"),
+                str(blocked_comparison),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "blocked simulation comparison unexpectedly failed audit\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
 
         missing_hardware_fields = out_dir / "missing-adg-hardware-summary.csv"
         missing_hardware_fields.write_text(

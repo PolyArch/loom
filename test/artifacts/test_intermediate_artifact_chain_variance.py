@@ -86,10 +86,10 @@ def main() -> int:
         if len(variance_rows) != 1:
             raise AssertionError(f"expected one aggregate variance mapping row, got {mapping_rows}")
         mapping_row = variance_rows[0]
-        if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "pass":
+        if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "blocked":
             raise AssertionError(f"unexpected variance aggregate mapping row: {mapping_row}")
-        if mapping_row["unrouted_edges"] != "0" or mapping_row["unplaced_records"] != "0":
-            raise AssertionError(f"variance aggregate mapping should be fully routed: {mapping_row}")
+        if mapping_row["routed_edges"] != "0" or mapping_row["unrouted_edges"] != "22" or mapping_row["unplaced_records"] != "0":
+            raise AssertionError(f"variance aggregate mapping should preserve unrouted edges: {mapping_row}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())
         if mapping_artifact.get("graph") != "workload_graph_set":
@@ -109,8 +109,8 @@ def main() -> int:
             component = json.loads((out_dir / name).read_text())
             if component.get("graph") != graph or component.get("mapping_id") != mapping_id:
                 raise AssertionError(f"unexpected variance component mapping {name}: {component}")
-            if component.get("status") != "pass":
-                raise AssertionError(f"variance component mapping {name} should pass: {component}")
+            if component.get("status") != "fail":
+                raise AssertionError(f"variance component mapping {name} should expose unrouted failure: {component}")
 
         dfg_report = json.loads((out_dir / "variance-dfg-sim-report.json").read_text())
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "variance DFG-sim cycles")
@@ -123,15 +123,15 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "variance CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected variance CGRA mapping identity: {cgra_report}")
-        if cgra_cycles != 576:
-            raise AssertionError(f"variance aggregate CGRA cycles should include both passes: {cgra_report}")
+        if cgra_report.get("status") != "blocked" or cgra_cycles != 546:
+            raise AssertionError(f"variance aggregate CGRA report should be blocked at DFG cycles: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"variance CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
         if set(cgra_report.get("component_mapping_ids", [])) != EXPECTED_MAPPING_IDS:
             raise AssertionError(f"variance aggregate CGRA report missed component mappings: {cgra_report}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
-        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "variance":
+        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != "variance":
             raise AssertionError(f"unexpected variance runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != f"work-package::variance::{AGGREGATE_MAPPING_ID}":
             raise AssertionError(f"unexpected variance work package identity: {runtime_package}")
@@ -159,21 +159,21 @@ def main() -> int:
             raise AssertionError(f"expected one variance sim row, got {sim_rows}")
         if variance_sim[0]["dfg_sim_cycles"] != str(dfg_cycles):
             raise AssertionError(f"variance sim summary missed DFG cycles: {variance_sim[0]}")
-        if variance_sim[0]["cgra_sim_cycles"] != str(cgra_cycles):
-            raise AssertionError(f"variance sim summary missed CGRA cycles: {variance_sim[0]}")
+        if variance_sim[0]["cgra_sim_cycles"] != "" or variance_sim[0]["status"] != "blocked":
+            raise AssertionError(f"variance sim summary should preserve blocked CGRA status: {variance_sim[0]}")
 
         dse_rows = read_csv_rows(out_dir / "dse-candidate-summary.csv")
         variance_dse = [row for row in dse_rows if row["workload"] == "variance"]
         if len(variance_dse) != 1:
             raise AssertionError(f"expected one variance DSE row, got {dse_rows}")
         dse_row = variance_dse[0]
-        if dse_row["mapping_id"] != AGGREGATE_MAPPING_ID or dse_row["selection_status"] != "selected":
+        if dse_row["mapping_id"] != AGGREGATE_MAPPING_ID or dse_row["selection_status"] != "blocked":
             raise AssertionError(f"unexpected variance DSE row: {dse_row}")
-        if dse_row["cgra_sim_cycles"] != str(cgra_cycles) or float(dse_row["energy_nj"]) <= 0.0:
-            raise AssertionError(f"variance DSE row missed cycle or energy evidence: {dse_row}")
+        if dse_row["cgra_sim_cycles"] != "" or dse_row["energy_nj"] != "":
+            raise AssertionError(f"blocked variance DSE row must not expose objective metrics: {dse_row}")
 
         workload_bundle = json.loads((out_dir / "workload-report-bundle.json").read_text())
-        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != "variance":
+        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != "variance":
             raise AssertionError(f"unexpected variance workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
@@ -181,9 +181,9 @@ def main() -> int:
             if isinstance(metric, dict)
         }
         for metric_id in (
-            "metric::variance::cgra_sim_cycles",
-            "metric::variance::estimated_runtime_us",
-            "metric::variance::energy_nj",
+            "metric::variance::dfg_sim_cycles",
+            "metric::variance::workload_size_items",
+            "metric::shared_reduction_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"variance workload report missed {metric_id}: {workload_bundle}")
@@ -235,7 +235,7 @@ def main() -> int:
         cgra_evidence = [
             check
             for check in audit.get("cross_artifact_checks", [])
-            if check.get("rule") == "sim_cycle_report_mapping_evidence"
+            if check.get("rule") == "sim_cycle_blocked_mapping_evidence"
             and check.get("workload") == "variance"
         ]
         if not cgra_evidence:

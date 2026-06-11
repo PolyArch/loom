@@ -101,14 +101,16 @@ def main() -> int:
             "hardware": "shared_reduction_adg",
             "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "placed_records": "5",
-            "routed_edges": "6",
-            "unrouted_edges": "0",
+            "routed_edges": "0",
+            "unrouted_edges": "6",
             "unplaced_records": "0",
-            "status": "pass",
+            "status": "fail",
         }
         for key, value in expected.items():
             if row[key] != value:
                 raise AssertionError(f"explicit mapping {key}={row[key]!r}, expected {value!r}")
+        if "unrouted software edges lack Fabric ADG connectivity" not in row.get("diagnostic", ""):
+            raise AssertionError(f"explicit mapping should report unrouted Fabric ADG connectivity: {row}")
         if not artifact.is_file():
             raise AssertionError("explicit mapping did not emit JSON artifact")
 
@@ -154,8 +156,10 @@ def main() -> int:
             if len(graph_rows) != 1:
                 raise AssertionError(f"expected one mapping row for {graph_name}, got {graph_rows}")
             graph_row = graph_rows[0]
-            if graph_row["status"] != "pass":
-                raise AssertionError(f"mapping row for {graph_name} should pass: {graph_row}")
+            if graph_row["status"] != "fail":
+                raise AssertionError(f"mapping row for {graph_name} should fail without Fabric ADG routes: {graph_row}")
+            if "unrouted software edges lack Fabric ADG connectivity" not in graph_row.get("diagnostic", ""):
+                raise AssertionError(f"mapping row for {graph_name} should diagnose unrouted edges: {graph_row}")
             mapping_id = graph_row["mapping_id"]
             if graph_name not in mapping_id:
                 raise AssertionError(

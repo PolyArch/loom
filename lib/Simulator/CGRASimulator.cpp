@@ -409,6 +409,8 @@ bool isSupportedSchedule(llvm::StringRef schedule) {
 }
 
 llvm::StringRef differenceClassification(const CGRASimReport &report) {
+  if (report.status != "pass")
+    return "unsupported_scope";
   return report.performanceDeltaCycles == 0 ? "no_modeled_hardware_constraints"
                                             : "expected_hardware_constraint";
 }
@@ -736,9 +738,17 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (llvm::Error err = requireKindAndPass(*dfgOrErr, "dfg_sim_report",
                                            options.dfgReportPath))
     return std::move(err);
-  if (llvm::Error err = requireKindAndPass(*mappingOrErr, "pnr_mapping",
-                                           options.mappingArtifactPath))
-    return std::move(err);
+  std::optional<llvm::StringRef> mappingKind = mappingOrErr->getString("kind");
+  if (!mappingKind || *mappingKind != "pnr_mapping")
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s has wrong kind",
+                                   options.mappingArtifactPath.c_str());
+  std::optional<llvm::StringRef> mappingStatus =
+      mappingOrErr->getString("status");
+  if (!mappingStatus || mappingStatus->empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "%s lacks string field status",
+                                   options.mappingArtifactPath.c_str());
 
   CGRASimReport report;
   auto workloadOrErr =
@@ -800,6 +810,40 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     return finalMemoryStateOrErr.takeError();
   report.finalMemoryState = *finalMemoryStateOrErr;
   report.functionalStateSource = "carried_from_dfg_sim_report";
+
+  if (*mappingStatus != "pass") {
+    auto routeStatsOrErr =
+        collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
+    if (!routeStatsOrErr)
+      return routeStatsOrErr.takeError();
+    report.routedEdges = routeStatsOrErr->routeCount;
+    report.routeSegments = routeStatsOrErr->segmentCount;
+    auto configRecordsOrErr = requireNonNegativeInteger(
+        *mappingOrErr, "config_records", options.mappingArtifactPath);
+    if (!configRecordsOrErr)
+      return configRecordsOrErr.takeError();
+    report.configRecords = *configRecordsOrErr;
+    if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
+      return std::move(err);
+    report.memoryLatencyCycles = 0;
+    report.temporalPenaltyCycles = 0;
+    report.hardwareAwareCycles = report.dfgCycles;
+    report.modeledLowerBoundCycles = report.dfgCycles;
+    report.performanceDeltaCycles = 0;
+    report.status = "blocked";
+    report.diagnostic = "mapping artifact status " + mappingStatus->str() +
+                        " blocks CGRA-sim";
+    if (const llvm::json::Array *diagnostics =
+            mappingOrErr->getArray("diagnostics")) {
+      if (!diagnostics->empty()) {
+        if (std::optional<llvm::StringRef> detail =
+                (*diagnostics)[0].getAsString())
+          report.diagnostic += ": " + detail->str();
+      }
+    }
+    return report;
+  }
+
   auto routeStatsOrErr =
       collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
   if (!routeStatsOrErr)
@@ -902,7 +946,8 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"operation_semantics_source", report.operationSemanticsSource},
       {"operation_cost_model_source", report.operationCostModelSource},
       {"difference_classification", differenceClassification(report)},
-      {"hardware_bound_classification", "within_modeled_bounds"},
+      {"hardware_bound_classification",
+       report.status == "pass" ? "within_modeled_bounds" : "unsupported_scope"},
       {"dfg_cycles", static_cast<int64_t>(report.dfgCycles)},
       {"modeled_lower_bound_cycles",
        static_cast<int64_t>(report.modeledLowerBoundCycles)},

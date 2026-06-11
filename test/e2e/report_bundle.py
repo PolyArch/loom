@@ -36,11 +36,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def selected_dse_row(paths: list[Path]) -> tuple[Path, dict[str, str]] | None:
+    blocked: tuple[Path, dict[str, str]] | None = None
     for path in paths:
         for row in read_csv(path):
             if row.get("selection_status") == "selected":
                 return path, row
-    return None
+            if blocked is None and row.get("selection_status") == "blocked":
+                blocked = (path, row)
+    return blocked
 
 
 def matching_row(paths: list[Path], key: str, value: str) -> tuple[Path, dict[str, str]] | None:
@@ -129,6 +132,13 @@ def matching_cgra_report_path(paths: list[Path], workload: str, hardware: str, m
 
 def numeric(row: dict[str, str], key: str) -> float:
     return float(row[key])
+
+
+def optional_numeric(row: dict[str, str], key: str) -> float | None:
+    value = row.get(key, "")
+    if value == "":
+        return None
+    return float(value)
 
 
 def diagnostic_class(message: str) -> str:
@@ -529,7 +539,12 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             )
         )
 
-    if isinstance(cgra_report.get("hardware_aware_cycles"), int) and cgra_path is not None:
+    cgra_report_pass = cgra_report.get("status") == "pass"
+    if (
+        cgra_report_pass
+        and isinstance(cgra_report.get("hardware_aware_cycles"), int)
+        and cgra_path is not None
+    ):
         metric_records.append(
             report_metric_helpers.metric_record(
                 metric_id=f"metric::{workload}::cgra_sim_cycles",
@@ -567,6 +582,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             )
 
     if (
+        cgra_report_pass
+        and
         isinstance(cgra_report.get("hardware_aware_cycles"), int)
         and cgra_path is not None
         and rtl_row is not None
@@ -602,23 +619,27 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         dynamic_power_metric_id,
         leakage_power_metric_id,
     ]
-    metric_records.append(
-        report_metric_helpers.metric_record(
-            metric_id=f"metric::{workload}::energy_nj",
-            metric_class="energy",
-            value=numeric(dse_row, "energy_nj"),
-            unit="nJ",
-            fidelity_level=(
-                rtl_row.get("fidelity_level", "") if rtl_row is not None else ""
-            ) or "custom_calibrated",
-            evidence_source_artifact_id=artifact_id(dse_path),
-            producer_component="dse-candidate-summary",
-            derivation_kind="runtime_power_energy",
-            diagnostics=[dse_row.get("diagnostic", "")],
-            input_metric_ids=energy_inputs,
+    dse_energy_nj = optional_numeric(dse_row, "energy_nj")
+    if dse_energy_nj is not None:
+        metric_records.append(
+            report_metric_helpers.metric_record(
+                metric_id=f"metric::{workload}::energy_nj",
+                metric_class="energy",
+                value=dse_energy_nj,
+                unit="nJ",
+                fidelity_level=(
+                    rtl_row.get("fidelity_level", "") if rtl_row is not None else ""
+                ) or "custom_calibrated",
+                evidence_source_artifact_id=artifact_id(dse_path),
+                producer_component="dse-candidate-summary",
+                derivation_kind="runtime_power_energy",
+                diagnostics=[dse_row.get("diagnostic", "")],
+                input_metric_ids=energy_inputs,
+            )
         )
-    )
     if (
+        cgra_report_pass
+        and
         isinstance(dfg_report.get("dynamic_work_items"), int)
         and isinstance(cgra_report.get("hardware_aware_cycles"), int)
         and cgra_path is not None

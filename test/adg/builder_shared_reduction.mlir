@@ -22,8 +22,7 @@
 
 // MAPPING-DAG: "hardware": "shared_reduction_adg"
 // MAPPING-DAG: "placed_records": 5
-// MAPPING-DAG: "routed_edges": 6
-// MAPPING-DAG: "config_records": 65
-// MAPPING-DAG: "segments"
-// MAPPING-DAG: "segment_kind": "module_path"
-// MAPPING-DAG: "status": "pass"
+// MAPPING-DAG: "routed_edges": 0
+// MAPPING-DAG: "unrouted_edges": 6
+// MAPPING-DAG: "config_records": 0
+// MAPPING-DAG: "status": "fail"

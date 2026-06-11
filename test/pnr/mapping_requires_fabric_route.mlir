@@ -1,25 +1,28 @@
-// RUN: loom-pnr-map --dfg-mlir %s --graph parallel_edges --hardware-mlir %s --hardware parallel_adg --workload parallel_edges --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph disconnected_route --hardware-mlir %s --hardware disconnected_adg --workload disconnected_route --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: parallel_edges,parallel_adg,parallel_edges__parallel_edges__parallel_adg,2,0,2,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CSV-NEXT: disconnected_route,disconnected_adg,disconnected_route__disconnected_route__disconnected_adg,2,0,2,0,fail
 
 // JSON-DAG: "status": "fail"
 // JSON-DAG: "routed_edges": 0
 // JSON-DAG: "unrouted_edges": 2
+// JSON-DAG: "diagnostics": [
+// JSON-DAG: "unrouted software edges lack Fabric ADG connectivity"
+// JSON-NOT: "source_endpoint"
+// JSON-NOT: "sink_endpoint"
 
 module {
-  dataflow.graph.func private @parallel_edges(%ctrl: none, %lhs: i32, %rhs: i32)
+  dataflow.graph.func private @disconnected_route(%ctrl: none, %lhs: i32, %rhs: i32)
       -> (none, i32) {
     %sum = arith.addi %lhs, %rhs : i32
     %doubled = arith.addi %sum, %sum : i32
     dataflow.graph.return %ctrl, %doubled : none, i32
   }
 
-  fabric.module @parallel_adg(%i32a : !fabric.bits<32>,
-                              %i32b : !fabric.bits<32>,
-                              %i32c : !fabric.bits<32>) {
+  fabric.module @disconnected_adg(%i32a : !fabric.bits<32>,
+                                  %i32b : !fabric.bits<32>) {
     fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                          %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,

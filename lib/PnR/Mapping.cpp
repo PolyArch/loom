@@ -55,10 +55,33 @@ struct HardwareResource {
   std::string id;
   ResourceKind kind;
   std::string schedule;
+  mlir::Operation *op = nullptr;
   std::map<std::string, std::set<std::string>> hwParamOptions;
   std::map<std::string, std::string> swConfigs;
   llvm::StringSet<> supportedOps;
   bool used = false;
+};
+
+struct HardwareRouteSegment {
+  std::string segmentKind;
+  std::string sourceEndpoint;
+  std::string sinkEndpoint;
+  std::string hardwareRef;
+};
+
+struct HardwareTopology {
+  std::map<std::string, llvm::SmallVector<HardwareRouteSegment, 2>>
+      segmentsBySource;
+};
+
+struct HardwareModel {
+  llvm::SmallVector<HardwareResource> resources;
+  HardwareTopology topology;
+};
+
+struct RouteCollection {
+  llvm::SmallVector<RouteRecord, 0> routes;
+  std::uint64_t unroutedEdges = 0;
 };
 
 std::string csvEscape(llvm::StringRef value) {
@@ -279,6 +302,7 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
         HardwareResource{(hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
                          ResourceKind::MemLoad,
                          schedule,
+                         op,
                          {},
                          {},
                          {},
@@ -289,6 +313,7 @@ void appendMemResources(mlir::Operation *op, llvm::StringRef hardwareName,
         HardwareResource{(hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
                          ResourceKind::MemStore,
                          schedule,
+                         op,
                          {},
                          {},
                          {},
@@ -306,6 +331,7 @@ void appendFabricOpResource(
   resource.id = (hardwareName + "::fabric.op#" + llvm::Twine(index)).str();
   resource.kind = ResourceKind::FabricOp;
   resource.schedule = nearestSchedule(op);
+  resource.op = op;
   appendHwParamOptions(op, resource);
   if (auto swConfigs = op->getAttrOfType<mlir::DictionaryAttr>("sw_configs")) {
     for (mlir::NamedAttribute namedAttr : swConfigs) {
@@ -320,23 +346,125 @@ void appendFabricOpResource(
   resources.push_back(std::move(resource));
 }
 
-llvm::Expected<llvm::SmallVector<HardwareResource>>
-collectHardwareResources(mlir::Operation *hardware, llvm::StringRef name) {
-  llvm::SmallVector<HardwareResource> resources;
+std::string endpointFor(llvm::StringRef resourceId, llvm::StringRef endpoint,
+                        unsigned index) {
+  return (resourceId + "." + endpoint + llvm::Twine(index)).str();
+}
+
+bool isRouteResourceOp(llvm::StringRef opName) {
+  return opName == "fabric.switch" || opName == "fabric.fifo" ||
+         opName == "fabric.boundary";
+}
+
+std::string routeResourceKind(llvm::StringRef opName) {
+  if (opName == "fabric.switch")
+    return "fabric.switch";
+  if (opName == "fabric.fifo")
+    return "fabric.fifo";
+  return "fabric.boundary";
+}
+
+std::string internalRouteSegmentKind(llvm::StringRef opName) {
+  if (opName == "fabric.fifo")
+    return "buffer";
+  if (opName == "fabric.boundary")
+    return "boundary_crossing";
+  return "module_path";
+}
+
+void addTopologySegment(HardwareTopology &topology,
+                        HardwareRouteSegment segment) {
+  topology.segmentsBySource[segment.sourceEndpoint].push_back(
+      std::move(segment));
+}
+
+HardwareTopology buildHardwareTopology(
+    mlir::Operation *hardware, llvm::StringRef hardwareName,
+    const llvm::SmallVectorImpl<HardwareResource> &resources) {
+  HardwareTopology topology;
+  llvm::DenseMap<mlir::Operation *, std::string> endpointResourceByOp;
+  for (const HardwareResource &resource : resources) {
+    if (resource.kind == ResourceKind::FabricOp && resource.op)
+      endpointResourceByOp.try_emplace(resource.op, resource.id);
+  }
+
+  llvm::StringMap<unsigned> routeResourceCounts;
+  hardware->walk([&](mlir::Operation *op) {
+    llvm::StringRef opName = op->getName().getStringRef();
+    if (!isRouteResourceOp(opName))
+      return;
+    std::string kind = routeResourceKind(opName);
+    unsigned index = routeResourceCounts[kind]++;
+    endpointResourceByOp.try_emplace(
+        op, (hardwareName + "::" + kind + "#" + llvm::Twine(index)).str());
+  });
+
+  unsigned ssaEdgeIndex = 0;
+  hardware->walk([&](mlir::Operation *op) {
+    auto destIt = endpointResourceByOp.find(op);
+    if (destIt == endpointResourceByOp.end())
+      return;
+    llvm::StringRef opName = op->getName().getStringRef();
+    llvm::StringRef destId = destIt->second;
+    for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+         ++operandIndex) {
+      mlir::Value operand = op->getOperand(operandIndex);
+      mlir::Operation *producer = operand.getDefiningOp();
+      if (!producer)
+        continue;
+      auto sourceIt = endpointResourceByOp.find(producer);
+      if (sourceIt == endpointResourceByOp.end())
+        continue;
+      auto opResult = llvm::dyn_cast<mlir::OpResult>(operand);
+      if (!opResult)
+        continue;
+      addTopologySegment(
+          topology,
+          HardwareRouteSegment{
+              "resource_edge",
+              endpointFor(sourceIt->second, "result",
+                          opResult.getResultNumber()),
+              endpointFor(destId, "operand", operandIndex),
+              (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
+                  .str()});
+    }
+
+    if (!isRouteResourceOp(opName))
+      return;
+    for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+         ++operandIndex) {
+      for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
+           ++resultIndex) {
+        addTopologySegment(
+            topology,
+            HardwareRouteSegment{
+                internalRouteSegmentKind(opName),
+                endpointFor(destId, "operand", operandIndex),
+                endpointFor(destId, "result", resultIndex), destId.str()});
+      }
+    }
+  });
+  return topology;
+}
+
+llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
+                                                   llvm::StringRef name) {
+  HardwareModel model;
   unsigned fabricOpIndex = 0;
   hardware->walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
     if (opName == "fabric.op") {
-      appendFabricOpResource(op, name, fabricOpIndex++, resources);
+      appendFabricOpResource(op, name, fabricOpIndex++, model.resources);
       return;
     }
     if (opName == "fabric.mem")
-      appendMemResources(op, name, resources);
+      appendMemResources(op, name, model.resources);
   });
-  if (resources.empty())
+  if (model.resources.empty())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "hardware has no mappable resources");
-  return resources;
+  model.topology = buildHardwareTopology(hardware, name, model.resources);
+  return model;
 }
 
 bool resourceSupportsConfig(const HardwareResource &resource,
@@ -454,10 +582,50 @@ void collectValueProducers(
   }
 }
 
-llvm::SmallVector<RouteRecord, 0>
+bool findRouteDfs(const HardwareTopology &topology,
+                  const std::string &currentEndpoint,
+                  const std::string &targetEndpoint,
+                  llvm::StringSet<> &visited,
+                  llvm::SmallVectorImpl<RouteSegment> &path) {
+  if (currentEndpoint == targetEndpoint)
+    return true;
+  auto segmentsIt = topology.segmentsBySource.find(currentEndpoint);
+  if (segmentsIt == topology.segmentsBySource.end())
+    return false;
+  for (const HardwareRouteSegment &candidate : segmentsIt->second) {
+    if (!visited.insert(candidate.sinkEndpoint).second)
+      continue;
+    RouteSegment segment;
+    segment.segmentKind = candidate.segmentKind;
+    segment.sourceEndpoint = candidate.sourceEndpoint;
+    segment.sinkEndpoint = candidate.sinkEndpoint;
+    segment.hardwareRef = candidate.hardwareRef;
+    path.push_back(std::move(segment));
+    if (findRouteDfs(topology, candidate.sinkEndpoint, targetEndpoint, visited,
+                     path))
+      return true;
+    path.pop_back();
+  }
+  return false;
+}
+
+std::optional<llvm::SmallVector<RouteSegment, 2>>
+findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
+          const std::string &sinkEndpoint) {
+  llvm::StringSet<> visited;
+  visited.insert(sourceEndpoint);
+  llvm::SmallVector<RouteSegment, 2> path;
+  if (!findRouteDfs(topology, sourceEndpoint, sinkEndpoint, visited, path))
+    return std::nullopt;
+  for (auto [index, segment] : llvm::enumerate(path))
+    segment.segmentId = "seg" + std::to_string(index);
+  return path;
+}
+
+RouteCollection
 collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
               llvm::ArrayRef<PlacementRecord> placements,
-              llvm::StringRef hardwareName) {
+              const HardwareTopology &topology) {
   RouteBuilder builder;
   llvm::DenseMap<mlir::Operation *, std::string> nodeIds = indexNodeIds(nodes);
   collectValueProducers(graph, nodeIds, builder);
@@ -482,7 +650,7 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
     }
   }
 
-  llvm::SmallVector<RouteRecord, 0> routes;
+  RouteCollection collection;
   std::size_t index = 0;
   for (const auto &[edge, kind] : builder.payloadKindByEdge) {
     const std::string &from = edge.producerSoftwareId;
@@ -491,16 +659,20 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
     auto toHw = hardwareBySoftware.find(to);
     if (fromHw == hardwareBySoftware.end() || toHw == hardwareBySoftware.end())
       continue;
+    std::string sourceEndpoint =
+        endpointFor(fromHw->second, "result", edge.producerResultIndex);
+    std::string sinkEndpoint =
+        endpointFor(toHw->second, "operand", edge.consumerOperandIndex);
+    std::optional<llvm::SmallVector<RouteSegment, 2>> path =
+        findRoute(topology, sourceEndpoint, sinkEndpoint);
+    if (!path) {
+      ++collection.unroutedEdges;
+      continue;
+    }
     std::string recordId = "route#" + std::to_string(index++);
     std::string edgeRef =
         from + ".result" + std::to_string(edge.producerResultIndex) + "->" +
         to + ".operand" + std::to_string(edge.consumerOperandIndex);
-    RouteSegment segment;
-    segment.segmentId = "seg0";
-    segment.segmentKind = "module_path";
-    segment.sourceEndpoint = fromHw->second + ".out";
-    segment.sinkEndpoint = toHw->second + ".in";
-    segment.hardwareRef = hardwareName.str();
     RouteRecord route;
     route.recordId = recordId;
     route.edgeRef = edgeRef;
@@ -509,10 +681,10 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
     route.payloadKind = kind;
     route.fromSoftwareId = from;
     route.toSoftwareId = to;
-    route.segments.push_back(std::move(segment));
-    routes.push_back(std::move(route));
+    route.segments = std::move(*path);
+    collection.routes.push_back(std::move(route));
   }
-  return routes;
+  return collection;
 }
 
 llvm::json::Object placementJson(const PlacementRecord &placement) {
@@ -779,10 +951,9 @@ loom::pnr::createMapping(const MappingOptions &options) {
   auto nodesOrErr = collectSoftwareNodes(graph);
   if (!nodesOrErr)
     return nodesOrErr.takeError();
-  auto resourcesOrErr =
-      collectHardwareResources(hardwareOp, options.hardwareName);
-  if (!resourcesOrErr)
-    return resourcesOrErr.takeError();
+  auto hardwareModelOrErr = collectHardwareModel(hardwareOp, options.hardwareName);
+  if (!hardwareModelOrErr)
+    return hardwareModelOrErr.takeError();
 
   MappingSummary summary;
   summary.workload =
@@ -794,7 +965,7 @@ loom::pnr::createMapping(const MappingOptions &options) {
   summary.status = "pass";
 
   for (SoftwareNode &node : *nodesOrErr) {
-    HardwareResource *resource = claimResource(node, *resourcesOrErr);
+    HardwareResource *resource = claimResource(node, hardwareModelOrErr->resources);
     if (!resource) {
       summary.status = "fail";
       summary.diagnostic =
@@ -809,8 +980,14 @@ loom::pnr::createMapping(const MappingOptions &options) {
       return std::move(err);
   }
 
-  summary.routes =
-      collectRoutes(*nodesOrErr, graph, summary.placements, summary.hardware);
+  RouteCollection routeCollection = collectRoutes(
+      *nodesOrErr, graph, summary.placements, hardwareModelOrErr->topology);
+  summary.routes = std::move(routeCollection.routes);
+  summary.unroutedEdges = routeCollection.unroutedEdges;
+  if (summary.status == "pass" && summary.unroutedEdges != 0) {
+    summary.status = "fail";
+    summary.diagnostic = "unrouted software edges lack Fabric ADG connectivity";
+  }
   if (summary.status == "pass") {
     appendRouteConfig(summary);
     if (llvm::Error err = validateConfigBitstream(summary))

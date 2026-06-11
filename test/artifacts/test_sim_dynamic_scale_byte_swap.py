@@ -234,7 +234,7 @@ def run_comparison(
     mapping_artifact: Path,
 ) -> Path:
     comparison = out_dir / f"{workload}-sim-comparison-report.json"
-    artifact_test_common.require_success(
+    result = artifact_test_common.run_command(
         repo,
         [
             "bash",
@@ -248,8 +248,14 @@ def run_comparison(
             "--output",
             str(comparison),
         ],
-        f"{workload} simulation comparison report",
     )
+    if result.returncode == 0:
+        raise AssertionError(f"{workload} blocked simulation comparison unexpectedly returned success")
+    if not comparison.is_file():
+        raise AssertionError(
+            f"{workload} simulation comparison did not write structured blocked artifact\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
     return comparison
 
 
@@ -273,13 +279,15 @@ def assert_scale_artifacts(
             "hardware": HARDWARE,
             "mapping_id": mapping_id,
             "placed_records": "4",
-            "routed_edges": "4",
-            "unrouted_edges": "0",
+            "routed_edges": "0",
+            "unrouted_edges": "4",
             "unplaced_records": "0",
-            "status": "pass",
+            "status": "fail",
         },
         label=f"{workload} mapping row",
     )
+    if "unrouted software edges lack Fabric ADG connectivity" not in mapping_summary.get("diagnostic", ""):
+        raise AssertionError(f"{workload} mapping row should diagnose unrouted edges: {mapping_summary}")
     mapping = read_json_object(out_dir / f"{workload}-pnr-mapping.json")
     assert_fields(
         mapping,
@@ -289,9 +297,10 @@ def assert_scale_artifacts(
             "hardware": HARDWARE,
             "mapping_id": mapping_id,
             "placed_records": 4,
-            "routed_edges": 4,
-            "config_records": 45,
-            "status": "pass",
+            "routed_edges": 0,
+            "unrouted_edges": 4,
+            "config_records": 0,
+            "status": "fail",
         },
         label=f"{workload} mapping artifact",
     )
@@ -326,13 +335,13 @@ def assert_scale_artifacts(
     assert_fields(
         cgra_report,
         {
-            "status": "pass",
+            "status": "blocked",
             "workload": workload,
             "mapping_id": mapping_id,
             "dfg_cycles": expected_dfg_cycles,
-            "hardware_aware_cycles": expected_cgra_cycles,
-            "difference_classification": "expected_hardware_constraint",
-            "performance_delta_cycles": 12,
+            "hardware_aware_cycles": expected_dfg_cycles,
+            "difference_classification": "unsupported_scope",
+            "performance_delta_cycles": 0,
         },
         label=f"{workload} CGRA report",
     )
@@ -343,12 +352,12 @@ def assert_scale_artifacts(
     assert_fields(
         comparison,
         {
-            "status": "pass",
+            "status": "blocked",
             "workload": workload,
             "dfg_sim_cycles": expected_dfg_cycles,
-            "cgra_sim_cycles": expected_cgra_cycles,
-            "performance_delta_cycles": 12,
-            "difference_classification": "expected_hardware_constraint",
+            "cgra_sim_cycles": expected_dfg_cycles,
+            "performance_delta_cycles": 0,
+            "difference_classification": "unsupported_scope",
         },
         label=f"{workload} simulation comparison",
     )
@@ -393,18 +402,16 @@ def main() -> int:
         large = single_row(rows, key="kernel", value="byte_swap_large", label="large sim cycle")
         assert_fields(
             small,
-            {"dfg_sim_cycles": "80", "cgra_sim_cycles": "92", "status": "pass"},
+            {"dfg_sim_cycles": "80", "cgra_sim_cycles": "", "status": "blocked"},
             label="small sim cycle row",
         )
         assert_fields(
             large,
-            {"dfg_sim_cycles": "320", "cgra_sim_cycles": "332", "status": "pass"},
+            {"dfg_sim_cycles": "320", "cgra_sim_cycles": "", "status": "blocked"},
             label="large sim cycle row",
         )
         if int(large["dfg_sim_cycles"]) <= int(small["dfg_sim_cycles"]):
             raise AssertionError(f"larger byte_swap input should cost more DFG cycles: {rows}")
-        if int(large["cgra_sim_cycles"]) <= int(small["cgra_sim_cycles"]):
-            raise AssertionError(f"larger byte_swap input should cost more CGRA cycles: {rows}")
         if int(small["dfg_sim_cycles"]) in {448, 579, 1027}:
             raise AssertionError(f"small byte_swap scale should add distinct cycle evidence: {small}")
         if int(large["dfg_sim_cycles"]) in {448, 579, 1027}:
@@ -432,7 +439,7 @@ def main() -> int:
         }
         expected_checks = {
             "sim_cycle_dfg_report_evidence",
-            "sim_cycle_report_mapping_evidence",
+            "sim_cycle_blocked_mapping_evidence",
         }
         if not expected_checks.issubset(checks):
             raise AssertionError(f"audit missed byte_swap scale cross checks {checks}: {audit_data}")

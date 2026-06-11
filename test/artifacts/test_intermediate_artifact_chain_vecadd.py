@@ -123,15 +123,16 @@ def main() -> int:
         expected_mapping = {
             "hardware": "shared_reduction_adg",
             "mapping_id": AGGREGATE_MAPPING_ID,
-            "unrouted_edges": "0",
+            "routed_edges": "0",
+            "unrouted_edges": "12",
             "unplaced_records": "0",
-            "status": "pass",
+            "status": "blocked",
         }
         for key, value in expected_mapping.items():
             if mapping[key] != value:
                 raise AssertionError(f"unexpected vecadd mapping {key}: {mapping}")
-        if int(mapping["placed_records"]) <= 0 or int(mapping["routed_edges"]) <= 0:
-            raise AssertionError(f"vecadd mapping should carry real placement and route evidence: {mapping}")
+        if int(mapping["placed_records"]) <= 0:
+            raise AssertionError(f"vecadd mapping should carry placement evidence: {mapping}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())
         expected_mapping_artifact = {
@@ -139,12 +140,13 @@ def main() -> int:
             "graph": "workload_graph_set",
             "hardware": "shared_reduction_adg",
             "mapping_id": AGGREGATE_MAPPING_ID,
-            "status": "pass",
+            "status": "blocked",
         }
         for key, value in expected_mapping_artifact.items():
             if mapping_artifact.get(key) != value:
                 raise AssertionError(f"unexpected vecadd mapping artifact {key}: {mapping_artifact}")
-        positive_int(mapping_artifact.get("config_records"), "vecadd config_records")
+        if mapping_artifact.get("config_records") != 0:
+            raise AssertionError(f"blocked vecadd mapping should not emit config records: {mapping_artifact}")
         component_mapping_ids = set(mapping_artifact.get("component_mapping_ids", []))
         if component_mapping_ids != EXPECTED_MAPPING_IDS:
             raise AssertionError(f"aggregate mapping must cite both component mappings: {mapping_artifact}")
@@ -157,8 +159,8 @@ def main() -> int:
             component = json.loads((out_dir / name).read_text())
             if component.get("graph") != graph or component.get("mapping_id") != mapping_id:
                 raise AssertionError(f"unexpected component mapping {name}: {component}")
-            if component.get("status") != "pass":
-                raise AssertionError(f"component mapping {name} should pass: {component}")
+            if component.get("status") != "fail":
+                raise AssertionError(f"component mapping {name} should expose unrouted failure: {component}")
 
         dfg_report = json.loads((out_dir / "vecadd-dfg-sim-report.json").read_text())
         if dfg_report.get("status") != "pass" or dfg_report.get("workload") != "vecadd":
@@ -176,13 +178,13 @@ def main() -> int:
             raise AssertionError(f"aggregate DFG report must expose final memory state: {dfg_report}")
 
         cgra_report = json.loads((out_dir / "vecadd-cgra-sim-report.json").read_text())
-        if cgra_report.get("status") != "pass" or cgra_report.get("workload") != "vecadd":
+        if cgra_report.get("status") != "blocked" or cgra_report.get("workload") != "vecadd":
             raise AssertionError(f"unexpected vecadd CGRA-sim report: {cgra_report}")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected vecadd CGRA mapping identity: {cgra_report}")
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "vecadd CGRA-sim cycles")
-        if cgra_cycles != 1631:
-            raise AssertionError(f"vecadd aggregate CGRA cycles should include checksum reduction tail: {cgra_report}")
+        if cgra_cycles != 1603:
+            raise AssertionError(f"vecadd aggregate CGRA report should be blocked at DFG cycles: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
         if dfg_cycles in {579, 1027, 448} or cgra_cycles in {589, 1044, 466}:
@@ -200,7 +202,7 @@ def main() -> int:
             raise AssertionError(f"aggregate CGRA report must expose matching final memory state: {cgra_report}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
-        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "vecadd":
+        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != "vecadd":
             raise AssertionError(f"unexpected vecadd runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != f"work-package::vecadd::{AGGREGATE_MAPPING_ID}":
             raise AssertionError(f"unexpected vecadd work package identity: {runtime_package}")
@@ -229,9 +231,9 @@ def main() -> int:
         if len(vecadd_sim_rows) != 1:
             raise AssertionError(f"expected one vecadd sim row, got {sim_rows}")
         sim_row = vecadd_sim_rows[0]
-        if sim_row["dfg_sim_cycles"] != str(dfg_cycles) or sim_row["cgra_sim_cycles"] != str(cgra_cycles):
-            raise AssertionError(f"vecadd sim summary should preserve report cycles: {sim_row}")
-        if sim_row["status"] != "pass":
+        if sim_row["dfg_sim_cycles"] != str(dfg_cycles) or sim_row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"vecadd sim summary should preserve blocked CGRA status: {sim_row}")
+        if sim_row["status"] != "blocked":
             raise AssertionError(f"unexpected vecadd sim summary status: {sim_row}")
 
         dse_rows = read_csv_rows(out_dir / "dse-candidate-summary.csv")
@@ -239,15 +241,13 @@ def main() -> int:
         if len(vecadd_dse_rows) != 1:
             raise AssertionError(f"expected one vecadd DSE row, got {dse_rows}")
         vecadd_dse = vecadd_dse_rows[0]
-        if vecadd_dse["mapping_id"] != AGGREGATE_MAPPING_ID or vecadd_dse["selection_status"] != "selected":
+        if vecadd_dse["mapping_id"] != AGGREGATE_MAPPING_ID or vecadd_dse["selection_status"] != "blocked":
             raise AssertionError(f"unexpected vecadd DSE row: {vecadd_dse}")
-        if vecadd_dse["cgra_sim_cycles"] != str(cgra_cycles):
-            raise AssertionError(f"vecadd DSE row missed CGRA-sim cycles: {vecadd_dse}")
-        if float(vecadd_dse["energy_nj"]) <= 0.0:
-            raise AssertionError(f"vecadd DSE row should consume FPA energy evidence: {vecadd_dse}")
+        if vecadd_dse["cgra_sim_cycles"] != "" or vecadd_dse["energy_nj"] != "":
+            raise AssertionError(f"blocked vecadd DSE row must not expose objective metrics: {vecadd_dse}")
 
         workload_bundle = json.loads((out_dir / "workload-report-bundle.json").read_text())
-        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != "vecadd":
+        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != "vecadd":
             raise AssertionError(f"unexpected vecadd workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
@@ -255,9 +255,9 @@ def main() -> int:
             if isinstance(metric, dict)
         }
         for metric_id in (
-            "metric::vecadd::cgra_sim_cycles",
-            "metric::vecadd::estimated_runtime_us",
-            "metric::vecadd::energy_nj",
+            "metric::vecadd::dfg_sim_cycles",
+            "metric::vecadd::workload_size_items",
+            "metric::shared_reduction_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")
@@ -282,7 +282,7 @@ def main() -> int:
         cgra_evidence = [
             check
             for check in audit.get("cross_artifact_checks", [])
-            if check.get("rule") == "sim_cycle_report_mapping_evidence"
+            if check.get("rule") == "sim_cycle_blocked_mapping_evidence"
             and check.get("workload") == "vecadd"
         ]
         if not cgra_evidence:

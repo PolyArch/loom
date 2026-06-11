@@ -36,12 +36,14 @@ def main() -> int:
         if len(vecsum_default_rows) != 1:
             raise AssertionError(f"expected one default vecsum row, got {default_rows}")
         default_row = vecsum_default_rows[0]
-        if default_row.get("status") != "pass":
-            raise AssertionError(f"default sim cycle row should be pass evidence: {default_row}")
-        if default_row["dfg_sim_cycles"] == "" or default_row["cgra_sim_cycles"] == "":
-            raise AssertionError(f"default sim cycle row should include both simulators: {default_row}")
-        if int(default_row["cgra_sim_cycles"]) < int(default_row["dfg_sim_cycles"]):
-            raise AssertionError(f"CGRA-sim should not be more optimistic than DFG-sim: {default_row}")
+        if default_row.get("status") != "blocked":
+            raise AssertionError(f"default sim cycle row should block without routed CGRA evidence: {default_row}")
+        if default_row["dfg_sim_cycles"] == "":
+            raise AssertionError(f"default sim cycle row should include DFG-sim evidence: {default_row}")
+        if default_row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"default sim cycle row must not expose blocked CGRA cycles: {default_row}")
+        if "mapping artifact status fail blocks CGRA-sim" not in default_row.get("diagnostic", ""):
+            raise AssertionError(f"default sim cycle row should diagnose failed mapping evidence: {default_row}")
 
         artifact_test_common.require_success(
             repo,

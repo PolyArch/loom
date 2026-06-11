@@ -4361,6 +4361,8 @@ def aggregate_component_reports(
     expected_kind: str,
     diagnostics: list[str],
     label: str,
+    *,
+    require_pass: bool = True,
 ) -> list[dict[str, object]]:
     identities = aggregate_component_identities(data, key)
     if not identities:
@@ -4384,7 +4386,7 @@ def aggregate_component_reports(
         if not isinstance(report, dict) or json_kind_for_path(resolved) != expected_kind:
             diagnostics.append(f"{label} component reference {identity!r} has wrong artifact kind")
             continue
-        if report.get("status") != "pass":
+        if require_pass and report.get("status") != "pass":
             diagnostics.append(f"{label} component reference {identity!r} is not passing")
         fingerprint = fingerprints.get(identity)
         if not valid_sha256_hex(fingerprint):
@@ -4892,8 +4894,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "component_cgra_sim_reports_carried_from_dfg_sim_reports",
         }:
             diagnostics.append("CGRA simulator report has unknown functional_state_source")
-        if data.get("hardware_bound_classification") != "within_modeled_bounds":
+        report_status = data.get("status")
+        if report_status == "pass" and data.get("hardware_bound_classification") != "within_modeled_bounds":
             diagnostics.append("CGRA simulator report has unknown hardware bound classification")
+        if report_status != "pass" and data.get("hardware_bound_classification") != "unsupported_scope":
+            diagnostics.append("blocked CGRA simulator report needs unsupported_scope hardware bound classification")
         difference = data.get("difference_classification")
         dfg_cycles = data.get("dfg_cycles")
         hardware_cycles = data.get("hardware_aware_cycles")
@@ -4924,10 +4929,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             if hardware_cycles - dfg_cycles != delta:
                 diagnostics.append("CGRA simulator report delta does not match hardware minus DFG cycles")
         if isinstance(delta, int):
-            if delta == 0 and difference != "no_modeled_hardware_constraints":
+            if report_status == "pass" and delta == 0 and difference != "no_modeled_hardware_constraints":
                 diagnostics.append("CGRA simulator zero-delta report needs no-constraint classification")
-            if delta > 0 and difference != "expected_hardware_constraint":
+            if report_status == "pass" and delta > 0 and difference != "expected_hardware_constraint":
                 diagnostics.append("CGRA simulator positive-delta report needs hardware-constraint classification")
+            if report_status != "pass" and difference != "unsupported_scope":
+                diagnostics.append("blocked CGRA simulator report needs unsupported_scope difference classification")
         if all(
             isinstance(value, int)
             for value in (route_cycles, memory_cycles, temporal_cycles, delta)
@@ -4972,6 +4979,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "cgra_sim_report",
                 diagnostics,
                 "CGRA simulator aggregate report",
+                require_pass=data.get("status") == "pass",
             )
             if components:
                 workload = data.get("workload")
@@ -5012,12 +5020,29 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("simulation comparison report kind must be sim_comparison_report")
         if data.get("status") not in BASE_STATUSES:
             diagnostics.append("simulation comparison report status must be a known status")
-        elif data.get("status") != "pass":
-            diagnostics.append("simulation comparison report status must be pass")
+        elif data.get("status") not in {"pass", "blocked"}:
+            diagnostics.append("simulation comparison report status must be pass or structured blocked")
         if data.get("status") == "pass":
-            for key in ("functional_comparison_status", "memory_comparison_status"):
+            for key in (
+                "functional_comparison_status",
+                "memory_comparison_status",
+                "performance_comparison_status",
+            ):
                 if data.get(key) != "pass":
                     diagnostics.append(f"simulation comparison report pass needs {key}=pass")
+        if data.get("status") == "blocked":
+            blocked_fields = [
+                data.get(key)
+                for key in (
+                    "functional_comparison_status",
+                    "memory_comparison_status",
+                    "performance_comparison_status",
+                )
+            ]
+            if "blocked" not in blocked_fields:
+                diagnostics.append("simulation comparison report blocked status needs a blocked comparison substatus")
+            if data.get("difference_classification") not in {"unsupported_scope", "metric_not_comparable"}:
+                diagnostics.append("simulation comparison report blocked status needs an unsupported or metric classification")
         for key in (
             "comparison_id",
             "workload",
@@ -5131,17 +5156,39 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 if not isinstance(segments, list) or not segments:
                     diagnostics.append(f"PnR mapping artifact route {index} lacks non-empty segments")
                     continue
+                previous_sink: str | None = None
                 for segment_index, segment in enumerate(segments, start=1):
                     if not isinstance(segment, dict):
                         diagnostics.append(
                             f"PnR mapping artifact route {index} segment {segment_index} must be an object"
                         )
+                        previous_sink = None
                         continue
                     for key in ("segment_id", "segment_kind", "source_endpoint", "sink_endpoint"):
                         if not isinstance(segment.get(key), str) or not segment.get(key):
                             diagnostics.append(
                                 f"PnR mapping artifact route {index} segment {segment_index} lacks {key}"
                             )
+                    source_endpoint = segment.get("source_endpoint")
+                    sink_endpoint = segment.get("sink_endpoint")
+                    if data.get("status") == "pass":
+                        if isinstance(source_endpoint, str) and is_placeholder_route_endpoint(source_endpoint):
+                            diagnostics.append(
+                                f"PnR mapping artifact route {index} segment {segment_index} uses placeholder source_endpoint"
+                            )
+                        if isinstance(sink_endpoint, str) and is_placeholder_route_endpoint(sink_endpoint):
+                            diagnostics.append(
+                                f"PnR mapping artifact route {index} segment {segment_index} uses placeholder sink_endpoint"
+                            )
+                        if (
+                            previous_sink is not None
+                            and isinstance(source_endpoint, str)
+                            and previous_sink != source_endpoint
+                        ):
+                            diagnostics.append(
+                                f"PnR mapping artifact route {index} segment {segment_index} is not contiguous"
+                            )
+                    previous_sink = sink_endpoint if isinstance(sink_endpoint, str) else None
         if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
             diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
         if is_workload_graph_set_aggregate(data):
@@ -5152,6 +5199,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "pnr_mapping_artifact",
                 diagnostics,
                 "PnR mapping aggregate artifact",
+                require_pass=data.get("status") == "pass",
             )
             if components:
                 workload = data.get("workload")
@@ -6533,8 +6581,9 @@ def referenced_artifact_paths(row: dict[str, str], column: str) -> set[Path]:
     }
 
 
-def build_pass_mapping_artifacts_by_workload(
+def build_mapping_artifacts_by_workload(
     json_grouped: dict[str, list[dict[str, object]]],
+    accepted_statuses: set[str],
 ) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[dict[str, object]]] = {}
     for artifact in json_grouped.get("pnr_mapping_artifact", []):
@@ -6542,12 +6591,18 @@ def build_pass_mapping_artifacts_by_workload(
         if (
             isinstance(workload, str)
             and valid_identity(workload)
-            and artifact.get("status") == "pass"
+            and artifact.get("status") in accepted_statuses
             and isinstance(artifact.get("mapping_id"), str)
             and isinstance(artifact.get("hardware"), str)
         ):
             grouped.setdefault(workload, []).append(artifact)
     return grouped
+
+
+def build_pass_mapping_artifacts_by_workload(
+    json_grouped: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    return build_mapping_artifacts_by_workload(json_grouped, {"pass"})
 
 
 def build_pass_dfg_reports_by_workload(
@@ -6568,8 +6623,9 @@ def build_pass_dfg_reports_by_workload(
     return prefer_workload_graph_set_aggregates(grouped)
 
 
-def build_pass_cgra_reports_by_workload(
+def build_cgra_reports_by_workload(
     json_grouped: dict[str, list[dict[str, object]]],
+    accepted_statuses: set[str],
 ) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[dict[str, object]]] = {}
     for report in json_grouped.get("cgra_sim_report", []):
@@ -6577,10 +6633,16 @@ def build_pass_cgra_reports_by_workload(
         if (
             isinstance(workload, str)
             and valid_identity(workload)
-            and report.get("status") == "pass"
+            and report.get("status") in accepted_statuses
         ):
             grouped.setdefault(workload, []).append(report)
     return prefer_workload_graph_set_aggregates(grouped)
+
+
+def build_pass_cgra_reports_by_workload(
+    json_grouped: dict[str, list[dict[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    return build_cgra_reports_by_workload(json_grouped, {"pass"})
 
 
 def route_segment_count(routes: object) -> int | None:
@@ -6591,6 +6653,10 @@ def route_segment_count(routes: object) -> int | None:
         if isinstance(route, dict) and isinstance(route.get("segments"), list):
             count += len(route["segments"])
     return count
+
+
+def is_placeholder_route_endpoint(endpoint: str) -> bool:
+    return endpoint.endswith(".out") or endpoint.endswith(".in")
 
 
 def float_cell(row: dict[str, str], column: str) -> float | None:
@@ -7329,6 +7395,11 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
     dfg_reports_by_workload = build_pass_dfg_reports_by_workload(json_grouped)
     cgra_reports_by_workload = build_pass_cgra_reports_by_workload(json_grouped)
     pass_mapping_artifacts_by_workload = build_pass_mapping_artifacts_by_workload(json_grouped)
+    blocked_cgra_reports_by_workload = build_cgra_reports_by_workload(json_grouped, {"blocked"})
+    nonpass_mapping_artifacts_by_workload = build_mapping_artifacts_by_workload(
+        json_grouped,
+        {"blocked", "fail"},
+    )
 
     for row in grouped.get("sim_cycle", []):
         workload = row.get("kernel")
@@ -7367,6 +7438,86 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
                 "dynamic_work_items": dynamic_work_items,
             }
         )
+
+        blocked_cgra_reports = blocked_cgra_reports_by_workload.get(workload, [])
+        blocked_cgra_report_cycles = [
+            int(report["hardware_aware_cycles"])
+            for report in blocked_cgra_reports
+            if isinstance(report.get("hardware_aware_cycles"), int)
+        ]
+        if blocked_cgra_report_cycles and sum(blocked_cgra_report_cycles) == dfg_cycles:
+            mapping_ids: list[str] = []
+            component_mapping_ids: list[str] = []
+            hardware_refs: list[str] = []
+            mapping_statuses: list[str] = []
+            difference_classifications: list[str] = []
+            hardware_bound_classifications: list[str] = []
+            route_segments = 0
+            matched_all_mappings = True
+            nonpass_mappings = nonpass_mapping_artifacts_by_workload.get(workload, [])
+            for report in blocked_cgra_reports:
+                mapping_id = report.get("mapping_id")
+                hardware = report.get("hardware")
+                if not isinstance(mapping_id, str) or not isinstance(hardware, str):
+                    matched_all_mappings = False
+                    break
+                matching_mapping = None
+                for mapping in nonpass_mappings:
+                    if mapping.get("mapping_id") != mapping_id or mapping.get("hardware") != hardware:
+                        continue
+                    expected_route_segments = report.get("route_segments")
+                    if isinstance(expected_route_segments, int):
+                        actual_route_segments = route_segment_count(mapping.get("routes"))
+                        if (
+                            actual_route_segments is not None
+                            and actual_route_segments != expected_route_segments
+                        ):
+                            continue
+                    expected_config_records = report.get("config_records")
+                    if (
+                        isinstance(expected_config_records, int)
+                        and mapping.get("config_records") != expected_config_records
+                    ):
+                        continue
+                    matching_mapping = mapping
+                    break
+                if matching_mapping is None:
+                    matched_all_mappings = False
+                    break
+                mapping_ids.append(mapping_id)
+                for component_mapping_id in aggregate_component_identities(report, "component_mapping_ids"):
+                    component_mapping_ids.append(component_mapping_id)
+                hardware_refs.append(hardware)
+                mapping_status = matching_mapping.get("status")
+                if isinstance(mapping_status, str):
+                    mapping_statuses.append(mapping_status)
+                difference_classification = report.get("difference_classification")
+                if isinstance(difference_classification, str):
+                    difference_classifications.append(difference_classification)
+                hardware_bound_classification = report.get("hardware_bound_classification")
+                if isinstance(hardware_bound_classification, str):
+                    hardware_bound_classifications.append(hardware_bound_classification)
+                if isinstance(report.get("route_segments"), int):
+                    route_segments += int(report["route_segments"])
+            if matched_all_mappings:
+                checks.append(
+                    {
+                        "rule": "sim_cycle_blocked_mapping_evidence",
+                        "status": "blocked",
+                        "workload": workload,
+                        "dfg_sim_cycles": dfg_cycles,
+                        "dfg_report_cycles": dfg_report_cycles,
+                        "cgra_report_cycles": blocked_cgra_report_cycles,
+                        "dynamic_work_items": dynamic_work_items,
+                        "mapping_ids": sorted(mapping_ids),
+                        "component_mapping_ids": sorted(set(component_mapping_ids)),
+                        "hardware": sorted(set(hardware_refs)),
+                        "mapping_statuses": sorted(set(mapping_statuses)),
+                        "difference_classifications": sorted(set(difference_classifications)),
+                        "hardware_bound_classifications": sorted(set(hardware_bound_classifications)),
+                        "route_segments": route_segments,
+                    }
+                )
 
         cgra_cycles = nonnegative_int_cell(row, "cgra_sim_cycles")
         if cgra_cycles is None:

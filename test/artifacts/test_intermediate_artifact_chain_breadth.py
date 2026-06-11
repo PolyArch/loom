@@ -369,10 +369,10 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
                 "hardware": "shared_reduction_adg",
                 "mapping_id": expected["mapping_id"],
                 "placed_records": expected["placed_records"],
-                "routed_edges": expected["routed_edges"],
-                "unrouted_edges": "0",
+                "routed_edges": "0",
+                "unrouted_edges": expected["routed_edges"],
                 "unplaced_records": "0",
-                "status": "pass",
+                "status": "fail",
             },
             label=f"{case_name} mapping",
         )
@@ -384,7 +384,8 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
                 "workload": case_name,
                 "graph": expected["graph"],
                 "mapping_id": expected["mapping_id"],
-                "config_records": expected["config_records"],
+                "config_records": 0,
+                "status": "fail",
             },
             label=f"{case_name} mapping artifact",
         )
@@ -406,11 +407,11 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         assert_fields(
             cgra_report,
             {
-                "status": "pass",
+                "status": "blocked",
                 "workload": case_name,
                 "mapping_id": expected["mapping_id"],
-                "hardware_aware_cycles": expected["cgra_cycles"],
-                "difference_classification": "expected_hardware_constraint",
+                "hardware_aware_cycles": expected["dfg_cycles"],
+                "difference_classification": "unsupported_scope",
             },
             label=f"{case_name} CGRA-sim report",
         )
@@ -427,8 +428,8 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             sim_row,
             {
                 "dfg_sim_cycles": str(expected["dfg_cycles"]),
-                "cgra_sim_cycles": str(expected["cgra_cycles"]),
-                "status": "pass",
+                "cgra_sim_cycles": "",
+                "status": "blocked",
             },
             label=f"{case_name} sim row",
         )
@@ -440,17 +441,17 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         assert_fields(
             comparison,
             {
-                "status": "pass",
+                "status": "blocked",
                 "workload": case_name,
                 "dfg_sim_cycles": expected["dfg_cycles"],
-                "cgra_sim_cycles": expected["cgra_cycles"],
-                "difference_classification": "expected_hardware_constraint",
+                "cgra_sim_cycles": expected["dfg_cycles"],
+                "difference_classification": "unsupported_scope",
             },
             label=f"{case_name} simulation comparison",
         )
 
         runtime_package = read_json_object(out_dir / "runtime-package.json")
-        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != case_name:
+        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != case_name:
             raise AssertionError(f"unexpected {case_name} runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != (
             f"work-package::{case_name}::{expected['mapping_id']}"
@@ -487,14 +488,14 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             dse_row,
             {
                 "mapping_id": expected["mapping_id"],
-                "cgra_sim_cycles": str(expected["cgra_cycles"]),
-                "selection_status": "selected",
+                "cgra_sim_cycles": "",
+                "selection_status": "blocked",
             },
             label=f"{case_name} DSE",
         )
 
         workload_bundle = read_json_object(out_dir / "workload-report-bundle.json")
-        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != case_name:
+        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != case_name:
             raise AssertionError(f"unexpected {case_name} workload report bundle: {workload_bundle}")
         runtime_evidence = workload_bundle.get("runtime_evidence")
         if not isinstance(runtime_evidence, dict):
@@ -506,9 +507,9 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             if isinstance(metric, dict)
         }
         for metric_id in (
-            f"metric::{case_name}::cgra_sim_cycles",
-            f"metric::{case_name}::estimated_runtime_us",
-            f"metric::{case_name}::energy_nj",
+            f"metric::{case_name}::dfg_sim_cycles",
+            f"metric::{case_name}::workload_size_items",
+            "metric::shared_reduction_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")
@@ -535,7 +536,7 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         }
         expected_cross_checks = {
             "sim_cycle_dfg_report_evidence",
-            "sim_cycle_report_mapping_evidence",
+            "sim_cycle_blocked_mapping_evidence",
         }
         if not expected_cross_checks <= cross_checks:
             raise AssertionError(

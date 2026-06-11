@@ -118,6 +118,16 @@ esac
 
 mkdir -p "${OUT_DIR}"
 
+run_artifact_command() {
+  local output="$1"
+  shift
+  if ! "$@"; then
+    if [[ ! -s "${output}" ]]; then
+      exit 1
+    fi
+  fi
+}
+
 hardware_mlir="${ROOT}/test/pnr/shared_reduction_adg.mlir"
 hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
@@ -417,12 +427,14 @@ else
     --hardware-mlir "${hardware_mlir}" \
     --output "${cgra_report}"
 fi
-bash "${ROOT}/test/simulator/run_sim_comparison_report.sh" \
+run_artifact_command "${sim_comparison}" \
+  bash "${ROOT}/test/simulator/run_sim_comparison_report.sh" \
   --dfg-report "${dfg_report}" \
   --cgra-report "${cgra_report}" \
   --mapping-artifact "${mapping_artifact}" \
   --output "${sim_comparison}"
-bash "${ROOT}/test/e2e/run_runtime_package.sh" \
+run_artifact_command "${runtime_package}" \
+  bash "${ROOT}/test/e2e/run_runtime_package.sh" \
   --artifact "${mapping_artifact}" \
   --artifact "${cgra_report}" \
   --artifact "${sim_comparison}" \
@@ -431,7 +443,8 @@ bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
   --dfg-report "${dfg_report}" \
   --cgra-report "${cgra_report}" \
   --output "${sim_cycle}"
-bash "${ROOT}/test/rtl/run_rtl_manifest.sh" \
+run_artifact_command "${rtl_manifest}" \
+  bash "${ROOT}/test/rtl/run_rtl_manifest.sh" \
   --hardware-summary "${hardware}" \
   --mapping-artifact "${mapping_artifact}" \
   --output "${rtl_manifest}"
@@ -445,7 +458,8 @@ bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --eda-report "${rtl_eda}" \
   --report-output "${rtl_fpa_report}" \
   --output "${rtl_fpa}"
-bash "${ROOT}/test/e2e/run_hardware_report_bundle.sh" \
+run_artifact_command "${hardware_bundle}" \
+  bash "${ROOT}/test/e2e/run_hardware_report_bundle.sh" \
   --artifact "${hardware}" \
   --artifact "${rtl_manifest}" \
   --artifact "${rtl_eda}" \
@@ -459,7 +473,8 @@ bash "${ROOT}/test/dse/run_candidate_summary.sh" \
   --artifact "${cgra_report}" \
   --artifact "${rtl_fpa}" \
   --output "${dse_candidate}"
-bash "${ROOT}/test/e2e/run_report_bundle.sh" \
+run_artifact_command "${report_bundle}" \
+  bash "${ROOT}/test/e2e/run_report_bundle.sh" \
   --artifact "${source_compat}" \
   --artifact "${compiler_pipeline}" \
   --artifact "${primitive}" \
@@ -476,7 +491,8 @@ bash "${ROOT}/test/e2e/run_report_bundle.sh" \
   --artifact "${rtl_fpa}" \
   --artifact "${dse_candidate}" \
   --output "${report_bundle}"
-bash "${ROOT}/test/e2e/run_dse_report_bundle.sh" \
+run_artifact_command "${dse_bundle}" \
+  bash "${ROOT}/test/e2e/run_dse_report_bundle.sh" \
   --artifact "${dse_candidate}" \
   --artifact "${report_bundle}" \
   --artifact "${hardware_bundle}" \

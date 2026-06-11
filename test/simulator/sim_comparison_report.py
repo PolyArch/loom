@@ -98,6 +98,8 @@ def build_report(
     difference_classification = "match"
     status = "pass"
     performance_status = "pass"
+    input_status_blocked = False
+    input_status_classification = "unsupported_scope"
 
     if string_field(dfg, "kind") != "dfg_sim_report":
         diagnostics.append("DFG input is not a dfg_sim_report")
@@ -125,10 +127,24 @@ def build_report(
             )
             difference_classification = "mapping_invalid"
 
+    dfg_status = string_field(dfg, "status")
+    cgra_status = string_field(cgra, "status")
+    if dfg_status and dfg_status != "pass":
+        diagnostics.append(f"DFG-sim report status {dfg_status} blocks simulation comparison")
+        input_status_blocked = True
+    if cgra_status and cgra_status != "pass":
+        diagnostics.append(f"CGRA-sim report status {cgra_status} blocks performance comparison")
+        input_status_blocked = True
+        input_status_classification = string_field(cgra, "difference_classification") or "unsupported_scope"
+
     dfg_cycles = int_field(dfg, "optimistic_cycles")
     cgra_cycles = int_field(cgra, "hardware_aware_cycles")
     performance_delta = int_field(cgra, "performance_delta_cycles")
-    if dfg_cycles is None or cgra_cycles is None:
+    if input_status_blocked:
+        performance_status = "blocked"
+        if difference_classification == "match":
+            difference_classification = input_status_classification
+    elif dfg_cycles is None or cgra_cycles is None:
         diagnostics.append("missing comparable simulator cycle metric")
         performance_status = "blocked"
         if difference_classification == "match":
@@ -153,6 +169,8 @@ def build_report(
     if identity_or_mapping_failure:
         status = "fail"
         performance_status = "blocked"
+    elif input_status_blocked:
+        status = "blocked"
     elif performance_status == "fail":
         status = "fail"
     elif performance_status == "blocked":
@@ -162,18 +180,16 @@ def build_report(
     memory_status, memory_diagnostics = compare_memory_state(dfg, cgra)
     diagnostics.extend(functional_diagnostics)
     diagnostics.extend(memory_diagnostics)
-    if functional_status == "fail" and status == "pass":
+    if functional_status == "fail" and not identity_or_mapping_failure:
         status = "fail"
-        if not identity_or_mapping_failure:
-            difference_classification = "functional_mismatch"
+        difference_classification = "functional_mismatch"
     if functional_status == "blocked" and status == "pass":
         status = "blocked"
         if not identity_or_mapping_failure:
             difference_classification = "unsupported_scope"
-    if memory_status == "fail" and status == "pass":
+    if memory_status == "fail" and not identity_or_mapping_failure:
         status = "fail"
-        if not identity_or_mapping_failure:
-            difference_classification = "functional_mismatch"
+        difference_classification = "functional_mismatch"
     if memory_status == "blocked" and status == "pass":
         status = "blocked"
         if not identity_or_mapping_failure:

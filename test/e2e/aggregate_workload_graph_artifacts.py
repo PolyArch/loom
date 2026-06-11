@@ -280,6 +280,15 @@ def aggregate_cgra(
     mapping_ids = [str(report["mapping_id"]) for report in cgra_reports]
     graphs = [str(report["graph"]) for report in dfg_reports]
     performance_delta = hardware_aware_cycles - dfg_cycles
+    aggregate_status = (
+        "pass"
+        if mapping_artifact.get("status") == "pass"
+        and all(report.get("status") == "pass" for report in cgra_reports)
+        else "blocked"
+    )
+    diagnostics = ["derived workload graph-set CGRA report from component CGRA simulator reports"]
+    if aggregate_status != "pass":
+        diagnostics.append("one or more component mappings or CGRA reports are not passing")
     return {
         "schema_version": 1,
         "kind": "cgra_sim_report",
@@ -295,7 +304,7 @@ def aggregate_cgra(
             **component_fingerprint_map(dfg_paths),
             **component_fingerprint_map(cgra_paths),
         },
-        "status": "pass",
+        "status": aggregate_status,
         "fidelity_level": same_string(cgra_reports, "fidelity_level"),
         "metric_definition": same_string(cgra_reports, "metric_definition"),
         "operation_semantics_source": same_string(cgra_reports, "operation_semantics_source"),
@@ -304,9 +313,17 @@ def aggregate_cgra(
         "final_outputs": merge_final_outputs(cgra_reports),
         "final_memory_state": merge_final_memory_state(cgra_reports, graphs),
         "difference_classification": (
-            "match" if hardware_aware_cycles == dfg_cycles else "expected_hardware_constraint"
+            "unsupported_scope"
+            if aggregate_status != "pass"
+            else "match"
+            if hardware_aware_cycles == dfg_cycles
+            else "expected_hardware_constraint"
         ),
-        "hardware_bound_classification": same_string(cgra_reports, "hardware_bound_classification"),
+        "hardware_bound_classification": (
+            "unsupported_scope"
+            if aggregate_status != "pass"
+            else same_string(cgra_reports, "hardware_bound_classification")
+        ),
         "dfg_cycles": dfg_cycles,
         "modeled_lower_bound_cycles": hardware_aware_cycles,
         "performance_delta_cycles": performance_delta,
@@ -328,7 +345,7 @@ def aggregate_cgra(
                 "evidence": "aggregate route_segments matches aggregate mapping routes",
             },
         ],
-        "diagnostics": ["derived workload graph-set CGRA report from component CGRA simulator reports"],
+        "diagnostics": diagnostics,
         "placed_records": int(mapping_artifact["placed_records"]),
         "spatial_placements": sum_int(cgra_reports, "spatial_placements"),
         "temporal_placements": sum_int(cgra_reports, "temporal_placements"),
@@ -380,13 +397,11 @@ def validate_components(
         )
     for artifact in mapping_artifacts:
         require(artifact.get("kind") == "pnr_mapping", "mapping component has wrong kind")
-        require(artifact.get("status") == "pass", "mapping component is not passing")
         require(artifact.get("workload") == args.workload, "mapping component workload mismatch")
         require(artifact.get("hardware") == args.hardware, "mapping component hardware mismatch")
     mapping_ids = {artifact.get("mapping_id") for artifact in mapping_artifacts}
     for report in cgra_reports:
         require(report.get("kind") == "cgra_sim_report", "CGRA component has wrong kind")
-        require(report.get("status") == "pass", "CGRA component is not passing")
         require(report.get("workload") == args.workload, "CGRA component workload mismatch")
         require(report.get("hardware") == args.hardware, "CGRA component hardware mismatch")
         require(report.get("mapping_id") in mapping_ids, "CGRA component mapping mismatch")

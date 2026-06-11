@@ -108,10 +108,10 @@ def main() -> int:
                 "hardware": "shared_reduction_adg",
                 "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
                 "placed_records": "5",
-                "routed_edges": "6",
-                "unrouted_edges": "0",
+                "routed_edges": "0",
+                "unrouted_edges": "6",
                 "unplaced_records": "0",
-                "status": "pass",
+                "status": "fail",
             },
             label="xor_block mapping",
         )
@@ -126,8 +126,8 @@ def main() -> int:
             },
             label="xor_block mapping artifact",
         )
-        if int(mapping_artifact.get("config_records", 0)) <= 0:
-            raise AssertionError(f"mapping artifact should carry real config records: {mapping_artifact}")
+        if mapping_artifact.get("status") != "fail" or mapping_artifact.get("config_records") != 0:
+            raise AssertionError(f"mapping artifact should expose unrouted blocked evidence: {mapping_artifact}")
 
         dfg_report = read_json_object(out_dir / "xor_block-dfg-sim-report.json")
         if dfg_report.get("status") != "pass" or dfg_report.get("workload") != "xor_block":
@@ -146,12 +146,14 @@ def main() -> int:
         assert_fields(fire_counts, expected_fire_counts, label="xor_block fire count")
 
         cgra_report = read_json_object(out_dir / "xor_block-cgra-sim-report.json")
-        if cgra_report.get("status") != "pass" or cgra_report.get("workload") != "xor_block":
+        if cgra_report.get("status") != "blocked" or cgra_report.get("workload") != "xor_block":
             raise AssertionError(f"unexpected xor_block CGRA-sim report: {cgra_report}")
         if cgra_report.get("mapping_id") != "xor_block__g_t_xor_block_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected xor_block CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("hardware_aware_cycles") != 466:
+        if cgra_report.get("hardware_aware_cycles") != 448:
             raise AssertionError(f"unexpected xor_block CGRA-sim cycles: {cgra_report}")
+        if cgra_report.get("difference_classification") != "unsupported_scope":
+            raise AssertionError(f"xor_block blocked CGRA report should classify unsupported scope: {cgra_report}")
         if cgra_report.get("hardware_aware_cycles") < dfg_report.get("optimistic_cycles"):
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
 
@@ -163,22 +165,22 @@ def main() -> int:
         )
         assert_fields(
             sim_row,
-            {"dfg_sim_cycles": "448", "cgra_sim_cycles": "466", "status": "pass"},
+            {"dfg_sim_cycles": "448", "cgra_sim_cycles": "", "status": "blocked"},
             label="xor_block sim row",
         )
         if int(sim_row["dfg_sim_cycles"]) in {579, 1027}:
             raise AssertionError(f"xor_block cycles should differ from existing vecsum/dotproduct evidence: {sim_row}")
 
         comparison = read_json_object(out_dir / "sim-comparison-report.json")
-        if comparison.get("status") != "pass" or comparison.get("workload") != "xor_block":
+        if comparison.get("status") != "blocked" or comparison.get("workload") != "xor_block":
             raise AssertionError(f"unexpected xor_block comparison report: {comparison}")
-        if comparison.get("dfg_sim_cycles") != 448 or comparison.get("cgra_sim_cycles") != 466:
+        if comparison.get("dfg_sim_cycles") != 448 or comparison.get("cgra_sim_cycles") != 448:
             raise AssertionError(f"comparison should preserve xor_block cycles: {comparison}")
-        if comparison.get("difference_classification") != "expected_hardware_constraint":
-            raise AssertionError(f"comparison should classify hardware constraint difference: {comparison}")
+        if comparison.get("difference_classification") != "unsupported_scope":
+            raise AssertionError(f"comparison should classify unsupported route evidence: {comparison}")
 
         runtime_package = read_json_object(out_dir / "runtime-package.json")
-        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "xor_block":
+        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != "xor_block":
             raise AssertionError(f"unexpected xor_block runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != (
             "work-package::xor_block::xor_block__g_t_xor_block_0_0__shared_reduction_adg"
@@ -216,12 +218,12 @@ def main() -> int:
             xor_dse,
             {
                 "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
-                "cgra_sim_cycles": "466",
-                "frequency_mhz": "250.000",
-                "area_um2": "7250.000",
-                "dynamic_power_mw": "6.000",
-                "energy_nj": "12.722",
-                "selection_status": "selected",
+                "cgra_sim_cycles": "",
+                "frequency_mhz": "",
+                "area_um2": "",
+                "dynamic_power_mw": "",
+                "energy_nj": "",
+                "selection_status": "blocked",
             },
             label="xor_block DSE",
         )
@@ -229,7 +231,7 @@ def main() -> int:
             raise AssertionError(f"xor_block DSE should consume FPA evidence: {xor_dse}")
 
         workload_bundle = read_json_object(out_dir / "workload-report-bundle.json")
-        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != "xor_block":
+        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != "xor_block":
             raise AssertionError(f"unexpected xor_block workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
@@ -237,9 +239,9 @@ def main() -> int:
             if isinstance(metric, dict)
         }
         for metric_id in (
-            "metric::xor_block::cgra_sim_cycles",
-            "metric::xor_block::estimated_runtime_us",
-            "metric::xor_block::energy_nj",
+            "metric::xor_block::dfg_sim_cycles",
+            "metric::xor_block::workload_size_items",
+            "metric::shared_reduction_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")

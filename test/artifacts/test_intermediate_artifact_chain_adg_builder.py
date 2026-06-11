@@ -72,7 +72,7 @@ def main() -> int:
             {
                 "hardware": "shared_reduction_adg",
                 "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
-                "status": "pass",
+                "status": "fail",
             },
             label="xor_block mapping",
         )
@@ -84,9 +84,9 @@ def main() -> int:
                 "workload": "xor_block",
                 "hardware": "shared_reduction_adg",
                 "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
-                "status": "pass",
+                "status": "blocked",
                 "dfg_cycles": 448,
-                "hardware_aware_cycles": 466,
+                "hardware_aware_cycles": 448,
                 "hardware_artifact": str(generated_adg),
             },
             label="xor_block CGRA-sim report",
@@ -102,7 +102,7 @@ def main() -> int:
                 "mode": "mapped_workload_rtl",
                 "source_fabric_adg_identity": generated_hardware_identity,
                 "mapping_artifact_identity": "pnr-mapping",
-                "status": "pass",
+                "status": "blocked",
             },
             label="ADG Builder RTL manifest",
         )
@@ -114,7 +114,8 @@ def main() -> int:
                 "hardware_candidate_identity": generated_hardware_identity,
                 "fabric_adg_identity": generated_hardware_identity.rsplit("::", 1)[0],
                 "adg_builder_recipe_identity": "adg-builder::shared-reduction",
-                "report_status": "pass",
+                "rtl_manifest_identity": "",
+                "report_status": "blocked",
             },
             label="ADG Builder hardware report bundle",
         )

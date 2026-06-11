@@ -180,8 +180,7 @@ def mapping_artifact_for_candidate(
     matches = [
         artifact
         for artifact in artifacts
-        if artifact.get("status") == "pass"
-        and artifact.get("workload") == workload
+        if artifact.get("workload") == workload
         and artifact.get("mapping_id") == mapping_id
         and hardware_refs_match(hardware, artifact.get("hardware"))
     ]
@@ -204,8 +203,7 @@ def mapping_artifact_from_row(row: dict[str, str]) -> dict[str, object]:
     if not isinstance(artifact, dict) or artifact.get("kind") != "pnr_mapping":
         return {}
     if (
-        artifact.get("status") == "pass"
-        and artifact.get("workload") == row.get("workload")
+        artifact.get("workload") == row.get("workload")
         and artifact.get("mapping_id") == row.get("mapping_id")
         and hardware_refs_match(row.get("hardware", ""), artifact.get("hardware"))
     ):
@@ -238,8 +236,7 @@ def cgra_report_for_candidate(
     matches = [
         report
         for report in reports
-        if report.get("status") == "pass"
-        and report.get("workload") == workload
+        if report.get("workload") == workload
         and report.get("mapping_id") == mapping_id
         and hardware_refs_match(hardware, report.get("hardware"))
     ]
@@ -511,11 +508,30 @@ def candidate_row(
         if effective_objective == "minimize_unsupported_scope_diagnostics":
             row["unsupported_scope_diagnostics_count"] = str(unsupported_count)
         return row
+    blocked_mapping_id = ""
+    if mapping_artifact or cgra_report:
+        blocked_mapping_id = mapping.get("mapping_id", "")
+    blocked_input_refs = unique_refs(
+        [
+            ref
+            for ref in (
+                artifact_ref(mapping.get("__manifest_path")),
+                artifact_ref(mapping.get("__path")),
+                artifact_ref(mapping_artifact.get("__path")),
+                artifact_ref(sim.get("__path")),
+                artifact_ref(cgra_report.get("__path")),
+                artifact_ref(fpa.get("__path")),
+            )
+            if ref
+        ]
+    )
     return {
-        "candidate": f"candidate::{workload}::{hardware}",
+        "candidate": complete_candidate_id(workload, hardware, blocked_mapping_id)
+        if blocked_mapping_id
+        else f"candidate::{workload}::{hardware}",
         "workload": workload,
         "hardware": hardware,
-        "mapping_id": "",
+        "mapping_id": blocked_mapping_id,
         "objective": effective_objective,
         "cgra_sim_cycles": "",
         "frequency_mhz": "",
@@ -526,8 +542,8 @@ def candidate_row(
         "unsupported_scope_diagnostics_count": "",
         "selection_status": "blocked",
         "candidate_kind": "combined_full_stack_candidate",
-        "input_artifacts": "",
-        "input_artifact_fingerprints": "",
+        "input_artifacts": ";".join(artifact_identity_list(blocked_input_refs)),
+        "input_artifact_fingerprints": input_artifact_fingerprints(blocked_input_refs),
         "output_artifacts": intermediate_artifacts.artifact_id_for_path(output_artifact),
         "objective_record": f"objective::{effective_objective}",
         "metric_records": "",

@@ -445,7 +445,7 @@ def main() -> int:
         combined_hardware = out_dir / "combined-adg-hardware-summary.csv"
         write_combined_hardware_summary([hardware, shared_hardware], combined_hardware)
         mapped_manifest = out_dir / "mapped-workload-rtl-manifest.json"
-        artifact_test_common.require_success(
+        result = artifact_test_common.run_command(
             repo,
             [
                 "bash",
@@ -457,43 +457,34 @@ def main() -> int:
                 "--output",
                 str(mapped_manifest),
             ],
-            "mapped workload RTL manifest",
         )
+        if result.returncode == 0:
+            raise AssertionError("mapped workload RTL manifest unexpectedly passed with failed mapping")
+        if not mapped_manifest.is_file():
+            raise AssertionError(
+                "mapped workload RTL manifest did not write structured blocked artifact\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
         mapped_data = json.loads(mapped_manifest.read_text())
+        if mapped_data.get("status") != "blocked":
+            raise AssertionError(f"mapped manifest should block for failed mapping: {mapped_data}")
         if mapped_data.get("mode") != "mapped_workload_rtl":
             raise AssertionError(f"mapped manifest should use mapped_workload_rtl mode: {mapped_data}")
         if mapped_data.get("mapping_artifact_identity") != "mapped-pnr-mapping":
             raise AssertionError(f"mapped manifest should identify its mapping artifact: {mapped_data}")
         if mapped_data.get("source_fabric_adg_identity") != "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg":
             raise AssertionError(f"mapped manifest should select hardware matching the mapping: {mapped_data}")
-        mapped_lowering = mapped_data.get("lowering_configuration")
-        expected_lowering_fields = {
-            "lowering_kind": "mapped_workload_rtl",
-            "mapping_artifact_identity": "mapped-pnr-mapping",
-            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
-            "mapping_hardware": "shared_reduction_adg",
-            "workload": "vecsum",
-        }
-        if not isinstance(mapped_lowering, dict):
-            raise AssertionError(f"mapped manifest lowering configuration must be an object: {mapped_data}")
-        for key, value in expected_lowering_fields.items():
-            if mapped_lowering.get(key) != value:
-                raise AssertionError(f"mapped manifest lowering {key} mismatch: {mapped_data}")
-        expected_constraint = {
-            "constraint_kind": "pnr_mapping_binding",
-            "mapping_artifact_identity": "mapped-pnr-mapping",
-            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
-            "workload": "vecsum",
-        }
-        if expected_constraint not in mapped_data.get("constraints", []):
-            raise AssertionError(f"mapped manifest missed PnR mapping constraint: {mapped_data}")
-        expected_activity_hook = {
-            "source": "pnr_mapping_activity",
-            "mapping_artifact_identity": "mapped-pnr-mapping",
-            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
-        }
-        if expected_activity_hook not in mapped_data.get("activity_hooks", []):
-            raise AssertionError(f"mapped manifest missed mapping activity hook: {mapped_data}")
+        if mapped_data.get("lowering_configuration") != {}:
+            raise AssertionError(f"blocked mapped manifest should not expose lowering configuration: {mapped_data}")
+        if mapped_data.get("constraints") != [] or mapped_data.get("activity_hooks") != []:
+            raise AssertionError(f"blocked mapped manifest should not expose mapping-derived hooks: {mapped_data}")
+        diagnostics = mapped_data.get("diagnostics", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "mapping_artifact_failure"
+            for record in diagnostics
+        ):
+            raise AssertionError(f"blocked mapped manifest should diagnose failed mapping: {mapped_data}")
         mapped_audit = out_dir / "mapped-workload-rtl-manifest-audit-summary.json"
         artifact_test_common.require_success(
             repo,

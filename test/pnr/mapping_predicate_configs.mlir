@@ -1,7 +1,7 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph cmpf_graph --hardware-mlir %s --hardware predicate_adg --workload cmpf_graph --output %t.pass.csv --artifact %t.pass.json
 // RUN: FileCheck %s --check-prefix=CSV-PASS < %t.pass.csv
 // RUN: FileCheck %s --check-prefix=JSON-PASS < %t.pass.json
-// RUN: not loom-pnr-map --dfg-mlir %s --graph cmpf_graph --hardware-mlir %s --hardware predicate_mismatch_adg --workload cmpf_graph --output %t.fail.csv --artifact %t.fail.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph cmpf_graph --hardware-mlir %s --hardware predicate_mismatch_adg --workload cmpf_graph --output %t.fail.csv --artifact %t.fail.json
 // RUN: FileCheck %s --check-prefix=CSV-FAIL < %t.fail.csv
 
 // CSV-PASS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic

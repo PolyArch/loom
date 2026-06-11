@@ -86,12 +86,12 @@ def main() -> int:
         if len(relu_rows) != 1:
             raise AssertionError(f"expected one aggregate relu mapping row, got {mapping_rows}")
         mapping_row = relu_rows[0]
-        if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "pass":
+        if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "blocked":
             raise AssertionError(f"unexpected relu aggregate mapping row: {mapping_row}")
-        if mapping_row["placed_records"] != "10" or mapping_row["routed_edges"] != "12":
+        if mapping_row["placed_records"] != "10" or mapping_row["routed_edges"] != "0":
             raise AssertionError(f"relu aggregate mapping missed component placement evidence: {mapping_row}")
-        if mapping_row["unrouted_edges"] != "0" or mapping_row["unplaced_records"] != "0":
-            raise AssertionError(f"relu aggregate mapping should be fully routed: {mapping_row}")
+        if mapping_row["unrouted_edges"] != "12" or mapping_row["unplaced_records"] != "0":
+            raise AssertionError(f"relu aggregate mapping should preserve unrouted edges: {mapping_row}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())
         if mapping_artifact.get("graph") != "workload_graph_set":
@@ -102,8 +102,8 @@ def main() -> int:
             raise AssertionError(f"relu aggregate mapping missed component mappings: {mapping_artifact}")
         if set(mapping_artifact.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"relu aggregate mapping missed component graphs: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 129:
-            raise AssertionError(f"relu aggregate mapping should preserve component config records: {mapping_artifact}")
+        if mapping_artifact.get("config_records") != 0 or mapping_artifact.get("status") != "blocked":
+            raise AssertionError(f"relu aggregate mapping should preserve blocked route evidence: {mapping_artifact}")
 
         component_expectations = {
             "pnr-mapping-main.json": ("g_t_relu_0_0", MAIN_MAPPING_ID),
@@ -113,8 +113,8 @@ def main() -> int:
             component = json.loads((out_dir / name).read_text())
             if component.get("graph") != graph or component.get("mapping_id") != mapping_id:
                 raise AssertionError(f"unexpected relu component mapping {name}: {component}")
-            if component.get("status") != "pass":
-                raise AssertionError(f"relu component mapping {name} should pass: {component}")
+            if component.get("status") != "fail":
+                raise AssertionError(f"relu component mapping {name} should expose unrouted failure: {component}")
 
         dfg_report = json.loads((out_dir / "relu-dfg-sim-report.json").read_text())
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "relu DFG-sim cycles")
@@ -127,8 +127,8 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "relu CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected relu CGRA mapping identity: {cgra_report}")
-        if cgra_cycles != 731:
-            raise AssertionError(f"relu aggregate CGRA cycles should include checksum slice: {cgra_report}")
+        if cgra_report.get("status") != "blocked" or cgra_cycles != 707:
+            raise AssertionError(f"relu aggregate CGRA report should be blocked at DFG cycles: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"relu CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
         if dfg_cycles in {448, 546, 579, 1027, 1603} or cgra_cycles in {466, 576, 589, 1044, 1631}:
@@ -137,7 +137,7 @@ def main() -> int:
             raise AssertionError(f"relu aggregate CGRA report missed component mappings: {cgra_report}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
-        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "relu":
+        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != "relu":
             raise AssertionError(f"unexpected relu runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != f"work-package::relu::{AGGREGATE_MAPPING_ID}":
             raise AssertionError(f"unexpected relu work package identity: {runtime_package}")
@@ -165,21 +165,21 @@ def main() -> int:
             raise AssertionError(f"expected one relu sim row, got {sim_rows}")
         if relu_sim[0]["dfg_sim_cycles"] != str(dfg_cycles):
             raise AssertionError(f"relu sim summary missed DFG cycles: {relu_sim[0]}")
-        if relu_sim[0]["cgra_sim_cycles"] != str(cgra_cycles):
-            raise AssertionError(f"relu sim summary missed CGRA cycles: {relu_sim[0]}")
+        if relu_sim[0]["cgra_sim_cycles"] != "" or relu_sim[0]["status"] != "blocked":
+            raise AssertionError(f"relu sim summary should preserve blocked CGRA status: {relu_sim[0]}")
 
         dse_rows = read_csv_rows(out_dir / "dse-candidate-summary.csv")
         relu_dse = [row for row in dse_rows if row["workload"] == "relu"]
         if len(relu_dse) != 1:
             raise AssertionError(f"expected one relu DSE row, got {dse_rows}")
         dse_row = relu_dse[0]
-        if dse_row["mapping_id"] != AGGREGATE_MAPPING_ID or dse_row["selection_status"] != "selected":
+        if dse_row["mapping_id"] != AGGREGATE_MAPPING_ID or dse_row["selection_status"] != "blocked":
             raise AssertionError(f"unexpected relu DSE row: {dse_row}")
-        if dse_row["cgra_sim_cycles"] != str(cgra_cycles) or float(dse_row["energy_nj"]) <= 0.0:
-            raise AssertionError(f"relu DSE row missed cycle or energy evidence: {dse_row}")
+        if dse_row["cgra_sim_cycles"] != "" or dse_row["energy_nj"] != "":
+            raise AssertionError(f"blocked relu DSE row must not expose objective metrics: {dse_row}")
 
         workload_bundle = json.loads((out_dir / "workload-report-bundle.json").read_text())
-        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != "relu":
+        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != "relu":
             raise AssertionError(f"unexpected relu workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
@@ -187,9 +187,9 @@ def main() -> int:
             if isinstance(metric, dict)
         }
         for metric_id in (
-            "metric::relu::cgra_sim_cycles",
-            "metric::relu::estimated_runtime_us",
-            "metric::relu::energy_nj",
+            "metric::relu::dfg_sim_cycles",
+            "metric::relu::workload_size_items",
+            "metric::shared_reduction_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"relu workload report missed {metric_id}: {workload_bundle}")
@@ -241,7 +241,7 @@ def main() -> int:
         cgra_evidence = [
             check
             for check in audit.get("cross_artifact_checks", [])
-            if check.get("rule") == "sim_cycle_report_mapping_evidence"
+            if check.get("rule") == "sim_cycle_blocked_mapping_evidence"
             and check.get("workload") == "relu"
         ]
         if not cgra_evidence:

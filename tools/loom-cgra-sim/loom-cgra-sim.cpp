@@ -47,5 +47,5 @@ int main(int argc, char **argv) {
     llvm::errs() << "error: " << llvm::toString(std::move(err)) << "\n";
     return 1;
   }
-  return reportOrErr->status == "pass" ? 0 : 1;
+  return 0;
 }
