@@ -1379,8 +1379,8 @@ def main() -> int:
         dse_provenance_header = (
             "candidate,workload,hardware,mapping_id,objective,cgra_sim_cycles,frequency_mhz,"
             "area_um2,dynamic_power_mw,leakage_power_mw,energy_nj,selection_status,candidate_kind,"
-            "input_artifacts,input_artifact_fingerprints,output_artifacts,objective_record,metric_records,policy_id,"
-            "ordering_rule,diagnostic\n"
+            "input_artifacts,input_artifact_fingerprints,output_artifacts,objective_record,metric_records,"
+            "feedback_fidelity_records,policy_id,ordering_rule,diagnostic\n"
         )
         valid_dse_inputs = [
             valid_mapping,
@@ -1403,12 +1403,20 @@ def main() -> int:
             "cgra_sim_cycles=12;frequency_mhz=100;area_um2=200;"
             "dynamic_power_mw=3;leakage_power_mw=1;energy_nj=0.480"
         )
+        valid_dse_fidelity_records = (
+            "frequency_mhz=analytic:analytic_fpa_model;"
+            "area_um2=analytic:analytic_fpa_model;"
+            "dynamic_power_mw=analytic:analytic_fpa_model:default_toggle;"
+            "leakage_power_mw=analytic:analytic_fpa_model:default_toggle;"
+            "energy_nj=analytic:derived_from_fpa_and_cgra_sim"
+        )
         valid_dse = out_dir / "valid-dse-candidate-summary.csv"
         valid_dse_provenance = (
             "combined_full_stack_candidate,"
             f"{valid_dse_input_artifacts},{valid_dse_input_fingerprints},{valid_dse},"
             "objective::minimize_runtime,"
             f"{valid_dse_metric_records},"
+            f"{valid_dse_fidelity_records},"
             "deterministic_minimize_runtime_v1,"
             "runtime_score_then_candidate_id,"
         )
@@ -1718,6 +1726,41 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE row with mismatched metric_records unexpectedly passed audit")
+
+        missing_fidelity_dse = out_dir / "missing-fidelity-dse-candidate-summary.csv"
+        missing_fidelity_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(missing_fidelity_dse),
+        ).replace(
+            valid_dse_fidelity_records,
+            "",
+        )
+        missing_fidelity_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
+            + missing_fidelity_dse_provenance
+            + "fidelity provenance omits analytic FPA markers\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-missing-dse-fidelity.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(missing_fidelity_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row without feedback_fidelity_records unexpectedly passed audit")
 
         bogus_input_dse = out_dir / "bogus-input-dse-candidate-summary.csv"
         bogus_input_dse_provenance = valid_dse_provenance.replace(

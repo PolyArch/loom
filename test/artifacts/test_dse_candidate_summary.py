@@ -370,6 +370,16 @@ def main() -> int:
         ):
             if metric not in metric_records:
                 raise AssertionError(f"selected-like metric records missed {metric}: {row}")
+        fidelity_records = row.get("feedback_fidelity_records", "")
+        for record in (
+            "frequency_mhz=analytic:analytic_fpa_model",
+            "area_um2=analytic:analytic_fpa_model",
+            "dynamic_power_mw=analytic:analytic_fpa_model:default_toggle",
+            "leakage_power_mw=analytic:analytic_fpa_model:default_toggle",
+            "energy_nj=analytic:derived_from_fpa_and_cgra_sim",
+        ):
+            if record not in fidelity_records:
+                raise AssertionError(f"selected-like fidelity records missed {record}: {row}")
 
         artifact_only_output = out_dir / "artifact-only-dse-candidate-summary.csv"
         rows = artifact_test_common.run_csv_summary(

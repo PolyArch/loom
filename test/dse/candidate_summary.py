@@ -410,6 +410,21 @@ def complete_evidence(
     return cycles, energy_nj
 
 
+def metric_fidelity_record_values(fpa: dict[str, str]) -> list[str]:
+    fidelity = fpa.get("fidelity_level", "")
+    frequency_source = fpa.get("frequency_source", "")
+    area_source = fpa.get("area_source", "")
+    power_source = fpa.get("power_source", "")
+    activity_source = fpa.get("activity_source", "")
+    return [
+        f"frequency_mhz={fidelity}:{frequency_source}",
+        f"area_um2={fidelity}:{area_source}",
+        f"dynamic_power_mw={fidelity}:{power_source}:{activity_source}",
+        f"leakage_power_mw={fidelity}:{power_source}:{activity_source}",
+        f"energy_nj={fidelity}:derived_from_fpa_and_cgra_sim",
+    ]
+
+
 def candidate_row(
     mapping: dict[str, str],
     sim: dict[str, str],
@@ -478,6 +493,7 @@ def candidate_row(
         if effective_objective == "minimize_unsupported_scope_diagnostics":
             metric_record_values.append(f"unsupported_scope_diagnostics_count={unsupported_count}")
         metric_records = ";".join(metric_record_values)
+        feedback_fidelity_records = ";".join(metric_fidelity_record_values(fpa))
         row = {
             "candidate": candidate_id,
             "workload": workload,
@@ -497,6 +513,7 @@ def candidate_row(
             "output_artifacts": intermediate_artifacts.artifact_id_for_path(output_artifact),
             "objective_record": f"objective::{effective_objective}",
             "metric_records": metric_records,
+            "feedback_fidelity_records": feedback_fidelity_records,
             "policy_id": policy_id_for_objective(effective_objective, mapping),
             "ordering_rule": ordering_rule_for_objective(effective_objective),
             "diagnostic": (
@@ -547,6 +564,7 @@ def candidate_row(
         "output_artifacts": intermediate_artifacts.artifact_id_for_path(output_artifact),
         "objective_record": f"objective::{effective_objective}",
         "metric_records": "",
+        "feedback_fidelity_records": "",
         "policy_id": policy_id_for_objective(effective_objective, mapping),
         "ordering_rule": ordering_rule_for_objective(effective_objective),
         "diagnostic": (

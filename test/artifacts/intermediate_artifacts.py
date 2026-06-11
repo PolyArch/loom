@@ -368,6 +368,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "output_artifacts",
             "objective_record",
             "metric_records",
+            "feedback_fidelity_records",
             "policy_id",
             "ordering_rule",
             "diagnostic",
@@ -394,6 +395,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "",
             "blocked",
+            "",
             "",
             "",
             "",
@@ -1004,6 +1006,29 @@ def parse_dse_metric_records(
     return parsed
 
 
+def parse_dse_fidelity_records(
+    fidelity_records: str,
+    diagnostics: list[str],
+    row_index: int,
+) -> dict[str, tuple[str, ...]]:
+    parsed: dict[str, tuple[str, ...]] = {}
+    for entry in fidelity_records.split(";"):
+        if entry == "":
+            continue
+        if "=" not in entry:
+            diagnostics.append(f"row {row_index}: feedback_fidelity_records entry {entry!r} has no value")
+            continue
+        name, value = entry.split("=", 1)
+        parts = tuple(part for part in value.split(":") if part)
+        if name == "" or not parts:
+            diagnostics.append(f"row {row_index}: feedback_fidelity_records entry {entry!r} is incomplete")
+            continue
+        if name in parsed:
+            diagnostics.append(f"row {row_index}: feedback_fidelity_records repeats {name}")
+        parsed[name] = parts
+    return parsed
+
+
 def dse_candidate_metric_id(row: dict[str, str], name: str) -> str | None:
     workload = row.get("workload", "")
     hardware = row.get("hardware", "")
@@ -1063,6 +1088,7 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             "output_artifacts",
             "objective_record",
             "metric_records",
+            "feedback_fidelity_records",
             "policy_id",
             "ordering_rule",
         )
@@ -1084,6 +1110,8 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
             diagnostics.append(f"row {row_index}: ordering_rule does not match objective")
         metric_records = row.get("metric_records", "")
         parsed_metrics = parse_dse_metric_records(metric_records, diagnostics, row_index)
+        fidelity_records = row.get("feedback_fidelity_records", "")
+        parsed_fidelity = parse_dse_fidelity_records(fidelity_records, diagnostics, row_index)
         for metric in (
             "cgra_sim_cycles",
             "frequency_mhz",
@@ -1103,6 +1131,24 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
                     or abs(row_value - metric_value) > 0.001
                 ):
                     diagnostics.append(f"row {row_index}: metric_records {metric} does not match row value")
+        for metric in (
+            "frequency_mhz",
+            "area_um2",
+            "dynamic_power_mw",
+            "leakage_power_mw",
+            "energy_nj",
+        ):
+            if metric_records and metric not in parsed_fidelity:
+                diagnostics.append(f"row {row_index}: feedback_fidelity_records missing {metric}")
+                continue
+            parts = parsed_fidelity.get(metric)
+            if parts is None:
+                continue
+            fidelity = parts[0]
+            if fidelity not in FPA_FIDELITY_LEVELS:
+                diagnostics.append(f"row {row_index}: feedback_fidelity_records {metric} has unknown fidelity")
+            if len(parts) < 2:
+                diagnostics.append(f"row {row_index}: feedback_fidelity_records {metric} lacks source")
         diagnostic_count = row.get("unsupported_scope_diagnostics_count", "")
         if objective == "minimize_unsupported_scope_diagnostics":
             if diagnostic_count == "":
