@@ -470,6 +470,24 @@ def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
             "element_layout": "f32[9];f32[9]",
             "alignment_bytes": 4,
         }
+    if workload == "spmv":
+        return {
+            "byte_size": 128,
+            "element_layout": "u32[9];u32[9];u32[5];u32[5];u32[4]",
+            "alignment_bytes": 4,
+        }
+    if workload == "convolve_1d":
+        return {
+            "byte_size": 1028,
+            "element_layout": "f32[128];f32[7];f32[122]",
+            "alignment_bytes": 4,
+        }
+    if workload == "matvec":
+        return {
+            "byte_size": 116,
+            "element_layout": "u32[20];u32[5];u32[4]",
+            "alignment_bytes": 4,
+        }
     return None
 
 

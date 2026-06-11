@@ -62,6 +62,15 @@ case "${CASE}" in
   integrate_trapz)
     case_graph="g_t_integrate_trapz_red_0_0"
     ;;
+  spmv)
+    case_graph="g_t_spmv_kernel_red_0_0"
+    ;;
+  convolve_1d)
+    case_graph="g_t_convolve_1d_kernel_0_0"
+    ;;
+  matvec)
+    case_graph="g_t_matvec_kernel_0_0"
+    ;;
   xor_block)
     case_graph="g_t_xor_block_0_0"
     ;;
