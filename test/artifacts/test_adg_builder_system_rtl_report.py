@@ -41,6 +41,17 @@ FPA_HEADER = [
     "activity_source",
 ]
 
+DEMONSTRATOR_HEADER = [
+    "demonstrator",
+    "compat_status",
+    "artifact_status",
+    "mapping_status",
+    "sim_status",
+    "rtl_status",
+    "fpa_status",
+    "report_status",
+]
+
 
 def read_json_object(path: Path) -> dict[str, object]:
     data = json.loads(path.read_text())
@@ -341,6 +352,105 @@ def main() -> int:
             if metric is None or metric.get("value") != value:
                 raise AssertionError(f"system hardware bundle missed metric {metric_id}: {bundle}")
 
+        artifact_manifest = out_dir / "full-stack-artifact-manifest.json"
+        manifest_inputs = [
+            system_only_hardware,
+            rtl_manifest,
+            eda_report,
+            fpa,
+            hardware_bundle,
+        ]
+        manifest_args = []
+        for artifact in manifest_inputs:
+            manifest_args.extend(["--artifact", str(artifact)])
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                *manifest_args,
+                "--output",
+                str(artifact_manifest),
+            ],
+            "system artifact manifest",
+        )
+        manifest_data = read_json_object(artifact_manifest)
+        if manifest_data.get("diagnostics"):
+            raise AssertionError(f"system artifact manifest should be clean: {manifest_data}")
+        manifest_artifacts = {
+            artifact.get("logical_path")
+            for artifact in manifest_data.get("artifacts", [])
+            if isinstance(artifact, dict)
+        }
+        if "system-hardware-report-bundle.json" not in manifest_artifacts:
+            raise AssertionError(f"system hardware bundle should be registered in manifest: {manifest_data}")
+
+        demonstrator = out_dir / "e2e-demonstrator-summary.csv"
+        demonstrator_rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/e2e/run_demonstrator_summary.sh",
+            demonstrator,
+            DEMONSTRATOR_HEADER,
+            "--artifact",
+            str(system_only_hardware),
+            "--artifact",
+            str(fpa),
+            "--artifact",
+            str(hardware_bundle),
+            "--artifact",
+            str(artifact_manifest),
+            label="system e2e demonstrator summary",
+        )
+        system_demo = single_row(
+            demonstrator_rows,
+            key="demonstrator",
+            value=f"hardware::{system_identity}",
+            label="system hardware demonstrator",
+        )
+        assert_fields(
+            system_demo,
+            {
+                "compat_status": "skipped",
+                "artifact_status": "pass",
+                "mapping_status": "skipped",
+                "sim_status": "skipped",
+                "rtl_status": "skipped",
+                "fpa_status": "skipped",
+                "report_status": "pass",
+                "diagnostic": "hardware report bundle available",
+            },
+            label="system hardware demonstrator row",
+        )
+
+        final_manifest_args = []
+        for artifact in [*manifest_inputs, demonstrator]:
+            final_manifest_args.extend(["--artifact", str(artifact)])
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                *final_manifest_args,
+                "--output",
+                str(artifact_manifest),
+            ],
+            "system artifact manifest with demonstrator",
+        )
+        final_manifest = read_json_object(artifact_manifest)
+        if final_manifest.get("diagnostics"):
+            raise AssertionError(f"final system artifact manifest should be clean: {final_manifest}")
+        final_edges = [
+            edge
+            for edge in final_manifest.get("edges", [])
+            if isinstance(edge, dict)
+        ]
+        if not any(
+            edge.get("producer_artifact_kind") == "hardware_report_bundle"
+            and edge.get("consumer_artifact_kind") == "e2e_demonstrator"
+            for edge in final_edges
+        ):
+            raise AssertionError(f"system manifest missed hardware bundle to demonstrator edge: {final_manifest}")
+
         audit = out_dir / "system-artifact-audit-summary.json"
         artifact_test_common.require_success(
             repo,
@@ -354,6 +464,8 @@ def main() -> int:
                 str(eda_report),
                 str(fpa),
                 str(hardware_bundle),
+                str(artifact_manifest),
+                str(demonstrator),
             ],
             "system hardware artifact audit",
         )
