@@ -124,6 +124,18 @@ CASES = {
         "byte_size": 8192,
         "element_layout": "f32[1024];f32[1024]",
     },
+    "prefix_sum_inclusive": {
+        "graph": "g_t_prefix_sum_inclusive_kernel_red_0_0",
+        "mapping_id": "prefix_sum_inclusive__g_t_prefix_sum_inclusive_kernel_red_0_0__shared_reduction_adg",
+        "placed_records": "6",
+        "routed_edges": "9",
+        "config_records": 90,
+        "dfg_cycles": 13302,
+        "dynamic_work_items": 1023,
+        "cgra_cycles": 13319,
+        "byte_size": 8192,
+        "element_layout": "u32[1024];u32[1024]",
+    },
     "integrate_trapz": {
         "graph": "g_t_integrate_trapz_red_0_0",
         "mapping_id": "integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg",

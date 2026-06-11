@@ -91,6 +91,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "f32[1024];f32[1024]",
         "alignment_bytes": 4,
     },
+    "prefix_sum_inclusive": {
+        "byte_size": 8192,
+        "element_layout": "u32[1024];u32[1024]",
+        "alignment_bytes": 4,
+    },
     "integrate_trapz": {
         "byte_size": 72,
         "element_layout": "f32[9];f32[9]",
