@@ -39,7 +39,16 @@ CSV_COMMANDS = [
     (
         "test/fabric/run_adg_hardware_summary.sh",
         "adg-hardware-summary.csv",
-        ["hardware", "topology_class", "node_count", "link_count", "verify_status", "diagnostic"],
+        [
+            "hardware",
+            "topology_class",
+            "node_count",
+            "link_count",
+            "verify_status",
+            "diagnostic",
+            "tile_kinds",
+            "schedule_kinds",
+        ],
     ),
     (
         "test/pnr/run_mapping_summary.sh",
@@ -525,6 +534,25 @@ def main() -> int:
         if audit_data.get("verdict") != "fail":
             raise AssertionError(f"expected fail audit, got {audit_data}")
 
+        missing_hardware_fields = out_dir / "missing-adg-hardware-summary.csv"
+        missing_hardware_fields.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
+            "fabric0,fabric_module_template,0,0,blocked,no verified hardware\n"
+        )
+        missing_hardware_fields_audit = out_dir / "artifact-audit-summary-missing-hardware-fields.json"
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_hardware_fields_audit),
+                str(missing_hardware_fields),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("ADG hardware summary without tile coverage fields unexpectedly passed audit")
+
         valid_primitive = out_dir / "valid-dataflow-primitive-coverage.csv"
         valid_primitive.write_text(
             "workload,primitive,op_count,dfg_sim_status,diagnostic\n"
@@ -532,8 +560,8 @@ def main() -> int:
         )
         valid_hardware = out_dir / "valid-adg-hardware-summary.csv"
         valid_hardware.write_text(
-            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
-            "fabric0,fabric_module_template,1,0,pass,verified\n"
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,tile_kinds,schedule_kinds\n"
+            "fabric0,fabric_module_template,1,0,pass,verified,pe,spatial\n"
         )
         stale_mapping = out_dir / "stale-pnr-mapping-summary.csv"
         stale_mapping.write_text(
@@ -1057,9 +1085,9 @@ def main() -> int:
 
         ambiguous_hardware = out_dir / "ambiguous-adg-hardware-summary.csv"
         ambiguous_hardware.write_text(
-            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
-            "test/a.mlir::fabric0,fabric_module_template,1,0,pass,verified\n"
-            "test/b.mlir::fabric0,fabric_module_template,1,0,pass,verified\n"
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,tile_kinds,schedule_kinds\n"
+            "test/a.mlir::fabric0,fabric_module_template,1,0,pass,verified,pe,spatial\n"
+            "test/b.mlir::fabric0,fabric_module_template,1,0,pass,verified,pe,spatial\n"
         )
         result = run_command(
             repo,
@@ -1878,8 +1906,8 @@ def main() -> int:
 
         invalid_hardware = out_dir / "invalid-adg-hardware-summary.csv"
         invalid_hardware.write_text(
-            "hardware,topology_class,node_count,link_count,verify_status,diagnostic\n"
-            "fabric0,arbitrary_graph,0,1,pass,\n"
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,tile_kinds,schedule_kinds\n"
+            "fabric0,arbitrary_graph,0,1,pass,,pe,spatial\n"
         )
         result = run_command(
             repo,

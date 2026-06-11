@@ -201,6 +201,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         kind="adg_hardware",
         filename="adg-hardware-summary.csv",
         first_columns=("hardware", "topology_class", "node_count", "link_count", "verify_status", "diagnostic"),
+        extra_columns=("tile_kinds", "schedule_kinds"),
         status_columns=("verify_status",),
         numeric_columns=("node_count", "link_count"),
         identity_columns=("hardware", "topology_class"),
@@ -211,6 +212,8 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "0",
             "blocked",
             "ADG hardware summary scaffold has no hardware candidate yet",
+            "",
+            "",
         ),
     ),
     "pnr_mapping": CsvSchema(
@@ -1042,8 +1045,18 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
         node_count = numeric_value(row, "node_count")
         link_count = numeric_value(row, "link_count")
         topology_class = row.get("topology_class", "")
+        tile_kinds = {entry for entry in row.get("tile_kinds", "").split(";") if entry}
+        schedule_kinds = {entry for entry in row.get("schedule_kinds", "").split(";") if entry}
         if node_count is not None and node_count <= 0:
             diagnostics.append(f"row {row_index}: ADG hardware pass row has no nodes")
+        if not tile_kinds:
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has no tile kinds")
+        if not tile_kinds <= {"pe", "switch", "mem"}:
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown tile kinds")
+        if not schedule_kinds:
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has no schedule kinds")
+        if not schedule_kinds <= {"spatial", "temporal"}:
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown schedule kinds")
         if (
             topology_class != "fabric_module_template"
             and link_count is not None
@@ -1258,6 +1271,12 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
             f"header first columns {list(header[:len(schema.first_columns)])} "
             f"do not match {list(schema.first_columns)}"
         )
+    if schema.kind == "adg_hardware":
+        expected_header = tuple(csv_header(schema.kind))
+        if header != expected_header:
+            diagnostics.append(
+                f"header columns {list(header)} do not match {list(expected_header)}"
+            )
     if not rows:
         diagnostics.append("artifact has no rows")
     for index, row in enumerate(rows, start=1):

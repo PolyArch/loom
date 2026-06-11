@@ -9,7 +9,16 @@ from pathlib import Path
 import artifact_test_common
 
 
-HEADER = ["hardware", "topology_class", "node_count", "link_count", "verify_status", "diagnostic"]
+HEADER = [
+    "hardware",
+    "topology_class",
+    "node_count",
+    "link_count",
+    "verify_status",
+    "diagnostic",
+    "tile_kinds",
+    "schedule_kinds",
+]
 
 
 def assert_pe_two_pes(rows: list[dict[str, str]]) -> None:
@@ -22,6 +31,8 @@ def assert_pe_two_pes(rows: list[dict[str, str]]) -> None:
         "node_count": "2",
         "link_count": "0",
         "verify_status": "pass",
+        "tile_kinds": "pe",
+        "schedule_kinds": "spatial",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -40,6 +51,8 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
         "node_count": "25",
         "link_count": "0",
         "verify_status": "pass",
+        "tile_kinds": "mem;pe",
+        "schedule_kinds": "spatial",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -58,6 +71,8 @@ def assert_minimal_spatial_adg(rows: list[dict[str, str]]) -> None:
         "node_count": "3",
         "link_count": "0",
         "verify_status": "pass",
+        "tile_kinds": "mem;pe;switch",
+        "schedule_kinds": "spatial",
     }
     for key, value in expected.items():
         if row[key] != value:
@@ -76,12 +91,32 @@ def assert_minimal_temporal_adg(rows: list[dict[str, str]]) -> None:
         "node_count": "3",
         "link_count": "0",
         "verify_status": "pass",
+        "tile_kinds": "mem;pe;switch",
+        "schedule_kinds": "temporal",
     }
     for key, value in expected.items():
         if row[key] != value:
             raise AssertionError(f"minimal_temporal_adg {key}={row[key]!r}, expected {value!r}")
     if "fabric.module template verified" not in row["diagnostic"]:
         raise AssertionError(f"unexpected diagnostic: {row}")
+
+
+def assert_quoted_named_pe(rows: list[dict[str, str]]) -> None:
+    matches = [row for row in rows if "quoted module" in row["hardware"]]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one quoted module row, got {rows}")
+    row = matches[0]
+    expected = {
+        "topology_class": "fabric_module_template",
+        "node_count": "1",
+        "link_count": "0",
+        "verify_status": "pass",
+        "tile_kinds": "pe",
+        "schedule_kinds": "spatial",
+    }
+    for key, value in expected.items():
+        if row[key] != value:
+            raise AssertionError(f"quoted module {key}={row[key]!r}, expected {value!r}")
 
 
 def main() -> int:
@@ -111,6 +146,34 @@ def main() -> int:
         assert_shared_reduction_adg(rows)
         assert_minimal_spatial_adg(rows)
         assert_minimal_temporal_adg(rows)
+
+        quoted_input = Path(tmp) / "quoted-named-pe.mlir"
+        quoted_input.write_text(
+            """fabric.module @"quoted module"(%a : !fabric.bits<32>) {
+  fabric.pe @\"ALU 0\" [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+    fabric.yield %pa : !fabric.bits<32>
+  }
+  fabric.yield
+}
+"""
+        )
+        quoted_output = Path(tmp) / "adg-hardware-summary-quoted.csv"
+        rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/fabric/run_adg_hardware_summary.sh",
+            quoted_output,
+            HEADER,
+            "--input",
+            str(quoted_input),
+            label="quoted ADG hardware summary",
+        )
+        assert_quoted_named_pe(rows)
 
     return 0
 

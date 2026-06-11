@@ -162,11 +162,22 @@ Required first columns:
 * `verify_status`;
 * `diagnostic`.
 
+Additional required columns:
+
+* `tile_kinds`;
+* `schedule_kinds`.
+
 Rules:
 
 * `topology_class` distinguishes arbitrary graph, non-mesh, regular
   graph, mesh-like, systolic-like, and custom classes.
 * `node_count` and `link_count` are non-negative integers.
+* `tile_kinds` is a semicolon-separated, deterministic set of Fabric
+  SpatialCore tile kinds observed in the verified template. The baseline
+  tile kinds are `pe`, `switch`, and `mem`.
+* `schedule_kinds` is a semicolon-separated, deterministic set of
+  schedule predicates observed on those tile kinds. The baseline
+  schedule kinds are `spatial` and `temporal`.
 * `verify_status = pass` requires positive node count and legal link
   evidence for hardware candidates that are not intentionally empty.
 * Coordinates or visualization metadata must not be counted as links.

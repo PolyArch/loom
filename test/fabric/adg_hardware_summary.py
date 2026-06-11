@@ -24,8 +24,11 @@ DEFAULT_INPUTS = (
     ROOT / "test" / "pnr" / "minimal_temporal_adg.mlir.inc",
     ROOT / "test" / "pnr" / "shared_reduction_adg.mlir",
 )
-MODULE_RE = re.compile(r"^\s*fabric\.module @([A-Za-z_.$-][A-Za-z0-9_.$-]*)\b")
+SYMBOL_PATTERN = r'"(?:\\.|[^"\\])*"|[A-Za-z_.$-][A-Za-z0-9_.$-]*'
+MODULE_RE = re.compile(rf"^\s*fabric\.module @(?P<name>{SYMBOL_PATTERN})")
 NODE_RE = re.compile(r"\bfabric\.(pe|switch|mem|fifo|instantiate)\b")
+TILE_RE = re.compile(r"\bfabric\.(pe|switch|mem)\b")
+SCHEDULE_RE = re.compile(r"\[(spatial|temporal)\]")
 LINK_RE = re.compile(r"\bfabric\.link\b")
 
 
@@ -72,6 +75,12 @@ def run_loom(tool: str, input_path: Path) -> tuple[str | None, str]:
     return None, first_diagnostic(result)
 
 
+def symbol_name(raw: str) -> str:
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return raw[1:-1]
+    return raw
+
+
 def iter_module_bodies(text: str) -> list[tuple[str, list[str]]]:
     modules: list[tuple[str, list[str]]] = []
     active_name: str | None = None
@@ -83,7 +92,7 @@ def iter_module_bodies(text: str) -> list[tuple[str, list[str]]]:
             match = MODULE_RE.match(line)
             if match is None:
                 continue
-            active_name = match.group(1)
+            active_name = symbol_name(match.group("name"))
             active_body = [line]
             brace_depth = line.count("{") - line.count("}")
             if brace_depth == 0:
@@ -105,6 +114,15 @@ def iter_module_bodies(text: str) -> list[tuple[str, list[str]]]:
 def summarize_module(input_path: Path, name: str, body: list[str]) -> dict[str, str]:
     node_count = sum(1 for line in body if NODE_RE.search(line))
     link_count = sum(1 for line in body if LINK_RE.search(line))
+    tile_kinds: set[str] = set()
+    schedule_kinds: set[str] = set()
+    for line in body:
+        tile_match = TILE_RE.search(line)
+        schedule_match = SCHEDULE_RE.search(line)
+        if tile_match is None or schedule_match is None:
+            continue
+        tile_kinds.add(tile_match.group(1))
+        schedule_kinds.add(schedule_match.group(1))
     return {
         "hardware": f"{relative_id(input_path)}::{name}",
         "topology_class": "fabric_module_template",
@@ -112,6 +130,8 @@ def summarize_module(input_path: Path, name: str, body: list[str]) -> dict[str, 
         "link_count": str(link_count),
         "verify_status": "pass",
         "diagnostic": "fabric.module template verified; link_count counts explicit fabric.link records only",
+        "tile_kinds": ";".join(sorted(tile_kinds)),
+        "schedule_kinds": ";".join(sorted(schedule_kinds)),
     }
 
 
@@ -123,6 +143,8 @@ def failed_row(input_path: Path, diagnostic: str) -> dict[str, str]:
         "link_count": "0",
         "verify_status": "fail",
         "diagnostic": diagnostic,
+        "tile_kinds": "",
+        "schedule_kinds": "",
     }
 
 
