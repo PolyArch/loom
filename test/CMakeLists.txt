@@ -37,4 +37,8 @@ add_lit_testsuite(check-fabric "Running the fabric regression tests"
 )
 set_target_properties(check-fabric PROPERTIES FOLDER "Tests")
 
-add_lit_testsuites(LOOM ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${LOOM_TEST_DEPENDS})
+add_lit_testsuites(LOOM ${CMAKE_CURRENT_SOURCE_DIR}
+  BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS ${LOOM_TEST_DEPENDS}
+  SKIP "cmsis-dsp.*" "cmsis-nn.*"
+)
