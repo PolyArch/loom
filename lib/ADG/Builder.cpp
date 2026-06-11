@@ -417,12 +417,37 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
                                        "unknown",
                                        load.control.c_str());
     }
+    for (const MemStorePort &store : mem.stores) {
+      if (!inputTypes.contains(store.address))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem store address input %s is "
+                                       "unknown",
+                                       store.address.c_str());
+      if (!inputTypes.contains(store.data))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem store data input %s is "
+                                       "unknown",
+                                       store.data.c_str());
+      if (!inputTypes.contains(store.control))
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "ADG mem store control input %s is "
+                                       "unknown",
+                                       store.control.c_str());
+    }
     os << "  ";
+    bool hasResult = false;
     for (std::size_t i = 0; i < mem.loads.size(); ++i) {
-      if (i)
+      if (hasResult)
         os << ", ";
       os << "%mem" << memIndex << "_data" << i << ", %mem" << memIndex
          << "_done" << i;
+      hasResult = true;
+    }
+    for (std::size_t i = 0; i < mem.stores.size(); ++i) {
+      if (hasResult)
+        os << ", ";
+      os << "%mem" << memIndex << "_store_done" << i;
+      hasResult = true;
     }
     os << " = fabric.mem [" << scheduleName(mem.schedule) << "] mgr("
        << valueName(mem.manager) << ')';
@@ -436,9 +461,21 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
       }
       os << ')';
     }
+    if (!mem.stores.empty()) {
+      os << " store(";
+      for (std::size_t i = 0; i < mem.stores.size(); ++i) {
+        if (i)
+          os << ", ";
+        const MemStorePort &store = mem.stores[i];
+        os << valueName(store.address) << ", " << valueName(store.data)
+           << ", " << valueName(store.control);
+      }
+      os << ')';
+    }
     os << "\n        [{load_group_size = "
        << static_cast<unsigned>(mem.loads.size())
-       << " : i32, store_group_size = " << mem.storePorts << " : i32";
+       << " : i32, store_group_size = "
+       << static_cast<unsigned>(mem.stores.size()) << " : i32";
     if (mem.schedule == Schedule::Temporal)
       os << ", tag_width = " << mem.temporalTagWidth
          << " : i32, addr_table_size = " << mem.temporalAddrTableSize
@@ -451,11 +488,18 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
       operandTypes.push_back(inputTypes.lookup(load.address));
       operandTypes.push_back(inputTypes.lookup(load.control));
     }
+    for (const MemStorePort &store : mem.stores) {
+      operandTypes.push_back(inputTypes.lookup(store.address));
+      operandTypes.push_back(inputTypes.lookup(store.data));
+      operandTypes.push_back(inputTypes.lookup(store.control));
+    }
     llvm::SmallVector<std::string> resultTypes;
     for (const MemLoadPort &load : mem.loads) {
       resultTypes.push_back(inputTypes.lookup(load.address));
       resultTypes.push_back(inputTypes.lookup(load.control));
     }
+    for (const MemStorePort &store : mem.stores)
+      resultTypes.push_back(inputTypes.lookup(store.control));
     os << "        : ";
     printTypeList(os, operandTypes);
     os << "\n        -> ";
@@ -486,7 +530,7 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
                               {"!fabric.bits<32>", "!fabric.bits<32>"},
                               {"11", "11"},
                               0});
-  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, 0});
+  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, {}});
   return module;
 }
 
@@ -617,6 +661,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   reductionPe.fus.push_back(makeBinary32Fu("shifted", "arith.shli"));
   reductionPe.fus.push_back(makeBinary32Fu("masked", "arith.andi"));
   reductionPe.fus.push_back(makeBinary32Fu("combined", "arith.ori"));
+  reductionPe.fus.push_back(makeBinary32Fu("combined", "arith.xori"));
   module.addPe(std::move(reductionPe));
 
   PeSpec syncPe;
@@ -641,7 +686,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                          {"i32b", "ctrl"},
                          {"i32c", "ctrl"},
                          {"i32d", "ctrl"}},
-                        0});
+                        {{"i32a", "i32b", "ctrl"},
+                         {"i32c", "i32d", "ctrl"}}});
   return module;
 }
 

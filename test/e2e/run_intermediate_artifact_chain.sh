@@ -5,12 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
 OUT_DIR=""
 CASE="vecsum"
+HARDWARE_SOURCE="checked-in"
 LEGACY_APP_ROOT="${ROOT}/temp/old_implementation_loom/loom/tests/app"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -20,6 +21,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --case)
       CASE="${2:?missing --case value}"
+      shift 2
+      ;;
+    --hardware-source)
+      HARDWARE_SOURCE="${2:?missing --hardware-source value}"
       shift 2
       ;;
     --legacy-app-root)
@@ -61,6 +66,32 @@ case "${CASE}" in
 esac
 
 mkdir -p "${OUT_DIR}"
+
+hardware_mlir="${ROOT}/test/pnr/shared_reduction_adg.mlir"
+hardware_name="shared_reduction_adg"
+hardware_summary_recipe_args=()
+case "${HARDWARE_SOURCE}" in
+  checked-in)
+    ;;
+  adg-builder)
+    hardware_mlir="${OUT_DIR}/adg-builder-shared-reduction-adg.mlir"
+    adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+    if [[ ! -x "${adg_builder_tool}" ]]; then
+      echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+      exit 1
+    fi
+    "${adg_builder_tool}" --shared-reduction --output "${hardware_mlir}"
+    hardware_summary_recipe_args=(
+      --input-recipe-identity
+      "${hardware_mlir}=adg-builder::shared-reduction"
+    )
+    ;;
+  *)
+    echo "unknown hardware source: ${HARDWARE_SOURCE}" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
 
 old_app_inventory="${OUT_DIR}/old-app-corpus-inventory.csv"
 app_import_status="${OUT_DIR}/app-corpus-import-status.csv"
@@ -108,7 +139,8 @@ bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
   --case "${CASE}" \
   --output "${primitive}"
 bash "${ROOT}/test/fabric/run_adg_hardware_summary.sh" \
-  --input "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
+  --input "${hardware_mlir}" \
+  "${hardware_summary_recipe_args[@]}" \
   --output "${hardware}"
 case_dfg_dir="${OUT_DIR}/${CASE}-dfg"
 env BUILD_DIR="${case_dfg_dir}" \
@@ -126,15 +158,15 @@ env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
 bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
   --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
   --graph "${case_graph}" \
-  --hardware-mlir "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
-  --hardware shared_reduction_adg \
+  --hardware-mlir "${hardware_mlir}" \
+  --hardware "${hardware_name}" \
   --workload "${CASE}" \
   --artifact "${mapping_artifact}" \
   --output "${mapping}"
 ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
   --dfg-report "${dfg_report}" \
   --mapping-artifact "${mapping_artifact}" \
-  --hardware-mlir "${ROOT}/test/pnr/shared_reduction_adg.mlir" \
+  --hardware-mlir "${hardware_mlir}" \
   --output "${cgra_report}"
 bash "${ROOT}/test/simulator/run_sim_comparison_report.sh" \
   --dfg-report "${dfg_report}" \

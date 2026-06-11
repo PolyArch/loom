@@ -71,11 +71,17 @@ struct MemLoadPort {
   std::string control;
 };
 
+struct MemStorePort {
+  std::string address;
+  std::string data;
+  std::string control;
+};
+
 struct MemSpec {
   Schedule schedule = Schedule::Spatial;
   std::string manager;
   std::vector<MemLoadPort> loads;
-  unsigned storePorts = 0;
+  std::vector<MemStorePort> stores;
   unsigned temporalTagWidth = 0;
   unsigned temporalAddrTableSize = 0;
 };

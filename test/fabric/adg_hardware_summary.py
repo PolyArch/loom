@@ -41,6 +41,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--input", action="append", dest="inputs", default=[])
+    parser.add_argument("--input-recipe-identity", action="append", default=[])
     return parser.parse_args(argv)
 
 
@@ -61,7 +62,20 @@ def relative_id(path: Path) -> str:
         return path.as_posix()
 
 
-def adg_builder_recipe_identity(path: Path) -> str:
+def explicit_recipe_identities(entries: list[str]) -> dict[str, str]:
+    identities: dict[str, str] = {}
+    for entry in entries:
+        path_text, separator, identity = entry.partition("=")
+        if separator != "=" or not path_text or not identity:
+            raise SystemExit(f"--input-recipe-identity expects PATH=IDENTITY, got {entry!r}")
+        identities[Path(path_text).resolve().as_posix()] = identity
+    return identities
+
+
+def adg_builder_recipe_identity(path: Path, explicit_recipes: dict[str, str]) -> str:
+    explicit = explicit_recipes.get(path.resolve().as_posix())
+    if explicit is not None:
+        return explicit
     return ADG_BUILDER_RECIPES.get(relative_id(path), "")
 
 
@@ -120,7 +134,12 @@ def iter_module_bodies(text: str) -> list[tuple[str, list[str]]]:
     return modules
 
 
-def summarize_module(input_path: Path, name: str, body: list[str]) -> dict[str, str]:
+def summarize_module(
+    input_path: Path,
+    name: str,
+    body: list[str],
+    explicit_recipes: dict[str, str],
+) -> dict[str, str]:
     node_count = sum(1 for line in body if NODE_RE.search(line))
     link_count = sum(1 for line in body if LINK_RE.search(line))
     tile_kinds: set[str] = set()
@@ -141,11 +160,11 @@ def summarize_module(input_path: Path, name: str, body: list[str]) -> dict[str, 
         "diagnostic": "fabric.module template verified; link_count counts explicit fabric.link records only",
         "tile_kinds": ";".join(sorted(tile_kinds)),
         "schedule_kinds": ";".join(sorted(schedule_kinds)),
-        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path),
+        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path, explicit_recipes),
     }
 
 
-def failed_row(input_path: Path, diagnostic: str) -> dict[str, str]:
+def failed_row(input_path: Path, diagnostic: str, explicit_recipes: dict[str, str]) -> dict[str, str]:
     return {
         "hardware": relative_id(input_path),
         "topology_class": "fabric_module_template",
@@ -155,19 +174,32 @@ def failed_row(input_path: Path, diagnostic: str) -> dict[str, str]:
         "diagnostic": diagnostic,
         "tile_kinds": "",
         "schedule_kinds": "",
-        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path),
+        "adg_builder_recipe_identity": adg_builder_recipe_identity(input_path, explicit_recipes),
     }
 
 
-def summarize_input(tool: str, input_path: Path) -> tuple[list[dict[str, str]], bool]:
+def summarize_input(
+    tool: str,
+    input_path: Path,
+    explicit_recipes: dict[str, str],
+) -> tuple[list[dict[str, str]], bool]:
     text, diagnostic = run_loom(tool, input_path)
     if text is None:
-        return [failed_row(input_path, diagnostic)], False
+        return [failed_row(input_path, diagnostic, explicit_recipes)], False
 
     modules = iter_module_bodies(text)
     if not modules:
-        return [failed_row(input_path, "verified file contains no fabric.module hardware template")], False
-    return [summarize_module(input_path, name, body) for name, body in modules], True
+        return [
+            failed_row(
+                input_path,
+                "verified file contains no fabric.module hardware template",
+                explicit_recipes,
+            )
+        ], False
+    return [
+        summarize_module(input_path, name, body, explicit_recipes)
+        for name, body in modules
+    ], True
 
 
 def main(argv: list[str]) -> int:
@@ -179,10 +211,11 @@ def main(argv: list[str]) -> int:
         return 0
 
     inputs = [Path(value) for value in args.inputs] if args.inputs else list(DEFAULT_INPUTS)
+    explicit_recipes = explicit_recipe_identities(args.input_recipe_identity)
     rows: list[dict[str, str]] = []
     ok = True
     for input_path in inputs:
-        summary_rows, input_ok = summarize_input(tool, input_path)
+        summary_rows, input_ok = summarize_input(tool, input_path, explicit_recipes)
         rows.extend(summary_rows)
         ok = ok and input_ok
 
