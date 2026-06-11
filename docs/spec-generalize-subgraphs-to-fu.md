@@ -146,7 +146,7 @@ Non-goals:
   miss that caused synthesis failure.
 * **alignment**: the semantic relation that decides which operation or
   value positions across input subgraphs may be represented by the same
-  Fabric node or port.
+  legal FU-body operation position or FU boundary port.
 * **share group**: a multi-member hardware-share group defined by
   `docs/spec-fabric-hw-share-group.md`. Operations may share one
   `fabric.op` only when the owning share-group and data-path width rules
@@ -370,6 +370,9 @@ commutative operand normalization, multi-result operations, multi-yield
 outputs, and graph-region back-edges. A strategy may use different
 search mechanics, but accepted alignments must be compatible with the
 same enumerator/matcher roundtrip used for final coverage.
+Accepted alignments materialize as legal `fabric.op` configurations,
+`fabric.mux` or `fabric.demux` arms, or PE-local `fabric.fu` boundary
+ports. They do not create a separate Fabric node-kind namespace.
 
 ### Coverage Verification
 
