@@ -930,12 +930,9 @@ descriptors for port channels, explicit `fabric.link` records, endpoint
 direction checks, endpoint uniqueness checks, and `acc_core` references
 to visible `fabric.module` SpatialCore templates. The ADG Builder can
 emit a heterogeneous SoC example that uses this baseline, and the ADG
-hardware summary can report it as a `fabric_system` candidate. The full
-target contract still requires structured port and channel attributes,
-all node kinds, external ports beyond the baseline parser surface,
-clock/reset/power domains, address spaces, memory regions, coherence
-domains, visualization metadata, and downstream PnR, simulator, RTL,
-FPA, report, runtime, and DSE consumption of selected systems.
+hardware summary can report it as a `fabric_system` candidate. This note
+does not define the target system contract; the normative target is in
+the sections above.
 
 ## Mapping Boundary
 

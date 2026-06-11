@@ -187,8 +187,9 @@ Rules:
   system nodes are not SpatialCore tiles.
 * For `fabric_system` rows, `node_kinds` is a semicolon-separated,
   deterministic set of system node kinds observed in the verified
-  system. The current baseline node kinds are `host_core`, `acc_core`,
-  `fixed_accelerator`, and `memory`.
+  system. The allowed vocabulary is the verifier-legal system node-kind
+  universe owned by `docs/spec-fabric-system-adg.md`; this artifact must
+  not hard-code a smaller baseline subset as the target contract.
 * For `fabric_system` rows, `tile_kinds` and `schedule_kinds` must be
   empty because SpatialCore tile evidence belongs to `fabric.module`
   rows referenced by the system.

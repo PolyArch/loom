@@ -384,10 +384,9 @@ emits a `fabric.module`, and a heterogeneous SoC example that emits a
 baseline `fabric.system`. The system builder seed covers host,
 SpatialCore-backed accelerator, fixed-function accelerator, memory
 nodes, string-described port channels, explicit links, and hardware
-summary evidence. Full exact-layer coverage, structured system port and
-channel attributes, domains, coherence, address spaces, visualization
-layouts, and broad SpatialCore tile-matrix helpers remain target
-contracts.
+summary evidence. This note records the current repository surface only;
+the Builder target contract is defined by the sections above and by the
+owning Fabric specs.
 
 ## Non-Goals
 

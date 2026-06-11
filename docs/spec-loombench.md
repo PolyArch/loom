@@ -109,5 +109,6 @@ This section is non-normative. It records current repository facts for
 orientation only and is not part of target acceptance.
 
 The current repository has app and CMSIS runner infrastructure. The
-dedicated `loombench` benchmark family is a target contract and still
-needs manifest, runner, and report integration.
+current tree does not have a dedicated `loombench` manifest, runner, or
+report artifact. App and CMSIS artifacts are adjacent workload evidence,
+not `loombench` evidence.
