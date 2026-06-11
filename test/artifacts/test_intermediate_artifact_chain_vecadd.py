@@ -288,6 +288,7 @@ def main() -> int:
             ("vecadd-cgra-sim-main-report", "vecadd-cgra-sim-report"),
             ("vecadd-cgra-sim-reduction-report", "vecadd-cgra-sim-report"),
             ("pnr-mapping", "vecadd-cgra-sim-report"),
+            ("pnr-mapping", "rtl-manifest"),
         }
         missing_edges = sorted(required_edges - edges)
         if missing_edges:

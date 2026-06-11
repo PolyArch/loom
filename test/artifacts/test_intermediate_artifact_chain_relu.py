@@ -217,6 +217,7 @@ def main() -> int:
             ("relu-cgra-sim-main-report", "relu-cgra-sim-report"),
             ("relu-cgra-sim-checksum-report", "relu-cgra-sim-report"),
             ("pnr-mapping", "relu-cgra-sim-report"),
+            ("pnr-mapping", "rtl-manifest"),
         }
         missing_edges = sorted(required_edges - edges)
         if missing_edges:

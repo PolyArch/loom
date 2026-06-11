@@ -209,6 +209,8 @@ def main() -> int:
         if "dotproduct-cgra-sim-report.json" not in manifest_artifacts:
             raise AssertionError(f"manifest missed dotproduct CGRA-sim report: {manifest}")
         edges = {(edge["from"], edge["to"]) for edge in manifest.get("edges", [])}
+        if ("pnr-mapping", "rtl-manifest") not in edges:
+            raise AssertionError(f"manifest missed mapped RTL dependency edge: {edges}")
         eda_to_hardware_edge = ("rtl-eda-report", "hardware-report-bundle")
         if hardware_bundle.get("eda_report_identities") == ["rtl-eda-report"]:
             if eda_to_hardware_edge not in edges:

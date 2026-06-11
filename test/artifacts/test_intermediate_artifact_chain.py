@@ -339,6 +339,7 @@ def main() -> int:
             ("pnr-mapping", "runtime-package"),
             ("vecsum-cgra-sim-report", "runtime-package"),
             ("sim-comparison-report", "runtime-package"),
+            ("pnr-mapping", "rtl-manifest"),
             ("adg-hardware-summary", "rtl-manifest"),
             ("rtl-manifest", "rtl-eda-report"),
             ("rtl-manifest", "rtl-fpa-summary"),

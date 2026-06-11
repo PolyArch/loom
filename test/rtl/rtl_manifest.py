@@ -43,14 +43,29 @@ class ScalarPort:
         }
 
 
+@dataclass(frozen=True)
+class MappingEvidence:
+    identity: str
+    workload: str
+    hardware: str
+    mapping_id: str
+
+
 class InterfaceLoweringError(ValueError):
     pass
+
+
+class MappingArtifactError(ValueError):
+    def __init__(self, diagnostic_class: str, message: str):
+        super().__init__(message)
+        self.diagnostic_class = diagnostic_class
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--hardware-summary")
+    parser.add_argument("--mapping-artifact")
     return parser.parse_args(argv)
 
 
@@ -62,6 +77,21 @@ def module_name(hardware_identity: str) -> str:
     if sanitized[0].isdigit():
         return f"loom_{sanitized}"
     return sanitized
+
+
+def string_field(data: dict[str, object], key: str) -> str:
+    value = data.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def hardware_identity_matches(candidate: str, hardware: str) -> bool:
+    if not candidate or not hardware:
+        return False
+    return (
+        candidate == hardware
+        or candidate.rsplit("::", 1)[-1] == hardware
+        or hardware.rsplit("::", 1)[-1] == candidate
+    )
 
 
 def pass_hardware_rows(path: Path) -> list[dict[str, str]]:
@@ -256,6 +286,87 @@ def module_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[st
     return input_ports + output_ports, input_diagnostics + output_diagnostics
 
 
+def read_mapping_evidence(path: Path, hardware_identity: str) -> MappingEvidence:
+    if not path.is_file():
+        raise MappingArtifactError(
+            "missing_mapping_artifact",
+            f"mapping artifact does not exist: {path}",
+        )
+    try:
+        raw_data = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise MappingArtifactError(
+            "invalid_mapping_artifact",
+            f"mapping artifact is not JSON: {error}",
+        ) from error
+    if not isinstance(raw_data, dict):
+        raise MappingArtifactError("invalid_mapping_artifact", "mapping artifact must be a JSON object")
+    if raw_data.get("kind") != "pnr_mapping":
+        raise MappingArtifactError(
+            "invalid_mapping_artifact",
+            "mapping artifact kind must be pnr_mapping",
+        )
+    if raw_data.get("status") != "pass":
+        raise MappingArtifactError(
+            "mapping_artifact_failure",
+            "mapping artifact must be passing for mapped workload RTL",
+        )
+    workload = string_field(raw_data, "workload")
+    hardware = string_field(raw_data, "hardware")
+    mapping_id = string_field(raw_data, "mapping_id")
+    missing = [
+        key
+        for key, value in (
+            ("workload", workload),
+            ("hardware", hardware),
+            ("mapping_id", mapping_id),
+        )
+        if not value
+    ]
+    if missing:
+        raise MappingArtifactError(
+            "invalid_mapping_artifact",
+            f"mapping artifact lacks {', '.join(missing)}",
+        )
+    if not hardware_identity_matches(hardware_identity, hardware):
+        raise MappingArtifactError(
+            "mapping_hardware_mismatch",
+            f"mapping hardware {hardware} does not match RTL hardware {hardware_identity}",
+        )
+    return MappingEvidence(
+        identity=intermediate_artifacts.artifact_id_for_path(path),
+        workload=workload,
+        hardware=hardware,
+        mapping_id=mapping_id,
+    )
+
+
+def mapping_hardware_hint(path: Path | None) -> str:
+    if path is None or not path.is_file():
+        return ""
+    try:
+        raw_data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(raw_data, dict):
+        return ""
+    return string_field(raw_data, "hardware")
+
+
+def mapping_selection_blocked_manifest(
+    mapping_artifact: Path,
+    diagnostic_class: str,
+    message: str,
+) -> dict[str, object]:
+    return blocked_manifest(
+        "",
+        diagnostic_class,
+        message,
+        mode="mapped_workload_rtl",
+        mapping_artifact_identity=intermediate_artifacts.artifact_id_for_path(mapping_artifact),
+    )
+
+
 def interface_manifest(top_module: str, ports: list[ScalarPort]) -> list[dict[str, object]]:
     if not ports:
         return []
@@ -285,16 +396,23 @@ def sv_source(module: str, node_count: str, link_count: str, ports: list[ScalarP
     )
 
 
-def blocked_manifest(hardware_identity: str, diagnostic_class: str, message: str) -> dict[str, object]:
+def blocked_manifest(
+    hardware_identity: str,
+    diagnostic_class: str,
+    message: str,
+    *,
+    mode: str = "architecture_rtl",
+    mapping_artifact_identity: str = "",
+) -> dict[str, object]:
     top_module = module_name(hardware_identity) if hardware_identity else "blocked"
     return {
         "schema_version": 1,
         "kind": "rtl_manifest",
         "manifest_id": f"rtl-manifest::{top_module}",
-        "mode": "architecture_rtl",
+        "mode": mode,
         "source_hardware_root": hardware_identity,
         "source_fabric_adg_identity": hardware_identity,
-        "mapping_artifact_identity": "",
+        "mapping_artifact_identity": mapping_artifact_identity,
         "lowering_configuration": {},
         "emitted_source_files": [],
         "top_level_modules": [],
@@ -316,13 +434,35 @@ def blocked_manifest(hardware_identity: str, diagnostic_class: str, message: str
     }
 
 
-def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, object]:
+def build_manifest(
+    output: Path,
+    hardware_row: dict[str, str],
+    mapping_artifact: Path | None = None,
+) -> dict[str, object]:
     hardware_identity = hardware_row["hardware"]
     top_module = module_name(hardware_identity)
+    mapping_evidence = None
+    if mapping_artifact is not None:
+        try:
+            mapping_evidence = read_mapping_evidence(mapping_artifact, hardware_identity)
+        except MappingArtifactError as error:
+            return blocked_manifest(
+                hardware_identity,
+                error.diagnostic_class,
+                str(error),
+                mode="mapped_workload_rtl",
+                mapping_artifact_identity=intermediate_artifacts.artifact_id_for_path(mapping_artifact),
+            )
     try:
         ports, diagnostics = module_ports(hardware_identity)
     except InterfaceLoweringError as error:
-        return blocked_manifest(hardware_identity, "unsupported_rtl_interface", str(error))
+        return blocked_manifest(
+            hardware_identity,
+            "unsupported_rtl_interface",
+            str(error),
+            mode="mapped_workload_rtl" if mapping_evidence else "architecture_rtl",
+            mapping_artifact_identity=mapping_evidence.identity if mapping_evidence else "",
+        )
     source_relative = Path("rtl") / f"{top_module}.sv"
     source_path = output.parent / source_relative
     source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -334,19 +474,54 @@ def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, obje
             ports,
         )
     )
+    mode = "mapped_workload_rtl" if mapping_evidence else "architecture_rtl"
+    lowering_configuration: dict[str, object] = {
+        "lowering_kind": mode,
+        "source_root_kind": "fabric_adg",
+        "systemverilog_profile": "behavioral_shell_v1",
+    }
+    constraints: list[dict[str, object]] = []
+    activity_hooks = [
+        {
+            "source": "rtl_signal_names",
+            "top_level_module": top_module,
+        }
+    ]
+    mapping_artifact_identity = ""
+    if mapping_evidence is not None:
+        mapping_artifact_identity = mapping_evidence.identity
+        lowering_configuration.update(
+            {
+                "mapping_artifact_identity": mapping_evidence.identity,
+                "mapping_id": mapping_evidence.mapping_id,
+                "mapping_hardware": mapping_evidence.hardware,
+                "workload": mapping_evidence.workload,
+            }
+        )
+        constraints.append(
+            {
+                "constraint_kind": "pnr_mapping_binding",
+                "mapping_artifact_identity": mapping_evidence.identity,
+                "mapping_id": mapping_evidence.mapping_id,
+                "workload": mapping_evidence.workload,
+            }
+        )
+        activity_hooks.append(
+            {
+                "source": "pnr_mapping_activity",
+                "mapping_artifact_identity": mapping_evidence.identity,
+                "mapping_id": mapping_evidence.mapping_id,
+            }
+        )
     return {
         "schema_version": 1,
         "kind": "rtl_manifest",
         "manifest_id": f"rtl-manifest::{top_module}",
-        "mode": "architecture_rtl",
+        "mode": mode,
         "source_hardware_root": hardware_identity,
         "source_fabric_adg_identity": hardware_identity,
-        "mapping_artifact_identity": "",
-        "lowering_configuration": {
-            "lowering_kind": "architecture_rtl",
-            "source_root_kind": "fabric_adg",
-            "systemverilog_profile": "behavioral_shell_v1",
-        },
+        "mapping_artifact_identity": mapping_artifact_identity,
+        "lowering_configuration": lowering_configuration,
         "emitted_source_files": [
             {
                 "path": source_relative.as_posix(),
@@ -361,13 +536,8 @@ def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, obje
         "behavioral_models": ["behavioral_fabric_module_shell"],
         "required_tool_capability_classes": ["rtl_lint"],
         "required_library_profile_classes": [],
-        "constraints": [],
-        "activity_hooks": [
-            {
-                "source": "rtl_signal_names",
-                "top_level_module": top_module,
-            }
-        ],
+        "constraints": constraints,
+        "activity_hooks": activity_hooks,
         "diagnostics": diagnostics,
         "status": "pass",
     }
@@ -386,8 +556,45 @@ def main(argv: list[str]) -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     hardware_summary = Path(args.hardware_summary) if args.hardware_summary else Path()
+    mapping_artifact = Path(args.mapping_artifact) if args.mapping_artifact else None
     rows = pass_hardware_rows(hardware_summary)
-    manifest = build_manifest(output, sorted(rows, key=lambda row: row["hardware"])[0]) if rows else scaffold(output)
+    sorted_rows = sorted(rows, key=lambda row: row["hardware"])
+    hardware_hint = mapping_hardware_hint(mapping_artifact)
+    if hardware_hint:
+        matching_rows = [
+            row for row in sorted_rows if hardware_identity_matches(row["hardware"], hardware_hint)
+        ]
+        if len(matching_rows) == 1:
+            sorted_rows = matching_rows
+        elif len(matching_rows) > 1 and mapping_artifact is not None:
+            manifest = mapping_selection_blocked_manifest(
+                mapping_artifact,
+                "ambiguous_mapping_hardware",
+                f"mapping hardware {hardware_hint} matches multiple passing hardware rows",
+            )
+            output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            return 1
+        elif mapping_artifact is not None:
+            manifest = mapping_selection_blocked_manifest(
+                mapping_artifact,
+                "mapping_hardware_mismatch",
+                f"mapping hardware {hardware_hint} does not match any passing hardware row",
+            )
+            output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            return 1
+    if not sorted_rows and mapping_artifact is not None:
+        manifest = mapping_selection_blocked_manifest(
+            mapping_artifact,
+            "missing_fabric_adg",
+            "no passing ADG hardware summary row was provided",
+        )
+        output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        return 1
+    manifest = (
+        build_manifest(output, sorted_rows[0], mapping_artifact)
+        if sorted_rows
+        else scaffold(output)
+    )
     output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return 0 if manifest["status"] == "pass" else 1
 

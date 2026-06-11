@@ -155,6 +155,10 @@ def matching_rtl_inputs(
         )
         if mapping_path is not None:
             return mapping_path, rtl_manifest_path
+    for rtl_manifest_path in grouped.get("rtl_manifest", []):
+        rtl_manifest = read_json(rtl_manifest_path)
+        if string_field(rtl_manifest, "mapping_artifact_identity"):
+            continue
         source_fabric = string_field(rtl_manifest, "source_fabric_adg_identity")
         hardware_matches_manifest = [
             path
@@ -658,7 +662,7 @@ def build_package(
     )
     hardware = string_field(mapping_for_identity, "hardware") or string_field(cgra_for_identity, "hardware")
     runtime_input = runtime_input_identity(workload, comparison_for_identity, dfg_for_identity)
-    if hardware:
+    if target == "rtl-sim" and rtl_manifest_path is None and hardware:
         rtl_manifest_path = matching_rtl_manifest_path(grouped.get("rtl_manifest", []), hardware)
 
     diagnostics: list[str] = []

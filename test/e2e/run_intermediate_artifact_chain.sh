@@ -405,6 +405,7 @@ bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
   --output "${sim_cycle}"
 bash "${ROOT}/test/rtl/run_rtl_manifest.sh" \
   --hardware-summary "${hardware}" \
+  --mapping-artifact "${mapping_artifact}" \
   --output "${rtl_manifest}"
 bash "${ROOT}/test/rtl/run_rtl_eda_report.sh" \
   --manifest "${rtl_manifest}" \

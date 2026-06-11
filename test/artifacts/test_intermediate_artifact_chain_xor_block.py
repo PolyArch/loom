@@ -277,6 +277,7 @@ def main() -> int:
         required_edges = {
             ("xor_block-dfg-sim-report", "sim-cycle-summary"),
             ("xor_block-cgra-sim-report", "sim-cycle-summary"),
+            ("pnr-mapping", "rtl-manifest"),
             ("runtime-package", "workload-report-bundle"),
             ("rtl-fpa-summary", "hardware-report-bundle"),
         }

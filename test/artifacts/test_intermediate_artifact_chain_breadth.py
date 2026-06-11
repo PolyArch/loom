@@ -337,6 +337,7 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         required_edges = {
             (f"{case_name}-dfg-sim-report", "sim-cycle-summary"),
             (f"{case_name}-cgra-sim-report", "sim-cycle-summary"),
+            ("pnr-mapping", "rtl-manifest"),
             ("sim-comparison-report", "runtime-package"),
             ("dse-candidate-summary", "workload-report-bundle"),
         }

@@ -99,7 +99,9 @@ def main() -> int:
             rtl_manifest,
             {
                 "kind": "rtl_manifest",
+                "mode": "mapped_workload_rtl",
                 "source_fabric_adg_identity": generated_hardware_identity,
+                "mapping_artifact_identity": "pnr-mapping",
                 "status": "pass",
             },
             label="ADG Builder RTL manifest",

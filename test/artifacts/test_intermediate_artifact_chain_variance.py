@@ -211,6 +211,7 @@ def main() -> int:
             ("variance-cgra-sim-mean-report", "variance-cgra-sim-report"),
             ("variance-cgra-sim-var-report", "variance-cgra-sim-report"),
             ("pnr-mapping", "variance-cgra-sim-report"),
+            ("pnr-mapping", "rtl-manifest"),
         }
         missing_edges = sorted(required_edges - edges)
         if missing_edges:

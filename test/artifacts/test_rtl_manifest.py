@@ -48,6 +48,88 @@ def write_filtered_hardware_summary(source: Path, output: Path, hardware_identit
         writer.writerows(rows)
 
 
+def write_combined_hardware_summary(sources: list[Path], output: Path) -> None:
+    fieldnames: list[str] | None = None
+    rows: list[dict[str, str]] = []
+    for source in sources:
+        with source.open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            if fieldnames is None:
+                fieldnames = reader.fieldnames
+            elif reader.fieldnames != fieldnames:
+                raise AssertionError(f"hardware summary header mismatch: {reader.fieldnames} != {fieldnames}")
+            rows.extend(reader)
+    if fieldnames is None:
+        raise AssertionError("expected at least one hardware summary source")
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_ambiguous_hardware_summary(source: Path, output: Path, duplicate_hardware: str) -> None:
+    with source.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        fieldnames = reader.fieldnames
+    if fieldnames is None:
+        raise AssertionError(f"missing hardware summary header: {source}")
+    shared_rows = [
+        row
+        for row in rows
+        if row.get("hardware", "").endswith("::shared_reduction_adg")
+        and row.get("verify_status") == "pass"
+    ]
+    if len(shared_rows) != 1:
+        raise AssertionError(f"expected one shared reduction hardware row: {rows}")
+    duplicate_row = dict(shared_rows[0])
+    duplicate_row["hardware"] = duplicate_hardware
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows([shared_rows[0], duplicate_row])
+
+
+def prepare_vecsum_mapping(repo: Path, out_dir: Path, mapping_artifact: Path) -> None:
+    dfg_dir = out_dir / "vecsum-dfg"
+    artifact_test_common.require_success(
+        repo,
+        [
+            "env",
+            f"BUILD_DIR={dfg_dir}",
+            f"LOOM_CC={repo / 'build/bin/loom-cc'}",
+            f"LOOM_RAISE={repo / 'build/bin/loom-raise'}",
+            f"LOOM_LOWER={repo / 'build/bin/loom-lower'}",
+            f"LOOM_RAISE_OPT={repo / 'build/bin/loom-raise-opt'}",
+            "bash",
+            "test/app/vecsum/dfg_check.sh",
+        ],
+        "vecsum DFG",
+    )
+    artifact_test_common.require_success(
+        repo,
+        [
+            "bash",
+            "test/pnr/run_mapping_summary.sh",
+            "--dfg-mlir",
+            str(dfg_dir / "main_func.dfg.mlir"),
+            "--graph",
+            "g_t_vecsum_red_0_0",
+            "--hardware-mlir",
+            "test/pnr/shared_reduction_adg.mlir",
+            "--hardware",
+            "shared_reduction_adg",
+            "--workload",
+            "vecsum",
+            "--artifact",
+            str(mapping_artifact),
+            "--output",
+            str(out_dir / "mapped-pnr-mapping-summary.csv"),
+        ],
+        "vecsum mapped PnR artifact",
+    )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-rtl-manifest-") as tmp:
@@ -247,6 +329,27 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("architecture RTL manifest with mapping unexpectedly passed audit")
 
+        mapped_missing_mapping = out_dir / "mapped-missing-mapping-rtl-manifest.json"
+        mapped_missing_mapping_data = json.loads(manifest.read_text())
+        mapped_missing_mapping_data["mode"] = "mapped_workload_rtl"
+        mapped_missing_mapping_data["mapping_artifact_identity"] = "missing-pnr-mapping"
+        mapped_missing_mapping.write_text(
+            json.dumps(mapped_missing_mapping_data, indent=2, sort_keys=True) + "\n"
+        )
+        mapped_missing_mapping_audit = out_dir / "mapped-missing-mapping-rtl-manifest-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mapped_missing_mapping_audit),
+                str(mapped_missing_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("mapped-workload RTL manifest with unresolved mapping unexpectedly passed audit")
+
         shared_hardware = out_dir / "shared-reduction-adg-hardware-summary.csv"
         artifact_test_common.require_success(
             repo,
@@ -336,6 +439,166 @@ def main() -> int:
             ],
             "shared reduction RTL manifest audit",
         )
+
+        mapping_artifact = out_dir / "mapped-pnr-mapping.json"
+        prepare_vecsum_mapping(repo, out_dir, mapping_artifact)
+        combined_hardware = out_dir / "combined-adg-hardware-summary.csv"
+        write_combined_hardware_summary([hardware, shared_hardware], combined_hardware)
+        mapped_manifest = out_dir / "mapped-workload-rtl-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(combined_hardware),
+                "--mapping-artifact",
+                str(mapping_artifact),
+                "--output",
+                str(mapped_manifest),
+            ],
+            "mapped workload RTL manifest",
+        )
+        mapped_data = json.loads(mapped_manifest.read_text())
+        if mapped_data.get("mode") != "mapped_workload_rtl":
+            raise AssertionError(f"mapped manifest should use mapped_workload_rtl mode: {mapped_data}")
+        if mapped_data.get("mapping_artifact_identity") != "mapped-pnr-mapping":
+            raise AssertionError(f"mapped manifest should identify its mapping artifact: {mapped_data}")
+        if mapped_data.get("source_fabric_adg_identity") != "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg":
+            raise AssertionError(f"mapped manifest should select hardware matching the mapping: {mapped_data}")
+        mapped_lowering = mapped_data.get("lowering_configuration")
+        expected_lowering_fields = {
+            "lowering_kind": "mapped_workload_rtl",
+            "mapping_artifact_identity": "mapped-pnr-mapping",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
+            "mapping_hardware": "shared_reduction_adg",
+            "workload": "vecsum",
+        }
+        if not isinstance(mapped_lowering, dict):
+            raise AssertionError(f"mapped manifest lowering configuration must be an object: {mapped_data}")
+        for key, value in expected_lowering_fields.items():
+            if mapped_lowering.get(key) != value:
+                raise AssertionError(f"mapped manifest lowering {key} mismatch: {mapped_data}")
+        expected_constraint = {
+            "constraint_kind": "pnr_mapping_binding",
+            "mapping_artifact_identity": "mapped-pnr-mapping",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
+            "workload": "vecsum",
+        }
+        if expected_constraint not in mapped_data.get("constraints", []):
+            raise AssertionError(f"mapped manifest missed PnR mapping constraint: {mapped_data}")
+        expected_activity_hook = {
+            "source": "pnr_mapping_activity",
+            "mapping_artifact_identity": "mapped-pnr-mapping",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
+        }
+        if expected_activity_hook not in mapped_data.get("activity_hooks", []):
+            raise AssertionError(f"mapped manifest missed mapping activity hook: {mapped_data}")
+        mapped_audit = out_dir / "mapped-workload-rtl-manifest-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mapped_audit),
+                str(mapping_artifact),
+                str(mapped_manifest),
+            ],
+            "mapped workload RTL manifest audit",
+        )
+
+        duplicate_adg = out_dir / "duplicate-shared-reduction-adg.mlir"
+        duplicate_adg.write_text((repo / "test/pnr/shared_reduction_adg.mlir").read_text())
+        duplicate_hardware_identity = (
+            f"{duplicate_adg.resolve().relative_to(repo).as_posix()}::shared_reduction_adg"
+        )
+        ambiguous_hardware = out_dir / "ambiguous-adg-hardware-summary.csv"
+        write_ambiguous_hardware_summary(shared_hardware, ambiguous_hardware, duplicate_hardware_identity)
+        ambiguous_manifest = out_dir / "ambiguous-mapped-workload-rtl-manifest.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(ambiguous_hardware),
+                "--mapping-artifact",
+                str(mapping_artifact),
+                "--output",
+                str(ambiguous_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("mapped RTL manifest with ambiguous hardware unexpectedly passed")
+        ambiguous_data = json.loads(ambiguous_manifest.read_text())
+        if (
+            ambiguous_data.get("mode") != "mapped_workload_rtl"
+            or ambiguous_data.get("mapping_artifact_identity") != "mapped-pnr-mapping"
+            or ambiguous_data.get("diagnostics", [{}])[0].get("diagnostic_class")
+            != "ambiguous_mapping_hardware"
+        ):
+            raise AssertionError(f"ambiguous hardware should produce blocked mapped manifest: {ambiguous_data}")
+
+        ambiguous_artifact_manifest = out_dir / "ambiguous-full-stack-artifact-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                "--artifact",
+                str(ambiguous_hardware),
+                "--artifact",
+                str(mapping_artifact),
+                "--artifact",
+                str(mapped_manifest),
+                "--output",
+                str(ambiguous_artifact_manifest),
+            ],
+            "ambiguous mapped RTL artifact manifest",
+        )
+        ambiguous_artifact_audit = out_dir / "ambiguous-full-stack-artifact-manifest-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(ambiguous_artifact_audit),
+                str(ambiguous_artifact_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("artifact manifest with ambiguous mapped RTL hardware unexpectedly passed audit")
+
+        mismatched_mapping = out_dir / "mismatched-pnr-mapping.json"
+        mismatched_mapping_data = json.loads(mapping_artifact.read_text())
+        mismatched_mapping_data["hardware"] = "other_hardware"
+        mismatched_mapping.write_text(json.dumps(mismatched_mapping_data, indent=2, sort_keys=True) + "\n")
+        mismatched_manifest = out_dir / "mismatched-mapped-workload-rtl-manifest.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(shared_hardware),
+                "--mapping-artifact",
+                str(mismatched_mapping),
+                "--output",
+                str(mismatched_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("mapped RTL manifest with mismatched hardware unexpectedly passed")
+        mismatched_data = json.loads(mismatched_manifest.read_text())
+        if (
+            mismatched_data.get("mode") != "mapped_workload_rtl"
+            or mismatched_data.get("mapping_artifact_identity") != "mismatched-pnr-mapping"
+            or mismatched_data.get("diagnostics", [{}])[0].get("diagnostic_class")
+            != "mapping_hardware_mismatch"
+        ):
+            raise AssertionError(f"mismatched mapping should produce blocked mapped manifest: {mismatched_data}")
 
         module_hardware = out_dir / "module-adg-hardware-summary.csv"
         artifact_test_common.require_success(

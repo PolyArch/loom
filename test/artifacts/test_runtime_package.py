@@ -1650,6 +1650,19 @@ def main() -> int:
             ],
             "blocked RTL-sim runtime package audit",
         )
+        architecture_rtl_manifest = out_dir / "architecture-rtl-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--output",
+                str(architecture_rtl_manifest),
+            ],
+            "architecture RTL manifest",
+        )
         rtl_with_manifest_package = out_dir / "rtl-with-manifest-runtime-package.json"
         result = artifact_test_common.run_command(
             repo,
@@ -1663,7 +1676,7 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "pnr-mapping.json"),
                 "--artifact",
-                str(out_dir / "rtl-manifest.json"),
+                str(architecture_rtl_manifest),
             ],
         )
         if result.returncode == 0:
@@ -1672,7 +1685,7 @@ def main() -> int:
         rtl_argument_descriptors = rtl_with_manifest_data.get("argument_descriptors", [])
         if {
             "name": "rtl_manifest",
-            "identity": "rtl-manifest",
+            "identity": "architecture-rtl-manifest",
             "descriptor_kind": "rtl_manifest",
         } not in rtl_argument_descriptors:
             raise AssertionError(f"RTL-sim package missed RTL manifest argument descriptor: {rtl_with_manifest_data}")
@@ -1681,7 +1694,7 @@ def main() -> int:
             raise AssertionError(f"RTL-sim launch descriptor missed RTL manifest argument: {rtl_with_manifest_data}")
         expected_rtl_fingerprints = {
             "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
-            "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
+            "architecture-rtl-manifest": artifact_test_common.fingerprint(architecture_rtl_manifest),
         }
         if rtl_with_manifest_data.get("input_artifact_fingerprints") != expected_rtl_fingerprints:
             raise AssertionError(f"RTL-sim package missed RTL manifest input fingerprint: {rtl_with_manifest_data}")
@@ -1715,7 +1728,7 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "pnr-mapping.json"),
                 "--artifact",
-                str(out_dir / "rtl-manifest.json"),
+                str(architecture_rtl_manifest),
             ],
         )
         if result.returncode == 0:
@@ -1732,6 +1745,109 @@ def main() -> int:
             "descriptor_kind": "pnr_mapping_artifact",
         } not in filtered_rtl_arguments:
             raise AssertionError(f"RTL-sim package should bind selected mapping argument: {filtered_rtl_data}")
+        priority_mapped_rtl_package = out_dir / "priority-mapped-rtl-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "rtl-sim",
+                "--output",
+                str(priority_mapped_rtl_package),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(architecture_rtl_manifest),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("priority mapped RTL-sim package with unavailable backend unexpectedly passed")
+        priority_mapped_rtl_data = json.loads(priority_mapped_rtl_package.read_text())
+        priority_fingerprints = {
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+            "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
+        }
+        if priority_mapped_rtl_data.get("input_artifact_fingerprints") != priority_fingerprints:
+            raise AssertionError(
+                f"explicit mapped RTL manifest should take priority over architecture fallback: {priority_mapped_rtl_data}"
+            )
+        same_hardware_rtl_mapping = out_dir / "same-hardware-rtl-pnr-mapping.json"
+        same_hardware_rtl_mapping_data = json.loads((out_dir / "pnr-mapping.json").read_text())
+        same_hardware_rtl_mapping_data["workload"] = "other_workload"
+        same_hardware_rtl_mapping_data["mapping_id"] = "same_hardware_other_mapping"
+        same_hardware_rtl_mapping.write_text(
+            json.dumps(same_hardware_rtl_mapping_data, indent=2, sort_keys=True) + "\n"
+        )
+        mapped_rtl_package = out_dir / "mapped-rtl-runtime-package.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_runtime_package.sh",
+                "--target",
+                "rtl-sim",
+                "--output",
+                str(mapped_rtl_package),
+                "--artifact",
+                str(same_hardware_rtl_mapping),
+                "--artifact",
+                str(out_dir / "pnr-mapping.json"),
+                "--artifact",
+                str(architecture_rtl_manifest),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("mapped RTL-sim runtime package with unavailable backend unexpectedly passed")
+        mapped_rtl_data = json.loads(mapped_rtl_package.read_text())
+        if mapped_rtl_data.get("selected_mapping_artifact_identity") != "pnr-mapping":
+            raise AssertionError(f"mapped RTL-sim package should select manifest mapping input: {mapped_rtl_data}")
+        expected_mapped_rtl_fingerprints = {
+            "pnr-mapping": artifact_test_common.fingerprint(out_dir / "pnr-mapping.json"),
+            "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
+        }
+        if mapped_rtl_data.get("input_artifact_fingerprints") != expected_mapped_rtl_fingerprints:
+            raise AssertionError(f"mapped RTL-sim package should fingerprint explicit manifest inputs: {mapped_rtl_data}")
+        mapped_rtl_arguments = mapped_rtl_data.get("argument_descriptors", [])
+        for expected_argument in (
+            {
+                "name": "mapping_artifact",
+                "identity": "pnr-mapping",
+                "descriptor_kind": "pnr_mapping_artifact",
+            },
+            {
+                "name": "rtl_manifest",
+                "identity": "rtl-manifest",
+                "descriptor_kind": "rtl_manifest",
+            },
+        ):
+            if expected_argument not in mapped_rtl_arguments:
+                raise AssertionError(f"mapped RTL-sim package missed argument {expected_argument}: {mapped_rtl_data}")
+        mapped_rtl_classes = {
+            record.get("diagnostic_class")
+            for record in mapped_rtl_data.get("diagnostic_records", [])
+            if isinstance(record, dict)
+        }
+        if "missing_rtl_artifact" in mapped_rtl_classes:
+            raise AssertionError(f"mapped RTL-sim package should not report missing RTL manifest: {mapped_rtl_data}")
+        if "unavailable_accelerator_target" not in mapped_rtl_classes:
+            raise AssertionError(f"mapped RTL-sim package should still report unavailable backend: {mapped_rtl_data}")
+        mapped_rtl_audit = out_dir / "mapped-rtl-runtime-package-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mapped_rtl_audit),
+                str(mapped_rtl_package),
+            ],
+            "blocked mapped RTL-sim runtime package audit",
+        )
         rtl_with_manifest_audit = out_dir / "rtl-with-manifest-runtime-package-audit-summary.json"
         artifact_test_common.require_success(
             repo,
@@ -1771,7 +1887,7 @@ def main() -> int:
             )
         stale_rtl_manifest_package = out_dir / "stale-rtl-manifest-runtime-package.json"
         stale_rtl_manifest_data = json.loads(rtl_with_manifest_package.read_text())
-        stale_rtl_manifest_data["input_artifact_fingerprints"]["rtl-manifest"] = "0" * 64
+        stale_rtl_manifest_data["input_artifact_fingerprints"]["architecture-rtl-manifest"] = "0" * 64
         stale_rtl_manifest_package.write_text(
             json.dumps(stale_rtl_manifest_data, indent=2, sort_keys=True) + "\n"
         )
@@ -1790,7 +1906,10 @@ def main() -> int:
             raise AssertionError("RTL-sim runtime package with stale RTL manifest fingerprint unexpectedly passed audit")
         missing_rtl_manifest_fingerprint = out_dir / "missing-rtl-manifest-fingerprint-runtime-package.json"
         missing_rtl_manifest_fingerprint_data = json.loads(rtl_with_manifest_package.read_text())
-        missing_rtl_manifest_fingerprint_data["input_artifact_fingerprints"].pop("rtl-manifest", None)
+        missing_rtl_manifest_fingerprint_data["input_artifact_fingerprints"].pop(
+            "architecture-rtl-manifest",
+            None,
+        )
         missing_rtl_manifest_fingerprint.write_text(
             json.dumps(missing_rtl_manifest_fingerprint_data, indent=2, sort_keys=True) + "\n"
         )

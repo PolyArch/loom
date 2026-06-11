@@ -1548,6 +1548,18 @@ def iter_artifact_manifest_required_edges(
                 yield cgra_id, dse_id
 
     for rtl_manifest_id in ids_by_kind.get("rtl_manifest", []):
+        rtl_manifest = (
+            read_manifest_json_artifact(artifact_paths_by_id.get(rtl_manifest_id))
+            if artifact_paths_by_id
+            else None
+        )
+        for mapping_id in iter_manifest_json_string_reference(
+            rtl_manifest,
+            "mapping_artifact_identity",
+            artifact_id_set,
+        ):
+            if mapping_id in ids_by_kind.get("pnr_mapping_artifact", []):
+                yield mapping_id, rtl_manifest_id
         for hardware_id in ids_by_kind.get("adg_hardware", []):
             yield hardware_id, rtl_manifest_id
         for eda_id in ids_by_kind.get("eda_report", []):
@@ -1661,6 +1673,56 @@ def manifest_artifact_path(raw_path: object, manifest_path: Path | None) -> Path
     return manifest_path.parent / path
 
 
+def matching_adg_hardware_rows(
+    mapping_hardware: object,
+    ids_by_kind: dict[str, list[str]],
+    artifact_paths_by_id: dict[str, Path],
+) -> list[tuple[str, str]]:
+    if not isinstance(mapping_hardware, str) or not mapping_hardware:
+        return []
+    matches: list[tuple[str, str]] = []
+    for hardware_id in ids_by_kind.get("adg_hardware", []):
+        path = artifact_paths_by_id.get(hardware_id)
+        if path is None or not path.is_file():
+            continue
+        for row in read_csv_rows(path):
+            hardware = row.get("hardware")
+            if row.get("verify_status") == "pass" and hardware_identity_matches(hardware, mapping_hardware):
+                matches.append((hardware_id, hardware))
+    return matches
+
+
+def validate_mapped_rtl_manifest_hardware_uniqueness(
+    ids_by_kind: dict[str, list[str]],
+    artifact_paths_by_id: dict[str, Path],
+    diagnostics: list[str],
+) -> None:
+    if not ids_by_kind.get("adg_hardware"):
+        return
+    for rtl_manifest_id in ids_by_kind.get("rtl_manifest", []):
+        rtl_manifest = read_manifest_json_artifact(artifact_paths_by_id.get(rtl_manifest_id))
+        if rtl_manifest is None or rtl_manifest.get("mode") != "mapped_workload_rtl":
+            continue
+        mapping_identity = rtl_manifest.get("mapping_artifact_identity")
+        if not isinstance(mapping_identity, str) or not mapping_identity:
+            continue
+        mapping_path = artifact_paths_by_id.get(mapping_identity)
+        mapping = read_manifest_json_artifact(mapping_path)
+        if mapping is None or mapping.get("kind") != "pnr_mapping":
+            continue
+        matches = matching_adg_hardware_rows(mapping.get("hardware"), ids_by_kind, artifact_paths_by_id)
+        if len(matches) == 1:
+            continue
+        if matches:
+            diagnostics.append(
+                f"mapped-workload RTL manifest {rtl_manifest_id} mapping hardware matches multiple ADG hardware rows"
+            )
+        else:
+            diagnostics.append(
+                f"mapped-workload RTL manifest {rtl_manifest_id} mapping hardware matches no ADG hardware rows"
+            )
+
+
 def validate_artifact_manifest_edges(
     data: dict[str, object],
     diagnostics: list[str],
@@ -1709,6 +1771,8 @@ def validate_artifact_manifest_edges(
         if resolved_path is not None:
             artifact_paths_by_id[identity] = resolved_path
         ids_by_kind.setdefault(kind, []).append(identity)
+
+    validate_mapped_rtl_manifest_hardware_uniqueness(ids_by_kind, artifact_paths_by_id, diagnostics)
 
     edge_pairs: set[tuple[str, str]] = set()
     edge_ids: set[str] = set()
@@ -4076,6 +4140,38 @@ def validate_eda_report_rtl_manifest_reference(
             diagnostics.append(f"EDA report pass missed RTL manifest top modules {missing}")
 
 
+def validate_rtl_manifest_mapping_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("mode") != "mapped_workload_rtl":
+        return
+    mapping_identity = data.get("mapping_artifact_identity")
+    mapping = read_resolved_json_reference(path, mapping_identity)
+    if mapping is None:
+        diagnostics.append("mapped-workload RTL manifest mapping_artifact_identity does not resolve")
+        return
+    if mapping.get("kind") != "pnr_mapping":
+        diagnostics.append("mapped-workload RTL manifest mapping reference has wrong kind")
+        return
+    if data.get("status") == "pass" and mapping.get("status") != "pass":
+        diagnostics.append("mapped-workload RTL manifest pass references a non-passing mapping artifact")
+    mapping_hardware = mapping.get("hardware")
+    if not (
+        hardware_identity_matches(mapping_hardware, data.get("source_fabric_adg_identity"))
+        or hardware_identity_matches(mapping_hardware, data.get("source_hardware_root"))
+    ):
+        diagnostics.append("mapped-workload RTL manifest mapping hardware does not match source hardware")
+    lowering = data.get("lowering_configuration")
+    if isinstance(lowering, dict):
+        if lowering.get("mapping_artifact_identity") not in {None, "", mapping_identity}:
+            diagnostics.append("mapped-workload RTL manifest lowering mapping artifact does not match manifest")
+        mapping_id = lowering.get("mapping_id")
+        if isinstance(mapping_id, str) and mapping_id and mapping_id != mapping.get("mapping_id"):
+            diagnostics.append("mapped-workload RTL manifest lowering mapping id does not match mapping artifact")
+
+
 def read_resolved_json_reference(path: Path, identity: object) -> dict[str, object] | None:
     if not isinstance(identity, str) or not identity:
         return None
@@ -4462,6 +4558,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("architecture RTL manifest must not claim mapping_artifact_identity")
         if mode == "mapped_workload_rtl" and not mapping_identity:
             diagnostics.append("mapped-workload RTL manifest needs mapping_artifact_identity")
+        validate_rtl_manifest_mapping_reference(path, data, diagnostics)
         if not isinstance(data.get("lowering_configuration"), dict):
             diagnostics.append("RTL manifest lowering_configuration must be an object")
         for key in (
