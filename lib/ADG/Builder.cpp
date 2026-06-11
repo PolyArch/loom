@@ -38,6 +38,15 @@ void printTypeList(llvm::raw_ostream &os, llvm::ArrayRef<std::string> types) {
   os << ')';
 }
 
+void printTypeSequence(llvm::raw_ostream &os,
+                       llvm::ArrayRef<std::string> types) {
+  for (std::size_t i = 0; i < types.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << types[i];
+  }
+}
+
 void printResultTypes(llvm::raw_ostream &os,
                       llvm::ArrayRef<std::string> types) {
   if (types.empty()) {
@@ -167,7 +176,7 @@ void printFu(llvm::raw_ostream &os, const FuSpec &fu) {
       os << valueName(fu.yieldValues[i]);
     }
     os << " : ";
-    printTypeList(os, fu.resultTypes);
+    printTypeSequence(os, fu.resultTypes);
   }
   os << "\n";
   os << "    }\n";
@@ -184,6 +193,101 @@ void printPe(llvm::raw_ostream &os, const PeSpec &pe) {
   os << "  }\n";
 }
 
+void printSwitchHwParams(llvm::raw_ostream &os, const SwitchSpec &sw) {
+  os << "[{connectivity_table = ";
+  printStringArray(os, sw.connectivityTable);
+  if (sw.schedule == Schedule::Temporal)
+    os << ", route_table_size = " << sw.temporalRouteTableSize << " : i32";
+  os << "}]";
+}
+
+void printSwitch(llvm::raw_ostream &os, const SwitchSpec &sw,
+                 std::size_t switchIndex,
+                 llvm::ArrayRef<std::string> operandTypes) {
+  os << "  ";
+  for (std::size_t i = 0; i < sw.resultTypes.size(); ++i) {
+    if (i)
+      os << ", ";
+    os << "%sw" << switchIndex << "_out" << i;
+  }
+  os << " = fabric.switch [" << scheduleName(sw.schedule) << "]";
+  for (std::size_t i = 0; i < sw.inputs.size(); ++i) {
+    if (i)
+      os << ',';
+    const std::string &input = sw.inputs[i];
+    os << ' ' << valueName(input);
+  }
+  os << "\n         ";
+  printSwitchHwParams(os, sw);
+  os << "\n         : ";
+  printTypeList(os, operandTypes);
+  os << "\n        -> ";
+  printResultTypes(os, sw.resultTypes);
+  os << '\n';
+}
+
+llvm::Error validateSwitch(const SwitchSpec &sw,
+                           const llvm::StringMap<std::string> &inputTypes) {
+  if (sw.inputs.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG switch has no inputs");
+  if (sw.resultTypes.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG switch has no result types");
+  if (sw.connectivityTable.size() != sw.resultTypes.size())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "ADG switch connectivity rows must match result count");
+  if (sw.schedule == Schedule::Spatial && sw.temporalRouteTableSize != 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "spatial ADG switch must not carry temporal route table size");
+  if (sw.schedule == Schedule::Temporal && sw.temporalRouteTableSize == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "temporal ADG switch requires temporal route table size");
+
+  std::vector<bool> columnHasConnection(sw.inputs.size(), false);
+  for (const std::string &input : sw.inputs) {
+    if (!inputTypes.contains(input))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG switch input %s is unknown",
+                                     input.c_str());
+  }
+  for (std::size_t rowIndex = 0; rowIndex < sw.connectivityTable.size();
+       ++rowIndex) {
+    const std::string &row = sw.connectivityTable[rowIndex];
+    if (row.size() != sw.inputs.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG switch connectivity row %zu has width %zu, expected %zu",
+          rowIndex, row.size(), sw.inputs.size());
+    bool rowHasConnection = false;
+    for (std::size_t column = 0; column < row.size(); ++column) {
+      if (row[column] != '0' && row[column] != '1')
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "ADG switch connectivity row %zu contains non-binary entry",
+            rowIndex);
+      if (row[column] == '1') {
+        rowHasConnection = true;
+        columnHasConnection[column] = true;
+      }
+    }
+    if (!rowHasConnection)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG switch connectivity row %zu has no connection", rowIndex);
+  }
+  for (std::size_t column = 0; column < columnHasConnection.size(); ++column) {
+    if (!columnHasConnection[column])
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG switch input column %zu has no connection", column);
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 ModuleBuilder::ModuleBuilder(std::string name) : name(std::move(name)) {}
@@ -196,6 +300,11 @@ ModuleBuilder &ModuleBuilder::addInput(std::string inputName,
 
 ModuleBuilder &ModuleBuilder::addPe(PeSpec pe) {
   pes.push_back(std::move(pe));
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addSwitch(SwitchSpec sw) {
+  switches.push_back(std::move(sw));
   return *this;
 }
 
@@ -235,6 +344,16 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
   os << ") {\n";
   for (const PeSpec &pe : pes)
     printPe(os, pe);
+  for (std::size_t switchIndex = 0; switchIndex < switches.size();
+       ++switchIndex) {
+    const SwitchSpec &sw = switches[switchIndex];
+    if (llvm::Error err = validateSwitch(sw, inputTypes))
+      return err;
+    llvm::SmallVector<std::string> operandTypes;
+    for (const std::string &input : sw.inputs)
+      operandTypes.push_back(inputTypes.lookup(input));
+    printSwitch(os, sw, switchIndex, operandTypes);
+  }
   for (std::size_t memIndex = 0; memIndex < mems.size(); ++memIndex) {
     const MemSpec &mem = mems[memIndex];
     if (!inputTypes.contains(mem.manager))
@@ -298,6 +417,43 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
   os << "  fabric.yield\n";
   os << "}\n";
   return llvm::Error::success();
+}
+
+ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
+  ModuleBuilder module("minimal_spatial_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("lhs", "!fabric.bits<32>")
+      .addInput("rhs", "!fabric.bits<32>")
+      .addInput("addr", "!fabric.bits<32>")
+      .addInput("ctrl", "!fabric.bits<0>");
+
+  PeSpec aluPe;
+  aluPe.inputs = {{"pa", "lhs", "!fabric.bits<32>", ""},
+                  {"pb", "rhs", "!fabric.bits<32>", ""}};
+  aluPe.resultTypes = {"!fabric.bits<32>"};
+  FuSpec addFu;
+  addFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
+                  {"fb", "pb", "!fabric.bits<32>", ""}};
+  addFu.resultTypes = {"!fabric.bits<32>"};
+  addFu.operations.push_back(
+      FabricOpSpec{{"sum"},
+                   {"arith.addi"},
+                   {"fa", "fb"},
+                   {"!fabric.bits<32>", "!fabric.bits<32>"},
+                   {"!fabric.bits<32>"},
+                   {},
+                   {}});
+  addFu.yieldValues = {"sum"};
+  aluPe.fus.push_back(std::move(addFu));
+  module.addPe(std::move(aluPe));
+
+  module.addSwitch(SwitchSpec{Schedule::Spatial,
+                              {"lhs", "rhs"},
+                              {"!fabric.bits<32>", "!fabric.bits<32>"},
+                              {"11", "11"},
+                              0});
+  module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, 0});
+  return module;
 }
 
 ModuleBuilder loom::adg::buildSharedReductionAdg() {
@@ -419,6 +575,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                          {"i32d", "ctrl"}},
                         0});
   return module;
+}
+
+llvm::Error loom::adg::writeMinimalSpatialAdg(llvm::raw_ostream &os) {
+  return buildMinimalSpatialAdg().print(os);
 }
 
 llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {

@@ -46,6 +46,14 @@ struct PeSpec {
   std::vector<FuSpec> fus;
 };
 
+struct SwitchSpec {
+  Schedule schedule = Schedule::Spatial;
+  std::vector<std::string> inputs;
+  std::vector<std::string> resultTypes;
+  std::vector<std::string> connectivityTable;
+  unsigned temporalRouteTableSize = 0;
+};
+
 struct MemLoadPort {
   std::string address;
   std::string control;
@@ -64,6 +72,7 @@ public:
 
   ModuleBuilder &addInput(std::string name, std::string type);
   ModuleBuilder &addPe(PeSpec pe);
+  ModuleBuilder &addSwitch(SwitchSpec sw);
   ModuleBuilder &addMem(MemSpec mem);
   ModuleBuilder &addExactBodyLine(std::string line);
 
@@ -78,12 +87,15 @@ private:
   std::string name;
   std::vector<Input> inputs;
   std::vector<PeSpec> pes;
+  std::vector<SwitchSpec> switches;
   std::vector<MemSpec> mems;
   std::vector<std::string> exactBodyLines;
 };
 
+ModuleBuilder buildMinimalSpatialAdg();
 ModuleBuilder buildSharedReductionAdg();
 
+llvm::Error writeMinimalSpatialAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedReductionAdg(llvm::raw_ostream &os);
 
 } // namespace adg

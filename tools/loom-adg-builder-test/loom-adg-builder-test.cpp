@@ -12,6 +12,11 @@ static llvm::cl::opt<bool>
                     llvm::cl::desc("emit a shared reduction SpatialCore ADG"),
                     llvm::cl::init(false));
 
+static llvm::cl::opt<bool>
+    minimalSpatial("minimal-spatial",
+                   llvm::cl::desc("emit a minimal SpatialCore ADG"),
+                   llvm::cl::init(false));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -22,8 +27,14 @@ int main(int argc, char **argv) {
       "loom-adg-builder-test: emit deterministic Fabric MLIR from the ADG "
       "Builder C++ API\n");
 
-  if (!sharedReduction) {
+  unsigned selectedRecipes =
+      (sharedReduction ? 1 : 0) + (minimalSpatial ? 1 : 0);
+  if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
+    return 1;
+  }
+  if (selectedRecipes > 1) {
+    llvm::errs() << "error: select exactly one ADG recipe\n";
     return 1;
   }
 
@@ -35,7 +46,9 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (llvm::Error err = loom::adg::writeSharedReductionAdg(out)) {
+  llvm::Error err = minimalSpatial ? loom::adg::writeMinimalSpatialAdg(out)
+                                   : loom::adg::writeSharedReductionAdg(out);
+  if (err) {
     llvm::errs() << "error: " << llvm::toString(std::move(err)) << "\n";
     return 1;
   }

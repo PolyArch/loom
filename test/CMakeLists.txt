@@ -15,6 +15,7 @@ set(LOOM_TEST_DEPENDS
   loom-lower
   loom-raise
   loom-raise-opt
+  loom-adg-builder-test
   loom-alignment-test
   loom-candidate-dump
   loom-config-test

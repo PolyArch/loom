@@ -48,6 +48,24 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
         raise AssertionError(f"unexpected diagnostic: {row}")
 
 
+def assert_minimal_spatial_adg(rows: list[dict[str, str]]) -> None:
+    matches = [row for row in rows if row["hardware"].endswith("::minimal_spatial_adg")]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one minimal_spatial_adg row, got {rows}")
+    row = matches[0]
+    expected = {
+        "topology_class": "fabric_module_template",
+        "node_count": "3",
+        "link_count": "0",
+        "verify_status": "pass",
+    }
+    for key, value in expected.items():
+        if row[key] != value:
+            raise AssertionError(f"minimal_spatial_adg {key}={row[key]!r}, expected {value!r}")
+    if "fabric.module template verified" not in row["diagnostic"]:
+        raise AssertionError(f"unexpected diagnostic: {row}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-adg-hardware-") as tmp:
@@ -73,6 +91,7 @@ def main() -> int:
         )
         assert_pe_two_pes(rows)
         assert_shared_reduction_adg(rows)
+        assert_minimal_spatial_adg(rows)
 
     return 0
 
