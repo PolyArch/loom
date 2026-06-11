@@ -48,7 +48,7 @@ The comparison protocol is specified in
 
 ## Semantic Scope
 
-The first target semantic scope includes:
+The baseline semantic scope includes:
 
 * `dataflow.stream`;
 * `dataflow.carry`;

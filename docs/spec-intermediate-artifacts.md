@@ -37,6 +37,13 @@ Artifact existence is not sufficient evidence. A producer may create a
 file with invalid, empty, stale, or internally contradictory contents.
 Consumers and acceptance gates must inspect the artifact contents.
 
+JSON artifacts are the preferred program-to-program contract for
+non-tabular evidence. CSV and other table exports are projections for
+regression tracking, review, or dashboards. A table export that
+summarizes JSON evidence must carry enough source identity columns to
+recover the source JSON artifact kind, id, schema version, and export
+profile.
+
 JSON artifacts are self-describing when they contain a recognized
 `kind` field. Canonical filenames remain recommended for portability,
 but content audits must be able to classify DFG-sim reports,
@@ -238,7 +245,10 @@ Rules:
 
 ### RTL FPA Summary
 
-Purpose: prove Fabric-to-RTL and FPA evidence are connected.
+Purpose: prove Fabric-to-RTL and FPA evidence are connected. This CSV
+gate is a projection of the RTL manifest, backend reports, activity
+records, and normalized FPA JSON report; it is not the FPA source of
+truth.
 
 Required first columns:
 
@@ -270,6 +280,9 @@ Rules:
   blocked according to the selected profile.
 * Workload-specific power must identify an `activity_source` in the
   summary row or in the referenced FPA report.
+* The row must identify the normalized FPA JSON report when frequency,
+  area, power, or energy values are reported through Loom's FPA
+  contract.
 
 ### End-To-End Demonstrator Summary
 
@@ -504,6 +517,81 @@ Rules:
 * Diagnostics must identify missing, stale, unsupported, or
   inconsistent artifacts.
 
+### RTL Manifest
+
+Purpose: content-audit the RTL manifest specified by
+`docs/spec-rtl-lowering.md` and record the emitted RTL source set and
+intended validation mode.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `mode`;
+* `manifest_id`;
+* `source_fabric_adg_identity`;
+* `source_hardware_root`;
+* `lowering_configuration`;
+* `emitted_source_files`;
+* `top_level_modules`;
+* `generated_packages`;
+* `generated_interfaces`;
+* `black_box_modules`;
+* `behavioral_models`;
+* `required_tool_capability_classes`;
+* `required_library_profile_classes`;
+* `constraints`;
+* `activity_hooks`;
+* `status`;
+* `diagnostics`.
+
+Rules:
+
+* `kind` must be `rtl_manifest`.
+* `mode` is either `architecture_rtl` or `mapped_workload_rtl`.
+* `architecture_rtl` manifests are generated from Fabric ADG alone.
+  Their `mapping_artifact_identity` field is absent unless an export
+  profile explicitly records a non-semantic reference.
+* `mapped_workload_rtl` manifests consume a mapping artifact for
+  configuration, initialization, harness, or workload-bound validation
+  artifacts. The mapping artifact must not introduce hardware nodes,
+  links, memories, or protocol endpoints.
+* `emitted_source_files` entries must use portable relative paths and
+  carry fingerprints for the emitted source files.
+* A passing architecture RTL manifest must identify a Fabric ADG input,
+  at least one emitted SystemVerilog source file, at least one top-level
+  module, and the required RTL tool capability classes.
+* Behavioral models, black boxes, generated packages, generated
+  interfaces, constraints, and activity hooks must be recorded
+  explicitly when present.
+
+### Normalized FPA Report
+
+Purpose: record frequency, power, and area evidence in the stable JSON
+contract consumed by reports and DSE.
+
+Required top-level keys:
+
+* `schema_version`;
+* `kind`;
+* `report_id`;
+* `fidelity_level`;
+* `source_artifacts`;
+* `model_identity`;
+* `calibration_identity`;
+* `metrics`;
+* `diagnostics`.
+
+Rules:
+
+* `kind` must be `fpa_report`.
+* `fidelity_level` follows `docs/spec-fidelity-ladder.md`.
+* Each metric records value, unit, source artifact identity, derivation
+  kind, confidence when required by the fidelity level, and diagnostics.
+* Backend reports may calibrate an analytic model, but calibrated
+  analytic output remains analytic unless the metric is directly
+  produced by a backend evidence class.
+
 ### Artifact Audit Summary
 
 Purpose: record content-reasonableness reviews for intermediate
@@ -528,44 +616,6 @@ Rules:
   mapping, simulator, RTL, FPA, report, and DSE artifacts.
 * An audit summary with unresolved contradictions blocks milestone
   acceptance.
-
-### RTL Manifest
-
-Purpose: record generated RTL source sets and lowering metadata from a
-Fabric hardware root.
-
-Required top-level keys:
-
-* `schema_version`;
-* `kind`;
-* `manifest_id`;
-* `source_fabric_adg_identity`;
-* `mapping_artifact_identity`;
-* `lowering_configuration`;
-* `emitted_source_files`;
-* `top_level_modules`;
-* `generated_packages`;
-* `generated_interfaces`;
-* `black_box_modules`;
-* `behavioral_models`;
-* `required_tool_capability_classes`;
-* `required_library_profile_classes`;
-* `constraints`;
-* `activity_hooks`;
-* `diagnostics`;
-* `status`.
-
-Rules:
-
-* `kind` must be `rtl_manifest`.
-* `emitted_source_files` entries must use portable relative paths and
-  carry fingerprints for the emitted source files.
-* A passing architecture RTL manifest must identify a Fabric ADG input,
-  at least one emitted SystemVerilog source file, at least one top-level
-  module, and the required RTL tool capability classes.
-* Behavioral models, black boxes, generated interfaces, constraints,
-  and activity hooks must be explicit lists so downstream FPA and EDA
-  tooling can distinguish present evidence from absent optional support.
 
 ## Content Audit Requirements
 

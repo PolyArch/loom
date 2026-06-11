@@ -48,6 +48,12 @@ For a legal mapping and supported simulator scope, DFG-sim and CGRA-sim
 must produce equivalent functional outputs and equivalent final memory
 state for visible memory regions.
 
+The comparison must be based on final outputs and final memory diffs
+when both simulator runs pass and the modeled scope is supported. A
+final-state comparison is valid only when both reports define the same
+visible memory region set or provide enough metadata to derive the same
+diff region set.
+
 Functional mismatch is a correctness failure unless explicitly explained
 by unsupported operations, intentionally partial simulation scope, or
 invalid mapping diagnostics.
@@ -110,6 +116,8 @@ A simulation comparison report must include:
 * workload and input identity;
 * functional comparison result;
 * memory comparison result;
+* visible memory region set and diff derivation when memory comparison
+  is performed;
 * performance metric definitions;
 * performance comparison result;
 * difference classification;
@@ -165,7 +173,7 @@ The comparison protocol is complete at the target-spec level when:
 
 * it verifies that DFG-sim and CGRA-sim reports refer to the same
   workload and input;
-* it detects functional output and visible memory mismatches;
+* it detects functional output and visible-memory-diff mismatches;
 * it distinguishes correctness mismatches from expected hardware
   constraint differences;
 * it reports metric definitions before performance ratios;

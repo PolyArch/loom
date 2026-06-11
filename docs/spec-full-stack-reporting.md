@@ -147,6 +147,11 @@ Full-stack reporting must support compact table exports for regression
 tracking and DSE dashboards. A table export is a projection of report
 bundle metrics. It does not replace the report bundle.
 
+The report bundle JSON is the stable program-to-program interface.
+Every table export derived from a report bundle must identify the source
+bundle id, bundle schema version, export profile, and source metric ids
+when metrics are projected into columns.
+
 Portable intermediate artifact gate schemas are specified in
 `docs/spec-intermediate-artifacts.md`. Full-stack report bundles may
 consume those artifacts, but they do not replace the per-artifact
@@ -168,6 +173,10 @@ Missing simulator evidence must be represented by explicit unsupported
 or diagnostic values according to the export profile. A missing DFG-sim
 or CGRA-sim cycle value must not be represented as numeric zero unless
 the simulator report itself produced zero.
+
+The global evidence policy in `docs/spec-loom-stack.md` applies to
+report exports. Table rows that do not trace back to real source bundle
+metrics are projections or fixtures, not report evidence.
 
 ## Derived Cycle/Frequency/Power/Area Metrics
 
@@ -247,6 +256,7 @@ The full-stack reporting target is complete when:
 * every metric records fidelity and evidence source;
 * simulator cycle summary exports preserve the required
   `kernel`, `dfg_sim_cycles`, and `cgra_sim_cycles` columns;
+* every table export identifies the source bundle and export profile;
 * derived cycle/frequency/power/area metrics preserve input metric
   identities;
 * missing optional stages are represented as unsupported-scope or

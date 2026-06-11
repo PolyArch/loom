@@ -41,6 +41,11 @@ ordinary source build must not fail because optional Loom artifact
 generation is unsupported. A reporting demonstrator may require later
 artifacts, but it must state that requirement explicitly.
 
+The global evidence, unsupported-scope, and timeout policies in
+`docs/spec-loom-stack.md` apply to every demonstrator. Demonstrator
+specs add only the matrix-specific input, output, and diagnostic
+requirements.
+
 ## Required Demonstrators
 
 ### App Full-Stack Demonstrator
@@ -226,5 +231,7 @@ The demonstrator matrix target is complete when:
   CGRA-sim, FPA, and combined reporting boundaries;
 * required intermediate artifact gate rows exist and pass content audit
   for the demonstrators they summarize;
+* timeout, blocked, skipped, and unsupported outcomes are recorded with
+  structured diagnostics;
 * unsupported-scope records are explicit and never counted as ordinary
   pass evidence.

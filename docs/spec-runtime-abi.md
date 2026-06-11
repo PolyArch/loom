@@ -279,9 +279,8 @@ The runtime ABI target is complete when:
   graph-control tokens;
 * memory descriptors support coherent shared, noncoherent shared,
   copy, device-local, simulated, and custom policies;
-* host pointers are not treated as hardware virtual memory unless a
-  platform adapter explicitly binds them to accelerator-accessible
-  memory;
+* host pointers are runtime inputs only and must be explicitly bound or
+  translated by a platform adapter before accelerator access;
 * simulator routing respects DFG-sim and CGRA-sim input boundaries;
 * fallback decisions and runtime failures produce structured
   diagnostics.
