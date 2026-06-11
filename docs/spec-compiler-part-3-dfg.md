@@ -99,11 +99,18 @@ contract in `docs/spec-compiler-part-3-impl.md`.
 
 ## 2. Hardware Model
 
-Loom's execution target is a heterogeneous chip composed of a single
-HostCore plus a fabric of AccCores. Each AccCore is a fused
-`(ScalarCore + SpatialCore)` pair; the SpatialCore is the CGRA tile
-described by the body of one `fabric.module`, while the ScalarCore is
-described by hardware parameters carried on that same `fabric.module`.
+Loom's execution target is a heterogeneous system containing HostCore
+execution and one or more AccCore execution resources. A physical
+AccCore is a system-level resource described by `fabric.system`: the
+`acc_core` node carries ScalarCore parameters and references a
+`fabric.module` symbol as its SpatialCore template. `fabric.module`
+remains the SpatialCore or CGRA template only; it does not own the
+physical AccCore instance or ScalarCore parameters.
+
+The front-end IR in this document remains a software and logical
+execution model. Binding logical execution cells to physical AccCore
+instances, and selecting the system-level ScalarCore/SpatialCore
+resources, belongs to mapping and binding artifacts.
 
 The front-end's IR mirrors this trio:
 
@@ -352,8 +359,12 @@ each rule lands in IR.
 
 * **HostCore.** The general-purpose CPU that runs host-call-context
   `func.func` body code outside any `dataflow.thread.launch`.
-* **AccCore.** One CGRA-attached compute element described by one
-  `fabric.module`. Composed of a ScalarCore plus a SpatialCore.
+* **AccCore.** One physical accelerator execution resource represented
+  by a `fabric.system` `acc_core` node. The node carries ScalarCore
+  metadata and references a `fabric.module` symbol as its SpatialCore
+  template. Part 3 does not create physical AccCore instances; it
+  creates logical accelerator work that later binding/PnR maps to
+  AccCore resources.
 * **ScalarCore-callable function.** A module-level `func.func` that
   Part 2 classified as legal to call from code running inside a
   `dataflow.thread` definition's body. Such a function remains a
@@ -1306,7 +1317,7 @@ tokens for an unselected branch can remain buffered inside branch-local
 ops and be consumed by a later selected invocation at the wrong dynamic
 position.
 
-#### Boundary Translation
+#### If Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.if`.
@@ -1483,7 +1494,7 @@ with `%cond = false` by `dataflow.carry`, emits no new before value,
 and returns the carry to its init state. The same rule applies to the
 structural `%ctrl_feedback` and hidden memory-state feedback streams.
 
-#### Boundary Translation
+#### While Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.while`.
@@ -1831,7 +1842,7 @@ Memref operands are not iter_arg-like stream state; only explicit
   true-lane projected state, and the false lane is the loop-exit
   memory state. The zero-trip case forwards the initial memory state.
 
-#### Boundary Translation
+#### For Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.for`.
@@ -2116,7 +2127,7 @@ inside an accelerator region. Part 2 or an earlier Part 3 pass must
 either remove or translate that mapping with an explicit downgrade
 decision, or emit a diagnostic before this template runs.
 
-#### Boundary Translation
+#### Forall Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.forall`.
@@ -2593,7 +2604,7 @@ After normalization, all generated `scf.for` and `scf.if` operations
 use the templates in this section. Their stream, carry, gate,
 demux, mux, and memory-order behavior is inherited from those templates.
 
-#### Boundary Translation
+#### Parallel Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.parallel`.
@@ -2764,7 +2775,7 @@ selector stream is `[1, 0, 2]`:
 | `%done_case1` | `[done_case1_0]` |
 | `%done` | `[done_case0_0, done_default0, done_case1_0]` |
 
-#### Boundary Translation
+#### Index Switch Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.index_switch`.
@@ -2811,7 +2822,7 @@ plane.
   into the surrounding scope and rewires SSA values; ctrl/done
   forwarding follows program order.
 
-#### Boundary Translation
+#### Execute Region Boundary Translation
 
 This template instantiates the boundary translation contract of
 `docs/spec-compiler-part-3-mem.md` Section 2.8 for `scf.execute_region`.

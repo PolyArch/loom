@@ -5,7 +5,8 @@ load/store operations, partitioned-data regions, coherence, consistency,
 and physical address binding.
 
 Loom requires cache coherence and a defined memory consistency model.
-The first target does not include MMU behavior or virtual memory.
+Fabric ADG and mapping memory records do not include MMU behavior or
+virtual memory.
 
 ## Memory Region Binding
 

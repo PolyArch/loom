@@ -23,6 +23,45 @@ dataflow compiler owns the L3 software partitioning instance for
 compatibility and generalization, while PnR and the mapping artifact own
 selected binding to concrete hardware resources.
 
+## Compiler Strategy Universe
+
+The compiler strategy universe includes graph partitioning, fusion,
+tiling, memory placement, and operator specialization.
+
+Graph partitioning chooses L1, L2, and L3 placement units through the
+framework in this document.
+
+Fusion combines adjacent compatible software regions before or during
+partitioning when the fused unit preserves observable behavior, explicit
+effects, memory order, and launch/fence structure. Fusion must emit
+diagnostics when a requested fusion is illegal, and it must preserve the
+same dataflow and mapping contracts as an unfused candidate.
+
+Tiling splits iteration or data domains into smaller logical execution
+units. Tiling belongs to compiler placement when it changes logical
+software regions, thread domains, graph launches, or subgraph
+boundaries. Hardware reuse, physical placement, routing, and buffering
+remain PnR and mapping-artifact responsibilities.
+
+Memory placement in the compiler chooses software-level memory intent:
+which data regions should be considered host-resident, accelerator
+visible, ScalarCore residual, SpatialCore-local, scratchpad-like, or
+candidate DMA/copy regions. It does not bind those regions to physical
+ports, address ranges, banks, routes, or coherent domains. Physical
+memory binding belongs to `docs/spec-mapping-memory.md`, runtime
+descriptors, and Fabric system memory declarations.
+
+Operator specialization selects software or dataflow operator variants
+when those variants are semantically equivalent under the selected
+inputs, types, attributes, and target constraints. It must record the
+selected variant and preserve enough provenance for later tech mapping,
+PnR, simulation, and reporting.
+
+Each strategy must have explicit owner metadata, artifacts or IR
+annotations that describe the selected candidate, structured diagnostics
+for unsupported or rejected candidates, and tests that distinguish
+legality failures from cost-model preferences.
+
 ## 1. Core Model
 
 A placement pass is described by five ingredients:
@@ -83,7 +122,8 @@ A candidate partition is legal only when all of the following hold:
 * Every cut materializes explicit boundary operands and results
   required by the target IR. No placed region may directly use an
   SSA value from its parent scope unless the target op explicitly
-  permits that use. In this milestone the placement-unit defs --
+  permits that use. In the current temporary marker flow the
+  placement-unit defs --
   `loom.acc_region` (L1, the temporary Part 2 to Part 3 marker),
   `dataflow.graph` def (L2), and `dataflow.subgraph` (L3) -- are
   all `IsolatedFromAbove`. `dataflow.thread`, the L1 final-form

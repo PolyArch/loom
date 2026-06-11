@@ -185,11 +185,11 @@ classes:
   accelerator region.
 * **Host-only.** Must not be reachable from a `loom.acc_region`.
 
-The first milestone may be conservative and require calls inside
-`loom.acc_region` to be inlined or explicitly marked
-ScalarCore-callable. Unsupported indirect calls, recursion, exceptions,
-unstructured stack behavior, or host-only runtime calls cause a
-diagnostic if they are reachable from an accelerator region.
+Conservative policies may require calls inside `loom.acc_region` to be
+inlined or explicitly marked ScalarCore-callable. Unsupported indirect
+calls, recursion, exceptions, unstructured stack behavior, or host-only
+runtime calls cause a diagnostic if they are reachable from an
+accelerator region.
 
 ## 7. Memory Region Analysis
 

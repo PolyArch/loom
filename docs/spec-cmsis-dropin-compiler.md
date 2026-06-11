@@ -187,6 +187,14 @@ The target CMSIS scope includes:
 * fixed-point and floating-point kernels;
 * scalar paths and target-feature-gated intrinsic paths.
 
+The global workload universe is owned by `docs/spec-loom-stack.md`.
+This document owns only the CMSIS-DSP and CMSIS-NN portion of that
+universe. Every tracked CMSIS source row must eventually have an
+explicit status for compile/run, IR emission, raise, dataflow lowering,
+DFG-sim, PnR/CGRA-sim, and RTL/FPA evidence. Rows that cannot reach a
+tier must carry structured unsupported-scope, failed, or blocked
+records.
+
 Unsupported target intrinsics, missing sysroots, unavailable target
 backends, and unsupported library configurations must produce
 structured diagnostics. In compatibility mode, unsupported acceleration
@@ -231,6 +239,11 @@ Diagnostics must distinguish:
 Diagnostics should preserve source locations when available and should
 identify the relevant pipeline component.
 
+Unsupported-scope diagnostics must include the shared fields required by
+`docs/spec-loom-stack.md`: case, component, missing capability, owner
+category, selected profile, and diagnostic class. CMSIS-specific
+diagnostics may add source-tree, target-triple, or intrinsic details.
+
 ## Reports
 
 When artifact or acceleration mode is enabled, reports should identify:
@@ -252,8 +265,9 @@ Reports must not mutate source trees or vendored CMSIS inputs.
 
 The target is complete when:
 
-* CMSIS-DSP and CMSIS-NN representative source sets compile through
-  `loom-cc` with ordinary CMSIS flags;
+* every tracked CMSIS-DSP and CMSIS-NN source row has an explicit status
+  for every validation tier, with either passing evidence or a
+  structured unsupported-scope, failed, or blocked record;
 * C and C++ build-system overrides can use `loom-cc` and `loom-c++`
   without editing source code;
 * IR emission preserves target triples, data layout, and expected
@@ -265,10 +279,9 @@ The target is complete when:
 * negative tests prove runner and per-row gate failures are not masked;
 * acceleration-required mode fails when acceleration is impossible;
 * fallback-allowed mode reports host or ScalarCore fallback explicitly;
-* at least one CMSIS-DSP kernel and one CMSIS-NN kernel can proceed
-  through dataflow simulation;
-* at least one mapped CMSIS workload can proceed through PnR,
-  CGRA-sim, and FPA reporting when a compatible ADG is provided.
+* representative CMSIS-DSP and CMSIS-NN gates may be used as
+  intermediate regression checks, but they do not replace full
+  per-source target tracking across the validation ladder.
 
 ## Non-Goals
 

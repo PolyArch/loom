@@ -15,6 +15,12 @@ not the final performance policy. Production-quality policies must be
 designed for large candidate spaces, cache-local data structures,
 incremental legality updates, and bounded-time search.
 
+The first hard target for this spec is artifact quality, not search
+cleverness: Loom must be able to validate, consume, and emit complete
+mapping artifacts, including manually produced fixtures. Scalable search
+engines are search-extension targets layered on top of the same artifact
+and verifier contracts.
+
 The central compute mapping relation is `dataflow.subgraph` to
 `fabric.fu`. Operation-level binding is allowed when the software graph
 has not been partitioned or when a consumer explicitly requests that
@@ -219,8 +225,7 @@ Mapping search is complete when:
 * every failed required mapping emits structured diagnostics;
 * DSE can compare multiple candidate artifacts through a mapping-set
   manifest;
-* the default scalable policy includes a simulated-annealing-style
-  placement engine and an improved-A*-style routing engine over
-  explicit topology, while keeping the deterministic baseline as a
-  reference oracle;
+* scalable policies such as simulated-annealing-style placement or
+  improved-A*-style routing can be added without changing the artifact
+  schema or weakening the deterministic baseline as a reference oracle;
 * CGRA-sim can consume selected artifacts without PnR internal state.

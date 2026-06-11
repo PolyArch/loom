@@ -34,6 +34,11 @@ runtime behavior, artifact generation, and simulator integration
 without requiring external library layout, CMSIS headers, or CMSIS
 build-system conventions.
 
+The global workload universe is owned by `docs/spec-loom-stack.md`.
+This document owns only the repository app-corpus portion of that
+universe. Removal, deferral, or unsupported status for an app-corpus
+case requires a structured record.
+
 Both suites share the same compiler-product principle: replacing
 `gcc` or `g++` with `loom-cc` or `loom-c++` must preserve ordinary
 program behavior in compatibility mode.
@@ -151,7 +156,7 @@ to `docs/spec-pnr.md`, `docs/spec-mapping-artifact.md`, and
 
 ### Tier 7: RTL And FPA Evidence
 
-The case may feed mapped-workload RTL checks and FPA estimation when
+The case feeds mapped-workload RTL checks and FPA estimation when
 the selected hardware profile supports those flows. Reports must follow
 `docs/spec-rtl-lowering.md`, `docs/spec-fpa-estimation.md`, and
 `docs/spec-eda-tooling.md`.
@@ -173,6 +178,11 @@ The app runner stack must provide:
 Skip budgets are allowed only as explicit manifest policy. A skip must
 name the case, tier, reason, and owner category. Silent skip-by-missing
 file or skip-by-empty-corpus behavior is illegal.
+
+Unsupported-scope rows must include the shared fields required by
+`docs/spec-loom-stack.md`: case, component, missing capability, owner
+category, selected profile, and diagnostic class. Component-specific
+fields may be added, but the shared fields must not be omitted.
 
 ## Artifact Requirements
 
@@ -237,10 +247,11 @@ The app drop-in corpus target is complete when:
 * all required cases pass the Loom drop-in build-and-run tier;
 * supported cases can proceed through LLVM IR, raise, and dataflow
   lowering tiers with structured artifacts;
-* at least one representative case from each major feature group can
-  run under DFG-sim when DFG-sim exists;
-* at least one representative mapped case can run through PnR and
-  CGRA-sim when those tools exist;
+* every in-universe app case has an explicit status for every validation
+  tier, with either passing evidence or a structured unsupported-scope,
+  failed, or blocked record;
+* representative feature-group gates may be used as intermediate
+  regression checks, but they do not replace the full target universe;
 * runner failures, missing cases, stale expected outputs, and invalid
   manifest records are diagnosed by tests;
 * compatibility-mode failures are separated from optional

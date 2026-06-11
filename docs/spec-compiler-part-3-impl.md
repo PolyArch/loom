@@ -14,6 +14,19 @@ the design contract can skip this file.
 References below use Part 3 section names rather than numeric indices,
 so that Part 3 can renumber without forcing edits here.
 
+## Implementation Guidance Boundary
+
+This file is implementation guidance, not the owning target contract.
+The target IR semantics are owned by `docs/spec-compiler-part-3-dfg.md`,
+the memory-dependence model is owned by
+`docs/spec-compiler-part-3-mem.md`, and global evidence policy is owned
+by `docs/spec-loom-stack.md`. If this file conflicts with those owning
+specs, the owning specs win and this file must be updated.
+
+Future execution plans may replace the pass ordering, test layout, or
+implementation decomposition when they preserve the target IR and
+verification contracts.
+
 ## 1. Lowering Pipeline
 
 The scf-to-dfg lowering is implemented as an ordered sequence of MLIR
