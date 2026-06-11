@@ -446,6 +446,12 @@ def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
             "element_layout": "u32[32];u32[32];u32[32]",
             "alignment_bytes": 4,
         }
+    if workload == "variance":
+        return {
+            "byte_size": 64,
+            "element_layout": "f32[16]",
+            "alignment_bytes": 4,
+        }
     return None
 
 

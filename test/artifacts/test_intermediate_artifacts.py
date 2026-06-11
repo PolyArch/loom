@@ -237,9 +237,20 @@ def assert_manifest_trace_edges(path: Path) -> None:
         ("vecsum-cgra-sim-report", "sim-cycle-summary"),
         ("adg-hardware-summary", "rtl-manifest"),
         ("rtl-manifest", "rtl-fpa-summary"),
-        ("pnr-mapping", "dse-candidate-summary"),
-        ("vecsum-cgra-sim-report", "dse-candidate-summary"),
+        ("pnr-mapping-summary", "dse-candidate-summary"),
+        ("sim-cycle-summary", "dse-candidate-summary"),
+        ("rtl-fpa-summary", "dse-candidate-summary"),
     }
+    dse_input_artifacts: set[str] = set()
+    dse_path = path.parent / "dse-candidate-summary.csv"
+    if dse_path.is_file():
+        _, dse_rows = read_csv(dse_path)
+        for row in dse_rows:
+            dse_input_artifacts.update(entry for entry in row.get("input_artifacts", "").split(";") if entry)
+    if "pnr-mapping" in dse_input_artifacts:
+        required_edges.add(("pnr-mapping", "dse-candidate-summary"))
+    if "vecsum-cgra-sim-report" in dse_input_artifacts:
+        required_edges.add(("vecsum-cgra-sim-report", "dse-candidate-summary"))
     if not required_edges <= edge_pairs:
         missing = sorted(required_edges - edge_pairs)
         raise AssertionError(f"{path.name}: missing trace edges {missing}")

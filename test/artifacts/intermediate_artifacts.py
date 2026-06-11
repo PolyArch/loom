@@ -1401,12 +1401,64 @@ def iter_manifest_optional_artifact_references(
             yield reference
 
 
+def normalize_manifest_artifact_reference(reference: str, artifact_id_set: set[str]) -> str:
+    if reference in artifact_id_set:
+        return reference
+    identity = artifact_id_for_path(Path(reference))
+    return identity if identity in artifact_id_set else ""
+
+
+def iter_dse_input_artifact_references(path: Path | None, artifact_id_set: set[str]) -> Iterable[str]:
+    if path is None or not path.is_file():
+        return
+    try:
+        with path.open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError:
+        return
+    for row in rows:
+        for reference in split_semicolon(row.get("input_artifacts", "")):
+            identity = normalize_manifest_artifact_reference(reference, artifact_id_set)
+            if identity:
+                yield identity
+
+
+def dse_input_references_by_artifact(
+    ids_by_kind: dict[str, list[str]],
+    artifact_paths_by_id: dict[str, Path] | None,
+    artifact_id_set: set[str],
+) -> dict[str, set[str]]:
+    if artifact_paths_by_id is None:
+        return {}
+    return {
+        dse_id: set(iter_dse_input_artifact_references(artifact_paths_by_id.get(dse_id), artifact_id_set))
+        for dse_id in ids_by_kind.get("dse_candidate", [])
+    }
+
+
+def dse_consumes_artifact(
+    dse_id: str,
+    source_id: str,
+    dse_input_references: dict[str, set[str]],
+    has_artifact_paths: bool,
+) -> bool:
+    if not has_artifact_paths:
+        return True
+    return source_id in dse_input_references.get(dse_id, set())
+
+
 def iter_artifact_manifest_required_edges(
     artifact_ids: Iterable[str],
     ids_by_kind: dict[str, list[str]],
     artifact_paths_by_id: dict[str, Path] | None = None,
 ) -> Iterable[tuple[str, str]]:
     artifact_id_set = set(artifact_ids)
+    dse_input_references = dse_input_references_by_artifact(
+        ids_by_kind,
+        artifact_paths_by_id,
+        artifact_id_set,
+    )
+    has_artifact_paths = artifact_paths_by_id is not None
     for left, right in ARTIFACT_EDGE_PAIRS:
         if left in artifact_id_set and right in artifact_id_set:
             yield left, right
@@ -1436,7 +1488,8 @@ def iter_artifact_manifest_required_edges(
                 ):
                     yield mapping_id, cgra_id
         for dse_id in ids_by_kind.get("dse_candidate", []):
-            yield mapping_id, dse_id
+            if dse_consumes_artifact(dse_id, mapping_id, dse_input_references, has_artifact_paths):
+                yield mapping_id, dse_id
 
     for sim_id in ids_by_kind.get("sim_cycle", []):
         for dfg_id in ids_by_kind.get("dfg_sim_report", []):
@@ -1467,7 +1520,8 @@ def iter_artifact_manifest_required_edges(
                 for source_id in iter_manifest_json_identity_references(cgra_report, key, artifact_id_set):
                     yield source_id, cgra_id
         for dse_id in ids_by_kind.get("dse_candidate", []):
-            yield cgra_id, dse_id
+            if dse_consumes_artifact(dse_id, cgra_id, dse_input_references, has_artifact_paths):
+                yield cgra_id, dse_id
 
     for rtl_manifest_id in ids_by_kind.get("rtl_manifest", []):
         for hardware_id in ids_by_kind.get("adg_hardware", []):

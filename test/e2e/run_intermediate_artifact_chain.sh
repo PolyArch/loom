@@ -62,6 +62,9 @@ case "${CASE}" in
   vecadd)
     case_graph="g_t_vecadd_0_0"
     ;;
+  variance)
+    case_graph="g_t_variance_red_0_0"
+    ;;
   *)
     echo "case ${CASE} is not wired for the full-stack artifact chain" >&2
     exit 2
@@ -215,6 +218,71 @@ if [[ "${CASE}" == "vecadd" ]]; then
     "${mapping_reduction_artifact}"
     "${cgra_main_report}"
     "${cgra_reduction_report}"
+  )
+elif [[ "${CASE}" == "variance" ]]; then
+  dfg_mean_report="${OUT_DIR}/variance-dfg-sim-mean.report.json"
+  dfg_var_report="${OUT_DIR}/variance-dfg-sim-var.report.json"
+  dfg_var_generated_report="${OUT_DIR}/variance-dfg-sim-mean.var.report.json"
+  mapping_mean_artifact="${OUT_DIR}/pnr-mapping-mean.json"
+  mapping_var_artifact="${OUT_DIR}/pnr-mapping-var.json"
+  mapping_mean_summary="${OUT_DIR}/pnr-mapping-mean-summary.csv"
+  mapping_var_summary="${OUT_DIR}/pnr-mapping-var-summary.csv"
+  cgra_mean_report="${OUT_DIR}/variance-cgra-sim-mean-report.json"
+  cgra_var_report="${OUT_DIR}/variance-cgra-sim-var-report.json"
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_mean_report}" \
+    "${dfg_cycle}"
+  mv "${dfg_var_generated_report}" "${dfg_var_report}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_variance_red_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_mean_artifact}" \
+    --output "${mapping_mean_summary}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_variance_red_1_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_var_artifact}" \
+    --output "${mapping_var_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_mean_report}" \
+    --mapping-artifact "${mapping_mean_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_mean_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_var_report}" \
+    --mapping-artifact "${mapping_var_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_var_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "variance__workload_graph_set__shared_reduction_adg" \
+    --dfg-report "${dfg_mean_report}" \
+    --dfg-report "${dfg_var_report}" \
+    --mapping-artifact "${mapping_mean_artifact}" \
+    --mapping-artifact "${mapping_var_artifact}" \
+    --cgra-report "${cgra_mean_report}" \
+    --cgra-report "${cgra_var_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${dfg_mean_report}"
+    "${dfg_var_report}"
+    "${mapping_mean_artifact}"
+    "${mapping_var_artifact}"
+    "${cgra_mean_report}"
+    "${cgra_var_report}"
   )
 else
   env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
