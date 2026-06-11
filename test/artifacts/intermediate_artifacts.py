@@ -1449,6 +1449,28 @@ def dse_consumes_artifact(
     return source_id in dse_input_references.get(dse_id, set())
 
 
+def rtl_fpa_consumed_lint_artifact_ids(path: Path | None) -> set[str]:
+    if path is None or not path.is_file():
+        return set()
+    try:
+        rows = read_csv_rows(path)
+    except (OSError, csv.Error):
+        return set()
+    consumed: set[str] = set()
+    for row in rows:
+        diagnostic = row.get("diagnostic", "")
+        if "RTL lint evidence status=" not in diagnostic:
+            continue
+        for segment in diagnostic.split(";"):
+            token = segment.strip()
+            if not token.startswith("artifact="):
+                continue
+            identity = token[len("artifact=") :].strip()
+            if identity:
+                consumed.add(identity)
+    return consumed
+
+
 def iter_artifact_manifest_required_edges(
     artifact_ids: Iterable[str],
     ids_by_kind: dict[str, list[str]],
@@ -1532,6 +1554,11 @@ def iter_artifact_manifest_required_edges(
             yield rtl_manifest_id, eda_id
         for rtl_fpa_id in ids_by_kind.get("rtl_fpa", []):
             yield rtl_manifest_id, rtl_fpa_id
+            rtl_fpa_path = artifact_paths_by_id.get(rtl_fpa_id) if artifact_paths_by_id else None
+            consumed_lint_artifact_ids = rtl_fpa_consumed_lint_artifact_ids(rtl_fpa_path)
+            for eda_id in ids_by_kind.get("eda_report", []):
+                if eda_id in consumed_lint_artifact_ids:
+                    yield eda_id, rtl_fpa_id
 
     for comparison_id in ids_by_kind.get("sim_comparison_report", []):
         if artifact_paths_by_id is None:

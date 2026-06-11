@@ -403,6 +403,8 @@ bash "${ROOT}/test/rtl/run_rtl_eda_report.sh" \
 bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --primitive-coverage "${primitive}" \
   --hardware-summary "${hardware}" \
+  --rtl-manifest "${rtl_manifest}" \
+  --eda-report "${rtl_eda}" \
   --output "${rtl_fpa}"
 bash "${ROOT}/test/e2e/run_hardware_report_bundle.sh" \
   --artifact "${hardware}" \

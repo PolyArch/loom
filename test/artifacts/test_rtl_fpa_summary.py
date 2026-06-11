@@ -104,6 +104,118 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("RTL/FPA summary with missing activity source unexpectedly passed audit")
 
+        manifest = out_dir / "rtl-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(hardware),
+                "--output",
+                str(manifest),
+            ],
+            "RTL manifest",
+        )
+        eda = out_dir / "rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                "definitely-missing-verilator",
+                "--output",
+                str(eda),
+            ],
+            "blocked RTL EDA report",
+        )
+        fpa_with_lint = out_dir / "with-lint-rtl-fpa-summary.csv"
+        rows_with_lint = artifact_test_common.run_csv_summary(
+            repo,
+            "test/rtl/run_rtl_fpa_summary.sh",
+            fpa_with_lint,
+            HEADER,
+            "--primitive-coverage",
+            str(primitive),
+            "--hardware-summary",
+            str(hardware),
+            "--rtl-manifest",
+            str(manifest),
+            "--eda-report",
+            str(eda),
+            label="RTL/FPA summary with RTL lint evidence",
+        )
+        lint_matches = [
+            row
+            for row in rows_with_lint
+            if row["workload"] == "vecadd"
+            and row["hardware"] == "test/fabric/unit/pe/valid.mlir::pe_2x2"
+        ]
+        if len(lint_matches) != 1:
+            raise AssertionError(f"expected one vecadd pe_2x2 row with lint evidence, got {rows_with_lint}")
+        lint_row = lint_matches[0]
+        if lint_row["rtl_lint_status"] != "blocked":
+            raise AssertionError(f"FPA row should consume blocked RTL lint evidence: {lint_row}")
+        for column in ("rtl_sim_status", "synth_status"):
+            if lint_row[column] != "skipped":
+                raise AssertionError(f"{column} should stay skipped for analytic FPA: {lint_row}")
+        for column in ("fidelity_level", "frequency_source", "area_source", "power_source", "activity_source"):
+            if lint_row[column] != row[column]:
+                raise AssertionError(f"RTL lint evidence must not change analytic FPA {column}: {lint_row}")
+        if "RTL lint evidence status=blocked" not in lint_row.get("diagnostic", ""):
+            raise AssertionError(f"FPA diagnostic should mention consumed lint evidence: {lint_row}")
+        if "artifact=rtl-eda-report" not in lint_row.get("diagnostic", ""):
+            raise AssertionError(f"FPA diagnostic should identify consumed lint artifact: {lint_row}")
+        fpa_with_lint_audit = out_dir / "rtl-fpa-with-lint-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(fpa_with_lint_audit),
+                str(fpa_with_lint),
+            ],
+            "RTL/FPA summary with lint evidence audit",
+        )
+
+        malformed_eda = out_dir / "malformed-rtl-eda-report.json"
+        malformed_eda.write_text("{not-json\n")
+        fpa_with_bad_lint = out_dir / "bad-lint-input-rtl-fpa-summary.csv"
+        rows_with_bad_lint = artifact_test_common.run_csv_summary(
+            repo,
+            "test/rtl/run_rtl_fpa_summary.sh",
+            fpa_with_bad_lint,
+            HEADER,
+            "--primitive-coverage",
+            str(primitive),
+            "--hardware-summary",
+            str(hardware),
+            "--rtl-manifest",
+            str(manifest),
+            "--eda-report",
+            str(malformed_eda),
+            label="RTL/FPA summary with malformed RTL lint evidence",
+        )
+        bad_lint_matches = [
+            row
+            for row in rows_with_bad_lint
+            if row["workload"] == "vecadd"
+            and row["hardware"] == "test/fabric/unit/pe/valid.mlir::pe_2x2"
+        ]
+        if len(bad_lint_matches) != 1:
+            raise AssertionError(f"expected one vecadd pe_2x2 row with bad lint evidence, got {rows_with_bad_lint}")
+        bad_lint_row = bad_lint_matches[0]
+        if bad_lint_row["rtl_lint_status"] != "blocked":
+            raise AssertionError(f"explicit malformed RTL lint evidence should block lint status: {bad_lint_row}")
+        if "RTL lint evidence unavailable" not in bad_lint_row.get("diagnostic", ""):
+            raise AssertionError(f"bad lint diagnostic should explain unavailable evidence: {bad_lint_row}")
+        if bad_lint_row["status"] != "pass" or bad_lint_row["fidelity_level"] != "analytic":
+            raise AssertionError(f"bad lint evidence must not change analytic FPA status: {bad_lint_row}")
+
     return 0
 
 

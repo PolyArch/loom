@@ -266,8 +266,12 @@ def main() -> int:
         if len(vecsum_demo_rows) != 1:
             raise AssertionError(f"expected one vecsum demonstrator row, got {demonstrator_rows}")
         vecsum_demo = vecsum_demo_rows[0]
-        if vecsum_demo["rtl_status"] != "skipped" or vecsum_demo["fpa_status"] != "pass":
-            raise AssertionError(f"demonstrator should see analytic FPA evidence: {vecsum_demo}")
+        eda_status = eda_report.get("status")
+        expected_rtl_status = "skipped" if eda_status == "pass" else str(eda_status or "blocked")
+        if vecsum_demo["rtl_status"] != expected_rtl_status or vecsum_demo["fpa_status"] != "pass":
+            raise AssertionError(
+                f"demonstrator should expose RTL lint and passing analytic FPA evidence: {vecsum_demo}"
+            )
         if vecsum_demo["report_status"] != "pass":
             raise AssertionError(f"demonstrator should see workload report bundle evidence: {vecsum_demo}")
         hardware_demo_rows = [row for row in demonstrator_rows if row["demonstrator"] == "hardware::test/pnr/shared_reduction_adg.mlir::shared_reduction_adg"]
@@ -338,6 +342,7 @@ def main() -> int:
             ("adg-hardware-summary", "rtl-manifest"),
             ("rtl-manifest", "rtl-eda-report"),
             ("rtl-manifest", "rtl-fpa-summary"),
+            ("rtl-eda-report", "rtl-fpa-summary"),
             ("runtime-package", "workload-report-bundle"),
             ("pnr-mapping", "workload-report-bundle"),
             ("sim-comparison-report", "workload-report-bundle"),

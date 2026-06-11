@@ -499,6 +499,53 @@ def main() -> int:
                 assert_manifest_trace_edges(output)
             produced.append(output)
 
+        prefix_manifest = out_dir / "prefix-edge-rtl-manifest.json"
+        prefix_manifest.write_text("{}\n")
+        prefix_eda = out_dir / "a-rtl-eda-report.json"
+        prefix_eda.write_text("{}\n")
+        consumed_eda = out_dir / "a-rtl-eda-report-extra-rtl-eda-report.json"
+        consumed_eda.write_text("{}\n")
+        prefix_fpa = out_dir / "prefix-edge-rtl-fpa-summary.csv"
+        consumed_eda_id = consumed_eda.name[: -len(".json")]
+        prefix_fpa.write_text(
+            "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
+            "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
+            "activity_source,status,diagnostic\n"
+            "fabric0,vecadd,blocked,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
+            "analytic_fpa_model,analytic_fpa_model,default_toggle,pass,"
+            f"RTL lint evidence status=blocked; artifact={consumed_eda_id}; diagnostic=tool unavailable\n"
+        )
+        prefix_manifest_output = out_dir / "prefix-edge-full-stack-artifact-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_artifact_manifest.sh",
+                "--artifact",
+                str(prefix_manifest),
+                "--artifact",
+                str(prefix_eda),
+                "--artifact",
+                str(consumed_eda),
+                "--artifact",
+                str(prefix_fpa),
+                "--output",
+                str(prefix_manifest_output),
+            ],
+            "artifact manifest with prefix EDA identities",
+        )
+        prefix_edges = {
+            (edge.get("from"), edge.get("to"))
+            for edge in json.loads(prefix_manifest_output.read_text()).get("edges", [])
+            if isinstance(edge, dict)
+        }
+        prefix_fpa_id = prefix_fpa.name[: -len(".csv")]
+        if (consumed_eda_id, prefix_fpa_id) not in prefix_edges:
+            raise AssertionError(f"manifest missed consumed EDA to FPA edge: {prefix_edges}")
+        prefix_eda_id = prefix_eda.name[: -len(".json")]
+        if (prefix_eda_id, prefix_fpa_id) in prefix_edges:
+            raise AssertionError(f"manifest used prefix EDA identity as consumed lint evidence: {prefix_edges}")
+
         audit_pass = out_dir / "artifact-audit-summary.json"
         result = run_command(
             repo,
