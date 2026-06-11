@@ -680,6 +680,13 @@ def main() -> int:
             raise AssertionError("noncontiguous route segments unexpectedly passed audit")
 
         blocked_comparison = out_dir / "blocked-sim-comparison-report.json"
+        write_dfg_report(out_dir / "vecadd-dfg-sim-report.json", "vecadd", "g_vecadd", 10)
+        write_mapping_artifact(out_dir / "vecadd-pnr-mapping.json", "vecadd", "g_vecadd", "map0")
+        write_cgra_report(out_dir / "vecadd-cgra-sim-report.json", "vecadd", "map0", 10, 10)
+        blocked_cgra_data = json.loads((out_dir / "vecadd-cgra-sim-report.json").read_text())
+        blocked_cgra_data["status"] = "blocked"
+        blocked_cgra_data["diagnostics"] = ["synthetic blocked CGRA report with final state provenance"]
+        (out_dir / "vecadd-cgra-sim-report.json").write_text(json.dumps(blocked_cgra_data))
         write_blocked_sim_comparison_report(blocked_comparison)
         result = run_command(
             repo,
@@ -1450,6 +1457,41 @@ def main() -> int:
                 f"DSE selected row with matching mapping/sim/FPA unexpectedly failed audit\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
+
+        mismatched_hardware_evidence_dse = out_dir / "mismatched-hardware-evidence-dse-candidate-summary.csv"
+        mismatched_hardware_evidence_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(mismatched_hardware_evidence_dse),
+        ).replace(
+            "combined_full_stack_candidate,analytic_model_only,",
+            "combined_full_stack_candidate,backend_evidence,",
+        )
+        mismatched_hardware_evidence_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
+            + mismatched_hardware_evidence_dse_provenance
+            + "hardware evidence kind contradicts analytic FPA fidelity\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-hardware-evidence.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(mismatched_hardware_evidence_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row with mismatched hardware_evidence_kind unexpectedly passed audit")
 
         missing_fingerprint_dse = out_dir / "missing-fingerprint-dse-candidate-summary.csv"
         missing_fingerprint_dse_provenance = valid_dse_provenance.replace(

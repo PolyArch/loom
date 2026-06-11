@@ -74,6 +74,27 @@ DSE_HARDWARE_EVIDENCE_KINDS = {
     "custom_model",
     "unknown",
 }
+DSE_HARDWARE_EVIDENCE_KIND_BY_FIDELITY = {
+    "analytic": "analytic_model_only",
+    "mapped_activity": "sim_activity_model",
+    "rtl_structural": "backend_evidence",
+    "rtl_activity": "backend_evidence",
+    "physical_estimate": "backend_evidence",
+    "fpga_estimate": "backend_evidence",
+    "custom": "custom_model",
+    "custom_calibrated": "custom_model",
+}
+DSE_HARDWARE_EVIDENCE_KIND_ORDER = (
+    "unknown",
+    "backend_evidence",
+    "custom_model",
+    "sim_activity_model",
+    "analytic_model_only",
+)
+CGRA_FUNCTIONAL_STATE_SOURCES = {
+    "carried_from_dfg_sim_report",
+    "component_cgra_sim_reports_carried_from_dfg_sim_reports",
+}
 ARTIFACT_EDGE_PAIRS = (
     ("old-app-corpus-inventory", "app-corpus-import-status"),
     ("app-corpus-import-status", "source-compat-summary"),
@@ -1041,6 +1062,22 @@ def parse_dse_fidelity_records(
     return parsed
 
 
+def hardware_evidence_kind_from_fidelity_records(
+    parsed_fidelity: dict[str, tuple[str, ...]],
+) -> str | None:
+    kinds = {
+        DSE_HARDWARE_EVIDENCE_KIND_BY_FIDELITY.get(parts[0], "unknown")
+        for parts in parsed_fidelity.values()
+        if parts
+    }
+    if not kinds:
+        return None
+    for kind in DSE_HARDWARE_EVIDENCE_KIND_ORDER:
+        if kind in kinds:
+            return kind
+    return "unknown"
+
+
 def dse_candidate_metric_id(row: dict[str, str], name: str) -> str | None:
     workload = row.get("workload", "")
     hardware = row.get("hardware", "")
@@ -1128,6 +1165,17 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
         parsed_metrics = parse_dse_metric_records(metric_records, diagnostics, row_index)
         fidelity_records = row.get("feedback_fidelity_records", "")
         parsed_fidelity = parse_dse_fidelity_records(fidelity_records, diagnostics, row_index)
+        expected_hardware_evidence_kind = hardware_evidence_kind_from_fidelity_records(
+            parsed_fidelity
+        )
+        if (
+            hardware_evidence_kind
+            and expected_hardware_evidence_kind is not None
+            and hardware_evidence_kind != expected_hardware_evidence_kind
+        ):
+            diagnostics.append(
+                f"row {row_index}: hardware_evidence_kind does not match feedback_fidelity_records"
+            )
         for metric in (
             "cgra_sim_cycles",
             "frequency_mhz",
@@ -4474,13 +4522,12 @@ def validate_string_array_field(
     label: str,
     diagnostics: list[str],
 ) -> None:
-    values = data.get(key)
-    if not isinstance(values, list):
+    invalid_indices = invalid_string_array_indices(data.get(key))
+    if invalid_indices is None:
         diagnostics.append(f"{label} {key} must be a list")
         return
-    for index, value in enumerate(values, start=1):
-        if not isinstance(value, str):
-            diagnostics.append(f"{label} {key} entry {index} must be a string")
+    for invalid_index in invalid_indices:
+        diagnostics.append(f"{label} {key} entry {invalid_index} must be a string")
 
 
 def validate_string_array_object_field(
@@ -4496,16 +4543,23 @@ def validate_string_array_object_field(
     for name, values in state.items():
         if not isinstance(name, str):
             diagnostics.append(f"{label} {key} keys must be strings")
-        if not isinstance(values, list):
+        invalid_indices = invalid_string_array_indices(values)
+        if invalid_indices is None:
             diagnostics.append(f"{label} {key}.{name} must be a list")
             continue
-        for index, value in enumerate(values, start=1):
-            if not isinstance(value, str):
-                diagnostics.append(f"{label} {key}.{name} entry {index} must be a string")
+        for invalid_index in invalid_indices:
+            diagnostics.append(f"{label} {key}.{name} entry {invalid_index} must be a string")
+
+
+def invalid_string_array_indices(value: object) -> list[int] | None:
+    if not isinstance(value, list):
+        return None
+    return [index for index, item in enumerate(value, start=1) if not isinstance(item, str)]
 
 
 def is_string_array(value: object) -> bool:
-    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    invalid_indices = invalid_string_array_indices(value)
+    return invalid_indices is not None and not invalid_indices
 
 
 def is_string_array_object(value: object) -> bool:
@@ -4542,9 +4596,12 @@ def validate_sim_comparison_references(
     workload = data.get("workload")
     runtime_input_identity = data.get("runtime_input_identity")
     comparison_status = data.get("status")
+    functional_pass = data.get("functional_comparison_status") == "pass"
+    memory_pass = data.get("memory_comparison_status") == "pass"
+    requires_final_state_sources = functional_pass or memory_pass or comparison_status == "pass"
     dfg_report = read_resolved_json_reference(path, data.get("dfg_sim_report_identity"))
     if dfg_report is None:
-        if comparison_status == "pass":
+        if requires_final_state_sources:
             diagnostics.append(f"{label} DFG reference does not resolve")
     else:
         if dfg_report.get("kind") != "dfg_sim_report":
@@ -4564,7 +4621,7 @@ def validate_sim_comparison_references(
 
     cgra_report = read_resolved_json_reference(path, data.get("cgra_sim_report_identity"))
     if cgra_report is None:
-        if comparison_status == "pass":
+        if requires_final_state_sources:
             diagnostics.append(f"{label} CGRA reference does not resolve")
     else:
         if cgra_report.get("kind") != "cgra_sim_report":
@@ -4572,8 +4629,8 @@ def validate_sim_comparison_references(
         if comparison_status == "pass" and cgra_report.get("status") != "pass":
             diagnostics.append(f"{label} CGRA reference is not passing")
         if (
-            comparison_status == "pass"
-            and cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+            requires_final_state_sources
+            and cgra_report.get("functional_state_source") not in CGRA_FUNCTIONAL_STATE_SOURCES
         ):
             diagnostics.append(f"{label} CGRA reference lacks functional state provenance")
         if isinstance(workload, str) and workload and cgra_report.get("workload") != workload:
@@ -4586,14 +4643,14 @@ def validate_sim_comparison_references(
             and expected_runtime_input != runtime_input_identity
         ):
             diagnostics.append(f"{label} CGRA reference runtime input does not match report")
-    if comparison_status == "pass" and dfg_report is not None and cgra_report is not None:
+    if requires_final_state_sources and dfg_report is not None and cgra_report is not None:
         dfg_outputs = dfg_report.get("final_outputs")
         cgra_outputs = cgra_report.get("final_outputs")
         if not is_string_array(dfg_outputs):
             diagnostics.append(f"{label} DFG reference final_outputs is invalid")
         if not is_string_array(cgra_outputs):
             diagnostics.append(f"{label} CGRA reference final_outputs is invalid")
-        if data.get("functional_comparison_status") == "pass" and (
+        if functional_pass and (
             not is_string_array(dfg_outputs)
             or not is_string_array(cgra_outputs)
             or dfg_outputs != cgra_outputs
@@ -4605,7 +4662,7 @@ def validate_sim_comparison_references(
             diagnostics.append(f"{label} DFG reference final_memory_state is invalid")
         if not is_string_array_object(cgra_memory):
             diagnostics.append(f"{label} CGRA reference final_memory_state is invalid")
-        if data.get("memory_comparison_status") == "pass" and (
+        if memory_pass and (
             not is_string_array_object(dfg_memory)
             or not is_string_array_object(cgra_memory)
             or dfg_memory != cgra_memory
@@ -5011,10 +5068,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report has unknown operation cost model source")
         validate_string_array_field(data, "final_outputs", "CGRA simulator report", diagnostics)
         validate_string_array_object_field(data, "final_memory_state", "CGRA simulator report", diagnostics)
-        if data.get("functional_state_source") not in {
-            "carried_from_dfg_sim_report",
-            "component_cgra_sim_reports_carried_from_dfg_sim_reports",
-        }:
+        if data.get("functional_state_source") not in CGRA_FUNCTIONAL_STATE_SOURCES:
             diagnostics.append("CGRA simulator report has unknown functional_state_source")
         report_status = data.get("status")
         if report_status == "pass" and data.get("hardware_bound_classification") != "within_modeled_bounds":

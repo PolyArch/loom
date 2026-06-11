@@ -411,6 +411,21 @@ def main() -> int:
             expected_fragment="DFG reference does not resolve",
         )
 
+        blocked_missing_source_comparison = json.loads(json.dumps(data))
+        blocked_missing_source_comparison["dfg_sim_report_identity"] = (
+            "blocked-missing-source-dfg-sim-report"
+        )
+        blocked_missing_source_comparison["cgra_sim_report_identity"] = (
+            "blocked-missing-source-cgra-sim-report"
+        )
+        assert_comparison_audit_fails(
+            repo,
+            out_dir,
+            blocked_missing_source_comparison,
+            label="blocked-missing-source-references",
+            expected_fragment="DFG reference does not resolve",
+        )
+
         missing_provenance_pass_cgra = json.loads(json.dumps(pass_cgra))
         missing_provenance_pass_cgra.pop("functional_state_source", None)
         write_json(out_dir / "missing-pass-provenance-cgra-sim-report.json", missing_provenance_pass_cgra)
