@@ -182,11 +182,32 @@ void printFu(llvm::raw_ostream &os, const FuSpec &fu) {
   os << "    }\n";
 }
 
+void printTemporalPeAttributes(llvm::raw_ostream &os,
+                               const TemporalPeConfig &config) {
+  os << " attributes {\n"
+     << "         tag_width = " << config.tagWidth << " : i32,\n"
+     << "         num_instruction = " << config.numInstruction << " : i32,\n";
+  if (config.numRegFifo)
+    os << "         num_reg_fifo = " << config.numRegFifo << " : i32,\n";
+  if (config.regFifoDepth)
+    os << "         reg_fifo_depth = " << config.regFifoDepth << " : i32,\n";
+  if (config.regFifoPorts)
+    os << "         reg_fifo_ports = " << config.regFifoPorts << " : i32,\n";
+  os << "         fu_config_mode = \"" << config.fuConfigMode << "\",\n"
+     << "         operand_buffer_mode = \"" << config.operandBufferMode << "\"";
+  if (config.operandBufferSize)
+    os << ",\n         operand_buffer_size = " << config.operandBufferSize
+       << " : i32";
+  os << "\n       }";
+}
+
 void printPe(llvm::raw_ostream &os, const PeSpec &pe) {
   os << "  fabric.pe [" << scheduleName(pe.schedule) << "] (";
   printBindings(os, pe.inputs, "                    ");
   os << ") -> ";
   printResultTypes(os, pe.resultTypes);
+  if (pe.schedule == Schedule::Temporal)
+    printTemporalPeAttributes(os, pe.temporal);
   os << " {\n";
   for (const FuSpec &fu : pe.fus)
     printFu(os, fu);
@@ -393,7 +414,12 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     }
     os << "\n        [{load_group_size = "
        << static_cast<unsigned>(mem.loads.size())
-       << " : i32, store_group_size = " << mem.storePorts << " : i32}]\n";
+       << " : i32, store_group_size = " << mem.storePorts << " : i32";
+    if (mem.schedule == Schedule::Temporal)
+      os << ", tag_width = " << mem.temporalTagWidth
+         << " : i32, addr_table_size = " << mem.temporalAddrTableSize
+         << " : i32";
+    os << "}]\n";
 
     llvm::SmallVector<std::string> operandTypes;
     operandTypes.push_back(inputTypes.lookup(mem.manager));
@@ -453,6 +479,57 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
                               {"11", "11"},
                               0});
   module.addMem(MemSpec{Schedule::Spatial, "mgr", {{"addr", "ctrl"}}, 0});
+  return module;
+}
+
+ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
+  ModuleBuilder module("minimal_temporal_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("lhs", "!fabric.bits_tag<32, 4>")
+      .addInput("rhs", "!fabric.bits_tag<32, 4>")
+      .addInput("addr", "!fabric.bits_tag<32, 4>")
+      .addInput("ctrl", "!fabric.bits_tag<0, 4>");
+
+  PeSpec aluPe;
+  aluPe.schedule = Schedule::Temporal;
+  aluPe.inputs = {{"pa", "lhs", "!fabric.bits_tag<32, 4>", ""},
+                  {"pb", "rhs", "!fabric.bits_tag<32, 4>", ""}};
+  aluPe.resultTypes = {"!fabric.bits_tag<32, 4>"};
+  aluPe.temporal.tagWidth = 4;
+  aluPe.temporal.numInstruction = 1;
+  aluPe.temporal.fuConfigMode = "per_fu_config";
+  aluPe.temporal.operandBufferMode = "per_instruction";
+
+  FuSpec addFu;
+  addFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
+                  {"fb", "pb", "!fabric.bits<32>", ""}};
+  addFu.resultTypes = {"!fabric.bits<32>"};
+  addFu.operations.push_back(
+      FabricOpSpec{{"sum"},
+                   {"arith.addi"},
+                   {"fa", "fb"},
+                   {"!fabric.bits<32>", "!fabric.bits<32>"},
+                   {"!fabric.bits<32>"},
+                   {},
+                   {}});
+  addFu.yieldValues = {"sum"};
+  aluPe.fus.push_back(std::move(addFu));
+  module.addPe(std::move(aluPe));
+
+  module.addSwitch(SwitchSpec{Schedule::Temporal,
+                              {"lhs", "rhs"},
+                              {"!fabric.bits_tag<32, 4>",
+                               "!fabric.bits_tag<32, 4>"},
+                              {"11", "11"},
+                              1});
+
+  MemSpec mem;
+  mem.schedule = Schedule::Temporal;
+  mem.manager = "mgr";
+  mem.loads = {{"addr", "ctrl"}};
+  mem.temporalTagWidth = 4;
+  mem.temporalAddrTableSize = 1;
+  module.addMem(std::move(mem));
   return module;
 }
 
@@ -579,6 +656,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
 
 llvm::Error loom::adg::writeMinimalSpatialAdg(llvm::raw_ostream &os) {
   return buildMinimalSpatialAdg().print(os);
+}
+
+llvm::Error loom::adg::writeMinimalTemporalAdg(llvm::raw_ostream &os) {
+  return buildMinimalTemporalAdg().print(os);
 }
 
 llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {

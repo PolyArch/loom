@@ -17,6 +17,11 @@ static llvm::cl::opt<bool>
                    llvm::cl::desc("emit a minimal SpatialCore ADG"),
                    llvm::cl::init(false));
 
+static llvm::cl::opt<bool>
+    minimalTemporal("minimal-temporal",
+                    llvm::cl::desc("emit a minimal temporal SpatialCore ADG"),
+                    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -28,7 +33,8 @@ int main(int argc, char **argv) {
       "Builder C++ API\n");
 
   unsigned selectedRecipes =
-      (sharedReduction ? 1 : 0) + (minimalSpatial ? 1 : 0);
+      (sharedReduction ? 1 : 0) + (minimalSpatial ? 1 : 0) +
+      (minimalTemporal ? 1 : 0);
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
     return 1;
@@ -46,9 +52,15 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  llvm::Error err = minimalSpatial ? loom::adg::writeMinimalSpatialAdg(out)
-                                   : loom::adg::writeSharedReductionAdg(out);
-  if (err) {
+  auto writeSelectedRecipe = [&]() -> llvm::Error {
+    if (minimalSpatial)
+      return loom::adg::writeMinimalSpatialAdg(out);
+    if (minimalTemporal)
+      return loom::adg::writeMinimalTemporalAdg(out);
+    return loom::adg::writeSharedReductionAdg(out);
+  };
+
+  if (llvm::Error err = writeSelectedRecipe()) {
     llvm::errs() << "error: " << llvm::toString(std::move(err)) << "\n";
     return 1;
   }

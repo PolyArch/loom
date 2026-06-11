@@ -39,11 +39,23 @@ struct FuSpec {
   std::vector<std::string> yieldValues;
 };
 
+struct TemporalPeConfig {
+  unsigned tagWidth = 0;
+  unsigned numInstruction = 0;
+  std::string fuConfigMode;
+  std::string operandBufferMode;
+  unsigned operandBufferSize = 0;
+  unsigned numRegFifo = 0;
+  unsigned regFifoDepth = 0;
+  unsigned regFifoPorts = 0;
+};
+
 struct PeSpec {
   Schedule schedule = Schedule::Spatial;
   std::vector<PortBinding> inputs;
   std::vector<std::string> resultTypes;
   std::vector<FuSpec> fus;
+  TemporalPeConfig temporal;
 };
 
 struct SwitchSpec {
@@ -64,6 +76,8 @@ struct MemSpec {
   std::string manager;
   std::vector<MemLoadPort> loads;
   unsigned storePorts = 0;
+  unsigned temporalTagWidth = 0;
+  unsigned temporalAddrTableSize = 0;
 };
 
 class ModuleBuilder {
@@ -93,9 +107,11 @@ private:
 };
 
 ModuleBuilder buildMinimalSpatialAdg();
+ModuleBuilder buildMinimalTemporalAdg();
 ModuleBuilder buildSharedReductionAdg();
 
 llvm::Error writeMinimalSpatialAdg(llvm::raw_ostream &os);
+llvm::Error writeMinimalTemporalAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedReductionAdg(llvm::raw_ostream &os);
 
 } // namespace adg
