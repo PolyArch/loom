@@ -86,6 +86,9 @@ case "${CASE}" in
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
     ;;
+  byte_swap)
+    case_graph="g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
+    ;;
   xor_block)
     case_graph="g_t_xor_block_0_0"
     ;;
