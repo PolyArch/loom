@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import subprocess
 import sys
@@ -54,6 +55,29 @@ def find_existing_tool(candidates: list[Path]) -> Path | None:
 
 def find_tool() -> Path | None:
     return find_existing_tool(tool_candidates())
+
+
+def classify_report(path: Path) -> str:
+    with path.open() as handle:
+        data = json.load(handle)
+    kind = data.get("kind")
+    if kind not in {"dfg_sim_report", "cgra_sim_report"}:
+        raise ValueError(f"{path} has unsupported simulator report kind {kind!r}")
+    return kind
+
+
+def discover_report_inputs(evidence_dir: Path) -> tuple[list[Path], list[Path]]:
+    dfg_reports: list[Path] = []
+    cgra_reports: list[Path] = []
+    if not evidence_dir.is_dir():
+        return dfg_reports, cgra_reports
+    for report in sorted(evidence_dir.glob("*.report.json")):
+        kind = classify_report(report)
+        if kind == "dfg_sim_report":
+            dfg_reports.append(report)
+        else:
+            cgra_reports.append(report)
+    return dfg_reports, cgra_reports
 
 
 def dfg_sim_candidates() -> list[Path]:
@@ -232,6 +256,15 @@ def main(argv: list[str]) -> int:
     cgra_reports = [Path(path) for path in args.cgra_report]
     valid_cgra_reports = [path for path in cgra_reports if path.is_file()]
     if not args.primitive_coverage and not valid_dfg_reports:
+        discovered_dfg_reports, discovered_cgra_reports = discover_report_inputs(
+            output.parent / "current-sim-cycle"
+        )
+        if discovered_dfg_reports:
+            tool = find_tool()
+            if tool is not None:
+                return summarize_reports(output, discovered_dfg_reports, discovered_cgra_reports)
+            intermediate_artifacts.write_csv("sim_cycle", output)
+            return 0
         return emit_default_vecsum_summary(output)
     if valid_dfg_reports:
         tool = find_tool()

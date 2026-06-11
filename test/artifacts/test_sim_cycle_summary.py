@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -10,6 +11,78 @@ import artifact_test_common
 
 
 HEADER = ["kernel", "dfg_sim_cycles", "cgra_sim_cycles"]
+
+
+def write_blocked_mapping_artifact(path: Path, workload: str) -> None:
+    artifact = {
+        "schema_version": 1,
+        "kind": "pnr_mapping",
+        "workload": workload,
+        "hardware": "blocked_adg",
+        "mapping_id": f"{workload}__blocked_adg",
+        "status": "fail",
+        "placed_records": 0,
+        "routed_edges": 0,
+        "unrouted_edges": 1,
+        "unplaced_records": 0,
+        "config_records": 0,
+        "placements": [],
+        "routes": [],
+        "config_bitstream": [],
+        "diagnostics": ["structured test mapping blocks CGRA-sim"],
+    }
+    path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+
+def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, upper_bound: str) -> None:
+    dfg_tool = repo / "build/tools/loom-dfg-sim/loom-dfg-sim"
+    if not dfg_tool.is_file():
+        dfg_tool = repo / "build/bin/loom-dfg-sim"
+    cgra_tool = repo / "build/tools/loom-cgra-sim/loom-cgra-sim"
+    if not cgra_tool.is_file():
+        cgra_tool = repo / "build/bin/loom-cgra-sim"
+
+    dfg_report = evidence_dir / f"{workload}.dfg.report.json"
+    mapping_artifact = evidence_dir / f"{workload}.mapping.json"
+    cgra_report = evidence_dir / f"{workload}.cgra.report.json"
+    artifact_test_common.require_success(
+        repo,
+        [
+            str(dfg_tool),
+            "test/simulator/dfg_basic.mlir",
+            "--graph",
+            "sum4",
+            "--workload",
+            workload,
+            "--arg",
+            "0=none",
+            "--arg",
+            "1=0",
+            "--arg",
+            f"2={upper_bound}",
+            "--arg",
+            "3=1",
+            "--arg",
+            "4=0.000000e+00",
+            "--output",
+            str(dfg_report),
+        ],
+        f"{workload} DFG simulation report",
+    )
+    write_blocked_mapping_artifact(mapping_artifact, workload)
+    artifact_test_common.require_success(
+        repo,
+        [
+            str(cgra_tool),
+            "--dfg-report",
+            str(dfg_report),
+            "--mapping-artifact",
+            str(mapping_artifact),
+            "--output",
+            str(cgra_report),
+        ],
+        f"{workload} CGRA simulation report",
+    )
 
 
 def main() -> int:
@@ -44,6 +117,37 @@ def main() -> int:
             raise AssertionError(f"default sim cycle row must not expose blocked CGRA cycles: {default_row}")
         if "mapping artifact status fail blocks CGRA-sim" not in default_row.get("diagnostic", ""):
             raise AssertionError(f"default sim cycle row should diagnose failed mapping evidence: {default_row}")
+
+        evidence_dir = out_dir / "current-sim-cycle"
+        evidence_dir.mkdir()
+        run_discovered_report_pair(repo, evidence_dir, "sum4", "4")
+        run_discovered_report_pair(repo, evidence_dir, "sum8", "8")
+        discovered_sim = out_dir / "sim-cycle-summary-discovered.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--output",
+                str(discovered_sim),
+            ],
+            "discovered sim cycle summary",
+        )
+        discovered_rows = artifact_test_common.read_csv_rows(discovered_sim, HEADER)
+        discovered_by_kernel = {row["kernel"]: row for row in discovered_rows}
+        if set(discovered_by_kernel) != {"sum4", "sum8"}:
+            raise AssertionError(f"expected discovered evidence rows only, got {discovered_rows}")
+        if discovered_by_kernel["sum4"]["dfg_sim_cycles"] != "28":
+            raise AssertionError(f"sum4 should keep DFG cycles from report: {discovered_by_kernel['sum4']}")
+        if discovered_by_kernel["sum8"]["dfg_sim_cycles"] != "48":
+            raise AssertionError(f"sum8 should keep DFG cycles from report: {discovered_by_kernel['sum8']}")
+        for kernel, discovered_row in discovered_by_kernel.items():
+            if discovered_row["cgra_sim_cycles"] != "":
+                raise AssertionError(f"{kernel} must not expose blocked CGRA cycles: {discovered_row}")
+            if discovered_row.get("status") != "blocked":
+                raise AssertionError(f"{kernel} should keep structured blocked status: {discovered_row}")
+            if "mapping artifact status fail blocks CGRA-sim" not in discovered_row.get("diagnostic", ""):
+                raise AssertionError(f"{kernel} should carry CGRA blocked diagnostic: {discovered_row}")
 
         artifact_test_common.require_success(
             repo,
