@@ -45,6 +45,89 @@ SYNCHRONIZATION_MODES = (
     "device_poll",
 )
 
+WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
+    "vecsum": {
+        "byte_size": 256,
+        "element_layout": "u32[64]",
+        "alignment_bytes": 4,
+    },
+    "dotproduct": {
+        "byte_size": 512,
+        "element_layout": "f32[64];f32[64]",
+        "alignment_bytes": 4,
+    },
+    "vecadd": {
+        "byte_size": 768,
+        "element_layout": "f32[64];f32[64];f32[64]",
+        "alignment_bytes": 4,
+    },
+    "xor_block": {
+        "byte_size": 384,
+        "element_layout": "u32[32];u32[32];u32[32]",
+        "alignment_bytes": 4,
+    },
+    "relu": {
+        "byte_size": 256,
+        "element_layout": "f32[32];f32[32]",
+        "alignment_bytes": 4,
+    },
+    "variance": {
+        "byte_size": 64,
+        "element_layout": "f32[16]",
+        "alignment_bytes": 4,
+    },
+    "prefix_sum": {
+        "byte_size": 512,
+        "element_layout": "i32[64];i32[64]",
+        "alignment_bytes": 4,
+    },
+    "integrate_trapz": {
+        "byte_size": 72,
+        "element_layout": "f32[9];f32[9]",
+        "alignment_bytes": 4,
+    },
+    "reduction": {
+        "byte_size": 512,
+        "element_layout": "i32[128]",
+        "alignment_bytes": 4,
+    },
+    "mean": {
+        "byte_size": 256,
+        "element_layout": "f32[64]",
+        "alignment_bytes": 4,
+    },
+    "vecnorm_l1": {
+        "byte_size": 256,
+        "element_layout": "i32[64]",
+        "alignment_bytes": 4,
+    },
+    "vecnorm_l2": {
+        "byte_size": 256,
+        "element_layout": "i32[64]",
+        "alignment_bytes": 4,
+    },
+    "correlation": {
+        "byte_size": 1028,
+        "element_layout": "f32[128];f32[16];f32[113]",
+        "alignment_bytes": 4,
+    },
+    "spmv": {
+        "byte_size": 128,
+        "element_layout": "u32[9];u32[9];u32[5];u32[5];u32[4]",
+        "alignment_bytes": 4,
+    },
+    "convolve_1d": {
+        "byte_size": 1028,
+        "element_layout": "f32[128];f32[7];f32[122]",
+        "alignment_bytes": 4,
+    },
+    "matvec": {
+        "byte_size": 116,
+        "element_layout": "u32[20];u32[5];u32[4]",
+        "alignment_bytes": 4,
+    },
+}
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -426,73 +509,7 @@ def host_interface(
 
 
 def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
-    if workload == "vecsum":
-        return {
-            "byte_size": 256,
-            "element_layout": "u32[64]",
-            "alignment_bytes": 4,
-        }
-    if workload == "dotproduct":
-        return {
-            "byte_size": 512,
-            "element_layout": "f32[64];f32[64]",
-            "alignment_bytes": 4,
-        }
-    if workload == "vecadd":
-        return {
-            "byte_size": 768,
-            "element_layout": "f32[64];f32[64];f32[64]",
-            "alignment_bytes": 4,
-        }
-    if workload == "xor_block":
-        return {
-            "byte_size": 384,
-            "element_layout": "u32[32];u32[32];u32[32]",
-            "alignment_bytes": 4,
-        }
-    if workload == "relu":
-        return {
-            "byte_size": 256,
-            "element_layout": "f32[32];f32[32]",
-            "alignment_bytes": 4,
-        }
-    if workload == "variance":
-        return {
-            "byte_size": 64,
-            "element_layout": "f32[16]",
-            "alignment_bytes": 4,
-        }
-    if workload == "prefix_sum":
-        return {
-            "byte_size": 512,
-            "element_layout": "i32[64];i32[64]",
-            "alignment_bytes": 4,
-        }
-    if workload == "integrate_trapz":
-        return {
-            "byte_size": 72,
-            "element_layout": "f32[9];f32[9]",
-            "alignment_bytes": 4,
-        }
-    if workload == "spmv":
-        return {
-            "byte_size": 128,
-            "element_layout": "u32[9];u32[9];u32[5];u32[5];u32[4]",
-            "alignment_bytes": 4,
-        }
-    if workload == "convolve_1d":
-        return {
-            "byte_size": 1028,
-            "element_layout": "f32[128];f32[7];f32[122]",
-            "alignment_bytes": 4,
-        }
-    if workload == "matvec":
-        return {
-            "byte_size": 116,
-            "element_layout": "u32[20];u32[5];u32[4]",
-            "alignment_bytes": 4,
-        }
-    return None
+    return WORKLOAD_MEMORY_LAYOUTS.get(workload)
 
 
 def address_space_for_policy(data_movement_policy: str, platform_binding: str) -> str:

@@ -62,6 +62,21 @@ case "${CASE}" in
   integrate_trapz)
     case_graph="g_t_integrate_trapz_red_0_0"
     ;;
+  reduction)
+    case_graph="g_t_reduce_sum_red_0_0"
+    ;;
+  mean)
+    case_graph="g_t_mean_kernel_red_0_0"
+    ;;
+  vecnorm_l1)
+    case_graph="g_t_vecnorm_l1_red_0_0"
+    ;;
+  vecnorm_l2)
+    case_graph="g_t_vecnorm_l2_red_0_0"
+    ;;
+  correlation)
+    case_graph="g_t_correlation_kernel_0_0"
+    ;;
   spmv)
     case_graph="g_t_spmv_kernel_red_0_0"
     ;;

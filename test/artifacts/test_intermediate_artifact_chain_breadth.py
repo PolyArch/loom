@@ -13,8 +13,11 @@ import artifact_test_common
 
 
 COMMON_FILES = [
+    "old-app-corpus-inventory.csv",
+    "app-corpus-import-status.csv",
     "source-compat-summary.csv",
     "compiler-pipeline-summary.csv",
+    "cmsis-compiler-pipeline-summary.csv",
     "dataflow-primitive-coverage.csv",
     "adg-hardware-summary.csv",
     "pnr-mapping-summary.csv",
@@ -30,12 +33,73 @@ COMMON_FILES = [
     "dse-candidate-summary.csv",
     "dse-report-bundle.json",
     "full-stack-artifact-manifest.json",
+    "e2e-demonstrator-summary.csv",
     "unsupported-scope-ledger.csv",
     "artifact-audit-summary.json",
 ]
 
 
 CASES = {
+    "reduction": {
+        "graph": "g_t_reduce_sum_red_0_0",
+        "mapping_id": "reduction__g_t_reduce_sum_red_0_0__shared_reduction_adg",
+        "placed_records": "5",
+        "routed_edges": "6",
+        "config_records": 65,
+        "dfg_cycles": 1155,
+        "dynamic_work_items": 128,
+        "cgra_cycles": 1165,
+        "byte_size": 512,
+        "element_layout": "i32[128]",
+    },
+    "mean": {
+        "graph": "g_t_mean_kernel_red_0_0",
+        "mapping_id": "mean__g_t_mean_kernel_red_0_0__shared_reduction_adg",
+        "placed_records": "7",
+        "routed_edges": "9",
+        "config_records": 94,
+        "dfg_cycles": 904,
+        "dynamic_work_items": 64,
+        "cgra_cycles": 917,
+        "byte_size": 256,
+        "element_layout": "f32[64]",
+    },
+    "vecnorm_l1": {
+        "graph": "g_t_vecnorm_l1_red_0_0",
+        "mapping_id": "vecnorm_l1__g_t_vecnorm_l1_red_0_0__shared_reduction_adg",
+        "placed_records": "6",
+        "routed_edges": "7",
+        "config_records": 76,
+        "dfg_cycles": 643,
+        "dynamic_work_items": 64,
+        "cgra_cycles": 654,
+        "byte_size": 256,
+        "element_layout": "i32[64]",
+    },
+    "vecnorm_l2": {
+        "graph": "g_t_vecnorm_l2_red_0_0",
+        "mapping_id": "vecnorm_l2__g_t_vecnorm_l2_red_0_0__shared_reduction_adg",
+        "placed_records": "6",
+        "routed_edges": "8",
+        "config_records": 83,
+        "dfg_cycles": 771,
+        "dynamic_work_items": 64,
+        "cgra_cycles": 783,
+        "byte_size": 256,
+        "element_layout": "i32[64]",
+    },
+    "correlation": {
+        "graph": "g_t_correlation_kernel_0_0",
+        "mapping_id": "correlation__g_t_correlation_kernel_0_0__shared_reduction_adg",
+        "placed_records": "10",
+        "routed_edges": "15",
+        "config_records": 148,
+        "dfg_cycles": 346,
+        "dynamic_work_items": 16,
+        "cgra_cycles": 369,
+        "byte_size": 1028,
+        "element_layout": "f32[128];f32[16];f32[113]",
+    },
     "prefix_sum": {
         "graph": "g_t_prefix_sum_red_0_0",
         "mapping_id": "prefix_sum__g_t_prefix_sum_red_0_0__shared_reduction_adg",
@@ -320,6 +384,27 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         audit = read_json_object(out_dir / "artifact-audit-summary.json")
         if audit.get("verdict") != "pass" or audit.get("cross_artifact_findings"):
             raise AssertionError(f"expected {case_name} chain audit pass, got {audit}")
+        reviewed = {
+            Path(review.get("artifact", "")).name
+            for review in audit.get("artifact_reviews", [])
+            if isinstance(review, dict)
+        }
+        expected_reviewed = set(expected_files) - {"artifact-audit-summary.json"}
+        if reviewed != expected_reviewed:
+            raise AssertionError(f"audit reviewed {reviewed}, expected {expected_reviewed}")
+        cross_checks = {
+            check.get("rule")
+            for check in audit.get("cross_artifact_checks", [])
+            if isinstance(check, dict)
+        }
+        expected_cross_checks = {
+            "sim_cycle_dfg_report_evidence",
+            "sim_cycle_report_mapping_evidence",
+        }
+        if not expected_cross_checks <= cross_checks:
+            raise AssertionError(
+                f"audit missed {case_name} cross-artifact checks {expected_cross_checks - cross_checks}: {audit}"
+            )
 
         manifest = read_json_object(out_dir / "full-stack-artifact-manifest.json")
         manifest_artifacts = {
