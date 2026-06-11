@@ -258,37 +258,34 @@ Observable acceptance criteria:
 8. Any invalid input subgraph is annotated with `invalid_input` and is
    not enqueued for synthesis.
 
-## Minimal IR Shape
+## Minimal Structural Shape
 
-This illustrative shape shows the target ownership hierarchy. Exact
-assembly syntax is owned by the dialect printers.
+This illustrative shape shows the target ownership hierarchy. It is
+structural pseudocode, not dialect assembly:
 
-```mlir
-fabric.module @loom_synth_fus(%a : !fabric.bits<32>,
-                              %b : !fabric.bits<32>)
-    -> (!fabric.bits<32>) {
-  %pe_out = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
-                                 %pb = %b : !fabric.bits<32>)
-                                -> !fabric.bits<32> {
-    %fu_out = fabric.fu (%aa = %pa : !fabric.bits<32>,
-                         %bb = %pb : !fabric.bits<32>)
-                        -> !fabric.bits<32> {
-      %r = fabric.op [@arith.addi, @arith.subi] (%aa, %bb)
-           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %r : !fabric.bits<32>
-    }
-  }
-  fabric.yield %pe_out : !fabric.bits<32>
-}
+```text
+fabric.module @synth_module
+  fabric.pe [spatial or temporal] @synth_pe
+    fabric.fu @synth_fu
+      fabric.op / fabric.mux / fabric.demux
+      fabric.yield
+  fabric.yield
 ```
 
-The PE result in this sketch is the PE external output port. Which PE
-inputs drive which FU inputs, and which FU outputs drive which PE
-outputs, is PE configuration evidence owned by
-`docs/spec-fabric-pe.md`. It is not expressed by PE-body SSA wiring in
-the subgraph-generalization contract. If the pass chooses named Fabric
-templates for reuse, every use must go through legal
-`fabric.instantiate` sites as specified by
+The synthesized FU is PE-local. The pass must not place a `fabric.fu`
+directly in a `fabric.module`, must not create a top-level FU target,
+and must not wrap hardware identity in `func.func`.
+
+The `fabric.module` body connects its legal children through graph-
+region SSA values and the configuration fields defined by the owning
+Fabric specs. It does not contain module-internal `fabric.link`
+connectivity. Which PE inputs drive which FU inputs, and which FU
+outputs drive which PE outputs, is PE configuration evidence owned by
+`docs/spec-fabric-pe.md`. The subgraph-generalization contract does not
+prove coverage by inventing PE-body SSA wiring.
+
+If the pass chooses named Fabric templates for reuse, every use must go
+through legal `fabric.instantiate` sites as specified by
 `docs/spec-fabric-instantiate.md`.
 
 Failed groups are reported on the software subgraphs:
