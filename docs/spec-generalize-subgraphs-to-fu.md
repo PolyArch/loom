@@ -25,8 +25,9 @@ This spec is subordinate to these owning specs:
 * `docs/spec-core-dialect-boundary.md` for the ownership boundary
   between software dataflow, hardware Fabric, mapping artifacts,
   runtime, and reports.
-* `docs/spec-fabric-module.md`, `docs/spec-fabric-pe.md`, and
-  `docs/spec-fabric-fu.md` for SpatialCore, PE, and FU semantics.
+* `docs/spec-fabric-module.md`, `docs/spec-fabric-pe.md`,
+  `docs/spec-fabric-fu.md`, and `docs/spec-fabric-instantiate.md`
+  for SpatialCore, PE, FU, and legal template-reuse semantics.
 * `docs/spec-fabric-reconfigurable-op.md` for `fabric.op`
   configuration axes and enumerator semantics.
 * `docs/spec-fabric-hw-share-group.md` for legal operation sharing.
@@ -229,11 +230,14 @@ Output requirements:
    path for the same group is idempotent and emits a remark.
 5. Name collisions with non-synthesized Fabric symbols are reported as
    `symbol_conflict` failures.
-6. The emitted `fabric.module`, `fabric.pe`, `fabric.fu`,
-   `fabric.instantiate`, and nested FU body operations pass the MLIR
-   verifier before the output is accepted.
+6. The emitted `fabric.module`, `fabric.pe`, PE-local `fabric.fu`, any
+   `fabric.instantiate` used for legal template reuse, and nested FU
+   body operations pass the MLIR verifier before the output is
+   accepted. `fabric.instantiate` is not mandatory for every
+   synthesized group; it is governed by the named-template reuse rules
+   in the Fabric owning specs.
 7. State-bearing dataflow operations inside a synthesized FU are
-   represented as legal `fabric.op` configurations, for example
+   represented as legal `fabric.op` op-list entries, for example
    `fabric.op [@dataflow.carry]`; bare dataflow operations are not
    emitted into the FU body.
 
@@ -264,11 +268,11 @@ fabric.module @loom_synth_fus(%a : !fabric.bits<32>,
                               %b : !fabric.bits<32>)
     -> (!fabric.bits<32>) {
   %pe_out = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
-                              %pb = %b : !fabric.bits<32>)
-                             -> !fabric.bits<32> {
-    fabric.fu @fu_alu_int_32
-        (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32> {
-    ^bb0(%aa : !fabric.bits<32>, %bb : !fabric.bits<32>):
+                                 %pb = %b : !fabric.bits<32>)
+                                -> !fabric.bits<32> {
+    %fu_out = fabric.fu (%aa = %pa : !fabric.bits<32>,
+                         %bb = %pb : !fabric.bits<32>)
+                        -> !fabric.bits<32> {
       %r = fabric.op [@arith.addi, @arith.subi] (%aa, %bb)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %r : !fabric.bits<32>
@@ -282,7 +286,10 @@ The PE result in this sketch is the PE external output port. Which PE
 inputs drive which FU inputs, and which FU outputs drive which PE
 outputs, is PE configuration evidence owned by
 `docs/spec-fabric-pe.md`. It is not expressed by PE-body SSA wiring in
-the subgraph-generalization contract.
+the subgraph-generalization contract. If the pass chooses named Fabric
+templates for reuse, every use must go through legal
+`fabric.instantiate` sites as specified by
+`docs/spec-fabric-instantiate.md`.
 
 Failed groups are reported on the software subgraphs:
 
@@ -388,12 +395,13 @@ configurations.
 
 Tier-C feedback support is expressed through graph-region semantics and
 legal Fabric operations. `dataflow.carry`, `dataflow.gate`, and
-`dataflow.invariant` are represented as `fabric.op` configurations.
-They do not own `step_op` or `cont_cond` attributes. Those loop-shape
-parameters are observed through upstream `dataflow.stream` operations as
-specified by `docs/spec-dataflow-part-1-streaming.md`. Feedback
-compatibility is determined by observable dataflow structure, carried
-value types, condition sources, and upstream stream configuration.
+`dataflow.invariant` are represented as legal `fabric.op` op-list
+entries with no runtime axes of their own. They do not own `step_op`
+or `cont_cond` attributes. Those loop-shape parameters are observed
+through upstream `dataflow.stream` operations as specified by
+`docs/spec-dataflow-part-1-streaming.md`. Feedback compatibility is
+determined by observable dataflow structure, carried value types,
+condition sources, and upstream stream configuration.
 
 If feedback paths cannot be aligned, a conservative strategy may keep
 incompatible state paths separate. Such a candidate is accepted only if
@@ -462,7 +470,7 @@ contain unsupported memory operations fail with `unsupported_op`.
 
 Config options are part of the pass contract only after they are
 accepted by the pass config verifier and covered by tests. A malformed
-config does not mutate user Fabric IR.
+config does not mutate user IR.
 
 ## Objective Verification
 
@@ -495,6 +503,7 @@ The objective verification surface is:
 * `docs/spec-fabric-module.md`
 * `docs/spec-fabric-pe.md`
 * `docs/spec-fabric-fu.md`
+* `docs/spec-fabric-instantiate.md`
 * `docs/spec-fabric-reconfigurable-op.md`
 * `docs/spec-fabric-hw-share-group.md`
 * `docs/spec-dataflow-part-1-streaming.md`
