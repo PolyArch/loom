@@ -30,6 +30,53 @@ REQUIRED_KEYS = {
 }
 
 
+def write_json(path: Path, data: dict[str, object]) -> None:
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+
+def assert_generator_blocks_missing_final_state(
+    repo: Path,
+    out_dir: Path,
+    dfg_data: dict[str, object],
+    cgra_data: dict[str, object],
+    *,
+    label: str,
+    expected_status_key: str,
+) -> None:
+    dfg_report = out_dir / f"{label}-dfg-sim-report.json"
+    cgra_report = out_dir / f"{label}-cgra-sim-report.json"
+    comparison_report = out_dir / f"{label}-sim-comparison-report.json"
+    write_json(dfg_report, dfg_data)
+    write_json(cgra_report, cgra_data)
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "bash",
+            "test/simulator/run_sim_comparison_report.sh",
+            "--dfg-report",
+            str(dfg_report),
+            "--cgra-report",
+            str(cgra_report),
+            "--output",
+            str(comparison_report),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{label} comparison unexpectedly passed")
+    data = json.loads(comparison_report.read_text())
+    if data.get("status") != "blocked":
+        raise AssertionError(f"{label} comparison should be blocked: {data}")
+    if data.get("difference_classification") != "unsupported_scope":
+        raise AssertionError(f"{label} comparison should classify unsupported scope: {data}")
+    if data.get(expected_status_key) != "blocked":
+        raise AssertionError(f"{label} comparison missed blocked {expected_status_key}: {data}")
+    if "skipped" in {
+        data.get("functional_comparison_status"),
+        data.get("memory_comparison_status"),
+    }:
+        raise AssertionError(f"{label} comparison must not silently skip final-state checks: {data}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-comparison-") as tmp:
@@ -219,6 +266,31 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("pass comparison with skipped functional or memory checks passed audit")
+
+        missing_outputs_dfg = json.loads(json.dumps(dfg_data))
+        missing_outputs_cgra = json.loads(json.dumps(cgra_data))
+        missing_outputs_dfg.pop("final_outputs", None)
+        assert_generator_blocks_missing_final_state(
+            repo,
+            out_dir,
+            missing_outputs_dfg,
+            missing_outputs_cgra,
+            label="missing-final-outputs",
+            expected_status_key="functional_comparison_status",
+        )
+
+        missing_memory_dfg = json.loads(json.dumps(dfg_data))
+        missing_memory_cgra = json.loads(json.dumps(cgra_data))
+        missing_memory_dfg.pop("final_memory_state", None)
+        missing_memory_cgra.pop("final_memory_state", None)
+        assert_generator_blocks_missing_final_state(
+            repo,
+            out_dir,
+            missing_memory_dfg,
+            missing_memory_cgra,
+            label="missing-final-memory",
+            expected_status_key="memory_comparison_status",
+        )
 
         mismatched_runtime_input = out_dir / "mismatch-runtime-input-sim-comparison-report.json"
         mismatched_runtime_input_data = json.loads(json.dumps(data))

@@ -118,6 +118,8 @@ A simulation comparison report must include:
 * memory comparison result;
 * visible memory region set and diff derivation when memory comparison
   is performed;
+* blocked or unsupported-scope diagnostics when either simulator report
+  lacks required final outputs or final memory state;
 * performance metric definitions;
 * performance comparison result;
 * difference classification;

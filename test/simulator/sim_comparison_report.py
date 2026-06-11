@@ -66,7 +66,7 @@ def compare_final_outputs(dfg: dict[str, object], cgra: dict[str, object]) -> tu
     dfg_outputs = dfg.get("final_outputs")
     cgra_outputs = cgra.get("final_outputs")
     if not isinstance(dfg_outputs, list) or not isinstance(cgra_outputs, list):
-        return "skipped", ["functional output comparison skipped because one report lacks final_outputs"]
+        return "blocked", ["functional output comparison blocked because one report lacks final_outputs"]
     if [str(item) for item in dfg_outputs] == [str(item) for item in cgra_outputs]:
         return "pass", []
     return "fail", ["functional output mismatch between DFG-sim and CGRA-sim reports"]
@@ -75,8 +75,8 @@ def compare_final_outputs(dfg: dict[str, object], cgra: dict[str, object]) -> tu
 def compare_memory_state(dfg: dict[str, object], cgra: dict[str, object]) -> tuple[str, list[str]]:
     dfg_memory = dfg.get("final_memory_state")
     cgra_memory = cgra.get("final_memory_state")
-    if dfg_memory is None and cgra_memory is None:
-        return "skipped", ["visible memory-state comparison skipped because reports expose no final memory state"]
+    if not isinstance(dfg_memory, dict) or not isinstance(cgra_memory, dict):
+        return "blocked", ["visible memory-state comparison blocked because one report lacks final_memory_state"]
     if dfg_memory == cgra_memory:
         return "pass", []
     return "fail", ["visible memory-state mismatch between DFG-sim and CGRA-sim reports"]
@@ -166,10 +166,18 @@ def build_report(
         status = "fail"
         if not identity_or_mapping_failure:
             difference_classification = "functional_mismatch"
+    if functional_status == "blocked" and status == "pass":
+        status = "blocked"
+        if not identity_or_mapping_failure:
+            difference_classification = "unsupported_scope"
     if memory_status == "fail" and status == "pass":
         status = "fail"
         if not identity_or_mapping_failure:
             difference_classification = "functional_mismatch"
+    if memory_status == "blocked" and status == "pass":
+        status = "blocked"
+        if not identity_or_mapping_failure:
+            difference_classification = "unsupported_scope"
 
     explanation_categories = cycle_breakdown_categories(cgra)
     explanation_categories.extend(list_strings(cgra.get("unmodeled_constraints")))

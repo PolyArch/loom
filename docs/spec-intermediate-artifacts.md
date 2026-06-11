@@ -420,6 +420,7 @@ Required top-level keys:
 * `dynamic_work_items`;
 * `operation_fire_counts`;
 * `final_outputs`;
+* `final_memory_state`;
 * `diagnostics`.
 
 Rules:
