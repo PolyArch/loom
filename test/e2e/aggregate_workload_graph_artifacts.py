@@ -365,10 +365,19 @@ def validate_components(
 ) -> None:
     require(len(dfg_reports) == len(mapping_artifacts) == len(cgra_reports), "component artifact counts must match")
     require(len(dfg_reports) > 0, "at least one component graph is required")
-    for report in dfg_reports:
+    for index, report in enumerate(dfg_reports):
         require(report.get("kind") == "dfg_sim_report", "DFG component has wrong kind")
         require(report.get("status") == "pass", "DFG component is not passing")
         require(report.get("workload") == args.workload, "DFG component workload mismatch")
+        graph = report.get("graph")
+        require(isinstance(graph, str) and graph, "DFG component lacks graph")
+        mapping = mapping_artifacts[index]
+        require(mapping.get("graph") == graph, "component mapping graph does not match DFG graph")
+        cgra = cgra_reports[index]
+        require(
+            cgra.get("mapping_id") == mapping.get("mapping_id"),
+            "component CGRA mapping_id does not match mapping artifact order",
+        )
     for artifact in mapping_artifacts:
         require(artifact.get("kind") == "pnr_mapping", "mapping component has wrong kind")
         require(artifact.get("status") == "pass", "mapping component is not passing")

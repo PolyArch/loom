@@ -470,6 +470,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "dynamic_work_items",
             "operation_fire_counts",
             "final_outputs",
+            "final_memory_state",
             "diagnostics",
         },
     },
@@ -498,6 +499,9 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "cycle_breakdown",
             "unmodeled_constraints",
             "first_principles_checks",
+            "final_outputs",
+            "final_memory_state",
+            "functional_state_source",
             "diagnostics",
         },
     },
@@ -4391,6 +4395,42 @@ def aggregate_component_reports(
     return reports
 
 
+def validate_string_array_field(
+    data: dict[str, object],
+    key: str,
+    label: str,
+    diagnostics: list[str],
+) -> None:
+    values = data.get(key)
+    if not isinstance(values, list):
+        diagnostics.append(f"{label} {key} must be a list")
+        return
+    for index, value in enumerate(values, start=1):
+        if not isinstance(value, str):
+            diagnostics.append(f"{label} {key} entry {index} must be a string")
+
+
+def validate_string_array_object_field(
+    data: dict[str, object],
+    key: str,
+    label: str,
+    diagnostics: list[str],
+) -> None:
+    state = data.get(key)
+    if not isinstance(state, dict):
+        diagnostics.append(f"{label} {key} must be an object")
+        return
+    for name, values in state.items():
+        if not isinstance(name, str):
+            diagnostics.append(f"{label} {key} keys must be strings")
+        if not isinstance(values, list):
+            diagnostics.append(f"{label} {key}.{name} must be a list")
+            continue
+        for index, value in enumerate(values, start=1):
+            if not isinstance(value, str):
+                diagnostics.append(f"{label} {key}.{name} entry {index} must be a string")
+
+
 def prefer_workload_graph_set_aggregates(
     grouped: dict[str, list[dict[str, object]]],
 ) -> dict[str, list[dict[str, object]]]:
@@ -4778,6 +4818,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("DFG simulator report has unknown operation semantics source")
         if data.get("operation_cost_model_source") != "loom.sim.operation_cost.v1":
             diagnostics.append("DFG simulator report has unknown operation cost model source")
+        validate_string_array_field(data, "final_outputs", "DFG simulator report", diagnostics)
+        validate_string_array_object_field(data, "final_memory_state", "DFG simulator report", diagnostics)
         cycles = data.get("optimistic_cycles")
         if not isinstance(cycles, int) or cycles < 0:
             diagnostics.append("DFG simulator report optimistic_cycles must be non-negative integer")
@@ -4843,6 +4885,13 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report has unknown operation semantics source")
         if data.get("operation_cost_model_source") != "loom.sim.operation_cost.v1":
             diagnostics.append("CGRA simulator report has unknown operation cost model source")
+        validate_string_array_field(data, "final_outputs", "CGRA simulator report", diagnostics)
+        validate_string_array_object_field(data, "final_memory_state", "CGRA simulator report", diagnostics)
+        if data.get("functional_state_source") not in {
+            "carried_from_dfg_sim_report",
+            "component_cgra_sim_reports_carried_from_dfg_sim_reports",
+        }:
+            diagnostics.append("CGRA simulator report has unknown functional_state_source")
         if data.get("hardware_bound_classification") != "within_modeled_bounds":
             diagnostics.append("CGRA simulator report has unknown hardware bound classification")
         difference = data.get("difference_classification")

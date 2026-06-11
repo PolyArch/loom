@@ -104,6 +104,46 @@ def main() -> int:
             raise AssertionError(f"CGRA-sim final outputs should match DFG-sim: {cgra_data}")
         if cgra_data["final_memory_state"] != dfg_data["final_memory_state"]:
             raise AssertionError(f"CGRA-sim final memory should match DFG-sim: {cgra_data}")
+
+        missing_audit_state_dfg = out_dir / "missing-audit-state-dfg-sim-report.json"
+        missing_audit_state_dfg_data = json.loads(json.dumps(dfg_data))
+        del missing_audit_state_dfg_data["final_memory_state"]
+        missing_audit_state_dfg.write_text(
+            json.dumps(missing_audit_state_dfg_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_audit_state_summary = out_dir / "missing-audit-state-dfg-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_audit_state_summary),
+                str(missing_audit_state_dfg),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DFG report without final_memory_state passed artifact audit")
+
+        missing_provenance_cgra = out_dir / "missing-provenance-cgra-sim-report.json"
+        missing_provenance_cgra_data = json.loads(json.dumps(cgra_data))
+        del missing_provenance_cgra_data["functional_state_source"]
+        missing_provenance_cgra.write_text(
+            json.dumps(missing_provenance_cgra_data, indent=2, sort_keys=True) + "\n"
+        )
+        missing_provenance_summary = out_dir / "missing-provenance-cgra-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_provenance_summary),
+                str(missing_provenance_cgra),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("CGRA report without functional_state_source passed artifact audit")
         missing_state_dfg = out_dir / "missing-state-dfg-sim-report.json"
         missing_state_dfg_data = json.loads(json.dumps(dfg_data))
         del missing_state_dfg_data["final_memory_state"]

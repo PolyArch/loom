@@ -302,6 +302,7 @@ def write_dfg_report(
                 "dynamic_work_items": dynamic_work_items,
                 "operation_fire_counts": {"dataflow.stream": dynamic_work_items},
                 "final_outputs": final_outputs if final_outputs is not None else ["none"],
+                "final_memory_state": {},
                 "diagnostics": [],
             }
         )
@@ -418,6 +419,9 @@ def write_cgra_report(
                         "evidence": "performance_delta_cycles = modeled penalties",
                     },
                 ],
+                "final_outputs": ["none"],
+                "final_memory_state": {},
+                "functional_state_source": "carried_from_dfg_sim_report",
                 "diagnostics": ["synthetic checked CGRA report"],
             }
         )
