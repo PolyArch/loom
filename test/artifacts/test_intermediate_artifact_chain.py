@@ -347,7 +347,6 @@ def main() -> int:
             ("dse-candidate-summary", "workload-report-bundle"),
             ("adg-hardware-summary", "hardware-report-bundle"),
             ("rtl-manifest", "hardware-report-bundle"),
-            ("rtl-eda-report", "hardware-report-bundle"),
             ("rtl-fpa-summary", "hardware-report-bundle"),
             ("hardware-report-bundle", "e2e-demonstrator-summary"),
             ("dse-candidate-summary", "dse-report-bundle"),
@@ -358,6 +357,12 @@ def main() -> int:
         }
         if not required_edges.issubset(edges):
             raise AssertionError(f"manifest edges {edges} missing {required_edges - edges}")
+        eda_to_hardware_edge = ("rtl-eda-report", "hardware-report-bundle")
+        if hardware_bundle.get("eda_report_identities") == ["rtl-eda-report"]:
+            if eda_to_hardware_edge not in edges:
+                raise AssertionError(f"manifest missed consumed EDA report edge: {edges}")
+        elif eda_to_hardware_edge in edges:
+            raise AssertionError(f"manifest must not feed blocked EDA report to hardware bundle: {edges}")
         if ("cmsis-compiler-pipeline-summary", "dataflow-primitive-coverage") in edges:
             raise AssertionError(f"CMSIS pipeline summary must not feed app primitive coverage: {edges}")
 

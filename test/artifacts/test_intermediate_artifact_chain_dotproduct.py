@@ -208,6 +208,13 @@ def main() -> int:
             raise AssertionError(f"manifest missed dotproduct DFG-sim report: {manifest}")
         if "dotproduct-cgra-sim-report.json" not in manifest_artifacts:
             raise AssertionError(f"manifest missed dotproduct CGRA-sim report: {manifest}")
+        edges = {(edge["from"], edge["to"]) for edge in manifest.get("edges", [])}
+        eda_to_hardware_edge = ("rtl-eda-report", "hardware-report-bundle")
+        if hardware_bundle.get("eda_report_identities") == ["rtl-eda-report"]:
+            if eda_to_hardware_edge not in edges:
+                raise AssertionError(f"manifest missed consumed EDA report edge: {edges}")
+        elif eda_to_hardware_edge in edges:
+            raise AssertionError(f"manifest must not feed blocked EDA report to hardware bundle: {edges}")
 
     return 0
 

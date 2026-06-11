@@ -1443,8 +1443,16 @@ def iter_artifact_manifest_required_edges(
             yield report_id, demonstrator_id
 
     for hardware_report_id in ids_by_kind.get("hardware_report_bundle", []):
-        for source_kind in ("adg_hardware", "rtl_manifest", "eda_report", "rtl_fpa"):
+        for source_kind in ("adg_hardware", "rtl_manifest", "rtl_fpa"):
             for source_id in ids_by_kind.get(source_kind, []):
+                yield source_id, hardware_report_id
+        if artifact_paths_by_id is not None and hardware_report_id in artifact_paths_by_id:
+            report = read_manifest_json_artifact(artifact_paths_by_id.get(hardware_report_id))
+            for source_id in iter_manifest_json_identity_references(
+                report,
+                "eda_report_identities",
+                artifact_id_set,
+            ):
                 yield source_id, hardware_report_id
         for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
             yield hardware_report_id, demonstrator_id

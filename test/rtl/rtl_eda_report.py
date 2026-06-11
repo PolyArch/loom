@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -15,6 +17,14 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+
+
+@dataclass(frozen=True)
+class ToolResolution:
+    name: str
+    executable: str | None
+    diagnostic_class: str
+    diagnostic_message: str
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -64,34 +74,52 @@ def source_paths(manifest_path: Path, manifest: dict[str, object]) -> list[tuple
     return paths
 
 
-def tool_command(raw_tool: str) -> tuple[str, str | None]:
+def resolve_tool(raw_tool: str) -> ToolResolution:
     requested = raw_tool or "verilator"
     if Path(requested).is_absolute() or "/" in requested:
         path = Path(requested)
-        return path.name, str(path) if path.is_file() else None
+        if path.is_file() and os.access(path, os.X_OK):
+            return ToolResolution(path.name, str(path), "", "")
+        return ToolResolution(
+            path.name,
+            None,
+            "tool_unavailable",
+            f"RTL lint tool is unavailable or not executable: {path.name}",
+        )
     resolved = shutil.which(requested)
-    return requested, resolved
+    if resolved is None:
+        return ToolResolution(
+            requested,
+            None,
+            "tool_unavailable",
+            f"RTL lint tool is unavailable: {requested}",
+        )
+    return ToolResolution(requested, resolved, "", "")
 
 
-def tool_version(tool_path: str) -> str:
-    result = subprocess.run(
-        [tool_path, "--version"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+def tool_version(tool_path: str) -> tuple[str, str]:
+    try:
+        result = subprocess.run(
+            [tool_path, "--version"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        return "", f"RTL lint tool version probe failed: {exc}"
     text = result.stdout.strip() or result.stderr.strip()
-    return text.splitlines()[0] if text else ""
+    if result.returncode != 0:
+        detail = text.splitlines()[0] if text else f"exit code {result.returncode}"
+        return "", f"RTL lint tool version probe failed: {detail}"
+    return (text.splitlines()[0] if text else "", "")
 
 
 def base_report(manifest_path: Path, manifest: dict[str, object], tool_name: str) -> dict[str, object]:
     tops = manifest.get("top_level_modules")
     top_modules = [top for top in tops if isinstance(top, str) and top] if isinstance(tops, list) else []
     sources = source_paths(manifest_path, manifest)
-    input_fingerprints = {}
-    if manifest_path.is_file():
-        input_fingerprints[artifact_id(manifest_path)] = intermediate_artifacts.artifact_fingerprint(manifest_path)
+    input_fingerprints = intermediate_artifacts.input_artifact_fingerprints([manifest_path])
     return {
         "schema_version": 1,
         "kind": "eda_report",
@@ -130,30 +158,67 @@ def blocked_report(
     return report
 
 
+def restrict_source_claims(report: dict[str, object], sources: list[tuple[str, Path]]) -> None:
+    report["checked_source_files"] = [logical for logical, path in sources if path.is_file()]
+    report["source_file_fingerprints"] = {
+        logical: intermediate_artifacts.artifact_fingerprint(path)
+        for logical, path in sources
+        if path.is_file()
+    }
+
+
+def lint_once(
+    tool_path: str,
+    top_module: str,
+    sources: list[tuple[str, Path]],
+) -> tuple[int | None, str]:
+    command = [tool_path, "--lint-only", "--sv"]
+    if top_module:
+        command.extend(["--top-module", top_module])
+    command.extend(str(path) for _, path in sources)
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        return None, f"RTL lint execution failed: {exc}"
+    detail = (result.stderr.strip() or result.stdout.strip() or "RTL lint failed").splitlines()[0]
+    if top_module and result.returncode != 0:
+        detail = f"{top_module}: {detail}"
+    return result.returncode, detail
+
+
 def run_lint(report: dict[str, object], tool_path: str, source_paths: list[tuple[str, Path]]) -> None:
     tops = report.get("checked_top_modules")
-    top_module = tops[0] if isinstance(tops, list) and tops else ""
-    command = [tool_path, "--lint-only", "--sv"]
-    if isinstance(top_module, str) and top_module:
-        command.extend(["--top-module", top_module])
-    command.extend(str(path) for _, path in source_paths)
-    result = subprocess.run(
-        command,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    report["returncode"] = result.returncode
-    if result.returncode == 0:
+    lint_targets = [top for top in tops if isinstance(top, str) and top] if isinstance(tops, list) else []
+    if not lint_targets:
+        lint_targets = [""]
+    failures: list[tuple[str, str, str]] = []
+    returncodes: list[int] = []
+    for top_module in lint_targets:
+        returncode, detail = lint_once(tool_path, top_module, source_paths)
+        if returncode is None:
+            report["returncode"] = None
+            report["status"] = "blocked"
+            report["diagnostic_records"] = diagnostic_records([("tool_execution_failed", "error", detail)])
+            report["diagnostics"] = [detail]
+            return
+        returncodes.append(returncode)
+        if returncode != 0:
+            failures.append(("rtl_lint_failed", "error", detail))
+    report["returncode"] = next((code for code in returncodes if code != 0), 0)
+    if not failures:
         report["status"] = "pass"
         report["diagnostic_records"] = []
         report["diagnostics"] = []
         return
-    detail = (result.stderr.strip() or result.stdout.strip() or "RTL lint failed").splitlines()[0]
     report["status"] = "fail"
-    report["diagnostic_records"] = diagnostic_records([("rtl_lint_failed", "error", detail)])
-    report["diagnostics"] = [detail]
+    report["diagnostic_records"] = diagnostic_records(failures)
+    report["diagnostics"] = [message for _, _, message in failures]
 
 
 def load_manifest(path: Path) -> dict[str, object]:
@@ -165,15 +230,15 @@ def load_manifest(path: Path) -> dict[str, object]:
 
 
 def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
-    tool_name, resolved_tool = tool_command(raw_tool)
+    tool = resolve_tool(raw_tool)
     manifest = load_manifest(manifest_path)
     if manifest.get("kind") != "rtl_manifest":
-        return blocked_report(manifest_path, manifest, tool_name, "rtl_manifest_invalid", "input is not an RTL manifest")
+        return blocked_report(manifest_path, manifest, tool.name, "rtl_manifest_invalid", "input is not an RTL manifest")
     if manifest.get("status") != "pass":
         return blocked_report(
             manifest_path,
             manifest,
-            tool_name,
+            tool.name,
             "rtl_manifest_not_passing",
             "RTL manifest is not passing",
         )
@@ -182,31 +247,39 @@ def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
         return blocked_report(
             manifest_path,
             manifest,
-            tool_name,
+            tool.name,
             "rtl_source_missing",
             "RTL manifest has no SystemVerilog source files",
         )
     missing_sources = [logical for logical, path in sources if not path.is_file()]
     if missing_sources:
-        return blocked_report(
+        report = blocked_report(
             manifest_path,
             manifest,
-            tool_name,
+            tool.name,
             "rtl_source_missing",
             f"RTL source files are missing: {', '.join(missing_sources)}",
         )
-    if resolved_tool is None:
+        restrict_source_claims(report, sources)
+        return report
+    if tool.executable is None:
         return blocked_report(
             manifest_path,
             manifest,
-            tool_name,
-            "tool_unavailable",
-            f"RTL lint tool is unavailable: {tool_name}",
+            tool.name,
+            tool.diagnostic_class,
+            tool.diagnostic_message,
         )
 
-    report = base_report(manifest_path, manifest, tool_name)
-    report["tool_version"] = tool_version(resolved_tool)
-    run_lint(report, resolved_tool, sources)
+    report = base_report(manifest_path, manifest, tool.name)
+    version, version_error = tool_version(tool.executable)
+    if version_error:
+        report["status"] = "blocked"
+        report["diagnostic_records"] = diagnostic_records([("tool_activation_failed", "error", version_error)])
+        report["diagnostics"] = [version_error]
+        return report
+    report["tool_version"] = version
+    run_lint(report, tool.executable, sources)
     return report
 
 
