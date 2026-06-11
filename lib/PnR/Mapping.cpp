@@ -74,6 +74,15 @@ struct HardwareTopology {
       segmentsBySource;
 };
 
+struct EndpointKey {
+  mlir::Operation *op = nullptr;
+  unsigned index = 0;
+
+  bool operator<(const EndpointKey &other) const {
+    return std::tie(op, index) < std::tie(other.op, other.index);
+  }
+};
+
 struct HardwareModel {
   llvm::SmallVector<HardwareResource> resources;
   HardwareTopology topology;
@@ -378,58 +387,168 @@ void addTopologySegment(HardwareTopology &topology,
       std::move(segment));
 }
 
+std::pair<std::uint64_t, std::uint64_t> memPortCounts(mlir::Operation *op) {
+  std::uint64_t loadPorts = 0;
+  std::uint64_t storePorts = 0;
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (hwParams && !hwParams.empty()) {
+    if (auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0])) {
+      loadPorts = integerAttrValue(dict.get("load_group_size"));
+      storePorts = integerAttrValue(dict.get("store_group_size"));
+    }
+  }
+  return {loadPorts, storePorts};
+}
+
+std::optional<std::string> forwardedBlockArgumentEndpoint(
+    mlir::Value value,
+    const std::map<EndpointKey, std::string> &resultEndpoints);
+
+std::optional<std::string> sourceEndpointForValue(
+    mlir::Value value,
+    const std::map<EndpointKey, std::string> &resultEndpoints) {
+  if (auto opResult = llvm::dyn_cast<mlir::OpResult>(value)) {
+    auto it = resultEndpoints.find(
+        EndpointKey{opResult.getOwner(), opResult.getResultNumber()});
+    if (it != resultEndpoints.end())
+      return it->second;
+    return std::nullopt;
+  }
+  return forwardedBlockArgumentEndpoint(value, resultEndpoints);
+}
+
+std::optional<std::string> forwardedBlockArgumentEndpoint(
+    mlir::Value value,
+    const std::map<EndpointKey, std::string> &resultEndpoints) {
+  auto blockArg = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!blockArg)
+    return std::nullopt;
+  mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+  if (!parent)
+    return std::nullopt;
+  llvm::StringRef parentName = parent->getName().getStringRef();
+  if (parentName != "fabric.fu" && parentName != "fabric.pe")
+    return std::nullopt;
+  unsigned index = blockArg.getArgNumber();
+  if (index >= parent->getNumOperands())
+    return std::nullopt;
+  return sourceEndpointForValue(parent->getOperand(index), resultEndpoints);
+}
+
+void addGenericEndpointMaps(
+    mlir::Operation *op, llvm::StringRef resourceId,
+    std::map<EndpointKey, std::string> &operandEndpoints,
+    std::map<EndpointKey, std::string> &resultEndpoints) {
+  for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+       ++operandIndex)
+    operandEndpoints.try_emplace(EndpointKey{op, operandIndex},
+                                 endpointFor(resourceId, "operand",
+                                             operandIndex));
+  for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
+       ++resultIndex)
+    resultEndpoints.try_emplace(EndpointKey{op, resultIndex},
+                                endpointFor(resourceId, "result", resultIndex));
+}
+
+void addMemEndpointMaps(
+    mlir::Operation *op, llvm::StringRef hardwareName,
+    std::map<EndpointKey, std::string> &operandEndpoints,
+    std::map<EndpointKey, std::string> &resultEndpoints) {
+  auto [loadPorts, storePorts] = memPortCounts(op);
+  unsigned operandBase = 1;
+  unsigned resultBase = 0;
+  for (std::uint64_t i = 0; i < loadPorts; ++i) {
+    std::string resourceId =
+        (hardwareName + "::mem.load#" + llvm::Twine(i)).str();
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase},
+                                 endpointFor(resourceId, "operand", 0));
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 1},
+                                 endpointFor(resourceId, "operand", 1));
+    resultEndpoints.try_emplace(EndpointKey{op, resultBase},
+                                endpointFor(resourceId, "result", 0));
+    resultEndpoints.try_emplace(EndpointKey{op, resultBase + 1},
+                                endpointFor(resourceId, "result", 1));
+    operandBase += 2;
+    resultBase += 2;
+  }
+  for (std::uint64_t i = 0; i < storePorts; ++i) {
+    std::string resourceId =
+        (hardwareName + "::mem.store#" + llvm::Twine(i)).str();
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase},
+                                 endpointFor(resourceId, "operand", 0));
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 1},
+                                 endpointFor(resourceId, "operand", 1));
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 2},
+                                 endpointFor(resourceId, "operand", 2));
+    resultEndpoints.try_emplace(EndpointKey{op, resultBase},
+                                endpointFor(resourceId, "result", 0));
+    operandBase += 3;
+    resultBase += 1;
+  }
+}
+
 HardwareTopology buildHardwareTopology(
     mlir::Operation *hardware, llvm::StringRef hardwareName,
     const llvm::SmallVectorImpl<HardwareResource> &resources) {
   HardwareTopology topology;
-  llvm::DenseMap<mlir::Operation *, std::string> endpointResourceByOp;
+  std::map<EndpointKey, std::string> operandEndpoints;
+  std::map<EndpointKey, std::string> resultEndpoints;
   for (const HardwareResource &resource : resources) {
     if (resource.kind == ResourceKind::FabricOp && resource.op)
-      endpointResourceByOp.try_emplace(resource.op, resource.id);
+      addGenericEndpointMaps(resource.op, resource.id, operandEndpoints,
+                             resultEndpoints);
   }
 
   llvm::StringMap<unsigned> routeResourceCounts;
   hardware->walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
+    if (opName == "fabric.mem") {
+      addMemEndpointMaps(op, hardwareName, operandEndpoints, resultEndpoints);
+      return;
+    }
     if (!isRouteResourceOp(opName))
       return;
     std::string kind = routeResourceKind(opName);
     unsigned index = routeResourceCounts[kind]++;
-    endpointResourceByOp.try_emplace(
-        op, (hardwareName + "::" + kind + "#" + llvm::Twine(index)).str());
+    addGenericEndpointMaps(
+        op, (hardwareName + "::" + kind + "#" + llvm::Twine(index)).str(),
+        operandEndpoints, resultEndpoints);
   });
 
   unsigned ssaEdgeIndex = 0;
   hardware->walk([&](mlir::Operation *op) {
-    auto destIt = endpointResourceByOp.find(op);
-    if (destIt == endpointResourceByOp.end())
-      return;
     llvm::StringRef opName = op->getName().getStringRef();
-    llvm::StringRef destId = destIt->second;
     for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
          ++operandIndex) {
       mlir::Value operand = op->getOperand(operandIndex);
-      mlir::Operation *producer = operand.getDefiningOp();
-      if (!producer)
+      std::optional<std::string> sourceEndpoint =
+          sourceEndpointForValue(operand, resultEndpoints);
+      if (!sourceEndpoint)
         continue;
-      auto sourceIt = endpointResourceByOp.find(producer);
-      if (sourceIt == endpointResourceByOp.end())
-        continue;
-      auto opResult = llvm::dyn_cast<mlir::OpResult>(operand);
-      if (!opResult)
+      auto destIt = operandEndpoints.find(EndpointKey{op, operandIndex});
+      if (destIt == operandEndpoints.end())
         continue;
       addTopologySegment(
           topology,
           HardwareRouteSegment{
               "resource_edge",
-              endpointFor(sourceIt->second, "result",
-                          opResult.getResultNumber()),
-              endpointFor(destId, "operand", operandIndex),
+              *sourceEndpoint,
+              destIt->second,
               (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
                   .str()});
     }
 
     if (!isRouteResourceOp(opName))
+      return;
+    std::optional<std::string> destId;
+    auto firstOperand = operandEndpoints.find(EndpointKey{op, 0});
+    if (firstOperand != operandEndpoints.end()) {
+      llvm::StringRef endpoint = firstOperand->second;
+      std::size_t dot = endpoint.rfind(".operand");
+      if (dot != std::string::npos)
+        destId = endpoint.take_front(dot).str();
+    }
+    if (!destId)
       return;
     for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
          ++operandIndex) {
@@ -439,8 +558,8 @@ HardwareTopology buildHardwareTopology(
             topology,
             HardwareRouteSegment{
                 internalRouteSegmentKind(opName),
-                endpointFor(destId, "operand", operandIndex),
-                endpointFor(destId, "result", resultIndex), destId.str()});
+                endpointFor(*destId, "operand", operandIndex),
+                endpointFor(*destId, "result", resultIndex), *destId});
       }
     }
   });
