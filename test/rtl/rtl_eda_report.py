@@ -31,7 +31,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--tool", default="")
+    parser.add_argument("--tool", default=os.environ.get("LOOM_RTL_LINT_TOOL", ""))
     return parser.parse_args(argv)
 
 

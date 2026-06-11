@@ -251,6 +251,50 @@ def main() -> int:
             "failing-version RTL EDA report audit",
         )
 
+        env_tool = out_dir / "env-verilator"
+        env_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test env'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        env_tool.chmod(env_tool.stat().st_mode | 0o111)
+        env_selected = out_dir / "env-selected-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                f"LOOM_RTL_LINT_TOOL={env_tool}",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(env_selected),
+            ],
+            "environment-selected RTL lint tool report",
+        )
+        env_selected_data = json.loads(env_selected.read_text())
+        if env_selected_data.get("status") != "pass":
+            raise AssertionError(
+                f"environment-selected RTL lint tool should pass: {env_selected_data}"
+            )
+        if (
+            env_selected_data.get("tool_name") != "env-verilator"
+            or env_selected_data.get("tool_version") != "Verilator 5.test env"
+        ):
+            raise AssertionError(
+                f"environment-selected RTL lint tool was not recorded: {env_selected_data}"
+            )
+        require_audit_pass(
+            repo,
+            env_selected,
+            out_dir / "env-selected-rtl-eda-audit-summary.json",
+            "environment-selected RTL EDA report audit",
+        )
+
         verilator = shutil.which("verilator")
         if verilator is None:
             return 0
