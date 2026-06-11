@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import csv
 import sys
 from pathlib import Path
 
@@ -32,6 +33,19 @@ REQUIRED_KEYS = {
     "diagnostics",
     "status",
 }
+
+
+def write_filtered_hardware_summary(source: Path, output: Path, hardware_identity: str) -> None:
+    with source.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = [row for row in reader if row.get("hardware") == hardware_identity]
+        fieldnames = reader.fieldnames
+    if len(rows) != 1 or fieldnames is None:
+        raise AssertionError(f"expected one hardware row for {hardware_identity}: {rows}")
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def main() -> int:
@@ -76,6 +90,26 @@ def main() -> int:
             raise AssertionError(f"manifest should identify behavioral model use: {data}")
         if data["required_tool_capability_classes"] != ["rtl_lint"]:
             raise AssertionError(f"manifest should declare lint capability requirement: {data}")
+        expected_interface = {
+            "interface_id": "interface::pe_2x2::scalar_bits_top_ports",
+            "interface_kind": "scalar_bits_top_ports",
+            "ports": [
+                {
+                    "name": "a",
+                    "direction": "input",
+                    "fabric_type": "!fabric.bits<32>",
+                    "systemverilog_type": "logic [31:0]",
+                },
+                {
+                    "name": "b",
+                    "direction": "input",
+                    "fabric_type": "!fabric.bits<32>",
+                    "systemverilog_type": "logic [31:0]",
+                },
+            ],
+        }
+        if data["generated_interfaces"] != [expected_interface]:
+            raise AssertionError(f"manifest should record lowered scalar top ports: {data}")
         sources = data["emitted_source_files"]
         if len(sources) != 1:
             raise AssertionError(f"expected one emitted source file: {data}")
@@ -88,6 +122,14 @@ def main() -> int:
         source_text = source_path.read_text()
         if "module pe_2x2" not in source_text or "endmodule" not in source_text:
             raise AssertionError(f"unexpected SystemVerilog source: {source_text}")
+        for snippet in (
+            "input logic clk",
+            "input logic rst_n",
+            "input logic [31:0] a",
+            "input logic [31:0] b",
+        ):
+            if snippet not in source_text:
+                raise AssertionError(f"SystemVerilog source lacks lowered port {snippet}: {source_text}")
         if source.get("fingerprint") != artifact_test_common.fingerprint(source_path):
             raise AssertionError(f"source fingerprint does not match file: {source}")
         hooks = data["activity_hooks"]
@@ -204,6 +246,256 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("architecture RTL manifest with mapping unexpectedly passed audit")
+
+        shared_hardware = out_dir / "shared-reduction-adg-hardware-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/fabric/run_adg_hardware_summary.sh",
+                "--input",
+                "test/pnr/shared_reduction_adg.mlir",
+                "--output",
+                str(shared_hardware),
+            ],
+            "shared reduction ADG hardware summary",
+        )
+        shared_manifest = out_dir / "shared-reduction-rtl-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(shared_hardware),
+                "--output",
+                str(shared_manifest),
+            ],
+            "shared reduction RTL manifest",
+        )
+        shared_data = json.loads(shared_manifest.read_text())
+        if shared_data.get("status") != "pass":
+            raise AssertionError(f"shared reduction manifest should remain pass: {shared_data}")
+        shared_interfaces = shared_data.get("generated_interfaces")
+        if not isinstance(shared_interfaces, list) or len(shared_interfaces) != 1:
+            raise AssertionError(f"shared reduction manifest should record one scalar interface: {shared_data}")
+        shared_ports = shared_interfaces[0].get("ports")
+        if not isinstance(shared_ports, list):
+            raise AssertionError(f"shared reduction interface lacks ports: {shared_data}")
+        shared_port_names = {port.get("name") for port in shared_ports if isinstance(port, dict)}
+        for name in ("i64a", "i64b", "i64c", "i32a", "i32b", "i32c", "i32d"):
+            if name not in shared_port_names:
+                raise AssertionError(f"shared reduction scalar port {name} was not lowered: {shared_data}")
+        for name in ("mgr", "ctrl"):
+            if name in shared_port_names:
+                raise AssertionError(f"unsupported shared reduction port {name} should not be lowered: {shared_data}")
+        shared_diagnostic_classes = {
+            diagnostic.get("diagnostic_class")
+            for diagnostic in shared_data.get("diagnostics", [])
+            if isinstance(diagnostic, dict)
+        }
+        if "unsupported_rtl_boundary_type" not in shared_diagnostic_classes:
+            raise AssertionError(f"shared reduction manifest should report unsupported boundary types: {shared_data}")
+        shared_diagnostic_pairs = {
+            (diagnostic.get("diagnostic_class"), diagnostic.get("message"))
+            for diagnostic in shared_data.get("diagnostics", [])
+            if isinstance(diagnostic, dict)
+        }
+        expected_shared_diagnostics = {
+            (
+                "unsupported_rtl_boundary_type",
+                "input boundary port mgr has unsupported RTL boundary type memref<?x!fabric.bits<32>>",
+            ),
+            (
+                "unsupported_rtl_boundary_type",
+                "input boundary port ctrl has unsupported RTL boundary type !fabric.bits<0>",
+            ),
+        }
+        if shared_diagnostic_pairs != expected_shared_diagnostics:
+            raise AssertionError(f"unexpected shared reduction diagnostics: {shared_data}")
+        shared_source = shared_manifest.parent / shared_data["emitted_source_files"][0]["path"]
+        shared_source_text = shared_source.read_text()
+        for snippet in (
+            "input logic [63:0] i64a",
+            "input logic [31:0] i32a",
+        ):
+            if snippet not in shared_source_text:
+                raise AssertionError(f"shared reduction source lacks lowered port {snippet}: {shared_source_text}")
+        for snippet in ("mgr", "ctrl"):
+            if snippet in shared_source_text:
+                raise AssertionError(f"shared reduction source should not fake unsupported port {snippet}")
+        shared_audit = out_dir / "shared-reduction-rtl-manifest-audit-summary.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(shared_audit),
+                str(shared_manifest),
+            ],
+            "shared reduction RTL manifest audit",
+        )
+
+        module_hardware = out_dir / "module-adg-hardware-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/fabric/run_adg_hardware_summary.sh",
+                "--input",
+                "test/fabric/unit/module/valid.mlir",
+                "--output",
+                str(module_hardware),
+            ],
+            "module ADG hardware summary",
+        )
+        output_hardware = out_dir / "output-module-adg-hardware-summary.csv"
+        write_filtered_hardware_summary(
+            module_hardware,
+            output_hardware,
+            "test/fabric/unit/module/valid.mlir::m_with_outputs",
+        )
+        output_manifest = out_dir / "output-module-rtl-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(output_hardware),
+                "--output",
+                str(output_manifest),
+            ],
+            "output module RTL manifest",
+        )
+        output_data = json.loads(output_manifest.read_text())
+        output_ports = output_data["generated_interfaces"][0]["ports"]
+        expected_output_ports = [
+            ("a", "input", "logic [31:0]"),
+            ("b", "input", "logic [31:0]"),
+            ("out_0", "output", "logic [31:0]"),
+            ("out_1", "output", "logic [31:0]"),
+        ]
+        actual_output_ports = [
+            (port["name"], port["direction"], port["systemverilog_type"]) for port in output_ports
+        ]
+        if actual_output_ports != expected_output_ports:
+            raise AssertionError(f"unexpected output module top ports: {output_data}")
+        output_source = output_manifest.parent / output_data["emitted_source_files"][0]["path"]
+        output_source_text = output_source.read_text()
+        for snippet in (
+            "input logic [31:0] a",
+            "input logic [31:0] b",
+            "output logic [31:0] out_0",
+            "output logic [31:0] out_1",
+        ):
+            if snippet not in output_source_text:
+                raise AssertionError(f"output module source lacks lowered port {snippet}: {output_source_text}")
+
+        quoted_input = out_dir / "quoted-named-pe.mlir"
+        quoted_input.write_text(
+            """fabric.module @\"quoted module\"(%a : !fabric.bits<32>) {
+  fabric.pe @\"ALU 0\" [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {
+  ^bb0(%pa: !fabric.bits<32>):
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
+      %v = fabric.op [@arith.addi] (%fa, %fa)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %v : !fabric.bits<32>
+    }
+    fabric.yield %pa : !fabric.bits<32>
+  }
+  fabric.yield
+}
+"""
+        )
+        quoted_hardware = out_dir / "quoted-adg-hardware-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/fabric/run_adg_hardware_summary.sh",
+                "--input",
+                str(quoted_input),
+                "--output",
+                str(quoted_hardware),
+            ],
+            "quoted ADG hardware summary",
+        )
+        quoted_manifest = out_dir / "quoted-rtl-manifest.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(quoted_hardware),
+                "--output",
+                str(quoted_manifest),
+            ],
+            "quoted RTL manifest",
+        )
+        quoted_data = json.loads(quoted_manifest.read_text())
+        if quoted_data["source_fabric_adg_identity"].rsplit("::", 1)[-1] != "quoted module":
+            raise AssertionError(f"quoted symbol identity was not preserved: {quoted_data}")
+        quoted_source = quoted_manifest.parent / quoted_data["emitted_source_files"][0]["path"]
+        quoted_source_text = quoted_source.read_text()
+        if "module quoted_module" not in quoted_source_text or "input logic [31:0] a" not in quoted_source_text:
+            raise AssertionError(f"quoted module source lacks lowered scalar port: {quoted_source_text}")
+
+        missing_source_hardware = out_dir / "missing-source-adg-hardware-summary.csv"
+        missing_source_hardware.write_text(
+            "hardware,verify_status,node_count,link_count,diagnostic\n"
+            "temp/test-runs/does-not-exist.mlir::missing,pass,0,0,synthetic missing source\n"
+        )
+        missing_source_manifest = out_dir / "missing-source-identity-rtl-manifest.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(missing_source_hardware),
+                "--output",
+                str(missing_source_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL manifest with missing Fabric source unexpectedly passed")
+        missing_source_data = json.loads(missing_source_manifest.read_text())
+        if (
+            missing_source_data.get("status") != "blocked"
+            or missing_source_data.get("diagnostics", [{}])[0].get("diagnostic_class")
+            != "unsupported_rtl_interface"
+        ):
+            raise AssertionError(f"missing source should produce blocked manifest: {missing_source_data}")
+
+        missing_symbol_hardware = out_dir / "missing-symbol-adg-hardware-summary.csv"
+        missing_symbol_hardware.write_text(
+            "hardware,verify_status,node_count,link_count,diagnostic\n"
+            "test/fabric/unit/pe/valid.mlir::missing_symbol,pass,0,0,synthetic missing symbol\n"
+        )
+        missing_symbol_manifest = out_dir / "missing-symbol-rtl-manifest.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(missing_symbol_hardware),
+                "--output",
+                str(missing_symbol_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL manifest with missing Fabric symbol unexpectedly passed")
+        missing_symbol_data = json.loads(missing_symbol_manifest.read_text())
+        if (
+            missing_symbol_data.get("status") != "blocked"
+            or missing_symbol_data.get("diagnostics", [{}])[0].get("diagnostic_class")
+            != "unsupported_rtl_interface"
+        ):
+            raise AssertionError(f"missing symbol should produce blocked manifest: {missing_symbol_data}")
 
         malformed_hardware = out_dir / "malformed-adg-hardware-summary.csv"
         malformed_hardware.write_text(

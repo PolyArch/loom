@@ -8,6 +8,7 @@ import csv
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -15,6 +16,35 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
 import intermediate_artifacts  # noqa: E402
+
+
+SYMBOL_PATTERN = r'"(?:\\.|[^"\\])*"|[A-Za-z_.$-][A-Za-z0-9_.$-]*'
+
+
+@dataclass(frozen=True)
+class ScalarPort:
+    name: str
+    direction: str
+    fabric_type: str
+    width: int
+
+    @property
+    def systemverilog_type(self) -> str:
+        if self.width == 1:
+            return "logic"
+        return f"logic [{self.width - 1}:0]"
+
+    def manifest_entry(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "direction": self.direction,
+            "fabric_type": self.fabric_type,
+            "systemverilog_type": self.systemverilog_type,
+        }
+
+
+class InterfaceLoweringError(ValueError):
+    pass
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -62,12 +92,192 @@ def pass_hardware_rows(path: Path) -> list[dict[str, str]]:
     return rows
 
 
-def sv_source(module: str, node_count: str, link_count: str) -> str:
+def source_root(hardware_identity: str) -> tuple[Path, str]:
+    if "::" not in hardware_identity:
+        raise InterfaceLoweringError("hardware identity must include source path and module symbol")
+    raw_path, symbol = hardware_identity.rsplit("::", 1)
+    if not raw_path or not symbol:
+        raise InterfaceLoweringError("hardware identity must include source path and module symbol")
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.is_file():
+        raise InterfaceLoweringError(f"Fabric source file does not exist: {raw_path}")
+    return path, symbol
+
+
+def split_top_level_commas(raw: str) -> list[str]:
+    entries: list[str] = []
+    start = 0
+    angle_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+    for index, char in enumerate(raw):
+        if char == "<":
+            angle_depth += 1
+        elif char == ">" and angle_depth:
+            angle_depth -= 1
+        elif char == "(":
+            paren_depth += 1
+        elif char == ")" and paren_depth:
+            paren_depth -= 1
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]" and bracket_depth:
+            bracket_depth -= 1
+        elif char == "," and not angle_depth and not paren_depth and not bracket_depth:
+            entry = raw[start:index].strip()
+            if entry:
+                entries.append(entry)
+            start = index + 1
+    tail = raw[start:].strip()
+    if tail:
+        entries.append(tail)
+    return entries
+
+
+def sanitize_port_name(raw: str, used: set[str]) -> str:
+    base = re.sub(r"[^A-Za-z0-9_]", "_", raw)
+    if not base:
+        base = "port"
+    if base[0].isdigit():
+        base = f"port_{base}"
+    if base in {"clk", "rst_n", "module", "input", "output", "logic", "endmodule"}:
+        base = f"{base}_port"
+    candidate = base
+    suffix = 1
+    while candidate in used:
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def scalar_bits_width(fabric_type: str) -> int | None:
+    match = re.fullmatch(r"!fabric\.bits<([0-9]+)>", fabric_type.strip())
+    if not match:
+        return None
+    width = int(match.group(1))
+    if width <= 0:
+        return None
+    return width
+
+
+def unsupported_boundary_diagnostic(name: str, direction: str, fabric_type: str) -> dict[str, str]:
+    return {
+        "diagnostic_class": "unsupported_rtl_boundary_type",
+        "message": (
+            f"{direction} boundary port {name} has unsupported RTL boundary type {fabric_type}"
+        ),
+    }
+
+
+def mlir_symbol_name(raw: str) -> str:
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return raw[1:-1]
+    return raw
+
+
+def find_module_signature(text: str, symbol: str) -> tuple[str, str]:
+    pattern = re.compile(
+        r"fabric\.module\s+@(?P<symbol>"
+        + SYMBOL_PATTERN
+        + r")"
+        + r"\s*\((?P<inputs>.*?)\)\s*(?:->\s*(?P<outputs>\([^)]*\)|[^{\s]+))?\s*\{",
+        re.S,
+    )
+    for match in pattern.finditer(text):
+        if mlir_symbol_name(match.group("symbol")) == symbol:
+            return match.group("inputs") or "", match.group("outputs") or ""
+    raise InterfaceLoweringError(f"Fabric module symbol not found: {symbol}")
+
+
+def classify_boundary_port(
+    raw_name: str,
+    direction: str,
+    fabric_type: str,
+    used: set[str],
+) -> tuple[ScalarPort | None, dict[str, str] | None]:
+    width = scalar_bits_width(fabric_type)
+    if width is None:
+        return None, unsupported_boundary_diagnostic(raw_name, direction, fabric_type)
+    return (
+        ScalarPort(
+            name=sanitize_port_name(raw_name, used),
+            direction=direction,
+            fabric_type=fabric_type,
+            width=width,
+        ),
+        None,
+    )
+
+
+def parse_input_ports(raw_inputs: str, used: set[str]) -> tuple[list[ScalarPort], list[dict[str, str]]]:
+    ports: list[ScalarPort] = []
+    diagnostics: list[dict[str, str]] = []
+    for entry in split_top_level_commas(raw_inputs):
+        match = re.fullmatch(r"%([A-Za-z_][A-Za-z0-9_$]*)\s*:\s*(.+)", entry.strip(), re.S)
+        if not match:
+            raise InterfaceLoweringError(f"unsupported Fabric module input syntax: {entry}")
+        raw_name, fabric_type = match.groups()
+        fabric_type = " ".join(fabric_type.split())
+        port, diagnostic = classify_boundary_port(raw_name, "input", fabric_type, used)
+        if port is not None:
+            ports.append(port)
+        if diagnostic is not None:
+            diagnostics.append(diagnostic)
+    return ports, diagnostics
+
+
+def parse_output_ports(raw_outputs: str, used: set[str]) -> tuple[list[ScalarPort], list[dict[str, str]]]:
+    if not raw_outputs.strip():
+        return [], []
+    output_text = raw_outputs.strip()
+    if output_text.startswith("(") and output_text.endswith(")"):
+        output_text = output_text[1:-1]
+    ports: list[ScalarPort] = []
+    diagnostics: list[dict[str, str]] = []
+    for index, entry in enumerate(split_top_level_commas(output_text)):
+        fabric_type = " ".join(entry.split())
+        port, diagnostic = classify_boundary_port(f"out_{index}", "output", fabric_type, used)
+        if port is not None:
+            ports.append(port)
+        if diagnostic is not None:
+            diagnostics.append(diagnostic)
+    return ports, diagnostics
+
+
+def module_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[str, str]]]:
+    path, symbol = source_root(hardware_identity)
+    raw_inputs, raw_outputs = find_module_signature(path.read_text(), symbol)
+    used = {"clk", "rst_n"}
+    input_ports, input_diagnostics = parse_input_ports(raw_inputs, used)
+    output_ports, output_diagnostics = parse_output_ports(raw_outputs, used)
+    return input_ports + output_ports, input_diagnostics + output_diagnostics
+
+
+def interface_manifest(top_module: str, ports: list[ScalarPort]) -> list[dict[str, object]]:
+    if not ports:
+        return []
+    return [
+        {
+            "interface_id": f"interface::{top_module}::scalar_bits_top_ports",
+            "interface_kind": "scalar_bits_top_ports",
+            "ports": [port.manifest_entry() for port in ports],
+        }
+    ]
+
+
+def sv_source(module: str, node_count: str, link_count: str, ports: list[ScalarPort]) -> str:
+    port_lines = ["  input logic clk", "  input logic rst_n"]
+    port_lines.extend(
+        f"  {port.direction} {port.systemverilog_type} {port.name}" for port in ports
+    )
+    rendered_ports = ",\n".join(port_lines)
     return (
         "`timescale 1ns/1ps\n"
         f"module {module}(\n"
-        "  input logic clk,\n"
-        "  input logic rst_n\n"
+        f"{rendered_ports}\n"
         ");\n"
         f"  localparam int LOOM_NODE_COUNT = {node_count};\n"
         f"  localparam int LOOM_LINK_COUNT = {link_count};\n"
@@ -75,9 +285,44 @@ def sv_source(module: str, node_count: str, link_count: str) -> str:
     )
 
 
+def blocked_manifest(hardware_identity: str, diagnostic_class: str, message: str) -> dict[str, object]:
+    top_module = module_name(hardware_identity) if hardware_identity else "blocked"
+    return {
+        "schema_version": 1,
+        "kind": "rtl_manifest",
+        "manifest_id": f"rtl-manifest::{top_module}",
+        "mode": "architecture_rtl",
+        "source_hardware_root": hardware_identity,
+        "source_fabric_adg_identity": hardware_identity,
+        "mapping_artifact_identity": "",
+        "lowering_configuration": {},
+        "emitted_source_files": [],
+        "top_level_modules": [],
+        "generated_packages": [],
+        "generated_interfaces": [],
+        "black_box_modules": [],
+        "behavioral_models": [],
+        "required_tool_capability_classes": [],
+        "required_library_profile_classes": [],
+        "constraints": [],
+        "activity_hooks": [],
+        "diagnostics": [
+            {
+                "diagnostic_class": diagnostic_class,
+                "message": message,
+            }
+        ],
+        "status": "blocked",
+    }
+
+
 def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, object]:
     hardware_identity = hardware_row["hardware"]
     top_module = module_name(hardware_identity)
+    try:
+        ports, diagnostics = module_ports(hardware_identity)
+    except InterfaceLoweringError as error:
+        return blocked_manifest(hardware_identity, "unsupported_rtl_interface", str(error))
     source_relative = Path("rtl") / f"{top_module}.sv"
     source_path = output.parent / source_relative
     source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +331,7 @@ def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, obje
             top_module,
             hardware_row.get("node_count", "0") or "0",
             hardware_row.get("link_count", "0") or "0",
+            ports,
         )
     )
     return {
@@ -110,7 +356,7 @@ def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, obje
         ],
         "top_level_modules": [top_module],
         "generated_packages": [],
-        "generated_interfaces": [],
+        "generated_interfaces": interface_manifest(top_module, ports),
         "black_box_modules": [],
         "behavioral_models": ["behavioral_fabric_module_shell"],
         "required_tool_capability_classes": ["rtl_lint"],
@@ -122,39 +368,17 @@ def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, obje
                 "top_level_module": top_module,
             }
         ],
-        "diagnostics": [],
+        "diagnostics": diagnostics,
         "status": "pass",
     }
 
 
 def scaffold(output: Path) -> dict[str, object]:
-    return {
-        "schema_version": 1,
-        "kind": "rtl_manifest",
-        "manifest_id": "rtl-manifest::blocked",
-        "mode": "architecture_rtl",
-        "source_hardware_root": "",
-        "source_fabric_adg_identity": "",
-        "mapping_artifact_identity": "",
-        "lowering_configuration": {},
-        "emitted_source_files": [],
-        "top_level_modules": [],
-        "generated_packages": [],
-        "generated_interfaces": [],
-        "black_box_modules": [],
-        "behavioral_models": [],
-        "required_tool_capability_classes": [],
-        "required_library_profile_classes": [],
-        "constraints": [],
-        "activity_hooks": [],
-        "diagnostics": [
-            {
-                "diagnostic_class": "missing_fabric_adg",
-                "message": "no passing ADG hardware summary row was provided",
-            }
-        ],
-        "status": "blocked",
-    }
+    return blocked_manifest(
+        "",
+        "missing_fabric_adg",
+        "no passing ADG hardware summary row was provided",
+    )
 
 
 def main(argv: list[str]) -> int:
