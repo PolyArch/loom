@@ -168,11 +168,13 @@ Options:  config=<path>
 ```
 
 The output shape for each successful group is an owning
-`fabric.module` containing a legal `fabric.pe` that owns one PE-local
-`fabric.fu` template for the group. The pass may use named or anonymous
-Fabric forms only where the owning Fabric specs permit them. Generated
-module/PE/FU identities use a deterministic sanitized group-name scheme
-and are checked for collision at the full module/PE/FU symbol path.
+named `fabric.module` containing a legal named `fabric.pe` that owns
+one named PE-local `fabric.fu` template for the group. Anonymous Fabric
+forms may be used only where the owning Fabric specs permit them and
+only when they do not carry the stable synthesized template identity.
+Generated module/PE/FU identities use a deterministic sanitized
+group-name scheme and are checked for collision at the full
+module/PE/FU symbol path.
 PE external-port routing is represented by the PE configuration and
 mapping evidence specified by `docs/spec-fabric-pe.md`, not by a
 private wiring convention invented by this pass.
@@ -187,8 +189,11 @@ coverage report.
 
 ## Configuration Surface
 
-The concrete serialized config schema is owned by the pass config
-verifier. Its accepted semantic axes are:
+The target configuration contract is a validated public configuration
+profile consumed through `config=<path>`. This spec does not prescribe
+private key names, parser structure, or file syntax unless a field is
+promoted here as part of the public contract. Any accepted schema must
+either expose or intentionally default these semantic axes:
 
 * strategy selection from the public strategy set and an explicit
   fallback order;
@@ -201,8 +206,8 @@ verifier. Its accepted semantic axes are:
   separate-state fallback.
 
 Every accepted config axis must have focused evidence for its observable
-effect. A malformed config reports `config_parse_failed` and does not
-mutate user IR.
+effect. A malformed config reports the pass-scoped
+`config_parse_failed` diagnostic and does not mutate user IR.
 
 ## Input And Output Requirements
 
@@ -220,8 +225,8 @@ Input requirements:
 
 Output requirements:
 
-1. Successful groups append a legal Fabric template and do not mutate
-   the input software subgraphs.
+1. Successful groups append a legal named Fabric template and do not
+   mutate the input software subgraphs.
 2. Failed groups do not append partial Fabric IR and annotate every
    offending input subgraph with exactly one closed failure reason.
 3. Failure in one synth group does not prevent other independent groups
@@ -230,10 +235,10 @@ Output requirements:
    path for the same group is idempotent and emits a remark.
 5. Name collisions with non-synthesized Fabric symbols are reported as
    `symbol_conflict` failures.
-6. The emitted `fabric.module`, `fabric.pe`, PE-local `fabric.fu`, any
-   `fabric.instantiate` used for legal template reuse, and nested FU
-   body operations pass the MLIR verifier before the output is
-   accepted. `fabric.instantiate` is not mandatory for every
+6. The emitted named `fabric.module`, named `fabric.pe`, named PE-local
+   `fabric.fu`, any `fabric.instantiate` used for legal template reuse,
+   and nested FU body operations pass the MLIR verifier before the
+   output is accepted. `fabric.instantiate` is not mandatory for every
    synthesized group; it is governed by the named-template reuse rules
    in the Fabric owning specs.
 7. State-bearing dataflow operations inside a synthesized FU are
@@ -299,7 +304,8 @@ dataflow.subgraph (...) -> (...) {
 
 ## Failure Reasons
 
-Failure reasons are a closed set:
+Failure reasons are a closed set. All entries except
+`config_parse_failed` are group-scoped synthesis failures:
 
 * `cross_share_group`: aligned operations would require illegal sharing
   across hardware-share groups and no legal mux/demux decomposition was
@@ -319,11 +325,15 @@ Failure reasons are a closed set:
 * `symbol_conflict`: the generated Fabric symbol path conflicts with a
   non-synthesized symbol.
 * `config_parse_failed`: the pass configuration failed to load or
-  failed schema validation.
+  failed schema validation. This is a pass-scoped failure, not a
+  group-scoped synthesis failure.
 
-The exact string is stored in `loom.synth_failed` on the affected input
-subgraph operations and appears in diagnostics. `fail-as-error=true`
-upgrades failure diagnostics to errors without changing the closed set.
+For group-scoped failures, the exact string is stored in
+`loom.synth_failed` on the affected input subgraph operations and
+appears in diagnostics. `config_parse_failed` appears in diagnostics or
+pass-level report evidence only, because malformed configuration must
+not mutate user IR. `fail-as-error=true` upgrades failure diagnostics to
+errors without changing the closed set.
 
 ## Strategy Obligations
 
@@ -465,30 +475,32 @@ routing, or scheduling decisions into `dataflow.subgraph`.
 until memory-port and memory-effect synthesis are specified. Inputs that
 contain unsupported memory operations fail with `unsupported_op`.
 
-Config options are part of the pass contract only after they are
-accepted by the pass config verifier and covered by tests. A malformed
-config does not mutate user IR.
+Config options are part of the pass contract only after the public
+configuration validation path accepts them and focused tests cover
+their observable behavior. A malformed config does not mutate user IR.
 
 ## Objective Verification
 
 The objective verification surface is:
 
-1. Every closed failure reason has negative evidence that checks both
-   diagnostics and `loom.synth_failed`.
-2. Every accepted config option has focused evidence for its observable
+1. Every group-scoped closed failure reason has negative evidence that
+   checks both diagnostics and `loom.synth_failed`.
+2. Pass-scoped malformed-configuration failures have negative evidence
+   for `config_parse_failed` diagnostics and unchanged user IR.
+3. Every accepted config option has focused evidence for its observable
    behavior.
-3. Every strategy has positive coverage evidence and at least one
+4. Every strategy has positive coverage evidence and at least one
    relevant negative case.
-4. Cross-strategy evidence compares coverage and semantic properties,
+5. Cross-strategy evidence compares coverage and semantic properties,
    not byte-identical FU text.
-5. The synth -> enumerate -> match roundtrip is the end-to-end gate and
+6. The synth -> enumerate -> match roundtrip is the end-to-end gate and
    must not be replaced by fake, stub, or hand-written coverage claims.
-6. Deterministic configurations are checked by repeated runs with the
+7. Deterministic configurations are checked by repeated runs with the
    same seed, parallelism settings, and input set.
-7. Timeout and resource-exhaustion cases produce structured diagnostics
+8. Timeout and resource-exhaustion cases produce structured diagnostics
    and are not recorded as pass.
-8. Generated Fabric IR is verified before it is accepted.
-9. Downstream mapping, simulation, runtime, RTL, FPA, report, and DSE
+9. Generated Fabric IR is verified before it is accepted.
+10. Downstream mapping, simulation, runtime, RTL, FPA, report, and DSE
    consumers observe synthesized FUs through their owning artifacts.
    Selected software-to-hardware binding remains a mapping artifact
    responsibility; unsupported scope is carried forward as structured
