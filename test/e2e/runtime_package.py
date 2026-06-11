@@ -458,6 +458,18 @@ def memory_layout_for_workload(workload: str) -> dict[str, object] | None:
             "element_layout": "f32[16]",
             "alignment_bytes": 4,
         }
+    if workload == "prefix_sum":
+        return {
+            "byte_size": 512,
+            "element_layout": "i32[64];i32[64]",
+            "alignment_bytes": 4,
+        }
+    if workload == "integrate_trapz":
+        return {
+            "byte_size": 72,
+            "element_layout": "f32[9];f32[9]",
+            "alignment_bytes": 4,
+        }
     return None
 
 

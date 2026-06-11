@@ -56,6 +56,12 @@ case "${CASE}" in
   dotproduct)
     case_graph="g_t_dotproduct_red_0_0"
     ;;
+  prefix_sum)
+    case_graph="g_t_prefix_sum_red_0_0"
+    ;;
+  integrate_trapz)
+    case_graph="g_t_integrate_trapz_red_0_0"
+    ;;
   xor_block)
     case_graph="g_t_xor_block_0_0"
     ;;
