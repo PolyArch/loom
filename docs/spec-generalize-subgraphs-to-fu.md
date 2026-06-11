@@ -167,11 +167,14 @@ Options:  config=<path>
 ```
 
 The output shape for each successful group is an owning
-`fabric.module` containing one named `fabric.pe`; the PE contains one
-named PE-local `fabric.fu` template and the legal PE wiring needed to
-instantiate that FU. Generated names use a deterministic sanitized
-group-name scheme and are checked for collision at the full
-module/PE/FU symbol path.
+`fabric.module` containing a legal `fabric.pe` that owns one PE-local
+`fabric.fu` template for the group. The pass may use named or anonymous
+Fabric forms only where the owning Fabric specs permit them. Generated
+module/PE/FU identities use a deterministic sanitized group-name scheme
+and are checked for collision at the full module/PE/FU symbol path.
+PE external-port routing is represented by the PE configuration and
+mapping evidence specified by `docs/spec-fabric-pe.md`, not by a
+private wiring convention invented by this pass.
 
 The pass is part of the Fabric technology pass set exposed through the
 standard `loom` driver.
@@ -186,21 +189,14 @@ coverage report.
 The concrete serialized config schema is owned by the pass config
 verifier. Its accepted semantic axes are:
 
-* selected primary strategy: one of `anchor`, `mcs`, `incremental`, or
-  `incremental_random`;
-* fallback strategy chain, evaluated after the primary strategy fails;
-* timeout and candidate/resource caps;
-* parallelism controls for independent groups, coverage matching,
-  graph search, and random restarts;
-* cost-model weights for Fabric ops, muxes, demuxes, and state-like
-  Fabric op configurations;
-* anchor policy for whether legal intra-position mux/demux
-  decomposition may replace illegal cross-share-group sharing;
-* incremental input-order policy and per-attempt coverage-verification
-  policy;
-* incremental-random restart count and deterministic seed;
-* MCS graph-search cap and branch parallelism policy;
-* tier-C feedback policy for either signature alignment or conservative
+* strategy selection from the public strategy set and an explicit
+  fallback order;
+* timeout, candidate, resource, and deterministic parallelism bounds;
+* hardware-cost weighting for legal Fabric structures;
+* sharing and mux/demux decomposition policy;
+* input-order, restart, and graph-search policies that preserve the
+  common coverage contract;
+* tier-C feedback policy for either legal alignment or conservative
   separate-state fallback.
 
 Every accepted config axis must have focused evidence for its observable
@@ -264,26 +260,29 @@ This illustrative shape shows the target ownership hierarchy. Exact
 assembly syntax is owned by the dialect printers.
 
 ```mlir
-fabric.module @loom_synth_fus() -> () {
-  fabric.pe @pe_alu_int_32 [spatial]
-      (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>) {
-  ^bb0(%a : !fabric.bits<32>, %b : !fabric.bits<32>):
+fabric.module @loom_synth_fus(%a : !fabric.bits<32>,
+                              %b : !fabric.bits<32>)
+    -> (!fabric.bits<32>) {
+  %pe_out = fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                              %pb = %b : !fabric.bits<32>)
+                             -> !fabric.bits<32> {
     fabric.fu @fu_alu_int_32
-        (!fabric.bits<32>, !fabric.bits<32>) -> (!fabric.bits<32>) {
+        (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32> {
     ^bb0(%aa : !fabric.bits<32>, %bb : !fabric.bits<32>):
       %r = fabric.op [@arith.addi, @arith.subi] (%aa, %bb)
            : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %r : !fabric.bits<32>
     }
-    %y = fabric.instantiate @fu_alu_int_32(
-           %a : !fabric.bits<32>,
-           %b : !fabric.bits<32>)
-         -> (!fabric.bits<32>)
-    fabric.yield %y : !fabric.bits<32>
   }
-  fabric.yield
+  fabric.yield %pe_out : !fabric.bits<32>
 }
 ```
+
+The PE result in this sketch is the PE external output port. Which PE
+inputs drive which FU inputs, and which FU outputs drive which PE
+outputs, is PE configuration evidence owned by
+`docs/spec-fabric-pe.md`. It is not expressed by PE-body SSA wiring in
+the subgraph-generalization contract.
 
 Failed groups are reported on the software subgraphs:
 
@@ -376,10 +375,10 @@ ports. They do not create a separate Fabric node-kind namespace.
 
 ### Coverage Verification
 
-Coverage verification uses `SubgraphEnumerator` and `SubgraphMatcher` as
-the oracle. For each input subgraph, the coverage report records a
-matching materialized candidate or a miss. A candidate is accepted only
-when every input in the synth group is covered.
+Coverage verification uses the canonical FU enumeration and subgraph
+matching semantics as the oracle. For each input subgraph, the coverage
+report records a matching materialized candidate or a miss. A candidate
+is accepted only when every input in the synth group is covered.
 
 Parallel matching may be used as an optimization, but single-worker and
 multi-worker coverage reports must be equivalent for deterministic
