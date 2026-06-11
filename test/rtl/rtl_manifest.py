@@ -222,6 +222,19 @@ def find_module_signature(text: str, symbol: str) -> tuple[str, str]:
     raise InterfaceLoweringError(f"Fabric module symbol not found: {symbol}")
 
 
+def find_system_body(text: str, symbol: str) -> None:
+    pattern = re.compile(
+        r"fabric\.system\s+@(?P<symbol>"
+        + SYMBOL_PATTERN
+        + r")\s+memory_model\s*=",
+        re.S,
+    )
+    for match in pattern.finditer(text):
+        if mlir_symbol_name(match.group("symbol")) == symbol:
+            return
+    raise InterfaceLoweringError(f"Fabric system symbol not found: {symbol}")
+
+
 def classify_boundary_port(
     raw_name: str,
     direction: str,
@@ -284,6 +297,12 @@ def module_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[st
     input_ports, input_diagnostics = parse_input_ports(raw_inputs, used)
     output_ports, output_diagnostics = parse_output_ports(raw_outputs, used)
     return input_ports + output_ports, input_diagnostics + output_diagnostics
+
+
+def system_ports(hardware_identity: str) -> tuple[list[ScalarPort], list[dict[str, str]]]:
+    path, symbol = source_root(hardware_identity)
+    find_system_body(path.read_text(), symbol)
+    return [], []
 
 
 def read_mapping_evidence(path: Path, hardware_identity: str) -> MappingEvidence:
@@ -440,6 +459,7 @@ def build_manifest(
     mapping_artifact: Path | None = None,
 ) -> dict[str, object]:
     hardware_identity = hardware_row["hardware"]
+    topology_class = hardware_row.get("topology_class", "")
     top_module = module_name(hardware_identity)
     mapping_evidence = None
     if mapping_artifact is not None:
@@ -454,7 +474,10 @@ def build_manifest(
                 mapping_artifact_identity=intermediate_artifacts.artifact_id_for_path(mapping_artifact),
             )
     try:
-        ports, diagnostics = module_ports(hardware_identity)
+        if topology_class == "fabric_system":
+            ports, diagnostics = system_ports(hardware_identity)
+        else:
+            ports, diagnostics = module_ports(hardware_identity)
     except InterfaceLoweringError as error:
         return blocked_manifest(
             hardware_identity,
@@ -475,10 +498,18 @@ def build_manifest(
         )
     )
     mode = "mapped_workload_rtl" if mapping_evidence else "architecture_rtl"
+    source_root_kind = "fabric_system" if topology_class == "fabric_system" else "fabric_adg"
+    behavioral_model = (
+        "behavioral_fabric_system_shell"
+        if topology_class == "fabric_system"
+        else "behavioral_fabric_module_shell"
+    )
     lowering_configuration: dict[str, object] = {
         "lowering_kind": mode,
-        "source_root_kind": "fabric_adg",
+        "source_root_kind": source_root_kind,
         "systemverilog_profile": "behavioral_shell_v1",
+        "node_count": int(hardware_row.get("node_count", "0") or "0"),
+        "link_count": int(hardware_row.get("link_count", "0") or "0"),
     }
     constraints: list[dict[str, object]] = []
     activity_hooks = [
@@ -533,7 +564,7 @@ def build_manifest(
         "generated_packages": [],
         "generated_interfaces": interface_manifest(top_module, ports),
         "black_box_modules": [],
-        "behavioral_models": ["behavioral_fabric_module_shell"],
+        "behavioral_models": [behavioral_model],
         "required_tool_capability_classes": ["rtl_lint"],
         "required_library_profile_classes": [],
         "constraints": constraints,
