@@ -34,7 +34,7 @@ MODULE_RE = re.compile(rf"^\s*fabric\.module @(?P<name>{SYMBOL_PATTERN})")
 SYSTEM_RE = re.compile(
     rf"^\s*fabric\.system @(?P<name>{SYMBOL_PATTERN})\s+memory_model\s*="
 )
-NODE_RE = re.compile(r"\bfabric\.(pe|switch|mem|fifo|instantiate)\b")
+NODE_RE = re.compile(r"\bfabric\.(pe|switch|mem|fifo|boundary|instantiate)\b")
 TILE_RE = re.compile(r"\bfabric\.(pe|switch|mem)\b")
 SCHEDULE_RE = re.compile(r"\[(spatial|temporal)\]")
 SYSTEM_NODE_RE = re.compile(r'\bfabric\.node\s+@\S+\s+kind\s*=\s*"(?P<kind>[^"]+)"')

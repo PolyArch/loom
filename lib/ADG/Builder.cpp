@@ -839,6 +839,104 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   return module;
 }
 
+ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
+  ModuleBuilder module("full_spatialcore_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("lhs", "!fabric.bits<32>")
+      .addInput("rhs", "!fabric.bits<32>")
+      .addInput("addr", "!fabric.bits<32>")
+      .addInput("ctrl", "!fabric.bits<0>")
+      .addInput("tag", "!fabric.bits<4>")
+      .addInput("lhs_t", "!fabric.bits_tag<32, 4>")
+      .addInput("rhs_t", "!fabric.bits_tag<32, 4>")
+      .addInput("addr_t", "!fabric.bits_tag<32, 4>")
+      .addInput("ctrl_t", "!fabric.bits_tag<0, 4>");
+
+  module.addPe(makeMinimalAddPe(Schedule::Spatial, "!fabric.bits<32>",
+                                "!fabric.bits<32>"));
+
+  TemporalPeConfig temporal;
+  temporal.tagWidth = 4;
+  temporal.numInstruction = 2;
+  temporal.fuConfigMode = "per_fu_config";
+  temporal.operandBufferMode = "per_input_port";
+  temporal.operandBufferSize = 2;
+  temporal.numRegFifo = 2;
+  temporal.regFifoDepth = 4;
+  temporal.regFifoPorts = 1;
+  PeSpec temporalPe;
+  temporalPe.schedule = Schedule::Temporal;
+  temporalPe.inputs = {{"pa", "lhs_t", "!fabric.bits_tag<32, 4>", ""},
+                       {"pb", "rhs_t", "!fabric.bits_tag<32, 4>", ""}};
+  temporalPe.resultTypes = {"!fabric.bits_tag<32, 4>"};
+  temporalPe.temporal = std::move(temporal);
+  FuSpec temporalFu;
+  temporalFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
+                       {"fb", "pb", "!fabric.bits<32>", ""}};
+  temporalFu.resultTypes = {"!fabric.bits<32>"};
+  temporalFu.operations.push_back(FabricOpSpec{{"sum"},
+                                               {"arith.addi"},
+                                               {"fa", "fb"},
+                                               {"!fabric.bits<32>",
+                                                "!fabric.bits<32>"},
+                                               {"!fabric.bits<32>"},
+                                               {},
+                                               {}});
+  temporalFu.yieldValues = {"sum"};
+  temporalPe.fus.push_back(std::move(temporalFu));
+  module.addPe(std::move(temporalPe));
+
+  module.addSwitch(SwitchSpec{Schedule::Spatial,
+                              {"lhs", "rhs"},
+                              {"!fabric.bits<32>", "!fabric.bits<32>"},
+                              {"11", "11"},
+                              0});
+  module.addSwitch(
+      SwitchSpec{Schedule::Temporal,
+                 {"lhs_t", "rhs_t"},
+                 {"!fabric.bits_tag<32, 4>", "!fabric.bits_tag<32, 4>"},
+                 {"11", "11"},
+                 2});
+
+  module.addMem(MemSpec{
+      Schedule::Spatial,
+      "mgr",
+      {{"addr", "ctrl"}},
+      {{"addr", "lhs", "ctrl"}}});
+
+  MemSpec temporalMem;
+  temporalMem.schedule = Schedule::Temporal;
+  temporalMem.manager = "mgr";
+  temporalMem.loads = {{"addr_t", "ctrl_t"}};
+  temporalMem.stores = {{"addr_t", "lhs_t", "ctrl_t"}};
+  temporalMem.temporalTagWidth = 4;
+  temporalMem.temporalAddrTableSize = 2;
+  module.addMem(std::move(temporalMem));
+
+  module.addExactBodyLine(
+      "%tagged = fabric.boundary [s2t] %lhs, %tag : (!fabric.bits<32>, "
+      "!fabric.bits<4>) -> !fabric.bits_tag<32, 4>");
+  module.addExactBodyLine(
+      "%queued = fabric.fifo %tagged [max_depth = 4, bypassable = true] : "
+      "!fabric.bits_tag<32, 4>");
+  module.addExactBodyLine(
+      "fabric.pe @ALU [spatial] (!fabric.bits<32>) -> (!fabric.bits<32>) {");
+  module.addExactBodyLine("^bb0(%pa: !fabric.bits<32>):");
+  module.addExactBodyLine(
+      "  fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {");
+  module.addExactBodyLine(
+      "    %v = fabric.op [@arith.addi] (%fa, %fa) : (!fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine("    fabric.yield %v : !fabric.bits<32>");
+  module.addExactBodyLine("  }");
+  module.addExactBodyLine("  fabric.yield %pa : !fabric.bits<32>");
+  module.addExactBodyLine("}");
+  module.addExactBodyLine(
+      "%inst = fabric.instantiate @ALU(%lhs : !fabric.bits<32>) -> "
+      "(!fabric.bits<32>)");
+  return module;
+}
+
 SystemBuilder loom::adg::buildHeterogeneousSocAdg() {
   SystemBuilder system("heterogeneous_dual_accel_soc", "sequential");
   system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
@@ -868,6 +966,10 @@ llvm::Error loom::adg::writeMinimalTemporalAdg(llvm::raw_ostream &os) {
 
 llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
   return buildSharedReductionAdg().print(os);
+}
+
+llvm::Error loom::adg::writeFullSpatialCoreAdg(llvm::raw_ostream &os) {
+  return buildFullSpatialCoreAdg().print(os);
 }
 
 llvm::Error loom::adg::writeHeterogeneousSocAdg(llvm::raw_ostream &os) {
