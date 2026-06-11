@@ -400,6 +400,14 @@ std::pair<std::uint64_t, std::uint64_t> memPortCounts(mlir::Operation *op) {
   return {loadPorts, storePorts};
 }
 
+unsigned memResultPortBase(mlir::Operation *op) {
+  if (op->getNumResults() == 0)
+    return 0;
+  if (mlir::isa<mlir::MemRefType>(op->getResult(0).getType()))
+    return 1;
+  return 0;
+}
+
 std::optional<std::string> forwardedBlockArgumentEndpoint(
     mlir::Value value,
     const std::map<EndpointKey, std::string> &resultEndpoints);
@@ -456,7 +464,7 @@ void addMemEndpointMaps(
     std::map<EndpointKey, std::string> &resultEndpoints) {
   auto [loadPorts, storePorts] = memPortCounts(op);
   unsigned operandBase = 1;
-  unsigned resultBase = 0;
+  unsigned resultBase = memResultPortBase(op);
   for (std::uint64_t i = 0; i < loadPorts; ++i) {
     std::string resourceId =
         (hardwareName + "::mem.load#" + llvm::Twine(i)).str();
@@ -485,6 +493,42 @@ void addMemEndpointMaps(
     operandBase += 3;
     resultBase += 1;
   }
+}
+
+std::optional<unsigned> hardwareOperandIndexForSoftwareEndpoint(
+    ResourceKind kind, unsigned softwareOperandIndex) {
+  switch (kind) {
+  case ResourceKind::FabricOp:
+    return softwareOperandIndex;
+  case ResourceKind::MemLoad:
+    if (softwareOperandIndex == 1)
+      return 0;
+    if (softwareOperandIndex == 2)
+      return 1;
+    return std::nullopt;
+  case ResourceKind::MemStore:
+    if (softwareOperandIndex >= 1 && softwareOperandIndex <= 3)
+      return softwareOperandIndex - 1;
+    return std::nullopt;
+  }
+  llvm_unreachable("unknown resource kind");
+}
+
+std::optional<unsigned> hardwareResultIndexForSoftwareEndpoint(
+    ResourceKind kind, unsigned softwareResultIndex) {
+  switch (kind) {
+  case ResourceKind::FabricOp:
+    return softwareResultIndex;
+  case ResourceKind::MemLoad:
+    if (softwareResultIndex <= 1)
+      return softwareResultIndex;
+    return std::nullopt;
+  case ResourceKind::MemStore:
+    if (softwareResultIndex == 0)
+      return 0;
+    return std::nullopt;
+  }
+  llvm_unreachable("unknown resource kind");
 }
 
 HardwareTopology buildHardwareTopology(
@@ -752,6 +796,9 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
   llvm::StringMap<std::string> hardwareBySoftware;
   for (const PlacementRecord &placement : placements)
     hardwareBySoftware.try_emplace(placement.softwareId, placement.hardwareId);
+  std::map<std::string, ResourceKind> kindBySoftware;
+  for (const SoftwareNode &node : nodes)
+    kindBySoftware.try_emplace(node.id, node.resourceKind);
 
   for (const SoftwareNode &node : nodes) {
     unsigned operandIndex = 0;
@@ -778,10 +825,24 @@ collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
     auto toHw = hardwareBySoftware.find(to);
     if (fromHw == hardwareBySoftware.end() || toHw == hardwareBySoftware.end())
       continue;
+    auto fromKind = kindBySoftware.find(from);
+    auto toKind = kindBySoftware.find(to);
+    if (fromKind == kindBySoftware.end() || toKind == kindBySoftware.end())
+      continue;
+    std::optional<unsigned> producerResultIndex =
+        hardwareResultIndexForSoftwareEndpoint(fromKind->second,
+                                               edge.producerResultIndex);
+    std::optional<unsigned> consumerOperandIndex =
+        hardwareOperandIndexForSoftwareEndpoint(toKind->second,
+                                                edge.consumerOperandIndex);
+    if (!producerResultIndex || !consumerOperandIndex) {
+      ++collection.unroutedEdges;
+      continue;
+    }
     std::string sourceEndpoint =
-        endpointFor(fromHw->second, "result", edge.producerResultIndex);
+        endpointFor(fromHw->second, "result", *producerResultIndex);
     std::string sinkEndpoint =
-        endpointFor(toHw->second, "operand", edge.consumerOperandIndex);
+        endpointFor(toHw->second, "operand", *consumerOperandIndex);
     std::optional<llvm::SmallVector<RouteSegment, 2>> path =
         findRoute(topology, sourceEndpoint, sinkEndpoint);
     if (!path) {

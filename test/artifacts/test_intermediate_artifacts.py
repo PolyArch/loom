@@ -1762,6 +1762,43 @@ def main() -> int:
         if result.returncode == 0:
             raise AssertionError("DSE row without feedback_fidelity_records unexpectedly passed audit")
 
+        missing_power_activity_dse = out_dir / "missing-power-activity-dse-candidate-summary.csv"
+        missing_power_activity_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(missing_power_activity_dse),
+        ).replace(
+            "dynamic_power_mw=analytic:analytic_fpa_model:default_toggle;"
+            "leakage_power_mw=analytic:analytic_fpa_model:default_toggle;",
+            "dynamic_power_mw=analytic:analytic_fpa_model;"
+            "leakage_power_mw=analytic:analytic_fpa_model;",
+        )
+        missing_power_activity_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
+            + missing_power_activity_dse_provenance
+            + "power fidelity provenance omits activity source\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-missing-dse-power-activity.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(missing_power_activity_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE power fidelity row without activity source unexpectedly passed audit")
+
         bogus_input_dse = out_dir / "bogus-input-dse-candidate-summary.csv"
         bogus_input_dse_provenance = valid_dse_provenance.replace(
             str(valid_dse),

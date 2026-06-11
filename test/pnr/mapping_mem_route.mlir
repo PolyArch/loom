@@ -15,6 +15,24 @@
 // JSON-NOT: ".out"
 // JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_store_route --hardware-mlir %s --hardware mem_store_route_adg --workload mem_store_route --output %t.store.mapping.csv --artifact %t.store.mapping.json
+// RUN: FileCheck %s --check-prefix=STORE-CSV < %t.store.mapping.csv
+// RUN: FileCheck %s --check-prefix=STORE-JSON < %t.store.mapping.json
+
+// STORE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// STORE-CSV-NEXT: mem_store_route,mem_store_route_adg,mem_store_route__mem_store_route__mem_store_route_adg,2,2,0,0,pass
+
+// STORE-JSON-DAG: "status": "pass"
+// STORE-JSON-DAG: "hardware": "mem_store_route_adg::mem.load#0"
+// STORE-JSON-DAG: "hardware": "mem_store_route_adg::mem.store#0"
+// STORE-JSON-DAG: "source_endpoint": "mem_store_route_adg::mem.load#0.result0"
+// STORE-JSON-DAG: "sink_endpoint": "mem_store_route_adg::mem.store#0.operand1"
+// STORE-JSON-DAG: "source_endpoint": "mem_store_route_adg::mem.load#0.result1"
+// STORE-JSON-DAG: "sink_endpoint": "mem_store_route_adg::mem.store#0.operand2"
+// STORE-JSON-NOT: "sink_endpoint": "mem_store_route_adg::mem.store#0.operand3"
+// STORE-JSON-NOT: ".out"
+// STORE-JSON-NOT: ".in"
+
 module {
   dataflow.graph.func private @mem_route(%ctrl: none, %mem: memref<?xi32>,
                                          %idx: index, %rhs: i32)
@@ -53,6 +71,30 @@ module {
         fabric.yield
       }
     }
+    fabric.yield
+  }
+
+  dataflow.graph.func private @mem_store_route(%ctrl: none, %mem: memref<?xi32>,
+                                               %idx: index)
+      -> (none) {
+    %data, %done = dataflow.load %mem[%idx] %ctrl : memref<?xi32>
+    %stored = dataflow.store %mem[%idx] %data %done : memref<?xi32>
+    dataflow.graph.return %stored : none
+  }
+
+  fabric.module @mem_store_route_adg(%mgr : memref<?x!fabric.bits<32>>,
+                                     %addr : !fabric.bits<32>,
+                                     %ctrl : !fabric.bits<0>) {
+    %sub, %data, %done =
+        fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl) store()
+          [{load_group_size = 1 : i32, store_group_size = 0 : i32}]
+          : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+            -> (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>)
+    %stored =
+        fabric.mem [spatial] mgr(%sub) load() store(%addr, %data, %done)
+          [{load_group_size = 0 : i32, store_group_size = 1 : i32}]
+          : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<32>,
+             !fabric.bits<0>) -> !fabric.bits<0>
     fabric.yield
   }
 }

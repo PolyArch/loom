@@ -1149,6 +1149,15 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
                 diagnostics.append(f"row {row_index}: feedback_fidelity_records {metric} has unknown fidelity")
             if len(parts) < 2:
                 diagnostics.append(f"row {row_index}: feedback_fidelity_records {metric} lacks source")
+            if metric in {"dynamic_power_mw", "leakage_power_mw"}:
+                if len(parts) < 3:
+                    diagnostics.append(
+                        f"row {row_index}: feedback_fidelity_records {metric} lacks activity_source"
+                    )
+                elif parts[2] not in FPA_ACTIVITY_SOURCES:
+                    diagnostics.append(
+                        f"row {row_index}: feedback_fidelity_records {metric} has unknown activity_source"
+                    )
         diagnostic_count = row.get("unsupported_scope_diagnostics_count", "")
         if objective == "minimize_unsupported_scope_diagnostics":
             if diagnostic_count == "":
