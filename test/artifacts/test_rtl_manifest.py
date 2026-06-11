@@ -14,6 +14,8 @@ REQUIRED_KEYS = {
     "schema_version",
     "kind",
     "manifest_id",
+    "mode",
+    "source_hardware_root",
     "source_fabric_adg_identity",
     "mapping_artifact_identity",
     "lowering_configuration",
@@ -58,6 +60,10 @@ def main() -> int:
             raise AssertionError(f"RTL manifest missing keys: {sorted(missing)}")
         if data["kind"] != "rtl_manifest" or data["status"] != "pass":
             raise AssertionError(f"unexpected RTL manifest status: {data}")
+        if data["mode"] != "architecture_rtl":
+            raise AssertionError(f"unexpected RTL manifest mode: {data}")
+        if data["source_hardware_root"] != "test/fabric/unit/pe/valid.mlir::pe_2x2":
+            raise AssertionError(f"unexpected RTL source hardware root: {data}")
         if data["source_fabric_adg_identity"] != "test/fabric/unit/pe/valid.mlir::pe_2x2":
             raise AssertionError(f"unexpected Fabric ADG identity: {data}")
         if data["mapping_artifact_identity"] != "":
@@ -138,6 +144,66 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("RTL manifest with missing source file unexpectedly passed audit")
+
+        missing_mode_manifest = out_dir / "missing-mode-rtl-manifest.json"
+        missing_mode_data = json.loads(manifest.read_text())
+        del missing_mode_data["mode"]
+        missing_mode_manifest.write_text(json.dumps(missing_mode_data, indent=2, sort_keys=True) + "\n")
+        missing_mode_audit = out_dir / "missing-mode-rtl-manifest-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(missing_mode_audit),
+                str(missing_mode_manifest),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("RTL manifest without mode unexpectedly passed audit")
+
+        mapped_without_mapping = out_dir / "mapped-without-mapping-rtl-manifest.json"
+        mapped_without_mapping_data = json.loads(manifest.read_text())
+        mapped_without_mapping_data["mode"] = "mapped_workload_rtl"
+        mapped_without_mapping_data["mapping_artifact_identity"] = ""
+        mapped_without_mapping.write_text(
+            json.dumps(mapped_without_mapping_data, indent=2, sort_keys=True) + "\n"
+        )
+        mapped_without_mapping_audit = out_dir / "mapped-without-mapping-rtl-manifest-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(mapped_without_mapping_audit),
+                str(mapped_without_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("mapped-workload RTL manifest without mapping unexpectedly passed audit")
+
+        architecture_with_mapping = out_dir / "architecture-with-mapping-rtl-manifest.json"
+        architecture_with_mapping_data = json.loads(manifest.read_text())
+        architecture_with_mapping_data["mode"] = "architecture_rtl"
+        architecture_with_mapping_data["mapping_artifact_identity"] = "pnr-mapping"
+        architecture_with_mapping.write_text(
+            json.dumps(architecture_with_mapping_data, indent=2, sort_keys=True) + "\n"
+        )
+        architecture_with_mapping_audit = out_dir / "architecture-with-mapping-rtl-manifest-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(architecture_with_mapping_audit),
+                str(architecture_with_mapping),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("architecture RTL manifest with mapping unexpectedly passed audit")
 
         malformed_hardware = out_dir / "malformed-adg-hardware-summary.csv"
         malformed_hardware.write_text(

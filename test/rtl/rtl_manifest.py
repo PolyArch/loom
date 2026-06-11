@@ -92,6 +92,8 @@ def build_manifest(output: Path, hardware_row: dict[str, str]) -> dict[str, obje
         "schema_version": 1,
         "kind": "rtl_manifest",
         "manifest_id": f"rtl-manifest::{top_module}",
+        "mode": "architecture_rtl",
+        "source_hardware_root": hardware_identity,
         "source_fabric_adg_identity": hardware_identity,
         "mapping_artifact_identity": "",
         "lowering_configuration": {
@@ -130,6 +132,8 @@ def scaffold(output: Path) -> dict[str, object]:
         "schema_version": 1,
         "kind": "rtl_manifest",
         "manifest_id": "rtl-manifest::blocked",
+        "mode": "architecture_rtl",
+        "source_hardware_root": "",
         "source_fabric_adg_identity": "",
         "mapping_artifact_identity": "",
         "lowering_configuration": {},

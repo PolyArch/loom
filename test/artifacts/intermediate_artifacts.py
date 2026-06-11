@@ -526,6 +526,8 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "schema_version",
             "kind",
             "manifest_id",
+            "mode",
+            "source_hardware_root",
             "source_fabric_adg_identity",
             "mapping_artifact_identity",
             "lowering_configuration",
@@ -4417,9 +4419,22 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("RTL manifest kind must be rtl_manifest")
         if data.get("status") not in BASE_STATUSES:
             diagnostics.append("RTL manifest status must be a known status")
-        for key in ("manifest_id", "source_fabric_adg_identity", "mapping_artifact_identity"):
+        mode = data.get("mode")
+        if mode not in {"architecture_rtl", "mapped_workload_rtl"}:
+            diagnostics.append("RTL manifest mode must be architecture_rtl or mapped_workload_rtl")
+        for key in (
+            "manifest_id",
+            "source_hardware_root",
+            "source_fabric_adg_identity",
+            "mapping_artifact_identity",
+        ):
             if not isinstance(data.get(key), str):
                 diagnostics.append(f"RTL manifest {key} must be a string")
+        mapping_identity = data.get("mapping_artifact_identity")
+        if mode == "architecture_rtl" and mapping_identity:
+            diagnostics.append("architecture RTL manifest must not claim mapping_artifact_identity")
+        if mode == "mapped_workload_rtl" and not mapping_identity:
+            diagnostics.append("mapped-workload RTL manifest needs mapping_artifact_identity")
         if not isinstance(data.get("lowering_configuration"), dict):
             diagnostics.append("RTL manifest lowering_configuration must be an object")
         for key in (
@@ -4464,6 +4479,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             elif fingerprint != artifact_fingerprint(resolved_source):
                 diagnostics.append(f"RTL manifest source {index} fingerprint is stale")
         if data.get("status") == "pass":
+            if not data.get("source_hardware_root"):
+                diagnostics.append("RTL manifest pass needs source_hardware_root")
             if not data.get("source_fabric_adg_identity"):
                 diagnostics.append("RTL manifest pass needs source_fabric_adg_identity")
             if not sources:
