@@ -126,8 +126,25 @@ def main() -> int:
             "work-package::dotproduct::dotproduct__shared_reduction_adg"
         ):
             raise AssertionError(f"unexpected dotproduct work package identity: {runtime_package}")
-        if runtime_package.get("memory_descriptors") == []:
-            raise AssertionError(f"dotproduct runtime package needs memory descriptors: {runtime_package}")
+        memory_descriptors = runtime_package.get("memory_descriptors")
+        if not isinstance(memory_descriptors, list) or len(memory_descriptors) != 1:
+            raise AssertionError(f"dotproduct runtime package needs one memory descriptor: {runtime_package}")
+        memory_descriptor = memory_descriptors[0]
+        expected_descriptor_fields = {
+            "logical_argument": "dotproduct.default_input",
+            "host_buffer_identity": "runtime-buffer::dotproduct::default_input",
+            "policy": "simulated",
+            "runtime_input_identity": "test-app-fixture::dotproduct::default",
+            "byte_size": 512,
+            "element_layout": "f32[64];f32[64]",
+            "alignment_bytes": 4,
+            "address_space": "simulator::memory_model",
+            "coherence_requirement": "simulator_consistent",
+            "transfer_policy": "simulated",
+        }
+        for key, value in expected_descriptor_fields.items():
+            if memory_descriptor.get(key) != value:
+                raise AssertionError(f"unexpected dotproduct memory descriptor {key}: {runtime_package}")
 
         dse_rows = read_csv_rows(out_dir / "dse-candidate-summary.csv")
         dotproduct_dse_rows = [row for row in dse_rows if row["workload"] == "dotproduct"]
