@@ -6,7 +6,9 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -112,13 +114,61 @@ private:
   std::vector<std::string> exactBodyLines;
 };
 
+struct SystemNodeSpec {
+  std::string name;
+  std::string kind;
+  std::vector<std::string> ports;
+  std::string spatialModule;
+  std::string scalar;
+  std::string function;
+  std::optional<std::uint64_t> bytes;
+};
+
+struct SystemLinkSpec {
+  std::string srcNode;
+  std::string srcPort;
+  std::string srcChannel;
+  std::string dstNode;
+  std::string dstPort;
+  std::string dstChannel;
+};
+
+class SystemBuilder {
+public:
+  explicit SystemBuilder(std::string name, std::string memoryModel);
+
+  SystemBuilder &addHostCore(std::string name, std::string scalar,
+                             std::vector<std::string> ports);
+  SystemBuilder &addSpatialAccelerator(std::string name,
+                                       std::string spatialModule,
+                                       std::string scalar,
+                                       std::vector<std::string> ports);
+  SystemBuilder &addFixedAccelerator(std::string name, std::string function,
+                                     std::vector<std::string> ports);
+  SystemBuilder &addMemory(std::string name, std::uint64_t bytes,
+                           std::vector<std::string> ports);
+  SystemBuilder &connect(std::string srcNode, std::string srcPort,
+                         std::string srcChannel, std::string dstNode,
+                         std::string dstPort, std::string dstChannel);
+
+  llvm::Error print(llvm::raw_ostream &os) const;
+
+private:
+  std::string name;
+  std::string memoryModel;
+  std::vector<SystemNodeSpec> nodes;
+  std::vector<SystemLinkSpec> links;
+};
+
 ModuleBuilder buildMinimalSpatialAdg();
 ModuleBuilder buildMinimalTemporalAdg();
 ModuleBuilder buildSharedReductionAdg();
+SystemBuilder buildHeterogeneousSocAdg();
 
 llvm::Error writeMinimalSpatialAdg(llvm::raw_ostream &os);
 llvm::Error writeMinimalTemporalAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedReductionAdg(llvm::raw_ostream &os);
+llvm::Error writeHeterogeneousSocAdg(llvm::raw_ostream &os);
 
 } // namespace adg
 } // namespace loom

@@ -19,6 +19,7 @@ HEADER = [
     "tile_kinds",
     "schedule_kinds",
     "adg_builder_recipe_identity",
+    "node_kinds",
 ]
 
 

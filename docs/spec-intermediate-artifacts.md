@@ -166,24 +166,40 @@ Additional required columns:
 
 * `tile_kinds`;
 * `schedule_kinds`;
-* `adg_builder_recipe_identity`.
+* `adg_builder_recipe_identity`;
+* `node_kinds`.
 
 Rules:
 
-* `topology_class` distinguishes arbitrary graph, non-mesh, regular
-  graph, mesh-like, systolic-like, and custom classes.
+* `topology_class` is `fabric_module_template` for SpatialCore or CGRA
+  templates emitted as `fabric.module`, and `fabric_system` for
+  system-level hardware candidates emitted as `fabric.system`.
 * `node_count` and `link_count` are non-negative integers.
-* `tile_kinds` is a semicolon-separated, deterministic set of Fabric
-  SpatialCore tile kinds observed in the verified template. The baseline
-  tile kinds are `pe`, `switch`, and `mem`.
-* `schedule_kinds` is a semicolon-separated, deterministic set of
-  schedule predicates observed on those tile kinds. The baseline
-  schedule kinds are `spatial` and `temporal`.
+* For `fabric_module_template` rows, `tile_kinds` is a
+  semicolon-separated, deterministic set of Fabric SpatialCore tile
+  kinds observed in the verified template. The baseline tile kinds are
+  `pe`, `switch`, and `mem`.
+* For `fabric_module_template` rows, `schedule_kinds` is a
+  semicolon-separated, deterministic set of schedule predicates observed
+  on those tile kinds. The baseline schedule kinds are `spatial` and
+  `temporal`.
+* For `fabric_module_template` rows, `node_kinds` must be empty because
+  system nodes are not SpatialCore tiles.
+* For `fabric_system` rows, `node_kinds` is a semicolon-separated,
+  deterministic set of system node kinds observed in the verified
+  system. The current baseline node kinds are `host_core`, `acc_core`,
+  `fixed_accelerator`, and `memory`.
+* For `fabric_system` rows, `tile_kinds` and `schedule_kinds` must be
+  empty because SpatialCore tile evidence belongs to `fabric.module`
+  rows referenced by the system.
 * `adg_builder_recipe_identity` is empty when no ADG Builder recipe is
   known for the candidate. When present, it is a stable identity for the
   recipe that generated the candidate Fabric ADG.
-* `verify_status = pass` requires positive node count and legal link
-  evidence for hardware candidates that are not intentionally empty.
+* `verify_status = pass` requires positive node count. `fabric_system`
+  pass rows also require positive `link_count`; `fabric_module_template`
+  rows may have `link_count = 0` because module connectivity is
+  represented by Graph-region SSA values rather than `fabric.link`
+  records.
 * Coordinates or visualization metadata must not be counted as links.
 
 ### PnR Mapping Summary

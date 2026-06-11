@@ -31,9 +31,13 @@ ADG_BUILDER_RECIPES = {
 }
 SYMBOL_PATTERN = r'"(?:\\.|[^"\\])*"|[A-Za-z_.$-][A-Za-z0-9_.$-]*'
 MODULE_RE = re.compile(rf"^\s*fabric\.module @(?P<name>{SYMBOL_PATTERN})")
+SYSTEM_RE = re.compile(
+    rf"^\s*fabric\.system @(?P<name>{SYMBOL_PATTERN})\s+memory_model\s*="
+)
 NODE_RE = re.compile(r"\bfabric\.(pe|switch|mem|fifo|instantiate)\b")
 TILE_RE = re.compile(r"\bfabric\.(pe|switch|mem)\b")
 SCHEDULE_RE = re.compile(r"\[(spatial|temporal)\]")
+SYSTEM_NODE_RE = re.compile(r'\bfabric\.node\s+@\S+\s+kind\s*=\s*"(?P<kind>[^"]+)"')
 LINK_RE = re.compile(r"\bfabric\.link\b")
 
 
@@ -105,21 +109,29 @@ def symbol_name(raw: str) -> str:
 
 
 def iter_module_bodies(text: str) -> list[tuple[str, list[str]]]:
-    modules: list[tuple[str, list[str]]] = []
+    return iter_symbol_bodies(text, MODULE_RE)
+
+
+def iter_system_bodies(text: str) -> list[tuple[str, list[str]]]:
+    return iter_symbol_bodies(text, SYSTEM_RE)
+
+
+def iter_symbol_bodies(text: str, pattern: re.Pattern[str]) -> list[tuple[str, list[str]]]:
+    bodies: list[tuple[str, list[str]]] = []
     active_name: str | None = None
     active_body: list[str] = []
     brace_depth = 0
 
     for line in text.splitlines():
         if active_name is None:
-            match = MODULE_RE.match(line)
+            match = pattern.match(line)
             if match is None:
                 continue
             active_name = symbol_name(match.group("name"))
             active_body = [line]
             brace_depth = line.count("{") - line.count("}")
             if brace_depth == 0:
-                modules.append((active_name, active_body))
+                bodies.append((active_name, active_body))
                 active_name = None
                 active_body = []
             continue
@@ -127,11 +139,11 @@ def iter_module_bodies(text: str) -> list[tuple[str, list[str]]]:
         active_body.append(line)
         brace_depth += line.count("{") - line.count("}")
         if brace_depth == 0:
-            modules.append((active_name, active_body))
+            bodies.append((active_name, active_body))
             active_name = None
             active_body = []
 
-    return modules
+    return bodies
 
 
 def summarize_module(
@@ -161,6 +173,32 @@ def summarize_module(
         "tile_kinds": ";".join(sorted(tile_kinds)),
         "schedule_kinds": ";".join(sorted(schedule_kinds)),
         "adg_builder_recipe_identity": recipe_identity,
+        "node_kinds": "",
+    }
+
+
+def summarize_system(
+    input_path: Path,
+    name: str,
+    body: list[str],
+    recipe_identity: str,
+) -> dict[str, str]:
+    node_kinds: set[str] = set()
+    for line in body:
+        match = SYSTEM_NODE_RE.search(line)
+        if match is not None:
+            node_kinds.add(match.group("kind"))
+    return {
+        "hardware": f"{relative_id(input_path)}::{name}",
+        "topology_class": "fabric_system",
+        "node_count": str(sum(1 for line in body if SYSTEM_NODE_RE.search(line))),
+        "link_count": str(sum(1 for line in body if LINK_RE.search(line))),
+        "verify_status": "pass",
+        "diagnostic": "fabric.system verified; link_count counts explicit fabric.link records",
+        "tile_kinds": "",
+        "schedule_kinds": "",
+        "adg_builder_recipe_identity": recipe_identity,
+        "node_kinds": ";".join(sorted(node_kinds)),
     }
 
 
@@ -175,6 +213,7 @@ def failed_row(input_path: Path, diagnostic: str, recipe_identity: str) -> dict[
         "tile_kinds": "",
         "schedule_kinds": "",
         "adg_builder_recipe_identity": recipe_identity,
+        "node_kinds": "",
     }
 
 
@@ -189,17 +228,21 @@ def summarize_input(
         return [failed_row(input_path, diagnostic, recipe_identity)], False
 
     modules = iter_module_bodies(text)
-    if not modules:
+    systems = iter_system_bodies(text)
+    if not modules and not systems:
         return [
             failed_row(
                 input_path,
-                "verified file contains no fabric.module hardware template",
+                "verified file contains no fabric.module template or fabric.system hardware candidate",
                 recipe_identity,
             )
         ], False
     return [
         summarize_module(input_path, name, body, recipe_identity)
         for name, body in modules
+    ] + [
+        summarize_system(input_path, name, body, recipe_identity)
+        for name, body in systems
     ], True
 
 

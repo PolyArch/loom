@@ -378,10 +378,16 @@ through Builder internals.
 This section is non-normative. It records current repository facts for
 orientation only and is not part of target acceptance.
 
-The current implementation contains a `ModuleBuilder` seed and a
-`shared_reduction_adg` example that emits a `fabric.module`. The
-system-level `SystemBuilder` and broad SpatialCore tile-matrix helpers
-are target contracts and are not yet fully implemented.
+The current implementation contains a `ModuleBuilder` seed, a
+`SystemBuilder` seed, a `shared_reduction_adg` SpatialCore example that
+emits a `fabric.module`, and a heterogeneous SoC example that emits a
+baseline `fabric.system`. The system builder seed covers host,
+SpatialCore-backed accelerator, fixed-function accelerator, memory
+nodes, string-described port channels, explicit links, and hardware
+summary evidence. Full exact-layer coverage, structured system port and
+channel attributes, domains, coherence, address spaces, visualization
+layouts, and broad SpatialCore tile-matrix helpers remain target
+contracts.
 
 ## Non-Goals
 

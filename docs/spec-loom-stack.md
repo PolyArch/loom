@@ -196,11 +196,16 @@ belong in ignored execution guides under `temp/`.
 The current repository already contains substantial dataflow, fabric,
 mapping, simulator, report, and audit scaffolding, but implementation
 coverage is uneven. `fabric.module` and several SpatialCore-level fabric
-ops are implemented. The system-level `fabric.system` target and the
-full `SystemBuilder` API are still mostly specified rather than
-implemented. Current PnR and CGRA-sim evidence is useful for plumbing but
-does not yet represent the full target mapping and hardware-aware
-execution universe.
+ops are implemented. The system-level `fabric.system` target and
+`SystemBuilder` now have a baseline covering host, accelerator,
+fixed-function accelerator, memory nodes, string-described port
+channels, explicit links, endpoint checks, and hardware summary
+evidence. Structured system attributes, full node-kind coverage,
+domains, address spaces, coherence, and selected-system consumption by
+PnR, CGRA-sim, RTL, FPA, runtime, reports, and DSE remain target work.
+Current PnR and CGRA-sim evidence is useful for plumbing but does not
+yet represent the full target mapping and hardware-aware execution
+universe.
 
 ## Hardware Model
 

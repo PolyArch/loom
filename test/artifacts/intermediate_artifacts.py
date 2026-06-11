@@ -201,7 +201,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         kind="adg_hardware",
         filename="adg-hardware-summary.csv",
         first_columns=("hardware", "topology_class", "node_count", "link_count", "verify_status", "diagnostic"),
-        extra_columns=("tile_kinds", "schedule_kinds", "adg_builder_recipe_identity"),
+        extra_columns=("tile_kinds", "schedule_kinds", "adg_builder_recipe_identity", "node_kinds"),
         status_columns=("verify_status",),
         numeric_columns=("node_count", "link_count"),
         identity_columns=("hardware", "topology_class"),
@@ -212,6 +212,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "0",
             "blocked",
             "ADG hardware summary scaffold has no hardware candidate yet",
+            "",
             "",
             "",
             "",
@@ -1074,22 +1075,31 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
         topology_class = row.get("topology_class", "")
         tile_kinds = {entry for entry in row.get("tile_kinds", "").split(";") if entry}
         schedule_kinds = {entry for entry in row.get("schedule_kinds", "").split(";") if entry}
+        node_kinds = {entry for entry in row.get("node_kinds", "").split(";") if entry}
         if node_count is not None and node_count <= 0:
             diagnostics.append(f"row {row_index}: ADG hardware pass row has no nodes")
-        if not tile_kinds:
-            diagnostics.append(f"row {row_index}: ADG hardware pass row has no tile kinds")
-        if not tile_kinds <= {"pe", "switch", "mem"}:
-            diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown tile kinds")
-        if not schedule_kinds:
-            diagnostics.append(f"row {row_index}: ADG hardware pass row has no schedule kinds")
-        if not schedule_kinds <= {"spatial", "temporal"}:
-            diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown schedule kinds")
-        if (
-            topology_class != "fabric_module_template"
-            and link_count is not None
-            and link_count <= 0
-        ):
-            diagnostics.append(f"row {row_index}: ADG hardware pass row has no links")
+        if topology_class == "fabric_module_template":
+            if not tile_kinds:
+                diagnostics.append(f"row {row_index}: ADG hardware pass row has no tile kinds")
+            if not tile_kinds <= {"pe", "switch", "mem"}:
+                diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown tile kinds")
+            if not schedule_kinds:
+                diagnostics.append(f"row {row_index}: ADG hardware pass row has no schedule kinds")
+            if not schedule_kinds <= {"spatial", "temporal"}:
+                diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown schedule kinds")
+            if node_kinds:
+                diagnostics.append(f"row {row_index}: fabric.module row must not carry node kinds")
+        elif topology_class == "fabric_system":
+            if tile_kinds or schedule_kinds:
+                diagnostics.append(f"row {row_index}: fabric.system row must not carry tile or schedule kinds")
+            if link_count is not None and link_count <= 0:
+                diagnostics.append(f"row {row_index}: fabric.system pass row has no links")
+            if not node_kinds:
+                diagnostics.append(f"row {row_index}: fabric.system pass row has no node kinds")
+            if not node_kinds <= {"acc_core", "fixed_accelerator", "host_core", "memory"}:
+                diagnostics.append(f"row {row_index}: fabric.system pass row has unknown node kinds")
+        else:
+            diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown topology class")
 
 
 def validate_sim_cycle_uniqueness(rows: list[dict[str, str]], diagnostics: list[str]) -> None:

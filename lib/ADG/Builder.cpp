@@ -5,6 +5,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <iterator>
 #include <optional>
 #include <system_error>
 
@@ -66,8 +67,8 @@ void printBindings(llvm::raw_ostream &os, llvm::ArrayRef<PortBinding> bindings,
     const PortBinding &binding = bindings[i];
     if (i)
       os << ",\n" << indent;
-    os << valueName(binding.localName) << " = "
-       << valueName(binding.sourceName) << " : " << binding.type;
+    os << valueName(binding.localName) << " = " << valueName(binding.sourceName)
+       << " : " << binding.type;
     if (!binding.castType.empty())
       os << " to " << binding.castType;
   }
@@ -84,9 +85,9 @@ void printStringArray(llvm::raw_ostream &os,
   os << ']';
 }
 
-void printHwParams(llvm::raw_ostream &os,
-                   const std::map<std::string, std::vector<std::string>>
-                       &hwParams) {
+void printHwParams(
+    llvm::raw_ostream &os,
+    const std::map<std::string, std::vector<std::string>> &hwParams) {
   if (hwParams.empty())
     return;
   os << "hw_params = [{";
@@ -314,7 +315,8 @@ PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
                         TemporalPeConfig temporal = TemporalPeConfig()) {
   PeSpec pe;
   pe.schedule = schedule;
-  pe.inputs = {{"pa", "lhs", boundaryType, ""}, {"pb", "rhs", boundaryType, ""}};
+  pe.inputs = {{"pa", "lhs", boundaryType, ""},
+               {"pb", "rhs", boundaryType, ""}};
   pe.resultTypes = {boundaryType};
   pe.temporal = std::move(temporal);
 
@@ -360,6 +362,54 @@ ModuleBuilder &ModuleBuilder::addMem(MemSpec mem) {
 
 ModuleBuilder &ModuleBuilder::addExactBodyLine(std::string line) {
   exactBodyLines.push_back(std::move(line));
+  return *this;
+}
+
+SystemBuilder::SystemBuilder(std::string name, std::string memoryModel)
+    : name(std::move(name)), memoryModel(std::move(memoryModel)) {}
+
+SystemBuilder &SystemBuilder::addHostCore(std::string nodeName,
+                                          std::string scalar,
+                                          std::vector<std::string> ports) {
+  nodes.push_back(SystemNodeSpec{std::move(nodeName), "host_core",
+                                 std::move(ports), "", std::move(scalar), "",
+                                 std::nullopt});
+  return *this;
+}
+
+SystemBuilder &SystemBuilder::addSpatialAccelerator(
+    std::string nodeName, std::string spatialModule, std::string scalar,
+    std::vector<std::string> ports) {
+  nodes.push_back(SystemNodeSpec{std::move(nodeName), "acc_core",
+                                 std::move(ports), std::move(spatialModule),
+                                 std::move(scalar), "", std::nullopt});
+  return *this;
+}
+
+SystemBuilder &
+SystemBuilder::addFixedAccelerator(std::string nodeName, std::string function,
+                                   std::vector<std::string> ports) {
+  nodes.push_back(SystemNodeSpec{std::move(nodeName), "fixed_accelerator",
+                                 std::move(ports), "", "", std::move(function),
+                                 std::nullopt});
+  return *this;
+}
+
+SystemBuilder &SystemBuilder::addMemory(std::string nodeName,
+                                        std::uint64_t bytes,
+                                        std::vector<std::string> ports) {
+  nodes.push_back(SystemNodeSpec{std::move(nodeName), "memory",
+                                 std::move(ports), "", "", "", bytes});
+  return *this;
+}
+
+SystemBuilder &SystemBuilder::connect(std::string srcNode, std::string srcPort,
+                                      std::string srcChannel,
+                                      std::string dstNode, std::string dstPort,
+                                      std::string dstChannel) {
+  links.push_back(SystemLinkSpec{std::move(srcNode), std::move(srcPort),
+                                 std::move(srcChannel), std::move(dstNode),
+                                 std::move(dstPort), std::move(dstChannel)});
   return *this;
 }
 
@@ -467,8 +517,8 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
         if (i)
           os << ", ";
         const MemStorePort &store = mem.stores[i];
-        os << valueName(store.address) << ", " << valueName(store.data)
-           << ", " << valueName(store.control);
+        os << valueName(store.address) << ", " << valueName(store.data) << ", "
+           << valueName(store.control);
       }
       os << ')';
     }
@@ -513,6 +563,113 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
   return llvm::Error::success();
 }
 
+llvm::Error SystemBuilder::print(llvm::raw_ostream &os) const {
+  if (name.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG system name is empty");
+  if (memoryModel.empty())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "ADG system memory model is empty");
+  llvm::StringSet<> nodeNames;
+  for (const SystemNodeSpec &node : nodes) {
+    if (node.name.empty() || node.kind.empty() || node.ports.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG system node is incomplete");
+    if (!nodeNames.insert(node.name).second)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "duplicate ADG system node %s",
+                                     node.name.c_str());
+  }
+  for (const SystemLinkSpec &link : links) {
+    if (!nodeNames.contains(link.srcNode))
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG system link source %s is unknown",
+                                     link.srcNode.c_str());
+    if (!nodeNames.contains(link.dstNode))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG system link destination %s is unknown", link.dstNode.c_str());
+  }
+
+  os << "fabric.system @" << name << " memory_model = \"" << memoryModel
+     << "\" {\n";
+  for (const SystemNodeSpec &node : nodes) {
+    os << "  fabric.node @" << node.name << " kind = \"" << node.kind << "\"\n"
+       << "      ports = ";
+    printStringArray(os, node.ports);
+    os << " attributes {";
+    bool firstAttr = true;
+    auto printComma = [&]() {
+      if (!firstAttr)
+        os << ", ";
+      firstAttr = false;
+    };
+    if (!node.spatialModule.empty()) {
+      printComma();
+      os << "spatial = @" << node.spatialModule;
+    }
+    if (!node.scalar.empty()) {
+      printComma();
+      os << "scalar = \"" << node.scalar << "\"";
+    }
+    if (!node.function.empty()) {
+      printComma();
+      os << "function = \"" << node.function << "\"";
+    }
+    if (node.bytes) {
+      printComma();
+      os << "bytes = " << *node.bytes << " : i64";
+    }
+    os << "}\n";
+  }
+  if (!links.empty())
+    os << '\n';
+  for (const SystemLinkSpec &link : links) {
+    os << "  fabric.link src = @" << link.srcNode << " src_port = \""
+       << link.srcPort << "\""
+       << " src_channel = \"" << link.srcChannel << "\""
+       << " dst = @" << link.dstNode << " dst_port = \"" << link.dstPort
+       << "\" dst_channel = \"" << link.dstChannel << "\"\n";
+  }
+  os << "}\n";
+  return llvm::Error::success();
+}
+
+namespace {
+
+std::vector<std::string> axiManagerPort(std::string port) {
+  return {port + ".aw:output", port + ".w:output", port + ".b:input",
+          port + ".ar:output", port + ".r:input"};
+}
+
+std::vector<std::string> axiSubordinatePort(std::string port) {
+  return {port + ".aw:input", port + ".w:input", port + ".b:output",
+          port + ".ar:input", port + ".r:output"};
+}
+
+void appendPorts(std::vector<std::string> &dst, std::vector<std::string> src) {
+  dst.insert(dst.end(), std::make_move_iterator(src.begin()),
+             std::make_move_iterator(src.end()));
+}
+
+void connectAxiMemoryPort(SystemBuilder &system, llvm::StringRef managerNode,
+                          llvm::StringRef managerPort,
+                          llvm::StringRef memoryNode,
+                          llvm::StringRef memoryPort) {
+  system.connect(managerNode.str(), managerPort.str(), "aw", memoryNode.str(),
+                 memoryPort.str(), "aw");
+  system.connect(managerNode.str(), managerPort.str(), "w", memoryNode.str(),
+                 memoryPort.str(), "w");
+  system.connect(memoryNode.str(), memoryPort.str(), "b", managerNode.str(),
+                 managerPort.str(), "b");
+  system.connect(managerNode.str(), managerPort.str(), "ar", memoryNode.str(),
+                 memoryPort.str(), "ar");
+  system.connect(memoryNode.str(), memoryPort.str(), "r", managerNode.str(),
+                 managerPort.str(), "r");
+}
+
+} // namespace
+
 ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
   ModuleBuilder module("minimal_spatial_adg");
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
@@ -521,9 +678,8 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
       .addInput("addr", "!fabric.bits<32>")
       .addInput("ctrl", "!fabric.bits<0>");
 
-  module.addPe(
-      makeMinimalAddPe(Schedule::Spatial, "!fabric.bits<32>",
-                       "!fabric.bits<32>"));
+  module.addPe(makeMinimalAddPe(Schedule::Spatial, "!fabric.bits<32>",
+                                "!fabric.bits<32>"));
 
   module.addSwitch(SwitchSpec{Schedule::Spatial,
                               {"lhs", "rhs"},
@@ -547,16 +703,15 @@ ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
   temporal.numInstruction = 1;
   temporal.fuConfigMode = "per_fu_config";
   temporal.operandBufferMode = "per_instruction";
-  module.addPe(makeMinimalAddPe(Schedule::Temporal,
-                                "!fabric.bits_tag<32, 4>",
+  module.addPe(makeMinimalAddPe(Schedule::Temporal, "!fabric.bits_tag<32, 4>",
                                 "!fabric.bits<32>", std::move(temporal)));
 
-  module.addSwitch(SwitchSpec{Schedule::Temporal,
-                              {"lhs", "rhs"},
-                              {"!fabric.bits_tag<32, 4>",
-                               "!fabric.bits_tag<32, 4>"},
-                              {"11", "11"},
-                              1});
+  module.addSwitch(
+      SwitchSpec{Schedule::Temporal,
+                 {"lhs", "rhs"},
+                 {"!fabric.bits_tag<32, 4>", "!fabric.bits_tag<32, 4>"},
+                 {"11", "11"},
+                 1});
 
   MemSpec mem;
   mem.schedule = Schedule::Temporal;
@@ -589,14 +744,14 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   streamFu.inputs = {{"fa", "pa", "!fabric.bits<64>", ""},
                      {"fb", "pb", "!fabric.bits<64>", ""},
                      {"fc", "pc", "!fabric.bits<64>", ""}};
-  streamFu.operations.push_back(FabricOpSpec{
-      {"idx", "rwc"},
-      {"dataflow.stream"},
-      {"fa", "fb", "fc"},
-      {"!fabric.bits<64>", "!fabric.bits<64>", "!fabric.bits<64>"},
-      {"!fabric.bits<64>", "!fabric.bits<1>"},
-      {{"cont_cond", {"<"}}, {"step_op", {"+="}}},
-      {{"cont_cond", "<"}, {"step_op", "+="}}});
+  streamFu.operations.push_back(
+      FabricOpSpec{{"idx", "rwc"},
+                   {"dataflow.stream"},
+                   {"fa", "fb", "fc"},
+                   {"!fabric.bits<64>", "!fabric.bits<64>", "!fabric.bits<64>"},
+                   {"!fabric.bits<64>", "!fabric.bits<1>"},
+                   {{"cont_cond", {"<"}}, {"step_op", {"+="}}},
+                   {{"cont_cond", "<"}, {"step_op", "+="}}});
   streamPe.fus.push_back(std::move(streamFu));
   module.addPe(std::move(streamPe));
 
@@ -606,48 +761,45 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                         {"pc", "i32c", "!fabric.bits<32>", ""}};
   reductionPe.resultTypes = {"!fabric.bits<32>"};
   auto makeCarryFu = []() {
-    return FuSpec{
-        {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-         {"init", "pb", "!fabric.bits<32>", ""},
-         {"next", "pc", "!fabric.bits<32>", ""}},
-        {},
-        {FabricOpSpec{{"carried"},
-                      {"dataflow.carry"},
-                      {"cond", "init", "next"},
-                      {"!fabric.bits<1>", "!fabric.bits<32>",
-                       "!fabric.bits<32>"},
-                      {"!fabric.bits<32>"},
-                      {},
-                      {}}},
-        {}};
+    return FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+                   {"init", "pb", "!fabric.bits<32>", ""},
+                   {"next", "pc", "!fabric.bits<32>", ""}},
+                  {},
+                  {FabricOpSpec{{"carried"},
+                                {"dataflow.carry"},
+                                {"cond", "init", "next"},
+                                {"!fabric.bits<1>", "!fabric.bits<32>",
+                                 "!fabric.bits<32>"},
+                                {"!fabric.bits<32>"},
+                                {},
+                                {}}},
+                  {}};
   };
   auto makeInvariantFu = []() {
-    return FuSpec{
-        {{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
-         {"value", "pb", "!fabric.bits<32>", ""}},
-        {},
-        {FabricOpSpec{{"stable"},
-                      {"dataflow.invariant"},
-                      {"cond", "value"},
-                      {"!fabric.bits<1>", "!fabric.bits<32>"},
-                      {"!fabric.bits<32>"},
-                      {},
-                      {}}},
-        {}};
+    return FuSpec{{{"cond", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+                   {"value", "pb", "!fabric.bits<32>", ""}},
+                  {},
+                  {FabricOpSpec{{"stable"},
+                                {"dataflow.invariant"},
+                                {"cond", "value"},
+                                {"!fabric.bits<1>", "!fabric.bits<32>"},
+                                {"!fabric.bits<32>"},
+                                {},
+                                {}}},
+                  {}};
   };
   auto makeBinary32Fu = [](std::string resultName, std::string opName) {
-    return FuSpec{
-        {{"lhs", "pa", "!fabric.bits<32>", ""},
-         {"rhs", "pb", "!fabric.bits<32>", ""}},
-        {},
-        {FabricOpSpec{{std::move(resultName)},
-                      {std::move(opName)},
-                      {"lhs", "rhs"},
-                      {"!fabric.bits<32>", "!fabric.bits<32>"},
-                      {"!fabric.bits<32>"},
-                      {},
-                      {}}},
-        {}};
+    return FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+                   {"rhs", "pb", "!fabric.bits<32>", ""}},
+                  {},
+                  {FabricOpSpec{{std::move(resultName)},
+                                {std::move(opName)},
+                                {"lhs", "rhs"},
+                                {"!fabric.bits<32>", "!fabric.bits<32>"},
+                                {"!fabric.bits<32>"},
+                                {},
+                                {}}},
+                  {}};
   };
   reductionPe.fus.push_back(makeCarryFu());
   reductionPe.fus.push_back(makeCarryFu());
@@ -667,28 +819,43 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   PeSpec syncPe;
   syncPe.inputs = {{"pc", "ctrl", "!fabric.bits<0>", ""}};
   syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(FuSpec{
-      {{"fc", "pc", "!fabric.bits<0>", ""}},
-      {},
-      {FabricOpSpec{{"done"},
-                    {"dataflow.sync"},
-                    {"fc"},
-                    {"!fabric.bits<0>"},
-                    {"!fabric.bits<0>"},
-                    {},
-                    {{"bitmask", "1"}}}},
-      {}});
+  syncPe.fus.push_back(FuSpec{{{"fc", "pc", "!fabric.bits<0>", ""}},
+                              {},
+                              {FabricOpSpec{{"done"},
+                                            {"dataflow.sync"},
+                                            {"fc"},
+                                            {"!fabric.bits<0>"},
+                                            {"!fabric.bits<0>"},
+                                            {},
+                                            {{"bitmask", "1"}}}},
+                              {}});
   module.addPe(std::move(syncPe));
 
-  module.addMem(MemSpec{Schedule::Spatial,
-                        "mgr",
-                        {{"i32a", "ctrl"},
-                         {"i32b", "ctrl"},
-                         {"i32c", "ctrl"},
-                         {"i32d", "ctrl"}},
-                        {{"i32a", "i32b", "ctrl"},
-                         {"i32c", "i32d", "ctrl"}}});
+  module.addMem(MemSpec{
+      Schedule::Spatial,
+      "mgr",
+      {{"i32a", "ctrl"}, {"i32b", "ctrl"}, {"i32c", "ctrl"}, {"i32d", "ctrl"}},
+      {{"i32a", "i32b", "ctrl"}, {"i32c", "i32d", "ctrl"}}});
   return module;
+}
+
+SystemBuilder loom::adg::buildHeterogeneousSocAdg() {
+  SystemBuilder system("heterogeneous_dual_accel_soc", "sequential");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addFixedAccelerator("fft0", "fft", axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("fft0"));
+  system.addMemory("dram0", 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "fft0", "mem", "dram0", "fft0");
+  return system;
 }
 
 llvm::Error loom::adg::writeMinimalSpatialAdg(llvm::raw_ostream &os) {
@@ -701,4 +868,11 @@ llvm::Error loom::adg::writeMinimalTemporalAdg(llvm::raw_ostream &os) {
 
 llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
   return buildSharedReductionAdg().print(os);
+}
+
+llvm::Error loom::adg::writeHeterogeneousSocAdg(llvm::raw_ostream &os) {
+  if (llvm::Error err = buildSharedReductionAdg().print(os))
+    return err;
+  os << '\n';
+  return buildHeterogeneousSocAdg().print(os);
 }

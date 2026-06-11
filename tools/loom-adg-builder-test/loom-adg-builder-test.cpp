@@ -22,6 +22,11 @@ static llvm::cl::opt<bool>
                     llvm::cl::desc("emit a minimal temporal SpatialCore ADG"),
                     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> heterogeneousSoc(
+    "heterogeneous-soc",
+    llvm::cl::desc("emit a heterogeneous SoC system-level ADG"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -34,7 +39,7 @@ int main(int argc, char **argv) {
 
   unsigned selectedRecipes =
       (sharedReduction ? 1 : 0) + (minimalSpatial ? 1 : 0) +
-      (minimalTemporal ? 1 : 0);
+      (minimalTemporal ? 1 : 0) + (heterogeneousSoc ? 1 : 0);
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
     return 1;
@@ -57,6 +62,8 @@ int main(int argc, char **argv) {
       return loom::adg::writeMinimalSpatialAdg(out);
     if (minimalTemporal)
       return loom::adg::writeMinimalTemporalAdg(out);
+    if (heterogeneousSoc)
+      return loom::adg::writeHeterogeneousSocAdg(out);
     return loom::adg::writeSharedReductionAdg(out);
   };
 

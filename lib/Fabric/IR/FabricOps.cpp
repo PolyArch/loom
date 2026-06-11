@@ -8,6 +8,7 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -42,6 +43,85 @@ static bool sameModulePortKind(Type src, Type dst) {
   if (isa<MemRefType>(src))
     return isa<MemRefType>(dst);
   return false;
+}
+
+struct SystemChannel {
+  std::string port;
+  std::string channel;
+  std::string direction;
+};
+
+static std::string endpointKey(llvm::StringRef owner, llvm::StringRef port,
+                               llvm::StringRef channel) {
+  return (owner + "." + port + "." + channel).str();
+}
+
+static FailureOr<SystemChannel> parseSystemChannel(Attribute attr,
+                                                   Operation *owner) {
+  auto stringAttr = dyn_cast<StringAttr>(attr);
+  if (!stringAttr) {
+    owner->emitOpError("port descriptors must be string attributes");
+    return failure();
+  }
+
+  StringRef raw = stringAttr.getValue();
+  auto [qualified, direction] = raw.split(':');
+  auto [port, channel] = qualified.split('.');
+  if (qualified.empty() || port.empty() || channel.empty() ||
+      direction.empty() || qualified == raw || channel.contains('.') ||
+      direction.contains(':')) {
+    owner->emitOpError("port descriptor '")
+        << raw
+        << "' must use the form 'port.channel:input' or "
+           "'port.channel:output'";
+    return failure();
+  }
+  if (direction != "input" && direction != "output") {
+    owner->emitOpError("port descriptor '")
+        << raw << "' has direction '" << direction
+        << "', expected 'input' or 'output'";
+    return failure();
+  }
+  return SystemChannel{port.str(), channel.str(), direction.str()};
+}
+
+static LogicalResult verifySystemPortArray(Operation *op, ArrayAttr ports) {
+  if (!ports || ports.empty())
+    return op->emitOpError("requires at least one system port channel");
+  llvm::StringSet<> seenChannels;
+  for (Attribute attr : ports) {
+    FailureOr<SystemChannel> channel = parseSystemChannel(attr, op);
+    if (failed(channel))
+      return failure();
+    std::string key = endpointKey("", channel->port, channel->channel);
+    if (!seenChannels.insert(key).second)
+      return op->emitOpError("duplicates port channel '")
+             << channel->port << "." << channel->channel << "'";
+  }
+  return success();
+}
+
+static bool isBaselineSystemNodeKind(StringRef kind) {
+  return kind == "host_core" || kind == "acc_core" ||
+         kind == "fixed_accelerator" || kind == "memory";
+}
+
+static bool isValidMemoryModel(StringRef model) {
+  return model == "sequential" || model == "tso" ||
+         model == "release_acquire" || model == "weak" || model == "custom";
+}
+
+static Operation *lookupSymbolUpward(Operation *from, FlatSymbolRefAttr ref) {
+  Operation *cursor = from;
+  while (cursor) {
+    Operation *symbolTable = SymbolTable::getNearestSymbolTable(cursor);
+    if (!symbolTable)
+      break;
+    if (Operation *target = SymbolTable::lookupSymbolIn(symbolTable, ref))
+      return target;
+    cursor = symbolTable->getParentOp();
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -122,8 +202,7 @@ void MuxOp::print(OpAsmPrinter &p) {
 LogicalResult MuxOp::verify() {
   auto operands = getInputs();
   if (operands.size() < 2)
-    return emitOpError("requires at least 2 inputs, got ")
-           << operands.size();
+    return emitOpError("requires at least 2 inputs, got ") << operands.size();
 
   auto selAttr = getSelAttr();
   auto discardAttr = getDiscardAttr();
@@ -132,9 +211,8 @@ LogicalResult MuxOp::verify() {
   unsigned present = (selAttr ? 1u : 0u) + (discardAttr ? 1u : 0u) +
                      (disconnectAttr ? 1u : 0u);
   if (present != 0 && present != 3)
-    return emitOpError(
-        "software parameters must be all set or all unset "
-        "(sel, discard, disconnect)");
+    return emitOpError("software parameters must be all set or all unset "
+                       "(sel, discard, disconnect)");
 
   if (present == 0)
     return success();
@@ -152,8 +230,7 @@ LogicalResult MuxOp::verify() {
       return emitOpError("when 'disconnect' is true, 'sel' must be 0");
   } else {
     if (sel < 0 || sel >= n)
-      return emitOpError("'sel' (")
-             << sel << ") must be in [0, " << n << ")";
+      return emitOpError("'sel' (") << sel << ") must be in [0, " << n << ")";
   }
   return success();
 }
@@ -232,8 +309,7 @@ void DemuxOp::print(OpAsmPrinter &p) {
 LogicalResult DemuxOp::verify() {
   auto outputs = getOutputs();
   if (outputs.size() < 2)
-    return emitOpError("requires at least 2 outputs, got ")
-           << outputs.size();
+    return emitOpError("requires at least 2 outputs, got ") << outputs.size();
 
   auto selAttr = getSelAttr();
   auto discardAttr = getDiscardAttr();
@@ -242,9 +318,8 @@ LogicalResult DemuxOp::verify() {
   unsigned present = (selAttr ? 1u : 0u) + (discardAttr ? 1u : 0u) +
                      (disconnectAttr ? 1u : 0u);
   if (present != 0 && present != 3)
-    return emitOpError(
-        "software parameters must be all set or all unset "
-        "(sel, discard, disconnect)");
+    return emitOpError("software parameters must be all set or all unset "
+                       "(sel, discard, disconnect)");
   if (present == 0)
     return success();
 
@@ -261,8 +336,7 @@ LogicalResult DemuxOp::verify() {
       return emitOpError("when 'disconnect' is true, 'sel' must be 0");
   } else {
     if (sel < 0 || sel >= n)
-      return emitOpError("'sel' (")
-             << sel << ") must be in [0, " << n << ")";
+      return emitOpError("'sel' (") << sel << ") must be in [0, " << n << ")";
   }
   return success();
 }
@@ -335,12 +409,10 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   // Hardware params: [max_depth = N, bypassable = true|false]
   int32_t maxDepth = 0;
   bool bypassable = false;
-  if (parser.parseLSquare() ||
-      parser.parseKeyword("max_depth") || parser.parseEqual() ||
-      parser.parseInteger(maxDepth) ||
-      parser.parseComma() ||
-      parser.parseKeyword("bypassable") || parser.parseEqual() ||
-      parseBoolKeyword(parser, bypassable) ||
+  if (parser.parseLSquare() || parser.parseKeyword("max_depth") ||
+      parser.parseEqual() || parser.parseInteger(maxDepth) ||
+      parser.parseComma() || parser.parseKeyword("bypassable") ||
+      parser.parseEqual() || parseBoolKeyword(parser, bypassable) ||
       parser.parseRSquare())
     return failure();
   auto &builder = parser.getBuilder();
@@ -351,8 +423,7 @@ ParseResult FifoOp::parse(OpAsmParser &parser, OperationState &result) {
   if (succeeded(parser.parseOptionalLBrace())) {
     bool bypassed = false;
     if (parser.parseKeyword("bypassed") || parser.parseEqual() ||
-        parseBoolKeyword(parser, bypassed) ||
-        parser.parseRBrace())
+        parseBoolKeyword(parser, bypassed) || parser.parseRBrace())
       return failure();
     result.addAttribute("bypassed", builder.getBoolAttr(bypassed));
   }
@@ -455,8 +526,7 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     auto pT = PortSpec::param;
     auto pF = PortSpec::fixed;
 
-    auto add = [&](StringRef name,
-                   llvm::SmallVector<PortSpec, 4> ins,
+    auto add = [&](StringRef name, llvm::SmallVector<PortSpec, 4> ins,
                    llvm::SmallVector<PortSpec, 4> outs,
                    OpSchema::Kind kind = OpSchema::Fixed) {
       OpSchema s;
@@ -467,33 +537,30 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     };
 
     // --- arith integer arithmetic / logic / comparison ---
-    for (StringRef n : {"arith.addi", "arith.subi", "arith.muli",
-                        "arith.divsi", "arith.divui",
-                        "arith.remsi", "arith.remui",
-                        "arith.shli", "arith.shrsi", "arith.shrui",
-                        "arith.andi", "arith.ori", "arith.xori",
-                        "arith.minsi", "arith.maxsi",
-                        "arith.minui", "arith.maxui"}) {
+    for (StringRef n :
+         {"arith.addi", "arith.subi", "arith.muli", "arith.divsi",
+          "arith.divui", "arith.remsi", "arith.remui", "arith.shli",
+          "arith.shrsi", "arith.shrui", "arith.andi", "arith.ori", "arith.xori",
+          "arith.minsi", "arith.maxsi", "arith.minui", "arith.maxui"}) {
       add(n, {pT(0), pT(0)}, {pT(0)});
     }
     add("arith.cmpi", {pT(0), pT(0)}, {pF(1)});
 
     // --- arith floating-point arithmetic / comparison ---
-    for (StringRef n : {"arith.addf", "arith.subf", "arith.mulf",
-                        "arith.divf", "arith.remf",
-                        "arith.minimumf", "arith.maximumf"}) {
+    for (StringRef n : {"arith.addf", "arith.subf", "arith.mulf", "arith.divf",
+                        "arith.remf", "arith.minimumf", "arith.maximumf"}) {
       add(n, {pT(0), pT(0)}, {pT(0)});
     }
     add("arith.cmpf", {pT(0), pT(0)}, {pF(1)});
     add("llvm.intr.fmuladd", {pT(0), pT(0), pT(0)}, {pT(0)});
 
     // --- arith int<->fp casts (independent in/out widths) ---
-    for (StringRef n : {"arith.sitofp", "arith.uitofp",
-                        "arith.fptosi", "arith.fptoui"}) {
+    for (StringRef n :
+         {"arith.sitofp", "arith.uitofp", "arith.fptosi", "arith.fptoui"}) {
       add(n, {pT(0)}, {pT(1)});
     }
-    for (StringRef n : {"llvm.sitofp", "llvm.uitofp",
-                        "llvm.fptosi", "llvm.fptoui"}) {
+    for (StringRef n :
+         {"llvm.sitofp", "llvm.uitofp", "llvm.fptosi", "llvm.fptoui"}) {
       add(n, {pT(0)}, {pT(1)});
     }
     add("llvm.trunc", {pT(0)}, {pT(1)});
@@ -503,29 +570,22 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("llvm.intr.bswap", {pT(0)}, {pT(0)});
 
     // --- math unary ops: 1 in, 1 out, same width ---
-    for (StringRef n : {"math.sin", "math.cos", "math.tan",
-                        "math.sinh", "math.cosh", "math.tanh",
-                        "math.exp", "math.exp2", "math.expm1",
-                        "math.log", "math.log2", "math.log10", "math.log1p",
-                        "math.floor", "math.ceil", "math.round",
-                        "math.trunc", "math.roundeven",
-                        "math.sqrt", "math.rsqrt",
-                        "math.absf", "math.absi",
-                        "math.erf"}) {
+    for (StringRef n :
+         {"math.sin",   "math.cos",       "math.tan",  "math.sinh",
+          "math.cosh",  "math.tanh",      "math.exp",  "math.exp2",
+          "math.expm1", "math.log",       "math.log2", "math.log10",
+          "math.log1p", "math.floor",     "math.ceil", "math.round",
+          "math.trunc", "math.roundeven", "math.sqrt", "math.rsqrt",
+          "math.absf",  "math.absi",      "math.erf"}) {
       add(n, {pT(0)}, {pT(0)});
     }
 
     // --- dataflow ops ---
-    add("dataflow.stream",
-        {pT(0), pT(0), pT(0)}, {pT(0), pF(1)});
-    add("dataflow.constant",
-        {pF(0)}, {pT(0)});
-    add("dataflow.carry",
-        {pF(1), pT(0), pT(0)}, {pT(0)});
-    add("dataflow.invariant",
-        {pF(1), pT(0)}, {pT(0)});
-    add("dataflow.gate",
-        {pF(1), pT(0)}, {pF(1), pT(0)});
+    add("dataflow.stream", {pT(0), pT(0), pT(0)}, {pT(0), pF(1)});
+    add("dataflow.constant", {pF(0)}, {pT(0)});
+    add("dataflow.carry", {pF(1), pT(0), pT(0)}, {pT(0)});
+    add("dataflow.invariant", {pF(1), pT(0)}, {pT(0)});
+    add("dataflow.gate", {pF(1), pT(0)}, {pF(1), pT(0)});
     // Variadic ops: structural counts depend on sw_configs / fabric ports.
     add("dataflow.sync", {}, {}, OpSchema::VariadicSync);
     add("dataflow.mux", {}, {}, OpSchema::VariadicMux);
@@ -545,7 +605,9 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
 } // namespace
 
 namespace fabric {
-bool isFabricOpSupported(llvm::StringRef name) { return opSchemas().count(name); }
+bool isFabricOpSupported(llvm::StringRef name) {
+  return opSchemas().count(name);
+}
 } // namespace fabric
 
 namespace {
@@ -669,8 +731,7 @@ LogicalResult OpOp::verify() {
                            "inputs, got ")
                << numIns << " inputs";
       if (numOuts != 1)
-        return emitOpError(
-                   "@dataflow.mux requires exactly 1 output, got ")
+        return emitOpError("@dataflow.mux requires exactly 1 output, got ")
                << numOuts;
       unsigned fanIn = numIns - 1;
       unsigned wantSel = (fanIn == 2) ? 1u : loom::getIndexWidth();
@@ -683,8 +744,8 @@ LogicalResult OpOp::verify() {
       for (unsigned p = 1; p < numIns; ++p)
         if (inW[p] != dataW)
           return emitOpError("@dataflow.mux input #")
-                 << p << " width " << inW[p]
-                 << " must match output width " << dataW;
+                 << p << " width " << inW[p] << " must match output width "
+                 << dataW;
       break;
     }
     case OpSchema::VariadicDemux: {
@@ -693,8 +754,7 @@ LogicalResult OpOp::verify() {
                            "input, got ")
                << numIns << " inputs";
       if (numOuts < 2)
-        return emitOpError(
-                   "@dataflow.demux requires at least 2 outputs, got ")
+        return emitOpError("@dataflow.demux requires at least 2 outputs, got ")
                << numOuts;
       unsigned fanOut = numOuts;
       unsigned wantSel = (fanOut == 2) ? 1u : loom::getIndexWidth();
@@ -707,8 +767,8 @@ LogicalResult OpOp::verify() {
       for (unsigned p = 0; p < numOuts; ++p)
         if (outW[p] != dataW)
           return emitOpError("@dataflow.demux output #")
-                 << p << " width " << outW[p]
-                 << " must match data input width " << dataW;
+                 << p << " width " << outW[p] << " must match data input width "
+                 << dataW;
       break;
     }
     }
@@ -723,10 +783,9 @@ LogicalResult OpOp::verify() {
           s.outputs.size() != first.outputs.size())
         return emitOpError("ops in op_list must agree on input/output port "
                            "counts; @")
-               << opNames.front() << " has "
-               << first.inputs.size() << "->" << first.outputs.size()
-               << " but @" << n << " has " << s.inputs.size() << "->"
-               << s.outputs.size();
+               << opNames.front() << " has " << first.inputs.size() << "->"
+               << first.outputs.size() << " but @" << n << " has "
+               << s.inputs.size() << "->" << s.outputs.size();
     }
     if (numIns != first.inputs.size() || numOuts != first.outputs.size())
       return emitOpError("port count (")
@@ -739,8 +798,7 @@ LogicalResult OpOp::verify() {
     //     port itself; we then check consistency across all TypeParam ports
     //     sharing the same id within each member. For Fixed ports each
     //     member contributes its fixed width and we take the max.
-    auto check = [&](ArrayRef<unsigned> portWidths,
-                     auto extractor,
+    auto check = [&](ArrayRef<unsigned> portWidths, auto extractor,
                      StringRef portKind) -> LogicalResult {
       for (unsigned p = 0; p < portWidths.size(); ++p) {
         unsigned want = 0;
@@ -757,8 +815,7 @@ LogicalResult OpOp::verify() {
             needed = portWidths[p];
             for (unsigned q = 0; q < s.inputs.size(); ++q) {
               if (s.inputs[q].kind == PortSpec::TypeParam &&
-                  s.inputs[q].value == spec.value &&
-                  q < portWidths.size()) {
+                  s.inputs[q].value == spec.value && q < portWidths.size()) {
                 // Skip cross-checking here; handled below.
               }
             }
@@ -766,18 +823,20 @@ LogicalResult OpOp::verify() {
           want = std::max(want, needed);
         }
         if (portWidths[p] != want)
-          return emitOpError() << portKind << " port #" << p << " has width "
-                               << portWidths[p]
-                               << " but software op(s) require width " << want;
+          return emitOpError()
+                 << portKind << " port #" << p << " has width " << portWidths[p]
+                 << " but software op(s) require width " << want;
       }
       return success();
     };
 
-    if (failed(check(inW, [](const OpSchema &s, unsigned p) { return s.inputs[p]; },
-                     "input")))
+    if (failed(check(
+            inW, [](const OpSchema &s, unsigned p) { return s.inputs[p]; },
+            "input")))
       return failure();
-    if (failed(check(outW, [](const OpSchema &s, unsigned p) { return s.outputs[p]; },
-                     "output")))
+    if (failed(check(
+            outW, [](const OpSchema &s, unsigned p) { return s.outputs[p]; },
+            "output")))
       return failure();
 
     // 4c. Within each member, all TypeParam ports with the same param id
@@ -795,8 +854,9 @@ LogicalResult OpOp::verify() {
         }
         if (it->second != w)
           return emitOpError("op @")
-                 << n << " requires the same width on all ports tied to its "
-                          "type parameter T"
+                 << n
+                 << " requires the same width on all ports tied to its "
+                    "type parameter T"
                  << spec.value << ", got " << it->second << " and " << w;
         return success();
       };
@@ -838,7 +898,10 @@ LogicalResult OpOp::verify() {
         return emitOpError("'sw_configs.op_sel' must be a string attribute");
       bool found = false;
       for (StringRef n : opNames)
-        if (selStr.getValue() == n) { found = true; break; }
+        if (selStr.getValue() == n) {
+          found = true;
+          break;
+        }
       if (!found)
         return emitOpError("'sw_configs.op_sel' value \"")
                << selStr.getValue()
@@ -867,7 +930,10 @@ LogicalResult OpOp::verify() {
                     "key is selected by sw_configs";
         bool found = false;
         for (Attribute v : allowed)
-          if (v == na.getValue()) { found = true; break; }
+          if (v == na.getValue()) {
+            found = true;
+            break;
+          }
         if (!found)
           return emitOpError("'sw_configs[\"")
                  << key << "\"]' value " << na.getValue()
@@ -1068,9 +1134,7 @@ void FuOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/true);
 }
 
-RegionKind FuOp::getRegionKind(unsigned /*index*/) {
-  return RegionKind::Graph;
-}
+RegionKind FuOp::getRegionKind(unsigned /*index*/) { return RegionKind::Graph; }
 
 LogicalResult FuOp::verify() {
   // The op exists in two disjoint forms by `sym_name` presence:
@@ -1088,20 +1152,19 @@ LogicalResult FuOp::verify() {
     // Cross-form rejections.
     if (!getInputs().empty())
       return emitOpError(
-          "named fabric.fu template must have zero SSA operands; got ")
-          << getInputs().size();
+                 "named fabric.fu template must have zero SSA operands; got ")
+             << getInputs().size();
     if (!getResultTypes().empty())
       return emitOpError(
-          "named fabric.fu template must have zero SSA results; got ")
-          << getResultTypes().size();
+                 "named fabric.fu template must have zero SSA results; got ")
+             << getResultTypes().size();
     auto fta = getFunctionTypeAttr();
     if (!fta)
       return emitOpError(
           "named fabric.fu template requires a 'function_type' attribute");
     auto ft = dyn_cast<FunctionType>(fta.getValue());
     if (!ft)
-      return emitOpError(
-          "'function_type' attribute must be a FunctionType");
+      return emitOpError("'function_type' attribute must be a FunctionType");
 
     // Parent: a named fabric.fu lives in a fabric.module body or fabric.pe
     // body (the latter form mirrors the existing in-PE named-fu template).
@@ -1115,9 +1178,8 @@ LogicalResult FuOp::verify() {
     Block &entry = getBody().front();
     if (entry.getNumArguments() != ft.getNumInputs())
       return emitOpError("entry block argument count (")
-             << entry.getNumArguments()
-             << ") must match declared input count (" << ft.getNumInputs()
-             << ")";
+             << entry.getNumArguments() << ") must match declared input count ("
+             << ft.getNumInputs() << ")";
     for (auto [i, pair] :
          llvm::enumerate(llvm::zip(entry.getArguments(), ft.getInputs()))) {
       BlockArgument bb;
@@ -1184,8 +1246,7 @@ LogicalResult FuOp::verify() {
 
   Operation *parent = (*this)->getParentOp();
   if (!isa_and_nonnull<PeOp>(parent))
-    return emitOpError(
-        "must be inside a fabric.pe (parent must be fabric.pe)");
+    return emitOpError("must be inside a fabric.pe (parent must be fabric.pe)");
 
   Block &entry = getBody().front();
   if (entry.getNumArguments() != getInputs().size())
@@ -1226,8 +1287,7 @@ LogicalResult FuOp::verify() {
         "fabric.demux are permitted (no fabric.fu nesting, no fabric.fifo)");
   }
   if (numCompute < 1)
-    return emitOpError(
-        "fabric.fu body requires at least one fabric.op; got 0");
+    return emitOpError("fabric.fu body requires at least one fabric.op; got 0");
   return success();
 }
 
@@ -1274,13 +1334,10 @@ ParseResult PeOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
   auto sym = symbolizeSchedule(scheduleKw);
   if (!sym)
-    return parser.emitError(scheduleLoc,
-                            "expected fabric pe schedule keyword "
-                            "'spatial' or 'temporal', got '")
+    return parser.emitError(scheduleLoc, "expected fabric pe schedule keyword "
+                                         "'spatial' or 'temporal', got '")
            << scheduleKw << "'";
-  result.addAttribute(
-      "schedule",
-      ScheduleAttr::get(parser.getContext(), *sym));
+  result.addAttribute("schedule", ScheduleAttr::get(parser.getContext(), *sym));
 
   SmallVector<OpAsmParser::Argument, 4> blockArgs;
   SmallVector<OpAsmParser::UnresolvedOperand, 4> operands;
@@ -1460,9 +1517,8 @@ void PeOp::print(OpAsmPrinter &p) {
     }
   }
   // Elide attributes already serialized inline.
-  SmallVector<StringRef, 3> elided{"schedule",
-                                   ::mlir::SymbolTable::getSymbolAttrName(),
-                                   "function_type"};
+  SmallVector<StringRef, 3> elided{
+      "schedule", ::mlir::SymbolTable::getSymbolAttrName(), "function_type"};
   p.printOptionalAttrDictWithKeyword(getOperation()->getAttrs(), elided);
   p << ' ';
   p.printRegion(getBody(),
@@ -1470,9 +1526,7 @@ void PeOp::print(OpAsmPrinter &p) {
                 /*printBlockTerminators=*/isNamed);
 }
 
-RegionKind PeOp::getRegionKind(unsigned /*index*/) {
-  return RegionKind::Graph;
-}
+RegionKind PeOp::getRegionKind(unsigned /*index*/) { return RegionKind::Graph; }
 
 // Helpers for the temporal branch live in FabricPeTemporalOps.cpp.
 namespace fabric {
@@ -1501,12 +1555,12 @@ LogicalResult PeOp::verify() {
     // Cross-form rejections.
     if (!getInputs().empty())
       return emitOpError(
-          "named fabric.pe template must have zero SSA operands; got ")
-          << getInputs().size();
+                 "named fabric.pe template must have zero SSA operands; got ")
+             << getInputs().size();
     if (!getResultTypes().empty())
       return emitOpError(
-          "named fabric.pe template must have zero SSA results; got ")
-          << getResultTypes().size();
+                 "named fabric.pe template must have zero SSA results; got ")
+             << getResultTypes().size();
     auto fta = getFunctionTypeAttr();
     if (!fta)
       return emitOpError(
@@ -1520,9 +1574,8 @@ LogicalResult PeOp::verify() {
     // Block-arg types must equal declaredIns.
     if (entry.getNumArguments() != declaredIns.size())
       return emitOpError("entry block argument count (")
-             << entry.getNumArguments()
-             << ") must match declared input count (" << declaredIns.size()
-             << ")";
+             << entry.getNumArguments() << ") must match declared input count ("
+             << declaredIns.size() << ")";
     for (auto [i, pair] :
          llvm::enumerate(llvm::zip(entry.getArguments(), declaredIns))) {
       BlockArgument bb;
@@ -1654,8 +1707,7 @@ LogicalResult PeOp::verify() {
              << declaredIns.size();
     if (fuNumOuts > declaredOuts.size())
       return fu.emitOpError("inner fabric.fu has ")
-             << fuNumOuts
-             << " outputs which exceeds fabric.pe output count L="
+             << fuNumOuts << " outputs which exceeds fabric.pe output count L="
              << declaredOuts.size();
     for (auto [i, t] : llvm::enumerate(fuIns)) {
       auto w = bitsWidth(t);
@@ -1780,8 +1832,7 @@ ParseResult fabric::ModuleOp::parse(OpAsmParser &parser,
   }
 
   // Build the function_type attribute.
-  auto funcType =
-      FunctionType::get(parser.getContext(), argTypes, resultTypes);
+  auto funcType = FunctionType::get(parser.getContext(), argTypes, resultTypes);
   result.addAttribute("function_type", TypeAttr::get(funcType));
 
   // Optional attribute dictionary keyword.
@@ -1876,8 +1927,8 @@ LogicalResult fabric::ModuleOp::verify() {
   Block &entry = getBody().front();
   if (entry.getNumArguments() != ft.getNumInputs())
     return emitOpError("entry block argument count (")
-           << entry.getNumArguments()
-           << ") must match declared input count (" << ft.getNumInputs() << ")";
+           << entry.getNumArguments() << ") must match declared input count ("
+           << ft.getNumInputs() << ")";
   for (auto [i, pair] :
        llvm::enumerate(llvm::zip(entry.getArguments(), ft.getInputs()))) {
     BlockArgument bb;
@@ -1903,6 +1954,173 @@ LogicalResult fabric::ModuleOp::verify() {
         "fabric.instantiate, and fabric.boundary are permitted (plus the "
         "implicit terminator fabric.yield)");
   }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// fabric.system, fabric.node, fabric.external_port, fabric.link
+//===----------------------------------------------------------------------===//
+
+LogicalResult NodeOp::verify() {
+  StringRef kind = getKindAttr().getValue();
+  if (!isBaselineSystemNodeKind(kind))
+    return emitOpError("kind '")
+           << kind
+           << "' is not supported by the baseline fabric.system verifier";
+  if (failed(verifySystemPortArray(getOperation(), getPortsAttr())))
+    return failure();
+
+  if (kind == "acc_core") {
+    if (!getSpatialAttr())
+      return emitOpError(
+          "kind 'acc_core' requires a spatial fabric.module reference");
+    if (!getScalarAttr())
+      return emitOpError("kind 'acc_core' requires scalar metadata");
+  }
+  if (kind == "fixed_accelerator") {
+    if (!getFunctionAttr() || getFunctionAttr().getValue().empty())
+      return emitOpError(
+          "kind 'fixed_accelerator' requires a non-empty function attribute");
+  }
+  if (kind == "memory") {
+    auto bytes = getBytesAttr();
+    if (!bytes)
+      return emitOpError("kind 'memory' requires bytes metadata");
+    if (bytes.getInt() <= 0)
+      return emitOpError("kind 'memory' requires positive bytes metadata");
+  }
+  return success();
+}
+
+LogicalResult ExternalPortOp::verify() {
+  return verifySystemPortArray(getOperation(), getPortsAttr());
+}
+
+LogicalResult LinkOp::verify() {
+  if (getSrc() == getDst() && getSrcPort() == getDstPort() &&
+      getSrcChannel() == getDstChannel())
+    return emitOpError("source and destination endpoints must be distinct");
+  return success();
+}
+
+LogicalResult SystemOp::verify() {
+  StringRef memoryModel = getMemoryModelAttr().getValue();
+  if (!isValidMemoryModel(memoryModel))
+    return emitOpError("memory_model '")
+           << memoryModel
+           << "' is not one of sequential, tso, release_acquire, weak, custom";
+  if (memoryModel == "custom") {
+    bool hasModelName =
+        getModelNameAttr() && !getModelNameAttr().getValue().empty();
+    bool hasParams = getParamsAttr() && !getParamsAttr().empty();
+    if (!hasModelName && !hasParams)
+      return emitOpError(
+          "memory_model 'custom' requires model_name or non-empty params");
+  }
+
+  struct EndpointInfo {
+    std::string direction;
+    Operation *owner = nullptr;
+  };
+
+  llvm::StringMap<EndpointInfo> endpoints;
+  llvm::StringSet<> nodeSymbols;
+  llvm::StringSet<> externalSymbols;
+  llvm::SmallVector<LinkOp> links;
+
+  auto collectEndpointOwner =
+      [&](Operation *op, StringRef symbol, ArrayAttr ports,
+          llvm::StringSet<> &symbolSet) -> LogicalResult {
+    if (!symbolSet.insert(symbol).second)
+      return op->emitOpError("duplicates system symbol @") << symbol;
+    for (Attribute attr : ports) {
+      FailureOr<SystemChannel> channel = parseSystemChannel(attr, op);
+      if (failed(channel))
+        return failure();
+      std::string key = endpointKey(symbol, channel->port, channel->channel);
+      if (endpoints.contains(key))
+        return op->emitOpError("duplicates endpoint @")
+               << symbol << " " << channel->port << "." << channel->channel;
+      endpoints[key] = EndpointInfo{channel->direction, op};
+    }
+    return success();
+  };
+
+  for (Operation &op : getBody().front()) {
+    if (auto node = dyn_cast<NodeOp>(&op)) {
+      StringRef symbol = node.getSymNameAttr().getValue();
+      if (failed(collectEndpointOwner(&op, symbol, node.getPortsAttr(),
+                                      nodeSymbols)))
+        return failure();
+      if (node.getKindAttr().getValue() == "acc_core") {
+        FlatSymbolRefAttr spatial = node.getSpatialAttr();
+        Operation *target =
+            spatial ? lookupSymbolUpward(node.getOperation(), spatial)
+                    : nullptr;
+        if (!target)
+          return node.emitOpError("acc_core spatial reference @")
+                 << (spatial ? spatial.getValue() : StringRef(""))
+                 << " does not resolve to a fabric.module";
+        if (!isa<fabric::ModuleOp>(target))
+          return node.emitOpError("acc_core spatial reference @")
+                 << spatial.getValue() << " resolved to "
+                 << target->getName().getStringRef()
+                 << ", expected fabric.module";
+      }
+      continue;
+    }
+    if (auto external = dyn_cast<ExternalPortOp>(&op)) {
+      StringRef symbol = external.getSymNameAttr().getValue();
+      if (failed(collectEndpointOwner(&op, symbol, external.getPortsAttr(),
+                                      externalSymbols)))
+        return failure();
+      continue;
+    }
+    if (auto link = dyn_cast<LinkOp>(&op)) {
+      links.push_back(link);
+      continue;
+    }
+    if (isa<YieldOp>(op))
+      continue;
+    return op.emitOpError(
+        "is not allowed inside fabric.system; only fabric.node, "
+        "fabric.external_port, fabric.link, and fabric.yield are permitted");
+  }
+
+  llvm::StringSet<> usedSources;
+  llvm::StringSet<> usedDests;
+  auto verifyEndpoint = [&](LinkOp link, FlatSymbolRefAttr ownerAttr,
+                            StringRef port, StringRef channel,
+                            StringRef expectedDirection,
+                            llvm::StringSet<> &used) -> LogicalResult {
+    StringRef owner = ownerAttr.getValue();
+    std::string key = endpointKey(owner, port, channel);
+    auto it = endpoints.find(key);
+    if (it == endpoints.end())
+      return link.emitOpError("endpoint @")
+             << owner
+             << " does not refer to a fabric.node or fabric.external_port in "
+                "this fabric.system";
+    if (StringRef(it->second.direction) != expectedDirection)
+      return link.emitOpError("endpoint @")
+             << owner << " " << port << "." << channel << " is "
+             << it->second.direction << ", expected " << expectedDirection;
+    if (!used.insert(key).second)
+      return link.emitOpError("endpoint @")
+             << owner << " " << port << "." << channel
+             << " is used by more than one fabric.link";
+    return success();
+  };
+
+  for (LinkOp link : links) {
+    if (failed(verifyEndpoint(link, link.getSrcAttr(), link.getSrcPort(),
+                              link.getSrcChannel(), "output", usedSources)))
+      return failure();
+    if (failed(verifyEndpoint(link, link.getDstAttr(), link.getDstPort(),
+                              link.getDstChannel(), "input", usedDests)))
+      return failure();
+  }
+
   return success();
 }
 
@@ -2059,15 +2277,14 @@ void YieldOp::print(OpAsmPrinter &p) {
     llvm::interleaveComma(values, p, [&](Value v) { p << v.getType(); });
   } else {
     // Per-value form: %v0 : T0 [to TR0], %v1 : T1 [to TR1]
-    llvm::interleaveComma(
-        llvm::zip(values, declared), p, [&](auto pair) {
-          Value v;
-          Type d;
-          std::tie(v, d) = pair;
-          p << v << " : " << v.getType();
-          if (d && d != v.getType())
-            p << " to " << d;
-        });
+    llvm::interleaveComma(llvm::zip(values, declared), p, [&](auto pair) {
+      Value v;
+      Type d;
+      std::tie(v, d) = pair;
+      p << v << " : " << v.getType();
+      if (d && d != v.getType())
+        p << " to " << d;
+    });
   }
 
   // Print attr-dict but elide `declared_types` (handled above).
@@ -2107,8 +2324,9 @@ LogicalResult YieldOp::verify() {
     }
     if (getValues().size() != expectedResults.size())
       return emitOpError("yield value count (")
-             << getValues().size() << ") must match parent fabric.fu result "
-                                      "count ("
+             << getValues().size()
+             << ") must match parent fabric.fu result "
+                "count ("
              << expectedResults.size() << ")";
     for (auto [i, v] : llvm::enumerate(getValues())) {
       Type expected = expectedResults[i];
@@ -2171,8 +2389,7 @@ LogicalResult YieldOp::verify() {
       Type expected = expectedResults[i];
       if (declared[i] && declared[i] != v.getType())
         return emitOpError("yield value #")
-               << i
-               << ": 'to <type>' clause is not allowed inside fabric.pe";
+               << i << ": 'to <type>' clause is not allowed inside fabric.pe";
       // Temporal PE: yield carries !fabric.bits<W> matching the bits-data
       // part of the declared bits_tag<W, T> port; tag is reattached at
       // the PE boundary by hardware. The detailed bits<W'>/bits_tag<W,T>
@@ -2212,7 +2429,8 @@ LogicalResult YieldOp::verify() {
         return emitOpError("yield value #")
                << i << " type " << srcTy
                << " has a different fabric kind than the module result type "
-               << modResultTy << "; type-kind must match (bits/bits_tag/memref)";
+               << modResultTy
+               << "; type-kind must match (bits/bits_tag/memref)";
       if (declared[i] && declared[i] != modResultTy)
         return emitOpError("yield value #")
                << i << ": declared destination type " << declared[i]
@@ -2225,6 +2443,14 @@ LogicalResult YieldOp::verify() {
     }
     return success();
   }
-  return emitOpError(
-      "expects parent op 'fabric.fu', 'fabric.pe' (named), or 'fabric.module'");
+  if (isa_and_nonnull<SystemOp>(parent)) {
+    if (!getValues().empty())
+      return emitOpError("inside fabric.system must not carry values");
+    if (declaredArr)
+      return emitOpError(
+          "inside fabric.system must not carry declared destination types");
+    return success();
+  }
+  return emitOpError("expects parent op 'fabric.fu', 'fabric.pe' (named), "
+                     "'fabric.module', or 'fabric.system'");
 }

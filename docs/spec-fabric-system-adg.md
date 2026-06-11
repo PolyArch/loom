@@ -923,10 +923,19 @@ to `docs/spec-mapping-artifact.md`, not to this hardware description.
 This section is non-normative. It records current repository facts for
 orientation only and is not part of target acceptance.
 
-This document is ahead of the current implementation. The system-level
-IR, verifier, and SystemBuilder API are target contracts that still need
-implementation coverage. Existing SpatialCore `fabric.module` support
-does not satisfy the system-level target by itself.
+The current repository has a baseline `fabric.system` implementation
+covering a required `memory_model`, `fabric.node` records for
+`host_core`, `acc_core`, `fixed_accelerator`, and `memory`, string
+descriptors for port channels, explicit `fabric.link` records, endpoint
+direction checks, endpoint uniqueness checks, and `acc_core` references
+to visible `fabric.module` SpatialCore templates. The ADG Builder can
+emit a heterogeneous SoC example that uses this baseline, and the ADG
+hardware summary can report it as a `fabric_system` candidate. The full
+target contract still requires structured port and channel attributes,
+all node kinds, external ports beyond the baseline parser surface,
+clock/reset/power domains, address spaces, memory regions, coherence
+domains, visualization metadata, and downstream PnR, simulator, RTL,
+FPA, report, runtime, and DSE consumption of selected systems.
 
 ## Mapping Boundary
 

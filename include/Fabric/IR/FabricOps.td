@@ -547,13 +547,125 @@ def Fabric_MemOp : Fabric_Op<"mem", [
   let hasVerifier = 1;
 }
 
+def Fabric_SystemOp : Fabric_Op<"system", [
+    IsolatedFromAbove,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    Symbol,
+    SymbolTable
+]> {
+  let summary = "fabric system: system-level heterogeneous SoC ADG container";
+  let description = [{
+    Top-level system ADG container. Carries a required symbol name and a
+    required memory model. The body is a symbolic hardware graph made of
+    `fabric.node`, `fabric.external_port`, and `fabric.link` operations.
+    Connectivity is represented by explicit `fabric.link` endpoint fields,
+    not by SSA values.
+  }];
+
+  let arguments = (ins
+      SymbolNameAttr:$sym_name,
+      StrAttr:$memory_model,
+      OptionalAttr<StrAttr>:$model_name,
+      OptionalAttr<DictionaryAttr>:$params
+  );
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = [{
+    $sym_name `memory_model` `=` $memory_model attr-dict-with-keyword $body
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_NodeOp : Fabric_Op<"node", [
+    HasParent<"::fabric::SystemOp">,
+    Symbol
+]> {
+  let summary = "fabric system node";
+  let description = [{
+    Physical system-level hardware instance. The baseline implementation uses
+    explicit string channel descriptors in the form `port.channel:direction`.
+    Later structured port attributes must preserve the same endpoint identity
+    and direction checks.
+  }];
+
+  let arguments = (ins
+      SymbolNameAttr:$sym_name,
+      StrAttr:$kind,
+      ArrayAttr:$ports,
+      OptionalAttr<FlatSymbolRefAttr>:$spatial,
+      OptionalAttr<StrAttr>:$scalar,
+      OptionalAttr<StrAttr>:$function,
+      OptionalAttr<I64Attr>:$bytes,
+      OptionalAttr<DictionaryAttr>:$params
+  );
+
+  let assemblyFormat = [{
+    $sym_name `kind` `=` $kind `ports` `=` $ports attr-dict-with-keyword
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_ExternalPortOp : Fabric_Op<"external_port", [
+    HasParent<"::fabric::SystemOp">,
+    Symbol
+]> {
+  let summary = "fabric system external port";
+  let description = [{
+    Intentional system-boundary protocol exposure. The baseline implementation
+    uses the same `port.channel:direction` descriptors as `fabric.node`.
+  }];
+
+  let arguments = (ins
+      SymbolNameAttr:$sym_name,
+      ArrayAttr:$ports,
+      OptionalAttr<DictionaryAttr>:$params
+  );
+
+  let assemblyFormat = [{
+    $sym_name `ports` `=` $ports attr-dict-with-keyword
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_LinkOp : Fabric_Op<"link", [
+    HasParent<"::fabric::SystemOp">
+]> {
+  let summary = "fabric system point-to-point channel link";
+  let description = [{
+    Directed point-to-point system link. The source endpoint must name an
+    output channel, and the destination endpoint must name an input channel
+    owned by a `fabric.node` or `fabric.external_port` in the same
+    `fabric.system`.
+  }];
+
+  let arguments = (ins
+      FlatSymbolRefAttr:$src,
+      StrAttr:$src_port,
+      StrAttr:$src_channel,
+      FlatSymbolRefAttr:$dst,
+      StrAttr:$dst_port,
+      StrAttr:$dst_channel,
+      OptionalAttr<StrAttr>:$protocol,
+      OptionalAttr<I64Attr>:$latency,
+      OptionalAttr<DictionaryAttr>:$params
+  );
+
+  let assemblyFormat = [{
+    `src` `=` $src `src_port` `=` $src_port `src_channel` `=` $src_channel
+    `dst` `=` $dst `dst_port` `=` $dst_port `dst_channel` `=` $dst_channel
+    attr-dict-with-keyword
+  }];
+  let hasVerifier = 1;
+}
+
 def Fabric_YieldOp : Fabric_Op<"yield", [
     Terminator,
     Pure
 ]> {
-  let summary = "terminator of a fabric.fu or fabric.module region";
+  let summary = "terminator of a fabric.fu, fabric.module, or fabric.system region";
   let description = [{
-    Closes the enclosing `fabric.fu` or `fabric.module` body.
+    Closes the enclosing `fabric.fu`, `fabric.module`, or `fabric.system`
+    body.
 
     Inside `fabric.fu`, `$values` supplies the values that leave the FU
     on its results; the number and types must match the parent op's
@@ -567,6 +679,9 @@ def Fabric_YieldOp : Fabric_Op<"yield", [
     `to <module-result-type>` clause makes the relaxation explicit:
 
       fabric.yield %v : !fabric.bits<32> to !fabric.bits<16>
+
+    Inside `fabric.system`, the terminator carries no values. System
+    connectivity is represented by `fabric.link` operations.
   }];
 
   // Yield operands are the SSA values being yielded. They must be one of
