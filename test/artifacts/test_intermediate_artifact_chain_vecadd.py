@@ -124,7 +124,7 @@ def main() -> int:
             "hardware": "shared_reduction_adg",
             "mapping_id": AGGREGATE_MAPPING_ID,
             "routed_edges": "0",
-            "unrouted_edges": "12",
+            "unrouted_edges": "8",
             "unplaced_records": "0",
             "status": "blocked",
         }

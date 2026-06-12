@@ -458,33 +458,54 @@ def main() -> int:
                 str(mapped_manifest),
             ],
         )
-        if result.returncode == 0:
-            raise AssertionError("mapped workload RTL manifest unexpectedly passed with failed mapping")
+        if result.returncode != 0:
+            raise AssertionError(
+                "mapped workload RTL manifest failed with routed mapping\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
         if not mapped_manifest.is_file():
             raise AssertionError(
-                "mapped workload RTL manifest did not write structured blocked artifact\n"
+                "mapped workload RTL manifest did not write artifact\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
         mapped_data = json.loads(mapped_manifest.read_text())
-        if mapped_data.get("status") != "blocked":
-            raise AssertionError(f"mapped manifest should block for failed mapping: {mapped_data}")
+        if mapped_data.get("status") != "pass":
+            raise AssertionError(f"mapped manifest should pass for routed mapping: {mapped_data}")
         if mapped_data.get("mode") != "mapped_workload_rtl":
             raise AssertionError(f"mapped manifest should use mapped_workload_rtl mode: {mapped_data}")
         if mapped_data.get("mapping_artifact_identity") != "mapped-pnr-mapping":
             raise AssertionError(f"mapped manifest should identify its mapping artifact: {mapped_data}")
         if mapped_data.get("source_fabric_adg_identity") != "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg":
             raise AssertionError(f"mapped manifest should select hardware matching the mapping: {mapped_data}")
-        if mapped_data.get("lowering_configuration") != {}:
-            raise AssertionError(f"blocked mapped manifest should not expose lowering configuration: {mapped_data}")
-        if mapped_data.get("constraints") != [] or mapped_data.get("activity_hooks") != []:
-            raise AssertionError(f"blocked mapped manifest should not expose mapping-derived hooks: {mapped_data}")
-        diagnostics = mapped_data.get("diagnostics", [])
-        if not any(
+        lowering_configuration = mapped_data.get("lowering_configuration")
+        if not isinstance(lowering_configuration, dict):
+            raise AssertionError(f"mapped manifest should expose lowering configuration: {mapped_data}")
+        expected_lowering = {
+            "lowering_kind": "mapped_workload_rtl",
+            "mapping_artifact_identity": "mapped-pnr-mapping",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
+            "mapping_hardware": "shared_reduction_adg",
+            "workload": "vecsum",
+        }
+        for key, value in expected_lowering.items():
+            if lowering_configuration.get(key) != value:
+                raise AssertionError(f"mapped manifest lowering {key} changed: {mapped_data}")
+        constraints = mapped_data.get("constraints")
+        if not isinstance(constraints, list) or not any(
             isinstance(record, dict)
-            and record.get("diagnostic_class") == "mapping_artifact_failure"
-            for record in diagnostics
+            and record.get("constraint_kind") == "pnr_mapping_binding"
+            and record.get("mapping_artifact_identity") == "mapped-pnr-mapping"
+            for record in constraints
         ):
-            raise AssertionError(f"blocked mapped manifest should diagnose failed mapping: {mapped_data}")
+            raise AssertionError(f"mapped manifest should expose mapping binding constraint: {mapped_data}")
+        activity_hooks = mapped_data.get("activity_hooks")
+        if not isinstance(activity_hooks, list) or not any(
+            isinstance(record, dict)
+            and record.get("source") == "pnr_mapping_activity"
+            and record.get("mapping_artifact_identity") == "mapped-pnr-mapping"
+            for record in activity_hooks
+        ):
+            raise AssertionError(f"mapped manifest should expose mapping activity hook: {mapped_data}")
         mapped_audit = out_dir / "mapped-workload-rtl-manifest-audit-summary.json"
         artifact_test_common.require_success(
             repo,

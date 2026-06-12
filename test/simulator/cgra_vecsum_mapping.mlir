@@ -10,30 +10,31 @@
 
 // MAPPING-DAG: "schedule": "spatial"
 // MAPPING-DAG: "resource_kind": "fabric.mem.load"
-// MAPPING-DAG: "status": "fail"
-// MAPPING-DAG: "routed_edges": 0
-// MAPPING-DAG: "unrouted_edges": 6
-// MAPPING-DAG: "config_records": 0
+// MAPPING-DAG: "status": "pass"
+// MAPPING-DAG: "routed_edges": 6
+// MAPPING-DAG: "unrouted_edges": 0
+// MAPPING-DAG: "config_records": 73
 
 // CGRA-DAG: "kind": "cgra_sim_report"
 // CGRA-DAG: "workload": "vecsum"
 // CGRA-DAG: "hardware_artifact": "
 // CGRA-DAG: "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg"
-// CGRA-DAG: "status": "blocked"
+// CGRA-DAG: "status": "pass"
 // CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 // CGRA-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
 // CGRA-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// CGRA-DAG: "difference_classification": "unsupported_scope"
+// CGRA-DAG: "difference_classification": "expected_hardware_constraint"
 // CGRA-DAG: "dfg_cycles": 579
-// CGRA-DAG: "modeled_lower_bound_cycles": 579
-// CGRA-DAG: "hardware_bound_classification": "unsupported_scope"
-// CGRA-DAG: "performance_delta_cycles": 0
-// CGRA-DAG: "route_latency_cycles": 0
-// CGRA-DAG: "route_segments": 0
-// CGRA-DAG: "memory_latency_cycles": 0
+// CGRA-DAG: "modeled_lower_bound_cycles": 591
+// CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
+// CGRA-DAG: "performance_delta_cycles": 12
+// CGRA-DAG: "route_latency_cycles": 8
+// CGRA-DAG: "route_segments": 8
+// CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
-// CGRA-DAG: "hardware_aware_cycles": 579
-// CGRA-DAG: "config_records": 0
+// CGRA-DAG: "hardware_aware_cycles": 591
+// CGRA-DAG: "config_records": 73
+// CGRA-DAG: "functional_state_source": "carried_from_dfg_sim_report"
 // CGRA-DAG: "cycle_breakdown"
 // CGRA-DAG: "category": "route_latency"
 // CGRA-DAG: "evidence": "mapping.route_segments"
@@ -52,4 +53,4 @@
 // CGRA-DAG: "delta_explained_by_modeled_constraints"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-NEXT: vecsum,579,,blocked
+// SUMMARY-NEXT: vecsum,579,591,pass,"DFG-sim and CGRA-sim reports available; CGRA-sim includes mapping route, memory, and temporal penalties"

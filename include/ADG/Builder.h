@@ -55,6 +55,7 @@ struct TemporalPeConfig {
 struct PeSpec {
   Schedule schedule = Schedule::Spatial;
   std::vector<PortBinding> inputs;
+  std::vector<std::string> resultNames;
   std::vector<std::string> resultTypes;
   std::vector<FuSpec> fus;
   TemporalPeConfig temporal;

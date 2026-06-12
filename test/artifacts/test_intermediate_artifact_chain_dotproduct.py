@@ -73,7 +73,7 @@ def main() -> int:
             "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
             "placed_records": "6",
             "routed_edges": "0",
-            "unrouted_edges": "9",
+            "unrouted_edges": "6",
             "unplaced_records": "0",
             "status": "fail",
         }

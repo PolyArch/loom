@@ -88,7 +88,7 @@ def main() -> int:
         mapping_row = variance_rows[0]
         if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "blocked":
             raise AssertionError(f"unexpected variance aggregate mapping row: {mapping_row}")
-        if mapping_row["routed_edges"] != "0" or mapping_row["unrouted_edges"] != "22" or mapping_row["unplaced_records"] != "0":
+        if mapping_row["routed_edges"] != "0" or mapping_row["unrouted_edges"] != "16" or mapping_row["unplaced_records"] != "0":
             raise AssertionError(f"variance aggregate mapping should preserve unrouted edges: {mapping_row}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())

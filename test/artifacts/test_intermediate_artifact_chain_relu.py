@@ -90,7 +90,7 @@ def main() -> int:
             raise AssertionError(f"unexpected relu aggregate mapping row: {mapping_row}")
         if mapping_row["placed_records"] != "10" or mapping_row["routed_edges"] != "0":
             raise AssertionError(f"relu aggregate mapping missed component placement evidence: {mapping_row}")
-        if mapping_row["unrouted_edges"] != "12" or mapping_row["unplaced_records"] != "0":
+        if mapping_row["unrouted_edges"] != "8" or mapping_row["unplaced_records"] != "0":
             raise AssertionError(f"relu aggregate mapping should preserve unrouted edges: {mapping_row}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())

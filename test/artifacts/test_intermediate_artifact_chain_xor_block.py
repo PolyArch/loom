@@ -109,7 +109,7 @@ def main() -> int:
                 "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
                 "placed_records": "5",
                 "routed_edges": "0",
-                "unrouted_edges": "6",
+                "unrouted_edges": "5",
                 "unplaced_records": "0",
                 "status": "fail",
             },

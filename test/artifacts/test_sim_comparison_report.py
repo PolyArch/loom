@@ -177,10 +177,13 @@ def main() -> int:
                 str(comparison),
             ],
         )
-        if result.returncode == 0:
-            raise AssertionError("blocked simulation comparison unexpectedly returned success")
+        if result.returncode != 0:
+            raise AssertionError(
+                "routed simulation comparison unexpectedly failed\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
         if not comparison.is_file():
-            raise AssertionError("blocked simulation comparison did not write a report")
+            raise AssertionError("routed simulation comparison did not write a report")
 
         data = json.loads(comparison.read_text())
         missing = REQUIRED_KEYS - set(data)
@@ -188,8 +191,8 @@ def main() -> int:
             raise AssertionError(f"simulation comparison report missing keys: {sorted(missing)}")
         if data["kind"] != "sim_comparison_report":
             raise AssertionError(f"unexpected comparison report kind: {data}")
-        if data["status"] != "blocked":
-            raise AssertionError(f"comparison should be blocked for unmapped vecsum reports: {data}")
+        if data["status"] != "pass":
+            raise AssertionError(f"comparison should pass for routed vecsum reports: {data}")
         if data["workload"] != "vecsum":
             raise AssertionError(f"unexpected comparison workload: {data}")
         if data["runtime_input_identity"] != "test-app-fixture::vecsum::default":
@@ -203,8 +206,8 @@ def main() -> int:
         expected_statuses = {
             "functional_comparison_status": "pass",
             "memory_comparison_status": "pass",
-            "performance_comparison_status": "blocked",
-            "difference_classification": "unsupported_scope",
+            "performance_comparison_status": "pass",
+            "difference_classification": "expected_hardware_constraint",
         }
         for key, value in expected_statuses.items():
             if data[key] != value:
@@ -293,12 +296,12 @@ def main() -> int:
         }
         if definitions != expected_definitions:
             raise AssertionError(f"comparison should preserve metric definitions: {data}")
-        if data.get("dfg_sim_cycles") != 579 or data.get("cgra_sim_cycles") != 579:
+        if data.get("dfg_sim_cycles") != 579 or data.get("cgra_sim_cycles") != 591:
             raise AssertionError(f"comparison should preserve simulator cycle values: {data}")
-        if data.get("performance_delta_cycles") != 0:
-            raise AssertionError(f"comparison should preserve blocked hardware delta: {data}")
+        if data.get("performance_delta_cycles") != 12:
+            raise AssertionError(f"comparison should preserve mapped hardware delta: {data}")
         if "explicit_fabric_route_paths" not in data.get("explanation_categories", []):
-            raise AssertionError(f"comparison should explain unsupported route evidence: {data}")
+            raise AssertionError(f"comparison should explain mapped route evidence: {data}")
 
         audit = out_dir / "comparison-artifact-audit-summary.json"
         artifact_test_common.require_success(

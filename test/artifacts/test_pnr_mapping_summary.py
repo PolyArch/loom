@@ -101,18 +101,73 @@ def main() -> int:
             "hardware": "shared_reduction_adg",
             "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "placed_records": "5",
-            "routed_edges": "0",
-            "unrouted_edges": "6",
+            "routed_edges": "6",
+            "unrouted_edges": "0",
             "unplaced_records": "0",
-            "status": "fail",
+            "status": "pass",
         }
         for key, value in expected.items():
             if row[key] != value:
                 raise AssertionError(f"explicit mapping {key}={row[key]!r}, expected {value!r}")
-        if "unrouted software edges lack Fabric ADG connectivity" not in row.get("diagnostic", ""):
-            raise AssertionError(f"explicit mapping should report unrouted Fabric ADG connectivity: {row}")
+        if "unrouted software edges lack Fabric ADG connectivity" in row.get("diagnostic", ""):
+            raise AssertionError(f"explicit mapping should not report unrouted edges after routing passes: {row}")
         if not artifact.is_file():
             raise AssertionError("explicit mapping did not emit JSON artifact")
+        data = json.loads(artifact.read_text())
+        expected_json = {
+            "kind": "pnr_mapping",
+            "workload": "vecsum",
+            "graph": "g_t_vecsum_red_0_0",
+            "hardware": "shared_reduction_adg",
+            "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
+            "placed_records": 5,
+            "routed_edges": 6,
+            "unrouted_edges": 0,
+            "unplaced_records": 0,
+            "config_records": 73,
+            "status": "pass",
+        }
+        for key, value in expected_json.items():
+            if data.get(key) != value:
+                raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
+        if len(data.get("config_bitstream", [])) != 73:
+            raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
+        endpoint_pairs = {
+            (segment.get("source_endpoint"), segment.get("sink_endpoint"))
+            for route in data.get("routes", [])
+            for segment in route.get("segments", [])
+        }
+        required_endpoints = {
+            (
+                "shared_reduction_adg::fabric.op#2.result0",
+                "shared_reduction_adg::fabric.op#1.operand2",
+            ),
+            (
+                "shared_reduction_adg::mem.load#0.result0",
+                "shared_reduction_adg::fabric.op#2.operand0",
+            ),
+            (
+                "shared_reduction_adg::fabric.op#1.result0",
+                "shared_reduction_adg::fabric.op#2.operand1",
+            ),
+            (
+                "shared_reduction_adg::mem.load#0.result1",
+                "shared_reduction_adg::fabric.op#29.operand0",
+            ),
+            (
+                "shared_reduction_adg::fabric.pe#0.result0",
+                "shared_reduction_adg::mem.load#0.operand0",
+            ),
+            (
+                "shared_reduction_adg::fabric.op#0.result1",
+                "shared_reduction_adg::fabric.op#1.operand0",
+            ),
+        }
+        if not required_endpoints.issubset(endpoint_pairs):
+            raise AssertionError(f"explicit mapping route endpoints changed: {endpoint_pairs}")
+        for source, sink in endpoint_pairs:
+            if (source and source.endswith(".out")) or (sink and sink.endswith(".in")):
+                raise AssertionError(f"explicit mapping used legacy string endpoint: {(source, sink)}")
 
         vecadd_dir = out_dir / "vecadd-dfg"
         result = artifact_test_common.run_command(

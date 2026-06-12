@@ -158,11 +158,11 @@
 // SUMMARY-DAG: mean,904,,blocked
 // SUMMARY-DAG: vecnorm_l1,643,,blocked
 // SUMMARY-DAG: vecnorm_l2,771,,blocked
-// SUMMARY-DAG: reduction,1155,,blocked
+// SUMMARY-DAG: reduction,1155,1167,pass
 // SUMMARY-DAG: relu,707,,blocked
 // SUMMARY-DAG: rotate_bits,544,,blocked
 // SUMMARY-DAG: variance,546,,blocked
-// SUMMARY-DAG: vecsum,579,,blocked
+// SUMMARY-DAG: vecsum,579,591,pass
 // SUMMARY-DAG: dotproduct,1027,,blocked
 // SUMMARY-DAG: spmv,47,,blocked
 // SUMMARY-DAG: prefix_sum,835,,blocked

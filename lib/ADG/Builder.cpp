@@ -203,7 +203,16 @@ void printTemporalPeAttributes(llvm::raw_ostream &os,
 }
 
 void printPe(llvm::raw_ostream &os, const PeSpec &pe) {
-  os << "  fabric.pe [" << scheduleName(pe.schedule) << "] (";
+  os << "  ";
+  if (!pe.resultNames.empty()) {
+    for (std::size_t i = 0; i < pe.resultNames.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << valueName(pe.resultNames[i]);
+    }
+    os << " = ";
+  }
+  os << "fabric.pe [" << scheduleName(pe.schedule) << "] (";
   printBindings(os, pe.inputs, "                    ");
   os << ") -> ";
   printResultTypes(os, pe.resultTypes);
@@ -475,6 +484,11 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
     os << valueName(inputs[i].name) << " : " << inputs[i].type;
   }
   os << ") {\n";
+  for (const PeSpec &pe : pes)
+    if (!pe.resultNames.empty() && pe.resultNames.size() != pe.resultTypes.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "ADG pe result name count must match result type count");
   for (const PeSpec &pe : pes)
     printPe(os, pe);
   for (std::size_t switchIndex = 0; switchIndex < switches.size();
@@ -786,22 +800,46 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       .addInput("ctrl", "!fabric.bits<0>");
 
   PeSpec streamPe;
-  streamPe.inputs = {{"pa", "i64a", "!fabric.bits<64>", ""},
-                     {"pb", "i64b", "!fabric.bits<64>", ""},
-                     {"pc", "i64c", "!fabric.bits<64>", ""}};
-  streamPe.resultTypes = {"!fabric.bits<64>"};
+  streamPe.inputs = {{"pa", "i64a", "!fabric.bits<64>", "!fabric.bits<32>"},
+                     {"pb", "i64b", "!fabric.bits<64>", "!fabric.bits<32>"},
+                     {"pc", "i64c", "!fabric.bits<64>", "!fabric.bits<32>"},
+                     {"pd", "mem0_data0", "!fabric.bits<32>", ""},
+                     {"pi", "i32a", "!fabric.bits<32>", ""}};
+  streamPe.resultNames = {"idx"};
+  streamPe.resultTypes = {"!fabric.bits<32>"};
   FuSpec streamFu;
-  streamFu.inputs = {{"fa", "pa", "!fabric.bits<64>", ""},
-                     {"fb", "pb", "!fabric.bits<64>", ""},
-                     {"fc", "pc", "!fabric.bits<64>", ""}};
+  streamFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
+                     {"fb", "pb", "!fabric.bits<32>", ""},
+                     {"fc", "pc", "!fabric.bits<32>", ""},
+                     {"data", "pd", "!fabric.bits<32>", ""},
+                     {"init", "pi", "!fabric.bits<32>", ""}};
+  streamFu.resultTypes = {"!fabric.bits<32>"};
   streamFu.operations.push_back(
       FabricOpSpec{{"idx", "rwc"},
                    {"dataflow.stream"},
                    {"fa", "fb", "fc"},
-                   {"!fabric.bits<64>", "!fabric.bits<64>", "!fabric.bits<64>"},
-                   {"!fabric.bits<64>", "!fabric.bits<1>"},
+                   {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
+                   {"!fabric.bits<32>", "!fabric.bits<1>"},
                    {{"cont_cond", {"<"}}, {"step_op", {"+="}}},
                    {{"cont_cond", "<"}, {"step_op", "+="}}});
+  streamFu.operations.push_back(FabricOpSpec{{"carried"},
+                                             {"dataflow.carry"},
+                                             {"rwc", "init", "sum"},
+                                             {"!fabric.bits<1>",
+                                              "!fabric.bits<32>",
+                                              "!fabric.bits<32>"},
+                                             {"!fabric.bits<32>"},
+                                             {},
+                                             {}});
+  streamFu.operations.push_back(FabricOpSpec{{"sum"},
+                                             {"arith.addi"},
+                                             {"data", "carried"},
+                                             {"!fabric.bits<32>",
+                                              "!fabric.bits<32>"},
+                                             {"!fabric.bits<32>"},
+                                             {},
+                                             {}});
+  streamFu.yieldValues = {"idx"};
   streamPe.fus.push_back(std::move(streamFu));
   module.addPe(std::move(streamPe));
 
@@ -867,10 +905,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addPe(std::move(reductionPe));
 
   PeSpec syncPe;
-  syncPe.inputs = {{"pc", "ctrl", "!fabric.bits<0>", ""}};
+  syncPe.inputs = {{"pc", "mem0_done0", "!fabric.bits<0>", ""}};
   syncPe.resultTypes = {"!fabric.bits<0>"};
   syncPe.fus.push_back(FuSpec{{{"fc", "pc", "!fabric.bits<0>", ""}},
-                              {},
+                              {"!fabric.bits<0>"},
                               {FabricOpSpec{{"done"},
                                             {"dataflow.sync"},
                                             {"fc"},
@@ -878,14 +916,33 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                             {"!fabric.bits<0>"},
                                             {},
                                             {{"bitmask", "1"}}}},
-                              {}});
+                              {"done"}});
   module.addPe(std::move(syncPe));
 
-  module.addMem(MemSpec{
-      Schedule::Spatial,
-      "mgr",
-      {{"i32a", "ctrl"}, {"i32b", "ctrl"}, {"i32c", "ctrl"}, {"i32d", "ctrl"}},
-      {{"i32a", "i32b", "ctrl"}, {"i32c", "i32d", "ctrl"}}});
+  module.addExactBodyLine(
+      "%mem0_data0, %mem0_done0, %mem0_data1, %mem0_done1, %mem0_data2, "
+      "%mem0_done2, %mem0_data3, %mem0_done3, %mem0_store_done0, "
+      "%mem0_store_done1 =");
+  module.addExactBodyLine(
+      "    fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %i32b, %ctrl, "
+      "%i32c, %ctrl, %i32d, %ctrl)");
+  module.addExactBodyLine(
+      "                              store(%i32a, %i32b, %ctrl, %i32c, "
+      "%i32d, %ctrl)");
+  module.addExactBodyLine(
+      "      [{load_group_size = 4 : i32, store_group_size = 2 : i32}]");
+  module.addExactBodyLine(
+      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<0>)");
+  module.addExactBodyLine(
+      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>)");
   return module;
 }
 

@@ -114,7 +114,7 @@ def main() -> int:
                 "mapping_id": MAPPING_ID,
                 "placed_records": "4",
                 "routed_edges": "0",
-                "unrouted_edges": "4",
+                "unrouted_edges": "3",
                 "unplaced_records": "0",
                 "status": "fail",
             },

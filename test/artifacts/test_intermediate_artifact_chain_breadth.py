@@ -46,18 +46,19 @@ CASES = {
         "mapping_id": "reduction__g_t_reduce_sum_red_0_0__shared_reduction_adg",
         "placed_records": "5",
         "routed_edges": "6",
-        "config_records": 65,
+        "config_records": 73,
         "dfg_cycles": 1155,
         "dynamic_work_items": 128,
-        "cgra_cycles": 1165,
+        "cgra_cycles": 1167,
         "byte_size": 512,
         "element_layout": "i32[128]",
+        "mapping_status": "pass",
     },
     "mean": {
         "graph": "g_t_mean_kernel_red_0_0",
         "mapping_id": "mean__g_t_mean_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "7",
-        "routed_edges": "9",
+        "routed_edges": "6",
         "config_records": 94,
         "dfg_cycles": 904,
         "dynamic_work_items": 64,
@@ -69,7 +70,7 @@ CASES = {
         "graph": "g_t_vecnorm_l1_red_0_0",
         "mapping_id": "vecnorm_l1__g_t_vecnorm_l1_red_0_0__shared_reduction_adg",
         "placed_records": "6",
-        "routed_edges": "7",
+        "routed_edges": "2",
         "config_records": 76,
         "dfg_cycles": 643,
         "dynamic_work_items": 64,
@@ -81,7 +82,7 @@ CASES = {
         "graph": "g_t_vecnorm_l2_red_0_0",
         "mapping_id": "vecnorm_l2__g_t_vecnorm_l2_red_0_0__shared_reduction_adg",
         "placed_records": "6",
-        "routed_edges": "8",
+        "routed_edges": "3",
         "config_records": 83,
         "dfg_cycles": 771,
         "dynamic_work_items": 64,
@@ -93,7 +94,7 @@ CASES = {
         "graph": "g_t_correlation_kernel_0_0",
         "mapping_id": "correlation__g_t_correlation_kernel_0_0__shared_reduction_adg",
         "placed_records": "10",
-        "routed_edges": "15",
+        "routed_edges": "13",
         "config_records": 148,
         "dfg_cycles": 346,
         "dynamic_work_items": 16,
@@ -105,7 +106,7 @@ CASES = {
         "graph": "g_t_prefix_sum_red_0_0",
         "mapping_id": "prefix_sum__g_t_prefix_sum_red_0_0__shared_reduction_adg",
         "placed_records": "6",
-        "routed_edges": "9",
+        "routed_edges": "3",
         "config_records": 90,
         "dfg_cycles": 835,
         "dynamic_work_items": 64,
@@ -117,7 +118,7 @@ CASES = {
         "graph": "g_t_cumsum_kernel_red_0_0",
         "mapping_id": "cumsum__g_t_cumsum_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "6",
-        "routed_edges": "9",
+        "routed_edges": "6",
         "config_records": 90,
         "dfg_cycles": 14339,
         "dynamic_work_items": 1024,
@@ -129,7 +130,7 @@ CASES = {
         "graph": "g_t_prefix_sum_inclusive_kernel_red_0_0",
         "mapping_id": "prefix_sum_inclusive__g_t_prefix_sum_inclusive_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "6",
-        "routed_edges": "9",
+        "routed_edges": "3",
         "config_records": 90,
         "dfg_cycles": 13302,
         "dynamic_work_items": 1023,
@@ -141,7 +142,7 @@ CASES = {
         "graph": "g_t_integrate_trapz_red_0_0",
         "mapping_id": "integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg",
         "placed_records": "15",
-        "routed_edges": "25",
+        "routed_edges": "22",
         "config_records": 238,
         "dfg_cycles": 299,
         "dynamic_work_items": 8,
@@ -153,7 +154,7 @@ CASES = {
         "graph": "g_t_spmv_kernel_red_0_0",
         "mapping_id": "spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "9",
-        "routed_edges": "13",
+        "routed_edges": "8",
         "config_records": 130,
         "dfg_cycles": 47,
         "dynamic_work_items": 2,
@@ -165,7 +166,7 @@ CASES = {
         "graph": "g_t_convolve_1d_kernel_0_0",
         "mapping_id": "convolve_1d__g_t_convolve_1d_kernel_0_0__shared_reduction_adg",
         "placed_records": "10",
-        "routed_edges": "15",
+        "routed_edges": "13",
         "config_records": 148,
         "dfg_cycles": 157,
         "dynamic_work_items": 7,
@@ -177,7 +178,7 @@ CASES = {
         "graph": "g_t_matvec_kernel_0_0",
         "mapping_id": "matvec__g_t_matvec_kernel_0_0__shared_reduction_adg",
         "placed_records": "7",
-        "routed_edges": "10",
+        "routed_edges": "5",
         "config_records": 101,
         "dfg_cycles": 83,
         "dynamic_work_items": 5,
@@ -189,7 +190,7 @@ CASES = {
         "graph": "g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0",
         "mapping_id": "vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg",
         "placed_records": "5",
-        "routed_edges": "6",
+        "routed_edges": "5",
         "config_records": 63,
         "dfg_cycles": 256,
         "dynamic_work_items": 16,
@@ -334,6 +335,9 @@ def assert_runtime_evidence(
 def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> None:
     with artifact_test_common.repo_temp_dir(repo, f"loom-{case_name}-chain-") as tmp:
         out_dir = Path(tmp)
+        mapping_passes = expected.get("mapping_status") == "pass"
+        expected_cgra_cycles = expected["cgra_cycles"] if mapping_passes else expected["dfg_cycles"]
+        expected_difference = "expected_hardware_constraint" if mapping_passes else "unsupported_scope"
         artifact_test_common.require_success(
             repo,
             [
@@ -369,10 +373,10 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
                 "hardware": "shared_reduction_adg",
                 "mapping_id": expected["mapping_id"],
                 "placed_records": expected["placed_records"],
-                "routed_edges": "0",
-                "unrouted_edges": expected["routed_edges"],
+                "routed_edges": expected["routed_edges"] if mapping_passes else "0",
+                "unrouted_edges": "0" if mapping_passes else expected["routed_edges"],
                 "unplaced_records": "0",
-                "status": "fail",
+                "status": "pass" if mapping_passes else "fail",
             },
             label=f"{case_name} mapping",
         )
@@ -384,8 +388,8 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
                 "workload": case_name,
                 "graph": expected["graph"],
                 "mapping_id": expected["mapping_id"],
-                "config_records": 0,
-                "status": "fail",
+                "config_records": expected["config_records"] if mapping_passes else 0,
+                "status": "pass" if mapping_passes else "fail",
             },
             label=f"{case_name} mapping artifact",
         )
@@ -407,11 +411,11 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         assert_fields(
             cgra_report,
             {
-                "status": "blocked",
+                "status": "pass" if mapping_passes else "blocked",
                 "workload": case_name,
                 "mapping_id": expected["mapping_id"],
-                "hardware_aware_cycles": expected["dfg_cycles"],
-                "difference_classification": "unsupported_scope",
+                "hardware_aware_cycles": expected_cgra_cycles,
+                "difference_classification": expected_difference,
             },
             label=f"{case_name} CGRA-sim report",
         )
@@ -428,8 +432,8 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             sim_row,
             {
                 "dfg_sim_cycles": str(expected["dfg_cycles"]),
-                "cgra_sim_cycles": "",
-                "status": "blocked",
+                "cgra_sim_cycles": str(expected_cgra_cycles) if mapping_passes else "",
+                "status": "pass" if mapping_passes else "blocked",
             },
             label=f"{case_name} sim row",
         )
@@ -441,17 +445,18 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         assert_fields(
             comparison,
             {
-                "status": "blocked",
+                "status": "pass" if mapping_passes else "blocked",
                 "workload": case_name,
                 "dfg_sim_cycles": expected["dfg_cycles"],
-                "cgra_sim_cycles": expected["dfg_cycles"],
-                "difference_classification": "unsupported_scope",
+                "cgra_sim_cycles": expected_cgra_cycles,
+                "difference_classification": expected_difference,
             },
             label=f"{case_name} simulation comparison",
         )
 
         runtime_package = read_json_object(out_dir / "runtime-package.json")
-        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != case_name:
+        expected_runtime_status = "pass" if mapping_passes else "blocked"
+        if runtime_package.get("status") != expected_runtime_status or runtime_package.get("workload") != case_name:
             raise AssertionError(f"unexpected {case_name} runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != (
             f"work-package::{case_name}::{expected['mapping_id']}"
@@ -488,14 +493,22 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             dse_row,
             {
                 "mapping_id": expected["mapping_id"],
-                "cgra_sim_cycles": "",
-                "selection_status": "blocked",
+                "cgra_sim_cycles": str(expected_cgra_cycles) if mapping_passes else "",
+                "selection_status": "selected" if mapping_passes else "blocked",
             },
             label=f"{case_name} DSE",
         )
+        if mapping_passes:
+            if dse_row.get("hardware_evidence_kind") != "analytic_model_only":
+                raise AssertionError(f"{case_name} DSE row should mark analytic hardware evidence: {dse_row}")
+            if "energy_nj=analytic:derived_from_fpa_and_cgra_sim" not in dse_row.get(
+                "feedback_fidelity_records", ""
+            ):
+                raise AssertionError(f"{case_name} DSE row should mark analytic energy fidelity: {dse_row}")
 
         workload_bundle = read_json_object(out_dir / "workload-report-bundle.json")
-        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != case_name:
+        expected_bundle_status = "pass" if mapping_passes else "blocked"
+        if workload_bundle.get("report_status") != expected_bundle_status or workload_bundle.get("workload") != case_name:
             raise AssertionError(f"unexpected {case_name} workload report bundle: {workload_bundle}")
         runtime_evidence = workload_bundle.get("runtime_evidence")
         if not isinstance(runtime_evidence, dict):
@@ -513,6 +526,8 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")
+        if mapping_passes and f"metric::{case_name}::cgra_sim_cycles" not in metric_ids:
+            raise AssertionError(f"workload report bundle missed CGRA cycles metric: {workload_bundle}")
 
         hardware_bundle = read_json_object(out_dir / "hardware-report-bundle.json")
         if hardware_bundle.get("supported_workload_classes") != [case_name]:
@@ -534,10 +549,10 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             for check in audit.get("cross_artifact_checks", [])
             if isinstance(check, dict)
         }
-        expected_cross_checks = {
-            "sim_cycle_dfg_report_evidence",
-            "sim_cycle_blocked_mapping_evidence",
-        }
+        expected_cross_checks = {"sim_cycle_dfg_report_evidence"}
+        expected_cross_checks.add(
+            "sim_cycle_report_mapping_evidence" if mapping_passes else "sim_cycle_blocked_mapping_evidence"
+        )
         if not expected_cross_checks <= cross_checks:
             raise AssertionError(
                 f"audit missed {case_name} cross-artifact checks {expected_cross_checks - cross_checks}: {audit}"
