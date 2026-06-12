@@ -156,6 +156,13 @@ static bool hasMemoryManagerShape(const SystemPortProfile &profile) {
          profile.arOutput && profile.rInput;
 }
 
+static bool isDmaControlOrDescriptorPort(StringRef port,
+                                         const SystemPortProfile &profile) {
+  return hasMemorySubordinateShape(profile) &&
+         (port == "ctrl" || port == "control" || port == "desc" ||
+          port == "descriptor");
+}
+
 static std::optional<int64_t> getPositiveI64Param(DictionaryAttr params,
                                                   StringRef name) {
   if (!params)
@@ -178,7 +185,8 @@ static bool isPowerOfTwo(int64_t value) {
 
 static bool isBaselineSystemNodeKind(StringRef kind) {
   return kind == "host_core" || kind == "acc_core" ||
-         kind == "fixed_accelerator" || kind == "memory" || kind == "cache";
+         kind == "fixed_accelerator" || kind == "memory" ||
+         kind == "cache" || kind == "dma_engine";
 }
 
 static bool isValidMemoryModel(StringRef model) {
@@ -2088,6 +2096,27 @@ LogicalResult NodeOp::verify() {
     if (!hasSubordinate || !hasManager)
       return emitOpError("kind 'cache' requires at least one subordinate "
                          "memory port and one manager memory port");
+  }
+  if (kind == "dma_engine") {
+    std::optional<int64_t> queueDepth =
+        getPositiveI64Param(getParamsAttr(), "queue_depth");
+    if (!queueDepth)
+      return emitOpError("kind 'dma_engine' requires positive queue_depth");
+
+    llvm::StringMap<SystemPortProfile> profiles;
+    if (failed(
+            collectSystemPortProfiles(getOperation(), getPortsAttr(), profiles)))
+      return failure();
+    bool hasControlOrDescriptor = false;
+    bool hasMemoryManager = false;
+    for (const auto &entry : profiles) {
+      hasControlOrDescriptor |=
+          isDmaControlOrDescriptorPort(entry.getKey(), entry.getValue());
+      hasMemoryManager |= hasMemoryManagerShape(entry.getValue());
+    }
+    if (!hasControlOrDescriptor || !hasMemoryManager)
+      return emitOpError("kind 'dma_engine' requires at least one control or "
+                         "descriptor port and one memory-capable manager port");
   }
   return success();
 }

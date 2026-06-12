@@ -92,6 +92,14 @@ DSE_HARDWARE_EVIDENCE_KIND_ORDER = (
     "sim_activity_model",
     "analytic_model_only",
 )
+FABRIC_SYSTEM_NODE_KINDS = {
+    "acc_core",
+    "cache",
+    "dma_engine",
+    "fixed_accelerator",
+    "host_core",
+    "memory",
+}
 CGRA_FUNCTIONAL_STATE_SOURCES = {
     "carried_from_dfg_sim_report",
     "component_cgra_sim_reports_carried_from_dfg_sim_reports",
@@ -1285,7 +1293,7 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
                 diagnostics.append(f"row {row_index}: fabric.system pass row has no links")
             if not node_kinds:
                 diagnostics.append(f"row {row_index}: fabric.system pass row has no node kinds")
-            if not node_kinds <= {"acc_core", "cache", "fixed_accelerator", "host_core", "memory"}:
+            if not node_kinds <= FABRIC_SYSTEM_NODE_KINDS:
                 diagnostics.append(f"row {row_index}: fabric.system pass row has unknown node kinds")
         else:
             diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown topology class")

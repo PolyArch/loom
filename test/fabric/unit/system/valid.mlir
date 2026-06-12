@@ -9,6 +9,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>) {
 // CHECK: fabric.node @host0 kind = "host_core"
 // CHECK: fabric.node @acc0 kind = "acc_core"
 // CHECK: fabric.node @fft0 kind = "fixed_accelerator"
+// CHECK: fabric.node @dma0 kind = "dma_engine"
 // CHECK: fabric.node @l1d0 kind = "cache"
 // CHECK: fabric.node @dram0 kind = "memory"
 // CHECK: fabric.link src = @host0 src_port = "mem" src_channel = "aw" dst = @l1d0 dst_port = "host" dst_channel = "aw"
@@ -22,6 +23,10 @@ fabric.system @heterogeneous_dual_accel_soc memory_model = "sequential" {
   fabric.node @fft0 kind = "fixed_accelerator"
       ports = ["mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
       attributes {function = "fft"}
+  fabric.node @dma0 kind = "dma_engine"
+      ports = ["ctrl.aw:input", "ctrl.w:input", "ctrl.b:output", "ctrl.ar:input", "ctrl.r:output",
+               "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
+      attributes {params = {queue_depth = 4 : i64}}
   fabric.node @l1d0 kind = "cache"
       ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
                "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
@@ -29,7 +34,8 @@ fabric.system @heterogeneous_dual_accel_soc memory_model = "sequential" {
   fabric.node @dram0 kind = "memory"
       ports = ["cache.aw:input", "cache.w:input", "cache.b:output", "cache.ar:input", "cache.r:output",
                "acc0.aw:input", "acc0.w:input", "acc0.b:output", "acc0.ar:input", "acc0.r:output",
-               "fft0.aw:input", "fft0.w:input", "fft0.b:output", "fft0.ar:input", "fft0.r:output"]
+               "fft0.aw:input", "fft0.w:input", "fft0.b:output", "fft0.ar:input", "fft0.r:output",
+               "dma0.aw:input", "dma0.w:input", "dma0.b:output", "dma0.ar:input", "dma0.r:output"]
       attributes {bytes = 1048576 : i64}
 
   fabric.link src = @host0 src_port = "mem" src_channel = "aw" dst = @l1d0 dst_port = "host" dst_channel = "aw"
@@ -55,4 +61,10 @@ fabric.system @heterogeneous_dual_accel_soc memory_model = "sequential" {
   fabric.link src = @dram0 src_port = "fft0" src_channel = "b" dst = @fft0 dst_port = "mem" dst_channel = "b"
   fabric.link src = @fft0 src_port = "mem" src_channel = "ar" dst = @dram0 dst_port = "fft0" dst_channel = "ar"
   fabric.link src = @dram0 src_port = "fft0" src_channel = "r" dst = @fft0 dst_port = "mem" dst_channel = "r"
+
+  fabric.link src = @dma0 src_port = "mem" src_channel = "aw" dst = @dram0 dst_port = "dma0" dst_channel = "aw"
+  fabric.link src = @dma0 src_port = "mem" src_channel = "w" dst = @dram0 dst_port = "dma0" dst_channel = "w"
+  fabric.link src = @dram0 src_port = "dma0" src_channel = "b" dst = @dma0 dst_port = "mem" dst_channel = "b"
+  fabric.link src = @dma0 src_port = "mem" src_channel = "ar" dst = @dram0 dst_port = "dma0" dst_channel = "ar"
+  fabric.link src = @dram0 src_port = "dma0" src_channel = "r" dst = @dma0 dst_port = "mem" dst_channel = "r"
 }

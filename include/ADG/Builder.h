@@ -150,6 +150,8 @@ public:
   SystemBuilder &addCache(std::string name, std::uint64_t lineBytes,
                           std::uint64_t capacityBytes,
                           std::vector<std::string> ports);
+  SystemBuilder &addDmaEngine(std::string name, std::uint64_t queueDepth,
+                              std::vector<std::string> ports);
   SystemBuilder &addMemory(std::string name, std::uint64_t bytes,
                            std::vector<std::string> ports);
   SystemBuilder &connect(std::string srcNode, std::string srcPort,

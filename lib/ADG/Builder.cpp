@@ -440,6 +440,16 @@ SystemBuilder &SystemBuilder::addCache(std::string nodeName,
   return *this;
 }
 
+SystemBuilder &SystemBuilder::addDmaEngine(std::string nodeName,
+                                           std::uint64_t queueDepth,
+                                           std::vector<std::string> ports) {
+  SystemNodeSpec node =
+      makeSystemNode(std::move(nodeName), "dma_engine", std::move(ports));
+  node.params = {{"queue_depth", queueDepth}};
+  nodes.push_back(std::move(node));
+  return *this;
+}
+
 SystemBuilder &SystemBuilder::addMemory(std::string nodeName,
                                         std::uint64_t bytes,
                                         std::vector<std::string> ports) {
@@ -1038,16 +1048,23 @@ SystemBuilder loom::adg::buildHeterogeneousSocAdg() {
   appendPorts(cachePorts, axiManagerPort("mem"));
   system.addCache("l1d0", 64, 32 * 1024, std::move(cachePorts));
 
+  std::vector<std::string> dmaPorts;
+  appendPorts(dmaPorts, axiSubordinatePort("ctrl"));
+  appendPorts(dmaPorts, axiManagerPort("mem"));
+  system.addDmaEngine("dma0", 4, std::move(dmaPorts));
+
   std::vector<std::string> dramPorts;
   appendPorts(dramPorts, axiSubordinatePort("cache"));
   appendPorts(dramPorts, axiSubordinatePort("acc0"));
   appendPorts(dramPorts, axiSubordinatePort("fft0"));
+  appendPorts(dramPorts, axiSubordinatePort("dma0"));
   system.addMemory("dram0", 1024 * 1024, std::move(dramPorts));
 
   connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
   connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "cache");
   connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
   connectAxiMemoryPort(system, "fft0", "mem", "dram0", "fft0");
+  connectAxiMemoryPort(system, "dma0", "mem", "dram0", "dma0");
   return system;
 }
 

@@ -71,8 +71,10 @@ def main() -> int:
             "fabric.node @host0",
             "fabric.node @acc0",
             "fabric.node @fft0",
+            "fabric.node @dma0",
             "fabric.node @dram0",
             "fabric.link src = @acc0",
+            "fabric.link src = @dma0",
         ]
         for fragment in required_fragments:
             if fragment not in generated:
@@ -104,13 +106,13 @@ def main() -> int:
             system_row,
             {
                 "topology_class": "fabric_system",
-                "node_count": "5",
-                "link_count": "20",
+                "node_count": "6",
+                "link_count": "25",
                 "verify_status": "pass",
                 "tile_kinds": "",
                 "schedule_kinds": "",
                 "adg_builder_recipe_identity": "adg-builder::heterogeneous-soc",
-                "node_kinds": "acc_core;cache;fixed_accelerator;host_core;memory",
+                "node_kinds": "acc_core;cache;dma_engine;fixed_accelerator;host_core;memory",
             },
             label="ADG Builder generated fabric.system",
         )

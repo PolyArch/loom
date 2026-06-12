@@ -804,6 +804,27 @@ def main() -> int:
             "tile_kinds,schedule_kinds,adg_builder_recipe_identity,node_kinds\n"
             "fabric0,fabric_module_template,1,0,pass,verified,pe,spatial,,\n"
         )
+        valid_system_hardware = out_dir / "valid-system-adg-hardware-summary.csv"
+        valid_system_hardware.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,"
+            "tile_kinds,schedule_kinds,adg_builder_recipe_identity,node_kinds\n"
+            "soc0,fabric_system,2,1,pass,verified,,,,dma_engine;memory\n"
+        )
+        valid_system_hardware_audit = out_dir / "artifact-audit-summary-valid-system-hardware.json"
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(valid_system_hardware_audit),
+                str(valid_system_hardware),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError(
+                "ADG hardware summary with dma_engine node kind unexpectedly failed audit"
+            )
         stale_mapping = out_dir / "stale-pnr-mapping-summary.csv"
         stale_mapping.write_text(
             "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic\n"

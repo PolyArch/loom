@@ -136,11 +136,11 @@ def main() -> int:
             system_row,
             {
                 "topology_class": "fabric_system",
-                "node_count": "5",
-                "link_count": "20",
+                "node_count": "6",
+                "link_count": "25",
                 "verify_status": "pass",
                 "adg_builder_recipe_identity": "adg-builder::heterogeneous-soc",
-                "node_kinds": "acc_core;cache;fixed_accelerator;host_core;memory",
+                "node_kinds": "acc_core;cache;dma_engine;fixed_accelerator;host_core;memory",
             },
             label="system hardware row",
         )
@@ -189,8 +189,8 @@ def main() -> int:
                 "lowering_kind": "architecture_rtl",
                 "source_root_kind": "fabric_system",
                 "systemverilog_profile": "behavioral_shell_v1",
-                "node_count": 5,
-                "link_count": 20,
+                "node_count": 6,
+                "link_count": 25,
             },
             label="system RTL lowering",
         )
@@ -206,8 +206,8 @@ def main() -> int:
             "module heterogeneous_dual_accel_soc",
             "input logic clk",
             "input logic rst_n",
-            "LOOM_NODE_COUNT = 5",
-            "LOOM_LINK_COUNT = 20",
+            "LOOM_NODE_COUNT = 6",
+            "LOOM_LINK_COUNT = 25",
         ):
             if snippet not in source_text:
                 raise AssertionError(f"system RTL source missed {snippet}: {source_text}")
@@ -280,10 +280,10 @@ def main() -> int:
                 "rtl_lint_status": "blocked",
                 "rtl_sim_status": "skipped",
                 "synth_status": "skipped",
-                "frequency_mhz": "350.000",
-                "area_um2": "3250.000",
-                "dynamic_power_mw": "3.000",
-                "leakage_power_mw": "0.425",
+                "frequency_mhz": "315.000",
+                "area_um2": "3750.000",
+                "dynamic_power_mw": "3.450",
+                "leakage_power_mw": "0.475",
                 "fidelity_level": "analytic",
                 "frequency_source": "analytic_fpa_model",
                 "area_source": "analytic_fpa_model",
@@ -346,12 +346,12 @@ def main() -> int:
             raise AssertionError(f"system hardware bundle fingerprint drift: {bundle}")
         metrics = metric_by_id(bundle.get("metric_records", []))
         for metric_id, value in (
-            (f"metric::{system_identity}::node_count", 5),
-            (f"metric::{system_identity}::link_count", 20),
-            (f"metric::{system_identity}::frequency_mhz", 350.0),
-            (f"metric::{system_identity}::area_um2", 3250.0),
-            (f"metric::{system_identity}::dynamic_power_mw", 3.0),
-            (f"metric::{system_identity}::leakage_power_mw", 0.425),
+            (f"metric::{system_identity}::node_count", 6),
+            (f"metric::{system_identity}::link_count", 25),
+            (f"metric::{system_identity}::frequency_mhz", 315.0),
+            (f"metric::{system_identity}::area_um2", 3750.0),
+            (f"metric::{system_identity}::dynamic_power_mw", 3.45),
+            (f"metric::{system_identity}::leakage_power_mw", 0.475),
         ):
             metric = metrics.get(metric_id)
             if metric is None or metric.get("value") != value:

@@ -75,3 +75,21 @@ fabric.system @bad_cache_ports_soc memory_model = "sequential" {
       ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output"]
       attributes {params = {line_bytes = 64 : i64, capacity_bytes = 32768 : i64}}
 }
+
+// -----
+
+fabric.system @bad_dma_ports_soc memory_model = "sequential" {
+  // expected-error @+1 {{'fabric.node' op kind 'dma_engine' requires at least one control or descriptor port and one memory-capable manager port}}
+  fabric.node @dma0 kind = "dma_engine"
+      ports = ["ctrl.aw:input", "ctrl.w:input", "ctrl.b:output", "ctrl.ar:input", "ctrl.r:output"]
+      attributes {params = {queue_depth = 4 : i64}}
+}
+
+// -----
+
+fabric.system @bad_dma_queue_soc memory_model = "sequential" {
+  // expected-error @+1 {{'fabric.node' op kind 'dma_engine' requires positive queue_depth}}
+  fabric.node @dma0 kind = "dma_engine"
+      ports = ["ctrl.aw:input", "ctrl.w:input", "ctrl.b:output", "ctrl.ar:input", "ctrl.r:output",
+               "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
+}
