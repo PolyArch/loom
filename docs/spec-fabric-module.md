@@ -299,9 +299,10 @@ orientation only and is not part of target acceptance.
 The current implementation already supports a substantial subset of the
 SpatialCore-level Fabric dialect, including `fabric.module`,
 `fabric.pe`, `fabric.fu`, `fabric.switch`, `fabric.mem`, FIFO,
-boundary, instantiate, and related verifier tests. Coverage still needs
-to be audited against the complete target universe and downstream
-consumer requirements.
+boundary, instantiate, and related verifier tests. This note does not
+claim complete target-universe coverage; completion is judged by the
+target universe, objective verification, and downstream consumer
+requirements above.
 
 ## Negative tests
 
