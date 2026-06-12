@@ -925,14 +925,17 @@ orientation only and is not part of target acceptance.
 
 The current repository has a baseline `fabric.system` implementation
 covering a required `memory_model`, `fabric.node` records for
-`host_core`, `acc_core`, `fixed_accelerator`, and `memory`, string
-descriptors for port channels, explicit `fabric.link` records, endpoint
-direction checks, endpoint uniqueness checks, and `acc_core` references
-to visible `fabric.module` SpatialCore templates. The ADG Builder can
-emit a heterogeneous SoC example that uses this baseline, and the ADG
-hardware summary can report it as a `fabric_system` candidate. This note
-does not define the target system contract; the normative target is in
-the sections above.
+`host_core`, `acc_core`, `fixed_accelerator`, `cache`, and `memory`,
+string descriptors for port channels, explicit `fabric.link` records,
+endpoint direction checks, endpoint uniqueness checks, and `acc_core`
+references to visible `fabric.module` SpatialCore templates. The
+current `cache` verifier requires positive power-of-two `line_bytes`,
+positive `capacity_bytes` of at least one line, and at least one
+subordinate memory port plus one manager memory port. The ADG Builder
+can emit a heterogeneous SoC example that uses this baseline, and the
+ADG hardware summary can report it as a `fabric_system` candidate. This
+note does not define the target system contract; the normative target is
+in the sections above.
 
 ## Mapping Boundary
 

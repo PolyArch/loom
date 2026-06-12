@@ -376,30 +376,47 @@ ModuleBuilder &ModuleBuilder::addExactBodyLine(std::string line) {
 SystemBuilder::SystemBuilder(std::string name, std::string memoryModel)
     : name(std::move(name)), memoryModel(std::move(memoryModel)) {}
 
+namespace {
+
+SystemNodeSpec makeSystemNode(std::string name, std::string kind,
+                              std::vector<std::string> ports) {
+  SystemNodeSpec node;
+  node.name = std::move(name);
+  node.kind = std::move(kind);
+  node.ports = std::move(ports);
+  return node;
+}
+
+} // namespace
+
 SystemBuilder &SystemBuilder::addHostCore(std::string nodeName,
                                           std::string scalar,
                                           std::vector<std::string> ports) {
-  nodes.push_back(SystemNodeSpec{std::move(nodeName), "host_core",
-                                 std::move(ports), "", std::move(scalar), "",
-                                 std::nullopt, {}});
+  SystemNodeSpec node =
+      makeSystemNode(std::move(nodeName), "host_core", std::move(ports));
+  node.scalar = std::move(scalar);
+  nodes.push_back(std::move(node));
   return *this;
 }
 
 SystemBuilder &SystemBuilder::addSpatialAccelerator(
     std::string nodeName, std::string spatialModule, std::string scalar,
     std::vector<std::string> ports) {
-  nodes.push_back(SystemNodeSpec{std::move(nodeName), "acc_core",
-                                 std::move(ports), std::move(spatialModule),
-                                 std::move(scalar), "", std::nullopt, {}});
+  SystemNodeSpec node =
+      makeSystemNode(std::move(nodeName), "acc_core", std::move(ports));
+  node.spatialModule = std::move(spatialModule);
+  node.scalar = std::move(scalar);
+  nodes.push_back(std::move(node));
   return *this;
 }
 
 SystemBuilder &
 SystemBuilder::addFixedAccelerator(std::string nodeName, std::string function,
                                    std::vector<std::string> ports) {
-  nodes.push_back(SystemNodeSpec{std::move(nodeName), "fixed_accelerator",
-                                 std::move(ports), "", "", std::move(function),
-                                 std::nullopt, {}});
+  SystemNodeSpec node = makeSystemNode(std::move(nodeName),
+                                       "fixed_accelerator", std::move(ports));
+  node.function = std::move(function);
+  nodes.push_back(std::move(node));
   return *this;
 }
 
@@ -407,18 +424,20 @@ SystemBuilder &SystemBuilder::addCache(std::string nodeName,
                                        std::uint64_t lineBytes,
                                        std::uint64_t capacityBytes,
                                        std::vector<std::string> ports) {
-  nodes.push_back(SystemNodeSpec{
-      std::move(nodeName), "cache", std::move(ports), "", "", "",
-      std::nullopt,
-      {{"capacity_bytes", capacityBytes}, {"line_bytes", lineBytes}}});
+  SystemNodeSpec node =
+      makeSystemNode(std::move(nodeName), "cache", std::move(ports));
+  node.params = {{"capacity_bytes", capacityBytes}, {"line_bytes", lineBytes}};
+  nodes.push_back(std::move(node));
   return *this;
 }
 
 SystemBuilder &SystemBuilder::addMemory(std::string nodeName,
                                         std::uint64_t bytes,
                                         std::vector<std::string> ports) {
-  nodes.push_back(SystemNodeSpec{std::move(nodeName), "memory",
-                                 std::move(ports), "", "", "", bytes, {}});
+  SystemNodeSpec node =
+      makeSystemNode(std::move(nodeName), "memory", std::move(ports));
+  node.bytes = bytes;
+  nodes.push_back(std::move(node));
   return *this;
 }
 

@@ -8,7 +8,7 @@
 // HARDWARE-SAME: memory_model = "sequential"
 // HARDWARE: fabric.node @host0 kind = "host_core"
 // HARDWARE: fabric.node @acc0 kind = "acc_core"
-// HARDWARE: spatial = @shared_reduction_adg
+// HARDWARE-SAME: spatial = @shared_reduction_adg
 // HARDWARE: fabric.node @fft0 kind = "fixed_accelerator"
 // HARDWARE: fabric.node @l1d0 kind = "cache"
 // HARDWARE: fabric.node @dram0 kind = "memory"

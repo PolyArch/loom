@@ -2072,7 +2072,8 @@ LogicalResult NodeOp::verify() {
     if (!lineBytes || !capacityBytes || !isPowerOfTwo(*lineBytes) ||
         *capacityBytes < *lineBytes)
       return emitOpError("kind 'cache' requires positive power-of-two "
-                         "line_bytes and capacity_bytes of at least one line");
+                         "line_bytes and positive capacity_bytes of at "
+                         "least one line");
 
     llvm::StringMap<SystemPortProfile> profiles;
     if (failed(

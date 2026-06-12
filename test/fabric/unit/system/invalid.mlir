@@ -41,7 +41,7 @@ fabric.system @bad_spatial_reference_soc memory_model = "sequential" {
 // -----
 
 fabric.system @bad_cache_params_soc memory_model = "sequential" {
-  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and capacity_bytes of at least one line}}
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and positive capacity_bytes of at least one line}}
   fabric.node @l1d0 kind = "cache"
       ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
                "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
@@ -50,7 +50,7 @@ fabric.system @bad_cache_params_soc memory_model = "sequential" {
 // -----
 
 fabric.system @bad_cache_line_bytes_soc memory_model = "sequential" {
-  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and capacity_bytes of at least one line}}
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and positive capacity_bytes of at least one line}}
   fabric.node @l1d0 kind = "cache"
       ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
                "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
@@ -60,7 +60,7 @@ fabric.system @bad_cache_line_bytes_soc memory_model = "sequential" {
 // -----
 
 fabric.system @bad_cache_capacity_soc memory_model = "sequential" {
-  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and capacity_bytes of at least one line}}
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and positive capacity_bytes of at least one line}}
   fabric.node @l1d0 kind = "cache"
       ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
                "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
