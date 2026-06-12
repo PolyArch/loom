@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -136,6 +137,111 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("RTL/FPA summary with missing activity source unexpectedly passed audit")
+
+        default_lint_tool = out_dir / "default-lint-tool"
+        default_lint_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test default lint'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        default_lint_tool.chmod(default_lint_tool.stat().st_mode | 0o111)
+        default_profile = out_dir / "default-rtl-eda-profile.sh"
+        default_profile.write_text(
+            f"export LOOM_RTL_LINT_TOOL={shlex.quote(str(default_lint_tool))}\n"
+        )
+        default_fpa = out_dir / "default-rtl-fpa-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                f"LOOM_RTL_FPA_STANDARD_DIR={out_dir}",
+                f"LOOM_RTL_EDA_ENV_FILE={default_profile}",
+                "bash",
+                "test/rtl/run_rtl_fpa_summary.sh",
+                "--output",
+                str(default_fpa),
+            ],
+            "default RTL/FPA summary with auto lint evidence",
+        )
+        default_rows = artifact_test_common.read_csv_rows(default_fpa, HEADER)
+        default_matches = [
+            row
+            for row in default_rows
+            if row["workload"] == "vecadd" and row["hardware"].endswith("::pe_2x2")
+        ]
+        if len(default_matches) != 1:
+            raise AssertionError(f"expected one default vecadd pe_2x2 row, got {default_rows}")
+        default_row = default_matches[0]
+        if default_row["rtl_lint_status"] != "pass":
+            raise AssertionError(f"default FPA row should consume passing RTL lint evidence: {default_row}")
+        if default_row["fidelity_level"] != "analytic":
+            raise AssertionError(f"default RTL lint must not relabel analytic FPA metrics: {default_row}")
+        if "RTL lint evidence status=pass" not in default_row.get("diagnostic", ""):
+            raise AssertionError(f"default FPA diagnostic should cite lint evidence: {default_row}")
+        default_manifest = out_dir / "rtl-manifest.json"
+        default_eda = out_dir / "rtl-eda-report.json"
+        default_report = out_dir / "default-rtl-fpa-report.json"
+        for artifact in (default_manifest, default_eda, default_report):
+            if not artifact.is_file():
+                raise AssertionError(f"default FPA summary should produce {artifact}")
+        default_eda_data = json.loads(default_eda.read_text())
+        if default_eda_data.get("status") != "pass":
+            raise AssertionError(f"default RTL EDA report should pass: {default_eda_data}")
+        if default_eda_data.get("tool_version") != "Verilator 5.test default lint":
+            raise AssertionError(f"default RTL EDA report should record tool version: {default_eda_data}")
+
+        failing_lint_tool = out_dir / "default-failing-lint-tool"
+        failing_lint_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test default fail'\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'lint failed for default propagation' >&2\n"
+            "exit 9\n"
+        )
+        failing_lint_tool.chmod(failing_lint_tool.stat().st_mode | 0o111)
+        failing_profile = out_dir / "default-failing-rtl-eda-profile.sh"
+        failing_profile.write_text(
+            f"export LOOM_RTL_LINT_TOOL={shlex.quote(str(failing_lint_tool))}\n"
+        )
+        failing_fpa = out_dir / "default-failing-rtl-fpa-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                f"LOOM_RTL_FPA_STANDARD_DIR={out_dir}",
+                f"LOOM_RTL_EDA_ENV_FILE={failing_profile}",
+                "bash",
+                "test/rtl/run_rtl_fpa_summary.sh",
+                "--output",
+                str(failing_fpa),
+            ],
+            "default RTL/FPA summary with failing lint evidence",
+        )
+        failing_rows = artifact_test_common.read_csv_rows(failing_fpa, HEADER)
+        failing_matches = [
+            row
+            for row in failing_rows
+            if row["workload"] == "vecadd" and row["hardware"].endswith("::pe_2x2")
+        ]
+        if len(failing_matches) != 1:
+            raise AssertionError(f"expected one failing-lint vecadd pe_2x2 row, got {failing_rows}")
+        failing_row = failing_matches[0]
+        if failing_row["rtl_lint_status"] != "fail":
+            raise AssertionError(f"default FPA row should consume failing RTL lint evidence: {failing_row}")
+        if failing_row["status"] != "pass" or failing_row["fidelity_level"] != "analytic":
+            raise AssertionError(f"failing lint must not relabel analytic FPA metrics: {failing_row}")
+        if "RTL lint evidence status=fail" not in failing_row.get("diagnostic", ""):
+            raise AssertionError(f"default FPA diagnostic should cite failing lint evidence: {failing_row}")
+        failing_eda_data = json.loads(default_eda.read_text())
+        if failing_eda_data.get("status") != "fail":
+            raise AssertionError(f"default RTL EDA report should preserve failing lint status: {failing_eda_data}")
+        if failing_eda_data.get("tool_version") != "Verilator 5.test default fail":
+            raise AssertionError(f"default failing RTL EDA report should record tool version: {failing_eda_data}")
 
         manifest = out_dir / "rtl-manifest.json"
         artifact_test_common.require_success(
