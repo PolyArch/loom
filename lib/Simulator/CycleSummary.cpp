@@ -22,11 +22,17 @@ struct PrimitiveStats {
   std::uint64_t totalOps = 0;
 };
 
+struct DFGSummary {
+  CycleSummaryRow row;
+  bool complete = true;
+};
+
 struct CGRASummary {
   std::string kernel;
   std::optional<std::uint64_t> cycles;
   std::string status;
   std::string diagnostic;
+  bool complete = true;
 };
 
 llvm::SmallVector<std::string> parseCsvLine(llvm::StringRef line) {
@@ -232,19 +238,20 @@ llvm::Expected<CGRASummary> summarizeOneCGRAReport(llvm::StringRef path) {
     if (diagnostic.empty())
       diagnostic = "CGRA-sim report did not pass";
     return CGRASummary{workload->str(), std::nullopt, reportStatus,
-                       std::move(diagnostic)};
+                       std::move(diagnostic), false};
   }
 
   std::optional<int64_t> cycles = object->getInteger("hardware_aware_cycles");
   if (!cycles || *cycles < 0)
     return CGRASummary{workload->str(), std::nullopt, "blocked",
                        "CGRA-sim report passed but lacks non-negative "
-                       "hardware_aware_cycles"};
+                       "hardware_aware_cycles",
+                       false};
 
   if (diagnostic.empty())
     diagnostic = "CGRA-sim report available";
   return CGRASummary{workload->str(), static_cast<std::uint64_t>(*cycles),
-                     "pass", std::move(diagnostic)};
+                     "pass", std::move(diagnostic), true};
 }
 
 } // namespace
@@ -317,32 +324,47 @@ loom::sim::summarizePrimitiveCoverage(llvm::StringRef csvPath,
   return rows;
 }
 
-void mergeDFGRow(CycleSummaryRow &target, CycleSummaryRow source) {
-  if (target.kernel.empty())
-    target.kernel = std::move(source.kernel);
+void mergeDFGRow(DFGSummary &target, CycleSummaryRow source) {
+  CycleSummaryRow &row = target.row;
+  if (row.kernel.empty())
+    row.kernel = std::move(source.kernel);
   if (!source.dfgSimCycles) {
-    target.dfgSimCycles.reset();
-    target.status = source.status;
-    appendDiagnostic(target.diagnostic, source.diagnostic);
+    target.complete = false;
+    row.dfgSimCycles.reset();
+    row.status = source.status.empty() ? "blocked" : source.status;
+    appendDiagnostic(row.diagnostic, source.diagnostic);
     return;
   }
-  if (target.dfgSimCycles)
-    *target.dfgSimCycles += *source.dfgSimCycles;
-  else if (target.status.empty() || target.status == "blocked")
-    target.dfgSimCycles = *source.dfgSimCycles;
-  if (target.status.empty())
-    target.status = source.status;
-  if (target.status == "pass" && source.status != "pass")
-    target.status = source.status;
-  appendDiagnostic(target.diagnostic, source.diagnostic);
+  if (!target.complete) {
+    if (row.status.empty())
+      row.status = "blocked";
+    appendDiagnostic(row.diagnostic, source.diagnostic);
+    return;
+  }
+  if (row.dfgSimCycles)
+    *row.dfgSimCycles += *source.dfgSimCycles;
+  else if (row.status.empty() || row.status == "blocked")
+    row.dfgSimCycles = *source.dfgSimCycles;
+  if (row.status.empty())
+    row.status = source.status;
+  if (row.status == "pass" && source.status != "pass")
+    row.status = source.status;
+  appendDiagnostic(row.diagnostic, source.diagnostic);
 }
 
 void mergeCGRASummary(CGRASummary &target, CGRASummary source) {
   if (target.kernel.empty())
     target.kernel = std::move(source.kernel);
-  if (!source.cycles) {
+  if (!source.complete || !source.cycles) {
+    target.complete = false;
     target.cycles.reset();
-    target.status = source.status;
+    target.status = source.status.empty() ? "blocked" : source.status;
+    appendDiagnostic(target.diagnostic, source.diagnostic);
+    return;
+  }
+  if (!target.complete) {
+    if (target.status.empty())
+      target.status = "blocked";
     appendDiagnostic(target.diagnostic, source.diagnostic);
     return;
   }
@@ -362,7 +384,7 @@ loom::sim::summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths) {
   if (reportPaths.empty())
     return scaffoldCycleSummaryRows();
 
-  std::map<std::string, CycleSummaryRow> byKernel;
+  std::map<std::string, DFGSummary> byKernel;
   for (const std::string &path : reportPaths) {
     auto rowOrErr = summarizeOneDFGReport(path);
     if (!rowOrErr)
@@ -371,8 +393,8 @@ loom::sim::summarizeDFGReports(llvm::ArrayRef<std::string> reportPaths) {
     mergeDFGRow(byKernel[kernel], std::move(*rowOrErr));
   }
   llvm::SmallVector<CycleSummaryRow> rows;
-  for (auto &[_, row] : byKernel)
-    rows.push_back(std::move(row));
+  for (auto &[_, summary] : byKernel)
+    rows.push_back(std::move(summary.row));
   return rows;
 }
 
@@ -407,7 +429,7 @@ loom::sim::summarizeSimulationReports(
           "CGRA-sim report available but DFG-sim cycles are missing");
       continue;
     }
-    if (!cgra.cycles) {
+    if (!cgra.complete || !cgra.cycles) {
       row.status = cgra.status;
       appendDiagnostic(row.diagnostic, cgra.diagnostic);
       continue;
