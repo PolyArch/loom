@@ -598,6 +598,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "tool_name",
             "tool_version",
             "command_role",
+            "command_timeout_seconds",
             "checked_top_modules",
             "checked_source_files",
             "input_artifact_fingerprints",
@@ -5761,6 +5762,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("EDA report capability_class must be rtl_lint")
         if data.get("command_role") != "rtl lint":
             diagnostics.append("EDA report command_role must be rtl lint")
+        timeout_seconds = data.get("command_timeout_seconds")
+        if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+            diagnostics.append("EDA report command_timeout_seconds must be a positive integer")
         if not isinstance(data.get("tool_version"), str):
             diagnostics.append("EDA report tool_version must be a string")
         for key in ("checked_top_modules", "checked_source_files", "diagnostics"):

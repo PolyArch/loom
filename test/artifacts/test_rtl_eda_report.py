@@ -21,6 +21,7 @@ REQUIRED_KEYS = {
     "tool_name",
     "tool_version",
     "command_role",
+    "command_timeout_seconds",
     "checked_top_modules",
     "checked_source_files",
     "input_artifact_fingerprints",
@@ -249,6 +250,93 @@ def main() -> int:
             failing_version,
             out_dir / "failing-version-rtl-eda-audit-summary.json",
             "failing-version RTL EDA report audit",
+        )
+
+        version_timeout_tool = out_dir / "version-timeout-tool"
+        version_timeout_tool.write_text("#!/bin/sh\nsleep 5\n")
+        version_timeout_tool.chmod(version_timeout_tool.stat().st_mode | 0o111)
+        version_timeout_report = out_dir / "version-timeout-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                str(version_timeout_tool),
+                "--timeout-seconds",
+                "1",
+                "--output",
+                str(version_timeout_report),
+            ],
+            "version-timeout RTL EDA report",
+        )
+        version_timeout_data = json.loads(version_timeout_report.read_text())
+        if version_timeout_data.get("status") != "blocked":
+            raise AssertionError(
+                f"timeout version probe should produce blocked report: {version_timeout_data}"
+            )
+        version_timeout_records = version_timeout_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "tool_timeout"
+            for record in version_timeout_records
+        ):
+            raise AssertionError(
+                f"timeout version probe should produce timeout diagnostic: {version_timeout_data}"
+            )
+        require_audit_pass(
+            repo,
+            version_timeout_report,
+            out_dir / "version-timeout-rtl-eda-audit-summary.json",
+            "version-timeout RTL EDA report audit",
+        )
+
+        timeout_tool = out_dir / "timeout-tool"
+        timeout_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.timeout'\n"
+            "  exit 0\n"
+            "fi\n"
+            "sleep 5\n"
+        )
+        timeout_tool.chmod(timeout_tool.stat().st_mode | 0o111)
+        timeout_report = out_dir / "timeout-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                str(timeout_tool),
+                "--timeout-seconds",
+                "1",
+                "--output",
+                str(timeout_report),
+            ],
+            "timeout RTL EDA report",
+        )
+        timeout_data = json.loads(timeout_report.read_text())
+        if timeout_data.get("status") != "blocked":
+            raise AssertionError(f"timeout lint run should produce blocked report: {timeout_data}")
+        if timeout_data.get("command_timeout_seconds") != 1:
+            raise AssertionError(f"timeout report should record command timeout: {timeout_data}")
+        timeout_records = timeout_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "tool_timeout"
+            for record in timeout_records
+        ):
+            raise AssertionError(f"timeout lint run should produce timeout diagnostic: {timeout_data}")
+        require_audit_pass(
+            repo,
+            timeout_report,
+            out_dir / "timeout-rtl-eda-audit-summary.json",
+            "timeout RTL EDA report audit",
         )
 
         env_tool = out_dir / "env-verilator"

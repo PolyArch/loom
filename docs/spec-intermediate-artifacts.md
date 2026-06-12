@@ -646,6 +646,7 @@ Required top-level keys:
 * `tool_name`;
 * `tool_version`;
 * `command_role`;
+* `command_timeout_seconds`;
 * `checked_top_modules`;
 * `checked_source_files`;
 * `input_artifact_fingerprints`;
@@ -661,6 +662,8 @@ Rules:
 * `capability_class` identifies the EDA role from
   `docs/spec-eda-tooling.md`; the first required backend role is
   `rtl_lint`.
+* `command_timeout_seconds` is the positive timeout applied to each
+  backend tool invocation.
 * `rtl_manifest_identity` must resolve to the RTL manifest consumed by
   the backend run, and the report must fingerprint that manifest.
 * Source file fingerprints must match the checked source files recorded

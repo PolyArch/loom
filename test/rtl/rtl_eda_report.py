@@ -27,11 +27,27 @@ class ToolResolution:
     diagnostic_message: str
 
 
+def positive_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--tool", default=os.environ.get("LOOM_RTL_LINT_TOOL", ""))
+    parser.add_argument(
+        "--timeout-seconds",
+        type=positive_int,
+        default=positive_int(os.environ.get("LOOM_RTL_EDA_TIMEOUT_SECONDS", "7200")),
+        help="timeout for each EDA tool invocation",
+    )
     return parser.parse_args(argv)
 
 
@@ -97,7 +113,7 @@ def resolve_tool(raw_tool: str) -> ToolResolution:
     return ToolResolution(requested, resolved, "", "")
 
 
-def tool_version(tool_path: str) -> tuple[str, str]:
+def tool_version(tool_path: str, timeout_seconds: int) -> tuple[str, str, str]:
     try:
         result = subprocess.run(
             [tool_path, "--version"],
@@ -105,17 +121,25 @@ def tool_version(tool_path: str) -> tuple[str, str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired:
+        return "", f"RTL lint tool version probe timed out after {timeout_seconds}s", "tool_timeout"
     except OSError as exc:
-        return "", f"RTL lint tool version probe failed: {exc}"
+        return "", f"RTL lint tool version probe failed: {exc}", "tool_activation_failed"
     text = result.stdout.strip() or result.stderr.strip()
     if result.returncode != 0:
         detail = text.splitlines()[0] if text else f"exit code {result.returncode}"
-        return "", f"RTL lint tool version probe failed: {detail}"
-    return (text.splitlines()[0] if text else "", "")
+        return "", f"RTL lint tool version probe failed: {detail}", "tool_activation_failed"
+    return (text.splitlines()[0] if text else "", "", "")
 
 
-def base_report(manifest_path: Path, manifest: dict[str, object], tool_name: str) -> dict[str, object]:
+def base_report(
+    manifest_path: Path,
+    manifest: dict[str, object],
+    tool_name: str,
+    timeout_seconds: int,
+) -> dict[str, object]:
     tops = manifest.get("top_level_modules")
     top_modules = [top for top in tops if isinstance(top, str) and top] if isinstance(tops, list) else []
     sources = source_paths(manifest_path, manifest)
@@ -130,6 +154,7 @@ def base_report(manifest_path: Path, manifest: dict[str, object], tool_name: str
         "tool_name": tool_name,
         "tool_version": "",
         "command_role": "rtl lint",
+        "command_timeout_seconds": timeout_seconds,
         "checked_top_modules": top_modules,
         "checked_source_files": [logical for logical, _ in sources],
         "input_artifact_fingerprints": input_fingerprints,
@@ -151,8 +176,9 @@ def blocked_report(
     tool_name: str,
     diagnostic_class: str,
     message: str,
+    timeout_seconds: int,
 ) -> dict[str, object]:
-    report = base_report(manifest_path, manifest, tool_name)
+    report = base_report(manifest_path, manifest, tool_name, timeout_seconds)
     report["diagnostic_records"] = diagnostic_records([(diagnostic_class, "error", message)])
     report["diagnostics"] = [message]
     return report
@@ -171,7 +197,8 @@ def lint_once(
     tool_path: str,
     top_module: str,
     sources: list[tuple[str, Path]],
-) -> tuple[int | None, str]:
+    timeout_seconds: int,
+) -> tuple[int | None, str, str]:
     command = [tool_path, "--lint-only", "--sv"]
     if top_module:
         command.extend(["--top-module", top_module])
@@ -183,16 +210,24 @@ def lint_once(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout_seconds,
         )
+    except subprocess.TimeoutExpired:
+        return None, f"RTL lint timed out after {timeout_seconds}s", "tool_timeout"
     except OSError as exc:
-        return None, f"RTL lint execution failed: {exc}"
+        return None, f"RTL lint execution failed: {exc}", "tool_execution_failed"
     detail = (result.stderr.strip() or result.stdout.strip() or "RTL lint failed").splitlines()[0]
     if top_module and result.returncode != 0:
         detail = f"{top_module}: {detail}"
-    return result.returncode, detail
+    return result.returncode, detail, ""
 
 
-def run_lint(report: dict[str, object], tool_path: str, source_paths: list[tuple[str, Path]]) -> None:
+def run_lint(
+    report: dict[str, object],
+    tool_path: str,
+    source_paths: list[tuple[str, Path]],
+    timeout_seconds: int,
+) -> None:
     tops = report.get("checked_top_modules")
     lint_targets = [top for top in tops if isinstance(top, str) and top] if isinstance(tops, list) else []
     if not lint_targets:
@@ -200,11 +235,18 @@ def run_lint(report: dict[str, object], tool_path: str, source_paths: list[tuple
     failures: list[tuple[str, str, str]] = []
     returncodes: list[int] = []
     for top_module in lint_targets:
-        returncode, detail = lint_once(tool_path, top_module, source_paths)
+        returncode, detail, diagnostic_class = lint_once(
+            tool_path,
+            top_module,
+            source_paths,
+            timeout_seconds,
+        )
         if returncode is None:
             report["returncode"] = None
             report["status"] = "blocked"
-            report["diagnostic_records"] = diagnostic_records([("tool_execution_failed", "error", detail)])
+            report["diagnostic_records"] = diagnostic_records(
+                [(diagnostic_class or "tool_execution_failed", "error", detail)]
+            )
             report["diagnostics"] = [detail]
             return
         returncodes.append(returncode)
@@ -229,11 +271,18 @@ def load_manifest(path: Path) -> dict[str, object]:
     return data if isinstance(data, dict) else {}
 
 
-def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
+def build_report(manifest_path: Path, raw_tool: str, timeout_seconds: int) -> dict[str, object]:
     tool = resolve_tool(raw_tool)
     manifest = load_manifest(manifest_path)
     if manifest.get("kind") != "rtl_manifest":
-        return blocked_report(manifest_path, manifest, tool.name, "rtl_manifest_invalid", "input is not an RTL manifest")
+        return blocked_report(
+            manifest_path,
+            manifest,
+            tool.name,
+            "rtl_manifest_invalid",
+            "input is not an RTL manifest",
+            timeout_seconds,
+        )
     if manifest.get("status") != "pass":
         return blocked_report(
             manifest_path,
@@ -241,6 +290,7 @@ def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
             tool.name,
             "rtl_manifest_not_passing",
             "RTL manifest is not passing",
+            timeout_seconds,
         )
     sources = source_paths(manifest_path, manifest)
     if not sources:
@@ -250,6 +300,7 @@ def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
             tool.name,
             "rtl_source_missing",
             "RTL manifest has no SystemVerilog source files",
+            timeout_seconds,
         )
     missing_sources = [logical for logical, path in sources if not path.is_file()]
     if missing_sources:
@@ -259,6 +310,7 @@ def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
             tool.name,
             "rtl_source_missing",
             f"RTL source files are missing: {', '.join(missing_sources)}",
+            timeout_seconds,
         )
         restrict_source_claims(report, sources)
         return report
@@ -269,17 +321,23 @@ def build_report(manifest_path: Path, raw_tool: str) -> dict[str, object]:
             tool.name,
             tool.diagnostic_class,
             tool.diagnostic_message,
+            timeout_seconds,
         )
 
-    report = base_report(manifest_path, manifest, tool.name)
-    version, version_error = tool_version(tool.executable)
+    report = base_report(manifest_path, manifest, tool.name, timeout_seconds)
+    version, version_error, version_error_class = tool_version(
+        tool.executable,
+        timeout_seconds,
+    )
     if version_error:
         report["status"] = "blocked"
-        report["diagnostic_records"] = diagnostic_records([("tool_activation_failed", "error", version_error)])
+        report["diagnostic_records"] = diagnostic_records(
+            [(version_error_class or "tool_activation_failed", "error", version_error)]
+        )
         report["diagnostics"] = [version_error]
         return report
     report["tool_version"] = version
-    run_lint(report, tool.executable, sources)
+    run_lint(report, tool.executable, sources, timeout_seconds)
     return report
 
 
@@ -287,7 +345,7 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    report = build_report(Path(args.manifest), args.tool)
+    report = build_report(Path(args.manifest), args.tool, args.timeout_seconds)
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     return 1 if report["status"] == "fail" else 0
 
