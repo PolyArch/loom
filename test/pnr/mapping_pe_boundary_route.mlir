@@ -1,0 +1,53 @@
+// RUN: loom-pnr-map --dfg-mlir %s --graph pe_boundary_route --hardware-mlir %s --hardware pe_boundary_route_adg --workload pe_boundary_route --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
+// RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
+
+// CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CSV-NEXT: pe_boundary_route,pe_boundary_route_adg,pe_boundary_route__pe_boundary_route__pe_boundary_route_adg,2,1,0,0,pass,mapped software graph to fabric resources
+
+// JSON-DAG: "status": "pass"
+// JSON-DAG: "segment_kind": "module_path"
+// JSON-DAG: "source_endpoint": "pe_boundary_route_adg::fabric.op#0.result0"
+// JSON-DAG: "sink_endpoint": "pe_boundary_route_adg::fabric.fu#0.result0"
+// JSON-DAG: "source_endpoint": "pe_boundary_route_adg::fabric.fu#0.result0"
+// JSON-DAG: "sink_endpoint": "pe_boundary_route_adg::fabric.pe#0.result0"
+// JSON-DAG: "source_endpoint": "pe_boundary_route_adg::fabric.pe#0.result0"
+// JSON-DAG: "sink_endpoint": "pe_boundary_route_adg::fabric.op#1.operand0"
+// JSON-NOT: ".out"
+// JSON-NOT: ".in"
+
+module {
+  dataflow.graph.func private @pe_boundary_route(%ctrl: none, %lhs: i32, %rhs: i32)
+      -> (none, i32) {
+    %sum = arith.addi %lhs, %rhs : i32
+    %product = arith.muli %sum, %rhs : i32
+    dataflow.graph.return %ctrl, %product : none, i32
+  }
+
+  fabric.module @pe_boundary_route_adg(%lhs : !fabric.bits<32>,
+                                       %rhs : !fabric.bits<32>) {
+    %sum = fabric.pe [spatial] (%pa = %lhs : !fabric.bits<32>,
+                                %pb = %rhs : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      %fu_sum = fabric.fu(%fa = %pa : !fabric.bits<32>,
+                          %fb = %pb : !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %value = fabric.op [@arith.addi] (%fa, %fb)
+                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %value : !fabric.bits<32>
+      }
+    }
+    fabric.pe [spatial] (%px = %sum : !fabric.bits<32>,
+                         %py = %rhs : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      %fu_product = fabric.fu(%fx = %px : !fabric.bits<32>,
+                              %fy = %py : !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %value = fabric.op [@arith.muli] (%fx, %fy)
+                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %value : !fabric.bits<32>
+      }
+    }
+    fabric.yield
+  }
+}

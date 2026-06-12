@@ -8,6 +8,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -476,6 +477,10 @@ void addGenericEndpointMaps(
                                 endpointFor(resourceId, "result", resultIndex));
 }
 
+bool isFabricBoundaryOp(llvm::StringRef opName) {
+  return opName == "fabric.fu" || opName == "fabric.pe";
+}
+
 void addMemEndpointMaps(
     mlir::Operation *op, llvm::StringRef hardwareName,
     std::map<EndpointKey, std::string> &operandEndpoints,
@@ -523,12 +528,68 @@ void recordEndpointMapValues(
     topology.endpoints.insert(endpoint);
 }
 
+void addYieldBoundarySegments(
+    mlir::Operation *op,
+    const llvm::DenseMap<mlir::Operation *, std::string> &fabricBoundaryIds,
+    const std::map<EndpointKey, std::string> &resultEndpoints,
+    HardwareTopology &topology) {
+  if (op->getName().getStringRef() != "fabric.yield")
+    return;
+  mlir::Operation *parent = op->getParentOp();
+  if (!parent)
+    return;
+  if (!isFabricBoundaryOp(parent->getName().getStringRef()))
+    return;
+  auto parentId = fabricBoundaryIds.find(parent);
+  if (parentId == fabricBoundaryIds.end())
+    return;
+  for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+       ++operandIndex) {
+    std::optional<std::string> sourceEndpoint =
+        sourceEndpointForValue(op->getOperand(operandIndex), resultEndpoints);
+    if (!sourceEndpoint)
+      continue;
+    auto sinkIt = resultEndpoints.find(EndpointKey{parent, operandIndex});
+    if (sinkIt == resultEndpoints.end())
+      continue;
+    addTopologySegment(topology,
+                       HardwareRouteSegment{"module_path", *sourceEndpoint,
+                                            sinkIt->second, parentId->second});
+  }
+}
+
+void addFuToPeBoundarySegments(
+    mlir::Operation *op,
+    const llvm::DenseMap<mlir::Operation *, std::string> &fabricBoundaryIds,
+    const std::map<EndpointKey, std::string> &resultEndpoints,
+    HardwareTopology &topology) {
+  if (op->getName().getStringRef() != "fabric.fu")
+    return;
+  mlir::Operation *parent = op->getParentOp();
+  if (!parent || parent->getName().getStringRef() != "fabric.pe")
+    return;
+  auto peId = fabricBoundaryIds.find(parent);
+  if (peId == fabricBoundaryIds.end())
+    return;
+  unsigned resultCount = std::min(op->getNumResults(), parent->getNumResults());
+  for (unsigned resultIndex = 0; resultIndex < resultCount; ++resultIndex) {
+    auto sourceIt = resultEndpoints.find(EndpointKey{op, resultIndex});
+    auto sinkIt = resultEndpoints.find(EndpointKey{parent, resultIndex});
+    if (sourceIt == resultEndpoints.end() || sinkIt == resultEndpoints.end())
+      continue;
+    addTopologySegment(topology,
+                       HardwareRouteSegment{"module_path", sourceIt->second,
+                                            sinkIt->second, peId->second});
+  }
+}
+
 HardwareTopology buildHardwareTopology(
     mlir::Operation *hardware, llvm::StringRef hardwareName,
     const llvm::StringMap<HardwareArtifactResource> &resources) {
   HardwareTopology topology;
   std::map<EndpointKey, std::string> operandEndpoints;
   std::map<EndpointKey, std::string> resultEndpoints;
+  llvm::DenseMap<mlir::Operation *, std::string> fabricBoundaryIds;
   for (const auto &entry : resources) {
     const HardwareArtifactResource &resource = entry.getValue();
     if (resource.resourceKind == "fabric.op" && resource.op)
@@ -536,9 +597,18 @@ HardwareTopology buildHardwareTopology(
                              resultEndpoints);
   }
 
+  llvm::StringMap<unsigned> fabricBoundaryCounts;
   llvm::StringMap<unsigned> routeResourceCounts;
   hardware->walk([&](mlir::Operation *op) {
     llvm::StringRef opName = op->getName().getStringRef();
+    if (isFabricBoundaryOp(opName)) {
+      unsigned index = fabricBoundaryCounts[opName]++;
+      std::string resourceId =
+          (hardwareName + "::" + opName + "#" + llvm::Twine(index)).str();
+      fabricBoundaryIds.try_emplace(op, resourceId);
+      addGenericEndpointMaps(op, resourceId, operandEndpoints, resultEndpoints);
+      return;
+    }
     if (opName == "fabric.mem") {
       addMemEndpointMaps(op, hardwareName, operandEndpoints, resultEndpoints);
       return;
@@ -574,6 +644,9 @@ HardwareTopology buildHardwareTopology(
               (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
                   .str()});
     }
+
+    addYieldBoundarySegments(op, fabricBoundaryIds, resultEndpoints, topology);
+    addFuToPeBoundarySegments(op, fabricBoundaryIds, resultEndpoints, topology);
 
     if (!isRouteResourceOp(opName))
       return;
