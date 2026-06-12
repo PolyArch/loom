@@ -21,6 +21,11 @@ DFG-sim consumes:
 * an initial memory image or memory model configuration;
 * simulator configuration.
 
+Simulator configuration is a typed view of the resolved configuration
+specified in `docs/spec-config-ssot.md`. DFG-sim does not own independent
+defaults for operation semantics, reciprocal throughput, event limits,
+or reporting policy.
+
 DFG-sim produces:
 
 * functional outputs;
@@ -129,6 +134,10 @@ configuration, DFG-sim must produce the same outputs, diagnostics, and
 report. Stable deterministic ordering is required for tests and
 comparison.
 
+If the requested simulator configuration contains an unknown key, an
+unknown model profile, a conflicting source, or an unrecorded override,
+DFG-sim must fail before simulation starts.
+
 ## Report Contract
 
 A DFG-sim report must identify:
@@ -137,6 +146,9 @@ A DFG-sim report must identify:
 * simulator schema version;
 * runtime input identity or fingerprint when available;
 * simulator configuration;
+* resolved configuration identity and fingerprint;
+* component configuration-view identity;
+* component configuration-view fingerprint;
 * functional outputs and memory diffs;
 * optimistic metrics;
 * trace location or inline trace summary;
@@ -168,7 +180,11 @@ DFG-sim is complete at the target-spec level when:
   real input data or a controlled fixture;
 * functional outputs match the expected software behavior;
 * unsupported operations produce structured diagnostics;
+* invalid or conflicting simulator configuration fails early with
+  structured diagnostics;
 * reports expose functional outputs, memory diffs, token counts, event
   counts, and optimistic metrics;
+* reports carry configuration identity, canonical fingerprint, and
+  component-view fingerprint;
 * the same workload and input can be compared against CGRA-sim through
   `docs/spec-sim-comparison.md`.

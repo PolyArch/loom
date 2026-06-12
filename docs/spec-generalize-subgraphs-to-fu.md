@@ -189,11 +189,12 @@ coverage report.
 
 ## Configuration Surface
 
-The target configuration contract is a validated public configuration
-profile consumed through `config=<path>`. This spec does not prescribe
-private key names, parser structure, or file syntax unless a field is
-promoted here as part of the public contract. Any accepted schema must
-either expose or intentionally default these semantic axes:
+The target configuration contract is a typed view of the resolved Loom
+configuration specified in `docs/spec-config-ssot.md`. A pass-local
+`config=<path>` entry point may exist as a compatibility input to the
+resolver, but it must not define a private independent schema or default
+set. Any accepted configuration view must either expose or intentionally
+resolve these semantic axes:
 
 * strategy selection from the public strategy set and an explicit
   fallback order;
@@ -207,7 +208,9 @@ either expose or intentionally default these semantic axes:
 
 Every accepted config axis must have focused evidence for its observable
 effect. A malformed config reports the pass-scoped
-`config_parse_failed` diagnostic and does not mutate user IR.
+`config_parse_failed` diagnostic and does not mutate user IR. Unknown
+keys, duplicate keys, conflicting sources, and unrecorded overrides
+follow the early-fail rules in `docs/spec-config-ssot.md`.
 
 ## Input And Output Requirements
 
@@ -423,7 +426,7 @@ function ranks candidates within a strategy, candidates produced by
 fallback strategy runs, and restart results. It is pure: the same
 candidate and config produce the same score across runs and threads.
 
-The compiled default weights are implementation details. The normative
+Default weights are owned by the configuration SSOT. The normative cost
 requirements are:
 
 1. Operation base cost is linear in bit-width for a fixed share group;

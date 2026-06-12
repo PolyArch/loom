@@ -182,27 +182,20 @@ distinct.
   `tag_width`. `tag` is interpreted as an unsigned `tag_width`-bit
   value.
 
-The 4-bit `element_log2_size` field encodes values 0..15. With the
-default `loom_mem_bus_width = 32768` bits = 4096 bytes, the maximum
-valid `element_log2_size` is `log2(4096) = 12`. Module-level
-overrides may further reduce this maximum (see below).
+The 4-bit `element_log2_size` field encodes values 0..15. The maximum
+valid value is derived from the resolved `loom_mem_bus_width`.
+Module-level overrides may further reduce this maximum (see below).
 
 ## Global constants and per-module overrides
 
-Two new global constants are added in `lib/Common/`:
-
-```cpp
-namespace loom {
-unsigned getDefaultLoomAddrBits();        // default 48,    env LOOM_ADDR_BITS
-unsigned getDefaultLoomMemBusWidth();     // default 32768, env LOOM_MEM_BUS_WIDTH
-}
-```
-
-Both mirror `getIndexWidth`'s pattern: env-var override at process
-start, otherwise the static default.
+`docs/spec-config-ssot.md` owns the resolved global values for Loom
+address width and memory bus width. Compatibility inputs such as
+environment variables may feed the configuration resolver, but they are
+not independent hidden defaults. They must be recorded as explicit
+configuration provenance when used.
 
 `fabric.module` carries two new optional attributes that override
-these defaults for ops nested inside the module body:
+these resolved values for ops nested inside the module body:
 
 ```
 fabric.module @top(...) attributes {
@@ -220,8 +213,8 @@ unsigned resolveLoomMemBusWidth(Operation *op);
 }
 ```
 
-to read the per-module override (if any) or fall back to the global
-default.
+to read the per-module override (if any) or fall back to the resolved
+configuration values.
 
 ## Custom assembly format
 
@@ -357,12 +350,8 @@ Implementation locations that must mirror this spec are:
   logic;
 * `loom::getDefaultLoomAddrBits` /
   `loom::getDefaultLoomMemBusWidth` in
-  `include/Common/LoomConstants.h` and
-  `lib/Common/LoomConstants.cpp` for the global defaults;
+  the configuration SSOT implementation for the resolved global values;
 * `fabric::resolveLoomAddrBits` /
   `fabric::resolveLoomMemBusWidth` in
   `lib/Fabric/IR/FabricMemOp.cpp` for the per-module override
   walker.
-
-When the `loom_addr_bits` or `loom_mem_bus_width` defaults change,
-update the spec table above as well.

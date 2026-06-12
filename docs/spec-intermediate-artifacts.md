@@ -50,6 +50,18 @@ but content audits must be able to classify DFG-sim reports,
 CGRA-sim reports, and PnR mapping artifacts from `kind` when local
 test or scratch paths use non-canonical filenames.
 
+Configured JSON artifacts must also carry the configuration identity and
+configuration fingerprint defined by `docs/spec-config-ssot.md`.
+Component-specific configuration-view identities are required when a
+producer consumes only a typed subset of the resolved configuration.
+CSV gates may project these fields, but CSV projection does not replace
+the JSON or MLIR source of truth.
+
+This rule is inherited by every configured JSON schema in this document,
+including RTL manifests, EDA reports, normalized FPA reports, full-stack
+artifact manifests, and audit summaries, even when a shorter local
+required-key list focuses on fields unique to that artifact kind.
+
 ## Status Values
 
 CSV gates use these baseline status values unless a more specific spec
@@ -415,6 +427,10 @@ Required top-level keys:
 
 * `schema_version`;
 * `kind`;
+* `config_id`;
+* `config_fingerprint`;
+* `component_config_view`;
+* `component_config_fingerprint`;
 * `workload`;
 * `graph`;
 * `status`;
@@ -445,6 +461,10 @@ Rules:
   operation counts. CGRA-sim must reuse the same operation semantics and
   cost model, adding hardware constraints instead of redefining the
   primitive operation behavior.
+* `config_fingerprint` identifies the canonical resolved configuration
+  for the run. `component_config_fingerprint` identifies the DFG-sim
+  view containing simulator model parameters, operation semantics, and
+  reciprocal-throughput cost model used for the report.
 * `wavefront_steps` and `event_count` are supporting diagnostics; they
   must not replace `optimistic_cycles` in simulator cycle summaries.
 * A derived workload graph-set DFG report is legal only when
@@ -462,6 +482,10 @@ Required top-level keys:
 
 * `schema_version`;
 * `kind`;
+* `config_id`;
+* `config_fingerprint`;
+* `component_config_view`;
+* `component_config_fingerprint`;
 * `workload`;
 * `hardware`;
 * `graph`;
@@ -499,6 +523,12 @@ Rules:
   invalid, even if `routed_edges` matches the route list size.
 * The config bitstream must cover placement configuration and route
   endpoint or segment configuration required by downstream consumers.
+* `config_fingerprint` identifies the canonical resolved configuration
+  for the run. `component_config_fingerprint` identifies the PnR and
+  mapping-search configuration view used for the artifact. Downstream
+  simulator, report, and DSE consumers must reject mismatched canonical
+  configuration fingerprints unless an explicit migration rule proves
+  the mismatch irrelevant to the consumed evidence.
 * A workload graph-set aggregate mapping artifact is a derived mapping
   candidate for a workload composed of multiple mapped dataflow graphs.
   It must carry `aggregation_kind = workload_graph_set`, a stable
@@ -516,6 +546,10 @@ Required top-level keys:
 
 * `schema_version`;
 * `kind`;
+* `config_id`;
+* `config_fingerprint`;
+* `component_config_view`;
+* `component_config_fingerprint`;
 * `workload`;
 * `hardware`;
 * `mapping_id`;
@@ -552,6 +586,11 @@ Rules:
   records and the selected fidelity model.
 * `hardware_aware_cycles` must not be smaller than comparable
   `dfg_cycles`.
+* The report must compare its canonical configuration fingerprint
+  against consumed DFG-sim and PnR evidence when those fingerprints are
+  present. A mismatch is a structured failure or blocked condition, not
+  a warning. Component configuration view fingerprints are compared only
+  against consumed artifacts that declare a semantically comparable view.
 * A derived workload graph-set CGRA-sim report is legal only when
   `aggregation_kind = workload_graph_set`, `mapping_id` names the
   aggregate mapping artifact, and `component_cgra_sim_report_identities`

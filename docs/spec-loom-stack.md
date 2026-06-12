@@ -92,6 +92,14 @@ specs. Component specs may repeat a short local consequence only when
 the local consequence is component-specific and the owning spec remains
 the authority.
 
+Configuration follows the same source-of-truth rule.
+`docs/spec-config-ssot.md` owns the global contract for loadable
+configuration, centralized defaults, strict resolution, early-fail
+behavior, configuration fingerprints, and the boundary between
+configurable parameters and semantic verifier constants. Component specs
+may reference configuration views, but they must not define independent
+defaults for the same canonical parameter.
+
 ## Target Universe
 
 The target Loom product is a complete, robust, modular, flexible,
@@ -110,7 +118,11 @@ spatial accelerators. The target universe includes:
 * DFG-sim, CGRA-sim, and simulation comparison;
 * architecture RTL, mapped-workload RTL metadata, EDA profiles, and FPA
   evidence;
-* runtime ABI, report bundles, artifact manifests, and DSE feedback.
+* runtime ABI, report bundles, artifact manifests, and DSE feedback;
+* a configuration SSOT that exposes DSE weights, preset profiles,
+  simulator model constants, mapping search policies, tech-mapping
+  parameters, ADG Builder recipe defaults, and backend profile selection
+  through one resolved configuration model.
 
 All workload families target the full validation ladder from native or
 drop-in compile/run through RTL/FPA evidence. A missing intermediate or
@@ -140,7 +152,9 @@ reading private state. Required evidence classes include:
 * RTL manifests, EDA reports, normalized FPA JSON reports, and derived
   metric records;
 * full-stack report bundles and artifact manifests for traceability;
-* DSE candidate, objective, selection, and rejection records.
+* DSE candidate, objective, selection, and rejection records;
+* resolved configuration identity, configuration fingerprints, and
+  component configuration-view identities for every configured artifact.
 
 Fake or stub artifacts must not satisfy any target requirement. Scaffold
 artifacts may exist while a component is being built, but they must be
@@ -161,6 +175,8 @@ verification policy is:
   input artifact identities, and diagnostics;
 * each DSE candidate must be immutable and must carry artifact identity
   and fingerprint records for its inputs and outputs;
+* every configured artifact must carry the resolved configuration
+  identity and fingerprint required by `docs/spec-config-ssot.md`;
 * cross-artifact contradictions must block acceptance rather than being
   reduced to warnings.
 
@@ -186,6 +202,12 @@ index that ties them together. When two specs disagree, resolve the
 conflict by preserving the ownership boundary in
 `docs/spec-core-dialect-boundary.md`, then update the affected component
 specs so the corpus is internally consistent.
+
+When two components describe the same parameter, resolve the conflict by
+moving the parameter to the configuration SSOT in
+`docs/spec-config-ssot.md` or by marking it as a semantic invariant in
+the owning component spec. Repeating a parameter as a local default in
+multiple components is not an acceptable target state.
 
 ## Current Implementation Notes
 

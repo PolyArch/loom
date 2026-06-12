@@ -194,21 +194,22 @@ strict per the existing rules.
 
 ## Optional Loom-constant overrides
 
-`fabric.module` carries two optional `i32` attributes that override
-the corresponding global Loom constants for ops nested inside the
-module body:
+`docs/spec-config-ssot.md` owns the resolved global values for Loom
+address width and memory bus width. `fabric.module` carries two optional
+`i32` attributes that override those resolved configuration values for
+ops nested inside the module body:
 
-* `loom_addr_bits` -- overrides `loom::getDefaultLoomAddrBits()`
-  (default 48).
-* `loom_mem_bus_width` -- overrides
-  `loom::getDefaultLoomMemBusWidth()` (default 32768).
+* `loom_addr_bits` -- module-local address width.
+* `loom_mem_bus_width` -- module-local memory bus width.
 
-Both attributes are absent by default. When present they are read by
-the `fabric::resolveLoomAddrBits` / `fabric::resolveLoomMemBusWidth`
-helpers (see `docs/spec-fabric-mem.md` for the consumer side).
-Operations outside the module body fall back to the global defaults.
-The attributes round-trip through the standard
-`attributes { ... }` keyword block.
+Both attributes are absent by default. When absent, operations inside
+the module body use the resolved configuration values. When present,
+they are recorded as explicit module-local overrides and are read by the
+`fabric::resolveLoomAddrBits` / `fabric::resolveLoomMemBusWidth`
+helpers (see `docs/spec-fabric-mem.md` for the consumer side). A tool
+that emits or consumes these attributes must preserve them in the
+artifact configuration provenance. The attributes round-trip through the
+standard `attributes { ... }` keyword block.
 
 ## Verifier rules
 

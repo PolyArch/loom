@@ -152,6 +152,8 @@ A normalized FPA report must identify:
 * optional mapping artifact identity;
 * optional CGRA-sim report identity;
 * optional RTL manifest identity;
+* resolved configuration identity and fingerprint;
+* FPA component configuration-view identity and fingerprint;
 * selected tool profile id;
 * selected library profile id;
 * estimation configuration;

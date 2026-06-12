@@ -88,6 +88,12 @@ inputs. DSE-specific selection criteria must not treat unsupported,
 blocked, scaffold, fixture, or missing-metric records as passing
 candidate evidence.
 
+The configuration SSOT in `docs/spec-config-ssot.md` owns DSE weights,
+objective profiles, policy selection, seeds, and fidelity requirements.
+DSE may consume typed views of the resolved configuration, but it must
+not own an independent objective-default table or silently fall back from
+an unknown objective to another objective.
+
 ## Objective Records
 
 An objective record has these required fields:
@@ -121,6 +127,14 @@ Baseline objective kinds include:
 When objectives conflict, the selected policy must state how conflicts
 are resolved: weighted score, lexicographic ordering, Pareto ranking,
 constraint filtering, or custom policy.
+
+Continuous weights and named preset profiles are both first-class DSE
+configuration. Presets resolve to ordinary objective records and weights
+before candidate generation or selection. Compiler placement choices,
+including whether a loop remains a logical `dataflow.thread` frontier or
+is placed inside a SpatialCore graph, are candidates selected by these
+configured objectives and feedback records rather than direct force
+switches.
 
 ## Candidate Records
 
@@ -182,6 +196,7 @@ DSE feedback must record:
 
 * selected policy id;
 * policy configuration;
+* resolved configuration identity and fingerprint;
 * random seed when stochastic search is used;
 * input artifact identities and fingerprints when available;
 * objective records;
@@ -197,6 +212,10 @@ policies must reproduce the same selected candidate records.
 DSE diagnostics must distinguish:
 
 * missing objective;
+* unknown objective;
+* unknown policy;
+* conflicting configuration sources;
+* mismatched configuration fingerprint;
 * missing required metric;
 * unsupported feedback target;
 * conflicting hard constraints;
@@ -230,6 +249,9 @@ The DSE feedback target is complete when:
 
 * objectives are explicit records rather than hidden command-line
   assumptions;
+* objective defaults, weights, presets, policy ids, and seeds are read
+  from the resolved configuration SSOT rather than from component-local
+  constants;
 * candidate records identify input and output artifacts;
 * DSE can request new compiler placement, hardware, mapping, simulator,
   RTL, or FPA candidates without mutating old artifacts;
@@ -240,5 +262,7 @@ The DSE feedback target is complete when:
 * selected candidates and Pareto sets declare the feedback fidelity and
   provenance used for ranking;
 * DSE selection rejects records that violate the global evidence policy;
+* DSE selection rejects records whose required configuration
+  fingerprints are incompatible;
 * unsupported feedback targets and missing metrics produce structured
   diagnostics.

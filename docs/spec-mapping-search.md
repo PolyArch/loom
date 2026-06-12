@@ -35,7 +35,7 @@ Required inputs:
 * software dataflow IR after compiler placement boundaries are chosen;
 * selected `fabric.system`;
 * every referenced `fabric.module` template;
-* PnR option set;
+* PnR configuration view identity and fingerprint;
 * workload shape when the mapping is shape-dependent.
 
 Optional inputs:
@@ -118,7 +118,9 @@ for tests.
 
 ## Search Extensions
 
-Loom may implement additional PnR policies:
+PnR policy selection and policy parameters are a typed view of the
+resolved configuration specified in `docs/spec-config-ssot.md`. Loom may
+implement additional PnR policies:
 
 * beam search;
 * simulated annealing;
@@ -154,8 +156,8 @@ The PnR cost model ranks legal candidates. Required baseline terms:
 The baseline cost model must define a total deterministic order.
 Additional policies may use weighted objectives, lexicographic
 objectives, constraints plus objectives, or Pareto ranking. The chosen
-cost configuration must be recorded in the mapping artifact metrics or
-mapping-set manifest.
+cost configuration view identity and fingerprint must be recorded in the
+mapping artifact metrics or mapping-set manifest.
 
 ## Diagnostics During Search
 
@@ -183,7 +185,8 @@ manifest. Required fields:
 
 * shared software input references;
 * shared hardware input references;
-* PnR policies and option sets;
+* resolved configuration identity and fingerprint;
+* PnR policy view identity and fingerprint;
 * objective functions;
 * candidate artifact list;
 * rejected-candidate summaries;

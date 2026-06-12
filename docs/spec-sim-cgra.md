@@ -23,6 +23,12 @@ CGRA-sim consumes:
 * initial memory image or memory configuration;
 * simulator configuration.
 
+Simulator configuration is a typed view of the resolved configuration
+specified in `docs/spec-config-ssot.md`. CGRA-sim does not own
+independent defaults for route latency, memory latency, temporal
+penalties, fidelity profiles, operation semantics, or resource-policy
+fallbacks.
+
 CGRA-sim produces:
 
 * functional outputs;
@@ -104,6 +110,11 @@ If a required mapping fact is missing, CGRA-sim must diagnose the
 mapping artifact instead of inventing a default placement, route, or
 schedule.
 
+If simulator configuration conflicts with the consumed DFG-sim report,
+mapping artifact, Fabric ADG profile, or runtime input profile,
+CGRA-sim must fail or block before producing pass evidence. A
+configuration mismatch must not be hidden behind a local default.
+
 ## Hardware-Aware Metrics
 
 Baseline CGRA-sim metrics include:
@@ -138,6 +149,10 @@ initial memory state, and simulator configuration, CGRA-sim must produce
 the same report. Any stochastic simulation mode must be explicit and
 must record its seed.
 
+The recorded seed and every model parameter used for deterministic or
+stochastic simulation must come from the resolved configuration or from
+an explicit recorded override.
+
 ## Report Contract
 
 A CGRA-sim report must identify:
@@ -150,6 +165,9 @@ A CGRA-sim report must identify:
 * simulator schema version;
 * runtime input identity or fingerprint when available;
 * simulator configuration and fidelity level;
+* resolved configuration identity and fingerprint;
+* component configuration-view identity;
+* component configuration-view fingerprint;
 * functional outputs and memory diffs;
 * hardware-aware metrics;
 * trace location or inline trace summary;
@@ -181,6 +199,8 @@ CGRA-sim is complete at the target-spec level when:
 * it consumes dataflow IR, Fabric ADG, a mapping artifact, and runtime
   input data;
 * it rejects stale or inconsistent mapping artifacts;
+* it rejects incompatible configuration fingerprints across consumed
+  artifacts;
 * it preserves DFG-sim functional behavior for legal mappings;
 * it reports hardware-aware cycles, activity, stalls, route activity,
   queue occupancy, memory activity, and temporal reuse;
