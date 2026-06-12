@@ -56,6 +56,29 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.bswap", 1, 1, true, true},
     {"llvm.intr.fmuladd", 4, 4, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
+    {"math.absf", 1, 1, true, true},
+    {"math.absi", 1, 1, true, true},
+    {"math.sin", 16, 16, true, true},
+    {"math.cos", 16, 16, true, true},
+    {"math.tan", 16, 16, true, true},
+    {"math.sinh", 16, 16, true, true},
+    {"math.cosh", 16, 16, true, true},
+    {"math.tanh", 16, 16, true, true},
+    {"math.exp", 12, 12, true, true},
+    {"math.exp2", 12, 12, true, true},
+    {"math.expm1", 12, 12, true, true},
+    {"math.log", 12, 12, true, true},
+    {"math.log2", 12, 12, true, true},
+    {"math.log10", 12, 12, true, true},
+    {"math.log1p", 12, 12, true, true},
+    {"math.floor", 2, 2, true, true},
+    {"math.ceil", 2, 2, true, true},
+    {"math.round", 2, 2, true, true},
+    {"math.trunc", 2, 2, true, true},
+    {"math.roundeven", 2, 2, true, true},
+    {"math.sqrt", 8, 8, true, true},
+    {"math.rsqrt", 8, 8, true, true},
+    {"math.erf", 16, 16, true, true},
     {"dataflow.stream", 1, 1, false, true},
     {"dataflow.carry", 1, 1, false, true},
     {"dataflow.invariant", 1, 1, false, true},
@@ -205,6 +228,76 @@ std::int64_t signedMinForBitWidth(unsigned bitWidth) {
 bool exactRightShiftWouldDiscardBits(const PrimitiveValue &value,
                                      unsigned bitWidth, unsigned amount) {
   return (toUnsignedBits(value, bitWidth) & lowBitsMask(amount)) != 0;
+}
+
+PrimitiveValue roundEven(double value) {
+  const double lower = std::floor(value);
+  const double fraction = value - lower;
+  double rounded = lower;
+  if (fraction < 0.5)
+    rounded = lower;
+  else if (fraction > 0.5)
+    rounded = lower + 1.0;
+  else
+    rounded = std::fmod(lower, 2.0) == 0.0 ? lower : lower + 1.0;
+  if (rounded == 0.0)
+    rounded = std::copysign(0.0, value);
+  return PrimitiveValue::floating(rounded);
+}
+
+llvm::Expected<PrimitiveValue>
+evaluateMathUnary(llvm::StringRef opName,
+                  llvm::ArrayRef<PrimitiveValue> operands) {
+  if (llvm::Error arity = requireArity(opName, operands, 1))
+    return std::move(arity);
+  const double value = asFloat(operands[0]);
+  if (opName == "math.absf")
+    return PrimitiveValue::floating(std::fabs(value));
+  if (opName == "math.sin")
+    return PrimitiveValue::floating(std::sin(value));
+  if (opName == "math.cos")
+    return PrimitiveValue::floating(std::cos(value));
+  if (opName == "math.tan")
+    return PrimitiveValue::floating(std::tan(value));
+  if (opName == "math.sinh")
+    return PrimitiveValue::floating(std::sinh(value));
+  if (opName == "math.cosh")
+    return PrimitiveValue::floating(std::cosh(value));
+  if (opName == "math.tanh")
+    return PrimitiveValue::floating(std::tanh(value));
+  if (opName == "math.exp")
+    return PrimitiveValue::floating(std::exp(value));
+  if (opName == "math.exp2")
+    return PrimitiveValue::floating(std::exp2(value));
+  if (opName == "math.expm1")
+    return PrimitiveValue::floating(std::expm1(value));
+  if (opName == "math.log")
+    return PrimitiveValue::floating(std::log(value));
+  if (opName == "math.log2")
+    return PrimitiveValue::floating(std::log2(value));
+  if (opName == "math.log10")
+    return PrimitiveValue::floating(std::log10(value));
+  if (opName == "math.log1p")
+    return PrimitiveValue::floating(std::log1p(value));
+  if (opName == "math.floor")
+    return PrimitiveValue::floating(std::floor(value));
+  if (opName == "math.ceil")
+    return PrimitiveValue::floating(std::ceil(value));
+  if (opName == "math.round")
+    return PrimitiveValue::floating(std::round(value));
+  if (opName == "math.trunc")
+    return PrimitiveValue::floating(std::trunc(value));
+  if (opName == "math.roundeven")
+    return roundEven(value);
+  if (opName == "math.sqrt")
+    return PrimitiveValue::floating(std::sqrt(value));
+  if (opName == "math.rsqrt")
+    return PrimitiveValue::floating(1.0 / std::sqrt(value));
+  if (opName == "math.erf")
+    return PrimitiveValue::floating(std::erf(value));
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "%s is not a supported unary math op",
+                                 opName.str().c_str());
 }
 
 llvm::Expected<PrimitiveValue>
@@ -656,6 +749,20 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return std::move(arity);
     return PrimitiveValue::floating(
         asFloat(operands[0]) * asFloat(operands[1]) + asFloat(operands[2]));
+  }
+  if (opName.starts_with("math.")) {
+    if (opName == "math.absi") {
+      if (llvm::Error arity = requireArity(opName, operands, 1))
+        return std::move(arity);
+      const std::int64_t value = asInteger(operands[0]);
+      if (value == signedMinForBitWidth(bitWidth))
+        return llvm::createStringError(
+            std::errc::result_out_of_range,
+            "%s cannot represent absolute value of signed minimum",
+            opName.str().c_str());
+      return integerFromSigned(value < 0 ? -value : value, bitWidth);
+    }
+    return evaluateMathUnary(opName, operands);
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "%s is not supported by operation semantics",

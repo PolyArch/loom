@@ -13,6 +13,7 @@ target_link_libraries(loom-dfg-sim
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect
+  MLIRMathDialect
   MLIRParser
   MLIRSCFDialect
   MLIRSupport

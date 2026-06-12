@@ -113,7 +113,9 @@ std::string tokenToString(const Token &token, mlir::Type type) {
   std::string storage;
   llvm::raw_string_ostream os(storage);
   os << typePrefix(type) << ':';
-  if (std::floor(token.floatValue) == token.floatValue)
+  if (token.floatValue == 0.0 && std::signbit(token.floatValue))
+    os << "-0";
+  else if (std::floor(token.floatValue) == token.floatValue)
     os << static_cast<std::int64_t>(token.floatValue);
   else
     os << llvm::formatv("{0:f6}", token.floatValue);

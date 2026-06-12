@@ -5,6 +5,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AsmState.h"
@@ -95,8 +96,8 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::scf::SCFDialect,
-                  mlir::ub::UBDialect>();
+                  mlir::LLVM::LLVMDialect, mlir::math::MathDialect,
+                  mlir::scf::SCFDialect, mlir::ub::UBDialect>();
 
   mlir::MLIRContext context(registry);
   context.allowUnregisteredDialects();
