@@ -10,6 +10,7 @@
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -20,8 +21,10 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <vector>
 
 using namespace loom::sim;
@@ -44,6 +47,34 @@ struct ConfigEntries {
 struct HardwareArtifactResource {
   std::string resourceKind;
   llvm::StringSet<> supportedOps;
+  mlir::Operation *op = nullptr;
+};
+
+struct HardwareRouteSegment {
+  std::string segmentKind;
+  std::string sourceEndpoint;
+  std::string sinkEndpoint;
+  std::string hardwareRef;
+};
+
+struct HardwareTopology {
+  std::set<std::string> endpoints;
+  std::set<std::string> edgeKeys;
+  std::map<std::string, HardwareRouteSegment> segmentByEdge;
+};
+
+struct EndpointKey {
+  mlir::Operation *op = nullptr;
+  unsigned index = 0;
+
+  bool operator<(const EndpointKey &other) const {
+    return std::tie(op, index) < std::tie(other.op, other.index);
+  }
+};
+
+struct PlacementInfo {
+  std::string hardware;
+  std::string resourceKind;
 };
 
 llvm::Error createParentDirectories(llvm::StringRef outputPath) {
@@ -83,9 +114,11 @@ std::uint64_t integerAttrValue(mlir::Attribute attr) {
 
 void addHardwareResource(llvm::StringMap<HardwareArtifactResource> &resources,
                          llvm::StringRef resourceId,
-                         llvm::StringRef resourceKind) {
+                         llvm::StringRef resourceKind,
+                         mlir::Operation *op = nullptr) {
   HardwareArtifactResource resource;
   resource.resourceKind = resourceKind.str();
+  resource.op = op;
   resources.try_emplace(resourceId, std::move(resource));
 }
 
@@ -104,11 +137,11 @@ void appendHardwareMemResources(
   for (std::uint64_t i = 0; i < loadPorts; ++i)
     addHardwareResource(resources,
                         (hardwareName + "::mem.load#" + llvm::Twine(i)).str(),
-                        "fabric.mem.load");
+                        "fabric.mem.load", op);
   for (std::uint64_t i = 0; i < storePorts; ++i)
     addHardwareResource(resources,
                         (hardwareName + "::mem.store#" + llvm::Twine(i)).str(),
-                        "fabric.mem.store");
+                        "fabric.mem.store", op);
 }
 
 void appendHardwareOpResource(
@@ -119,6 +152,7 @@ void appendHardwareOpResource(
     return;
   HardwareArtifactResource resource;
   resource.resourceKind = "fabric.op";
+  resource.op = op;
   for (mlir::Attribute attr : opList) {
     if (auto sym = llvm::dyn_cast<mlir::FlatSymbolRefAttr>(attr))
       resource.supportedOps.insert(sym.getValue());
@@ -149,18 +183,473 @@ llvm::Expected<std::string>
 requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
                     llvm::StringRef diagnosticContext);
 
-std::string endpointResourceId(llvm::StringRef endpoint) {
-  std::size_t dot = endpoint.rfind('.');
-  if (dot == llvm::StringRef::npos)
-    return endpoint.str();
-  return endpoint.take_front(dot).str();
+std::string endpointFor(llvm::StringRef resourceId, llvm::StringRef endpoint,
+                        unsigned index) {
+  return (resourceId + "." + endpoint + llvm::Twine(index)).str();
+}
+
+std::string topologyEdgeKey(llvm::StringRef sourceEndpoint,
+                            llvm::StringRef sinkEndpoint) {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  os << sourceEndpoint << '\x1f' << sinkEndpoint;
+  return key;
+}
+
+bool isPlaceholderRouteEndpoint(llvm::StringRef endpoint) {
+  return endpoint.ends_with(".out") || endpoint.ends_with(".in");
+}
+
+bool isRouteResourceOp(llvm::StringRef opName) {
+  return opName == "fabric.switch" || opName == "fabric.fifo" ||
+         opName == "fabric.boundary";
+}
+
+std::string routeResourceKind(llvm::StringRef opName) {
+  if (opName == "fabric.switch")
+    return "fabric.switch";
+  if (opName == "fabric.fifo")
+    return "fabric.fifo";
+  return "fabric.boundary";
+}
+
+std::string internalRouteSegmentKind(llvm::StringRef opName) {
+  if (opName == "fabric.fifo")
+    return "buffer";
+  if (opName == "fabric.boundary")
+    return "boundary_crossing";
+  return "module_path";
+}
+
+llvm::SmallVector<std::string, 4> switchConnectivityRows(mlir::Operation *op) {
+  llvm::SmallVector<std::string, 4> rows;
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (!hwParams || hwParams.empty())
+    return rows;
+  auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0]);
+  if (!dict)
+    return rows;
+  auto table = llvm::dyn_cast_if_present<mlir::ArrayAttr>(
+      dict.get("connectivity_table"));
+  if (!table)
+    return rows;
+  for (mlir::Attribute attr : table) {
+    auto row = llvm::dyn_cast<mlir::StringAttr>(attr);
+    if (!row)
+      return {};
+    rows.push_back(row.getValue().str());
+  }
+  return rows;
+}
+
+bool switchConnectsInputToOutput(llvm::ArrayRef<std::string> rows,
+                                 unsigned inputIndex,
+                                 unsigned outputIndex,
+                                 unsigned inputCount) {
+  if (outputIndex >= rows.size())
+    return false;
+  llvm::StringRef row = rows[outputIndex];
+  if (row.size() != inputCount || inputIndex >= inputCount)
+    return false;
+  return row[inputCount - 1 - inputIndex] == '1';
+}
+
+void addTopologySegment(HardwareTopology &topology,
+                        HardwareRouteSegment segment) {
+  topology.endpoints.insert(segment.sourceEndpoint);
+  topology.endpoints.insert(segment.sinkEndpoint);
+  std::string edgeKey =
+      topologyEdgeKey(segment.sourceEndpoint, segment.sinkEndpoint);
+  topology.edgeKeys.insert(edgeKey);
+  topology.segmentByEdge.try_emplace(edgeKey, segment);
+}
+
+std::pair<std::uint64_t, std::uint64_t> memPortCounts(mlir::Operation *op) {
+  std::uint64_t loadPorts = 0;
+  std::uint64_t storePorts = 0;
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (hwParams && !hwParams.empty()) {
+    if (auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0])) {
+      loadPorts = integerAttrValue(dict.get("load_group_size"));
+      storePorts = integerAttrValue(dict.get("store_group_size"));
+    }
+  }
+  return {loadPorts, storePorts};
+}
+
+unsigned memResultPortBase(mlir::Operation *op) {
+  if (op->getNumResults() == 0)
+    return 0;
+  if (mlir::isa<mlir::MemRefType>(op->getResult(0).getType()))
+    return 1;
+  return 0;
+}
+
+std::optional<unsigned> hardwareOperandIndexForResourceKind(
+    llvm::StringRef resourceKind, unsigned softwareOperandIndex) {
+  if (resourceKind == "fabric.op")
+    return softwareOperandIndex;
+  if (resourceKind == "fabric.mem.load") {
+    if (softwareOperandIndex == 1)
+      return 0;
+    if (softwareOperandIndex == 2)
+      return 1;
+    return std::nullopt;
+  }
+  if (resourceKind == "fabric.mem.store") {
+    if (softwareOperandIndex >= 1 && softwareOperandIndex <= 3)
+      return softwareOperandIndex - 1;
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+std::optional<unsigned> hardwareResultIndexForResourceKind(
+    llvm::StringRef resourceKind, unsigned softwareResultIndex) {
+  if (resourceKind == "fabric.op")
+    return softwareResultIndex;
+  if (resourceKind == "fabric.mem.load") {
+    if (softwareResultIndex <= 1)
+      return softwareResultIndex;
+    return std::nullopt;
+  }
+  if (resourceKind == "fabric.mem.store") {
+    if (softwareResultIndex == 0)
+      return 0;
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+llvm::Expected<unsigned> parseRouteIndex(llvm::StringRef text,
+                                         llvm::StringRef context) {
+  unsigned value = 0;
+  if (text.empty() || text.getAsInteger(10, value))
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping route edge_ref has invalid %s",
+                                   context.str().c_str());
+  return value;
+}
+
+llvm::Expected<std::pair<unsigned, unsigned>>
+parseRouteEndpointIndices(const llvm::json::Object &route,
+                          llvm::StringRef fromSoftware,
+                          llvm::StringRef toSoftware) {
+  auto edgeRefOrErr = requireObjectString(route, "edge_ref", "mapping route");
+  if (!edgeRefOrErr)
+    return edgeRefOrErr.takeError();
+  std::string producerPrefix = (fromSoftware + ".result").str();
+  std::string consumerPrefix = ("->" + toSoftware + ".operand").str();
+  llvm::StringRef rest(*edgeRefOrErr);
+  if (!rest.consume_front(producerPrefix))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route edge_ref does not match producer software id");
+  std::pair<llvm::StringRef, llvm::StringRef> split =
+      rest.split(consumerPrefix);
+  if (split.second.empty())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route edge_ref does not match consumer software id");
+  auto resultIndexOrErr = parseRouteIndex(split.first, "producer result index");
+  if (!resultIndexOrErr)
+    return resultIndexOrErr.takeError();
+  auto operandIndexOrErr =
+      parseRouteIndex(split.second, "consumer operand index");
+  if (!operandIndexOrErr)
+    return operandIndexOrErr.takeError();
+  return std::pair<unsigned, unsigned>{*resultIndexOrErr, *operandIndexOrErr};
+}
+
+llvm::Expected<std::pair<std::string, std::string>>
+expectedRouteEndpoints(
+    const llvm::json::Object &route,
+    const std::map<std::string, PlacementInfo> &placementBySoftware) {
+  auto fromOrErr = requireObjectString(route, "from", "mapping route");
+  if (!fromOrErr)
+    return fromOrErr.takeError();
+  auto toOrErr = requireObjectString(route, "to", "mapping route");
+  if (!toOrErr)
+    return toOrErr.takeError();
+  auto producerBindingOrErr =
+      requireObjectString(route, "producer_binding", "mapping route");
+  if (!producerBindingOrErr)
+    return producerBindingOrErr.takeError();
+  auto consumerBindingOrErr =
+      requireObjectString(route, "consumer_binding", "mapping route");
+  if (!consumerBindingOrErr)
+    return consumerBindingOrErr.takeError();
+  std::string expectedProducerBinding = "placement:" + *fromOrErr;
+  if (*producerBindingOrErr != expectedProducerBinding)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route producer_binding does not match from software id");
+  std::string expectedConsumerBinding = "placement:" + *toOrErr;
+  if (*consumerBindingOrErr != expectedConsumerBinding)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route consumer_binding does not match to software id");
+
+  auto indicesOrErr = parseRouteEndpointIndices(route, *fromOrErr, *toOrErr);
+  if (!indicesOrErr)
+    return indicesOrErr.takeError();
+  auto producerPlacement = placementBySoftware.find(*fromOrErr);
+  if (producerPlacement == placementBySoftware.end())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route producer lacks placement %s", fromOrErr->c_str());
+  auto consumerPlacement = placementBySoftware.find(*toOrErr);
+  if (consumerPlacement == placementBySoftware.end())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route consumer lacks placement %s", toOrErr->c_str());
+
+  std::optional<unsigned> producerResultIndex =
+      hardwareResultIndexForResourceKind(producerPlacement->second.resourceKind,
+                                         indicesOrErr->first);
+  if (!producerResultIndex)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route producer endpoint is not representable on hardware");
+  std::optional<unsigned> consumerOperandIndex =
+      hardwareOperandIndexForResourceKind(consumerPlacement->second.resourceKind,
+                                          indicesOrErr->second);
+  if (!consumerOperandIndex)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping route consumer endpoint is not representable on hardware");
+
+  return std::pair<std::string, std::string>{
+      endpointFor(producerPlacement->second.hardware, "result",
+                  *producerResultIndex),
+      endpointFor(consumerPlacement->second.hardware, "operand",
+                  *consumerOperandIndex)};
+}
+
+std::optional<std::string> forwardedBlockArgumentEndpoint(
+    mlir::Value value,
+    const std::map<EndpointKey, std::string> &resultEndpoints);
+
+std::optional<std::string> sourceEndpointForValue(
+    mlir::Value value,
+    const std::map<EndpointKey, std::string> &resultEndpoints) {
+  if (auto opResult = llvm::dyn_cast<mlir::OpResult>(value)) {
+    auto it = resultEndpoints.find(
+        EndpointKey{opResult.getOwner(), opResult.getResultNumber()});
+    if (it != resultEndpoints.end())
+      return it->second;
+    return std::nullopt;
+  }
+  return forwardedBlockArgumentEndpoint(value, resultEndpoints);
+}
+
+std::optional<std::string> forwardedBlockArgumentEndpoint(
+    mlir::Value value,
+    const std::map<EndpointKey, std::string> &resultEndpoints) {
+  auto blockArg = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!blockArg)
+    return std::nullopt;
+  mlir::Operation *parent = blockArg.getOwner()->getParentOp();
+  if (!parent)
+    return std::nullopt;
+  llvm::StringRef parentName = parent->getName().getStringRef();
+  if (parentName != "fabric.fu" && parentName != "fabric.pe")
+    return std::nullopt;
+  unsigned index = blockArg.getArgNumber();
+  if (index >= parent->getNumOperands())
+    return std::nullopt;
+  return sourceEndpointForValue(parent->getOperand(index), resultEndpoints);
+}
+
+void addGenericEndpointMaps(
+    mlir::Operation *op, llvm::StringRef resourceId,
+    std::map<EndpointKey, std::string> &operandEndpoints,
+    std::map<EndpointKey, std::string> &resultEndpoints) {
+  for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+       ++operandIndex)
+    operandEndpoints.try_emplace(EndpointKey{op, operandIndex},
+                                 endpointFor(resourceId, "operand",
+                                             operandIndex));
+  for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
+       ++resultIndex)
+    resultEndpoints.try_emplace(EndpointKey{op, resultIndex},
+                                endpointFor(resourceId, "result", resultIndex));
+}
+
+void addMemEndpointMaps(
+    mlir::Operation *op, llvm::StringRef hardwareName,
+    std::map<EndpointKey, std::string> &operandEndpoints,
+    std::map<EndpointKey, std::string> &resultEndpoints) {
+  auto [loadPorts, storePorts] = memPortCounts(op);
+  unsigned operandBase = 1;
+  unsigned resultBase = memResultPortBase(op);
+  for (std::uint64_t i = 0; i < loadPorts; ++i) {
+    std::string resourceId =
+        (hardwareName + "::mem.load#" + llvm::Twine(i)).str();
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase},
+                                 endpointFor(resourceId, "operand", 0));
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 1},
+                                 endpointFor(resourceId, "operand", 1));
+    resultEndpoints.try_emplace(EndpointKey{op, resultBase},
+                                endpointFor(resourceId, "result", 0));
+    resultEndpoints.try_emplace(EndpointKey{op, resultBase + 1},
+                                endpointFor(resourceId, "result", 1));
+    operandBase += 2;
+    resultBase += 2;
+  }
+  for (std::uint64_t i = 0; i < storePorts; ++i) {
+    std::string resourceId =
+        (hardwareName + "::mem.store#" + llvm::Twine(i)).str();
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase},
+                                 endpointFor(resourceId, "operand", 0));
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 1},
+                                 endpointFor(resourceId, "operand", 1));
+    operandEndpoints.try_emplace(EndpointKey{op, operandBase + 2},
+                                 endpointFor(resourceId, "operand", 2));
+    resultEndpoints.try_emplace(EndpointKey{op, resultBase},
+                                endpointFor(resourceId, "result", 0));
+    operandBase += 3;
+    resultBase += 1;
+  }
+}
+
+void recordEndpointMapValues(
+    HardwareTopology &topology,
+    const std::map<EndpointKey, std::string> &operandEndpoints,
+    const std::map<EndpointKey, std::string> &resultEndpoints) {
+  for (const auto &[_, endpoint] : operandEndpoints)
+    topology.endpoints.insert(endpoint);
+  for (const auto &[_, endpoint] : resultEndpoints)
+    topology.endpoints.insert(endpoint);
+}
+
+HardwareTopology buildHardwareTopology(
+    mlir::Operation *hardware, llvm::StringRef hardwareName,
+    const llvm::StringMap<HardwareArtifactResource> &resources) {
+  HardwareTopology topology;
+  std::map<EndpointKey, std::string> operandEndpoints;
+  std::map<EndpointKey, std::string> resultEndpoints;
+  for (const auto &entry : resources) {
+    const HardwareArtifactResource &resource = entry.getValue();
+    if (resource.resourceKind == "fabric.op" && resource.op)
+      addGenericEndpointMaps(resource.op, entry.getKey(), operandEndpoints,
+                             resultEndpoints);
+  }
+
+  llvm::StringMap<unsigned> routeResourceCounts;
+  hardware->walk([&](mlir::Operation *op) {
+    llvm::StringRef opName = op->getName().getStringRef();
+    if (opName == "fabric.mem") {
+      addMemEndpointMaps(op, hardwareName, operandEndpoints, resultEndpoints);
+      return;
+    }
+    if (!isRouteResourceOp(opName))
+      return;
+    std::string kind = routeResourceKind(opName);
+    unsigned index = routeResourceCounts[kind]++;
+    addGenericEndpointMaps(
+        op, (hardwareName + "::" + kind + "#" + llvm::Twine(index)).str(),
+        operandEndpoints, resultEndpoints);
+  });
+  recordEndpointMapValues(topology, operandEndpoints, resultEndpoints);
+
+  unsigned ssaEdgeIndex = 0;
+  hardware->walk([&](mlir::Operation *op) {
+    llvm::StringRef opName = op->getName().getStringRef();
+    for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+         ++operandIndex) {
+      std::optional<std::string> sourceEndpoint =
+          sourceEndpointForValue(op->getOperand(operandIndex), resultEndpoints);
+      if (!sourceEndpoint)
+        continue;
+      auto destIt = operandEndpoints.find(EndpointKey{op, operandIndex});
+      if (destIt == operandEndpoints.end())
+        continue;
+      addTopologySegment(
+          topology,
+          HardwareRouteSegment{
+              "resource_edge",
+              *sourceEndpoint,
+              destIt->second,
+              (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
+                  .str()});
+    }
+
+    if (!isRouteResourceOp(opName))
+      return;
+    std::optional<std::string> destId;
+    auto firstOperand = operandEndpoints.find(EndpointKey{op, 0});
+    if (firstOperand != operandEndpoints.end()) {
+      llvm::StringRef endpoint = firstOperand->second;
+      std::size_t dot = endpoint.rfind(".operand");
+      if (dot != std::string::npos)
+        destId = endpoint.take_front(dot).str();
+    }
+    if (!destId)
+      return;
+    llvm::SmallVector<std::string, 4> switchRows;
+    if (opName == "fabric.switch")
+      switchRows = switchConnectivityRows(op);
+    for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
+         ++operandIndex) {
+      for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
+           ++resultIndex) {
+        if (opName == "fabric.switch" &&
+            !switchConnectsInputToOutput(switchRows, operandIndex, resultIndex,
+                                         op->getNumOperands()))
+          continue;
+        addTopologySegment(
+            topology,
+            HardwareRouteSegment{
+                internalRouteSegmentKind(opName),
+                endpointFor(*destId, "operand", operandIndex),
+                endpointFor(*destId, "result", resultIndex), *destId});
+      }
+    }
+  });
+  return topology;
 }
 
 llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
                                      llvm::StringRef hardwareName,
                                      const llvm::json::Object &mapping) {
-  if (hardwareMlirPath.empty())
+  const llvm::json::Array *routes = mapping.getArray("routes");
+  if (!routes)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping artifact lacks routes");
+  for (const llvm::json::Value &routeValue : *routes) {
+    const llvm::json::Object *route = routeValue.getAsObject();
+    if (!route)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route is not an object");
+    const llvm::json::Array *segments = route->getArray("segments");
+    if (!segments || segments->empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "mapping route lacks non-empty segments");
+    for (const llvm::json::Value &segmentValue : *segments) {
+      const llvm::json::Object *segment = segmentValue.getAsObject();
+      if (!segment)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment is not an object");
+      for (llvm::StringRef key :
+           {"segment_id", "segment_kind", "source_endpoint",
+            "sink_endpoint"}) {
+        if (!segment->getString(key))
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "mapping route segment lacks string field %s",
+              key.str().c_str());
+      }
+    }
+  }
+  if (hardwareMlirPath.empty()) {
+    if (!routes->empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware MLIR is required to verify routed mapping");
     return llvm::Error::success();
+  }
 
   mlir::DialectRegistry registry;
   registry.insert<fabric::FabricDialect>();
@@ -180,15 +669,22 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
         hardwareName.str().c_str());
   llvm::StringMap<HardwareArtifactResource> resources =
       collectHardwareArtifactResources(hardware, hardwareName);
+  HardwareTopology topology =
+      buildHardwareTopology(hardware, hardwareName, resources);
   const llvm::json::Array *placements = mapping.getArray("placements");
   if (!placements)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "mapping artifact lacks placements");
+  std::map<std::string, PlacementInfo> placementBySoftware;
   for (const llvm::json::Value &value : *placements) {
     const llvm::json::Object *placement = value.getAsObject();
     if (!placement)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "mapping placement is not an object");
+    auto softwareOrErr =
+        requireObjectString(*placement, "software", "mapping placement");
+    if (!softwareOrErr)
+      return softwareOrErr.takeError();
     auto hardwareOrErr =
         requireObjectString(*placement, "hardware", "mapping placement");
     if (!hardwareOrErr)
@@ -220,47 +716,110 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
         std::errc::invalid_argument,
         "hardware resource %s does not support operation %s",
         hardwareOrErr->c_str(), operationOrErr->c_str());
+    if (!placementBySoftware
+             .try_emplace(*softwareOrErr,
+                          PlacementInfo{*hardwareOrErr, *resourceKindOrErr})
+             .second)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "mapping contains duplicate placement for software %s",
+          softwareOrErr->c_str());
   }
-  const llvm::json::Array *routes = mapping.getArray("routes");
-  if (!routes)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "mapping artifact lacks routes");
   for (const llvm::json::Value &routeValue : *routes) {
     const llvm::json::Object *route = routeValue.getAsObject();
     if (!route)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "mapping route is not an object");
+    auto expectedEndpointsOrErr =
+        expectedRouteEndpoints(*route, placementBySoftware);
+    if (!expectedEndpointsOrErr)
+      return expectedEndpointsOrErr.takeError();
     const llvm::json::Array *segments = route->getArray("segments");
     if (!segments || segments->empty())
       return llvm::createStringError(std::errc::invalid_argument,
                                      "mapping route lacks non-empty segments");
-    for (const llvm::json::Value &segmentValue : *segments) {
+    std::optional<std::string> previousSink;
+    for (auto [segmentIndex, segmentValue] : llvm::enumerate(*segments)) {
       const llvm::json::Object *segment = segmentValue.getAsObject();
       if (!segment)
         return llvm::createStringError(
             std::errc::invalid_argument,
             "mapping route segment is not an object");
-      for (llvm::StringRef key : {"source_endpoint", "sink_endpoint"}) {
-        auto endpointOrErr =
-            requireObjectString(*segment, key, "mapping route segment");
-        if (!endpointOrErr)
-          return endpointOrErr.takeError();
-        std::string resourceId = endpointResourceId(*endpointOrErr);
-        if (!resources.contains(resourceId))
+      auto sourceEndpointOrErr = requireObjectString(
+          *segment, "source_endpoint", "mapping route segment");
+      if (!sourceEndpointOrErr)
+        return sourceEndpointOrErr.takeError();
+      auto sinkEndpointOrErr = requireObjectString(
+          *segment, "sink_endpoint", "mapping route segment");
+      if (!sinkEndpointOrErr)
+        return sinkEndpointOrErr.takeError();
+      if (isPlaceholderRouteEndpoint(*sourceEndpointOrErr) ||
+          isPlaceholderRouteEndpoint(*sinkEndpointOrErr))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment endpoint uses placeholder suffix");
+      if (segmentIndex == 0 &&
+          *sourceEndpointOrErr != expectedEndpointsOrErr->first)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route source endpoint does not match mapped producer");
+      if (topology.endpoints.find(*sourceEndpointOrErr) ==
+          topology.endpoints.end())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "hardware artifact does not contain route endpoint %s",
+            sourceEndpointOrErr->c_str());
+      if (topology.endpoints.find(*sinkEndpointOrErr) ==
+          topology.endpoints.end())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "hardware artifact does not contain route endpoint %s",
+            sinkEndpointOrErr->c_str());
+      if (previousSink && *previousSink != *sourceEndpointOrErr)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment is not contiguous");
+      std::string edgeKey =
+          topologyEdgeKey(*sourceEndpointOrErr, *sinkEndpointOrErr);
+      if (topology.edgeKeys.find(edgeKey) == topology.edgeKeys.end())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "mapping route segment is not present in hardware topology");
+      auto topologySegment = topology.segmentByEdge.find(edgeKey);
+      if (std::optional<llvm::StringRef> segmentKind =
+              segment->getString("segment_kind")) {
+        if (topologySegment != topology.segmentByEdge.end() &&
+            topologySegment->second.segmentKind != *segmentKind)
           return llvm::createStringError(
               std::errc::invalid_argument,
-              "hardware artifact does not contain route endpoint resource %s",
-              resourceId.c_str());
+              "mapping route segment kind %s does not match hardware topology "
+              "kind %s",
+              segmentKind->str().c_str(),
+              topologySegment->second.segmentKind.c_str());
       }
-      if (std::optional<llvm::StringRef> hardwareRef =
-              segment->getString("hardware_ref")) {
-        if (*hardwareRef != hardwareName && !resources.contains(*hardwareRef))
+      previousSink = *sinkEndpointOrErr;
+      if (const llvm::json::Value *hardwareRefValue =
+              segment->get("hardware_ref")) {
+        std::optional<llvm::StringRef> hardwareRef =
+            hardwareRefValue->getAsString();
+        if (!hardwareRef)
           return llvm::createStringError(
               std::errc::invalid_argument,
-              "hardware artifact does not contain route segment hardware_ref %s",
-              hardwareRef->str().c_str());
+              "mapping route segment hardware_ref is not a string");
+        if (topologySegment != topology.segmentByEdge.end() &&
+            topologySegment->second.hardwareRef != *hardwareRef)
+          return llvm::createStringError(
+              std::errc::invalid_argument,
+              "mapping route segment hardware_ref %s does not match hardware "
+              "topology ref %s",
+              hardwareRef->str().c_str(),
+              topologySegment->second.hardwareRef.c_str());
       }
     }
+    if (previousSink && *previousSink != expectedEndpointsOrErr->second)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "mapping route sink endpoint does not match mapped consumer");
   }
   return llvm::Error::success();
 }

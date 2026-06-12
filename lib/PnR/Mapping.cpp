@@ -381,6 +381,39 @@ std::string internalRouteSegmentKind(llvm::StringRef opName) {
   return "module_path";
 }
 
+llvm::SmallVector<std::string, 4> switchConnectivityRows(mlir::Operation *op) {
+  llvm::SmallVector<std::string, 4> rows;
+  auto hwParams = op->getAttrOfType<mlir::ArrayAttr>("hw_params");
+  if (!hwParams || hwParams.empty())
+    return rows;
+  auto dict = llvm::dyn_cast<mlir::DictionaryAttr>(hwParams[0]);
+  if (!dict)
+    return rows;
+  auto table = llvm::dyn_cast_if_present<mlir::ArrayAttr>(
+      dict.get("connectivity_table"));
+  if (!table)
+    return rows;
+  for (mlir::Attribute attr : table) {
+    auto row = llvm::dyn_cast<mlir::StringAttr>(attr);
+    if (!row)
+      return {};
+    rows.push_back(row.getValue().str());
+  }
+  return rows;
+}
+
+bool switchConnectsInputToOutput(llvm::ArrayRef<std::string> rows,
+                                 unsigned inputIndex,
+                                 unsigned outputIndex,
+                                 unsigned inputCount) {
+  if (outputIndex >= rows.size())
+    return false;
+  llvm::StringRef row = rows[outputIndex];
+  if (row.size() != inputCount || inputIndex >= inputCount)
+    return false;
+  return row[inputCount - 1 - inputIndex] == '1';
+}
+
 void addTopologySegment(HardwareTopology &topology,
                         HardwareRouteSegment segment) {
   topology.segmentsBySource[segment.sourceEndpoint].push_back(
@@ -594,10 +627,17 @@ HardwareTopology buildHardwareTopology(
     }
     if (!destId)
       return;
+    llvm::SmallVector<std::string, 4> switchRows;
+    if (opName == "fabric.switch")
+      switchRows = switchConnectivityRows(op);
     for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
          ++operandIndex) {
       for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
            ++resultIndex) {
+        if (opName == "fabric.switch" &&
+            !switchConnectsInputToOutput(switchRows, operandIndex, resultIndex,
+                                         op->getNumOperands()))
+          continue;
         addTopologySegment(
             topology,
             HardwareRouteSegment{
