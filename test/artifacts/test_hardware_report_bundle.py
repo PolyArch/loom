@@ -48,6 +48,18 @@ def main() -> int:
             ],
             "intermediate artifact chain",
         )
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_manifest.sh",
+                "--hardware-summary",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--output",
+                str(out_dir / "rtl-manifest.json"),
+            ],
+            "architecture RTL manifest",
+        )
 
         report = out_dir / "hardware-report-bundle.json"
         artifact_test_common.require_success(
@@ -141,6 +153,142 @@ def main() -> int:
         blocked_eda_data = json.loads(blocked_eda_report.read_text())
         if blocked_eda_data["eda_report_identities"] != []:
             raise AssertionError(f"hardware report should ignore blocked EDA report: {blocked_eda_data}")
+
+        rtl_sim_tool = out_dir / "rtl-sim-tool"
+        rtl_sim_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-ID\" ]; then\n"
+            "  echo 'VCS X.test sim'\n"
+            "  exit 0\n"
+            "fi\n"
+            "out=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = \"-o\" ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  fi\n"
+            "  shift || break\n"
+            "done\n"
+            "if [ -n \"$out\" ]; then\n"
+            "  printf '%s\\n' '#!/bin/sh' 'echo RTL sim smoke passed' 'exit 0' > \"$out\"\n"
+            "  chmod +x \"$out\"\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        rtl_sim_tool.chmod(rtl_sim_tool.stat().st_mode | 0o111)
+        passing_rtl_sim = out_dir / "passing-rtl-sim-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(out_dir / "rtl-manifest.json"),
+                "--capability-class",
+                "rtl_sim",
+                "--tool",
+                str(rtl_sim_tool),
+                "--output",
+                str(passing_rtl_sim),
+            ],
+            "passing RTL sim EDA report",
+        )
+        rtl_sim_report = out_dir / "passing-rtl-sim-hardware-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_hardware_report_bundle.sh",
+                "--output",
+                str(rtl_sim_report),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(passing_rtl_sim),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "hardware report bundle with passing RTL sim EDA report",
+        )
+        rtl_sim_data = json.loads(rtl_sim_report.read_text())
+        if rtl_sim_data["eda_report_identities"] != ["passing-rtl-sim-report"]:
+            raise AssertionError(f"hardware report should consume passing RTL sim report: {rtl_sim_data}")
+        if "passing-rtl-sim-report" not in rtl_sim_data["input_artifact_fingerprints"]:
+            raise AssertionError(f"hardware report should fingerprint RTL sim report: {rtl_sim_data}")
+        rtl_sim_audit = out_dir / "passing-rtl-sim-hardware-report-bundle-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(rtl_sim_audit),
+                str(rtl_sim_report),
+            ],
+            "hardware report bundle audit with RTL sim report",
+        )
+        passing_rtl_lint = out_dir / "passing-rtl-lint-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(out_dir / "rtl-manifest.json"),
+                "--tool",
+                str(rtl_sim_tool),
+                "--output",
+                str(passing_rtl_lint),
+            ],
+            "passing RTL lint EDA report",
+        )
+        both_eda_report = out_dir / "passing-lint-sim-hardware-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_hardware_report_bundle.sh",
+                "--output",
+                str(both_eda_report),
+                "--artifact",
+                str(out_dir / "adg-hardware-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-manifest.json"),
+                "--artifact",
+                str(passing_rtl_lint),
+                "--artifact",
+                str(passing_rtl_sim),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-summary.csv"),
+            ],
+            "hardware report bundle with passing lint and sim EDA reports",
+        )
+        both_eda_data = json.loads(both_eda_report.read_text())
+        if both_eda_data["eda_report_identities"] != [
+            "passing-rtl-lint-report",
+            "passing-rtl-sim-report",
+        ]:
+            raise AssertionError(f"hardware report should consume lint and sim EDA reports: {both_eda_data}")
+        for identity in ("passing-rtl-lint-report", "passing-rtl-sim-report"):
+            if identity not in both_eda_data["input_artifact_fingerprints"]:
+                raise AssertionError(f"hardware report should fingerprint {identity}: {both_eda_data}")
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "passing-lint-sim-hardware-report-bundle-audit.json"),
+                str(both_eda_report),
+            ],
+            "hardware report bundle audit with lint and sim EDA reports",
+        )
 
         verilator = shutil.which("verilator")
         if verilator is not None:

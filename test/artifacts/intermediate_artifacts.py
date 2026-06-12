@@ -4317,7 +4317,7 @@ def validate_hardware_report_eda_references(
         if report.get("status") != "pass":
             diagnostics.append(f"hardware report bundle EDA reference {identity!r} is not passing")
             continue
-        if report.get("capability_class") != "rtl_lint":
+        if report.get("capability_class") not in {"rtl_lint", "rtl_sim"}:
             diagnostics.append(f"hardware report bundle EDA reference {identity!r} has wrong capability class")
             continue
         if report.get("rtl_manifest_identity") != rtl_manifest_identity:
@@ -5758,10 +5758,17 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         for key in ("report_id", "rtl_manifest_identity", "tool_profile_id", "tool_name", "command_role"):
             if not isinstance(data.get(key), str) or not data.get(key):
                 diagnostics.append(f"EDA report lacks {key}")
-        if data.get("capability_class") != "rtl_lint":
-            diagnostics.append("EDA report capability_class must be rtl_lint")
-        if data.get("command_role") != "rtl lint":
-            diagnostics.append("EDA report command_role must be rtl lint")
+        expected_command_roles = {
+            "rtl_lint": "rtl lint",
+            "rtl_sim": "rtl sim",
+        }
+        capability_class = data.get("capability_class")
+        if capability_class not in expected_command_roles:
+            diagnostics.append("EDA report capability_class must be rtl_lint or rtl_sim")
+        elif data.get("command_role") != expected_command_roles[capability_class]:
+            diagnostics.append(
+                f"EDA report command_role must be {expected_command_roles[capability_class]}"
+            )
         timeout_seconds = data.get("command_timeout_seconds")
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             diagnostics.append("EDA report command_timeout_seconds must be a positive integer")

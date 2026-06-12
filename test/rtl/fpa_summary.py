@@ -34,6 +34,7 @@ class RtlLintEvidence:
     diagnostic: str
     consumed_report: bool
     report_identity: str
+    capability_class: str = "rtl_lint"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -43,6 +44,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--hardware-summary")
     parser.add_argument("--rtl-manifest")
     parser.add_argument("--eda-report")
+    parser.add_argument("--rtl-sim-report")
     parser.add_argument("--report-output")
     return parser.parse_args(argv)
 
@@ -124,53 +126,82 @@ def blocked_lint_evidence(hardware: str | None, diagnostic: str) -> RtlLintEvide
     )
 
 
-def rtl_lint_evidence(manifest_path: Path | None, eda_path: Path | None) -> RtlLintEvidence | None:
+def blocked_backend_evidence(
+    hardware: str | None,
+    diagnostic: str,
+    capability_class: str,
+) -> RtlLintEvidence:
+    return RtlLintEvidence(
+        hardware=hardware,
+        status="blocked",
+        diagnostic=diagnostic,
+        consumed_report=False,
+        report_identity="",
+        capability_class=capability_class,
+    )
+
+
+def rtl_backend_evidence(
+    manifest_path: Path | None,
+    eda_path: Path | None,
+    *,
+    capability_class: str,
+    label: str,
+) -> RtlLintEvidence | None:
     if manifest_path is None and eda_path is None:
         return None
     if manifest_path is None or eda_path is None:
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             None,
-            "RTL lint evidence unavailable: both --rtl-manifest and --eda-report are required",
+            f"{label} evidence unavailable: both --rtl-manifest and EDA report are required",
+            capability_class,
         )
     manifest = read_json(manifest_path)
     if manifest.get("kind") != "rtl_manifest":
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             None,
-            "RTL lint evidence unavailable: input RTL manifest is missing or invalid",
+            f"{label} evidence unavailable: input RTL manifest is missing or invalid",
+            capability_class,
         )
     raw_hardware = manifest.get("source_fabric_adg_identity")
     hardware = raw_hardware if isinstance(raw_hardware, str) and raw_hardware else None
     eda = read_json(eda_path)
     if eda.get("kind") != "eda_report":
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             hardware,
-            "RTL lint evidence unavailable: input EDA report is missing or invalid",
+            f"{label} evidence unavailable: input EDA report is missing or invalid",
+            capability_class,
         )
-    if eda.get("capability_class") != "rtl_lint":
-        return blocked_lint_evidence(
+    if eda.get("capability_class") != capability_class:
+        return blocked_backend_evidence(
             hardware,
-            "RTL lint evidence unavailable: EDA report is not an RTL lint report",
+            f"{label} evidence unavailable: EDA report is not a {capability_class} report",
+            capability_class,
         )
     if eda.get("rtl_manifest_identity") != intermediate_artifacts.artifact_id_for_path(manifest_path):
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             hardware,
-            "RTL lint evidence unavailable: EDA report does not reference the RTL manifest",
+            f"{label} evidence unavailable: EDA report does not reference the RTL manifest",
+            capability_class,
         )
     status = eda.get("status")
     if not isinstance(status, str) or not status:
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             hardware,
-            "RTL lint evidence unavailable: EDA report has no status",
+            f"{label} evidence unavailable: EDA report has no status",
+            capability_class,
         )
     if status not in intermediate_artifacts.BASE_STATUSES:
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             hardware,
-            f"RTL lint evidence unavailable: EDA report has unknown status {status!r}",
+            f"{label} evidence unavailable: EDA report has unknown status {status!r}",
+            capability_class,
         )
     if hardware is None:
-        return blocked_lint_evidence(
+        return blocked_backend_evidence(
             None,
-            "RTL lint evidence unavailable: RTL manifest has no source fabric ADG identity",
+            f"{label} evidence unavailable: RTL manifest has no source fabric ADG identity",
+            capability_class,
         )
     return RtlLintEvidence(
         hardware=hardware,
@@ -178,13 +209,56 @@ def rtl_lint_evidence(manifest_path: Path | None, eda_path: Path | None) -> RtlL
         diagnostic=first_diagnostic(eda),
         consumed_report=True,
         report_identity=intermediate_artifacts.artifact_id_for_path(eda_path),
+        capability_class=capability_class,
     )
+
+
+def rtl_lint_evidence(manifest_path: Path | None, eda_path: Path | None) -> RtlLintEvidence | None:
+    return rtl_backend_evidence(
+        manifest_path,
+        eda_path,
+        capability_class="rtl_lint",
+        label="RTL lint",
+    )
+
+
+def rtl_sim_evidence(manifest_path: Path | None, eda_path: Path | None) -> RtlLintEvidence | None:
+    return rtl_backend_evidence(
+        manifest_path,
+        eda_path,
+        capability_class="rtl_sim",
+        label="RTL sim",
+    )
+
+
+def backend_status_and_diagnostic(
+    *,
+    hardware_name: str,
+    evidence: RtlLintEvidence | None,
+    label: str,
+    default_diagnostic: str,
+) -> tuple[str, str]:
+    if evidence is None:
+        return "skipped", default_diagnostic
+    if evidence.hardware is not None and not hardware_matches(evidence.hardware, hardware_name):
+        return "skipped", default_diagnostic
+    if evidence.consumed_report:
+        diagnostic = f"{label} evidence status={evidence.status}"
+        if evidence.report_identity:
+            diagnostic = f"{diagnostic}; artifact={evidence.report_identity}"
+        if evidence.diagnostic:
+            diagnostic = f"{diagnostic}; diagnostic={evidence.diagnostic}"
+        return evidence.status, diagnostic
+    if evidence.diagnostic:
+        return evidence.status, evidence.diagnostic
+    return evidence.status, default_diagnostic
 
 
 def analytic_fpa_row(
     workload: str,
     hardware: HardwareCandidate,
     lint_evidence: RtlLintEvidence | None,
+    sim_evidence: RtlLintEvidence | None,
     *,
     fpa_report_identity: str,
 ) -> dict[str, str]:
@@ -194,26 +268,23 @@ def analytic_fpa_row(
     frequency_mhz = max(50.0, 500.0 - 10.0 * node_count - 5.0 * link_count)
     dynamic_power_mw = 1.0 + 0.2 * node_count + 0.05 * link_count
     leakage_power_mw = 0.1 + 0.0001 * area_um2
-    rtl_lint_status = "skipped"
-    lint_diagnostic = "RTL lint evidence not provided"
-    if (
-        lint_evidence is not None
-        and (lint_evidence.hardware is None or hardware_matches(lint_evidence.hardware, hardware.name))
-    ):
-        rtl_lint_status = lint_evidence.status
-        if lint_evidence.consumed_report:
-            lint_diagnostic = f"RTL lint evidence status={lint_evidence.status}"
-            if lint_evidence.report_identity:
-                lint_diagnostic = f"{lint_diagnostic}; artifact={lint_evidence.report_identity}"
-            if lint_evidence.diagnostic:
-                lint_diagnostic = f"{lint_diagnostic}; diagnostic={lint_evidence.diagnostic}"
-        elif lint_evidence.diagnostic:
-            lint_diagnostic = lint_evidence.diagnostic
+    rtl_lint_status, lint_diagnostic = backend_status_and_diagnostic(
+        hardware_name=hardware.name,
+        evidence=lint_evidence,
+        label="RTL lint",
+        default_diagnostic="RTL lint evidence not provided",
+    )
+    rtl_sim_status, sim_diagnostic = backend_status_and_diagnostic(
+        hardware_name=hardware.name,
+        evidence=sim_evidence,
+        label="RTL sim",
+        default_diagnostic="RTL sim evidence not provided",
+    )
     return {
         "hardware": hardware.name,
         "workload": workload,
         "rtl_lint_status": rtl_lint_status,
-        "rtl_sim_status": "skipped",
+        "rtl_sim_status": rtl_sim_status,
         "synth_status": "skipped",
         "frequency_mhz": format_estimate(frequency_mhz),
         "area_um2": format_estimate(area_um2),
@@ -229,7 +300,7 @@ def analytic_fpa_row(
         "diagnostic": (
             "analytic FPA estimate; fidelity=analytic; "
             f"activity_source=default_toggle; {lint_diagnostic}; "
-            "RTL simulation and synthesis backends not run"
+            f"{sim_diagnostic}; synthesis backend not run"
         ),
     }
 
@@ -277,7 +348,7 @@ def write_fpa_report(
     primitive_path: Path,
     hardware_path: Path,
     rtl_manifest_path: Path | None,
-    eda_report_path: Path | None,
+    backend_evidence_paths: list[Path],
 ) -> None:
     report_identity = intermediate_artifacts.artifact_id_for_path(output)
     hardware_identities = sorted({row["hardware"] for row in rows if row.get("hardware")})
@@ -285,9 +356,7 @@ def write_fpa_report(
     metric_records = fpa_metric_records(rows, report_identity)
     backend_report_identities = [
         identity
-        for identity in [
-            intermediate_artifacts.artifact_id_for_path(eda_report_path),
-        ]
+        for identity in [intermediate_artifacts.artifact_id_for_path(path) for path in backend_evidence_paths]
         if identity
     ]
     diagnostics = sorted({row.get("diagnostic", "") for row in rows if row.get("status") != "pass"})
@@ -331,7 +400,7 @@ def write_fpa_report(
         "metric_records": metric_records,
         "backend_report_identities": backend_report_identities,
         "input_artifact_fingerprints": intermediate_artifacts.input_artifact_fingerprints(
-            [primitive_path, hardware_path, rtl_manifest_path, eda_report_path]
+            [primitive_path, hardware_path, rtl_manifest_path, *backend_evidence_paths]
         ),
         "diagnostic_records": [],
         "diagnostics": diagnostics,
@@ -362,6 +431,17 @@ def main(argv: list[str]) -> int:
         Path(args.rtl_manifest) if args.rtl_manifest else None,
         Path(args.eda_report) if args.eda_report else None,
     )
+    sim_evidence = rtl_sim_evidence(
+        Path(args.rtl_manifest) if args.rtl_manifest and args.rtl_sim_report else None,
+        Path(args.rtl_sim_report) if args.rtl_sim_report else None,
+    )
+    backend_evidence_paths: list[Path] = []
+    for evidence, raw_path in (
+        (lint_evidence, Path(args.eda_report) if args.eda_report else None),
+        (sim_evidence, Path(args.rtl_sim_report) if args.rtl_sim_report else None),
+    ):
+        if evidence is not None and evidence.consumed_report and raw_path is not None:
+            backend_evidence_paths.append(raw_path)
     report_output = (
         Path(args.report_output)
         if args.report_output
@@ -381,6 +461,7 @@ def main(argv: list[str]) -> int:
             workload,
             candidate,
             lint_evidence,
+            sim_evidence,
             fpa_report_identity=fpa_report_identity,
         )
         for workload in workloads
@@ -394,7 +475,7 @@ def main(argv: list[str]) -> int:
         primitive_path=primitive_path,
         hardware_path=hardware_path,
         rtl_manifest_path=Path(args.rtl_manifest) if args.rtl_manifest else None,
-        eda_report_path=Path(args.eda_report) if args.eda_report else None,
+        backend_evidence_paths=backend_evidence_paths,
     )
     return 0
 

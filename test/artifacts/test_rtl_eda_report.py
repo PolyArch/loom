@@ -383,6 +383,159 @@ def main() -> int:
             "environment-selected RTL EDA report audit",
         )
 
+        rtl_sim_tool = out_dir / "rtl-sim-tool"
+        rtl_sim_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-ID\" ]; then\n"
+            "  echo 'VCS X.test sim'\n"
+            "  exit 0\n"
+            "fi\n"
+            "out=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = \"-o\" ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  fi\n"
+            "  shift || break\n"
+            "done\n"
+            "if [ -n \"$out\" ]; then\n"
+            "  printf '%s\\n' '#!/bin/sh' 'echo RTL sim smoke passed' 'exit 0' > \"$out\"\n"
+            "  chmod +x \"$out\"\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        rtl_sim_tool.chmod(rtl_sim_tool.stat().st_mode | 0o111)
+        rtl_sim = out_dir / "rtl-sim-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--capability-class",
+                "rtl_sim",
+                "--tool",
+                str(rtl_sim_tool),
+                "--output",
+                str(rtl_sim),
+            ],
+            "passing RTL sim EDA report",
+        )
+        rtl_sim_data = json.loads(rtl_sim.read_text())
+        if rtl_sim_data.get("status") != "pass":
+            raise AssertionError(f"RTL sim smoke should produce passing report: {rtl_sim_data}")
+        if rtl_sim_data.get("capability_class") != "rtl_sim":
+            raise AssertionError(f"RTL sim report should declare rtl_sim capability: {rtl_sim_data}")
+        if rtl_sim_data.get("command_role") != "rtl sim":
+            raise AssertionError(f"RTL sim report should declare command role: {rtl_sim_data}")
+        if rtl_sim_data.get("tool_version") != "VCS X.test sim":
+            raise AssertionError(f"RTL sim report should record tool version: {rtl_sim_data}")
+        if rtl_sim_data.get("returncode") != 0:
+            raise AssertionError(f"RTL sim report should record zero return code: {rtl_sim_data}")
+        require_audit_pass(
+            repo,
+            rtl_sim,
+            out_dir / "rtl-sim-eda-audit-summary.json",
+            "RTL sim EDA report audit",
+        )
+
+        sim_top_a = out_dir / "rtl/sim_top_a.sv"
+        sim_top_b = out_dir / "rtl/sim_top_b.sv"
+        sim_top_a.write_text(
+            "`timescale 1ns/1ps\n"
+            "module sim_top_a(input logic clk, input logic rst_n, input logic a);\n"
+            "endmodule\n"
+        )
+        sim_top_b.write_text(
+            "`timescale 1ns/1ps\n"
+            "module sim_top_b(input logic clk, input logic rst_n);\n"
+            "endmodule\n"
+        )
+        multi_sim_manifest = out_dir / "multi-sim-rtl-manifest.json"
+        multi_sim_data = json.loads(manifest.read_text())
+        multi_sim_data["manifest_id"] = "rtl-manifest::multi_sim"
+        multi_sim_data["top_level_modules"] = ["sim_top_a", "sim_top_b"]
+        multi_sim_data["emitted_source_files"] = [
+            {
+                "path": "rtl/sim_top_a.sv",
+                "language": "systemverilog",
+                "fingerprint": artifact_test_common.fingerprint(sim_top_a),
+            },
+            {
+                "path": "rtl/sim_top_b.sv",
+                "language": "systemverilog",
+                "fingerprint": artifact_test_common.fingerprint(sim_top_b),
+            },
+        ]
+        multi_sim_data["generated_interfaces"] = [
+            {
+                "interface_id": "interface::unscoped::scalar_bits_top_ports",
+                "interface_kind": "scalar_bits_top_ports",
+                "ports": [
+                    {
+                        "name": "a",
+                        "direction": "input",
+                        "fabric_type": "!fabric.bits<1>",
+                        "systemverilog_type": "logic",
+                    }
+                ],
+            }
+        ]
+        multi_sim_manifest.write_text(json.dumps(multi_sim_data, indent=2, sort_keys=True) + "\n")
+        multi_sim_tool = out_dir / "multi-sim-tool"
+        multi_sim_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-ID\" ]; then\n"
+            "  echo 'VCS X.test sim'\n"
+            "  exit 0\n"
+            "fi\n"
+            "out=''\n"
+            "for arg in \"$@\"; do\n"
+            "  case \"$arg\" in\n"
+            "    *sim_top_b_smoke_tb.sv)\n"
+            "      if grep -q '\\.a(a)' \"$arg\"; then\n"
+            "        echo 'sim_top_b testbench reused unscoped interface' >&2\n"
+            "        exit 19\n"
+            "      fi\n"
+            "      ;;\n"
+            "  esac\n"
+            "done\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = \"-o\" ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  fi\n"
+            "  shift || break\n"
+            "done\n"
+            "if [ -n \"$out\" ]; then\n"
+            "  printf '%s\\n' '#!/bin/sh' 'echo RTL sim smoke passed' 'exit 0' > \"$out\"\n"
+            "  chmod +x \"$out\"\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        multi_sim_tool.chmod(multi_sim_tool.stat().st_mode | 0o111)
+        multi_sim = out_dir / "multi-sim-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(multi_sim_manifest),
+                "--capability-class",
+                "rtl_sim",
+                "--tool",
+                str(multi_sim_tool),
+                "--output",
+                str(multi_sim),
+            ],
+            "multi-top RTL sim EDA report",
+        )
+        multi_sim_report = json.loads(multi_sim.read_text())
+        if multi_sim_report.get("status") != "pass":
+            raise AssertionError(f"multi-top RTL sim should not reuse unscoped interface: {multi_sim_report}")
+
         verilator = shutil.which("verilator")
         if verilator is None:
             return 0

@@ -62,14 +62,18 @@ def matching_rtl_manifest_path(paths: list[Path], hardware: str) -> Path | None:
 
 
 def matching_eda_report_paths(paths: list[Path], rtl_manifest_identity: str) -> list[Path]:
-    matches: list[Path] = []
+    matches_by_capability: dict[str, list[Path]] = {}
     for path in paths:
         data = read_json_or_empty(path)
         if data.get("kind") != "eda_report" or data.get("status") != "pass":
             continue
-        if data.get("capability_class") != "rtl_lint":
+        capability = data.get("capability_class")
+        if capability not in {"rtl_lint", "rtl_sim"}:
             continue
         if data.get("rtl_manifest_identity") != rtl_manifest_identity:
             continue
-        matches.append(path)
-    return select_by_artifact_id(matches, lambda item: item, limit=1)
+        matches_by_capability.setdefault(str(capability), []).append(path)
+    selected: list[Path] = []
+    for capability in sorted(matches_by_capability):
+        selected.extend(select_by_artifact_id(matches_by_capability[capability], lambda item: item, limit=1))
+    return selected

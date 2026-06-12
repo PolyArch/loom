@@ -165,6 +165,45 @@ def main() -> int:
             ],
             "blocked RTL EDA report",
         )
+        rtl_sim_tool = out_dir / "rtl-sim-tool"
+        rtl_sim_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-ID\" ]; then\n"
+            "  echo 'VCS X.test sim'\n"
+            "  exit 0\n"
+            "fi\n"
+            "out=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = \"-o\" ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  fi\n"
+            "  shift || break\n"
+            "done\n"
+            "if [ -n \"$out\" ]; then\n"
+            "  printf '%s\\n' '#!/bin/sh' 'echo RTL sim smoke passed' 'exit 0' > \"$out\"\n"
+            "  chmod +x \"$out\"\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        rtl_sim_tool.chmod(rtl_sim_tool.stat().st_mode | 0o111)
+        rtl_sim = out_dir / "rtl-sim-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--capability-class",
+                "rtl_sim",
+                "--tool",
+                str(rtl_sim_tool),
+                "--output",
+                str(rtl_sim),
+            ],
+            "passing RTL sim EDA report",
+        )
         fpa_with_lint = out_dir / "with-lint-rtl-fpa-summary.csv"
         rows_with_lint = artifact_test_common.run_csv_summary(
             repo,
@@ -179,6 +218,8 @@ def main() -> int:
             str(manifest),
             "--eda-report",
             str(eda),
+            "--rtl-sim-report",
+            str(rtl_sim),
             label="RTL/FPA summary with RTL lint evidence",
         )
         lint_matches = [
@@ -192,16 +233,21 @@ def main() -> int:
         lint_row = lint_matches[0]
         if lint_row["rtl_lint_status"] != "blocked":
             raise AssertionError(f"FPA row should consume blocked RTL lint evidence: {lint_row}")
-        for column in ("rtl_sim_status", "synth_status"):
-            if lint_row[column] != "skipped":
-                raise AssertionError(f"{column} should stay skipped for analytic FPA: {lint_row}")
+        if lint_row["rtl_sim_status"] != "pass":
+            raise AssertionError(f"FPA row should consume passing RTL sim evidence: {lint_row}")
+        if lint_row["synth_status"] != "skipped":
+            raise AssertionError(f"synth_status should stay skipped for analytic FPA: {lint_row}")
         for column in ("fidelity_level", "frequency_source", "area_source", "power_source", "activity_source"):
             if lint_row[column] != row[column]:
-                raise AssertionError(f"RTL lint evidence must not change analytic FPA {column}: {lint_row}")
+                raise AssertionError(f"RTL backend evidence must not change analytic FPA {column}: {lint_row}")
         if "RTL lint evidence status=blocked" not in lint_row.get("diagnostic", ""):
             raise AssertionError(f"FPA diagnostic should mention consumed lint evidence: {lint_row}")
+        if "RTL sim evidence status=pass" not in lint_row.get("diagnostic", ""):
+            raise AssertionError(f"FPA diagnostic should mention consumed sim evidence: {lint_row}")
         if "artifact=rtl-eda-report" not in lint_row.get("diagnostic", ""):
             raise AssertionError(f"FPA diagnostic should identify consumed lint artifact: {lint_row}")
+        if "artifact=rtl-sim-eda-report" not in lint_row.get("diagnostic", ""):
+            raise AssertionError(f"FPA diagnostic should identify consumed sim artifact: {lint_row}")
         fpa_with_lint_audit = out_dir / "rtl-fpa-with-lint-audit-summary.json"
         artifact_test_common.require_success(
             repo,
@@ -214,6 +260,15 @@ def main() -> int:
             ],
             "RTL/FPA summary with lint evidence audit",
         )
+        fpa_with_lint_report = out_dir / "with-lint-rtl-fpa-report.json"
+        fpa_with_lint_report_data = json.loads(fpa_with_lint_report.read_text())
+        if fpa_with_lint_report_data.get("backend_report_identities") != [
+            "rtl-eda-report",
+            "rtl-sim-eda-report",
+        ]:
+            raise AssertionError(
+                f"FPA JSON should cite only consumed backend reports: {fpa_with_lint_report_data}"
+            )
 
         malformed_eda = out_dir / "malformed-rtl-eda-report.json"
         malformed_eda.write_text("{not-json\n")
@@ -248,6 +303,50 @@ def main() -> int:
             raise AssertionError(f"bad lint diagnostic should explain unavailable evidence: {bad_lint_row}")
         if bad_lint_row["status"] != "pass" or bad_lint_row["fidelity_level"] != "analytic":
             raise AssertionError(f"bad lint evidence must not change analytic FPA status: {bad_lint_row}")
+        bad_lint_report = out_dir / "bad-lint-input-rtl-fpa-report.json"
+        bad_lint_report_data = json.loads(bad_lint_report.read_text())
+        if bad_lint_report_data.get("backend_report_identities") != []:
+            raise AssertionError(
+                f"FPA JSON must not cite malformed backend reports: {bad_lint_report_data}"
+            )
+
+        malformed_sim = out_dir / "malformed-rtl-sim-report.json"
+        malformed_sim.write_text("{not-json\n")
+        fpa_with_bad_sim = out_dir / "bad-sim-input-rtl-fpa-summary.csv"
+        rows_with_bad_sim = artifact_test_common.run_csv_summary(
+            repo,
+            "test/rtl/run_rtl_fpa_summary.sh",
+            fpa_with_bad_sim,
+            HEADER,
+            "--primitive-coverage",
+            str(primitive),
+            "--hardware-summary",
+            str(hardware),
+            "--rtl-manifest",
+            str(manifest),
+            "--eda-report",
+            str(eda),
+            "--rtl-sim-report",
+            str(malformed_sim),
+            label="RTL/FPA summary with malformed RTL sim evidence",
+        )
+        bad_sim_matches = [
+            row
+            for row in rows_with_bad_sim
+            if row["workload"] == "vecadd"
+            and row["hardware"] == "test/fabric/unit/pe/valid.mlir::pe_2x2"
+        ]
+        if len(bad_sim_matches) != 1:
+            raise AssertionError(f"expected one vecadd pe_2x2 row with bad sim evidence, got {rows_with_bad_sim}")
+        bad_sim_row = bad_sim_matches[0]
+        if bad_sim_row["rtl_lint_status"] != "blocked" or bad_sim_row["rtl_sim_status"] != "blocked":
+            raise AssertionError(f"bad sim evidence should block only sim status while preserving lint: {bad_sim_row}")
+        bad_sim_report = out_dir / "bad-sim-input-rtl-fpa-report.json"
+        bad_sim_report_data = json.loads(bad_sim_report.read_text())
+        if bad_sim_report_data.get("backend_report_identities") != ["rtl-eda-report"]:
+            raise AssertionError(
+                f"FPA JSON must cite valid lint but not malformed sim backend: {bad_sim_report_data}"
+            )
 
     return 0
 
