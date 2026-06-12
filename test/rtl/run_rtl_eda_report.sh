@@ -75,7 +75,9 @@ if [[ -n "${profile}" ]]; then
         name="${entry%%=*}"
         [[ "${name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
         case "${name}" in
-          LOOM_*|PATH|LD_LIBRARY_PATH|LIBRARY_PATH|CPATH|PKG_CONFIG_PATH|VCS_HOME|VERILATOR_ROOT)
+          LOOM_*|PATH|LD_LIBRARY_PATH|LIBRARY_PATH|CPATH|PKG_CONFIG_PATH|\
+          LM_LICENSE_FILE|SNPSLMD_LICENSE_FILE|SYNOPSYS_INSTALL_ROOT_HOME|\
+          VCS_HOME|VCSMX_HOME|VCS_TARGET_ARCH|VCS_ARCH_OVERRIDE|VERILATOR_ROOT)
             export "${entry}"
             ;;
         esac

@@ -553,6 +553,72 @@ def main() -> int:
             "profile-selected RTL EDA report audit",
         )
 
+        profile_env_tool = out_dir / "profile-env-verilator"
+        profile_env_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test profile env'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ \"${VCS_TARGET_ARCH:-}\" != \"linux64\" ]; then\n"
+            "  echo 'missing VCS_TARGET_ARCH' >&2\n"
+            "  exit 9\n"
+            "fi\n"
+            "if [ \"${VCSMX_HOME:-}\" != \"/fake/vcsmx\" ]; then\n"
+            "  echo 'missing VCSMX_HOME' >&2\n"
+            "  exit 9\n"
+            "fi\n"
+            "if [ \"${SNPSLMD_LICENSE_FILE:-}\" != \"forwarding-sentinel\" ]; then\n"
+            "  echo 'missing SNPSLMD_LICENSE_FILE' >&2\n"
+            "  exit 9\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        profile_env_tool.chmod(profile_env_tool.stat().st_mode | 0o111)
+        profile_env_file = out_dir / "rtl-eda-profile-env.sh"
+        profile_env_file.write_text(
+            f"export LOOM_RTL_LINT_TOOL={shlex.quote(str(profile_env_tool))}\n"
+            "export VCS_TARGET_ARCH=linux64\n"
+            "export VCSMX_HOME=/fake/vcsmx\n"
+            "export SNPSLMD_LICENSE_FILE=forwarding-sentinel\n"
+        )
+        profile_env_selected = out_dir / "profile-env-selected-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                "-u",
+                "LOOM_RTL_LINT_TOOL",
+                "-u",
+                "VCS_TARGET_ARCH",
+                "-u",
+                "VCSMX_HOME",
+                "-u",
+                "SNPSLMD_LICENSE_FILE",
+                "-u",
+                "LOOM_RTL_EDA_DEFAULT_ENV_FILE",
+                f"LOOM_RTL_EDA_ENV_FILE={profile_env_file}",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(profile_env_selected),
+            ],
+            "profile-selected RTL lint tool environment report",
+        )
+        profile_env_selected_data = json.loads(profile_env_selected.read_text())
+        if profile_env_selected_data.get("status") != "pass":
+            raise AssertionError(
+                f"profile-selected RTL lint tool environment should pass: {profile_env_selected_data}"
+            )
+        require_audit_pass(
+            repo,
+            profile_env_selected,
+            out_dir / "profile-env-selected-rtl-eda-audit-summary.json",
+            "profile-selected RTL EDA environment report audit",
+        )
+
         equals_tool = out_dir / "equals-verilator"
         equals_tool.write_text(
             "#!/bin/sh\n"
