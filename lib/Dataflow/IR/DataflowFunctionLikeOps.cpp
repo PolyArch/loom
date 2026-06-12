@@ -358,10 +358,12 @@ static bool isAllowedInDataflowGraphFuncBody(::mlir::Operation *op) {
       op->getDialect() ? op->getDialect()->getNamespace() : ::mlir::StringRef{};
   ::mlir::StringRef name = op->getName().getStringRef();
 
-  // dataflow.* is broadly allowed (streaming primitives, control
-  // routing, the graph.return terminator, the cross-graph
-  // thread.launch). The graph-in-graph case is moot here because
-  // `dataflow.graph.func` is module-scoped and cannot be nested.
+  // dataflow.* is broadly allowed for leaf streaming primitives,
+  // control routing, and the graph.return terminator. Launch ops
+  // belong in the host/thread orchestration layer, not inside a leaf
+  // graph body.
+  if (::llvm::isa<ThreadLaunchOp, GraphLaunchOp>(op))
+    return false;
   if (dialect == "dataflow")
     return true;
   // arith.*, math.*, and memref.* are entire-dialect allowlists: every
@@ -482,8 +484,7 @@ LogicalResult GraphFuncOp::verify() {
         if (!isAllowedInDataflowGraphFuncBody(op)) {
           op->emitOpError(
               "is not allowed inside a dataflow.graph.func body; permitted "
-              "ops are dataflow.* (incl. graph.launch and thread.launch), "
-              "arith.*, math.*, ub.*, scf.*, cf.*, "
+              "ops are leaf dataflow.* primitives, arith.*, math.*, ub.*, scf.*, cf.*, "
               "builtin.unrealized_conversion_cast, and a curated llvm.* "
               "computation/conversion/intrinsic surface");
           return ::mlir::WalkResult::interrupt();

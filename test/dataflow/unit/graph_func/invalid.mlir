@@ -71,3 +71,15 @@ dataflow.graph.func private @g_rejects_tensor_op(%ctrl: none) -> (none, tensor<1
   %t = tensor.empty() : tensor<1xi32>
   dataflow.graph.return %ctrl, %t : none, tensor<1xi32>
 }
+
+// -----
+// graph.func body whitelist: thread launches belong in the host-level
+// launch layer, not inside leaf SpatialCore graph bodies.
+dataflow.thread private @t_empty() ctrl (%thread_ctrl: none) {
+  dataflow.thread.yield
+}
+dataflow.graph.func private @g_rejects_thread_launch(%ctrl: none) -> none {
+  // expected-error @+1 {{is not allowed inside a dataflow.graph.func body}}
+  %tok = dataflow.thread.launch @t_empty() : () -> !dataflow.thread_token
+  dataflow.graph.return %ctrl : none
+}
