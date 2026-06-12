@@ -67,6 +67,21 @@ def require_audit_pass(repo: Path, artifact: Path, output: Path, label: str) -> 
     return json.loads(output.read_text())
 
 
+def rtl_eda_env(*argv: str) -> list[str]:
+    return [
+        "env",
+        "-u",
+        "LOOM_RTL_EDA_ENV_FILE",
+        "-u",
+        "LOOM_RTL_EDA_DEFAULT_ENV_FILE",
+        "-u",
+        "LOOM_RTL_EDA_PROFILE_ERROR",
+        "-u",
+        "LOOM_RTL_EDA_PROFILE_ERROR_CLASS",
+        *argv,
+    ]
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-rtl-eda-") as tmp:
@@ -76,7 +91,7 @@ def main() -> int:
         blocked = out_dir / "rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -85,7 +100,7 @@ def main() -> int:
                 "definitely-missing-verilator",
                 "--output",
                 str(blocked),
-            ],
+            ),
             "blocked RTL EDA report",
         )
         blocked_data = json.loads(blocked.read_text())
@@ -143,7 +158,7 @@ def main() -> int:
         non_executable = out_dir / "non-executable-rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -152,7 +167,7 @@ def main() -> int:
                 str(non_executable_tool),
                 "--output",
                 str(non_executable),
-            ],
+            ),
             "non-executable RTL lint tool report",
         )
         non_executable_data = json.loads(non_executable.read_text())
@@ -181,7 +196,7 @@ def main() -> int:
         missing_source_report = out_dir / "missing-source-rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -190,7 +205,7 @@ def main() -> int:
                 "definitely-missing-verilator",
                 "--output",
                 str(missing_source_report),
-            ],
+            ),
             "missing-source RTL EDA report",
         )
         missing_source_report_data = json.loads(missing_source_report.read_text())
@@ -220,7 +235,7 @@ def main() -> int:
         failing_version = out_dir / "failing-version-rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -229,7 +244,7 @@ def main() -> int:
                 str(failing_version_tool),
                 "--output",
                 str(failing_version),
-            ],
+            ),
             "failing-version RTL EDA report",
         )
         failing_version_data = json.loads(failing_version.read_text())
@@ -259,7 +274,7 @@ def main() -> int:
         version_timeout_report = out_dir / "version-timeout-rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -270,7 +285,7 @@ def main() -> int:
                 "1",
                 "--output",
                 str(version_timeout_report),
-            ],
+            ),
             "version-timeout RTL EDA report",
         )
         version_timeout_data = json.loads(version_timeout_report.read_text())
@@ -307,7 +322,7 @@ def main() -> int:
         timeout_report = out_dir / "timeout-rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -318,7 +333,7 @@ def main() -> int:
                 "1",
                 "--output",
                 str(timeout_report),
-            ],
+            ),
             "timeout RTL EDA report",
         )
         timeout_data = json.loads(timeout_report.read_text())
@@ -347,6 +362,8 @@ def main() -> int:
             repo,
             [
                 "env",
+                "-u",
+                "LOOM_RTL_EDA_DEFAULT_ENV_FILE",
                 f"LOOM_RTL_EDA_ENV_FILE={failing_profile}",
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
@@ -379,6 +396,49 @@ def main() -> int:
             "profile-failure RTL EDA report audit",
         )
 
+        nounset_profile = out_dir / "nounset-profile.sh"
+        nounset_profile.write_text("set -u\necho \"${LOOM_RTL_EDA_TEST_UNSET}\"\n")
+        nounset_profile_report = out_dir / "nounset-profile-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                "-u",
+                "LOOM_RTL_EDA_TEST_UNSET",
+                "-u",
+                "LOOM_RTL_EDA_DEFAULT_ENV_FILE",
+                f"LOOM_RTL_EDA_ENV_FILE={nounset_profile}",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(nounset_profile_report),
+            ],
+            "nounset-profile RTL EDA report",
+        )
+        nounset_profile_data = json.loads(nounset_profile_report.read_text())
+        if nounset_profile_data.get("status") != "blocked":
+            raise AssertionError(
+                f"nounset profile failure should produce blocked report: {nounset_profile_data}"
+            )
+        nounset_records = nounset_profile_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "tool_activation_failed"
+            and "LOOM_RTL_EDA_TEST_UNSET" in record.get("message", "")
+            for record in nounset_records
+        ):
+            raise AssertionError(
+                f"nounset profile failure should produce structured diagnostic: {nounset_profile_data}"
+            )
+        require_audit_pass(
+            repo,
+            nounset_profile_report,
+            out_dir / "nounset-profile-rtl-eda-audit-summary.json",
+            "nounset-profile RTL EDA report audit",
+        )
+
         env_tool = out_dir / "env-verilator"
         env_tool.write_text(
             "#!/bin/sh\n"
@@ -394,6 +454,10 @@ def main() -> int:
             repo,
             [
                 "env",
+                "-u",
+                "LOOM_RTL_EDA_ENV_FILE",
+                "-u",
+                "LOOM_RTL_EDA_DEFAULT_ENV_FILE",
                 f"LOOM_RTL_LINT_TOOL={env_tool}",
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
@@ -447,6 +511,8 @@ def main() -> int:
                 "LOOM_RTL_LINT_TOOL",
                 "-u",
                 "LOOM_RTL_EDA_TIMEOUT_SECONDS",
+                "-u",
+                "LOOM_RTL_EDA_DEFAULT_ENV_FILE",
                 f"LOOM_RTL_EDA_ENV_FILE={profile_env}",
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
@@ -480,6 +546,56 @@ def main() -> int:
             "profile-selected RTL EDA report audit",
         )
 
+        equals_tool = out_dir / "equals-verilator"
+        equals_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test equals'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        equals_tool.chmod(equals_tool.stat().st_mode | 0o111)
+        equals_default_profile = out_dir / "equals-default-profile.sh"
+        equals_default_profile.write_text("echo 'equals default profile should not load' >&2\nreturn 7\n")
+        equals_selected = out_dir / "equals-selected-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                "-u",
+                "LOOM_RTL_EDA_ENV_FILE",
+                "-u",
+                "LOOM_RTL_LINT_TOOL",
+                "-u",
+                "LOOM_RTL_EDA_TIMEOUT_SECONDS",
+                f"LOOM_RTL_EDA_DEFAULT_ENV_FILE={equals_default_profile}",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                f"--tool={equals_tool}",
+                "--output",
+                str(equals_selected),
+            ],
+            "equals-selected RTL lint tool report",
+        )
+        equals_selected_data = json.loads(equals_selected.read_text())
+        if equals_selected_data.get("status") != "pass":
+            raise AssertionError(
+                f"equals-form RTL lint tool should bypass default profile: {equals_selected_data}"
+            )
+        if equals_selected_data.get("tool_name") != "equals-verilator":
+            raise AssertionError(
+                f"equals-form RTL lint tool was not recorded: {equals_selected_data}"
+            )
+        require_audit_pass(
+            repo,
+            equals_selected,
+            out_dir / "equals-selected-rtl-eda-audit-summary.json",
+            "equals-selected RTL EDA report audit",
+        )
+
         rtl_sim_tool = out_dir / "rtl-sim-tool"
         rtl_sim_tool.write_text(
             "#!/bin/sh\n"
@@ -505,7 +621,7 @@ def main() -> int:
         rtl_sim = out_dir / "rtl-sim-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -516,7 +632,7 @@ def main() -> int:
                 str(rtl_sim_tool),
                 "--output",
                 str(rtl_sim),
-            ],
+            ),
             "passing RTL sim EDA report",
         )
         rtl_sim_data = json.loads(rtl_sim.read_text())
@@ -615,7 +731,7 @@ def main() -> int:
         multi_sim = out_dir / "multi-sim-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -626,7 +742,7 @@ def main() -> int:
                 str(multi_sim_tool),
                 "--output",
                 str(multi_sim),
-            ],
+            ),
             "multi-top RTL sim EDA report",
         )
         multi_sim_report = json.loads(multi_sim.read_text())
@@ -640,7 +756,7 @@ def main() -> int:
         passed = out_dir / "passing-rtl-eda-report.json"
         artifact_test_common.require_success(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -649,7 +765,7 @@ def main() -> int:
                 verilator,
                 "--output",
                 str(passed),
-            ],
+            ),
             "passing RTL EDA report",
         )
         passed_data = json.loads(passed.read_text())
@@ -708,7 +824,7 @@ def main() -> int:
         multi_top_report = out_dir / "multi-top-rtl-eda-report.json"
         result = artifact_test_common.run_command(
             repo,
-            [
+            rtl_eda_env(
                 "bash",
                 "test/rtl/run_rtl_eda_report.sh",
                 "--manifest",
@@ -717,7 +833,7 @@ def main() -> int:
                 verilator,
                 "--output",
                 str(multi_top_report),
-            ],
+            ),
         )
         if result.returncode == 0:
             raise AssertionError("multi-top RTL lint with failing second top unexpectedly passed")
