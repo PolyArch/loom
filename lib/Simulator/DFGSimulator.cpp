@@ -327,6 +327,30 @@ std::string primitivePredicate(mlir::Operation *op) {
   return "";
 }
 
+PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
+                                                 llvm::StringRef predicate,
+                                                 mlir::Value result) {
+  PrimitiveOperationDescriptor descriptor{
+      op->getName().getStringRef(),
+      predicate,
+      integerBitWidth(result.getType()),
+      integerBitWidth(op->getOperand(0).getType())};
+  if (auto div = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
+    descriptor.isExact = div.getIsExact();
+  if (auto shift = mlir::dyn_cast<mlir::arith::ShRSIOp>(op))
+    descriptor.isExact = shift.getIsExact();
+  if (auto shift = mlir::dyn_cast<mlir::arith::ShRUIOp>(op))
+    descriptor.isExact = shift.getIsExact();
+  if (auto trunc = mlir::dyn_cast<mlir::arith::TruncIOp>(op)) {
+    mlir::arith::IntegerOverflowFlags flags = trunc.getOverflowFlags();
+    descriptor.noSignedWrap = mlir::arith::bitEnumContainsAll(
+        flags, mlir::arith::IntegerOverflowFlags::nsw);
+    descriptor.noUnsignedWrap = mlir::arith::bitEnumContainsAll(
+        flags, mlir::arith::IntegerOverflowFlags::nuw);
+  }
+  return descriptor;
+}
+
 bool evaluateCont(std::int64_t current, std::int64_t ub, llvm::StringRef pred) {
   if (pred == "<")
     return current < ub;
@@ -551,14 +575,10 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
   for (mlir::OpOperand &operand : op->getOpOperands())
     operands.push_back(
         primitiveValueFromToken(popToken(state.channels, operand)));
+  std::string predicate = primitivePredicate(op);
   auto valueOrErr =
-      evaluatePrimitiveOperation(
-          PrimitiveOperationDescriptor{op->getName().getStringRef(),
-                                       primitivePredicate(op),
-                                       integerBitWidth(result.getType()),
-                                       integerBitWidth(
-                                           op->getOperand(0).getType())},
-          operands);
+      evaluatePrimitiveOperation(primitiveDescriptor(op, predicate, result),
+                                 operands);
   if (!valueOrErr) {
     state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
     return false;

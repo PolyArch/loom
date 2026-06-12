@@ -39,6 +39,9 @@ struct PrimitiveOperationDescriptor {
   llvm::StringRef predicate;
   unsigned resultBitWidth = 0;
   unsigned operandBitWidth = 0;
+  bool isExact = false;
+  bool noSignedWrap = false;
+  bool noUnsignedWrap = false;
 };
 
 bool isSupportedPrimitiveOperation(llvm::StringRef opName);

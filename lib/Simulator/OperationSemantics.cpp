@@ -30,12 +30,17 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.ori", 1, 1, true, true},
     {"arith.xori", 1, 1, true, true},
     {"arith.shli", 1, 1, true, true},
+    {"arith.shrsi", 1, 1, true, true},
     {"arith.shrui", 1, 1, true, true},
+    {"arith.divsi", 8, 8, true, true},
+    {"arith.remsi", 8, 8, true, true},
     {"arith.remui", 8, 8, true, true},
     {"arith.cmpi", 1, 1, true, true},
     {"arith.cmpf", 2, 2, true, true},
     {"arith.select", 1, 1, true, true},
     {"arith.index_cast", 1, 1, true, true},
+    {"arith.extsi", 1, 1, true, true},
+    {"arith.trunci", 1, 1, true, true},
     {"arith.sitofp", 3, 3, true, true},
     {"arith.uitofp", 3, 3, true, true},
     {"arith.fptosi", 3, 3, true, true},
@@ -117,11 +122,34 @@ unsigned normalizeBitWidth(unsigned bitWidth) {
   return bitWidth;
 }
 
+llvm::Expected<unsigned> checkedShiftAmount(llvm::StringRef opName,
+                                            const PrimitiveValue &value,
+                                            unsigned bitWidth) {
+  auto amountOrErr = asShiftAmount(opName, value);
+  if (!amountOrErr)
+    return amountOrErr.takeError();
+  bitWidth = normalizeBitWidth(bitWidth);
+  if (*amountOrErr >= bitWidth)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "%s shift amount must be less than bit width %u, got %u",
+        opName.str().c_str(), bitWidth, *amountOrErr);
+  return *amountOrErr;
+}
+
 std::uint64_t maskForBitWidth(unsigned bitWidth) {
   bitWidth = normalizeBitWidth(bitWidth);
   if (bitWidth == 64)
     return ~std::uint64_t{0};
   return (std::uint64_t{1} << bitWidth) - 1;
+}
+
+std::uint64_t lowBitsMask(unsigned bitCount) {
+  if (bitCount == 0)
+    return 0;
+  if (bitCount >= 64)
+    return ~std::uint64_t{0};
+  return (std::uint64_t{1} << bitCount) - 1;
 }
 
 std::uint64_t toUnsignedBits(const PrimitiveValue &value, unsigned bitWidth) {
@@ -146,6 +174,37 @@ PrimitiveValue integerFromBits(std::uint64_t bits, unsigned bitWidth) {
 
 PrimitiveValue integerFromSigned(std::int64_t value, unsigned bitWidth) {
   return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
+}
+
+std::uint64_t arithmeticRightShiftBits(const PrimitiveValue &value,
+                                       unsigned bitWidth, unsigned amount) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  const std::uint64_t bits = toUnsignedBits(value, bitWidth);
+  const std::uint64_t signBit = std::uint64_t{1} << (bitWidth - 1);
+  if (amount == 0)
+    return bits;
+  if (amount >= bitWidth)
+    return (bits & signBit) ? maskForBitWidth(bitWidth) : 0;
+  std::uint64_t shifted = bits >> amount;
+  if ((bits & signBit) == 0)
+    return shifted;
+  const unsigned keptBits = bitWidth - amount;
+  const std::uint64_t lowMask =
+      keptBits == 64 ? ~std::uint64_t{0}
+                     : ((std::uint64_t{1} << keptBits) - 1);
+  return shifted | (maskForBitWidth(bitWidth) & ~lowMask);
+}
+
+std::int64_t signedMinForBitWidth(unsigned bitWidth) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  if (bitWidth == 64)
+    return std::numeric_limits<std::int64_t>::min();
+  return -(std::int64_t{1} << (bitWidth - 1));
+}
+
+bool exactRightShiftWouldDiscardBits(const PrimitiveValue &value,
+                                     unsigned bitWidth, unsigned amount) {
+  return (toUnsignedBits(value, bitWidth) & lowBitsMask(amount)) != 0;
 }
 
 llvm::Expected<PrimitiveValue>
@@ -366,7 +425,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "arith.shli") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    auto amountOrErr = asShiftAmount(opName, operands[1]);
+    auto amountOrErr = checkedShiftAmount(opName, operands[1], bitWidth);
     if (!amountOrErr)
       return amountOrErr.takeError();
     return integerFromBits(toUnsignedBits(operands[0], bitWidth)
@@ -376,12 +435,60 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "arith.shrui") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    auto amountOrErr = asShiftAmount(opName, operands[1]);
+    auto amountOrErr = checkedShiftAmount(opName, operands[1], bitWidth);
     if (!amountOrErr)
       return amountOrErr.takeError();
+    if (descriptor.isExact &&
+        exactRightShiftWouldDiscardBits(operands[0], bitWidth, *amountOrErr))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s exact shift would discard non-zero bits",
+          opName.str().c_str());
     return integerFromBits(toUnsignedBits(operands[0], bitWidth) >>
                                *amountOrErr,
                            bitWidth);
+  }
+  if (opName == "arith.shrsi") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    auto amountOrErr = checkedShiftAmount(opName, operands[1], bitWidth);
+    if (!amountOrErr)
+      return amountOrErr.takeError();
+    if (descriptor.isExact &&
+        exactRightShiftWouldDiscardBits(operands[0], bitWidth, *amountOrErr))
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s exact shift would discard non-zero bits",
+          opName.str().c_str());
+    return integerFromBits(
+        arithmeticRightShiftBits(operands[0], bitWidth, *amountOrErr),
+        bitWidth);
+  }
+  if (opName == "arith.divsi" || opName == "arith.remsi") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    const std::int64_t dividend =
+        fromUnsignedBits(toUnsignedBits(operands[0], bitWidth), bitWidth);
+    const std::int64_t divisor =
+        fromUnsignedBits(toUnsignedBits(operands[1], bitWidth), bitWidth);
+    if (divisor == 0)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "%s divisor must be non-zero",
+                                     opName.str().c_str());
+    if (opName == "arith.divsi" && dividend == signedMinForBitWidth(bitWidth) &&
+        divisor == -1)
+      return llvm::createStringError(std::errc::result_out_of_range,
+                                     "%s signed overflow", opName.str().c_str());
+    if (opName == "arith.divsi") {
+      if (descriptor.isExact && dividend % divisor != 0)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "%s exact result would be poison", opName.str().c_str());
+      return integerFromSigned(dividend / divisor, bitWidth);
+    }
+    if (dividend == signedMinForBitWidth(bitWidth) && divisor == -1)
+      return integerFromSigned(0, bitWidth);
+    return integerFromSigned(dividend % divisor, bitWidth);
   }
   if (opName == "arith.remui") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
@@ -422,6 +529,51 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return integerFromSigned(asInteger(operands[0]), bitWidth);
+  }
+  if (opName == "arith.extsi") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    const unsigned sourceBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
+    if (sourceBitWidth > bitWidth)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s source bit width must not exceed result bit width",
+          opName.str().c_str());
+    return integerFromSigned(
+        fromUnsignedBits(toUnsignedBits(operands[0], sourceBitWidth),
+                         sourceBitWidth),
+        bitWidth);
+  }
+  if (opName == "arith.trunci") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    const unsigned sourceBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
+    if (sourceBitWidth <= bitWidth)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s source bit width must be wider than result bit width",
+          opName.str().c_str());
+    const std::uint64_t inputBits = toUnsignedBits(operands[0], sourceBitWidth);
+    const unsigned truncatedBitCount = sourceBitWidth - bitWidth;
+    const std::uint64_t truncatedBits = inputBits >> bitWidth;
+    if (descriptor.noUnsignedWrap && truncatedBits != 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s overflow<nuw> result would be poison",
+          opName.str().c_str());
+    if (descriptor.noSignedWrap) {
+      const bool resultSign = ((inputBits >> (bitWidth - 1)) & 1u) != 0;
+      const std::uint64_t expectedTruncatedBits =
+          resultSign ? lowBitsMask(truncatedBitCount) : 0;
+      if (truncatedBits != expectedTruncatedBits)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "%s overflow<nsw> result would be poison",
+            opName.str().c_str());
+    }
+    return integerFromBits(inputBits, bitWidth);
   }
   if (opName == "llvm.trunc") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
