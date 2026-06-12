@@ -71,7 +71,14 @@ def discover_report_inputs(evidence_dir: Path) -> tuple[list[Path], list[Path]]:
     cgra_reports: list[Path] = []
     if not evidence_dir.is_dir():
         return dfg_reports, cgra_reports
-    for report in sorted(evidence_dir.glob("*.report.json")):
+    reports = sorted(
+        {
+            *evidence_dir.glob("*.report.json"),
+            *evidence_dir.glob("*-dfg-sim-report.json"),
+            *evidence_dir.glob("*-cgra-sim-report.json"),
+        }
+    )
+    for report in reports:
         kind = classify_report(report)
         if kind == "dfg_sim_report":
             dfg_reports.append(report)

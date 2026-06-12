@@ -18,6 +18,7 @@ def write_blocked_mapping_artifact(path: Path, workload: str) -> None:
         "schema_version": 1,
         "kind": "pnr_mapping",
         "workload": workload,
+        "graph": f"g_{workload}",
         "hardware": "blocked_adg",
         "mapping_id": f"{workload}__blocked_adg",
         "status": "fail",
@@ -34,7 +35,7 @@ def write_blocked_mapping_artifact(path: Path, workload: str) -> None:
     path.write_text(json.dumps(artifact, indent=2) + "\n")
 
 
-def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, upper_bound: str) -> None:
+def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, upper_bound: str) -> list[Path]:
     dfg_tool = repo / "build/tools/loom-dfg-sim/loom-dfg-sim"
     if not dfg_tool.is_file():
         dfg_tool = repo / "build/bin/loom-dfg-sim"
@@ -42,9 +43,9 @@ def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, up
     if not cgra_tool.is_file():
         cgra_tool = repo / "build/bin/loom-cgra-sim"
 
-    dfg_report = evidence_dir / f"{workload}.dfg.report.json"
-    mapping_artifact = evidence_dir / f"{workload}.mapping.json"
-    cgra_report = evidence_dir / f"{workload}.cgra.report.json"
+    dfg_report = evidence_dir / f"{workload}-dfg-sim-report.json"
+    mapping_artifact = evidence_dir / f"{workload}-pnr-mapping.json"
+    cgra_report = evidence_dir / f"{workload}-cgra-sim-report.json"
     artifact_test_common.require_success(
         repo,
         [
@@ -83,6 +84,7 @@ def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, up
         ],
         f"{workload} CGRA simulation report",
     )
+    return [dfg_report, mapping_artifact, cgra_report]
 
 
 def main() -> int:
@@ -120,9 +122,11 @@ def main() -> int:
 
         evidence_dir = out_dir / "current-sim-cycle"
         evidence_dir.mkdir()
-        run_discovered_report_pair(repo, evidence_dir, "sum4", "4")
-        run_discovered_report_pair(repo, evidence_dir, "sum8", "8")
-        discovered_sim = out_dir / "sim-cycle-summary-discovered.csv"
+        discovered_artifacts = [
+            *run_discovered_report_pair(repo, evidence_dir, "sum4", "4"),
+            *run_discovered_report_pair(repo, evidence_dir, "sum8", "8"),
+        ]
+        discovered_sim = out_dir / "discovered-sim-cycle-summary.csv"
         artifact_test_common.require_success(
             repo,
             [
@@ -148,6 +152,22 @@ def main() -> int:
                 raise AssertionError(f"{kernel} should keep structured blocked status: {discovered_row}")
             if "mapping artifact status fail blocks CGRA-sim" not in discovered_row.get("diagnostic", ""):
                 raise AssertionError(f"{kernel} should carry CGRA blocked diagnostic: {discovered_row}")
+        discovered_audit = out_dir / "sim-cycle-summary-discovered-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(discovered_audit),
+                str(discovered_sim),
+                *(str(path) for path in discovered_artifacts),
+            ],
+            "discovered sim cycle summary artifact audit",
+        )
+        discovered_audit_data = json.loads(discovered_audit.read_text())
+        if discovered_audit_data.get("verdict") != "pass":
+            raise AssertionError(f"discovered sim cycle audit should pass: {discovered_audit_data}")
 
         artifact_test_common.require_success(
             repo,
