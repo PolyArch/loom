@@ -373,6 +373,7 @@ def main() -> int:
                 raise AssertionError(f"selected-like metric records missed {metric}: {row}")
         fidelity_records = row.get("feedback_fidelity_records", "")
         for record in (
+            "cgra_sim_cycles=mapping_constraint_estimate:selected-like-cgra-sim-report",
             "frequency_mhz=analytic:analytic_fpa_model",
             "area_um2=analytic:analytic_fpa_model",
             "dynamic_power_mw=analytic:analytic_fpa_model:default_toggle",

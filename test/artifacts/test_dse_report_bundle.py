@@ -230,6 +230,19 @@ def main() -> int:
         ):
             if metric_id not in candidate.get("metric_records_used", []):
                 raise AssertionError(f"candidate missed metric {metric_id}: {candidate}")
+        fidelity_used = candidate.get("feedback_fidelity_records_used")
+        if not isinstance(fidelity_used, list):
+            raise AssertionError(f"candidate should preserve feedback fidelity records: {candidate}")
+        expected_fidelity = {
+            "cgra_sim_cycles=mapping_constraint_estimate:vecsum-cgra-sim-report",
+            "frequency_mhz=analytic:analytic_fpa_model",
+            "area_um2=analytic:analytic_fpa_model",
+            "dynamic_power_mw=analytic:analytic_fpa_model:default_toggle",
+            "leakage_power_mw=analytic:analytic_fpa_model:default_toggle",
+            "energy_nj=analytic:derived_from_fpa_and_cgra_sim",
+        }
+        if set(fidelity_used) != expected_fidelity:
+            raise AssertionError(f"candidate missed feedback fidelity records: {candidate}")
         if candidate.get("objective_records_used") != ["objective::minimize_runtime"]:
             raise AssertionError(f"candidate missed objective provenance: {candidate}")
         if data["selected_candidates"] != [candidate_id]:

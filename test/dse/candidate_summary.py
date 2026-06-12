@@ -410,13 +410,19 @@ def complete_evidence(
     return cycles, energy_nj
 
 
-def metric_fidelity_record_values(fpa: dict[str, str]) -> list[str]:
+def metric_fidelity_record_values(
+    fpa: dict[str, str],
+    cgra_report: dict[str, object],
+) -> list[str]:
     fidelity = fpa.get("fidelity_level", "")
     frequency_source = fpa.get("frequency_source", "")
     area_source = fpa.get("area_source", "")
     power_source = fpa.get("power_source", "")
     activity_source = fpa.get("activity_source", "")
+    cgra_fidelity = str(cgra_report.get("fidelity_level", ""))
+    cgra_source = artifact_identity(artifact_ref(cgra_report.get("__path")))
     return [
+        f"cgra_sim_cycles={cgra_fidelity}:{cgra_source}",
         f"frequency_mhz={fidelity}:{frequency_source}",
         f"area_um2={fidelity}:{area_source}",
         f"dynamic_power_mw={fidelity}:{power_source}:{activity_source}",
@@ -506,7 +512,7 @@ def candidate_row(
         if effective_objective == "minimize_unsupported_scope_diagnostics":
             metric_record_values.append(f"unsupported_scope_diagnostics_count={unsupported_count}")
         metric_records = ";".join(metric_record_values)
-        feedback_fidelity_records = ";".join(metric_fidelity_record_values(fpa))
+        feedback_fidelity_records = ";".join(metric_fidelity_record_values(fpa, cgra_report))
         row = {
             "candidate": candidate_id,
             "workload": workload,

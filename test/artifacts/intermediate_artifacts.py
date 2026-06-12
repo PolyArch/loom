@@ -1080,7 +1080,7 @@ def hardware_evidence_kind_from_fidelity_records(
     kinds = {
         DSE_HARDWARE_EVIDENCE_KIND_BY_FIDELITY.get(parts[0], "unknown")
         for parts in parsed_fidelity.values()
-        if parts
+        if parts and parts[0] in DSE_HARDWARE_EVIDENCE_KIND_BY_FIDELITY
     }
     if not kinds:
         return None
@@ -1207,6 +1207,18 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
                     or abs(row_value - metric_value) > 0.001
                 ):
                     diagnostics.append(f"row {row_index}: metric_records {metric} does not match row value")
+        simulator_parts = parsed_fidelity.get("cgra_sim_cycles")
+        if metric_records and simulator_parts is None:
+            diagnostics.append(f"row {row_index}: feedback_fidelity_records missing cgra_sim_cycles")
+        elif simulator_parts is not None:
+            if simulator_parts[0] != "mapping_constraint_estimate":
+                diagnostics.append(
+                    f"row {row_index}: feedback_fidelity_records cgra_sim_cycles has unknown fidelity"
+                )
+            if len(simulator_parts) < 2:
+                diagnostics.append(
+                    f"row {row_index}: feedback_fidelity_records cgra_sim_cycles lacks source"
+                )
         for metric in (
             "frequency_mhz",
             "area_um2",
@@ -6673,10 +6685,35 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "generated_output_artifacts",
                 "objective_records_used",
                 "metric_records_used",
+                "feedback_fidelity_records_used",
                 "diagnostics",
             ):
                 if not isinstance(candidate.get(key), list):
                     diagnostics.append(f"DSE report bundle candidate {index} {key} must be a list")
+            feedback_fidelity_records_used = candidate.get("feedback_fidelity_records_used")
+            if isinstance(feedback_fidelity_records_used, list):
+                if candidate.get("status") in {"selected", "pareto"} and not feedback_fidelity_records_used:
+                    diagnostics.append(
+                        f"DSE report bundle candidate {index} needs feedback_fidelity_records_used"
+                    )
+                fidelity_metric_names: set[str] = set()
+                for record in feedback_fidelity_records_used:
+                    if not isinstance(record, str) or "=" not in record:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} feedback_fidelity_records_used has invalid entry"
+                        )
+                        continue
+                    name, value = record.split("=", 1)
+                    if not name or not value:
+                        diagnostics.append(
+                            f"DSE report bundle candidate {index} feedback_fidelity_records_used has invalid entry"
+                        )
+                        continue
+                    fidelity_metric_names.add(name)
+                if candidate.get("status") in {"selected", "pareto"} and "cgra_sim_cycles" not in fidelity_metric_names:
+                    diagnostics.append(
+                        f"DSE report bundle candidate {index} lacks CGRA cycle feedback fidelity"
+                    )
             objective_records_used = candidate.get("objective_records_used")
             if isinstance(objective_records_used, list):
                 if candidate.get("status") in {"selected", "pareto"} and not objective_records_used:

@@ -1502,6 +1502,7 @@ def main() -> int:
             "dynamic_power_mw=3;leakage_power_mw=1;energy_nj=0.480"
         )
         valid_dse_fidelity_records = (
+            "cgra_sim_cycles=mapping_constraint_estimate:valid-cgra-sim-report;"
             "frequency_mhz=analytic:analytic_fpa_model;"
             "area_um2=analytic:analytic_fpa_model;"
             "dynamic_power_mw=analytic:analytic_fpa_model:default_toggle;"
@@ -1860,6 +1861,41 @@ def main() -> int:
         )
         if result.returncode == 0:
             raise AssertionError("DSE row with mismatched metric_records unexpectedly passed audit")
+
+        missing_cgra_fidelity_dse = out_dir / "missing-cgra-fidelity-dse-candidate-summary.csv"
+        missing_cgra_fidelity_dse_provenance = valid_dse_provenance.replace(
+            str(valid_dse),
+            str(missing_cgra_fidelity_dse),
+        ).replace(
+            "cgra_sim_cycles=mapping_constraint_estimate:valid-cgra-sim-report;",
+            "",
+        )
+        missing_cgra_fidelity_dse.write_text(
+            dse_provenance_header
+            + "candidate::vecadd::fabric0::map0,vecadd,fabric0,map0,minimize_runtime,12,100,200,3,1,0.480,selected,"
+            + missing_cgra_fidelity_dse_provenance
+            + "fidelity provenance omits CGRA simulator cycle marker\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-missing-dse-cgra-fidelity.json"),
+                str(valid_primitive),
+                str(valid_hardware),
+                str(valid_mapping),
+                str(valid_mapping_artifact),
+                str(valid_dfg_report),
+                str(valid_cgra_report),
+                str(cgra_without_report),
+                str(valid_rtl_fpa),
+                str(missing_cgra_fidelity_dse),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DSE row without CGRA cycle fidelity unexpectedly passed audit")
 
         missing_fidelity_dse = out_dir / "missing-fidelity-dse-candidate-summary.csv"
         missing_fidelity_dse_provenance = valid_dse_provenance.replace(

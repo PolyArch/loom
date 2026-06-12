@@ -128,6 +128,10 @@ def semicolon_identity_map(raw: str) -> dict[str, str]:
     return parsed
 
 
+def semicolon_list(raw: str) -> list[str]:
+    return [entry for entry in raw.split(";") if entry]
+
+
 def diagnostic_class(message: str) -> str:
     if "selected DSE candidate" in message:
         return "dse_candidate_missing"
@@ -193,6 +197,7 @@ def candidate_record(row: dict[str, str]) -> dict[str, object]:
         "generated_output_artifacts": semicolon_identity_list(row.get("output_artifacts", "")),
         "objective_records_used": [row.get("objective_record", "")],
         "metric_records_used": metric_ids_for_candidate(row),
+        "feedback_fidelity_records_used": semicolon_list(row.get("feedback_fidelity_records", "")),
         "status": row.get("selection_status", "blocked"),
         "diagnostics": [row.get("diagnostic", "")] if row.get("diagnostic", "") else [],
     }
