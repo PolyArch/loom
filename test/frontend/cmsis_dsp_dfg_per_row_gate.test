@@ -1,10 +1,10 @@
 # Per-row gate negative-control TDD smoke for run_cmsis_dsp_dfg.sh.
 # Confirms the DFG runner returns non-zero with a per-column drift
-# diagnostic when handed a synthetic targets row whose expect_thread
+# diagnostic when handed a synthetic targets row whose expect_scf_residual
 # cell is deliberately falsified. Wires the negative shell driver into
 # lit so a regression that masks the per-row gate would surface under
 # check-fabric.
 #
 # RUN: bash -c 'set -o pipefail; env LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../cmsis-dsp/test_runner_dfg_per_row_gate.sh' | FileCheck %s
 #
-# CHECK: PASS (runner correctly tripped expect_thread=99 actual=1 with rc=1)
+# CHECK: PASS (runner correctly tripped expect_scf_residual=99 actual=3 with rc=1)

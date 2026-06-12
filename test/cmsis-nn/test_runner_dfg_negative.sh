@@ -51,7 +51,7 @@ C
 mkdir -p "${TMP}/Include"
 
 cat > "${TMP}/cmsis_nn_targets.txt" <<'T'
-Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0
+Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0|>=0
 T
 
 mkdir -p "${TMP}/repo-shim/test/cmsis-nn"

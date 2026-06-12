@@ -12,12 +12,13 @@
 #      dialect is registered there in lieu of a separate dataflow opt
 #      tool) -- this is the structural well-formedness gate.
 #   5. Count dataflow.{thread, graph.func, stream, load, store, constant,
-#      sync, gate, mux, demux} ops in the produced .dfg.mlir and compare
+#      sync, gate, mux, demux} ops plus residual scf.* ops in the produced
+#      .dfg.mlir and compare
 #      against the row's expect_thread / expect_graph / expect_stream /
 #      expect_load / expect_store / expect_constant / expect_sync /
-#      expect_gate / expect_mux / expect_demux cells. A bare integer
-#      demands exact equality; a `>=N` cell accepts any count at or above
-#      the threshold. Any drift fails the row with a per-column
+#      expect_gate / expect_mux / expect_demux / expect_scf_residual cells.
+#      A bare integer demands exact equality; a `>=N` cell accepts any count
+#      at or above the threshold. Any drift fails the row with a per-column
 #      diagnostic.
 #
 # Pass criterion (gating, all required):
@@ -26,7 +27,7 @@
 #   c. expected_symbols presence on the lowered MLIR: at least one
 #      symbol survives as a dataflow.thread / dataflow.graph.func /
 #      func.func definition.
-#   d. The ten per-row count cells match the actual op counts.
+#   d. The eleven per-row count cells match the actual op counts.
 #
 # Sources whose lower breaks the mandatory gate (loom-lower crash,
 # parse failure of the produced .dfg.mlir) can be listed in
@@ -190,6 +191,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     IFS='|' read -r src triple cpu expected_triple expected_syms extra_cflags \
         expect_thread expect_graph expect_stream expect_load expect_store \
         expect_constant expect_sync expect_gate expect_mux expect_demux \
+        expect_scf_residual \
         <<< "${line}"
 
     if [[ -z "${src}" || -z "${triple}" || -z "${cpu}" || -z "${expected_triple}" || -z "${expected_syms}" ]]; then
@@ -201,8 +203,9 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     if [[ -z "${expect_thread}" || -z "${expect_graph}" || -z "${expect_stream}" \
           || -z "${expect_load}" || -z "${expect_store}" \
           || -z "${expect_constant}" || -z "${expect_sync}" \
-          || -z "${expect_gate}" || -z "${expect_mux}" || -z "${expect_demux}" ]]; then
-        echo "[${LABEL}] missing per-row gate cells (expect_thread/graph/stream/load/store/constant/sync/gate/mux/demux) in row: ${line}" >&2
+          || -z "${expect_gate}" || -z "${expect_mux}" || -z "${expect_demux}" \
+          || -z "${expect_scf_residual}" ]]; then
+        echo "[${LABEL}] missing per-row gate cells (expect_thread/graph/stream/load/store/constant/sync/gate/mux/demux/scf_residual) in row: ${line}" >&2
         failed+=("(parse:${src:-?})")
         continue
     fi
@@ -306,9 +309,9 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     fi
 
     # Per-row shape gate: count dataflow.{thread, graph.func, stream,
-    # load, store, constant, sync, gate, mux, demux} occurrences in the
-    # lowered MLIR and compare against the row's expectations. Drift on
-    # any column fails the row.
+    # load, store, constant, sync, gate, mux, demux} plus residual scf.*
+    # occurrences in the lowered MLIR and compare against the row's
+    # expectations. Drift on any column fails the row.
     thread_count=$(grep -c -E 'dataflow\.thread (private )?@' "${out_dfg}" || true)
     graph_count=$(grep -c -E 'dataflow\.graph\.func (private )?@' "${out_dfg}" || true)
     stream_count=$(grep -c -E '\bdataflow\.stream\b' "${out_dfg}" || true)
@@ -332,6 +335,7 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
     gate_count gate     "${expect_gate}"     "${df_gate_count}"  "${src}" || gate_ok=0
     gate_count mux      "${expect_mux}"      "${mux_count}"      "${src}" || gate_ok=0
     gate_count demux    "${expect_demux}"    "${demux_count}"    "${src}" || gate_ok=0
+    gate_count scf_residual "${expect_scf_residual}" "${scf_residual}" "${src}" || gate_ok=0
 
     if (( gate_ok == 0 )); then
         failed+=("${src}")

@@ -61,7 +61,7 @@ mkdir -p "${TMP}/Include" "${TMP}/PrivateInclude"
 # Empty stubs so the runner's -I flags resolve.
 
 cat > "${TMP}/cmsis_dsp_targets.txt" <<'T'
-Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0
+Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0|>=0
 T
 
 # Drive the actual runner with the synthetic corpus pointed at our

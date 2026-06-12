@@ -2,7 +2,7 @@
 #
 # One row per source file. Columns are pipe-separated:
 #
-#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync | expect_gate | expect_mux | expect_demux
+#   src_relpath | clang_target_triple | mcpu | expected_normalized_triple | expected_symbols (comma list) | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync | expect_gate | expect_mux | expect_demux | expect_scf_residual
 #
 # Notes:
 #  - src_relpath is relative to externals/cmsis-nn/Source/.
@@ -16,13 +16,15 @@
 #    script.
 #  - expect_thread / expect_graph / expect_stream / expect_load / expect_store /
 #    expect_constant / expect_sync / expect_gate / expect_mux / expect_demux
-#    pin the per-row shape of the lowered .dfg.mlir. The DFG runner counts
+#    / expect_scf_residual pin the per-row shape of the lowered .dfg.mlir.
+#    The DFG runner counts
 #    `dataflow.thread @`, `dataflow.graph.func @`, `dataflow.stream`,
 #    `dataflow.load`, `dataflow.store`, `dataflow.constant`, `dataflow.sync`,
-#    `dataflow.gate`, `dataflow.mux`, and `dataflow.demux` occurrences and
-#    asserts an exact match against these cells. A leading `>=` (e.g. `>=1`)
-#    accepts any count at or above the threshold; a bare integer demands
-#    exact equality. The IR-only and raise runners ignore these columns.
+#    `dataflow.gate`, `dataflow.mux`, `dataflow.demux`, and residual `scf.*`
+#    occurrences and asserts an exact match against these cells. A leading
+#    `>=` (e.g. `>=1`) accepts any count at or above the threshold; a bare
+#    integer demands exact equality. The IR-only and raise runners ignore
+#    these columns.
 #  - expect_demux is reserved for symmetry with the other control-routing
 #    primitives; the current SCF-to-DFG lowering does not yet emit
 #    `dataflow.demux` (the 1-to-N route lowering is a future iteration), so
@@ -62,21 +64,21 @@
 # are still covered by the base symbol; the pipeline asserts presence,
 # not exclusivity.
 #
-ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||1|1|1|1|1|1|1|0|0|0
-ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7||2|2|1|2|2|3|1|0|0|0
-ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu6_s8||0|0|0|0|0|0|0|0|0|0
-BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_elementwise_add_s8||0|0|0|0|0|0|0|0|0|0
-BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8||1|1|0|18|9|27|0|28|0|0
-BasicMathFunctions/arm_maximum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_maximum_s8||1|1|0|18|9|27|0|28|0|0
-ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_w||0|0|0|0|0|0|0|0|0|0
-ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|1|0|0|0|0|0|0|0
-ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8||2|2|0|22|5|20|0|26|4|0
-ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast||0|0|0|0|0|0|0|0|0|0
-FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|11|0|11|0|0|0|0
-FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_vector_sum_s8||1|1|0|2|1|3|0|2|0|0
-NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset||0|0|0|0|0|0|0|0|0|0
-PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8||0|0|0|0|0|0|0|0|0|0
-PoolingFunctions/arm_max_pool_s8.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_max_pool_s8||1|1|0|6|4|10|0|5|0|0
-ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8||0|0|0|0|0|0|0|0|0|0
-SoftmaxFunctions/arm_softmax_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_s8||0|0|0|0|0|0|0|0|0|0
-SoftmaxFunctions/arm_softmax_u8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_u8||1|1|0|4|1|1|0|1|2|0
+ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||1|1|1|1|1|1|1|0|0|0|7
+ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7||2|2|1|2|2|3|1|0|0|0|12
+ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu6_s8||0|0|0|0|0|0|0|0|0|0|2
+BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_elementwise_add_s8||0|0|0|0|0|0|0|0|0|0|10
+BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8||1|1|0|18|9|27|0|28|0|0|172
+BasicMathFunctions/arm_maximum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_maximum_s8||1|1|0|18|9|27|0|28|0|0|172
+ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_w||0|0|0|0|0|0|0|0|0|0|0
+ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|1|0|0|0|0|0|0|0|3
+ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8||2|2|0|22|5|20|0|26|4|0|152
+ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast||0|0|0|0|0|0|0|0|0|0|10
+FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|11|0|11|0|0|0|0|5
+FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_vector_sum_s8||1|1|0|2|1|3|0|2|0|0|16
+NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset||0|0|0|0|0|0|0|0|0|0|10
+PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8||0|0|0|0|0|0|0|0|0|0|52
+PoolingFunctions/arm_max_pool_s8.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_max_pool_s8||1|1|0|6|4|10|0|5|0|0|85
+ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8||0|0|0|0|0|0|0|0|0|0|0
+SoftmaxFunctions/arm_softmax_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_s8||0|0|0|0|0|0|0|0|0|0|0
+SoftmaxFunctions/arm_softmax_u8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_u8||1|1|0|4|1|1|0|1|2|0|35

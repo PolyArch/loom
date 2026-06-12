@@ -126,11 +126,12 @@ is exercised end-to-end.
    Prefer f32 variants when in doubt; q15/q31 saturation paths add
    noise but do not strengthen the smoke.
 2. Append a pipe-separated row to `cmsis_dsp_targets.txt`:
-   `src_relpath | triple | mcpu | normalized_triple | expected_symbols | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync`
-   The seven `expect_*` cells pin the per-row DFG shape gate (counts of
+   `src_relpath | triple | mcpu | normalized_triple | expected_symbols | extra_cflags | expect_thread | expect_graph | expect_stream | expect_load | expect_store | expect_constant | expect_sync | expect_gate | expect_mux | expect_demux | expect_scf_residual`
+   The eleven `expect_*` cells pin the per-row DFG shape gate (counts of
    `dataflow.thread @`, `dataflow.graph.func @`, `dataflow.stream`,
-   `dataflow.load`, `dataflow.store`, `dataflow.constant`, and
-   `dataflow.sync` ops). Use a bare integer for exact equality or
+   `dataflow.load`, `dataflow.store`, `dataflow.constant`,
+   `dataflow.sync`, `dataflow.gate`, `dataflow.mux`, `dataflow.demux`,
+   and residual `scf.*` ops). Use a bare integer for exact equality or
    `>=N` for a lower-bound; populate them by running the DFG runner
    once and reading the per-row PASS line.
 3. The normalized triple is what clang emits in the IR (run the
