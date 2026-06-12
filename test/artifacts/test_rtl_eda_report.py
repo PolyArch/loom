@@ -596,6 +596,57 @@ def main() -> int:
             "equals-selected RTL EDA report audit",
         )
 
+        readonly_profile_tool = out_dir / "readonly-profile-verilator"
+        readonly_profile_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test readonly-profile'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        readonly_profile_tool.chmod(readonly_profile_tool.stat().st_mode | 0o111)
+        readonly_profile = out_dir / "readonly-profile.sh"
+        readonly_profile.write_text(
+            f"export LOOM_RTL_LINT_TOOL={shlex.quote(str(readonly_profile_tool))}\n"
+        )
+        readonly_selected = out_dir / "readonly-profile-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                "-u",
+                "LOOM_RTL_EDA_ENV_FILE",
+                "-u",
+                "LOOM_RTL_LINT_TOOL",
+                f"LOOM_RTL_EDA_DEFAULT_ENV_FILE={readonly_profile}",
+                "SHELLOPTS=braceexpand:hashall:interactive-comments",
+                "BASHOPTS=checkwinsize:cmdhist",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(readonly_selected),
+            ],
+            "readonly-profile RTL lint tool report",
+        )
+        readonly_selected_data = json.loads(readonly_selected.read_text())
+        if readonly_selected_data.get("status") != "pass":
+            raise AssertionError(
+                f"readonly inherited vars should not break profile import: {readonly_selected_data}"
+            )
+        if readonly_selected_data.get("tool_name") != "readonly-profile-verilator":
+            raise AssertionError(
+                f"readonly profile-selected RTL lint tool was not recorded: {readonly_selected_data}"
+            )
+        require_audit_pass(
+            repo,
+            readonly_selected,
+            out_dir / "readonly-profile-rtl-eda-audit-summary.json",
+            "readonly-profile RTL EDA report audit",
+        )
+
         rtl_sim_tool = out_dir / "rtl-sim-tool"
         rtl_sim_tool.write_text(
             "#!/bin/sh\n"

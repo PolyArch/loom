@@ -73,9 +73,12 @@ if [[ -n "${profile}" ]]; then
     else
       while IFS= read -r -d '' entry; do
         name="${entry%%=*}"
-        if [[ "${name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "${name}" != BASH_FUNC_* && "${name}" != "_" ]]; then
-          export "${entry}"
-        fi
+        [[ "${name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        case "${name}" in
+          LOOM_*|PATH|LD_LIBRARY_PATH|LIBRARY_PATH|CPATH|PKG_CONFIG_PATH|VCS_HOME|VERILATOR_ROOT)
+            export "${entry}"
+            ;;
+        esac
       done <"${profile_env}"
     fi
     rm -f "${profile_log}" "${profile_env}"
