@@ -348,7 +348,8 @@ def write_fpa_report(
     primitive_path: Path,
     hardware_path: Path,
     rtl_manifest_path: Path | None,
-    backend_evidence_paths: list[Path],
+    backend_input_paths: list[Path],
+    backend_pass_paths: list[Path],
 ) -> None:
     report_identity = intermediate_artifacts.artifact_id_for_path(output)
     hardware_identities = sorted({row["hardware"] for row in rows if row.get("hardware")})
@@ -356,7 +357,7 @@ def write_fpa_report(
     metric_records = fpa_metric_records(rows, report_identity)
     backend_report_identities = [
         identity
-        for identity in [intermediate_artifacts.artifact_id_for_path(path) for path in backend_evidence_paths]
+        for identity in [intermediate_artifacts.artifact_id_for_path(path) for path in backend_pass_paths]
         if identity
     ]
     diagnostics = sorted({row.get("diagnostic", "") for row in rows if row.get("status") != "pass"})
@@ -400,7 +401,7 @@ def write_fpa_report(
         "metric_records": metric_records,
         "backend_report_identities": backend_report_identities,
         "input_artifact_fingerprints": intermediate_artifacts.input_artifact_fingerprints(
-            [primitive_path, hardware_path, rtl_manifest_path, *backend_evidence_paths]
+            [primitive_path, hardware_path, rtl_manifest_path, *backend_input_paths]
         ),
         "diagnostic_records": [],
         "diagnostics": diagnostics,
@@ -435,13 +436,16 @@ def main(argv: list[str]) -> int:
         Path(args.rtl_manifest) if args.rtl_manifest and args.rtl_sim_report else None,
         Path(args.rtl_sim_report) if args.rtl_sim_report else None,
     )
-    backend_evidence_paths: list[Path] = []
+    backend_input_paths: list[Path] = []
+    backend_pass_paths: list[Path] = []
     for evidence, raw_path in (
         (lint_evidence, Path(args.eda_report) if args.eda_report else None),
         (sim_evidence, Path(args.rtl_sim_report) if args.rtl_sim_report else None),
     ):
         if evidence is not None and evidence.consumed_report and raw_path is not None:
-            backend_evidence_paths.append(raw_path)
+            backend_input_paths.append(raw_path)
+            if evidence.status == "pass":
+                backend_pass_paths.append(raw_path)
     report_output = (
         Path(args.report_output)
         if args.report_output
@@ -475,7 +479,8 @@ def main(argv: list[str]) -> int:
         primitive_path=primitive_path,
         hardware_path=hardware_path,
         rtl_manifest_path=Path(args.rtl_manifest) if args.rtl_manifest else None,
-        backend_evidence_paths=backend_evidence_paths,
+        backend_input_paths=backend_input_paths,
+        backend_pass_paths=backend_pass_paths,
     )
     return 0
 

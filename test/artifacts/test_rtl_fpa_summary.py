@@ -263,11 +263,106 @@ def main() -> int:
         fpa_with_lint_report = out_dir / "with-lint-rtl-fpa-report.json"
         fpa_with_lint_report_data = json.loads(fpa_with_lint_report.read_text())
         if fpa_with_lint_report_data.get("backend_report_identities") != [
-            "rtl-eda-report",
             "rtl-sim-eda-report",
         ]:
             raise AssertionError(
-                f"FPA JSON should cite only consumed backend reports: {fpa_with_lint_report_data}"
+                f"FPA JSON should cite only passing backend reports: {fpa_with_lint_report_data}"
+            )
+        fingerprints = fpa_with_lint_report_data.get("input_artifact_fingerprints")
+        if not isinstance(fingerprints, dict) or "rtl-eda-report" not in fingerprints:
+            raise AssertionError(
+                f"FPA JSON should still fingerprint consumed blocked lint input: {fpa_with_lint_report_data}"
+            )
+        bad_backend_reference = out_dir / "bad-backend-reference-rtl-fpa-report.json"
+        bad_backend_reference_data = dict(fpa_with_lint_report_data)
+        bad_backend_reference_data["backend_report_identities"] = [
+            "rtl-eda-report",
+            "rtl-sim-eda-report",
+        ]
+        bad_backend_reference.write_text(
+            json.dumps(bad_backend_reference_data, indent=2, sort_keys=True) + "\n"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "bad-backend-reference-audit-summary.json"),
+                str(bad_backend_reference),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("FPA report with blocked backend identity unexpectedly passed audit")
+
+        passing_lint_tool = out_dir / "passing-lint-tool"
+        passing_lint_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test lint'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        passing_lint_tool.chmod(passing_lint_tool.stat().st_mode | 0o111)
+        passing_lint = out_dir / "passing-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                str(passing_lint_tool),
+                "--output",
+                str(passing_lint),
+            ],
+            "passing RTL lint EDA report",
+        )
+        fpa_with_passing_lint = out_dir / "passing-lint-rtl-fpa-summary.csv"
+        rows_with_passing_lint = artifact_test_common.run_csv_summary(
+            repo,
+            "test/rtl/run_rtl_fpa_summary.sh",
+            fpa_with_passing_lint,
+            HEADER,
+            "--primitive-coverage",
+            str(primitive),
+            "--hardware-summary",
+            str(hardware),
+            "--rtl-manifest",
+            str(manifest),
+            "--eda-report",
+            str(passing_lint),
+            "--rtl-sim-report",
+            str(rtl_sim),
+            label="RTL/FPA summary with passing RTL lint evidence",
+        )
+        passing_lint_matches = [
+            row
+            for row in rows_with_passing_lint
+            if row["workload"] == "vecadd"
+            and row["hardware"] == "test/fabric/unit/pe/valid.mlir::pe_2x2"
+        ]
+        if len(passing_lint_matches) != 1:
+            raise AssertionError(
+                f"expected one vecadd pe_2x2 row with passing lint evidence, got {rows_with_passing_lint}"
+            )
+        passing_lint_row = passing_lint_matches[0]
+        if passing_lint_row["rtl_lint_status"] != "pass":
+            raise AssertionError(f"FPA row should consume passing RTL lint evidence: {passing_lint_row}")
+        if passing_lint_row["fidelity_level"] != "analytic":
+            raise AssertionError(f"passing lint must not relabel analytic FPA metrics: {passing_lint_row}")
+        if "RTL lint evidence status=pass" not in passing_lint_row.get("diagnostic", ""):
+            raise AssertionError(f"FPA diagnostic should mention passing lint evidence: {passing_lint_row}")
+        passing_lint_report = out_dir / "passing-lint-rtl-fpa-report.json"
+        passing_lint_report_data = json.loads(passing_lint_report.read_text())
+        if passing_lint_report_data.get("backend_report_identities") != [
+            "passing-rtl-eda-report",
+            "rtl-sim-eda-report",
+        ]:
+            raise AssertionError(
+                f"FPA JSON should cite passing backend reports: {passing_lint_report_data}"
             )
 
         malformed_eda = out_dir / "malformed-rtl-eda-report.json"
@@ -343,9 +438,9 @@ def main() -> int:
             raise AssertionError(f"bad sim evidence should block only sim status while preserving lint: {bad_sim_row}")
         bad_sim_report = out_dir / "bad-sim-input-rtl-fpa-report.json"
         bad_sim_report_data = json.loads(bad_sim_report.read_text())
-        if bad_sim_report_data.get("backend_report_identities") != ["rtl-eda-report"]:
+        if bad_sim_report_data.get("backend_report_identities") != []:
             raise AssertionError(
-                f"FPA JSON must cite valid lint but not malformed sim backend: {bad_sim_report_data}"
+                f"FPA JSON must not cite blocked lint or malformed sim backend: {bad_sim_report_data}"
             )
 
     return 0

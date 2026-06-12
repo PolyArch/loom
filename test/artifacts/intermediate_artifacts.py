@@ -4463,6 +4463,33 @@ def read_resolved_json_reference(path: Path, identity: object) -> dict[str, obje
     return value if isinstance(value, dict) else None
 
 
+def validate_fpa_backend_report_references(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    identities = data.get("backend_report_identities")
+    if not isinstance(identities, list):
+        return
+    seen: set[str] = set()
+    for identity in identities:
+        if not isinstance(identity, str) or not identity:
+            diagnostics.append("FPA report backend_report_identities contains invalid identity")
+            continue
+        if identity in seen:
+            diagnostics.append(f"FPA report repeats backend report identity {identity!r}")
+            continue
+        seen.add(identity)
+        report = read_resolved_json_reference(path, identity)
+        if report is None:
+            continue
+        if report.get("kind") != "eda_report":
+            diagnostics.append(f"FPA report backend reference {identity!r} has wrong kind")
+            continue
+        if report.get("status") != "pass":
+            diagnostics.append(f"FPA report backend reference {identity!r} is not passing")
+
+
 def is_workload_graph_set_aggregate(data: dict[str, object]) -> bool:
     return data.get("aggregation_kind") == "workload_graph_set"
 
@@ -5843,6 +5870,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         )
         if data.get("status") != "pass" and not diagnostic_records:
             diagnostics.append("FPA report non-pass status needs diagnostic_records")
+        validate_fpa_backend_report_references(path, data, diagnostics)
         input_fingerprints = data.get("input_artifact_fingerprints")
         if not isinstance(input_fingerprints, dict):
             diagnostics.append("FPA report input_artifact_fingerprints must be an object")
