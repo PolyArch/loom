@@ -32,6 +32,7 @@ EXPECTED_FILES = [
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
     "rtl-eda-report.json",
+    "rtl-sim-eda-report.json",
     "rtl-fpa-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
@@ -219,6 +220,9 @@ def main() -> int:
             ("relu-cgra-sim-checksum-report", "relu-cgra-sim-report"),
             ("pnr-mapping", "relu-cgra-sim-report"),
             ("pnr-mapping", "rtl-manifest"),
+            ("rtl-manifest", "rtl-sim-eda-report"),
+            ("rtl-sim-eda-report", "rtl-fpa-summary"),
+            ("rtl-sim-eda-report", "rtl-fpa-report"),
         }
         missing_edges = sorted(required_edges - edges)
         if missing_edges:

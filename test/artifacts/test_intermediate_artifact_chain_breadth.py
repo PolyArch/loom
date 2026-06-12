@@ -27,6 +27,7 @@ COMMON_FILES = [
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
     "rtl-eda-report.json",
+    "rtl-sim-eda-report.json",
     "rtl-fpa-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
@@ -575,6 +576,9 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             (f"{case_name}-dfg-sim-report", "sim-cycle-summary"),
             (f"{case_name}-cgra-sim-report", "sim-cycle-summary"),
             ("pnr-mapping", "rtl-manifest"),
+            ("rtl-manifest", "rtl-sim-eda-report"),
+            ("rtl-sim-eda-report", "rtl-fpa-summary"),
+            ("rtl-sim-eda-report", "rtl-fpa-report"),
             ("sim-comparison-report", "runtime-package"),
             ("dse-candidate-summary", "workload-report-bundle"),
         }

@@ -171,6 +171,7 @@ runtime_package="${OUT_DIR}/runtime-package.json"
 sim_cycle="${OUT_DIR}/sim-cycle-summary.csv"
 rtl_manifest="${OUT_DIR}/rtl-manifest.json"
 rtl_eda="${OUT_DIR}/rtl-eda-report.json"
+rtl_sim_eda="${OUT_DIR}/rtl-sim-eda-report.json"
 rtl_fpa_report="${OUT_DIR}/rtl-fpa-report.json"
 rtl_fpa="${OUT_DIR}/rtl-fpa-summary.csv"
 report_bundle="${OUT_DIR}/workload-report-bundle.json"
@@ -451,11 +452,16 @@ run_artifact_command "${rtl_manifest}" \
 bash "${ROOT}/test/rtl/run_rtl_eda_report.sh" \
   --manifest "${rtl_manifest}" \
   --output "${rtl_eda}"
+bash "${ROOT}/test/rtl/run_rtl_eda_report.sh" \
+  --manifest "${rtl_manifest}" \
+  --capability-class rtl_sim \
+  --output "${rtl_sim_eda}"
 bash "${ROOT}/test/rtl/run_rtl_fpa_summary.sh" \
   --primitive-coverage "${primitive}" \
   --hardware-summary "${hardware}" \
   --rtl-manifest "${rtl_manifest}" \
   --eda-report "${rtl_eda}" \
+  --rtl-sim-report "${rtl_sim_eda}" \
   --report-output "${rtl_fpa_report}" \
   --output "${rtl_fpa}"
 run_artifact_command "${hardware_bundle}" \
@@ -463,6 +469,7 @@ run_artifact_command "${hardware_bundle}" \
   --artifact "${hardware}" \
   --artifact "${rtl_manifest}" \
   --artifact "${rtl_eda}" \
+  --artifact "${rtl_sim_eda}" \
   --artifact "${rtl_fpa_report}" \
   --artifact "${rtl_fpa}" \
   --output "${hardware_bundle}"
@@ -487,6 +494,7 @@ run_artifact_command "${report_bundle}" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_manifest}" \
   --artifact "${rtl_eda}" \
+  --artifact "${rtl_sim_eda}" \
   --artifact "${rtl_fpa_report}" \
   --artifact "${rtl_fpa}" \
   --artifact "${dse_candidate}" \
@@ -520,6 +528,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_manifest}" \
   --artifact "${rtl_eda}" \
+  --artifact "${rtl_sim_eda}" \
   --artifact "${rtl_fpa_report}" \
   --artifact "${rtl_fpa}" \
   --artifact "${dse_candidate}" \
@@ -565,6 +574,7 @@ bash "${ROOT}/test/e2e/run_artifact_manifest.sh" \
   --artifact "${sim_cycle}" \
   --artifact "${rtl_manifest}" \
   --artifact "${rtl_eda}" \
+  --artifact "${rtl_sim_eda}" \
   --artifact "${rtl_fpa_report}" \
   --artifact "${rtl_fpa}" \
   --artifact "${report_bundle}" \
@@ -594,6 +604,7 @@ python3 "${ROOT}/test/e2e/audit_intermediate_artifacts.py" \
   "${sim_cycle}" \
   "${rtl_manifest}" \
   "${rtl_eda}" \
+  "${rtl_sim_eda}" \
   "${rtl_fpa_report}" \
   "${rtl_fpa}" \
   "${report_bundle}" \

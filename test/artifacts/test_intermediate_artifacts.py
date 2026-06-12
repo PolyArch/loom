@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import artifact_test_common
+import intermediate_artifacts
 
 
 CSV_COMMANDS = [
@@ -145,6 +146,19 @@ RTL_MANIFEST_REQUIRED_KEYS = {
     "status",
 }
 
+EDA_REPORT_REQUIRED_KEYS = {
+    "schema_version",
+    "kind",
+    "report_id",
+    "capability_class",
+    "rtl_manifest_identity",
+    "tool_name",
+    "command_role",
+    "command_timeout_seconds",
+    "diagnostics",
+    "status",
+}
+
 
 def run_command(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -222,6 +236,7 @@ def assert_manifest_trace_edges(path: Path) -> None:
         "vecsum-cgra-sim-report",
         "sim-cycle-summary",
         "rtl-manifest",
+        "rtl-sim-eda-report",
         "dse-candidate-summary",
     }
     if not required_ids <= artifact_ids:
@@ -238,6 +253,7 @@ def assert_manifest_trace_edges(path: Path) -> None:
         ("vecsum-dfg-sim-report", "sim-cycle-summary"),
         ("vecsum-cgra-sim-report", "sim-cycle-summary"),
         ("adg-hardware-summary", "rtl-manifest"),
+        ("rtl-manifest", "rtl-sim-eda-report"),
         ("rtl-manifest", "rtl-fpa-summary"),
         ("pnr-mapping-summary", "dse-candidate-summary"),
         ("sim-cycle-summary", "dse-candidate-summary"),
@@ -464,6 +480,17 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-artifacts-") as tmp:
         out_dir = Path(tmp)
         produced: list[Path] = []
+        standard_root = out_dir / "standard-root"
+        standard_sim = standard_root / "temp" / "rtl-sim-eda-report.json"
+        standard_sim.parent.mkdir(parents=True)
+        standard_sim.write_text("{}\n")
+        discovered = intermediate_artifacts.discover_artifact_paths(
+            standard_root,
+            [],
+            include_unsupported_scope=True,
+        )
+        if standard_sim not in discovered:
+            raise AssertionError("standard artifact discovery missed RTL sim EDA report")
 
         for script, filename, required_columns in CSV_COMMANDS:
             output = out_dir / filename
@@ -508,6 +535,27 @@ def main() -> int:
                     )
                 assert_json_artifact(rtl_manifest, RTL_MANIFEST_REQUIRED_KEYS)
                 produced.append(rtl_manifest)
+                rtl_sim_eda = out_dir / "rtl-sim-eda-report.json"
+                result = run_command(
+                    repo,
+                    [
+                        "bash",
+                        "test/rtl/run_rtl_eda_report.sh",
+                        "--manifest",
+                        str(rtl_manifest),
+                        "--capability-class",
+                        "rtl_sim",
+                        "--output",
+                        str(rtl_sim_eda),
+                    ],
+                )
+                if result.returncode != 0:
+                    raise AssertionError(
+                        f"test/rtl/run_rtl_eda_report.sh rtl_sim failed with {result.returncode}\n"
+                        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                    )
+                assert_json_artifact(rtl_sim_eda, EDA_REPORT_REQUIRED_KEYS)
+                produced.append(rtl_sim_eda)
             if filename == "sim-cycle-summary.csv":
                 for backing_name in (
                     "pnr-mapping.json",
@@ -542,15 +590,19 @@ def main() -> int:
         prefix_eda.write_text("{}\n")
         consumed_eda = out_dir / "a-rtl-eda-report-extra-rtl-eda-report.json"
         consumed_eda.write_text("{}\n")
+        consumed_sim = out_dir / "a-rtl-sim-eda-report-extra-rtl-eda-report.json"
+        consumed_sim.write_text("{}\n")
         prefix_fpa = out_dir / "prefix-edge-rtl-fpa-summary.csv"
         consumed_eda_id = consumed_eda.name[: -len(".json")]
+        consumed_sim_id = consumed_sim.name[: -len(".json")]
         prefix_fpa.write_text(
             "hardware,workload,rtl_lint_status,rtl_sim_status,synth_status,frequency_mhz,area_um2,"
             "dynamic_power_mw,leakage_power_mw,fidelity_level,frequency_source,area_source,power_source,"
             "activity_source,fpa_report_identity,status,diagnostic\n"
-            "fabric0,vecadd,blocked,skipped,skipped,100,200,3,1,analytic,analytic_fpa_model,"
+            "fabric0,vecadd,blocked,blocked,skipped,100,200,3,1,analytic,analytic_fpa_model,"
             "analytic_fpa_model,analytic_fpa_model,default_toggle,prefix-edge-rtl-fpa-report,pass,"
-            f"RTL lint evidence status=blocked; artifact={consumed_eda_id}; diagnostic=tool unavailable\n"
+            f"RTL lint evidence status=blocked; artifact={consumed_eda_id}; diagnostic=tool unavailable; "
+            f"RTL sim evidence status=blocked; artifact={consumed_sim_id}; diagnostic=tool unavailable\n"
         )
         prefix_manifest_output = out_dir / "prefix-edge-full-stack-artifact-manifest.json"
         artifact_test_common.require_success(
@@ -564,6 +616,8 @@ def main() -> int:
                 str(prefix_eda),
                 "--artifact",
                 str(consumed_eda),
+                "--artifact",
+                str(consumed_sim),
                 "--artifact",
                 str(prefix_fpa),
                 "--output",
@@ -579,6 +633,8 @@ def main() -> int:
         prefix_fpa_id = prefix_fpa.name[: -len(".csv")]
         if (consumed_eda_id, prefix_fpa_id) not in prefix_edges:
             raise AssertionError(f"manifest missed consumed EDA to FPA edge: {prefix_edges}")
+        if (consumed_sim_id, prefix_fpa_id) not in prefix_edges:
+            raise AssertionError(f"manifest missed consumed sim EDA to FPA edge: {prefix_edges}")
         prefix_eda_id = prefix_eda.name[: -len(".json")]
         if (prefix_eda_id, prefix_fpa_id) in prefix_edges:
             raise AssertionError(f"manifest used prefix EDA identity as consumed lint evidence: {prefix_edges}")

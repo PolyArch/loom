@@ -26,6 +26,7 @@ EXPECTED_FILES = [
     "sim-cycle-summary.csv",
     "rtl-manifest.json",
     "rtl-eda-report.json",
+    "rtl-sim-eda-report.json",
     "rtl-fpa-report.json",
     "rtl-fpa-summary.csv",
     "workload-report-bundle.json",
@@ -184,16 +185,22 @@ def main() -> int:
         if hardware_bundle.get("supported_workload_classes") != ["dotproduct"]:
             raise AssertionError(f"hardware report should cite dotproduct FPA support: {hardware_bundle}")
         eda_report = json.loads((out_dir / "rtl-eda-report.json").read_text())
+        sim_eda_report = json.loads((out_dir / "rtl-sim-eda-report.json").read_text())
         if eda_report.get("kind") != "eda_report" or eda_report.get("capability_class") != "rtl_lint":
             raise AssertionError(f"unexpected dotproduct RTL EDA report: {eda_report}")
+        if sim_eda_report.get("kind") != "eda_report" or sim_eda_report.get("capability_class") != "rtl_sim":
+            raise AssertionError(f"unexpected dotproduct RTL sim EDA report: {sim_eda_report}")
+        expected_eda_identities = []
         if eda_report.get("status") == "pass":
-            if hardware_bundle.get("eda_report_identities") != ["rtl-eda-report"]:
-                raise AssertionError(f"hardware report missed passing EDA report: {hardware_bundle}")
-        elif eda_report.get("status") == "blocked":
-            if hardware_bundle.get("eda_report_identities") != []:
-                raise AssertionError(f"hardware report should not consume blocked EDA report: {hardware_bundle}")
-        else:
+            expected_eda_identities.append("rtl-eda-report")
+        elif eda_report.get("status") != "blocked":
             raise AssertionError(f"unexpected dotproduct RTL EDA report status: {eda_report}")
+        if sim_eda_report.get("status") == "pass":
+            expected_eda_identities.append("rtl-sim-eda-report")
+        elif sim_eda_report.get("status") != "blocked":
+            raise AssertionError(f"unexpected dotproduct RTL sim EDA report status: {sim_eda_report}")
+        if hardware_bundle.get("eda_report_identities") != expected_eda_identities:
+            raise AssertionError(f"hardware report EDA evidence mismatch: {hardware_bundle}")
 
         audit = json.loads((out_dir / "artifact-audit-summary.json").read_text())
         if audit.get("verdict") != "pass":
@@ -212,14 +219,26 @@ def main() -> int:
         if "dotproduct-cgra-sim-report.json" not in manifest_artifacts:
             raise AssertionError(f"manifest missed dotproduct CGRA-sim report: {manifest}")
         edges = {(edge["from"], edge["to"]) for edge in manifest.get("edges", [])}
-        if ("pnr-mapping", "rtl-manifest") not in edges:
-            raise AssertionError(f"manifest missed mapped RTL dependency edge: {edges}")
+        required_edges = {
+            ("pnr-mapping", "rtl-manifest"),
+            ("rtl-manifest", "rtl-sim-eda-report"),
+            ("rtl-sim-eda-report", "rtl-fpa-summary"),
+            ("rtl-sim-eda-report", "rtl-fpa-report"),
+        }
+        if not required_edges.issubset(edges):
+            raise AssertionError(f"manifest missed RTL sim dependency edges {required_edges - edges}: {edges}")
         eda_to_hardware_edge = ("rtl-eda-report", "hardware-report-bundle")
-        if hardware_bundle.get("eda_report_identities") == ["rtl-eda-report"]:
+        if "rtl-eda-report" in hardware_bundle.get("eda_report_identities", []):
             if eda_to_hardware_edge not in edges:
                 raise AssertionError(f"manifest missed consumed EDA report edge: {edges}")
         elif eda_to_hardware_edge in edges:
             raise AssertionError(f"manifest must not feed blocked EDA report to hardware bundle: {edges}")
+        sim_eda_to_hardware_edge = ("rtl-sim-eda-report", "hardware-report-bundle")
+        if "rtl-sim-eda-report" in hardware_bundle.get("eda_report_identities", []):
+            if sim_eda_to_hardware_edge not in edges:
+                raise AssertionError(f"manifest missed consumed sim EDA report edge: {edges}")
+        elif sim_eda_to_hardware_edge in edges:
+            raise AssertionError(f"manifest must not feed blocked sim EDA report to hardware bundle: {edges}")
 
     return 0
 

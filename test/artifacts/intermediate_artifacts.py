@@ -806,6 +806,7 @@ STANDARD_ARTIFACT_PATHS = (
     ("sim_cycle", "temp/sim-cycle-summary.csv"),
     ("rtl_manifest", "temp/rtl-manifest.json"),
     ("eda_report", "temp/rtl-eda-report.json"),
+    ("eda_report", "temp/rtl-sim-eda-report.json"),
     ("fpa_report", "temp/rtl-fpa-report.json"),
     ("rtl_fpa", "temp/rtl-fpa-summary.csv"),
     ("workload_report_bundle", "temp/workload-report-bundle.json"),
@@ -1659,7 +1660,7 @@ def dse_consumes_artifact(
     return source_id in dse_input_references.get(dse_id, set())
 
 
-def rtl_fpa_consumed_lint_artifact_ids(path: Path | None) -> set[str]:
+def rtl_fpa_consumed_backend_artifact_ids(path: Path | None) -> set[str]:
     if path is None or not path.is_file():
         return set()
     try:
@@ -1669,7 +1670,7 @@ def rtl_fpa_consumed_lint_artifact_ids(path: Path | None) -> set[str]:
     consumed: set[str] = set()
     for row in rows:
         diagnostic = row.get("diagnostic", "")
-        if "RTL lint evidence status=" not in diagnostic:
+        if "RTL lint evidence status=" not in diagnostic and "RTL sim evidence status=" not in diagnostic:
             continue
         for segment in diagnostic.split(";"):
             token = segment.strip()
@@ -1777,9 +1778,9 @@ def iter_artifact_manifest_required_edges(
         for rtl_fpa_id in ids_by_kind.get("rtl_fpa", []):
             yield rtl_manifest_id, rtl_fpa_id
             rtl_fpa_path = artifact_paths_by_id.get(rtl_fpa_id) if artifact_paths_by_id else None
-            consumed_lint_artifact_ids = rtl_fpa_consumed_lint_artifact_ids(rtl_fpa_path)
+            consumed_backend_artifact_ids = rtl_fpa_consumed_backend_artifact_ids(rtl_fpa_path)
             for eda_id in ids_by_kind.get("eda_report", []):
-                if eda_id in consumed_lint_artifact_ids:
+                if eda_id in consumed_backend_artifact_ids:
                     yield eda_id, rtl_fpa_id
 
     for fpa_report_id in ids_by_kind.get("fpa_report", []):
