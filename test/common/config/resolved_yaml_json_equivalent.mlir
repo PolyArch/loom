@@ -1,0 +1,16 @@
+// RUN: loom-config-test --resolved-json %p/resolved_equiv.yaml > %t.yaml.json
+// RUN: loom-config-test --resolved-json %p/resolved_equiv.json > %t.json.json
+// RUN: diff %t.yaml.json %t.json.json
+// RUN: loom-config-test --resolved-fingerprint %p/resolved_equiv.yaml > %t.yaml.fp
+// RUN: loom-config-test --resolved-fingerprint %p/resolved_equiv.json > %t.json.fp
+// RUN: diff %t.yaml.fp %t.json.fp
+// RUN: FileCheck %s < %t.yaml.json
+
+// CHECK-DAG: "config_id": "unit.config"
+// CHECK-DAG: "addr_bits": 40
+// CHECK-DAG: "index_width": 64
+// CHECK-DAG: "mem_bus_width": 1024
+// CHECK-DAG: "algorithm": "beam"
+// CHECK-DAG: "beam_width": 9
+// CHECK-DAG: "objective_id": "minimize_runtime"
+// CHECK-DAG: "objective_id": "minimize_area"

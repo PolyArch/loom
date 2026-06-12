@@ -59,6 +59,10 @@ struct MappingSummary {
   std::string hardware;
   std::string graph;
   std::string mappingId;
+  std::string configId;
+  std::string configFingerprint;
+  std::string componentConfigView;
+  std::string componentConfigFingerprint;
   std::string status;
   std::string diagnostic;
   llvm::SmallVector<PlacementRecord> placements;

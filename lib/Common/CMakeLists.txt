@@ -3,6 +3,7 @@ add_mlir_library(LoomCommon
   HwShareGroup.cpp
   IndexWidth.cpp
   LoomConstants.cpp
+  ResolvedConfig.cpp
   SynthConfig.cpp
 
   ADDITIONAL_HEADER_DIRS

@@ -1,0 +1,4 @@
+dse:
+  objectives:
+    - objective_id: custom_latency
+      weight: 1.0

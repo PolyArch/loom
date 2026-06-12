@@ -13,7 +13,36 @@ import artifact_test_common
 HEADER = ["kernel", "dfg_sim_cycles", "cgra_sim_cycles"]
 
 
-def write_blocked_mapping_artifact(path: Path, workload: str) -> None:
+def config_fingerprint(repo: Path) -> str:
+    tool = repo / "build/tools/loom-config-test/loom-config-test"
+    if not tool.is_file():
+        tool = repo / "build/bin/loom-config-test"
+    result = artifact_test_common.require_success(
+        repo,
+        [str(tool), "--resolved-fingerprint"],
+        "resolved config fingerprint",
+    )
+    return result.stdout.strip()
+
+
+def component_config_fingerprint(repo: Path, view: str) -> str:
+    tool = repo / "build/tools/loom-config-test/loom-config-test"
+    if not tool.is_file():
+        tool = repo / "build/bin/loom-config-test"
+    result = artifact_test_common.require_success(
+        repo,
+        [
+            str(tool),
+            "--component-fingerprint",
+            "--component-view",
+            view,
+        ],
+        f"{view} component config fingerprint",
+    )
+    return result.stdout.strip()
+
+
+def write_blocked_mapping_artifact(path: Path, repo: Path, workload: str) -> None:
     artifact = {
         "schema_version": 1,
         "kind": "pnr_mapping",
@@ -21,6 +50,12 @@ def write_blocked_mapping_artifact(path: Path, workload: str) -> None:
         "graph": f"g_{workload}",
         "hardware": "blocked_adg",
         "mapping_id": f"{workload}__blocked_adg",
+        "config_id": "loom.default",
+        "config_fingerprint": config_fingerprint(repo),
+        "component_config_view": "pnr.mapping.v1",
+        "component_config_fingerprint": component_config_fingerprint(
+            repo, "pnr.mapping.v1"
+        ),
         "status": "fail",
         "placed_records": 0,
         "routed_edges": 0,
@@ -70,7 +105,7 @@ def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, up
         ],
         f"{workload} DFG simulation report",
     )
-    write_blocked_mapping_artifact(mapping_artifact, workload)
+    write_blocked_mapping_artifact(mapping_artifact, repo, workload)
     artifact_test_common.require_success(
         repo,
         [

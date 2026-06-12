@@ -1,0 +1,4 @@
+config_id: unit.config
+---
+global:
+  mystery: 1

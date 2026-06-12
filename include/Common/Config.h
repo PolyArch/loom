@@ -12,27 +12,30 @@ namespace loom {
 // Tech-mapping partitioner configuration.
 //
 // Loaded from a YAML or TOML file via `--config <path>`; missing keys fall
-// back to the defaults below. The chosen algorithm and cost weights are read
-// once per pass invocation; downstream code never inspects the file again.
+// back to the centralized resolved configuration defaults. The chosen
+// algorithm and cost weights are read once per pass invocation; downstream
+// code never inspects the file again.
 struct TechMapConfig {
+  TechMapConfig();
+
   // Cost: alpha * |blocks| + beta * cross_edges - gamma * avg_density.
-  double alpha = 1.0;
-  double beta = 1.0;
-  double gamma = 0.5;
+  double alpha;
+  double beta;
+  double gamma;
 
   // Algorithm name. Valid values: "greedy", "list", "beam", "sa", "ilp".
-  std::string algorithm = "greedy";
+  std::string algorithm;
 
   // Beam-search width when algorithm == "beam".
-  unsigned beamWidth = 4;
+  unsigned beamWidth;
 
   // Simulated-annealing parameters when algorithm == "sa".
-  unsigned saSteps = 1000;
-  uint64_t saSeed = 0xC0DEull;
+  unsigned saSteps;
+  uint64_t saSeed;
 
   // Worker thread count for the candidate cache. 0 means
   // std::thread::hardware_concurrency().
-  unsigned threads = 0;
+  unsigned threads;
 
   bool operator==(const TechMapConfig &o) const {
     return alpha == o.alpha && beta == o.beta && gamma == o.gamma &&

@@ -1,5 +1,6 @@
 #include "PnR/Mapping.h"
 
+#include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -258,7 +259,8 @@ std::optional<std::string> predicateConfig(mlir::Operation *op) {
   return std::nullopt;
 }
 
-std::map<std::string, std::string> softwareConfigsFor(const SoftwareNode &node) {
+std::map<std::string, std::string>
+softwareConfigsFor(const SoftwareNode &node) {
   std::map<std::string, std::string> configs;
   if (std::optional<std::string> predicate = predicateConfig(node.op))
     configs.try_emplace("predicate", *predicate);
@@ -403,8 +405,7 @@ llvm::SmallVector<std::string, 4> switchConnectivityRows(mlir::Operation *op) {
 }
 
 bool switchConnectsInputToOutput(llvm::ArrayRef<std::string> rows,
-                                 unsigned inputIndex,
-                                 unsigned outputIndex,
+                                 unsigned inputIndex, unsigned outputIndex,
                                  unsigned inputCount) {
   if (outputIndex >= rows.size())
     return false;
@@ -482,9 +483,9 @@ void addGenericEndpointMaps(
     std::map<EndpointKey, std::string> &resultEndpoints) {
   for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
        ++operandIndex)
-    operandEndpoints.try_emplace(EndpointKey{op, operandIndex},
-                                 endpointFor(resourceId, "operand",
-                                             operandIndex));
+    operandEndpoints.try_emplace(
+        EndpointKey{op, operandIndex},
+        endpointFor(resourceId, "operand", operandIndex));
   for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
        ++resultIndex)
     resultEndpoints.try_emplace(EndpointKey{op, resultIndex},
@@ -495,10 +496,9 @@ bool isFabricBoundaryOp(llvm::StringRef opName) {
   return opName == "fabric.fu" || opName == "fabric.pe";
 }
 
-void addMemEndpointMaps(
-    mlir::Operation *op, llvm::StringRef hardwareName,
-    std::map<EndpointKey, std::string> &operandEndpoints,
-    std::map<EndpointKey, std::string> &resultEndpoints) {
+void addMemEndpointMaps(mlir::Operation *op, llvm::StringRef hardwareName,
+                        std::map<EndpointKey, std::string> &operandEndpoints,
+                        std::map<EndpointKey, std::string> &resultEndpoints) {
   auto [loadPorts, storePorts] = memPortCounts(op);
   unsigned operandBase = 1;
   unsigned resultBase = memResultPortBase(op);
@@ -587,8 +587,9 @@ void addFuToPeBoundarySegments(
   }
 }
 
-std::optional<unsigned> hardwareOperandIndexForSoftwareEndpoint(
-    ResourceKind kind, unsigned softwareOperandIndex) {
+std::optional<unsigned>
+hardwareOperandIndexForSoftwareEndpoint(ResourceKind kind,
+                                        unsigned softwareOperandIndex) {
   switch (kind) {
   case ResourceKind::FabricOp:
     return softwareOperandIndex;
@@ -606,8 +607,9 @@ std::optional<unsigned> hardwareOperandIndexForSoftwareEndpoint(
   llvm_unreachable("unknown resource kind");
 }
 
-std::optional<unsigned> hardwareResultIndexForSoftwareEndpoint(
-    ResourceKind kind, unsigned softwareResultIndex) {
+std::optional<unsigned>
+hardwareResultIndexForSoftwareEndpoint(ResourceKind kind,
+                                       unsigned softwareResultIndex) {
   switch (kind) {
   case ResourceKind::FabricOp:
     return softwareResultIndex;
@@ -677,9 +679,7 @@ HardwareTopology buildHardwareTopology(
       addTopologySegment(
           topology,
           HardwareRouteSegment{
-              "resource_edge",
-              *sourceEndpoint,
-              destIt->second,
+              "resource_edge", *sourceEndpoint, destIt->second,
               (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
                   .str()});
     }
@@ -712,10 +712,10 @@ HardwareTopology buildHardwareTopology(
           continue;
         addTopologySegment(
             topology,
-            HardwareRouteSegment{
-                internalRouteSegmentKind(opName),
-                endpointFor(*destId, "operand", operandIndex),
-                endpointFor(*destId, "result", resultIndex), *destId});
+            HardwareRouteSegment{internalRouteSegmentKind(opName),
+                                 endpointFor(*destId, "operand", operandIndex),
+                                 endpointFor(*destId, "result", resultIndex),
+                                 *destId});
       }
     }
   });
@@ -859,8 +859,7 @@ void collectValueProducers(
 
 bool findRouteDfs(const HardwareTopology &topology,
                   const std::string &currentEndpoint,
-                  const std::string &targetEndpoint,
-                  llvm::StringSet<> &visited,
+                  const std::string &targetEndpoint, llvm::StringSet<> &visited,
                   llvm::SmallVectorImpl<RouteSegment> &path) {
   if (currentEndpoint == targetEndpoint)
     return true;
@@ -897,10 +896,10 @@ findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
   return path;
 }
 
-RouteCollection
-collectRoutes(llvm::ArrayRef<SoftwareNode> nodes, mlir::Operation *graph,
-              llvm::ArrayRef<PlacementRecord> placements,
-              const HardwareTopology &topology) {
+RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
+                              mlir::Operation *graph,
+                              llvm::ArrayRef<PlacementRecord> placements,
+                              const HardwareTopology &topology) {
   RouteBuilder builder;
   llvm::DenseMap<mlir::Operation *, std::string> nodeIds = indexNodeIds(nodes);
   collectValueProducers(graph, nodeIds, builder);
@@ -1243,7 +1242,8 @@ loom::pnr::createMapping(const MappingOptions &options) {
   auto nodesOrErr = collectSoftwareNodes(graph);
   if (!nodesOrErr)
     return nodesOrErr.takeError();
-  auto hardwareModelOrErr = collectHardwareModel(hardwareOp, options.hardwareName);
+  auto hardwareModelOrErr =
+      collectHardwareModel(hardwareOp, options.hardwareName);
   if (!hardwareModelOrErr)
     return hardwareModelOrErr.takeError();
 
@@ -1254,10 +1254,17 @@ loom::pnr::createMapping(const MappingOptions &options) {
   summary.graph = options.graphName;
   summary.mappingId =
       mappingId(summary.workload, summary.graph, summary.hardware);
+  loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
+  summary.configId = resolvedConfig.configId;
+  summary.configFingerprint = loom::resolvedConfigFingerprint(resolvedConfig);
+  summary.componentConfigView = "pnr.mapping.v1";
+  summary.componentConfigFingerprint = loom::componentConfigFingerprint(
+      resolvedConfig, summary.componentConfigView);
   summary.status = "pass";
 
   for (SoftwareNode &node : *nodesOrErr) {
-    HardwareResource *resource = claimResource(node, hardwareModelOrErr->resources);
+    HardwareResource *resource =
+        claimResource(node, hardwareModelOrErr->resources);
     if (!resource) {
       summary.status = "fail";
       summary.diagnostic =
@@ -1340,6 +1347,10 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
       {"hardware", summary.hardware},
       {"graph", summary.graph},
       {"mapping_id", summary.mappingId},
+      {"config_id", summary.configId},
+      {"config_fingerprint", summary.configFingerprint},
+      {"component_config_view", summary.componentConfigView},
+      {"component_config_fingerprint", summary.componentConfigFingerprint},
       {"status", summary.status},
       {"placed_records", static_cast<int64_t>(summary.placements.size())},
       {"routed_edges", static_cast<int64_t>(summary.routes.size())},

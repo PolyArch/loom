@@ -23,6 +23,10 @@ struct CGRASimReport {
   std::string hardware;
   std::string hardwareArtifact;
   std::string mappingId;
+  std::string configId;
+  std::string configFingerprint;
+  std::string componentConfigView;
+  std::string componentConfigFingerprint;
   std::string status;
   std::string diagnostic;
   std::string operationSemanticsSource;

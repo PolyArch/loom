@@ -1,0 +1,31 @@
+{
+  "config_id": "unit.config",
+  "global": {
+    "addr_bits": 40,
+    "index_width": 64,
+    "mem_bus_width": 1024
+  },
+  "fabric_techmap": {
+    "algorithm": "beam",
+    "alpha": 2.5,
+    "beta": 0.75,
+    "gamma": 0.125,
+    "beam_width": 9,
+    "sa_steps": 77,
+    "sa_seed": 1234,
+    "threads": 2
+  },
+  "dse": {
+    "ranking_policy": "weighted_sum",
+    "objectives": [
+      {
+        "objective_id": "minimize_runtime",
+        "weight": 0.7
+      },
+      {
+        "objective_id": "minimize_area",
+        "weight": 0.3
+      }
+    ]
+  }
+}

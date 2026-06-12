@@ -1,5 +1,6 @@
 #include "Common/Config.h"
 
+#include "Common/ResolvedConfig.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorOr.h"
@@ -25,8 +26,7 @@ namespace {
 }
 
 bool stringIsKnownAlgorithm(StringRef s) {
-  return s == "greedy" || s == "list" || s == "beam" || s == "sa" ||
-         s == "ilp";
+  return s == "greedy" || s == "list" || s == "beam" || s == "sa" || s == "ilp";
 }
 
 ::llvm::Error validate(const ::loom::TechMapConfig &cfg) {
@@ -91,7 +91,7 @@ StringRef stripComment(StringRef s) {
 }
 
 ::llvm::Error applyTomlKV(::loom::TechMapConfig &cfg, StringRef key,
-                           StringRef value) {
+                          StringRef value) {
   value = trim(value);
   if (key == "alpha") {
     auto v = parseTomlDouble(value);
@@ -145,6 +145,18 @@ StringRef stripComment(StringRef s) {
 } // namespace
 
 namespace loom {
+
+TechMapConfig::TechMapConfig() {
+  ResolvedConfig resolved = defaultResolvedConfig();
+  alpha = resolved.fabricTechMap.alpha;
+  beta = resolved.fabricTechMap.beta;
+  gamma = resolved.fabricTechMap.gamma;
+  algorithm = resolved.fabricTechMap.algorithm;
+  beamWidth = resolved.fabricTechMap.beamWidth;
+  saSteps = resolved.fabricTechMap.saSteps;
+  saSeed = resolved.fabricTechMap.saSeed;
+  threads = resolved.fabricTechMap.threads;
+}
 
 ::llvm::Expected<TechMapConfig> parseTechMapConfigTOML(StringRef body) {
   TechMapConfig cfg;
@@ -228,8 +240,7 @@ namespace loom {
     StringRef key = keyNode->getValue(kbuf);
     StringRef val = valNode->getValue(vbuf);
     val = trim(val);
-    if (val.size() >= 2 &&
-        (val.front() == '"' || val.front() == '\'') &&
+    if (val.size() >= 2 && (val.front() == '"' || val.front() == '\'') &&
         val.front() == val.back())
       val = val.drop_front().drop_back();
 

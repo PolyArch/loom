@@ -1,5 +1,6 @@
 #include "Simulator/CGRASimulator.h"
 
+#include "Common/ResolvedConfig.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Simulator/OperationSemantics.h"
@@ -9,9 +10,9 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
@@ -244,8 +245,7 @@ llvm::SmallVector<std::string, 4> switchConnectivityRows(mlir::Operation *op) {
 }
 
 bool switchConnectsInputToOutput(llvm::ArrayRef<std::string> rows,
-                                 unsigned inputIndex,
-                                 unsigned outputIndex,
+                                 unsigned inputIndex, unsigned outputIndex,
                                  unsigned inputCount) {
   if (outputIndex >= rows.size())
     return false;
@@ -286,8 +286,9 @@ unsigned memResultPortBase(mlir::Operation *op) {
   return 0;
 }
 
-std::optional<unsigned> hardwareOperandIndexForResourceKind(
-    llvm::StringRef resourceKind, unsigned softwareOperandIndex) {
+std::optional<unsigned>
+hardwareOperandIndexForResourceKind(llvm::StringRef resourceKind,
+                                    unsigned softwareOperandIndex) {
   if (resourceKind == "fabric.op")
     return softwareOperandIndex;
   if (resourceKind == "fabric.mem.load") {
@@ -305,8 +306,9 @@ std::optional<unsigned> hardwareOperandIndexForResourceKind(
   return std::nullopt;
 }
 
-std::optional<unsigned> hardwareResultIndexForResourceKind(
-    llvm::StringRef resourceKind, unsigned softwareResultIndex) {
+std::optional<unsigned>
+hardwareResultIndexForResourceKind(llvm::StringRef resourceKind,
+                                   unsigned softwareResultIndex) {
   if (resourceKind == "fabric.op")
     return softwareResultIndex;
   if (resourceKind == "fabric.mem.load") {
@@ -362,8 +364,7 @@ parseRouteEndpointIndices(const llvm::json::Object &route,
   return std::pair<unsigned, unsigned>{*resultIndexOrErr, *operandIndexOrErr};
 }
 
-llvm::Expected<std::pair<std::string, std::string>>
-expectedRouteEndpoints(
+llvm::Expected<std::pair<std::string, std::string>> expectedRouteEndpoints(
     const llvm::json::Object &route,
     const std::map<std::string, PlacementInfo> &placementBySoftware) {
   auto fromOrErr = requireObjectString(route, "from", "mapping route");
@@ -396,14 +397,14 @@ expectedRouteEndpoints(
     return indicesOrErr.takeError();
   auto producerPlacement = placementBySoftware.find(*fromOrErr);
   if (producerPlacement == placementBySoftware.end())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "mapping route producer lacks placement %s", fromOrErr->c_str());
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping route producer lacks placement %s",
+                                   fromOrErr->c_str());
   auto consumerPlacement = placementBySoftware.find(*toOrErr);
   if (consumerPlacement == placementBySoftware.end())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "mapping route consumer lacks placement %s", toOrErr->c_str());
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "mapping route consumer lacks placement %s",
+                                   toOrErr->c_str());
 
   std::optional<unsigned> producerResultIndex =
       hardwareResultIndexForResourceKind(producerPlacement->second.resourceKind,
@@ -413,8 +414,8 @@ expectedRouteEndpoints(
         std::errc::invalid_argument,
         "mapping route producer endpoint is not representable on hardware");
   std::optional<unsigned> consumerOperandIndex =
-      hardwareOperandIndexForResourceKind(consumerPlacement->second.resourceKind,
-                                          indicesOrErr->second);
+      hardwareOperandIndexForResourceKind(
+          consumerPlacement->second.resourceKind, indicesOrErr->second);
   if (!consumerOperandIndex)
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -468,9 +469,9 @@ void addGenericEndpointMaps(
     std::map<EndpointKey, std::string> &resultEndpoints) {
   for (unsigned operandIndex = 0; operandIndex < op->getNumOperands();
        ++operandIndex)
-    operandEndpoints.try_emplace(EndpointKey{op, operandIndex},
-                                 endpointFor(resourceId, "operand",
-                                             operandIndex));
+    operandEndpoints.try_emplace(
+        EndpointKey{op, operandIndex},
+        endpointFor(resourceId, "operand", operandIndex));
   for (unsigned resultIndex = 0; resultIndex < op->getNumResults();
        ++resultIndex)
     resultEndpoints.try_emplace(EndpointKey{op, resultIndex},
@@ -481,10 +482,9 @@ bool isFabricBoundaryOp(llvm::StringRef opName) {
   return opName == "fabric.fu" || opName == "fabric.pe";
 }
 
-void addMemEndpointMaps(
-    mlir::Operation *op, llvm::StringRef hardwareName,
-    std::map<EndpointKey, std::string> &operandEndpoints,
-    std::map<EndpointKey, std::string> &resultEndpoints) {
+void addMemEndpointMaps(mlir::Operation *op, llvm::StringRef hardwareName,
+                        std::map<EndpointKey, std::string> &operandEndpoints,
+                        std::map<EndpointKey, std::string> &resultEndpoints) {
   auto [loadPorts, storePorts] = memPortCounts(op);
   unsigned operandBase = 1;
   unsigned resultBase = memResultPortBase(op);
@@ -638,9 +638,7 @@ HardwareTopology buildHardwareTopology(
       addTopologySegment(
           topology,
           HardwareRouteSegment{
-              "resource_edge",
-              *sourceEndpoint,
-              destIt->second,
+              "resource_edge", *sourceEndpoint, destIt->second,
               (hardwareName + "::ssa_edge#" + llvm::Twine(ssaEdgeIndex++))
                   .str()});
     }
@@ -673,10 +671,10 @@ HardwareTopology buildHardwareTopology(
           continue;
         addTopologySegment(
             topology,
-            HardwareRouteSegment{
-                internalRouteSegmentKind(opName),
-                endpointFor(*destId, "operand", operandIndex),
-                endpointFor(*destId, "result", resultIndex), *destId});
+            HardwareRouteSegment{internalRouteSegmentKind(opName),
+                                 endpointFor(*destId, "operand", operandIndex),
+                                 endpointFor(*destId, "result", resultIndex),
+                                 *destId});
       }
     }
   });
@@ -706,13 +704,11 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
             std::errc::invalid_argument,
             "mapping route segment is not an object");
       for (llvm::StringRef key :
-           {"segment_id", "segment_kind", "source_endpoint",
-            "sink_endpoint"}) {
+           {"segment_id", "segment_kind", "source_endpoint", "sink_endpoint"}) {
         if (!segment->getString(key))
           return llvm::createStringError(
               std::errc::invalid_argument,
-              "mapping route segment lacks string field %s",
-              key.str().c_str());
+              "mapping route segment lacks string field %s", key.str().c_str());
       }
     }
   }
@@ -786,9 +782,9 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
     if (*resourceKindOrErr == "fabric.op" &&
         !resourceIt->second.supportedOps.contains(*operationOrErr))
       return llvm::createStringError(
-        std::errc::invalid_argument,
-        "hardware resource %s does not support operation %s",
-        hardwareOrErr->c_str(), operationOrErr->c_str());
+          std::errc::invalid_argument,
+          "hardware resource %s does not support operation %s",
+          hardwareOrErr->c_str(), operationOrErr->c_str());
     if (!placementBySoftware
              .try_emplace(*softwareOrErr,
                           PlacementInfo{*hardwareOrErr, *resourceKindOrErr})
@@ -822,8 +818,8 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
           *segment, "source_endpoint", "mapping route segment");
       if (!sourceEndpointOrErr)
         return sourceEndpointOrErr.takeError();
-      auto sinkEndpointOrErr = requireObjectString(
-          *segment, "sink_endpoint", "mapping route segment");
+      auto sinkEndpointOrErr = requireObjectString(*segment, "sink_endpoint",
+                                                   "mapping route segment");
       if (!sinkEndpointOrErr)
         return sinkEndpointOrErr.takeError();
       if (isPlaceholderRouteEndpoint(*sourceEndpointOrErr) ||
@@ -936,9 +932,8 @@ requireStringArrayField(const llvm::json::Object &object, llvm::StringRef key,
     std::optional<llvm::StringRef> string = value.getAsString();
     if (!string)
       return llvm::createStringError(
-          std::errc::invalid_argument,
-          "%s field %s entry %u is not a string", path.str().c_str(),
-          key.str().c_str(), static_cast<unsigned>(index));
+          std::errc::invalid_argument, "%s field %s entry %u is not a string",
+          path.str().c_str(), key.str().c_str(), static_cast<unsigned>(index));
     values.push_back(string->str());
   }
   return values;
@@ -967,7 +962,8 @@ requireStringArrayObjectField(const llvm::json::Object &object,
         return llvm::createStringError(
             std::errc::invalid_argument,
             "%s field %s.%s entry %u is not a string", path.str().c_str(),
-            key.str().c_str(), name.str().c_str(), static_cast<unsigned>(index));
+            key.str().c_str(), name.str().c_str(),
+            static_cast<unsigned>(index));
       values.push_back(string->str());
     }
     result[name.str()] = std::move(values);
@@ -995,9 +991,9 @@ requireSupportedReportSource(const llvm::json::Object &object,
     return valueOrErr.takeError();
   if (*valueOrErr == expected)
     return *valueOrErr;
-  return llvm::createStringError(
-      std::errc::invalid_argument, "DFG report %s source %s is not supported",
-      label.str().c_str(), valueOrErr->c_str());
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "DFG report %s source %s is not supported",
+                                 label.str().c_str(), valueOrErr->c_str());
 }
 
 llvm::Expected<std::string>
@@ -1023,6 +1019,70 @@ llvm::Error requireKindAndPass(const llvm::json::Object &object,
     return llvm::createStringError(std::errc::invalid_argument,
                                    "%s is not a pass report",
                                    path.str().c_str());
+  return llvm::Error::success();
+}
+
+llvm::Error
+validateMappingConfigFingerprint(const llvm::json::Object &mapping,
+                                 llvm::StringRef mappingPath,
+                                 const loom::ResolvedConfig &config) {
+  std::optional<llvm::StringRef> fingerprint =
+      mapping.getString("config_fingerprint");
+  bool producedByPnr = mapping.getString("graph").has_value();
+  bool hasPartialConfigEvidence =
+      mapping.getString("config_id").has_value() ||
+      mapping.getString("component_config_view").has_value() ||
+      mapping.getString("component_config_fingerprint").has_value();
+  if (!fingerprint && !producedByPnr && !hasPartialConfigEvidence)
+    return llvm::Error::success();
+  if (!fingerprint)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "config_missing_required_profile: %s lacks config_fingerprint",
+        mappingPath.str().c_str());
+
+  std::optional<llvm::StringRef> configId = mapping.getString("config_id");
+  if (!configId || configId->empty())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "config_missing_required_profile: %s lacks config_id",
+        mappingPath.str().c_str());
+  if (*configId != config.configId)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "config_fingerprint_mismatch: mapping config_id %s does not match "
+        "resolved config_id %s",
+        configId->str().c_str(), config.configId.c_str());
+
+  std::string expected = loom::resolvedConfigFingerprint(config);
+  if (!loom::isResolvedConfigFingerprint(*fingerprint) ||
+      *fingerprint != expected)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "config_fingerprint_mismatch: mapping config_fingerprint %s does not "
+        "match resolved config_fingerprint %s",
+        fingerprint->str().c_str(), expected.c_str());
+
+  std::optional<llvm::StringRef> componentView =
+      mapping.getString("component_config_view");
+  if (!componentView || *componentView != "pnr.mapping.v1")
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "config_missing_required_profile: mapping component_config_view must "
+        "be pnr.mapping.v1");
+
+  std::optional<llvm::StringRef> componentFingerprint =
+      mapping.getString("component_config_fingerprint");
+  std::string expectedComponent =
+      loom::componentConfigFingerprint(config, "pnr.mapping.v1");
+  if (!componentFingerprint ||
+      !loom::isResolvedConfigFingerprint(*componentFingerprint) ||
+      *componentFingerprint != expectedComponent)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "config_fingerprint_mismatch: mapping component_config_fingerprint "
+        "does not match pnr.mapping.v1");
+
   return llvm::Error::success();
 }
 
@@ -1382,7 +1442,17 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
                                    "%s lacks string field status",
                                    options.mappingArtifactPath.c_str());
 
+  loom::ResolvedConfig resolvedConfig = loom::defaultResolvedConfig();
+  if (llvm::Error err = validateMappingConfigFingerprint(
+          *mappingOrErr, options.mappingArtifactPath, resolvedConfig))
+    return std::move(err);
+
   CGRASimReport report;
+  report.configId = resolvedConfig.configId;
+  report.configFingerprint = loom::resolvedConfigFingerprint(resolvedConfig);
+  report.componentConfigView = "cgra.sim.v1";
+  report.componentConfigFingerprint = loom::componentConfigFingerprint(
+      resolvedConfig, report.componentConfigView);
   auto workloadOrErr =
       requireString(*dfgOrErr, "workload", options.dfgReportPath);
   if (!workloadOrErr)
@@ -1431,8 +1501,8 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (!costModelOrErr)
     return costModelOrErr.takeError();
   report.operationCostModelSource = *costModelOrErr;
-  auto finalOutputsOrErr =
-      requireStringArrayField(*dfgOrErr, "final_outputs", options.dfgReportPath);
+  auto finalOutputsOrErr = requireStringArrayField(*dfgOrErr, "final_outputs",
+                                                   options.dfgReportPath);
   if (!finalOutputsOrErr)
     return finalOutputsOrErr.takeError();
   report.finalOutputs = *finalOutputsOrErr;
@@ -1463,8 +1533,8 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     report.modeledLowerBoundCycles = report.dfgCycles;
     report.performanceDeltaCycles = 0;
     report.status = "blocked";
-    report.diagnostic = "mapping artifact status " + mappingStatus->str() +
-                        " blocks CGRA-sim";
+    report.diagnostic =
+        "mapping artifact status " + mappingStatus->str() + " blocks CGRA-sim";
     if (const llvm::json::Array *diagnostics =
             mappingOrErr->getArray("diagnostics")) {
       if (!diagnostics->empty()) {
@@ -1572,6 +1642,10 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"workload", report.workload},
       {"hardware", report.hardware},
       {"mapping_id", report.mappingId},
+      {"config_id", report.configId},
+      {"config_fingerprint", report.configFingerprint},
+      {"component_config_view", report.componentConfigView},
+      {"component_config_fingerprint", report.componentConfigFingerprint},
       {"status", report.status},
       {"fidelity_level", "mapping_constraint_estimate"},
       {"metric_definition", "mapping_constraint_estimate"},

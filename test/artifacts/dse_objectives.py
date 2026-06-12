@@ -97,15 +97,20 @@ def objective_spec(objective: str) -> DseObjectiveSpec | None:
     return OBJECTIVE_SPECS.get(objective)
 
 
+def require_objective_spec(objective: str) -> DseObjectiveSpec:
+    spec = objective_spec(objective)
+    if spec is None:
+        raise ValueError(f"config_unknown_objective: {objective}")
+    return spec
+
+
 def policy_id_for_objective(objective: str) -> str:
+    require_objective_spec(objective)
     return f"deterministic_{objective}_v1"
 
 
 def ordering_rule_for_objective(objective: str) -> str:
-    spec = objective_spec(objective)
-    if spec is not None:
-        return spec.ordering_rule
-    return OBJECTIVE_SPECS["minimize_runtime"].ordering_rule
+    return require_objective_spec(objective).ordering_rule
 
 
 def objective_semantics(objective: str) -> tuple[str, str] | None:

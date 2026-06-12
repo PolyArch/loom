@@ -82,8 +82,19 @@ def main() -> int:
             raise AssertionError(f"artifact audit ordering drifted for {objective}")
         if intermediate_artifacts.dse_objective_semantics(objective) != (direction, units):
             raise AssertionError(f"artifact audit semantics drifted for {objective}")
-    if candidate_summary.ordering_rule_for_objective("custom_latency") != "runtime_score_then_candidate_id":
-        raise AssertionError("unknown objective fallback changed")
+    for helper in (
+        dse_objectives.policy_id_for_objective,
+        dse_objectives.ordering_rule_for_objective,
+        candidate_summary.ordering_rule_for_objective,
+        intermediate_artifacts.dse_ordering_rule_for_objective,
+    ):
+        try:
+            helper("custom_latency")
+        except ValueError as exc:
+            if "config_unknown_objective" not in str(exc):
+                raise AssertionError(f"unexpected unknown objective diagnostic: {exc}")
+        else:
+            raise AssertionError(f"{helper.__name__} accepted unknown objective")
     if intermediate_artifacts.dse_objective_semantics("custom_latency") is not None:
         raise AssertionError("unknown objective audit semantics changed")
     return 0
