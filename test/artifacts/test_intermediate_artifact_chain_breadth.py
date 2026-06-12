@@ -92,8 +92,8 @@ CASES = {
         "element_layout": "i32[64]",
     },
     "correlation": {
-        "graph": "g_t_correlation_kernel_0_0",
-        "mapping_id": "correlation__g_t_correlation_kernel_0_0__shared_reduction_adg",
+        "graph": "g_t_correlation_kernel_red_0_0",
+        "mapping_id": "correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "10",
         "route_edge_count": "13",
         "config_records": 148,
@@ -164,8 +164,8 @@ CASES = {
         "element_layout": "u32[9];u32[9];u32[5];u32[5];u32[4]",
     },
     "convolve_1d": {
-        "graph": "g_t_convolve_1d_kernel_0_0",
-        "mapping_id": "convolve_1d__g_t_convolve_1d_kernel_0_0__shared_reduction_adg",
+        "graph": "g_t_convolve_1d_kernel_red_0_0",
+        "mapping_id": "convolve_1d__g_t_convolve_1d_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "10",
         "route_edge_count": "13",
         "config_records": 148,

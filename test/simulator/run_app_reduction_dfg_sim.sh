@@ -471,7 +471,7 @@ case "${CASE}" in
     bit_reverse)
         append_ctrl_tokens 32
         sim_args+=(
-            --graph g_t_bit_reverse_kernel_0_0
+            --graph g_t_bit_reverse_kernel_red_0_0
             --workload bit_reverse
             --arg 1=0
             --arg 2=32
@@ -507,7 +507,7 @@ case "${CASE}" in
         append_constant_memref 6 7 "1.000000e+00"
         append_constant_memref 7 7 "1.42857149e-01"
         sim_args+=(
-            --graph g_t_convolve_1d_kernel_0_0
+            --graph g_t_convolve_1d_kernel_red_0_0
             --workload convolve_1d
             --arg 1=0
             --arg 2=7
@@ -522,7 +522,7 @@ case "${CASE}" in
         append_constant_memref 6 16 "1.000000e+00"
         append_constant_memref 7 16 "1.000000e+00"
         sim_args+=(
-            --graph g_t_correlation_kernel_0_0
+            --graph g_t_correlation_kernel_red_0_0
             --workload correlation
             --arg 1=0
             --arg 2=16

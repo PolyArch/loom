@@ -40,6 +40,23 @@ func.func @mean_like(%a: memref<?xf32>, %n: i64) -> f32 {
   return %mean : f32
 }
 
+func.func @nested_forall_reduction(%out: memref<?xi32>, %n: index) -> index {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %sum = scf.for %i = %c0 to %n step %c1 iter_args(%acc = %c0) -> (index) {
+    %end = arith.addi %acc, %c1 : index
+    %active = arith.cmpi ult, %acc, %end : index
+    scf.if %active {
+      scf.forall (%j) = (%acc) to (%end) step (1) {
+        %v = arith.index_cast %j : index to i32
+        memref.store %v, %out[%j] : memref<?xi32>
+      }
+    }
+    scf.yield %end : index
+  }
+  return %sum : index
+}
+
 // CHECK: dataflow.thread private @t_vecadd_like_0
 // CHECK-SAME: ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK: dataflow.graph.launch @g_t_vecadd_like_0_0
@@ -51,6 +68,10 @@ func.func @mean_like(%a: memref<?xf32>, %n: i64) -> f32 {
 // CHECK: %[[SCALE:.*]] = dataflow.invariant
 // CHECK: %[[MEAN:.*]] = arith.mulf %{{.*}}, %[[SCALE]] : f32
 // CHECK: dataflow.graph.return %{{.*}}, %[[MEAN]] : none, f32
+// CHECK-LABEL: dataflow.graph.func private @g_t_nested_forall_reduction_red_0_0
+// CHECK: scf.forall
+// CHECK-NOT: dataflow.thread.launch
+// CHECK: dataflow.graph.return
 // CHECK-LABEL: dataflow.graph.func private @g_t_vecadd_like_0_0
 // The graph.launch's ctrl_in is the enclosing thread's thread_ctrl
 // block argument; the lowered IR contains no ub.poison.

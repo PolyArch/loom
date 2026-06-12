@@ -5,8 +5,10 @@
 // values become explicit body operands of the launch and thread
 // entry-block arguments.
 //
-// Smoke deliverable: only top-level (i.e., not nested-inside-another-
-// forall) effect-form scf.forall ops are promoted. Aggregation-form
+// Smoke deliverable: only scf.forall ops that are direct children of
+// a func.func body are promoted. Nested foralls remain in their
+// enclosing control/data region so later graph extraction cannot
+// clone dataflow launchers into a graph body. Aggregation-form
 // foralls (with shared_outs / op results) are left in place; the
 // raise pipeline already lowers those through Part 2 normalization.
 // Dynamic upper bounds are forwarded via the launch's gridUpperBounds
@@ -127,11 +129,10 @@ struct LowerForallToThreadPass
       Pending p;
       p.func = func;
       // Source-order top-level foralls: walk the func body and only
-      // record foralls whose immediate parent op is the func itself
-      // (so we skip nested-inside-other-forall cases for now).
+      // record foralls whose immediate parent op is the func itself.
       func.walk([&](::mlir::scf::ForallOp forall) {
-        if (forall->getParentOfType<::mlir::scf::ForallOp>())
-          return; // TODO: handle nested foralls in a follow-up.
+        if (forall->getParentOp() != func.getOperation())
+          return;
         p.foralls.push_back(forall);
       });
       if (!p.foralls.empty())

@@ -100,7 +100,7 @@
 
 // BIT-REVERSE-DAG: "kind": "dfg_sim_report"
 // BIT-REVERSE-DAG: "workload": "bit_reverse"
-// BIT-REVERSE-DAG: "graph": "g_t_bit_reverse_kernel_0_0"
+// BIT-REVERSE-DAG: "graph": "g_t_bit_reverse_kernel_red_0_0"
 // BIT-REVERSE-DAG: "status": "pass"
 // BIT-REVERSE-DAG: "optimistic_cycles": 267
 // BIT-REVERSE-DAG: "event_count": 267
@@ -166,7 +166,7 @@
 
 // CONVOLVE-1D-DAG: "kind": "dfg_sim_report"
 // CONVOLVE-1D-DAG: "workload": "convolve_1d"
-// CONVOLVE-1D-DAG: "graph": "g_t_convolve_1d_kernel_0_0"
+// CONVOLVE-1D-DAG: "graph": "g_t_convolve_1d_kernel_red_0_0"
 // CONVOLVE-1D-DAG: "status": "pass"
 // CONVOLVE-1D-DAG: "optimistic_cycles": 157
 // CONVOLVE-1D-DAG: "wavefront_steps": 19
@@ -175,7 +175,7 @@
 
 // CORRELATION-DAG: "kind": "dfg_sim_report"
 // CORRELATION-DAG: "workload": "correlation"
-// CORRELATION-DAG: "graph": "g_t_correlation_kernel_0_0"
+// CORRELATION-DAG: "graph": "g_t_correlation_kernel_red_0_0"
 // CORRELATION-DAG: "status": "pass"
 // CORRELATION-DAG: "optimistic_cycles": 346
 // CORRELATION-DAG: "wavefront_steps": 37

@@ -81,13 +81,13 @@ case "${CASE}" in
     case_graph="g_t_vecnorm_l2_red_0_0"
     ;;
   correlation)
-    case_graph="g_t_correlation_kernel_0_0"
+    case_graph="g_t_correlation_kernel_red_0_0"
     ;;
   spmv)
     case_graph="g_t_spmv_kernel_red_0_0"
     ;;
   convolve_1d)
-    case_graph="g_t_convolve_1d_kernel_0_0"
+    case_graph="g_t_convolve_1d_kernel_red_0_0"
     ;;
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
