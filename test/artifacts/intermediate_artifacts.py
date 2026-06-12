@@ -67,6 +67,7 @@ FPA_ACTIVITY_SOURCES = {
     "backend_internal",
     "custom",
 }
+FPA_REPORT_METRIC_CLASSES = {"frequency", "area", "dynamic_power", "leakage_power"}
 DSE_HARDWARE_EVIDENCE_KINDS = {
     "analytic_model_only",
     "sim_activity_model",
@@ -1868,6 +1869,8 @@ def iter_artifact_manifest_required_edges(
         else:
             report = read_manifest_json_artifact(artifact_paths_by_id.get(report_id))
             for source_id in iter_manifest_optional_artifact_references(report, artifact_id_set):
+                yield source_id, report_id
+            for source_id in iter_manifest_input_fingerprint_references(report, artifact_id_set):
                 yield source_id, report_id
         for demonstrator_id in ids_by_kind.get("e2e_demonstrator", []):
             yield report_id, demonstrator_id
@@ -3992,6 +3995,117 @@ def validate_workload_report_input_fingerprints(
             diagnostics.append(f"workload report bundle input_artifact_fingerprints lacks {reference!r}")
 
 
+def workload_report_cites_fpa_evidence(path: Path, data: dict[str, object]) -> bool:
+    metrics = data.get("metric_records")
+    if not isinstance(metrics, list):
+        return False
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        metric_class = metric.get("metric_class")
+        if metric_class in FPA_REPORT_METRIC_CLASSES:
+            return True
+        derivation = metric.get("derivation_kind")
+        if isinstance(derivation, str) and "fpa" in derivation:
+            return True
+        source = metric.get("evidence_source_artifact_id")
+        if not isinstance(source, str) or not source:
+            continue
+        resolved = resolve_artifact_identity_reference(path, source)
+        if resolved is not None and artifact_kind_for_path(resolved) in {"fpa_report", "rtl_fpa"}:
+            return True
+    return False
+
+
+def fpa_report_has_workload_hardware_metric(
+    report: dict[str, object],
+    workload: object,
+    hardware: object,
+) -> bool:
+    metrics = report.get("metric_records")
+    if not isinstance(metrics, list) or not metrics:
+        return False
+    report_id = report.get("report_id")
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        if metric.get("metric_class") not in FPA_REPORT_METRIC_CLASSES:
+            continue
+        if isinstance(workload, str) and metric.get("workload") != workload:
+            continue
+        if isinstance(hardware, str) and hardware:
+            if not hardware_identity_matches(metric.get("hardware_candidate_identity"), hardware):
+                continue
+        value = metric.get("value")
+        if not isinstance(value, (int, float)) or value < 0:
+            continue
+        if metric.get("evidence_source_artifact_id") != report_id:
+            continue
+        if not isinstance(metric.get("source_column"), str) or not metric.get("source_column"):
+            continue
+        return True
+    return False
+
+
+def validate_workload_report_fpa_reference(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    optional_identities = data.get("optional_artifact_identities")
+    cites_fpa = workload_report_cites_fpa_evidence(path, data)
+    if not isinstance(optional_identities, dict):
+        if cites_fpa:
+            diagnostics.append("workload report bundle FPA metrics require a normalized FPA JSON report")
+        return
+    fpa_identity = optional_identities.get("fpa_report")
+    if not isinstance(fpa_identity, str) or not fpa_identity:
+        if cites_fpa:
+            diagnostics.append("workload report bundle FPA metrics require a normalized FPA JSON report")
+        return
+    report = read_resolved_json_reference(path, fpa_identity)
+    if report is None:
+        diagnostics.append("workload report bundle fpa_report must reference a normalized FPA JSON report")
+        return
+    if report.get("kind") != "fpa_report":
+        diagnostics.append("workload report bundle fpa_report must reference kind fpa_report")
+        return
+    if report.get("status") != "pass":
+        diagnostics.append("workload report bundle fpa_report status must be pass")
+    workload = data.get("workload")
+    workloads = report.get("workload_identities")
+    if isinstance(workload, str) and isinstance(workloads, list):
+        candidates = {entry for entry in workloads if isinstance(entry, str)}
+        if candidates and workload not in candidates:
+            diagnostics.append("workload report bundle fpa_report workload_identities do not include workload")
+    hardware = data.get("selected_hardware_candidate_identity")
+    hardware_identity = report.get("hardware_candidate_identity")
+    if (
+        isinstance(hardware, str)
+        and hardware
+        and isinstance(hardware_identity, str)
+        and hardware_identity
+        and hardware_identity != "multiple"
+        and not hardware_identity_matches(hardware_identity, hardware)
+    ):
+        diagnostics.append("workload report bundle fpa_report hardware_candidate_identity does not match")
+    hardware_identities = report.get("hardware_candidate_identities")
+    if isinstance(hardware, str) and hardware and isinstance(hardware_identities, list):
+        candidates = [candidate for candidate in hardware_identities if isinstance(candidate, str)]
+        if candidates and not any(hardware_identity_matches(candidate, hardware) for candidate in candidates):
+            diagnostics.append("workload report bundle fpa_report hardware_candidate_identities do not include hardware")
+    rtl_manifest_identity = optional_identities.get("rtl_manifest")
+    report_rtl_manifest_identity = report.get("rtl_manifest_identity")
+    if (
+        isinstance(rtl_manifest_identity, str)
+        and rtl_manifest_identity
+        and report_rtl_manifest_identity != rtl_manifest_identity
+    ):
+        diagnostics.append("workload report bundle fpa_report rtl_manifest_identity does not match")
+    if not fpa_report_has_workload_hardware_metric(report, workload, hardware):
+        diagnostics.append("workload report bundle fpa_report must include a metric for workload and hardware")
+
+
 def validate_workload_runtime_evidence_references(
     data: dict[str, object],
     runtime_evidence: object,
@@ -5982,6 +6096,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             require_complete=data.get("report_status") == "pass",
         )
         validate_workload_report_input_fingerprints(path, data, diagnostics)
+        validate_workload_report_fpa_reference(path, data, diagnostics)
         validate_workload_report_sim_comparison_reference(path, data, diagnostics)
         runtime_evidence = data.get("runtime_evidence")
         host_interface_expectations: dict[str, object] = {}

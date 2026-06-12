@@ -27,6 +27,8 @@ first_path = artifact_io_helpers.first_path
 hardware_matches = artifact_io_helpers.hardware_matches
 matching_rtl_manifest_path = artifact_io_helpers.matching_rtl_manifest_path
 
+FPA_REPORT_METRIC_CLASSES = {"frequency", "area", "dynamic_power", "leakage_power"}
+
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -59,6 +61,88 @@ def matching_rtl_fpa_row(paths: list[Path], workload: str, hardware: str) -> tup
         for row in read_csv(path):
             if row.get("workload") == workload and hardware_matches(row.get("hardware", ""), hardware):
                 return path, row
+    return None
+
+
+def fpa_report_matches(
+    data: dict[str, object],
+    *,
+    workload: str,
+    hardware: str,
+    rtl_manifest_identity: str,
+) -> bool:
+    if data.get("kind") != "fpa_report":
+        return False
+    if data.get("status") != "pass":
+        return False
+    workloads = data.get("workload_identities")
+    if isinstance(workloads, list):
+        workload_candidates = {entry for entry in workloads if isinstance(entry, str)}
+        if workload_candidates and workload not in workload_candidates:
+            return False
+    hardware_identity = data.get("hardware_candidate_identity")
+    if (
+        isinstance(hardware_identity, str)
+        and hardware_identity
+        and hardware_identity != "multiple"
+        and not hardware_matches(hardware_identity, hardware)
+    ):
+        return False
+    hardware_identities = data.get("hardware_candidate_identities")
+    if isinstance(hardware_identities, list):
+        candidates = [entry for entry in hardware_identities if isinstance(entry, str)]
+        if candidates and not any(hardware_matches(candidate, hardware) for candidate in candidates):
+            return False
+    report_rtl_manifest = data.get("rtl_manifest_identity")
+    if rtl_manifest_identity and report_rtl_manifest != rtl_manifest_identity:
+        return False
+    metrics = data.get("metric_records")
+    if not isinstance(metrics, list) or not metrics:
+        return False
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        if metric.get("metric_class") not in FPA_REPORT_METRIC_CLASSES:
+            continue
+        if metric.get("workload") != workload:
+            continue
+        metric_hardware = metric.get("hardware_candidate_identity")
+        if not isinstance(metric_hardware, str) or not hardware_matches(metric_hardware, hardware):
+            continue
+        value = metric.get("value")
+        if not isinstance(value, (int, float)) or value < 0:
+            continue
+        if metric.get("evidence_source_artifact_id") != data.get("report_id"):
+            continue
+        if not isinstance(metric.get("source_column"), str) or not metric.get("source_column"):
+            continue
+        return True
+    return False
+
+
+def matching_fpa_report_path(
+    paths: list[Path],
+    rtl_row: dict[str, str] | None,
+    *,
+    workload: str,
+    hardware: str,
+    rtl_manifest_identity: str,
+) -> Path | None:
+    if rtl_row is None:
+        return None
+    fpa_report_identity = rtl_row.get("fpa_report_identity", "")
+    if not fpa_report_identity:
+        return None
+    for path in paths:
+        if artifact_id(path) != fpa_report_identity:
+            continue
+        if fpa_report_matches(
+            read_json(path),
+            workload=workload,
+            hardware=hardware,
+            rtl_manifest_identity=rtl_manifest_identity,
+        ):
+            return path
     return None
 
 
@@ -164,6 +248,8 @@ def diagnostic_class(message: str) -> str:
         return "simulation_comparison_failure"
     if "RTL/FPA row is missing" in message:
         return "rtl_fpa_missing"
+    if "FPA report artifact is missing" in message:
+        return "fpa_report_missing"
     if "selected mapping artifact is missing" in message:
         return "mapping_artifact_missing"
     if "no selected DSE candidate artifact was provided" in message:
@@ -456,6 +542,13 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         rtl_row = None
     else:
         rtl_path, rtl_row = rtl_match
+    fpa_report_path = matching_fpa_report_path(
+        grouped.get("fpa_report", []),
+        rtl_row,
+        workload=workload,
+        hardware=hardware,
+        rtl_manifest_identity=artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
+    )
 
     dfg_report = read_json(dfg_path) if dfg_path is not None else {}
     cgra_report = read_json(cgra_path) if cgra_path is not None else {}
@@ -505,6 +598,8 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
         diagnostics.append("runtime package is not passing")
     if rtl_row is None or rtl_path is None:
         diagnostics.append("RTL/FPA row is missing")
+    elif fpa_report_path is None:
+        diagnostics.append("FPA report artifact is missing for selected RTL/FPA row")
     diagnostic_records = runtime_diagnostic_records(runtime_package)
     diagnostic_records.extend(
         diagnostic_record(index, message)
@@ -738,6 +833,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
                 sim_cycle_path,
                 rtl_manifest_path,
                 rtl_path,
+                fpa_report_path,
                 dse_path,
             ]
         ),
@@ -750,7 +846,7 @@ def build_bundle(paths: list[Path]) -> dict[str, object]:
             "runtime_package": artifact_id(runtime_path) if runtime_path is not None else "",
             "sim_cycle_summary": artifact_id(sim_cycle_path) if sim_cycle_path is not None else "",
             "rtl_manifest": artifact_id(rtl_manifest_path) if rtl_manifest_path is not None else "",
-            "fpa_report": artifact_id(rtl_path) if rtl_path is not None else "",
+            "fpa_report": artifact_id(fpa_report_path) if fpa_report_path is not None else "",
             "dse_feedback_record": artifact_id(dse_path),
         },
         "report_status": "pass" if not diagnostics else "blocked",

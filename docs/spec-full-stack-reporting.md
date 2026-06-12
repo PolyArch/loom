@@ -53,10 +53,15 @@ Optional fields:
 * runtime package identity;
 * RTL manifest identity;
 * EDA report identities;
-* FPA report identity;
+* normalized FPA report identity;
 * derived metric records;
 * visualization artifact identities;
 * DSE feedback record identity.
+
+The normalized FPA report identity references the JSON artifact whose
+kind is `fpa_report`. Table exports such as `rtl-fpa-summary.csv` are
+metric projections and may appear as metric evidence sources, but they
+do not replace the normalized FPA report identity.
 
 ### Hardware Candidate Report Bundle
 
@@ -260,6 +265,9 @@ The full-stack reporting target is complete when:
 * one workload report bundle can summarize source, compiler, dataflow,
   DFG-sim, PnR, CGRA-sim, runtime, RTL, EDA, and FPA evidence when
   those artifacts exist;
+* workload bundles that cite FPA evidence reference the normalized FPA
+  JSON report, while FPA CSV summaries remain projections of that
+  evidence;
 * every metric records fidelity and evidence source;
 * simulator cycle summary exports preserve the required
   `kernel`, `dfg_sim_cycles`, and `cgra_sim_cycles` columns;

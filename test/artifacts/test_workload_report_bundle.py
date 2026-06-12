@@ -36,6 +36,81 @@ def metric_by_id(metrics: list[dict[str, object]]) -> dict[str, dict[str, object
     return {str(metric.get("metric_id")): metric for metric in metrics}
 
 
+def standard_report_bundle_command(
+    out_dir: Path,
+    report: Path,
+    *,
+    fpa_summary: Path | None = None,
+    fpa_report: Path | None = None,
+) -> list[str]:
+    selected_fpa_summary = fpa_summary or out_dir / "rtl-fpa-summary.csv"
+    selected_fpa_report = fpa_report or out_dir / "rtl-fpa-report.json"
+    return [
+        "bash",
+        "test/e2e/run_report_bundle.sh",
+        "--output",
+        str(report),
+        "--artifact",
+        str(out_dir / "source-compat-summary.csv"),
+        "--artifact",
+        str(out_dir / "compiler-pipeline-summary.csv"),
+        "--artifact",
+        str(out_dir / "dataflow-primitive-coverage.csv"),
+        "--artifact",
+        str(out_dir / "adg-hardware-summary.csv"),
+        "--artifact",
+        str(out_dir / "pnr-mapping.json"),
+        "--artifact",
+        str(out_dir / "vecsum-dfg-sim-report.json"),
+        "--artifact",
+        str(out_dir / "vecsum-cgra-sim-report.json"),
+        "--artifact",
+        str(out_dir / "sim-comparison-report.json"),
+        "--artifact",
+        str(out_dir / "runtime-package.json"),
+        "--artifact",
+        str(out_dir / "sim-cycle-summary.csv"),
+        "--artifact",
+        str(out_dir / "rtl-manifest.json"),
+        "--artifact",
+        str(selected_fpa_summary),
+        "--artifact",
+        str(selected_fpa_report),
+        "--artifact",
+        str(out_dir / "dse-candidate-summary.csv"),
+    ]
+
+
+def nested_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        strings: list[str] = []
+        for child in value.values():
+            strings.extend(nested_strings(child))
+        return strings
+    if isinstance(value, list):
+        strings = []
+        for child in value:
+            strings.extend(nested_strings(child))
+        return strings
+    return []
+
+
+def require_nested_text(value: object, text: str, label: str) -> None:
+    if not any(text in entry for entry in nested_strings(value)):
+        raise AssertionError(f"{label} missing {text!r}: {value}")
+
+
+def require_diagnostic_class(data: dict[str, object], diagnostic_class: str, label: str) -> None:
+    records = data.get("diagnostic_records", [])
+    if not any(
+        isinstance(record, dict) and record.get("diagnostic_class") == diagnostic_class
+        for record in records
+    ):
+        raise AssertionError(f"{label} missing diagnostic class {diagnostic_class}: {data}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-workload-report-") as tmp:
@@ -84,6 +159,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle",
@@ -116,6 +193,7 @@ def main() -> int:
             "sim-cycle-summary": artifact_test_common.fingerprint(out_dir / "sim-cycle-summary.csv"),
             "rtl-manifest": artifact_test_common.fingerprint(out_dir / "rtl-manifest.json"),
             "rtl-fpa-summary": artifact_test_common.fingerprint(out_dir / "rtl-fpa-summary.csv"),
+            "rtl-fpa-report": artifact_test_common.fingerprint(out_dir / "rtl-fpa-report.json"),
             "dse-candidate-summary": artifact_test_common.fingerprint(out_dir / "dse-candidate-summary.csv"),
         }
         if data["input_artifact_fingerprints"] != expected_input_fingerprints:
@@ -135,6 +213,8 @@ def main() -> int:
             raise AssertionError(f"report should reference simulator cycle summary evidence: {data}")
         if optional_identities.get("rtl_manifest") != "rtl-manifest":
             raise AssertionError(f"report should reference RTL manifest evidence: {data}")
+        if optional_identities.get("fpa_report") != "rtl-fpa-report":
+            raise AssertionError(f"report should reference normalized FPA JSON evidence: {data}")
         expected_host_interface = {
             "host_program_identity": "test-app-host::vecsum::default",
             "host_wrapper_identity": "runtime-wrapper::vecsum::vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
@@ -273,6 +353,8 @@ def main() -> int:
                     "--artifact",
                     str(out_dir / "rtl-fpa-summary.csv"),
                     "--artifact",
+                    str(out_dir / "rtl-fpa-report.json"),
+                    "--artifact",
                     str(out_dir / "dse-candidate-summary.csv"),
                 ],
                 "workload report bundle with alternate runtime input",
@@ -330,6 +412,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -406,6 +490,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with unrelated runtime package",
@@ -479,6 +565,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -557,6 +645,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with blocked matching runtime package before passing package",
@@ -629,6 +719,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with DFG runtime package before CGRA runtime package",
@@ -694,6 +786,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with unrelated mapping artifact",
@@ -750,6 +844,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(unselected_dse_summary),
                 "--artifact",
@@ -817,14 +913,16 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with unrelated FPA summary",
         )
         filtered_fpa_data = json.loads(filtered_fpa_report.read_text())
         filtered_fpa_identities = filtered_fpa_data.get("optional_artifact_identities", {})
-        if filtered_fpa_identities.get("fpa_report") != "rtl-fpa-summary":
-            raise AssertionError(f"workload report should reference selected FPA summary: {filtered_fpa_data}")
+        if filtered_fpa_identities.get("fpa_report") != "rtl-fpa-report":
+            raise AssertionError(f"workload report should reference selected FPA report: {filtered_fpa_data}")
         if "unrelated-rtl-fpa-summary" in filtered_fpa_data["input_artifact_fingerprints"]:
             raise AssertionError(f"workload report should not fingerprint unrelated FPA summary: {filtered_fpa_data}")
 
@@ -886,6 +984,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -950,6 +1050,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with unrelated DFG report",
@@ -1007,6 +1109,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
             "workload report bundle with unrelated CGRA report",
@@ -1063,6 +1167,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -1195,6 +1301,229 @@ def main() -> int:
         audit_data = json.loads(audit.read_text())
         if audit_data.get("verdict") != "pass":
             raise AssertionError(f"expected report bundle audit pass: {audit_data}")
+        bad_fpa_reference_report = out_dir / "bad-fpa-reference-workload-report-bundle.json"
+        bad_fpa_reference_data = json.loads(report.read_text())
+        bad_fpa_reference_data["optional_artifact_identities"]["fpa_report"] = "rtl-fpa-summary"
+        bad_fpa_reference_data["input_artifact_fingerprints"].pop("rtl-fpa-report", None)
+        bad_fpa_reference_report.write_text(
+            json.dumps(bad_fpa_reference_data, indent=2, sort_keys=True) + "\n"
+        )
+        bad_fpa_reference_audit = out_dir / "bad-fpa-reference-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_fpa_reference_audit),
+                str(bad_fpa_reference_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with CSV FPA report reference unexpectedly passed audit")
+        require_nested_text(
+            json.loads(bad_fpa_reference_audit.read_text()),
+            "normalized FPA JSON report",
+            "CSV FPA reference audit",
+        )
+        blank_fpa_identity_summary = out_dir / "blank-fpa-identity-rtl-fpa-summary.csv"
+        with (out_dir / "rtl-fpa-summary.csv").open(newline="") as handle:
+            reader = csv.DictReader(handle)
+            fieldnames = reader.fieldnames or []
+            blank_fpa_identity_rows = list(reader)
+        for row in blank_fpa_identity_rows:
+            if row.get("workload") == "vecsum":
+                row["fpa_report_identity"] = ""
+        with blank_fpa_identity_summary.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(blank_fpa_identity_rows)
+        blank_fpa_identity_report = out_dir / "blank-fpa-identity-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            standard_report_bundle_command(
+                out_dir,
+                blank_fpa_identity_report,
+                fpa_summary=blank_fpa_identity_summary,
+            ),
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with blank FPA report identity unexpectedly passed")
+        blank_fpa_identity_data = json.loads(blank_fpa_identity_report.read_text())
+        require_diagnostic_class(blank_fpa_identity_data, "fpa_report_missing", "blank FPA report identity")
+        if blank_fpa_identity_data.get("optional_artifact_identities", {}).get("fpa_report"):
+            raise AssertionError(f"blank FPA identity report should not cite an FPA report: {blank_fpa_identity_data}")
+
+        blocked_fpa_dir = out_dir / "blocked-fpa-input"
+        blocked_fpa_dir.mkdir()
+        blocked_fpa_report_input = blocked_fpa_dir / "rtl-fpa-report.json"
+        blocked_fpa_report_data = json.loads((out_dir / "rtl-fpa-report.json").read_text())
+        blocked_fpa_report_data["status"] = "blocked"
+        blocked_fpa_report_data["diagnostic_records"] = [
+            {
+                "diagnostic_id": "fpa-report::blocked-for-test",
+                "diagnostic_class": "missing_fpa_inputs",
+                "component": "fpa_report",
+                "severity": "error",
+                "message": "blocked FPA report cannot provide normalized evidence",
+            }
+        ]
+        blocked_fpa_report_data["diagnostics"] = ["blocked FPA report cannot provide normalized evidence"]
+        blocked_fpa_report_input.write_text(json.dumps(blocked_fpa_report_data, indent=2, sort_keys=True) + "\n")
+        blocked_fpa_workload_report = out_dir / "blocked-fpa-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            standard_report_bundle_command(
+                out_dir,
+                blocked_fpa_workload_report,
+                fpa_report=blocked_fpa_report_input,
+            ),
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with blocked FPA report unexpectedly passed")
+        require_diagnostic_class(
+            json.loads(blocked_fpa_workload_report.read_text()),
+            "fpa_report_missing",
+            "blocked FPA report",
+        )
+
+        empty_metric_fpa_dir = out_dir / "empty-metric-fpa-input"
+        empty_metric_fpa_dir.mkdir()
+        empty_metric_fpa_report_input = empty_metric_fpa_dir / "rtl-fpa-report.json"
+        empty_metric_fpa_report_data = json.loads((out_dir / "rtl-fpa-report.json").read_text())
+        empty_metric_fpa_report_data["metric_records"] = []
+        empty_metric_fpa_report_input.write_text(
+            json.dumps(empty_metric_fpa_report_data, indent=2, sort_keys=True) + "\n"
+        )
+        empty_metric_workload_report = out_dir / "empty-metric-fpa-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            standard_report_bundle_command(
+                out_dir,
+                empty_metric_workload_report,
+                fpa_report=empty_metric_fpa_report_input,
+            ),
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with empty-metric FPA report unexpectedly passed")
+        require_diagnostic_class(
+            json.loads(empty_metric_workload_report.read_text()),
+            "fpa_report_missing",
+            "empty-metric FPA report",
+        )
+
+        aggregate_fpa_dir = out_dir / "aggregate-fpa-input"
+        aggregate_fpa_dir.mkdir()
+        aggregate_fpa_report_input = aggregate_fpa_dir / "rtl-fpa-report.json"
+        aggregate_fpa_report_data = json.loads((out_dir / "rtl-fpa-report.json").read_text())
+        aggregate_fpa_report_data["hardware_candidate_identity"] = "multiple"
+        aggregate_fpa_report_data["hardware_candidate_identities"] = [
+            "other_hardware",
+            "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg",
+        ]
+        aggregate_fpa_report_input.write_text(json.dumps(aggregate_fpa_report_data, indent=2, sort_keys=True) + "\n")
+        aggregate_fpa_workload_report = out_dir / "aggregate-fpa-workload-report-bundle.json"
+        artifact_test_common.require_success(
+            repo,
+            standard_report_bundle_command(
+                out_dir,
+                aggregate_fpa_workload_report,
+                fpa_report=aggregate_fpa_report_input,
+            ),
+            "workload report bundle with aggregate FPA report",
+        )
+        aggregate_fpa_workload_data = json.loads(aggregate_fpa_workload_report.read_text())
+        if aggregate_fpa_workload_data.get("optional_artifact_identities", {}).get("fpa_report") != "rtl-fpa-report":
+            raise AssertionError(f"aggregate FPA report should be selected: {aggregate_fpa_workload_data}")
+
+        thin_stub_fpa_dir = out_dir / "thin-stub-fpa-input"
+        thin_stub_fpa_dir.mkdir()
+        thin_stub_fpa_report_input = thin_stub_fpa_dir / "rtl-fpa-report.json"
+        thin_stub_fpa_report_data = json.loads((out_dir / "rtl-fpa-report.json").read_text())
+        thin_stub_fpa_report_data["metric_records"] = [
+            {
+                "workload": "vecsum",
+                "hardware_candidate_identity": "test/pnr/shared_reduction_adg.mlir::shared_reduction_adg",
+                "metric_class": "latency",
+            }
+        ]
+        thin_stub_fpa_report_input.write_text(json.dumps(thin_stub_fpa_report_data, indent=2, sort_keys=True) + "\n")
+        thin_stub_workload_report = out_dir / "thin-stub-fpa-workload-report-bundle.json"
+        result = artifact_test_common.run_command(
+            repo,
+            standard_report_bundle_command(
+                out_dir,
+                thin_stub_workload_report,
+                fpa_report=thin_stub_fpa_report_input,
+            ),
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with thin-stub FPA report unexpectedly passed")
+        require_diagnostic_class(
+            json.loads(thin_stub_workload_report.read_text()),
+            "fpa_report_missing",
+            "thin-stub FPA report",
+        )
+
+        bad_fpa_manifest_dir = out_dir / "bad-fpa-manifest-audit"
+        bad_fpa_manifest_dir.mkdir()
+        bad_fpa_manifest_report = bad_fpa_manifest_dir / "workload-report-bundle.json"
+        bad_fpa_manifest_json = bad_fpa_manifest_dir / "rtl-fpa-report.json"
+        bad_fpa_manifest_report.write_text(report.read_text())
+        bad_fpa_manifest_data = json.loads((out_dir / "rtl-fpa-report.json").read_text())
+        bad_fpa_manifest_data["rtl_manifest_identity"] = "other-rtl-manifest"
+        bad_fpa_manifest_json.write_text(json.dumps(bad_fpa_manifest_data, indent=2, sort_keys=True) + "\n")
+        bad_fpa_manifest_audit = bad_fpa_manifest_dir / "artifact-audit-summary.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(bad_fpa_manifest_audit),
+                str(bad_fpa_manifest_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with mismatched FPA RTL manifest unexpectedly passed audit")
+        require_nested_text(
+            json.loads(bad_fpa_manifest_audit.read_text()),
+            "rtl_manifest_identity does not match",
+            "FPA RTL manifest mismatch audit",
+        )
+        polluted_fpa_metric_report = out_dir / "polluted-fpa-metric-workload-report-bundle.json"
+        polluted_fpa_metric_data = json.loads(report.read_text())
+        polluted_fpa_metric_data["optional_artifact_identities"].pop("fpa_report", None)
+        polluted_fpa_metric_data["input_artifact_fingerprints"].pop("rtl-fpa-report", None)
+        polluted_fpa_metric_data["input_artifact_fingerprints"].pop("rtl-fpa-summary", None)
+        for metric in polluted_fpa_metric_data.get("metric_records", []):
+            if not isinstance(metric, dict):
+                continue
+            if metric.get("metric_class") in {"frequency", "area", "dynamic_power", "leakage_power"}:
+                metric["derivation_kind"] = "external_metric"
+                metric["evidence_source_artifact_id"] = "source-compat-summary"
+                metric["producer_component"] = "external-metric"
+        polluted_fpa_metric_report.write_text(
+            json.dumps(polluted_fpa_metric_data, indent=2, sort_keys=True) + "\n"
+        )
+        polluted_fpa_metric_audit = out_dir / "polluted-fpa-metric-workload-report-bundle-audit.json"
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(polluted_fpa_metric_audit),
+                str(polluted_fpa_metric_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("workload report with uncited FPA metric classes unexpectedly passed audit")
+        require_nested_text(
+            json.loads(polluted_fpa_metric_audit.read_text()),
+            "FPA metrics require",
+            "polluted FPA metric audit",
+        )
         alternate_comparison_runtime_input = "test-app-fixture::vecsum::alternate"
         alternate_dfg_report = out_dir / "alternate-runtime-input-dfg-sim-report.json"
         alternate_dfg_data = json.loads((out_dir / "vecsum-dfg-sim-report.json").read_text())
@@ -1499,6 +1828,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -2253,6 +2584,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
         )
@@ -2297,6 +2630,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
         )
@@ -2340,6 +2675,8 @@ def main() -> int:
                 str(out_dir / "rtl-manifest.json"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -2405,6 +2742,8 @@ def main() -> int:
                 str(out_dir / "sim-cycle-summary.csv"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
@@ -2479,6 +2818,8 @@ def main() -> int:
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
                 "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
+                "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],
         )
@@ -2546,6 +2887,8 @@ def main() -> int:
                 str(out_dir / "sim-cycle-summary.csv"),
                 "--artifact",
                 str(out_dir / "rtl-fpa-summary.csv"),
+                "--artifact",
+                str(out_dir / "rtl-fpa-report.json"),
                 "--artifact",
                 str(out_dir / "dse-candidate-summary.csv"),
             ],

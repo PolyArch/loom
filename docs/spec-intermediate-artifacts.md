@@ -315,6 +315,9 @@ Rules:
 * The row must identify the normalized FPA JSON report when frequency,
   area, power, or energy values are reported through Loom's FPA
   contract.
+* Consumers that need FPA report provenance must follow the normalized
+  FPA JSON report identity. The CSV summary is a projection of FPA
+  metrics, not the canonical report artifact.
 
 ### End-To-End Demonstrator Summary
 
@@ -703,6 +706,9 @@ Rules:
 * Backend reports may calibrate an analytic model, but calibrated
   analytic output remains analytic unless the metric is directly
   produced by a backend evidence class.
+* Workload and hardware report bundles that cite FPA evidence must
+  reference this JSON artifact by identity; they must not use an FPA
+  CSV summary identity as the normalized FPA report reference.
 
 ### Artifact Audit Summary
 
