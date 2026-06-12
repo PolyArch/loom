@@ -645,6 +645,7 @@ Required top-level keys:
 * `tool_profile_id`;
 * `tool_name`;
 * `tool_version`;
+* `fidelity_level`;
 * `command_role`;
 * `command_timeout_seconds`;
 * `checked_top_modules`;
@@ -662,6 +663,10 @@ Rules:
 * `capability_class` identifies the EDA role from
   `docs/spec-eda-tooling.md`; the first required backend role is
   `rtl_lint`.
+* `fidelity_level` records the evidence fidelity provided by the
+  backend role. Baseline mappings are owned by
+  `docs/spec-eda-tooling.md`; `rtl_lint` is structural RTL evidence and
+  `rtl_sim` is functional RTL evidence.
 * `command_timeout_seconds` is the positive timeout applied to each
   backend tool invocation.
 * `rtl_manifest_identity` must resolve to the RTL manifest consumed by

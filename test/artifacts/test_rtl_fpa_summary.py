@@ -192,6 +192,8 @@ def main() -> int:
             raise AssertionError(f"default RTL EDA report should pass: {default_eda_data}")
         if default_eda_data.get("tool_version") != "Verilator 5.test default lint":
             raise AssertionError(f"default RTL EDA report should record tool version: {default_eda_data}")
+        if default_eda_data.get("fidelity_level") != "rtl_structural":
+            raise AssertionError(f"default RTL EDA report should record structural fidelity: {default_eda_data}")
 
         failing_lint_tool = out_dir / "default-failing-lint-tool"
         failing_lint_tool.write_text(
@@ -470,6 +472,38 @@ def main() -> int:
             raise AssertionError(
                 f"FPA JSON should cite passing backend reports: {passing_lint_report_data}"
             )
+        passing_lint_metrics = passing_lint_report_data.get("metric_records", [])
+        if not passing_lint_metrics or any(
+            metric.get("fidelity_level") != "analytic"
+            for metric in passing_lint_metrics
+            if isinstance(metric, dict)
+        ):
+            raise AssertionError(
+                f"lint-backed FPA report must keep analytic metric fidelity: {passing_lint_report_data}"
+            )
+        bad_fpa_metric_fidelity = out_dir / "bad-fpa-metric-fidelity-rtl-fpa-report.json"
+        bad_fpa_metric_fidelity_data = dict(passing_lint_report_data)
+        bad_fpa_metric_fidelity_metrics = [
+            dict(metric) if isinstance(metric, dict) else metric
+            for metric in passing_lint_metrics
+        ]
+        bad_fpa_metric_fidelity_metrics[0]["fidelity_level"] = "rtl_functional"
+        bad_fpa_metric_fidelity_data["metric_records"] = bad_fpa_metric_fidelity_metrics
+        bad_fpa_metric_fidelity.write_text(
+            json.dumps(bad_fpa_metric_fidelity_data, indent=2, sort_keys=True) + "\n"
+        )
+        result = artifact_test_common.run_command(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "bad-fpa-metric-fidelity-audit-summary.json"),
+                str(bad_fpa_metric_fidelity),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("FPA report with rtl_functional metric fidelity unexpectedly passed audit")
 
         malformed_eda = out_dir / "malformed-rtl-eda-report.json"
         malformed_eda.write_text("{not-json\n")

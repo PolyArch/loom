@@ -119,6 +119,16 @@ Baseline tool classes are:
 Tool classes define required capabilities. A concrete profile may
 implement multiple classes when a backend supports multiple roles.
 
+Normalized EDA reports record the fidelity class implied by the
+executed backend role. Baseline mappings are:
+
+* `rtl_lint` produces `rtl_structural` evidence;
+* `rtl_sim` produces `rtl_functional` evidence.
+
+These mappings classify the backend evidence itself. They do not
+relabel analytic FPA metrics that merely cite a backend report as a
+calibration or structural input.
+
 ## Library Profiles
 
 A library profile describes technology or platform data used by an EDA

@@ -51,6 +51,11 @@ CAPABILITIES = {
     ),
 }
 
+FIDELITY_BY_CAPABILITY = {
+    "rtl_lint": "rtl_structural",
+    "rtl_sim": "rtl_functional",
+}
+
 
 def positive_int(raw: str) -> int:
     try:
@@ -246,6 +251,7 @@ def base_report(
         "tool_profile_id": f"tool::{tool_name}::{config.capability_class}",
         "tool_name": tool_name,
         "tool_version": "",
+        "fidelity_level": FIDELITY_BY_CAPABILITY[config.capability_class],
         "command_role": config.command_role,
         "command_timeout_seconds": timeout_seconds,
         "checked_top_modules": top_modules,

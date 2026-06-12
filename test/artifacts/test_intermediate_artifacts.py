@@ -152,9 +152,18 @@ EDA_REPORT_REQUIRED_KEYS = {
     "report_id",
     "capability_class",
     "rtl_manifest_identity",
+    "tool_profile_id",
     "tool_name",
+    "tool_version",
+    "fidelity_level",
     "command_role",
     "command_timeout_seconds",
+    "checked_top_modules",
+    "checked_source_files",
+    "input_artifact_fingerprints",
+    "source_file_fingerprints",
+    "returncode",
+    "diagnostic_records",
     "diagnostics",
     "status",
 }
@@ -555,6 +564,11 @@ def main() -> int:
                         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
                     )
                 assert_json_artifact(rtl_sim_eda, EDA_REPORT_REQUIRED_KEYS)
+                rtl_sim_data = json.loads(rtl_sim_eda.read_text())
+                if rtl_sim_data.get("fidelity_level") != "rtl_functional":
+                    raise AssertionError(
+                        f"RTL sim EDA report should declare functional fidelity: {rtl_sim_data}"
+                    )
                 produced.append(rtl_sim_eda)
             if filename == "sim-cycle-summary.csv":
                 for backing_name in (

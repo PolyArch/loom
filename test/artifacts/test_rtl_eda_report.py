@@ -21,6 +21,7 @@ REQUIRED_KEYS = {
     "tool_profile_id",
     "tool_name",
     "tool_version",
+    "fidelity_level",
     "command_role",
     "command_timeout_seconds",
     "checked_top_modules",
@@ -111,6 +112,8 @@ def main() -> int:
             raise AssertionError(f"unexpected RTL EDA report kind: {blocked_data}")
         if blocked_data.get("capability_class") != "rtl_lint":
             raise AssertionError(f"unexpected RTL EDA capability class: {blocked_data}")
+        if blocked_data.get("fidelity_level") != "rtl_structural":
+            raise AssertionError(f"RTL lint report should declare structural fidelity: {blocked_data}")
         if blocked_data.get("rtl_manifest_identity") != "rtl-manifest":
             raise AssertionError(f"unexpected RTL manifest identity: {blocked_data}")
         if blocked_data.get("status") != "blocked":
@@ -479,6 +482,10 @@ def main() -> int:
         ):
             raise AssertionError(
                 f"environment-selected RTL lint tool was not recorded: {env_selected_data}"
+            )
+        if env_selected_data.get("fidelity_level") != "rtl_structural":
+            raise AssertionError(
+                f"environment-selected RTL lint should record structural fidelity: {env_selected_data}"
             )
         require_audit_pass(
             repo,

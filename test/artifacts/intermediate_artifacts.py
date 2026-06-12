@@ -597,6 +597,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "tool_profile_id",
             "tool_name",
             "tool_version",
+            "fidelity_level",
             "command_role",
             "command_timeout_seconds",
             "checked_top_modules",
@@ -5790,13 +5791,22 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             "rtl_lint": "rtl lint",
             "rtl_sim": "rtl sim",
         }
+        expected_fidelity_levels = {
+            "rtl_lint": "rtl_structural",
+            "rtl_sim": "rtl_functional",
+        }
         capability_class = data.get("capability_class")
         if capability_class not in expected_command_roles:
             diagnostics.append("EDA report capability_class must be rtl_lint or rtl_sim")
-        elif data.get("command_role") != expected_command_roles[capability_class]:
-            diagnostics.append(
-                f"EDA report command_role must be {expected_command_roles[capability_class]}"
-            )
+        else:
+            if data.get("command_role") != expected_command_roles[capability_class]:
+                diagnostics.append(
+                    f"EDA report command_role must be {expected_command_roles[capability_class]}"
+                )
+            if data.get("fidelity_level") != expected_fidelity_levels[capability_class]:
+                diagnostics.append(
+                    f"EDA report fidelity_level must be {expected_fidelity_levels[capability_class]}"
+                )
         timeout_seconds = data.get("command_timeout_seconds")
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             diagnostics.append("EDA report command_timeout_seconds must be a positive integer")
