@@ -1281,7 +1281,7 @@ def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics
                 diagnostics.append(f"row {row_index}: fabric.system pass row has no links")
             if not node_kinds:
                 diagnostics.append(f"row {row_index}: fabric.system pass row has no node kinds")
-            if not node_kinds <= {"acc_core", "fixed_accelerator", "host_core", "memory"}:
+            if not node_kinds <= {"acc_core", "cache", "fixed_accelerator", "host_core", "memory"}:
                 diagnostics.append(f"row {row_index}: fabric.system pass row has unknown node kinds")
         else:
             diagnostics.append(f"row {row_index}: ADG hardware pass row has unknown topology class")

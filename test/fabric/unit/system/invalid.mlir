@@ -37,3 +37,41 @@ fabric.system @bad_spatial_reference_soc memory_model = "sequential" {
   // expected-error @+1 {{'fabric.node' op acc_core spatial reference @missing_template does not resolve to a fabric.module}}
   fabric.node @acc0 kind = "acc_core" ports = ["mem.aw:output"] attributes {spatial = @missing_template, scalar = "rv32im"}
 }
+
+// -----
+
+fabric.system @bad_cache_params_soc memory_model = "sequential" {
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and capacity_bytes of at least one line}}
+  fabric.node @l1d0 kind = "cache"
+      ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
+               "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
+}
+
+// -----
+
+fabric.system @bad_cache_line_bytes_soc memory_model = "sequential" {
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and capacity_bytes of at least one line}}
+  fabric.node @l1d0 kind = "cache"
+      ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
+               "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
+      attributes {params = {line_bytes = 48 : i64, capacity_bytes = 32768 : i64}}
+}
+
+// -----
+
+fabric.system @bad_cache_capacity_soc memory_model = "sequential" {
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires positive power-of-two line_bytes and capacity_bytes of at least one line}}
+  fabric.node @l1d0 kind = "cache"
+      ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output",
+               "mem.aw:output", "mem.w:output", "mem.b:input", "mem.ar:output", "mem.r:input"]
+      attributes {params = {line_bytes = 64 : i64, capacity_bytes = 1 : i64}}
+}
+
+// -----
+
+fabric.system @bad_cache_ports_soc memory_model = "sequential" {
+  // expected-error @+1 {{'fabric.node' op kind 'cache' requires at least one subordinate memory port and one manager memory port}}
+  fabric.node @l1d0 kind = "cache"
+      ports = ["host.aw:input", "host.w:input", "host.b:output", "host.ar:input", "host.r:output"]
+      attributes {params = {line_bytes = 64 : i64, capacity_bytes = 32768 : i64}}
+}

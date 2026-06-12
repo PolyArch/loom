@@ -15,6 +15,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 
+#include <optional>
+
 using namespace mlir;
 using namespace fabric;
 
@@ -49,6 +51,19 @@ struct SystemChannel {
   std::string port;
   std::string channel;
   std::string direction;
+};
+
+struct SystemPortProfile {
+  bool awInput = false;
+  bool awOutput = false;
+  bool wInput = false;
+  bool wOutput = false;
+  bool bInput = false;
+  bool bOutput = false;
+  bool arInput = false;
+  bool arOutput = false;
+  bool rInput = false;
+  bool rOutput = false;
 };
 
 static std::string endpointKey(llvm::StringRef owner, llvm::StringRef port,
@@ -101,9 +116,69 @@ static LogicalResult verifySystemPortArray(Operation *op, ArrayAttr ports) {
   return success();
 }
 
+static LogicalResult
+collectSystemPortProfiles(Operation *op, ArrayAttr ports,
+                          llvm::StringMap<SystemPortProfile> &profiles) {
+  for (Attribute attr : ports) {
+    FailureOr<SystemChannel> channel = parseSystemChannel(attr, op);
+    if (failed(channel))
+      return failure();
+    SystemPortProfile &profile = profiles[channel->port];
+    bool isInput = channel->direction == "input";
+    bool isOutput = channel->direction == "output";
+    if (channel->channel == "aw") {
+      profile.awInput |= isInput;
+      profile.awOutput |= isOutput;
+    } else if (channel->channel == "w") {
+      profile.wInput |= isInput;
+      profile.wOutput |= isOutput;
+    } else if (channel->channel == "b") {
+      profile.bInput |= isInput;
+      profile.bOutput |= isOutput;
+    } else if (channel->channel == "ar") {
+      profile.arInput |= isInput;
+      profile.arOutput |= isOutput;
+    } else if (channel->channel == "r") {
+      profile.rInput |= isInput;
+      profile.rOutput |= isOutput;
+    }
+  }
+  return success();
+}
+
+static bool hasMemorySubordinateShape(const SystemPortProfile &profile) {
+  return profile.awInput && profile.wInput && profile.bOutput &&
+         profile.arInput && profile.rOutput;
+}
+
+static bool hasMemoryManagerShape(const SystemPortProfile &profile) {
+  return profile.awOutput && profile.wOutput && profile.bInput &&
+         profile.arOutput && profile.rInput;
+}
+
+static std::optional<int64_t> getPositiveI64Param(DictionaryAttr params,
+                                                  StringRef name) {
+  if (!params)
+    return std::nullopt;
+  Attribute attr = params.get(name);
+  if (!attr)
+    return std::nullopt;
+  auto intAttr = dyn_cast<IntegerAttr>(attr);
+  if (!intAttr)
+    return std::nullopt;
+  int64_t value = intAttr.getInt();
+  if (value <= 0)
+    return std::nullopt;
+  return value;
+}
+
+static bool isPowerOfTwo(int64_t value) {
+  return value > 0 && (value & (value - 1)) == 0;
+}
+
 static bool isBaselineSystemNodeKind(StringRef kind) {
   return kind == "host_core" || kind == "acc_core" ||
-         kind == "fixed_accelerator" || kind == "memory";
+         kind == "fixed_accelerator" || kind == "memory" || kind == "cache";
 }
 
 static bool isValidMemoryModel(StringRef model) {
@@ -1988,6 +2063,30 @@ LogicalResult NodeOp::verify() {
       return emitOpError("kind 'memory' requires bytes metadata");
     if (bytes.getInt() <= 0)
       return emitOpError("kind 'memory' requires positive bytes metadata");
+  }
+  if (kind == "cache") {
+    std::optional<int64_t> lineBytes =
+        getPositiveI64Param(getParamsAttr(), "line_bytes");
+    std::optional<int64_t> capacityBytes =
+        getPositiveI64Param(getParamsAttr(), "capacity_bytes");
+    if (!lineBytes || !capacityBytes || !isPowerOfTwo(*lineBytes) ||
+        *capacityBytes < *lineBytes)
+      return emitOpError("kind 'cache' requires positive power-of-two "
+                         "line_bytes and capacity_bytes of at least one line");
+
+    llvm::StringMap<SystemPortProfile> profiles;
+    if (failed(
+            collectSystemPortProfiles(getOperation(), getPortsAttr(), profiles)))
+      return failure();
+    bool hasSubordinate = false;
+    bool hasManager = false;
+    for (const auto &entry : profiles) {
+      hasSubordinate |= hasMemorySubordinateShape(entry.getValue());
+      hasManager |= hasMemoryManagerShape(entry.getValue());
+    }
+    if (!hasSubordinate || !hasManager)
+      return emitOpError("kind 'cache' requires at least one subordinate "
+                         "memory port and one manager memory port");
   }
   return success();
 }

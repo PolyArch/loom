@@ -381,7 +381,7 @@ SystemBuilder &SystemBuilder::addHostCore(std::string nodeName,
                                           std::vector<std::string> ports) {
   nodes.push_back(SystemNodeSpec{std::move(nodeName), "host_core",
                                  std::move(ports), "", std::move(scalar), "",
-                                 std::nullopt});
+                                 std::nullopt, {}});
   return *this;
 }
 
@@ -390,7 +390,7 @@ SystemBuilder &SystemBuilder::addSpatialAccelerator(
     std::vector<std::string> ports) {
   nodes.push_back(SystemNodeSpec{std::move(nodeName), "acc_core",
                                  std::move(ports), std::move(spatialModule),
-                                 std::move(scalar), "", std::nullopt});
+                                 std::move(scalar), "", std::nullopt, {}});
   return *this;
 }
 
@@ -399,7 +399,18 @@ SystemBuilder::addFixedAccelerator(std::string nodeName, std::string function,
                                    std::vector<std::string> ports) {
   nodes.push_back(SystemNodeSpec{std::move(nodeName), "fixed_accelerator",
                                  std::move(ports), "", "", std::move(function),
-                                 std::nullopt});
+                                 std::nullopt, {}});
+  return *this;
+}
+
+SystemBuilder &SystemBuilder::addCache(std::string nodeName,
+                                       std::uint64_t lineBytes,
+                                       std::uint64_t capacityBytes,
+                                       std::vector<std::string> ports) {
+  nodes.push_back(SystemNodeSpec{
+      std::move(nodeName), "cache", std::move(ports), "", "", "",
+      std::nullopt,
+      {{"capacity_bytes", capacityBytes}, {"line_bytes", lineBytes}}});
   return *this;
 }
 
@@ -407,7 +418,7 @@ SystemBuilder &SystemBuilder::addMemory(std::string nodeName,
                                         std::uint64_t bytes,
                                         std::vector<std::string> ports) {
   nodes.push_back(SystemNodeSpec{std::move(nodeName), "memory",
-                                 std::move(ports), "", "", "", bytes});
+                                 std::move(ports), "", "", "", bytes, {}});
   return *this;
 }
 
@@ -627,6 +638,18 @@ llvm::Error SystemBuilder::print(llvm::raw_ostream &os) const {
     if (node.bytes) {
       printComma();
       os << "bytes = " << *node.bytes << " : i64";
+    }
+    if (!node.params.empty()) {
+      printComma();
+      os << "params = {";
+      bool firstParam = true;
+      for (const auto &[key, value] : node.params) {
+        if (!firstParam)
+          os << ", ";
+        firstParam = false;
+        os << key << " = " << value << " : i64";
+      }
+      os << '}';
     }
     os << "}\n";
   }
@@ -934,13 +957,19 @@ SystemBuilder loom::adg::buildHeterogeneousSocAdg() {
                                axiManagerPort("mem"));
   system.addFixedAccelerator("fft0", "fft", axiManagerPort("mem"));
 
+  std::vector<std::string> cachePorts;
+  appendPorts(cachePorts, axiSubordinatePort("host"));
+  appendPorts(cachePorts, axiManagerPort("mem"));
+  system.addCache("l1d0", 64, 32 * 1024, std::move(cachePorts));
+
   std::vector<std::string> dramPorts;
-  appendPorts(dramPorts, axiSubordinatePort("host"));
+  appendPorts(dramPorts, axiSubordinatePort("cache"));
   appendPorts(dramPorts, axiSubordinatePort("acc0"));
   appendPorts(dramPorts, axiSubordinatePort("fft0"));
   system.addMemory("dram0", 1024 * 1024, std::move(dramPorts));
 
-  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host");
+  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
+  connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "cache");
   connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
   connectAxiMemoryPort(system, "fft0", "mem", "dram0", "fft0");
   return system;

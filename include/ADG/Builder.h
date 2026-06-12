@@ -122,6 +122,7 @@ struct SystemNodeSpec {
   std::string scalar;
   std::string function;
   std::optional<std::uint64_t> bytes;
+  std::map<std::string, std::uint64_t> params;
 };
 
 struct SystemLinkSpec {
@@ -145,6 +146,9 @@ public:
                                        std::vector<std::string> ports);
   SystemBuilder &addFixedAccelerator(std::string name, std::string function,
                                      std::vector<std::string> ports);
+  SystemBuilder &addCache(std::string name, std::uint64_t lineBytes,
+                          std::uint64_t capacityBytes,
+                          std::vector<std::string> ports);
   SystemBuilder &addMemory(std::string name, std::uint64_t bytes,
                            std::vector<std::string> ports);
   SystemBuilder &connect(std::string srcNode, std::string srcPort,

@@ -104,13 +104,13 @@ def main() -> int:
             system_row,
             {
                 "topology_class": "fabric_system",
-                "node_count": "4",
-                "link_count": "15",
+                "node_count": "5",
+                "link_count": "20",
                 "verify_status": "pass",
                 "tile_kinds": "",
                 "schedule_kinds": "",
                 "adg_builder_recipe_identity": "adg-builder::heterogeneous-soc",
-                "node_kinds": "acc_core;fixed_accelerator;host_core;memory",
+                "node_kinds": "acc_core;cache;fixed_accelerator;host_core;memory",
             },
             label="ADG Builder generated fabric.system",
         )

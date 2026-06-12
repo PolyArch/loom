@@ -8,9 +8,12 @@
 // HARDWARE-SAME: memory_model = "sequential"
 // HARDWARE: fabric.node @host0 kind = "host_core"
 // HARDWARE: fabric.node @acc0 kind = "acc_core"
-// HARDWARE-SAME: spatial = @shared_reduction_adg
+// HARDWARE: spatial = @shared_reduction_adg
 // HARDWARE: fabric.node @fft0 kind = "fixed_accelerator"
+// HARDWARE: fabric.node @l1d0 kind = "cache"
 // HARDWARE: fabric.node @dram0 kind = "memory"
+// HARDWARE: fabric.link src = @host0 src_port = "mem" src_channel = "aw" dst = @l1d0 dst_port = "host" dst_channel = "aw"
+// HARDWARE: fabric.link src = @l1d0 src_port = "mem" src_channel = "aw" dst = @dram0 dst_port = "cache" dst_channel = "aw"
 // HARDWARE: fabric.link src = @acc0 src_port = "mem" src_channel = "aw" dst = @dram0 dst_port = "acc0" dst_channel = "aw"
 
-// SUMMARY: {{.*}}::heterogeneous_dual_accel_soc,fabric_system,4,15,pass,fabric.system verified; link_count counts explicit fabric.link records,,,adg-builder::heterogeneous-soc,acc_core;fixed_accelerator;host_core;memory
+// SUMMARY: {{.*}}::heterogeneous_dual_accel_soc,fabric_system,5,20,pass,fabric.system verified; link_count counts explicit fabric.link records,,,adg-builder::heterogeneous-soc,acc_core;cache;fixed_accelerator;host_core;memory

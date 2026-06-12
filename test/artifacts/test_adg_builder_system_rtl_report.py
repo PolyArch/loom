@@ -136,11 +136,11 @@ def main() -> int:
             system_row,
             {
                 "topology_class": "fabric_system",
-                "node_count": "4",
-                "link_count": "15",
+                "node_count": "5",
+                "link_count": "20",
                 "verify_status": "pass",
                 "adg_builder_recipe_identity": "adg-builder::heterogeneous-soc",
-                "node_kinds": "acc_core;fixed_accelerator;host_core;memory",
+                "node_kinds": "acc_core;cache;fixed_accelerator;host_core;memory",
             },
             label="system hardware row",
         )
@@ -189,8 +189,8 @@ def main() -> int:
                 "lowering_kind": "architecture_rtl",
                 "source_root_kind": "fabric_system",
                 "systemverilog_profile": "behavioral_shell_v1",
-                "node_count": 4,
-                "link_count": 15,
+                "node_count": 5,
+                "link_count": 20,
             },
             label="system RTL lowering",
         )
@@ -206,8 +206,8 @@ def main() -> int:
             "module heterogeneous_dual_accel_soc",
             "input logic clk",
             "input logic rst_n",
-            "LOOM_NODE_COUNT = 4",
-            "LOOM_LINK_COUNT = 15",
+            "LOOM_NODE_COUNT = 5",
+            "LOOM_LINK_COUNT = 20",
         ):
             if snippet not in source_text:
                 raise AssertionError(f"system RTL source missed {snippet}: {source_text}")
@@ -280,10 +280,10 @@ def main() -> int:
                 "rtl_lint_status": "blocked",
                 "rtl_sim_status": "skipped",
                 "synth_status": "skipped",
-                "frequency_mhz": "385.000",
-                "area_um2": "2750.000",
-                "dynamic_power_mw": "2.550",
-                "leakage_power_mw": "0.375",
+                "frequency_mhz": "350.000",
+                "area_um2": "3250.000",
+                "dynamic_power_mw": "3.000",
+                "leakage_power_mw": "0.425",
                 "fidelity_level": "analytic",
                 "frequency_source": "analytic_fpa_model",
                 "area_source": "analytic_fpa_model",
@@ -346,12 +346,12 @@ def main() -> int:
             raise AssertionError(f"system hardware bundle fingerprint drift: {bundle}")
         metrics = metric_by_id(bundle.get("metric_records", []))
         for metric_id, value in (
-            (f"metric::{system_identity}::node_count", 4),
-            (f"metric::{system_identity}::link_count", 15),
-            (f"metric::{system_identity}::frequency_mhz", 385.0),
-            (f"metric::{system_identity}::area_um2", 2750.0),
-            (f"metric::{system_identity}::dynamic_power_mw", 2.55),
-            (f"metric::{system_identity}::leakage_power_mw", 0.375),
+            (f"metric::{system_identity}::node_count", 5),
+            (f"metric::{system_identity}::link_count", 20),
+            (f"metric::{system_identity}::frequency_mhz", 350.0),
+            (f"metric::{system_identity}::area_um2", 3250.0),
+            (f"metric::{system_identity}::dynamic_power_mw", 3.0),
+            (f"metric::{system_identity}::leakage_power_mw", 0.425),
         ):
             metric = metrics.get(metric_id)
             if metric is None or metric.get("value") != value:
@@ -363,6 +363,7 @@ def main() -> int:
             rtl_manifest,
             eda_report,
             fpa,
+            fpa_report,
             hardware_bundle,
         ]
         manifest_args = []
@@ -389,6 +390,8 @@ def main() -> int:
         }
         if "system-hardware-report-bundle.json" not in manifest_artifacts:
             raise AssertionError(f"system hardware bundle should be registered in manifest: {manifest_data}")
+        if "system-rtl-fpa-report.json" not in manifest_artifacts:
+            raise AssertionError(f"system FPA report should be registered in manifest: {manifest_data}")
 
         demonstrator = out_dir / "e2e-demonstrator-summary.csv"
         demonstrator_rows = artifact_test_common.run_csv_summary(
@@ -455,6 +458,12 @@ def main() -> int:
             for edge in final_edges
         ):
             raise AssertionError(f"system manifest missed hardware bundle to demonstrator edge: {final_manifest}")
+        if not any(
+            edge.get("producer_artifact_kind") == "fpa_report"
+            and edge.get("consumer_artifact_kind") == "hardware_report_bundle"
+            for edge in final_edges
+        ):
+            raise AssertionError(f"system manifest missed FPA report to hardware bundle edge: {final_manifest}")
 
         audit = out_dir / "system-artifact-audit-summary.json"
         artifact_test_common.require_success(
@@ -468,6 +477,7 @@ def main() -> int:
                 str(rtl_manifest),
                 str(eda_report),
                 str(fpa),
+                str(fpa_report),
                 str(hardware_bundle),
                 str(artifact_manifest),
                 str(demonstrator),
