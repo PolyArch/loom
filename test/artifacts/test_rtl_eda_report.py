@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -339,6 +340,45 @@ def main() -> int:
             "timeout RTL EDA report audit",
         )
 
+        failing_profile = out_dir / "failing-profile.sh"
+        failing_profile.write_text("echo 'profile activation failed for test' >&2\nreturn 9\n")
+        profile_failure_report = out_dir / "profile-failure-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                f"LOOM_RTL_EDA_ENV_FILE={failing_profile}",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(profile_failure_report),
+            ],
+            "profile-failure RTL EDA report",
+        )
+        profile_failure_data = json.loads(profile_failure_report.read_text())
+        if profile_failure_data.get("status") != "blocked":
+            raise AssertionError(
+                f"profile activation failure should produce blocked report: {profile_failure_data}"
+            )
+        profile_failure_records = profile_failure_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "tool_activation_failed"
+            and "profile activation failed for test" in record.get("message", "")
+            for record in profile_failure_records
+        ):
+            raise AssertionError(
+                f"profile activation failure should produce structured diagnostic: {profile_failure_data}"
+            )
+        require_audit_pass(
+            repo,
+            profile_failure_report,
+            out_dir / "profile-failure-rtl-eda-audit-summary.json",
+            "profile-failure RTL EDA report audit",
+        )
+
         env_tool = out_dir / "env-verilator"
         env_tool.write_text(
             "#!/bin/sh\n"
@@ -381,6 +421,63 @@ def main() -> int:
             env_selected,
             out_dir / "env-selected-rtl-eda-audit-summary.json",
             "environment-selected RTL EDA report audit",
+        )
+
+        profile_tool = out_dir / "profile-verilator"
+        profile_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test profile'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        profile_tool.chmod(profile_tool.stat().st_mode | 0o111)
+        profile_env = out_dir / "rtl-eda-profile.sh"
+        profile_env.write_text(
+            f"export LOOM_RTL_LINT_TOOL={shlex.quote(str(profile_tool))}\n"
+            "export LOOM_RTL_EDA_TIMEOUT_SECONDS=7\n"
+        )
+        profile_selected = out_dir / "profile-selected-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                "-u",
+                "LOOM_RTL_LINT_TOOL",
+                "-u",
+                "LOOM_RTL_EDA_TIMEOUT_SECONDS",
+                f"LOOM_RTL_EDA_ENV_FILE={profile_env}",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(profile_selected),
+            ],
+            "profile-selected RTL lint tool report",
+        )
+        profile_selected_data = json.loads(profile_selected.read_text())
+        if profile_selected_data.get("status") != "pass":
+            raise AssertionError(
+                f"profile-selected RTL lint tool should pass: {profile_selected_data}"
+            )
+        if (
+            profile_selected_data.get("tool_name") != "profile-verilator"
+            or profile_selected_data.get("tool_version") != "Verilator 5.test profile"
+        ):
+            raise AssertionError(
+                f"profile-selected RTL lint tool was not recorded: {profile_selected_data}"
+            )
+        if profile_selected_data.get("command_timeout_seconds") != 7:
+            raise AssertionError(
+                f"profile-selected RTL lint report should record local timeout: {profile_selected_data}"
+            )
+        require_audit_pass(
+            repo,
+            profile_selected,
+            out_dir / "profile-selected-rtl-eda-audit-summary.json",
+            "profile-selected RTL EDA report audit",
         )
 
         rtl_sim_tool = out_dir / "rtl-sim-tool"

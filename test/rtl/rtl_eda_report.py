@@ -591,6 +591,17 @@ def build_report(
         )
         restrict_source_claims(report, sources)
         return report
+    profile_error = os.environ.get("LOOM_RTL_EDA_PROFILE_ERROR", "").strip()
+    if profile_error:
+        return blocked_report(
+            manifest_path,
+            manifest,
+            tool.name,
+            os.environ.get("LOOM_RTL_EDA_PROFILE_ERROR_CLASS", "tool_activation_failed"),
+            profile_error,
+            timeout_seconds,
+            config,
+        )
     if tool.executable is None:
         return blocked_report(
             manifest_path,
