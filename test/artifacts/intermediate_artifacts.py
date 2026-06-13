@@ -123,6 +123,7 @@ ARTIFACT_EDGE_PAIRS = (
     ("dataflow-primitive-coverage", "unsupported-scope-ledger"),
     ("pnr-mapping-summary", "unsupported-scope-ledger"),
     ("sim-cycle-summary", "unsupported-scope-ledger"),
+    ("cgra-status-summary", "unsupported-scope-ledger"),
     ("rtl-fpa-summary", "unsupported-scope-ledger"),
     ("e2e-demonstrator-summary", "unsupported-scope-ledger"),
     ("dse-candidate-summary", "unsupported-scope-ledger"),
@@ -301,6 +302,79 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "blocked",
             "DFG-sim and CGRA-sim cycle evidence is not available yet",
+        ),
+    ),
+    "cgra_status": CsvSchema(
+        kind="cgra_status",
+        filename="cgra-status-summary.csv",
+        first_columns=(
+            "suite",
+            "case",
+            "source_row",
+            "software_root",
+            "graph_ids",
+            "required_slice_count",
+            "hardware_system",
+            "spatialcore_template",
+            "mapping_id",
+            "dfg_report",
+            "dfg_report_fingerprint",
+            "dfg_status",
+            "mapping_artifact",
+            "mapping_artifact_fingerprint",
+            "mapping_status",
+            "cgra_report",
+            "cgra_report_fingerprint",
+            "cgra_status",
+            "comparison_report",
+            "comparison_report_fingerprint",
+            "comparison_status",
+            "final_outputs_present",
+            "final_memory_state_present",
+            "status",
+            "diagnostic_class",
+            "owner",
+            "blocking_prerequisite",
+            "diagnostic",
+        ),
+        status_columns=(
+            "dfg_status",
+            "mapping_status",
+            "cgra_status",
+            "comparison_status",
+            "status",
+        ),
+        numeric_columns=("required_slice_count",),
+        identity_columns=("suite", "case", "source_row"),
+        scaffold_row=(
+            "scaffold",
+            "scaffold",
+            "",
+            "",
+            "",
+            "0",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "not_run",
+            "",
+            "",
+            "not_run",
+            "",
+            "",
+            "not_run",
+            "",
+            "",
+            "not_run",
+            "false",
+            "false",
+            "not_run",
+            "missing_status",
+            "implementation",
+            "row_inventory",
+            "CGRA status scaffold has no row-complete evidence yet",
         ),
     ),
     "rtl_fpa": CsvSchema(
@@ -812,6 +886,7 @@ STANDARD_ARTIFACT_PATHS = (
     ("dfg_sim_report", "temp/vecsum-dfg-sim-report.json"),
     ("cgra_sim_report", "temp/vecsum-cgra-sim-report.json"),
     ("sim_comparison_report", "temp/sim-comparison-report.json"),
+    ("cgra_status", "temp/cgra-status-summary.csv"),
     ("runtime_package", "temp/runtime-package.json"),
     ("sim_cycle", "temp/sim-cycle-summary.csv"),
     ("rtl_manifest", "temp/rtl-manifest.json"),
@@ -1109,8 +1184,75 @@ def dse_candidate_metric_id(row: dict[str, str], name: str) -> str | None:
     return None
 
 
-def validate_kind_invariants(schema: CsvSchema, row: dict[str, str], diagnostics: list[str], row_index: int) -> None:
+def is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def validate_referenced_artifact_fingerprint(
+    anchor: Path,
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+    artifact_column: str,
+    fingerprint_column: str,
+) -> None:
+    reference = row.get(artifact_column, "")
+    fingerprint = row.get(fingerprint_column, "")
+    if not reference:
+        diagnostics.append(f"row {row_index}: pass row lacks {artifact_column}")
+        return
+    if not fingerprint:
+        diagnostics.append(f"row {row_index}: pass row lacks {fingerprint_column}")
+    elif not is_sha256(fingerprint):
+        diagnostics.append(f"row {row_index}: pass row has invalid {fingerprint_column}")
+    resolved = resolve_artifact_reference(anchor, reference)
+    if not resolved.is_file():
+        diagnostics.append(f"row {row_index}: pass row artifact path does not exist in {artifact_column}")
+        return
+    if is_sha256(fingerprint) and artifact_fingerprint(resolved) != fingerprint:
+        diagnostics.append(f"row {row_index}: pass row {fingerprint_column} does not match {artifact_column}")
+
+
+def validate_cgra_status_pass_row(
+    anchor: Path,
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row.get(column, "") != "pass":
+            diagnostics.append(f"row {row_index}: CGRA status pass row requires {column}=pass")
+    slice_count = nonnegative_int_cell(row, "required_slice_count")
+    if slice_count is None or slice_count <= 0:
+        diagnostics.append(f"row {row_index}: CGRA status pass row requires positive required_slice_count")
+    if row.get("final_outputs_present") != "true" and row.get("final_memory_state_present") != "true":
+        diagnostics.append(f"row {row_index}: CGRA status pass row lacks final output or memory-state evidence")
+    for artifact_column, fingerprint_column in (
+        ("dfg_report", "dfg_report_fingerprint"),
+        ("mapping_artifact", "mapping_artifact_fingerprint"),
+        ("cgra_report", "cgra_report_fingerprint"),
+        ("comparison_report", "comparison_report_fingerprint"),
+    ):
+        validate_referenced_artifact_fingerprint(
+            anchor,
+            row,
+            diagnostics,
+            row_index,
+            artifact_column,
+            fingerprint_column,
+        )
+
+
+def validate_kind_invariants(
+    schema: CsvSchema,
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+    anchor: Path,
+) -> None:
     statuses = dict(row_statuses(schema, row))
+    if schema.kind == "cgra_status" and statuses.get("status") == "pass":
+        validate_cgra_status_pass_row(anchor, row, diagnostics, row_index)
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
         for column in ("dfg_sim_cycles", "cgra_sim_cycles"):
             if row.get(column, "") and nonnegative_int_cell(row, column) is None:
@@ -1529,7 +1671,7 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
         validate_statuses(schema, row, diagnostics, index)
         validate_numeric(schema, row, diagnostics, index)
         validate_identity(schema, row, diagnostics, index)
-        validate_kind_invariants(schema, row, diagnostics, index)
+        validate_kind_invariants(schema, row, diagnostics, index, path)
         if any(value == "pass" for _, value in row_statuses(schema, row)):
             diagnostic = row.get("diagnostic", "")
             if diagnostic == "" and schema.kind not in {"sim_cycle", "pnr_mapping"}:

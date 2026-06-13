@@ -298,6 +298,13 @@ The implementation must provide example programs for these cases:
   `fabric.instantiate`;
 * mixed spatial and temporal resources connected through SSA values and
   boundary ops inside one `fabric.module`;
+* regular SpatialCore CGRA templates such as chain, mesh, array, or
+  systolic-like structures, where any coordinates are visualization
+  metadata and every connection is explicit in the emitted
+  `fabric.module` graph;
+* irregular SpatialCore CGRA templates such as heterogeneous islands,
+  reduction trees, sparse long-link graphs, or mixed spatial/temporal
+  regions, without relying on a fixed grid topology;
 * minimal host plus one accelerator plus one memory target;
 * heterogeneous host plus two different accelerator cores;
 * heterogeneous system with one SpatialCore-backed accelerator and one
@@ -417,6 +424,13 @@ The ADG Builder target is complete when:
 * emitted MLIR verifies under the Fabric ADG verifier;
 * generated names and operation ordering are stable;
 * regular-topology helpers can emit optional visualization metadata;
+* regular SpatialCore CGRA examples render as regular layouts when
+  visualization metadata is present, but removing that metadata does
+  not change Fabric legality, PnR legality, simulation behavior, RTL
+  lowering, or FPA estimation;
+* irregular SpatialCore CGRA examples prove the Builder and Fabric
+  dialect are not limited to mesh, array, or coordinate-adjacent
+  topology;
 * no convenience helper requires mesh, x/y coordinates, Manhattan
   routing, or homogeneous accelerator cores;
 * inline-fabric construction can be mixed with convenience construction

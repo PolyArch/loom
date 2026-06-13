@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
-GAP_STATUSES = {"blocked", "unsupported", "skipped"}
+GAP_STATUSES = {"blocked", "unsupported", "skipped", "not_run"}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -36,6 +36,8 @@ def discover_artifacts(explicit: list[str]) -> list[Path]:
 def case_identity(schema: intermediate_artifacts.CsvSchema, row: dict[str, str]) -> str:
     if schema.kind == "dataflow_primitive_coverage":
         return f"{row.get('workload', '')}:{row.get('primitive', '')}"
+    if schema.kind == "cgra_status":
+        return f"{row.get('suite', '')}:{row.get('case', '')}:{row.get('source_row', '')}"
     values = [row.get(column, "") for column in schema.identity_columns]
     return ":".join(value for value in values if value) or "unknown"
 
