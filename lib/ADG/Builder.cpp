@@ -1086,6 +1086,25 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                 {"product"}});
   module.addPe(std::move(squaredPe));
 
+  PeSpec vectorAddPe;
+  vectorAddPe.inputs = {{"pa", "mem0_data0", "!fabric.bits<32>", ""},
+                        {"pb", "mem0_data1", "!fabric.bits<32>", ""}};
+  vectorAddPe.resultNames = {"vector_sum"};
+  vectorAddPe.resultTypes = {"!fabric.bits<32>"};
+  vectorAddPe.fus.push_back(FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+                                    {"rhs", "pb", "!fabric.bits<32>", ""}},
+                                   {"!fabric.bits<32>"},
+                                   {FabricOpSpec{{"sum"},
+                                                 {"arith.addf"},
+                                                 {"lhs", "rhs"},
+                                                 {"!fabric.bits<32>",
+                                                  "!fabric.bits<32>"},
+                                                 {"!fabric.bits<32>"},
+                                                 {},
+                                                 {}}},
+                                   {"sum"}});
+  module.addPe(std::move(vectorAddPe));
+
   PeSpec reductionPe;
   reductionPe.inputs = {{"pa", "i32a", "!fabric.bits<32>", ""},
                         {"pb", "i32b", "!fabric.bits<32>", ""},
@@ -1147,6 +1166,30 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   reductionPe.fus.push_back(makeBinary32Fu("combined", "arith.xori"));
   module.addPe(std::move(reductionPe));
 
+  PeSpec vectorSyncPe;
+  vectorSyncPe.inputs = {{"pa", "mem0_done0", "!fabric.bits<0>", ""},
+                         {"pb", "vector_sync_mid", "!fabric.bits<0>", ""},
+                         {"pc", "mem0_store_done0", "!fabric.bits<0>", ""}};
+  vectorSyncPe.resultTypes = {"!fabric.bits<0>"};
+  vectorSyncPe.fus.push_back(FuSpec{{{"fa", "pa", "!fabric.bits<0>", ""},
+                                     {"fb", "pb", "!fabric.bits<0>", ""},
+                                     {"fc", "pc", "!fabric.bits<0>", ""}},
+                                    {"!fabric.bits<0>"},
+                                    {FabricOpSpec{{"sync_done0", "sync_done1",
+                                                   "sync_done2"},
+                                                  {"dataflow.sync"},
+                                                  {"fa", "fb", "fc"},
+                                                  {"!fabric.bits<0>",
+                                                   "!fabric.bits<0>",
+                                                   "!fabric.bits<0>"},
+                                                  {"!fabric.bits<0>",
+                                                   "!fabric.bits<0>",
+                                                   "!fabric.bits<0>"},
+                                                  {},
+                                                  {{"bitmask", "111"}}}},
+                                    {"sync_done0"}});
+  module.addPe(std::move(vectorSyncPe));
+
   PeSpec syncPe;
   syncPe.inputs = {{"pc", "mem0_done0", "!fabric.bits<0>", ""},
                    {"pd", "sync_aux_done", "!fabric.bits<0>", ""}};
@@ -1171,6 +1214,17 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
+      "%store0_value = fabric.switch [spatial] %i32b, %vector_sum");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%vector_sync_mid = fabric.switch [spatial] %mem0_done1, "
+      "%mem0_store_done0");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
+  module.addExactBodyLine(
       "%mem0_data0, %mem0_done0, %mem0_data1, %mem0_done1, %mem0_data2, "
       "%mem0_done2, %mem0_data3, %mem0_done3, %mem0_store_done0, "
       "%mem0_store_done1 =");
@@ -1178,8 +1232,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "    fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %load1_addr, "
       "%ctrl, %i32c, %ctrl, %i32d, %ctrl)");
   module.addExactBodyLine(
-      "                              store(%i32a, %i32b, %ctrl, %i32c, "
-      "%i32d, %ctrl)");
+      "                              store(%i32a, %store0_value, %ctrl, "
+      "%i32c, %i32d, %ctrl)");
   module.addExactBodyLine(
       "      [{load_group_size = 4 : i32, store_group_size = 2 : i32}]");
   module.addExactBodyLine(

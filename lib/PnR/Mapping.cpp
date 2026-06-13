@@ -1338,7 +1338,6 @@ loom::pnr::createMapping(const MappingOptions &options) {
       return std::move(err);
     summary.diagnostic = "mapped software graph to fabric resources";
   } else {
-    summary.routes.clear();
     summary.configEntries.clear();
   }
   return summary;

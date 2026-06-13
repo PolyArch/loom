@@ -178,14 +178,14 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::fabric.pe#0.result1",
-                "shared_reduction_adg::fabric.switch#2.operand0",
+                "shared_reduction_adg::fabric.switch#4.operand0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#2.operand0",
-                "shared_reduction_adg::fabric.switch#2.result0",
+                "shared_reduction_adg::fabric.switch#4.operand0",
+                "shared_reduction_adg::fabric.switch#4.result0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#2.result0",
+                "shared_reduction_adg::fabric.switch#4.result0",
                 "shared_reduction_adg::fabric.op#1.operand2",
             ),
             (
@@ -241,7 +241,7 @@ def main() -> int:
 
         graph_mapping_ids: dict[str, str] = {}
         expected_graph_status = {
-            "g_t_vecadd_0_0": "fail",
+            "g_t_vecadd_0_0": "pass",
             "g_t_main_red_0_0": "pass",
         }
         for graph_name in ("g_t_vecadd_0_0", "g_t_main_red_0_0"):
@@ -306,8 +306,27 @@ def main() -> int:
         if len(set(graph_mapping_ids.values())) != len(graph_mapping_ids):
             raise AssertionError(f"multi-graph workload mapping ids collided: {graph_mapping_ids}")
 
+        failed_unrouted_component = copy.deepcopy(data)
+        failed_unrouted_component["status"] = "fail"
+        failed_unrouted_component["unrouted_edges"] = 1
+        failed_unrouted_component["diagnostics"] = ["synthetic unrouted edge"]
+        failed_unrouted_component["unrouted_edge_details"] = [
+            {
+                "edge_ref": "synthetic.producer.result0->synthetic.consumer.operand0",
+                "producer_binding": "placement:synthetic.producer",
+                "consumer_binding": "placement:synthetic.consumer",
+                "payload_kind": "data",
+                "from": "synthetic.producer",
+                "to": "synthetic.consumer",
+                "status": "unrouted",
+                "source_endpoint": "shared_reduction_adg::synthetic.result0",
+                "sink_endpoint": "shared_reduction_adg::synthetic.operand0",
+                "diagnostic": "synthetic missing connectivity",
+            }
+        ]
+
         missing_unrouted_details = out_dir / "missing-unrouted-details-pnr-mapping.json"
-        missing_unrouted_details_data = json.loads((out_dir / "g_t_vecadd_0_0.mapping.json").read_text())
+        missing_unrouted_details_data = copy.deepcopy(failed_unrouted_component)
         missing_unrouted_details_data.pop("unrouted_edge_details", None)
         missing_unrouted_details.write_text(
             json.dumps(missing_unrouted_details_data, indent=2, sort_keys=True) + "\n"
@@ -320,7 +339,7 @@ def main() -> int:
         )
 
         empty_unrouted_details = out_dir / "empty-unrouted-details-pnr-mapping.json"
-        empty_unrouted_details_data = json.loads((out_dir / "g_t_vecadd_0_0.mapping.json").read_text())
+        empty_unrouted_details_data = copy.deepcopy(failed_unrouted_component)
         empty_unrouted_details_data["unrouted_edge_details"] = []
         empty_unrouted_details.write_text(
             json.dumps(empty_unrouted_details_data, indent=2, sort_keys=True) + "\n"
