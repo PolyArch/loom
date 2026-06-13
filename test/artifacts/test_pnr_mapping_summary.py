@@ -198,7 +198,7 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::mem.load#0.result1",
-                "shared_reduction_adg::fabric.op#29.operand0",
+                "shared_reduction_adg::fabric.op#30.operand0",
             ),
             (
                 "shared_reduction_adg::fabric.pe#0.result0",

@@ -264,6 +264,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "prefix_sum_inclusive",
                 "--case",
+                "mean",
+                "--case",
                 "vecadd",
             ],
         )
@@ -277,6 +279,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum",
             "cumsum",
             "prefix_sum_inclusive",
+            "mean",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -289,6 +292,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "prefix_sum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "cumsum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -324,6 +328,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum",
             "cumsum",
             "prefix_sum_inclusive",
+            "mean",
         ):
             assert_promoted_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
@@ -349,8 +354,11 @@ def main(argv: list[str]) -> int:
             raise AssertionError(
                 f"prefix_sum_inclusive should use shared reduction hardware: {prefix_sum_inclusive_row}"
             )
+        mean_row = one_row(rows, "mean")
+        if mean_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"mean should use shared reduction hardware: {mean_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 9:
+        if counts["pass"] < 10:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [

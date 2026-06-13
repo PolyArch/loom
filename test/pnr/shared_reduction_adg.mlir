@@ -15,21 +15,25 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                                     %i32d : !fabric.bits<32>,
                                     %ctrl : !fabric.bits<0>) {
   // CHECK: fabric.op [@dataflow.stream]
-  %idx, %running, %carried_scan =
+  %idx, %running, %carried_scan, %reduction_scale =
       fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64> to !fabric.bits<32>,
                            %pb = %i64b : !fabric.bits<64> to !fabric.bits<32>,
                            %pc = %i64c : !fabric.bits<64> to !fabric.bits<32>,
                            %pd = %data0 : !fabric.bits<32>,
                            %pi = %i32a : !fabric.bits<32>,
-                           %pn = %scan_feedback : !fabric.bits<32>)
-          -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+                           %pn = %scan_feedback : !fabric.bits<32>,
+                           %ps = %i32b : !fabric.bits<32>)
+          -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+              !fabric.bits<32>) {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>,
               %fc = %pc : !fabric.bits<32>,
               %data = %pd : !fabric.bits<32>,
               %init = %pi : !fabric.bits<32>,
-              %next = %pn : !fabric.bits<32>)
-        -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
+              %next = %pn : !fabric.bits<32>,
+              %scale = %ps : !fabric.bits<32>)
+        -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+            !fabric.bits<32>) {
       %idx, %rwc = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
                    {hw_params = [{step_op = ["+="], cont_cond = ["<"]}],
                     sw_configs = {step_op = "+=", cont_cond = "<"}}
@@ -40,8 +44,12 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                    -> !fabric.bits<32>
       %sum = fabric.op [@arith.addi] (%data, %carried)
              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %idx, %sum, %carried
-        : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
+      %stable_scale = fabric.op [@dataflow.invariant] (%rwc, %scale)
+                      : (!fabric.bits<1>, !fabric.bits<32>)
+                        -> !fabric.bits<32>
+      fabric.yield %idx, %sum, %carried, %stable_scale
+        : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+          !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
@@ -70,10 +78,10 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                     %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@dataflow.invariant]
     fabric.fu(%cond = %pa : !fabric.bits<32> to !fabric.bits<1>,
-              %value = %pb : !fabric.bits<32>) -> () {
+              %value = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %stable = fabric.op [@dataflow.invariant] (%cond, %value)
                 : (!fabric.bits<1>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield
+      fabric.yield %stable : !fabric.bits<32>
     }
     // CHECK: fabric.op [@dataflow.invariant]
     fabric.fu(%cond = %pa : !fabric.bits<32> to !fabric.bits<1>,
@@ -119,14 +127,16 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+  %scaled_reduction =
+      fabric.pe [spatial] (%pa = %carried_scan : !fabric.bits<32>,
+                        %pb = %reduction_scale : !fabric.bits<32>)
+          -> !fabric.bits<32> {
     // CHECK: fabric.op [@arith.mulf]
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
-              %rhs = %pb : !fabric.bits<32>) -> () {
+              %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %product = fabric.op [@arith.mulf] (%lhs, %rhs)
                  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield
+      fabric.yield %product : !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
