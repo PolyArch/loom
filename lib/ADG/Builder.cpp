@@ -813,7 +813,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   streamPe.inputs = {{"pa", "i64a", "!fabric.bits<64>", "!fabric.bits<32>"},
                      {"pb", "i64b", "!fabric.bits<64>", "!fabric.bits<32>"},
                      {"pc", "i64c", "!fabric.bits<64>", "!fabric.bits<32>"},
-                     {"pd", "mem0_data0", "!fabric.bits<32>", ""},
+                     {"pd", "reduction_input", "!fabric.bits<32>", ""},
                      {"pi", "i32a", "!fabric.bits<32>", ""}};
   streamPe.resultNames = {"idx"};
   streamPe.resultTypes = {"!fabric.bits<32>"};
@@ -852,6 +852,41 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   streamFu.yieldValues = {"idx"};
   streamPe.fus.push_back(std::move(streamFu));
   module.addPe(std::move(streamPe));
+
+  PeSpec absPe;
+  absPe.inputs = {{"pa", "mem0_data0", "!fabric.bits<32>", ""}};
+  absPe.resultNames = {"abs_data"};
+  absPe.resultTypes = {"!fabric.bits<32>"};
+  absPe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<32>", ""}},
+                             {"!fabric.bits<32>"},
+                             {FabricOpSpec{{"abs"},
+                                           {"llvm.intr.abs"},
+                                           {"value"},
+                                           {"!fabric.bits<32>"},
+                                           {"!fabric.bits<32>"},
+                                           {},
+                                           {}}},
+                             {"abs"}});
+  module.addPe(std::move(absPe));
+
+  PeSpec squaredPe;
+  squaredPe.inputs = {{"pa", "mem0_data0", "!fabric.bits<32>", ""},
+                      {"pb", "mem0_data0", "!fabric.bits<32>", ""}};
+  squaredPe.resultNames = {"squared_data"};
+  squaredPe.resultTypes = {"!fabric.bits<32>"};
+  squaredPe.fus.push_back(FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+                                 {"rhs", "pb", "!fabric.bits<32>", ""}},
+                                {"!fabric.bits<32>"},
+                                {FabricOpSpec{{"product"},
+                                              {"arith.muli"},
+                                              {"lhs", "rhs"},
+                                              {"!fabric.bits<32>",
+                                               "!fabric.bits<32>"},
+                                              {"!fabric.bits<32>"},
+                                              {},
+                                              {}}},
+                                {"product"}});
+  module.addPe(std::move(squaredPe));
 
   PeSpec reductionPe;
   reductionPe.inputs = {{"pa", "i32a", "!fabric.bits<32>", ""},
@@ -953,6 +988,13 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
       "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>, "
       "!fabric.bits<0>)");
+  module.addExactBodyLine(
+      "%reduction_input = fabric.switch [spatial] %mem0_data0, %abs_data, "
+      "%squared_data");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
   return module;
 }
 

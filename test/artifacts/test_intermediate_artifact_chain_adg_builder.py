@@ -51,10 +51,10 @@ def main() -> int:
             hardware_row,
             {
                 "topology_class": "fabric_module_template",
-                "node_count": "4",
+                "node_count": "7",
                 "link_count": "0",
                 "verify_status": "pass",
-                "tile_kinds": "mem;pe",
+                "tile_kinds": "mem;pe;switch",
                 "schedule_kinds": "spatial",
                 "adg_builder_recipe_identity": "adg-builder::shared-reduction",
             },

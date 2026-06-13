@@ -156,13 +156,13 @@ def main() -> int:
             "routed_edges": 6,
             "unrouted_edges": 0,
             "unplaced_records": 0,
-            "config_records": 89,
+            "config_records": 97,
             "status": "pass",
         }
         for key, value in expected_json.items():
             if data.get(key) != value:
                 raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
-        if len(data.get("config_bitstream", [])) != 89:
+        if len(data.get("config_bitstream", [])) != 97:
             raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
         if data.get("unrouted_edge_details") != []:
             raise AssertionError(f"passing mapping should have no unrouted edge details: {data}")
@@ -178,18 +178,26 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::fabric.pe#0.result1",
-                "shared_reduction_adg::fabric.switch#0.operand0",
+                "shared_reduction_adg::fabric.switch#1.operand0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#0.operand0",
-                "shared_reduction_adg::fabric.switch#0.result0",
+                "shared_reduction_adg::fabric.switch#1.operand0",
+                "shared_reduction_adg::fabric.switch#1.result0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#0.result0",
+                "shared_reduction_adg::fabric.switch#1.result0",
                 "shared_reduction_adg::fabric.op#1.operand2",
             ),
             (
                 "shared_reduction_adg::mem.load#0.result0",
+                "shared_reduction_adg::fabric.switch#0.operand0",
+            ),
+            (
+                "shared_reduction_adg::fabric.switch#0.operand0",
+                "shared_reduction_adg::fabric.switch#0.result0",
+            ),
+            (
+                "shared_reduction_adg::fabric.switch#0.result0",
                 "shared_reduction_adg::fabric.op#2.operand0",
             ),
             (
@@ -198,7 +206,7 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::mem.load#0.result1",
-                "shared_reduction_adg::fabric.op#30.operand0",
+                "shared_reduction_adg::fabric.op#32.operand0",
             ),
             (
                 "shared_reduction_adg::fabric.pe#0.result0",

@@ -19,7 +19,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64> to !fabric.bits<32>,
                            %pb = %i64b : !fabric.bits<64> to !fabric.bits<32>,
                            %pc = %i64c : !fabric.bits<64> to !fabric.bits<32>,
-                           %pd = %data0 : !fabric.bits<32>,
+                           %pd = %reduction_input : !fabric.bits<32>,
                            %pi = %i32a : !fabric.bits<32>,
                            %pn = %scan_feedback : !fabric.bits<32>,
                            %ps = %i32b : !fabric.bits<32>)
@@ -52,6 +52,33 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
           !fabric.bits<32>
     }
   }
+  %abs_data =
+      fabric.pe [spatial] (%pa = %data0 : !fabric.bits<32>)
+          -> !fabric.bits<32> {
+    // CHECK: fabric.op [@llvm.intr.abs]
+    fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %abs = fabric.op [@llvm.intr.abs] (%value)
+             : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %abs : !fabric.bits<32>
+    }
+  }
+  %squared_data =
+      fabric.pe [spatial] (%pa = %data0 : !fabric.bits<32>,
+                        %pb = %data0 : !fabric.bits<32>)
+          -> !fabric.bits<32> {
+    // CHECK: fabric.op [@arith.muli]
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %product = fabric.op [@arith.muli] (%lhs, %rhs)
+                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %product : !fabric.bits<32>
+    }
+  }
+  %reduction_input =
+      fabric.switch [spatial] %data0, %abs_data, %squared_data
+        [{connectivity_table = ["111"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+        -> !fabric.bits<32>
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                     %pb = %i32b : !fabric.bits<32>,
                     %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {

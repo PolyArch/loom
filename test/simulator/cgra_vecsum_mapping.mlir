@@ -17,7 +17,7 @@
 // MAPPING-DAG: "component_config_fingerprint": "{{[0-9a-f]+}}"
 // MAPPING-DAG: "routed_edges": 6
 // MAPPING-DAG: "unrouted_edges": 0
-// MAPPING-DAG: "config_records": 89
+// MAPPING-DAG: "config_records": 97
 
 // CGRA-DAG: "kind": "cgra_sim_report"
 // CGRA-DAG: "workload": "vecsum"
@@ -33,15 +33,15 @@
 // CGRA-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
 // CGRA-DAG: "difference_classification": "expected_hardware_constraint"
 // CGRA-DAG: "dfg_cycles": 579
-// CGRA-DAG: "modeled_lower_bound_cycles": 595
+// CGRA-DAG: "modeled_lower_bound_cycles": 597
 // CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
-// CGRA-DAG: "performance_delta_cycles": 16
-// CGRA-DAG: "route_latency_cycles": 12
-// CGRA-DAG: "route_segments": 12
+// CGRA-DAG: "performance_delta_cycles": 18
+// CGRA-DAG: "route_latency_cycles": 14
+// CGRA-DAG: "route_segments": 14
 // CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
-// CGRA-DAG: "hardware_aware_cycles": 595
-// CGRA-DAG: "config_records": 89
+// CGRA-DAG: "hardware_aware_cycles": 597
+// CGRA-DAG: "config_records": 97
 // CGRA-DAG: "functional_state_source": "carried_from_dfg_sim_report"
 // CGRA-DAG: "cycle_breakdown"
 // CGRA-DAG: "category": "route_latency"
@@ -61,4 +61,4 @@
 // CGRA-DAG: "delta_explained_by_modeled_constraints"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-NEXT: vecsum,579,595,pass,"DFG-sim and CGRA-sim reports available; CGRA-sim includes mapping route, memory, and temporal penalties"
+// SUMMARY-NEXT: vecsum,579,597,pass,"DFG-sim and CGRA-sim reports available; CGRA-sim includes mapping route, memory, and temporal penalties"
