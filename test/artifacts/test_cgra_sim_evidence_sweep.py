@@ -125,6 +125,13 @@ def assert_comparison_artifact(evidence_dir: Path, case: str, expected_status: s
             raise AssertionError(f"sweep comparison artifact has stale {key}: {path}: {data}")
 
 
+def assert_mapping_hardware(evidence_dir: Path, case: str, expected_hardware: str) -> None:
+    path = evidence_dir / f"{case}.mapping.json"
+    data = json.loads(path.read_text())
+    if data.get("hardware") != expected_hardware:
+        raise AssertionError(f"{case} should map to {expected_hardware}: {path}: {data}")
+
+
 def assert_component_references_resolve(evidence_dir: Path, case: str) -> None:
     aggregate_specs = (
         (
@@ -211,14 +218,17 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "reduction",
                 "--case",
+                "dotproduct",
+                "--case",
                 "vecadd",
             ],
         )
-        for case in ("vecsum", "reduction"):
+        for case in ("vecsum", "reduction", "dotproduct"):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
+        assert_mapping_hardware(evidence_dir, "dotproduct", "dotproduct_fmuladd_adg")
         assert_comparison_artifact(evidence_dir, "vecadd", "blocked")
         assert_component_references_resolve(evidence_dir, "vecadd")
 
@@ -241,10 +251,13 @@ def main(argv: list[str]) -> int:
             ],
         )
         rows = read_rows(status_csv)
-        for case in ("vecsum", "reduction"):
+        for case in ("vecsum", "reduction", "dotproduct"):
             assert_promoted_row(repo, rows, case)
+        dotproduct_row = one_row(rows, "dotproduct")
+        if dotproduct_row["hardware_system"] != "dotproduct_fmuladd_adg":
+            raise AssertionError(f"dotproduct should use fmuladd hardware: {dotproduct_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 2:
+        if counts["pass"] < 3:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [

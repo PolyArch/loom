@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|adg-builder] [--legacy-app-root DIR]
+usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -188,10 +188,14 @@ PY
 for case_name in "${CASES[@]}"; do
   case_out="${chain_root}/${case_name}"
   rm -rf "${case_out}"
+  case_hardware_source="${HARDWARE_SOURCE}"
+  if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "dotproduct" ]]; then
+    case_hardware_source="dotproduct-fmuladd"
+  fi
   bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
     --output-dir "${case_out}" \
     --case "${case_name}" \
-    --hardware-source "${HARDWARE_SOURCE}" \
+    --hardware-source "${case_hardware_source}" \
     --legacy-app-root "${LEGACY_APP_ROOT}"
   normalize_case_artifacts "${case_name}" "${case_out}"
 done

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -133,6 +133,10 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
+    ;;
+  dotproduct-fmuladd)
+    hardware_mlir="${ROOT}/test/pnr/dotproduct_fmuladd_adg.mlir"
+    hardware_name="dotproduct_fmuladd_adg"
     ;;
   adg-builder)
     hardware_mlir="${OUT_DIR}/adg-builder-shared-reduction-adg.mlir"
