@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -137,6 +137,10 @@ case "${HARDWARE_SOURCE}" in
   dotproduct-fmuladd)
     hardware_mlir="${ROOT}/test/pnr/dotproduct_fmuladd_adg.mlir"
     hardware_name="dotproduct_fmuladd_adg"
+    ;;
+  byte-swap-store)
+    hardware_mlir="${ROOT}/test/pnr/byte_swap_store_adg.mlir"
+    hardware_name="byte_swap_store_adg"
     ;;
   adg-builder)
     hardware_mlir="${OUT_DIR}/adg-builder-shared-reduction-adg.mlir"

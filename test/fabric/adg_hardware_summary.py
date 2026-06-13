@@ -25,6 +25,7 @@ DEFAULT_INPUTS = (
     ROOT / "test" / "pnr" / "minimal_temporal_adg.mlir.inc",
     ROOT / "test" / "pnr" / "shared_reduction_adg.mlir",
     ROOT / "test" / "pnr" / "dotproduct_fmuladd_adg.mlir",
+    ROOT / "test" / "pnr" / "byte_swap_store_adg.mlir",
 )
 ADG_BUILDER_RECIPES = {
     "test/pnr/minimal_spatial_adg.mlir.inc": "adg-builder::minimal-spatial",

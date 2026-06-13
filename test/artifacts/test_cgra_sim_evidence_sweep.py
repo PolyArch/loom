@@ -220,15 +220,18 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "dotproduct",
                 "--case",
+                "byte_swap",
+                "--case",
                 "vecadd",
             ],
         )
-        for case in ("vecsum", "reduction", "dotproduct"):
+        for case in ("vecsum", "reduction", "dotproduct", "byte_swap"):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
         assert_mapping_hardware(evidence_dir, "dotproduct", "dotproduct_fmuladd_adg")
+        assert_mapping_hardware(evidence_dir, "byte_swap", "byte_swap_store_adg")
         assert_comparison_artifact(evidence_dir, "vecadd", "blocked")
         assert_component_references_resolve(evidence_dir, "vecadd")
 
@@ -251,13 +254,16 @@ def main(argv: list[str]) -> int:
             ],
         )
         rows = read_rows(status_csv)
-        for case in ("vecsum", "reduction", "dotproduct"):
+        for case in ("vecsum", "reduction", "dotproduct", "byte_swap"):
             assert_promoted_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "dotproduct_fmuladd_adg":
             raise AssertionError(f"dotproduct should use fmuladd hardware: {dotproduct_row}")
+        byte_swap_row = one_row(rows, "byte_swap")
+        if byte_swap_row["hardware_system"] != "byte_swap_store_adg":
+            raise AssertionError(f"byte_swap should use store hardware: {byte_swap_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 3:
+        if counts["pass"] < 4:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
