@@ -205,6 +205,32 @@ coordinates, and a stacked-grid helper may emit a `grid3d` visualization
 layout. These hints are for GUI tools only. Explicit links remain the
 topology source of truth.
 
+## Topology Breadth
+
+The Builder must support both regular and irregular CGRA construction as
+first-class targets.
+
+Regular helpers cover traditional mesh-like, array-like, chain,
+systolic-row, and clustered-array structures. They may produce layout
+metadata that lets visualization tools draw the result as the same
+regular topology the architect requested.
+
+Irregular construction covers arbitrary explicit topology: heterogeneous
+islands, trees, sparse long links, cross-coupled switches, mixed
+temporal/spatial regions, and exact hand-built connectivity. These
+topologies must be expressible without mesh coordinates or template
+adjacency assumptions.
+
+In both cases, the emitted ADG remains an explicit Fabric graph. For
+`fabric.module`, Graph-region SSA values define connectivity. For
+`fabric.system`, `fabric.link` defines connectivity. Coordinates,
+layout names, ranks, labels, rows, columns, and other display hints are
+visualization metadata only, as specified by
+`docs/spec-mapping-visualization.md` and the ADG inventory fields in
+`docs/spec-intermediate-artifacts.md`. They must not affect Fabric
+verification, PnR placement legality, routing legality, routing costs,
+simulator behavior, RTL lowering, FPA, or DSE candidate scoring.
+
 ## Ergonomics Requirements
 
 The common construction path must be concise:
