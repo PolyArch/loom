@@ -26,6 +26,72 @@ HARDWARE_HEADER = [
     "node_kinds",
 ]
 
+REQUIRED_TOPOLOGY_FAMILIES = {
+    "regular": {
+        "chain_1d",
+        "mesh_2d",
+        "systolic_array",
+        "clustered_array",
+    },
+    "irregular": {
+        "reduction_tree",
+        "cross_coupled_switch",
+        "sparse_long_link",
+        "heterogeneous_islands",
+    },
+}
+
+EXPECTED_TOPOLOGY_SIGNATURES = {
+    "chain_1d": {
+        "layout_class": "regular",
+        "fabric_root": "matrix_chain1d_adg",
+        "tile_counts": {"mem": 1, "pe": 3, "switch": 1},
+        "schedule_kinds": {"spatial"},
+    },
+    "mesh_2d": {
+        "layout_class": "regular",
+        "fabric_root": "matrix_mesh2d_adg",
+        "tile_counts": {"mem": 1, "pe": 4, "switch": 1},
+        "schedule_kinds": {"spatial"},
+    },
+    "systolic_array": {
+        "layout_class": "regular",
+        "fabric_root": "matrix_systolic_array_adg",
+        "tile_counts": {"mem": 1, "pe": 3, "switch": 1},
+        "schedule_kinds": {"spatial"},
+    },
+    "clustered_array": {
+        "layout_class": "regular",
+        "fabric_root": "matrix_clustered_array_adg",
+        "tile_counts": {"mem": 1, "pe": 5, "switch": 2},
+        "schedule_kinds": {"spatial"},
+    },
+    "reduction_tree": {
+        "layout_class": "irregular",
+        "fabric_root": "matrix_reduction_tree_adg",
+        "tile_counts": {"mem": 1, "pe": 3, "switch": 1},
+        "schedule_kinds": {"spatial"},
+    },
+    "cross_coupled_switch": {
+        "layout_class": "irregular",
+        "fabric_root": "matrix_cross_coupled_switch_adg",
+        "tile_counts": {"mem": 1, "pe": 3, "switch": 2},
+        "schedule_kinds": {"spatial"},
+    },
+    "sparse_long_link": {
+        "layout_class": "irregular",
+        "fabric_root": "matrix_sparse_long_link_adg",
+        "tile_counts": {"mem": 1, "pe": 4, "switch": 1},
+        "schedule_kinds": {"spatial"},
+    },
+    "heterogeneous_islands": {
+        "layout_class": "irregular",
+        "fabric_root": "matrix_heterogeneous_islands_adg",
+        "tile_counts": {"mem": 1, "pe": 4, "switch": 1},
+        "schedule_kinds": {"spatial", "temporal"},
+    },
+}
+
 
 def read_summary_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
@@ -53,12 +119,14 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
     if data.get("kind") != "adg_inventory":
         raise AssertionError(f"unexpected inventory kind: {data}")
     candidates = data.get("candidates")
-    if not isinstance(candidates, list) or len(candidates) < 5:
-        raise AssertionError(f"inventory should contain current hardware candidates: {data}")
+    if not isinstance(candidates, list) or len(candidates) < 12:
+        raise AssertionError(f"inventory should contain a reusable ADG matrix: {data}")
 
     ids: set[str] = set()
     root_kinds: set[str] = set()
     layout_classes: set[str] = set()
+    families_by_layout = {"regular": set(), "irregular": set()}
+    topology_fingerprints: dict[str, str] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict):
             raise AssertionError(f"candidate should be an object: {candidate!r}")
@@ -70,8 +138,11 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
         ids.add(candidate_id)
         root_kind = require_candidate_field(candidate, "root_kind")
         layout_class = require_candidate_field(candidate, "layout_class")
+        topology_family = require_candidate_field(candidate, "topology_family")
         root_kinds.add(str(root_kind))
         layout_classes.add(str(layout_class))
+        if str(layout_class) in families_by_layout:
+            families_by_layout[str(layout_class)].add(str(topology_family))
         if candidate.get("coordinates_semantic") is not False:
             raise AssertionError(f"{candidate_id} must not make visual coordinates semantic")
         if candidate.get("visual_metadata_role") not in {"metadata_only", "absent"}:
@@ -95,6 +166,19 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
         coverage = candidate.get("construct_coverage")
         if not isinstance(coverage, dict) or not coverage:
             raise AssertionError(f"{candidate_id} lacks construct coverage")
+        if str(topology_family) in EXPECTED_TOPOLOGY_SIGNATURES:
+            signature = EXPECTED_TOPOLOGY_SIGNATURES[str(topology_family)]
+            if layout_class != signature["layout_class"]:
+                raise AssertionError(f"{candidate_id} has wrong layout signature")
+            if candidate.get("fabric_root") != signature["fabric_root"]:
+                raise AssertionError(f"{candidate_id} has wrong topology root")
+            if coverage.get("tile_counts") != signature["tile_counts"]:
+                raise AssertionError(f"{candidate_id} has wrong tile-count signature")
+            if set(coverage.get("schedule_kinds", [])) != signature["schedule_kinds"]:
+                raise AssertionError(f"{candidate_id} has wrong schedule signature")
+            topology_fingerprints[str(topology_family)] = str(
+                candidate.get("source_mlir_fingerprint")
+            )
         consumers = candidate.get("downstream_consumers")
         if not isinstance(consumers, list) or not consumers:
             raise AssertionError(f"{candidate_id} lacks downstream consumer records")
@@ -110,6 +194,20 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
         raise AssertionError(f"inventory should include module and system roots: {root_kinds}")
     if "regular" not in layout_classes or "irregular" not in layout_classes:
         raise AssertionError(f"inventory should classify regular and irregular candidates: {layout_classes}")
+    for layout_class, required_families in REQUIRED_TOPOLOGY_FAMILIES.items():
+        missing = required_families - families_by_layout[layout_class]
+        if missing:
+            raise AssertionError(
+                f"inventory missed {layout_class} topology families {sorted(missing)}: "
+                f"{families_by_layout[layout_class]}"
+            )
+    duplicate_fingerprints = len(set(topology_fingerprints.values())) != len(
+        topology_fingerprints
+    )
+    if duplicate_fingerprints:
+        raise AssertionError(
+            f"topology families should not share generated sources: {topology_fingerprints}"
+        )
     return data
 
 

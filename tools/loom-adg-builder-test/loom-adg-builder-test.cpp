@@ -32,6 +32,11 @@ static llvm::cl::opt<bool> heterogeneousSoc(
     llvm::cl::desc("emit a heterogeneous SoC system-level ADG"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<std::string> topologyMatrixCase(
+    "topology-matrix-case",
+    llvm::cl::desc("emit a named topology-matrix SpatialCore ADG"),
+    llvm::cl::init(""));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -45,7 +50,7 @@ int main(int argc, char **argv) {
   unsigned selectedRecipes =
       (sharedReduction ? 1 : 0) + (fullSpatialCore ? 1 : 0) +
       (minimalSpatial ? 1 : 0) + (minimalTemporal ? 1 : 0) +
-      (heterogeneousSoc ? 1 : 0);
+      (heterogeneousSoc ? 1 : 0) + (!topologyMatrixCase.empty() ? 1 : 0);
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
     return 1;
@@ -72,6 +77,9 @@ int main(int argc, char **argv) {
       return loom::adg::writeFullSpatialCoreAdg(out);
     if (heterogeneousSoc)
       return loom::adg::writeHeterogeneousSocAdg(out);
+    if (!topologyMatrixCase.empty())
+      return loom::adg::writeSpatialTopologyMatrixAdg(out,
+                                                      topologyMatrixCase);
     return loom::adg::writeSharedReductionAdg(out);
   };
 

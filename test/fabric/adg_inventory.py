@@ -29,32 +29,57 @@ SCHEDULE_RE = re.compile(r"\[(spatial|temporal)\]")
 LINK_RE = re.compile(r"\bfabric\.link\b")
 
 
+TOPOLOGY_MATRIX_CASES = (
+    ("chain-1d", "regular", "chain_1d"),
+    ("mesh-2d", "regular", "mesh_2d"),
+    ("systolic-array", "regular", "systolic_array"),
+    ("clustered-array", "regular", "clustered_array"),
+    ("reduction-tree", "irregular", "reduction_tree"),
+    ("cross-coupled-switch", "irregular", "cross_coupled_switch"),
+    ("sparse-long-link", "irregular", "sparse_long_link"),
+    ("heterogeneous-islands", "irregular", "heterogeneous_islands"),
+)
+
+TOPOLOGY_CLASSIFICATION_BY_RECIPE = {
+    f"adg-builder::topology-{case}": (layout_class, topology_family)
+    for case, layout_class, topology_family in TOPOLOGY_MATRIX_CASES
+}
+
+
 BUILDER_RECIPES = (
     {
         "recipe_id": "adg-builder::minimal-spatial",
-        "argument": "--minimal-spatial",
+        "arguments": ["--minimal-spatial"],
         "filename": "minimal-spatial.mlir",
     },
     {
         "recipe_id": "adg-builder::minimal-temporal",
-        "argument": "--minimal-temporal",
+        "arguments": ["--minimal-temporal"],
         "filename": "minimal-temporal.mlir",
     },
     {
         "recipe_id": "adg-builder::shared-reduction",
-        "argument": "--shared-reduction",
+        "arguments": ["--shared-reduction"],
         "filename": "shared-reduction.mlir",
     },
     {
         "recipe_id": "adg-builder::full-spatialcore",
-        "argument": "--full-spatialcore",
+        "arguments": ["--full-spatialcore"],
         "filename": "full-spatialcore.mlir",
     },
     {
         "recipe_id": "adg-builder::heterogeneous-soc",
-        "argument": "--heterogeneous-soc",
+        "arguments": ["--heterogeneous-soc"],
         "filename": "heterogeneous-soc.mlir",
     },
+    *(
+        {
+            "recipe_id": f"adg-builder::topology-{case}",
+            "arguments": ["--topology-matrix-case", case],
+            "filename": f"topology-{case}.mlir",
+        }
+        for case, _, _ in TOPOLOGY_MATRIX_CASES
+    ),
 )
 
 
@@ -165,6 +190,8 @@ def system_bodies(text: str) -> list[tuple[str, list[str]]]:
 def classify_layout(recipe_id: str, root_kind: str, root_symbol: str) -> tuple[str, str]:
     if root_kind == "fabric.system":
         return "irregular", "heterogeneous_soc"
+    if recipe_id in TOPOLOGY_CLASSIFICATION_BY_RECIPE:
+        return TOPOLOGY_CLASSIFICATION_BY_RECIPE[recipe_id]
     if "minimal" in recipe_id:
         return "regular", "small_array"
     if "shared-reduction" in recipe_id:
@@ -317,8 +344,9 @@ def generate_recipes(out_dir: Path, diagnostics: list[str]) -> list[tuple[str, P
     generated: list[tuple[str, Path]] = []
     for recipe in BUILDER_RECIPES:
         output = out_dir / str(recipe["filename"])
+        arguments = recipe["arguments"]
         result = subprocess.run(
-            [str(tool), str(recipe["argument"]), "--output", str(output)],
+            [str(tool), *[str(argument) for argument in arguments], "--output", str(output)],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,

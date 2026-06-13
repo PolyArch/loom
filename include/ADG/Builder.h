@@ -178,6 +178,8 @@ llvm::Error writeMinimalTemporalAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedReductionAdg(llvm::raw_ostream &os);
 llvm::Error writeFullSpatialCoreAdg(llvm::raw_ostream &os);
 llvm::Error writeHeterogeneousSocAdg(llvm::raw_ostream &os);
+llvm::Error writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,
+                                          llvm::StringRef family);
 
 } // namespace adg
 } // namespace loom

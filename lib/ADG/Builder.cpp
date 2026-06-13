@@ -742,6 +742,204 @@ void connectAxiMemoryPort(SystemBuilder &system, llvm::StringRef managerNode,
                  managerPort.str(), "r");
 }
 
+ModuleBuilder makeTopologyMatrixModule(llvm::StringRef name,
+                                       bool includeTemporal = false) {
+  ModuleBuilder module(name.str());
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("a", "!fabric.bits<32>")
+      .addInput("b", "!fabric.bits<32>")
+      .addInput("c", "!fabric.bits<32>")
+      .addInput("d", "!fabric.bits<32>")
+      .addInput("addr", "!fabric.bits<32>")
+      .addInput("ctrl", "!fabric.bits<0>");
+  if (includeTemporal) {
+    module.addInput("lhs_t", "!fabric.bits_tag<32, 4>")
+        .addInput("rhs_t", "!fabric.bits_tag<32, 4>");
+  }
+  return module;
+}
+
+std::string valueList(llvm::ArrayRef<llvm::StringRef> names) {
+  std::string text;
+  for (llvm::StringRef name : names) {
+    if (!text.empty())
+      text += ", ";
+    text += valueName(name);
+  }
+  return text;
+}
+
+std::string bits32TypeList(std::size_t count) {
+  std::string text = "(";
+  for (std::size_t index = 0; index < count; ++index) {
+    if (index)
+      text += ", ";
+    text += "!fabric.bits<32>";
+  }
+  text += ")";
+  return text;
+}
+
+std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
+  std::string text = "[{connectivity_table = [";
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    if (index)
+      text += ", ";
+    text += "\"";
+    text += rows[index].str();
+    text += "\"";
+  }
+  text += "]}]";
+  return text;
+}
+
+void addSpatialMemLoad(ModuleBuilder &module) {
+  module.addExactBodyLine("%data, %done =");
+  module.addExactBodyLine(
+      "    fabric.mem [spatial] mgr(%mgr) load(%addr, %ctrl)");
+  module.addExactBodyLine(
+      "      [{load_group_size = 1 : i32, store_group_size = 0 : i32}]");
+  module.addExactBodyLine(
+      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
+      "!fabric.bits<0>)");
+  module.addExactBodyLine("      -> (!fabric.bits<32>, !fabric.bits<0>)");
+}
+
+void addSpatialSwitch(ModuleBuilder &module, llvm::ArrayRef<llvm::StringRef> results,
+                      llvm::ArrayRef<llvm::StringRef> inputs,
+                      llvm::ArrayRef<llvm::StringRef> rows) {
+  module.addExactBodyLine(valueList(results) + " =");
+  module.addExactBodyLine("    fabric.switch [spatial] " + valueList(inputs));
+  module.addExactBodyLine("      " + switchConnectivity(rows));
+  module.addExactBodyLine("      : " + bits32TypeList(inputs.size()));
+  module.addExactBodyLine("      -> " +
+                          (results.size() == 1
+                               ? std::string("!fabric.bits<32>")
+                               : bits32TypeList(results.size())));
+}
+
+void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
+                     llvm::StringRef lhs, llvm::StringRef rhs,
+                     llvm::StringRef opName = "arith.addi") {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
+                          " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
+                          " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%fu_lhs = %lhs : !fabric.bits<32>,");
+  module.addExactBodyLine(
+      "                %fu_rhs = %rhs : !fabric.bits<32>) -> !fabric.bits<32> {");
+  module.addExactBodyLine("        %value = fabric.op [@" + opName.str() +
+                          "] (%fu_lhs, %fu_rhs)");
+  module.addExactBodyLine(
+      "                 : (!fabric.bits<32>, !fabric.bits<32>) -> "
+      "!fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+ModuleBuilder buildChain1DAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_chain1d_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "p0", "data", "a");
+  addSpatialSwitch(module, {"s0"}, {"p0", "b"}, {"11"});
+  addSpatialAddPe(module, "p1", "s0", "c");
+  addSpatialAddPe(module, "p2", "p1", "d");
+  return module;
+}
+
+ModuleBuilder buildMesh2DAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_mesh2d_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "n00", "data", "a");
+  addSpatialAddPe(module, "n01", "data", "b");
+  addSpatialSwitch(module, {"east", "south"}, {"n00", "n01"}, {"11", "11"});
+  addSpatialAddPe(module, "n10", "east", "c");
+  addSpatialAddPe(module, "n11", "south", "n10");
+  return module;
+}
+
+ModuleBuilder buildSystolicArrayAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_systolic_array_adg");
+  addSpatialMemLoad(module);
+  addSpatialSwitch(module, {"broadcast"}, {"data", "a", "b"}, {"111"});
+  addSpatialAddPe(module, "cell0", "broadcast", "c", "arith.mulf");
+  addSpatialAddPe(module, "cell1", "cell0", "d", "arith.addf");
+  addSpatialAddPe(module, "cell2", "cell1", "broadcast", "arith.addf");
+  return module;
+}
+
+ModuleBuilder buildClusteredArrayAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_clustered_array_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "c0a", "data", "a");
+  addSpatialAddPe(module, "c0b", "data", "b");
+  addSpatialSwitch(module, {"cluster0"}, {"c0a", "c0b"}, {"11"});
+  addSpatialAddPe(module, "c1a", "c", "d");
+  addSpatialAddPe(module, "c1b", "cluster0", "c1a");
+  addSpatialSwitch(module, {"cluster1"}, {"c1a", "c1b"}, {"11"});
+  addSpatialAddPe(module, "out", "cluster0", "cluster1");
+  return module;
+}
+
+ModuleBuilder buildReductionTreeAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_reduction_tree_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "leaf0", "data", "a");
+  addSpatialAddPe(module, "leaf1", "b", "c");
+  addSpatialSwitch(module, {"tree0", "tree1"}, {"leaf0", "leaf1"}, {"10", "01"});
+  addSpatialAddPe(module, "root", "tree0", "tree1");
+  return module;
+}
+
+ModuleBuilder buildCrossCoupledSwitchAdg() {
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_cross_coupled_switch_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "left", "data", "a");
+  addSpatialAddPe(module, "right", "b", "c");
+  addSpatialSwitch(module, {"x0", "x1"}, {"left", "right"}, {"01", "10"});
+  addSpatialSwitch(module, {"x2", "x3"}, {"x0", "x1", "d"}, {"111", "111"});
+  addSpatialAddPe(module, "merged", "x2", "x3");
+  return module;
+}
+
+ModuleBuilder buildSparseLongLinkAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_sparse_long_link_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "near0", "data", "a");
+  addSpatialAddPe(module, "near1", "b", "c");
+  addSpatialAddPe(module, "far0", "near1", "d");
+  addSpatialSwitch(module, {"long0", "bypass"}, {"near0", "far0", "data"},
+                   {"101", "010"});
+  addSpatialAddPe(module, "far1", "long0", "bypass");
+  return module;
+}
+
+ModuleBuilder buildHeterogeneousIslandsAdg() {
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_heterogeneous_islands_adg", true);
+  TemporalPeConfig temporal;
+  temporal.tagWidth = 4;
+  temporal.numInstruction = 2;
+  temporal.fuConfigMode = "per_fu_config";
+  temporal.operandBufferMode = "per_input_port";
+  temporal.operandBufferSize = 2;
+  module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
+                                "!fabric.bits_tag<32, 4>",
+                                "!fabric.bits<32>", std::move(temporal)));
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "int_island", "data", "a", "arith.addi");
+  addSpatialAddPe(module, "float_island", "b", "c", "arith.mulf");
+  addSpatialSwitch(module, {"island_mux"},
+                   {"int_island", "float_island", "d"}, {"111"});
+  addSpatialAddPe(module, "bridge", "island_mux", "int_island");
+  return module;
+}
+
 } // namespace
 
 ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
@@ -1154,4 +1352,27 @@ llvm::Error loom::adg::writeHeterogeneousSocAdg(llvm::raw_ostream &os) {
     return err;
   os << '\n';
   return buildHeterogeneousSocAdg().print(os);
+}
+
+llvm::Error loom::adg::writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,
+                                                     llvm::StringRef family) {
+  if (family == "chain-1d")
+    return buildChain1DAdg().print(os);
+  if (family == "mesh-2d")
+    return buildMesh2DAdg().print(os);
+  if (family == "systolic-array")
+    return buildSystolicArrayAdg().print(os);
+  if (family == "clustered-array")
+    return buildClusteredArrayAdg().print(os);
+  if (family == "reduction-tree")
+    return buildReductionTreeAdg().print(os);
+  if (family == "cross-coupled-switch")
+    return buildCrossCoupledSwitchAdg().print(os);
+  if (family == "sparse-long-link")
+    return buildSparseLongLinkAdg().print(os);
+  if (family == "heterogeneous-islands")
+    return buildHeterogeneousIslandsAdg().print(os);
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unknown topology matrix case %s",
+                                 family.str().c_str());
 }
