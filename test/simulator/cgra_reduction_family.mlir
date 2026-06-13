@@ -209,7 +209,7 @@
 // SUMMARY-DAG: hash_mix,1280,,blocked
 // SUMMARY-DAG: xor_block,448,,blocked
 // SUMMARY-DAG: matvec,371,533,pass
-// SUMMARY-DAG: vecadd,1603,1655,pass
+// SUMMARY-DAG: vecadd,1603,1657,pass
 // SUMMARY-DAG: vecmul,256,,blocked
 // SUMMARY-DAG: vecscale,384,,blocked
 // SUMMARY-DAG: mean,904,933,pass
@@ -221,7 +221,7 @@
 // SUMMARY-DAG: variance,594,,blocked
 // SUMMARY-DAG: vecsum,579,597,pass
 // SUMMARY-DAG: dotproduct,1219,1256,pass
-// SUMMARY-DAG: spmv,47,,blocked
+// SUMMARY-DAG: spmv,47,98,pass
 // SUMMARY-DAG: prefix_sum,835,868,pass
 // SUMMARY-DAG: prefix_sum_inclusive,13302,13335,pass
 // SUMMARY-DAG: cumsum,14339,14378,pass

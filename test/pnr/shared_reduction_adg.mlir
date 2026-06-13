@@ -310,13 +310,18 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %swapped : !fabric.bits<32>
     }
   }
-  fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64>) -> !fabric.bits<64> {
+  %zext_input =
+      fabric.switch [spatial] %i32a, %data1
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %zext_index =
+      fabric.pe [spatial] (%pa = %zext_input : !fabric.bits<32>)
+          -> !fabric.bits<32> {
     // CHECK: fabric.op [@llvm.zext]
-    fabric.fu(%value = %pa : !fabric.bits<64> to !fabric.bits<32>)
-        -> !fabric.bits<64> {
+    fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
       %wide = fabric.op [@llvm.zext] (%value)
-              : (!fabric.bits<32>) -> !fabric.bits<64>
-      fabric.yield %wide : !fabric.bits<64>
+              : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %wide : !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64>) -> !fabric.bits<64> {
@@ -383,9 +388,13 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.switch [spatial] %done1, %store_done0
         [{connectivity_table = ["11"]}]
         : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>
+  %sync_tail =
+      fabric.switch [spatial] %store_done0, %done2
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>
   fabric.pe [spatial] (%pa = %done0 : !fabric.bits<0>,
                        %pb = %sync_mid : !fabric.bits<0>,
-                       %pc = %store_done0 : !fabric.bits<0>)
+                       %pc = %sync_tail : !fabric.bits<0>)
       -> !fabric.bits<0> {
     fabric.fu(%fa = %pa : !fabric.bits<0>,
               %fb = %pb : !fabric.bits<0>,
@@ -422,10 +431,14 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.switch [spatial] %idx, %i32b
         [{connectivity_table = ["11"]}]
         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %load2_addr =
+      fabric.switch [spatial] %i32c, %zext_index
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   // CHECK: fabric.mem [spatial]
   %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %store_done0, %store_done1 =
       fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %load1_addr, %ctrl,
-                                          %i32c, %ctrl, %i32d, %ctrl)
+                                          %load2_addr, %ctrl, %i32d, %ctrl)
                             store(%idx, %store0_value, %ctrl,
                                   %i32c, %i32d, %ctrl)
         [{load_group_size = 4 : i32, store_group_size = 2 : i32}]

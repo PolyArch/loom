@@ -6,16 +6,19 @@
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecsum/main_func.dfg.mlir --graph g_t_vecsum_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecsum --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l1/main_func.dfg.mlir --graph g_t_vecnorm_l1_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecnorm_l1 --output %t.dir/vecnorm_l1.mapping.csv --artifact %t.dir/vecnorm_l1.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l2/main_func.dfg.mlir --graph g_t_vecnorm_l2_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecnorm_l2 --output %t.dir/vecnorm_l2.mapping.csv --artifact %t.dir/vecnorm_l2.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matvec/main_func.dfg.mlir --graph g_t_matvec_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matvec --output %t.dir/matvec.mapping.csv --artifact %t.dir/matvec.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/vecnorm_l1.mapping.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/vecnorm_l2.mapping.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/matvec.mapping.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
+// RUN: FileCheck %s --check-prefix=SPMV < %t.dir/spmv.mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_reduction_adg
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
@@ -31,6 +34,7 @@
 // HARDWARE-DAG: fabric.op [@arith.shli]
 // HARDWARE-DAG: fabric.op [@arith.andi]
 // HARDWARE-DAG: fabric.op [@arith.ori]
+// HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
 
@@ -79,3 +83,16 @@
 // VECADD-DAG: "edge_ref": "dataflow.load#0.result0->arith.addf#0.operand0"
 // VECADD-DAG: "edge_ref": "dataflow.load#1.result0->arith.addf#0.operand1"
 // VECADD-DAG: "edge_ref": "dataflow.store#0.result0->dataflow.sync#0.operand2"
+
+// SPMV-DAG: "workload": "spmv"
+// SPMV-DAG: "hardware": "shared_reduction_adg"
+// SPMV-DAG: "placed_records": 9
+// SPMV-DAG: "routed_edges": {{[1-9][0-9]*}}
+// SPMV-DAG: "unrouted_edges": 0
+// SPMV-DAG: "status": "pass"
+// SPMV-DAG: "edge_ref": "dataflow.load#1.result0->llvm.zext#0.operand0"
+// SPMV-DAG: "edge_ref": "llvm.zext#0.result0->dataflow.load#2.operand1"
+// SPMV-DAG: "edge_ref": "dataflow.load#2.result1->dataflow.sync#0.operand2"
+// SPMV-DAG: "segment_kind": "module_path"
+// SPMV-NOT: ".out"
+// SPMV-NOT: ".in"

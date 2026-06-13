@@ -297,6 +297,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "dotproduct",
                 "--case",
+                "spmv",
+                "--case",
                 "byte_swap",
                 "--case",
                 "xor_block",
@@ -328,6 +330,7 @@ def main(argv: list[str]) -> int:
             "vecsum",
             "reduction",
             "dotproduct",
+            "spmv",
             "byte_swap",
             "xor_block",
             "vecmul",
@@ -347,6 +350,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
@@ -364,6 +368,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
         assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
+        assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
         assert_component_references_resolve(evidence_dir, "vecadd")
@@ -391,6 +396,7 @@ def main(argv: list[str]) -> int:
             "vecsum",
             "reduction",
             "dotproduct",
+            "spmv",
             "byte_swap",
             "xor_block",
             "vecmul",
@@ -409,6 +415,9 @@ def main(argv: list[str]) -> int:
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"dotproduct should use shared reduction hardware: {dotproduct_row}")
+        spmv_row = one_row(rows, "spmv")
+        if spmv_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"spmv should use shared reduction hardware: {spmv_row}")
         byte_swap_row = one_row(rows, "byte_swap")
         if byte_swap_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"byte_swap should use shared vector hardware: {byte_swap_row}")
@@ -445,7 +454,7 @@ def main(argv: list[str]) -> int:
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 16:
+        if counts["pass"] < 17:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
