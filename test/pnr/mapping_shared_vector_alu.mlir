@@ -9,6 +9,11 @@
 // RUN: FileCheck %s --check-prefix=XOR-CSV < %t.dir/xor.mapping.csv
 // RUN: FileCheck %s --check-prefix=XOR-JSON < %t.dir/xor.mapping.json
 
+// RUN: env BUILD_DIR=%t.dir/vecmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecmul/dfg_check.sh
+// RUN: loom-pnr-map --dfg-mlir %t.dir/vecmul/main_func.dfg.mlir --graph g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0 --hardware-mlir %S/shared_vector_alu_adg.mlir --hardware shared_vector_alu_adg --workload vecmul --output %t.dir/vecmul.mapping.csv --artifact %t.dir/vecmul.mapping.json
+// RUN: FileCheck %s --check-prefix=VECMUL-CSV < %t.dir/vecmul.mapping.csv
+// RUN: FileCheck %s --check-prefix=VECMUL-JSON < %t.dir/vecmul.mapping.json
+
 // BYTE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // BYTE-CSV-NEXT: byte_swap,shared_vector_alu_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_vector_alu_adg,4,4,0,0,pass,mapped software graph to fabric resources
 
@@ -55,3 +60,25 @@
 // XOR-JSON-DAG: "segment_kind": "module_path"
 // XOR-JSON-NOT: ".out"
 // XOR-JSON-NOT: ".in"
+
+// VECMUL-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// VECMUL-CSV-NEXT: vecmul,shared_vector_alu_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_vector_alu_adg,5,6,0,0,pass,mapped software graph to fabric resources
+
+// VECMUL-JSON-DAG: "kind": "pnr_mapping"
+// VECMUL-JSON-DAG: "workload": "vecmul"
+// VECMUL-JSON-DAG: "hardware": "shared_vector_alu_adg"
+// VECMUL-JSON-DAG: "status": "pass"
+// VECMUL-JSON-DAG: "placed_records": 5
+// VECMUL-JSON-DAG: "routed_edges": 6
+// VECMUL-JSON-DAG: "unrouted_edges": 0
+// VECMUL-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.mulf#0.operand0"
+// VECMUL-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.mulf#0.operand1"
+// VECMUL-JSON-DAG: "edge_ref": "arith.mulf#0.result0->dataflow.store#0.operand2"
+// VECMUL-JSON-DAG: "source_endpoint": "shared_vector_alu_adg::fabric.switch#1.operand2"
+// VECMUL-JSON-DAG: "sink_endpoint": "shared_vector_alu_adg::fabric.switch#1.result0"
+// VECMUL-JSON-DAG: "source_endpoint": "shared_vector_alu_adg::fabric.switch#1.result0"
+// VECMUL-JSON-DAG: "sink_endpoint": "shared_vector_alu_adg::mem.store#0.operand1"
+// VECMUL-JSON-DAG: "segment_kind": "resource_edge"
+// VECMUL-JSON-DAG: "segment_kind": "module_path"
+// VECMUL-JSON-NOT: ".out"
+// VECMUL-JSON-NOT: ".in"

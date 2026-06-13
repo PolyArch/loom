@@ -114,7 +114,7 @@ def assert_shared_vector_alu_adg(rows: list[dict[str, str]]) -> None:
     row = matches[0]
     expected = {
         "topology_class": "fabric_module_template",
-        "node_count": "7",
+        "node_count": "8",
         "link_count": "0",
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",

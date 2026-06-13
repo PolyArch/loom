@@ -189,15 +189,17 @@ CASES = {
     },
     "vecmul": {
         "graph": "g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0",
-        "mapping_id": "vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg",
+        "hardware": "shared_vector_alu_adg",
+        "mapping_id": "vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_vector_alu_adg",
         "placed_records": "5",
-        "route_edge_count": "5",
-        "config_records": 63,
+        "route_edge_count": "6",
+        "config_records": 119,
         "dfg_cycles": 256,
         "dynamic_work_items": 16,
-        "cgra_cycles": 274,
+        "cgra_cycles": 288,
         "byte_size": 192,
         "element_layout": "f32[16];f32[16];f32[16]",
+        "mapping_status": "pass",
     },
 }
 
@@ -244,6 +246,7 @@ def assert_runtime_evidence(
     case_name: str,
     expected: Mapping[str, object],
 ) -> None:
+    expected_hardware = str(expected.get("hardware", "shared_reduction_adg"))
     runtime_report_identity = (
         f"runtime-report::{case_name}::{expected['mapping_id']}::report_only"
     )
@@ -260,7 +263,7 @@ def assert_runtime_evidence(
                 f"test-app-fixture::{case_name}::default"
             ),
             "mapping_artifact_identity": "pnr-mapping",
-            "fabric_adg_identity": "shared_reduction_adg",
+            "fabric_adg_identity": expected_hardware,
             "target_profile_id": "simulator::cgra_sim::mapping_constraint_estimate",
             "data_movement_policy": "simulated",
             "synchronization_mode": "host_wait",
@@ -336,6 +339,7 @@ def assert_runtime_evidence(
 def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> None:
     with artifact_test_common.repo_temp_dir(repo, f"loom-{case_name}-chain-") as tmp:
         out_dir = Path(tmp)
+        expected_hardware = str(expected.get("hardware", "shared_reduction_adg"))
         mapping_passes = expected.get("mapping_status") == "pass"
         expected_cgra_cycles = expected["cgra_cycles"] if mapping_passes else expected["dfg_cycles"]
         expected_difference = "expected_hardware_constraint" if mapping_passes else "unsupported_scope"
@@ -371,7 +375,7 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         assert_fields(
             mapping,
             {
-                "hardware": "shared_reduction_adg",
+                "hardware": expected_hardware,
                 "mapping_id": expected["mapping_id"],
                 "placed_records": expected["placed_records"],
                 "routed_edges": expected["route_edge_count"] if mapping_passes else "0",
@@ -523,7 +527,7 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
         for metric_id in (
             f"metric::{case_name}::dfg_sim_cycles",
             f"metric::{case_name}::workload_size_items",
-            "metric::shared_reduction_adg::frequency_mhz",
+            f"metric::{expected_hardware}::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")

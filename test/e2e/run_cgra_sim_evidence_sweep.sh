@@ -192,12 +192,6 @@ for case_name in "${CASES[@]}"; do
   if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "dotproduct" ]]; then
     case_hardware_source="dotproduct-fmuladd"
   fi
-  if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "byte_swap" ]]; then
-    case_hardware_source="shared-vector-alu"
-  fi
-  if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "xor_block" ]]; then
-    case_hardware_source="shared-vector-alu"
-  fi
   bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
     --output-dir "${case_out}" \
     --case "${case_name}" \
