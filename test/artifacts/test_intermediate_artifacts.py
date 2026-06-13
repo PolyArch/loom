@@ -169,6 +169,21 @@ JSON_COMMANDS = [
         "full-stack-artifact-manifest.json",
         {"schema_version", "run_id", "artifacts", "edges", "diagnostics"},
     ),
+    (
+        "test/fabric/run_adg_inventory.sh",
+        "adg-inventory.json",
+        {
+            "schema_version",
+            "kind",
+            "inventory_id",
+            "producer",
+            "candidate_count",
+            "input_artifact_fingerprints",
+            "candidates",
+            "diagnostics",
+            "status",
+        },
+    ),
 ]
 
 RTL_MANIFEST_REQUIRED_KEYS = {

@@ -111,6 +111,7 @@ ARTIFACT_EDGE_PAIRS = (
     ("source-compat-summary", "compiler-pipeline-summary"),
     ("compiler-pipeline-summary", "dataflow-primitive-coverage"),
     ("dataflow-primitive-coverage", "pnr-mapping-summary"),
+    ("adg-inventory", "adg-hardware-summary"),
     ("adg-hardware-summary", "pnr-mapping-summary"),
     ("dataflow-primitive-coverage", "sim-cycle-summary"),
     ("dataflow-primitive-coverage", "rtl-fpa-summary"),
@@ -548,6 +549,31 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
 
 
 JSON_SCHEMAS: dict[str, dict[str, object]] = {
+    "adg_inventory": {
+        "filename": "adg-inventory.json",
+        "required_keys": {
+            "schema_version",
+            "kind",
+            "inventory_id",
+            "producer",
+            "candidate_count",
+            "input_artifact_fingerprints",
+            "candidates",
+            "diagnostics",
+            "status",
+        },
+        "scaffold": {
+            "schema_version": 1,
+            "kind": "adg_inventory",
+            "inventory_id": "adg-inventory::scaffold",
+            "producer": "intermediate_artifacts.write_json",
+            "candidate_count": 0,
+            "input_artifact_fingerprints": {},
+            "candidates": [],
+            "diagnostics": ["ADG inventory scaffold has no hardware candidates"],
+            "status": "blocked",
+        },
+    },
     "artifact_manifest": {
         "filename": "full-stack-artifact-manifest.json",
         "required_keys": {"schema_version", "run_id", "artifacts", "edges", "diagnostics"},
@@ -885,6 +911,7 @@ STANDARD_ARTIFACT_PATHS = (
     ("source_compat", "temp/source-compat-summary.csv"),
     ("compiler_pipeline", "temp/compiler-pipeline-summary.csv"),
     ("dataflow_primitive_coverage", "temp/dataflow-primitive-coverage.csv"),
+    ("adg_inventory", "temp/adg-inventory.json"),
     ("adg_hardware", "temp/adg-hardware-summary.csv"),
     ("pnr_mapping", "temp/pnr-mapping-summary.csv"),
     ("pnr_mapping_artifact", "temp/pnr-mapping.json"),
@@ -908,6 +935,7 @@ STANDARD_ARTIFACT_PATHS = (
 )
 
 EMBEDDED_JSON_KIND_ALIASES = {
+    "adg_inventory": "adg_inventory",
     "dfg_sim_report": "dfg_sim_report",
     "cgra_sim_report": "cgra_sim_report",
     "sim_comparison_report": "sim_comparison_report",
@@ -5379,6 +5407,171 @@ def validate_runtime_package_mapping_reference(
         diagnostics.append("runtime package selected mapping hardware does not match package")
 
 
+def validate_adg_inventory(
+    path: Path,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    if data.get("kind") != "adg_inventory":
+        diagnostics.append("ADG inventory kind must be adg_inventory")
+    if data.get("status") not in BASE_STATUSES:
+        diagnostics.append("ADG inventory status must be a known status")
+    candidate_count = data.get("candidate_count")
+    candidates = data.get("candidates")
+    if not isinstance(candidate_count, int) or candidate_count < 0:
+        diagnostics.append("ADG inventory candidate_count must be a nonnegative integer")
+    if not isinstance(candidates, list):
+        diagnostics.append("ADG inventory candidates must be a list")
+        return
+    if isinstance(candidate_count, int) and candidate_count != len(candidates):
+        diagnostics.append("ADG inventory candidate_count does not match candidates")
+
+    seen_ids: set[str] = set()
+    seen_hardware: set[str] = set()
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            diagnostics.append(f"ADG inventory candidate {index} must be an object")
+            continue
+        for key in (
+            "candidate_id",
+            "recipe_id",
+            "config_id",
+            "config_fingerprint",
+            "fabric_root",
+            "root_kind",
+            "topology_class",
+            "layout_class",
+            "topology_family",
+            "source_mlir",
+            "source_mlir_fingerprint",
+            "hardware_identity",
+            "construct_coverage",
+            "semantic_connectivity_source",
+            "visual_metadata_role",
+            "coordinates_semantic",
+            "verifier_status",
+            "diagnostic",
+            "downstream_consumers",
+        ):
+            if key not in candidate:
+                diagnostics.append(f"ADG inventory candidate {index} missing {key}")
+        candidate_id = candidate.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            diagnostics.append(f"ADG inventory candidate {index} lacks candidate_id")
+        elif candidate_id in seen_ids:
+            diagnostics.append(f"ADG inventory duplicate candidate_id {candidate_id}")
+        else:
+            seen_ids.add(candidate_id)
+        hardware_identity = candidate.get("hardware_identity")
+        if not isinstance(hardware_identity, str) or not hardware_identity:
+            diagnostics.append(f"ADG inventory candidate {index} lacks hardware_identity")
+        elif hardware_identity in seen_hardware:
+            diagnostics.append(f"ADG inventory duplicate hardware_identity {hardware_identity}")
+        else:
+            seen_hardware.add(hardware_identity)
+
+        if not valid_sha256_hex(candidate.get("config_fingerprint")):
+            diagnostics.append(f"ADG inventory candidate {index} has invalid config_fingerprint")
+        source_mlir = candidate.get("source_mlir")
+        source_fingerprint = candidate.get("source_mlir_fingerprint")
+        if not isinstance(source_mlir, str) or not source_mlir:
+            diagnostics.append(f"ADG inventory candidate {index} lacks source_mlir")
+        elif not valid_sha256_hex(source_fingerprint):
+            diagnostics.append(f"ADG inventory candidate {index} has invalid source_mlir_fingerprint")
+        else:
+            resolved = resolve_artifact_reference(path, source_mlir)
+            if not resolved.is_file():
+                diagnostics.append(f"ADG inventory candidate {index} source_mlir does not exist")
+            elif artifact_fingerprint(resolved) != source_fingerprint:
+                diagnostics.append(f"ADG inventory candidate {index} source_mlir_fingerprint mismatch")
+
+        root_kind = candidate.get("root_kind")
+        topology_class = candidate.get("topology_class")
+        connectivity = candidate.get("semantic_connectivity_source")
+        if root_kind == "fabric.module":
+            if topology_class != "fabric_module_template":
+                diagnostics.append(f"ADG inventory candidate {index} module topology_class mismatch")
+            if connectivity != "graph_region_ssa":
+                diagnostics.append(f"ADG inventory candidate {index} module connectivity must be graph_region_ssa")
+        elif root_kind == "fabric.system":
+            if topology_class != "fabric_system":
+                diagnostics.append(f"ADG inventory candidate {index} system topology_class mismatch")
+            if connectivity != "fabric.link":
+                diagnostics.append(f"ADG inventory candidate {index} system connectivity must be fabric.link")
+        else:
+            diagnostics.append(f"ADG inventory candidate {index} root_kind is unknown")
+
+        if candidate.get("layout_class") not in {"regular", "irregular"}:
+            diagnostics.append(f"ADG inventory candidate {index} has invalid layout_class")
+        if candidate.get("visual_metadata_role") not in {"metadata_only", "absent"}:
+            diagnostics.append(f"ADG inventory candidate {index} has invalid visual_metadata_role")
+        if candidate.get("coordinates_semantic") is not False:
+            diagnostics.append(f"ADG inventory candidate {index}: visual coordinates must not be semantic")
+        if candidate.get("verifier_status") not in BASE_STATUSES:
+            diagnostics.append(f"ADG inventory candidate {index} verifier_status must be a known status")
+        coverage = candidate.get("construct_coverage")
+        if not isinstance(coverage, dict):
+            diagnostics.append(f"ADG inventory candidate {index} construct_coverage must be an object")
+        else:
+            for key in ("node_count", "link_count"):
+                value = coverage.get(key)
+                if not isinstance(value, int) or value < 0:
+                    diagnostics.append(f"ADG inventory candidate {index} coverage {key} must be nonnegative")
+            if candidate.get("verifier_status") == "pass" and coverage.get("node_count") == 0:
+                diagnostics.append(f"ADG inventory candidate {index} verifier pass has no nodes")
+            tile_kinds = coverage.get("tile_kinds")
+            schedule_kinds = coverage.get("schedule_kinds")
+            node_kinds = coverage.get("node_kinds")
+            if not isinstance(tile_kinds, list) or not all(isinstance(item, str) for item in tile_kinds):
+                diagnostics.append(f"ADG inventory candidate {index} coverage tile_kinds must be a string list")
+                tile_kinds = []
+            if not isinstance(schedule_kinds, list) or not all(isinstance(item, str) for item in schedule_kinds):
+                diagnostics.append(f"ADG inventory candidate {index} coverage schedule_kinds must be a string list")
+                schedule_kinds = []
+            if not isinstance(node_kinds, list) or not all(isinstance(item, str) for item in node_kinds):
+                diagnostics.append(f"ADG inventory candidate {index} coverage node_kinds must be a string list")
+                node_kinds = []
+            tile_kind_set = set(tile_kinds)
+            schedule_kind_set = set(schedule_kinds)
+            node_kind_set = set(node_kinds)
+            if root_kind == "fabric.module":
+                if not tile_kind_set:
+                    diagnostics.append(f"ADG inventory candidate {index} module has no tile kinds")
+                if not tile_kind_set <= {"pe", "switch", "mem"}:
+                    diagnostics.append(f"ADG inventory candidate {index} unknown module tile kind")
+                if not schedule_kind_set:
+                    diagnostics.append(f"ADG inventory candidate {index} module has no schedule kinds")
+                if not schedule_kind_set <= {"spatial", "temporal"}:
+                    diagnostics.append(f"ADG inventory candidate {index} unknown module schedule kind")
+                if node_kind_set:
+                    diagnostics.append(f"ADG inventory candidate {index} module must not carry system node kinds")
+            elif root_kind == "fabric.system":
+                if tile_kind_set or schedule_kind_set:
+                    diagnostics.append(f"ADG inventory candidate {index} system must not carry tile or schedule kinds")
+                if candidate.get("verifier_status") == "pass" and coverage.get("link_count") == 0:
+                    diagnostics.append(f"ADG inventory candidate {index} system verifier pass has no links")
+                if not node_kind_set:
+                    diagnostics.append(f"ADG inventory candidate {index} system has no node kinds")
+        consumers = candidate.get("downstream_consumers")
+        if not isinstance(consumers, list) or not consumers:
+            diagnostics.append(f"ADG inventory candidate {index} lacks downstream consumers")
+        else:
+            for consumer_index, consumer in enumerate(consumers, start=1):
+                if not isinstance(consumer, dict):
+                    diagnostics.append(
+                        f"ADG inventory candidate {index} consumer {consumer_index} must be an object"
+                    )
+                    continue
+                if not isinstance(consumer.get("consumer"), str) or not consumer.get("consumer"):
+                    diagnostics.append(
+                        f"ADG inventory candidate {index} consumer {consumer_index} lacks name"
+                    )
+                if consumer.get("status") not in BASE_STATUSES:
+                    diagnostics.append(
+                        f"ADG inventory candidate {index} consumer {consumer_index} status is unknown"
+                    )
+
+
 def audit_json(path: Path, kind: str) -> dict[str, object]:
     diagnostics: list[str] = []
     try:
@@ -5402,6 +5595,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
     if kind == "artifact_manifest" and data.get("diagnostics"):
         diagnostics.append("artifact manifest contains blocked diagnostics")
     manifest_entries_checked: int | None = None
+    if kind == "adg_inventory" and isinstance(data, dict):
+        validate_adg_inventory(path, data, diagnostics)
     if kind == "artifact_manifest" and isinstance(data, dict):
         manifest_entries_checked = validate_artifact_manifest_edges(data, diagnostics, path)
     if kind == "artifact_audit" and data.get("verdict") not in {"pass", "fail"}:

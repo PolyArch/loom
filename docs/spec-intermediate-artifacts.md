@@ -160,10 +160,79 @@ Rules:
 * `dfg_sim_status = pass` requires either positive operation coverage
   or an explicit non-runtime coverage classification.
 
+### ADG Inventory
+
+Purpose: provide the JSON SSOT for generated hardware candidates before
+CSV projections, reports, PnR, RTL, FPA, or DSE consume them.
+
+Required top-level JSON fields:
+
+* `schema_version`;
+* `kind`;
+* `inventory_id`;
+* `producer`;
+* `candidate_count`;
+* `input_artifact_fingerprints`;
+* `candidates`;
+* `diagnostics`;
+* `status`.
+
+Each candidate record must include:
+
+* `candidate_id`;
+* `recipe_id`;
+* `config_id`;
+* `config_fingerprint`;
+* `fabric_root`;
+* `root_kind`;
+* `topology_class`;
+* `layout_class`;
+* `topology_family`;
+* `source_mlir`;
+* `source_mlir_fingerprint`;
+* `hardware_identity`;
+* `construct_coverage`;
+* `semantic_connectivity_source`;
+* `visual_metadata_role`;
+* `coordinates_semantic`;
+* `verifier_status`;
+* `diagnostic`;
+* `downstream_consumers`.
+
+Rules:
+
+* `kind` is `adg_inventory`.
+* `candidate_count` matches the number of candidate records.
+* `candidate_id` and `hardware_identity` are unique inside the
+  inventory.
+* `source_mlir` resolves to the emitted Fabric MLIR for the candidate,
+  and `source_mlir_fingerprint` must match that file.
+* `root_kind = fabric.module` uses `topology_class =
+  fabric_module_template` and `semantic_connectivity_source =
+  graph_region_ssa`.
+* `root_kind = fabric.system` uses `topology_class = fabric_system` and
+  `semantic_connectivity_source = fabric.link`.
+* `layout_class` classifies candidates as `regular` or `irregular` for
+  breadth accounting. It is not a topology shortcut.
+* `visual_metadata_role` is `metadata_only` or `absent`.
+* `coordinates_semantic` must be `false`. Coordinates, ranks, labels,
+  and layout hints are for visualization and human inspection only.
+  They must not affect Fabric verification, PnR legality, routing,
+  simulation, RTL lowering, FPA, or DSE.
+* `construct_coverage` records observed Fabric constructs. FU coverage
+  is nested coverage only; FU must not appear as a SpatialCore tile kind.
+  The core SpatialCore tile vocabulary remains `pe`, `switch`, and
+  `mem`, as owned by the Fabric module specs.
+* `downstream_consumers` records each consumer status. A candidate is
+  not complete full-stack evidence merely because it appears in the
+  inventory; missing consumers must be `blocked`, `unsupported`, or
+  otherwise structured non-pass.
+
 ### ADG Hardware Summary
 
-Purpose: prove ADG Builder and Fabric verification for hardware
-candidates.
+Purpose: provide the CSV projection consumed by existing summary,
+report, and audit tools for hardware candidates. When an ADG inventory
+is available, the hardware summary is a projection of that JSON SSOT.
 
 Required first columns:
 
@@ -208,6 +277,9 @@ Rules:
 * `adg_builder_recipe_identity` is empty when no ADG Builder recipe is
   known for the candidate. When present, it is a stable identity for the
   recipe that generated the candidate Fabric ADG.
+* When projected from ADG inventory, each pass row diagnostic must
+  reference the `inventory_id` and `candidate_id` so audits can connect
+  the CSV row back to the JSON SSOT.
 * `verify_status = pass` requires positive node count. `fabric_system`
   pass rows also require positive `link_count`; `fabric_module_template`
   rows may have `link_count = 0` because module connectivity is

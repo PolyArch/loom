@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -44,6 +45,7 @@ LINK_RE = re.compile(r"\bfabric\.link\b")
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--inventory")
     parser.add_argument("--input", action="append", dest="inputs", default=[])
     parser.add_argument("--input-recipe-identity", action="append", default=[])
     return parser.parse_args(argv)
@@ -246,9 +248,81 @@ def summarize_input(
     ], True
 
 
+def semicolon(values: object) -> str:
+    if not isinstance(values, list):
+        return ""
+    return ";".join(sorted(str(value) for value in values if isinstance(value, str) and value))
+
+
+def projection_row_from_inventory_candidate(
+    candidate: dict[str, object],
+    inventory_id: str,
+) -> dict[str, str]:
+    coverage = candidate.get("construct_coverage")
+    if not isinstance(coverage, dict):
+        coverage = {}
+    status = str(candidate.get("verifier_status") or "blocked")
+    diagnostic = str(candidate.get("diagnostic") or "")
+    if status == "pass":
+        diagnostic = (
+            f"{diagnostic or 'Fabric verifier accepted candidate'}; "
+            f"inventory_id={inventory_id}; "
+            f"candidate_id={candidate.get('candidate_id', '')}; "
+            f"layout_class={candidate.get('layout_class', '')}; "
+            f"visual_metadata_role={candidate.get('visual_metadata_role', '')}"
+        )
+    return {
+        "hardware": str(candidate.get("hardware_identity") or ""),
+        "topology_class": str(candidate.get("topology_class") or ""),
+        "node_count": str(coverage.get("node_count", "")),
+        "link_count": str(coverage.get("link_count", "")),
+        "verify_status": status,
+        "diagnostic": diagnostic,
+        "tile_kinds": semicolon(coverage.get("tile_kinds")),
+        "schedule_kinds": semicolon(coverage.get("schedule_kinds")),
+        "adg_builder_recipe_identity": str(candidate.get("recipe_id") or ""),
+        "node_kinds": semicolon(coverage.get("node_kinds")),
+    }
+
+
+def summarize_inventory(inventory_path: Path) -> tuple[list[dict[str, str]], bool]:
+    data = json.loads(inventory_path.read_text())
+    inventory_id = str(data.get("inventory_id") or "")
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list):
+        return [
+            failed_row(
+                inventory_path,
+                "ADG inventory has no candidate list",
+                "",
+            )
+        ], False
+    candidate_count = data.get("candidate_count")
+    diagnostics = data.get("diagnostics")
+    inventory_status = data.get("status")
+    if inventory_status != "pass":
+        raise SystemExit(f"ADG inventory is not pass: {inventory_status}")
+    if diagnostics:
+        raise SystemExit("ADG inventory carries diagnostics")
+    if not isinstance(candidate_count, int) or candidate_count != len(candidates):
+        raise SystemExit("ADG inventory candidate_count does not match candidates")
+    rows = [
+        projection_row_from_inventory_candidate(candidate, inventory_id)
+        for candidate in candidates
+        if isinstance(candidate, dict)
+    ]
+    return rows, bool(rows) and all(row["verify_status"] == "pass" for row in rows)
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
+    if args.inventory:
+        rows, ok = summarize_inventory(Path(args.inventory))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        intermediate_artifacts.write_csv_rows("adg_hardware", output, rows)
+        return 0 if ok else 1
+
     tool = loom_tool()
     if tool is None:
         intermediate_artifacts.write_csv("adg_hardware", intermediate_artifacts.output_path(args.output))
