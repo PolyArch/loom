@@ -127,7 +127,7 @@
 // VARIANCE-MEAN-JSON-NOT: ".out"
 // VARIANCE-MEAN-JSON-NOT: ".in"
 
-// VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,6,7,0,fail,unrouted software edges lack Fabric ADG connectivity
+// VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,8,5,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,2,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -147,11 +147,11 @@
 
 // DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,6,1,4,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0__shared_reduction_adg,6,5,4,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 
-// CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__g_t_convolve_1d_kernel_red_0_0__shared_reduction_adg,10,5,10,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__g_t_convolve_1d_kernel_red_0_0__shared_reduction_adg,10,9,6,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg,10,5,10,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg,10,9,6,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,3,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -235,7 +235,7 @@
 
 // VECSUM-NEXT: vecsum,shared_reduction_adg,vecsum__g_t_vecsum_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg,6,5,4,0,fail,unrouted software edges lack Fabric ADG connectivity
+// DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 
 // SPMV-NEXT: spmv,shared_reduction_adg,spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg,9,10,3,0,fail,unrouted software edges lack Fabric ADG connectivity
 

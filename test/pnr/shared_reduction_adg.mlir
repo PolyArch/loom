@@ -141,6 +141,18 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.switch [spatial] %data0, %data1
         [{connectivity_table = ["11"]}]
         : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac_lhs =
+      fabric.switch [spatial] %i32a, %data0
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac_rhs =
+      fabric.switch [spatial] %i32b, %data1
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac_acc =
+      fabric.switch [spatial] %i32c, %carried_scan
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %fp_running =
       fabric.pe [spatial] (%pa = %fp_lhs : !fabric.bits<32>,
                         %pb = %fp_rhs : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -153,14 +165,17 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
   %scan_feedback, %scan_store_value =
-      fabric.switch [spatial] %running, %fp_running
-        [{connectivity_table = ["11", "11"]}]
-        : (!fabric.bits<32>, !fabric.bits<32>)
+      fabric.switch [spatial] %running, %fp_running, %mac_result
+        [{connectivity_table = ["111", "110"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
         -> (!fabric.bits<32>, !fabric.bits<32>)
   %store0_value =
-      fabric.switch [spatial] %scan_store_value, %fp_running
-        [{connectivity_table = ["11"]}]
-        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.switch [spatial] %scan_store_value, %fp_running, %running,
+                                  %mac_result
+        [{connectivity_table = ["1111"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
+           !fabric.bits<32>)
+        -> !fabric.bits<32>
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                     %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@arith.subf]
@@ -243,17 +258,18 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>,
-                    %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+  %mac_result =
+      fabric.pe [spatial] (%pa = %mac_lhs : !fabric.bits<32>,
+                        %pb = %mac_rhs : !fabric.bits<32>,
+                        %pc = %mac_acc : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@llvm.intr.fmuladd]
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
               %rhs = %pb : !fabric.bits<32>,
-              %acc = %pc : !fabric.bits<32>) -> () {
+              %acc = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
       %mac = fabric.op [@llvm.intr.fmuladd] (%lhs, %rhs, %acc)
              : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
                -> !fabric.bits<32>
-      fabric.yield
+      fabric.yield %mac : !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,

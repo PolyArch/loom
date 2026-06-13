@@ -178,14 +178,14 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::fabric.pe#0.result1",
-                "shared_reduction_adg::fabric.switch#4.operand0",
+                "shared_reduction_adg::fabric.switch#7.operand0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#4.operand0",
-                "shared_reduction_adg::fabric.switch#4.result0",
+                "shared_reduction_adg::fabric.switch#7.operand0",
+                "shared_reduction_adg::fabric.switch#7.result0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#4.result0",
+                "shared_reduction_adg::fabric.switch#7.result0",
                 "shared_reduction_adg::fabric.op#1.operand2",
             ),
             (

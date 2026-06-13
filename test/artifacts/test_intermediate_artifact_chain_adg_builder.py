@@ -51,7 +51,7 @@ def main() -> int:
             hardware_row,
             {
                 "topology_class": "fabric_module_template",
-                "node_count": "14",
+                "node_count": "21",
                 "link_count": "0",
                 "verify_status": "pass",
                 "tile_kinds": "mem;pe;switch",
@@ -59,6 +59,62 @@ def main() -> int:
                 "adg_builder_recipe_identity": "adg-builder::shared-reduction",
             },
             label="ADG Builder hardware summary",
+        )
+
+        dotproduct_dir = out_dir / "dotproduct-dfg"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "env",
+                f"BUILD_DIR={dotproduct_dir}",
+                "LOOM_CC=build/bin/loom-cc",
+                "LOOM_RAISE=build/bin/loom-raise",
+                "LOOM_LOWER=build/bin/loom-lower",
+                "LOOM_RAISE_OPT=build/bin/loom-raise-opt",
+                "bash",
+                "test/app/dotproduct/dfg_check.sh",
+            ],
+            "dotproduct DFG for ADG Builder generated hardware",
+        )
+        dotproduct_mapping = out_dir / "dotproduct-adg-builder-mapping.csv"
+        dotproduct_mapping_artifact = out_dir / "dotproduct-adg-builder-mapping.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "build/tools/loom-pnr-map/loom-pnr-map",
+                "--dfg-mlir",
+                str(dotproduct_dir / "main_func.dfg.mlir"),
+                "--graph",
+                "g_t_dotproduct_red_0_0",
+                "--hardware-mlir",
+                str(generated_adg),
+                "--hardware",
+                "shared_reduction_adg",
+                "--workload",
+                "dotproduct",
+                "--output",
+                str(dotproduct_mapping),
+                "--artifact",
+                str(dotproduct_mapping_artifact),
+            ],
+            "dotproduct PnR on ADG Builder generated shared reduction hardware",
+        )
+        dotproduct_mapping_row = single_row(
+            read_csv_rows(dotproduct_mapping),
+            key="workload",
+            value="dotproduct",
+            label="dotproduct ADG Builder mapping",
+        )
+        assert_fields(
+            dotproduct_mapping_row,
+            {
+                "hardware": "shared_reduction_adg",
+                "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
+                "status": "pass",
+                "unrouted_edges": "0",
+                "unplaced_records": "0",
+            },
+            label="dotproduct ADG Builder mapping",
         )
 
         mapping_row = single_row(

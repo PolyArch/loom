@@ -13,6 +13,31 @@ from pathlib import Path
 import artifact_test_common
 
 
+DEFAULT_SWEEP_CASES = (
+    "vecsum",
+    "dotproduct",
+    "downsample_avg",
+    "prefix_sum",
+    "cumsum",
+    "prefix_sum_inclusive",
+    "integrate_trapz",
+    "reduction",
+    "mean",
+    "vecnorm_l1",
+    "vecnorm_l2",
+    "correlation",
+    "spmv",
+    "convolve_1d",
+    "conv1d",
+    "matvec",
+    "byte_swap",
+    "xor_block",
+    "relu",
+    "vecadd",
+    "vecmul",
+    "variance",
+)
+
 HEADER = [
     "suite",
     "case",
@@ -45,6 +70,25 @@ HEADER = [
     "blocking_prerequisite",
     "diagnostic",
 ]
+
+
+def assert_default_sweep_cases(script: Path) -> None:
+    text = script.read_text()
+    marker = "if [[ ${#CASES[@]} -eq 0 ]]; then"
+    start = text.find(marker)
+    if start == -1:
+        raise AssertionError(f"default sweep case block is missing: {script}")
+    end = text.find("  )", start)
+    if end == -1:
+        raise AssertionError(f"default sweep case block is malformed: {script}")
+    block = text[start:end]
+    cases = tuple(
+        line.strip()
+        for line in block.splitlines()
+        if line.strip() and not line.lstrip().startswith(("if ", "CASES=("))
+    )
+    if cases != DEFAULT_SWEEP_CASES:
+        raise AssertionError(f"default sweep cases changed: {cases}")
 
 
 def run(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -235,6 +279,7 @@ def main(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit(f"usage: {argv[0]} <repo>")
     repo = Path(argv[1]).resolve()
+    assert_default_sweep_cases(repo / "test/e2e/run_cgra_sim_evidence_sweep.sh")
     with artifact_test_common.repo_temp_dir(repo, "cgra-sim-evidence-sweep-") as tmp:
         out_dir = Path(tmp)
         evidence_dir = out_dir / "current-sim-cycle"
@@ -275,6 +320,8 @@ def main(argv: list[str]) -> int:
                 "downsample_avg",
                 "--case",
                 "vecadd",
+                "--case",
+                "conv1d",
             ],
         )
         for case in (
@@ -293,12 +340,13 @@ def main(argv: list[str]) -> int:
             "matvec",
             "downsample_avg",
             "vecadd",
+            "conv1d",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
-        assert_mapping_hardware(evidence_dir, "dotproduct", "dotproduct_fmuladd_adg")
+        assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
@@ -311,9 +359,11 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "matvec", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample_avg", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
+        assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
         assert_component_references_resolve(evidence_dir, "vecadd")
@@ -353,11 +403,12 @@ def main(argv: list[str]) -> int:
             "matvec",
             "downsample_avg",
             "vecadd",
+            "conv1d",
         ):
             assert_promoted_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
-        if dotproduct_row["hardware_system"] != "dotproduct_fmuladd_adg":
-            raise AssertionError(f"dotproduct should use fmuladd hardware: {dotproduct_row}")
+        if dotproduct_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"dotproduct should use shared reduction hardware: {dotproduct_row}")
         byte_swap_row = one_row(rows, "byte_swap")
         if byte_swap_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"byte_swap should use shared vector hardware: {byte_swap_row}")
@@ -394,7 +445,7 @@ def main(argv: list[str]) -> int:
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 15:
+        if counts["pass"] < 16:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [

@@ -92,6 +92,9 @@ case "${CASE}" in
   convolve_1d)
     case_graph="g_t_convolve_1d_kernel_red_0_0"
     ;;
+  conv1d)
+    case_graph="g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
+    ;;
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
     ;;

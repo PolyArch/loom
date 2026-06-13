@@ -1012,16 +1012,22 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                      {"pb", "i64b", "!fabric.bits<64>", "!fabric.bits<32>"},
                      {"pc", "i64c", "!fabric.bits<64>", "!fabric.bits<32>"},
                      {"pd", "reduction_input", "!fabric.bits<32>", ""},
-                     {"pi", "i32a", "!fabric.bits<32>", ""}};
-  streamPe.resultNames = {"idx"};
-  streamPe.resultTypes = {"!fabric.bits<32>"};
+                     {"pi", "i32a", "!fabric.bits<32>", ""},
+                     {"pn", "scan_feedback", "!fabric.bits<32>", ""},
+                     {"ps", "i32b", "!fabric.bits<32>", ""}};
+  streamPe.resultNames = {"idx", "running", "carried_scan", "reduction_scale"};
+  streamPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
+                          "!fabric.bits<32>", "!fabric.bits<32>"};
   FuSpec streamFu;
   streamFu.inputs = {{"fa", "pa", "!fabric.bits<32>", ""},
                      {"fb", "pb", "!fabric.bits<32>", ""},
                      {"fc", "pc", "!fabric.bits<32>", ""},
                      {"data", "pd", "!fabric.bits<32>", ""},
-                     {"init", "pi", "!fabric.bits<32>", ""}};
-  streamFu.resultTypes = {"!fabric.bits<32>"};
+                     {"init", "pi", "!fabric.bits<32>", ""},
+                     {"next", "pn", "!fabric.bits<32>", ""},
+                     {"scale", "ps", "!fabric.bits<32>", ""}};
+  streamFu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
+                          "!fabric.bits<32>", "!fabric.bits<32>"};
   streamFu.operations.push_back(
       FabricOpSpec{{"idx", "rwc"},
                    {"dataflow.stream"},
@@ -1030,24 +1036,31 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                    {"!fabric.bits<32>", "!fabric.bits<1>"},
                    {{"cont_cond", {"<"}}, {"step_op", {"+="}}},
                    {{"cont_cond", "<"}, {"step_op", "+="}}});
-  streamFu.operations.push_back(FabricOpSpec{{"carried"},
-                                             {"dataflow.carry"},
-                                             {"rwc", "init", "sum"},
-                                             {"!fabric.bits<1>",
-                                              "!fabric.bits<32>",
-                                              "!fabric.bits<32>"},
-                                             {"!fabric.bits<32>"},
-                                             {},
-                                             {}});
-  streamFu.operations.push_back(FabricOpSpec{{"sum"},
-                                             {"arith.addi"},
-                                             {"data", "carried"},
-                                             {"!fabric.bits<32>",
-                                              "!fabric.bits<32>"},
-                                             {"!fabric.bits<32>"},
-                                             {},
-                                             {}});
-  streamFu.yieldValues = {"idx"};
+  streamFu.operations.push_back(
+      FabricOpSpec{{"carried"},
+                   {"dataflow.carry"},
+                   {"rwc", "init", "next"},
+                   {"!fabric.bits<1>", "!fabric.bits<32>", "!fabric.bits<32>"},
+                   {"!fabric.bits<32>"},
+                   {},
+                   {}});
+  streamFu.operations.push_back(
+      FabricOpSpec{{"sum"},
+                   {"arith.addi"},
+                   {"data", "carried"},
+                   {"!fabric.bits<32>", "!fabric.bits<32>"},
+                   {"!fabric.bits<32>"},
+                   {},
+                   {}});
+  streamFu.operations.push_back(
+      FabricOpSpec{{"stable_scale"},
+                   {"dataflow.invariant"},
+                   {"rwc", "scale"},
+                   {"!fabric.bits<1>", "!fabric.bits<32>"},
+                   {"!fabric.bits<32>"},
+                   {},
+                   {}});
+  streamFu.yieldValues = {"idx", "sum", "carried", "stable_scale"};
   streamPe.fus.push_back(std::move(streamFu));
   module.addPe(std::move(streamPe));
 
@@ -1087,9 +1100,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addPe(std::move(squaredPe));
 
   PeSpec vectorAddPe;
-  vectorAddPe.inputs = {{"pa", "mem0_data0", "!fabric.bits<32>", ""},
-                        {"pb", "mem0_data1", "!fabric.bits<32>", ""}};
-  vectorAddPe.resultNames = {"vector_sum"};
+  vectorAddPe.inputs = {{"pa", "fp_lhs", "!fabric.bits<32>", ""},
+                        {"pb", "fp_rhs", "!fabric.bits<32>", ""}};
+  vectorAddPe.resultNames = {"fp_running"};
   vectorAddPe.resultTypes = {"!fabric.bits<32>"};
   vectorAddPe.fus.push_back(FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
                                     {"rhs", "pb", "!fabric.bits<32>", ""}},
@@ -1166,6 +1179,28 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   reductionPe.fus.push_back(makeBinary32Fu("combined", "arith.xori"));
   module.addPe(std::move(reductionPe));
 
+  PeSpec macPe;
+  macPe.inputs = {{"pa", "mac_lhs", "!fabric.bits<32>", ""},
+                  {"pb", "mac_rhs", "!fabric.bits<32>", ""},
+                  {"pc", "mac_acc", "!fabric.bits<32>", ""}};
+  macPe.resultNames = {"mac_result"};
+  macPe.resultTypes = {"!fabric.bits<32>"};
+  macPe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""},
+              {"acc", "pc", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{
+                 {"mac"},
+                 {"llvm.intr.fmuladd"},
+                 {"lhs", "rhs", "acc"},
+                 {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
+                 {"!fabric.bits<32>"},
+                 {},
+                 {}}},
+             {"mac"}});
+  module.addPe(std::move(macPe));
+
   PeSpec vectorSyncPe;
   vectorSyncPe.inputs = {{"pa", "mem0_done0", "!fabric.bits<0>", ""},
                          {"pb", "vector_sync_mid", "!fabric.bits<0>", ""},
@@ -1214,10 +1249,13 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
-      "%store0_value = fabric.switch [spatial] %i32b, %vector_sum");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+      "%store0_value = fabric.switch [spatial] %scan_store_value, "
+      "%fp_running, %running, %mac_result");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
   module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%vector_sync_mid = fabric.switch [spatial] %mem0_done1, "
       "%mem0_store_done0");
@@ -1262,6 +1300,38 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%fp_lhs = fabric.switch [spatial] %carried_scan, %mem0_data0");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%fp_rhs = fabric.switch [spatial] %mem0_data0, %mem0_data1");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%mac_lhs = fabric.switch [spatial] %i32a, %mem0_data0");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%mac_rhs = fabric.switch [spatial] %i32b, %mem0_data1");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%mac_acc = fabric.switch [spatial] %i32c, %carried_scan");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%scan_feedback, %scan_store_value = fabric.switch [spatial] "
+      "%running, %fp_running, %mac_result");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\", \"110\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine("  -> (!fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine(
       "%sync_aux_done = fabric.switch [spatial] %mem0_store_done0, "
       "%mem0_done1, %mem0_done2, %mem0_done3");

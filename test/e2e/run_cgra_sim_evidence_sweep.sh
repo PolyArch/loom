@@ -66,6 +66,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     correlation
     spmv
     convolve_1d
+    conv1d
     matvec
     byte_swap
     xor_block
@@ -190,9 +191,6 @@ for case_name in "${CASES[@]}"; do
   case_out="${chain_root}/${case_name}"
   rm -rf "${case_out}"
   case_hardware_source="${HARDWARE_SOURCE}"
-  if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "dotproduct" ]]; then
-    case_hardware_source="dotproduct-fmuladd"
-  fi
   bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
     --output-dir "${case_out}" \
     --case "${case_name}" \

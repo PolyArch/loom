@@ -89,7 +89,7 @@ def main() -> int:
         mapping_row = variance_rows[0]
         if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "blocked":
             raise AssertionError(f"unexpected variance aggregate mapping row: {mapping_row}")
-        if mapping_row["routed_edges"] != "15" or mapping_row["unrouted_edges"] != "7" or mapping_row["unplaced_records"] != "0":
+        if mapping_row["routed_edges"] != "17" or mapping_row["unrouted_edges"] != "5" or mapping_row["unplaced_records"] != "0":
             raise AssertionError(f"variance aggregate mapping should preserve unrouted edges: {mapping_row}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())
@@ -102,15 +102,15 @@ def main() -> int:
         if set(mapping_artifact.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"variance aggregate mapping missed component graphs: {mapping_artifact}")
         if (
-            mapping_artifact.get("routed_edges") != 15
-            or mapping_artifact.get("unrouted_edges") != 7
+            mapping_artifact.get("routed_edges") != 17
+            or mapping_artifact.get("unrouted_edges") != 5
             or mapping_artifact.get("config_records") != 158
         ):
             raise AssertionError(f"variance aggregate mapping should expose partial routed evidence: {mapping_artifact}")
 
         component_expectations = {
             "pnr-mapping-mean.json": ("g_t_variance_red_0_0", MEAN_MAPPING_ID, "pass", 9, 0, 158),
-            "pnr-mapping-var.json": ("g_t_variance_red_1_0", VAR_MAPPING_ID, "fail", 6, 7, 0),
+            "pnr-mapping-var.json": ("g_t_variance_red_1_0", VAR_MAPPING_ID, "fail", 8, 5, 0),
         }
         for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():
             component = json.loads((out_dir / name).read_text())
@@ -126,7 +126,7 @@ def main() -> int:
 
         dfg_report = json.loads((out_dir / "variance-dfg-sim-report.json").read_text())
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "variance DFG-sim cycles")
-        if dfg_cycles != 546:
+        if dfg_cycles != 594:
             raise AssertionError(f"variance aggregate DFG cycles should include both passes: {dfg_report}")
         if set(dfg_report.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"variance aggregate DFG report missed component graphs: {dfg_report}")
@@ -135,9 +135,9 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "variance CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected variance CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("status") != "blocked" or cgra_cycles != 575:
+        if cgra_report.get("status") != "blocked" or cgra_cycles != 623:
             raise AssertionError(f"variance aggregate CGRA report should preserve partial routed component cost: {cgra_report}")
-        if cgra_report.get("routed_edges") != 15 or cgra_report.get("config_records") != 158:
+        if cgra_report.get("routed_edges") != 17 or cgra_report.get("config_records") != 158:
             raise AssertionError(f"variance aggregate CGRA report should expose partial routed evidence: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"variance CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")

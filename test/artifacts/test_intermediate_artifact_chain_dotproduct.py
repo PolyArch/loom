@@ -73,10 +73,10 @@ def main() -> int:
             "hardware": "shared_reduction_adg",
             "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
             "placed_records": "6",
-            "routed_edges": "5",
-            "unrouted_edges": "4",
+            "routed_edges": "9",
+            "unrouted_edges": "0",
             "unplaced_records": "0",
-            "status": "fail",
+            "status": "pass",
         }
         for key, value in expected_mapping.items():
             if mapping[key] != value:
@@ -87,24 +87,24 @@ def main() -> int:
             raise AssertionError(f"mapping artifact should carry dotproduct workload: {mapping_artifact}")
         if mapping_artifact.get("graph") != "g_t_dotproduct_red_0_0":
             raise AssertionError(f"mapping artifact should carry dotproduct graph: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 0 or mapping_artifact.get("status") != "fail":
-            raise AssertionError(f"mapping artifact should expose unrouted blocked evidence: {mapping_artifact}")
+        if mapping_artifact.get("config_records") != 170 or mapping_artifact.get("status") != "pass":
+            raise AssertionError(f"mapping artifact should expose routed evidence: {mapping_artifact}")
 
         dfg_report = json.loads((out_dir / "dotproduct-dfg-sim-report.json").read_text())
         if dfg_report.get("status") != "pass" or dfg_report.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct DFG-sim report: {dfg_report}")
-        if dfg_report.get("optimistic_cycles") != 1027 or dfg_report.get("dynamic_work_items") != 64:
+        if dfg_report.get("optimistic_cycles") != 1219 or dfg_report.get("dynamic_work_items") != 64:
             raise AssertionError(f"unexpected dotproduct DFG-sim cycles: {dfg_report}")
 
         cgra_report = json.loads((out_dir / "dotproduct-cgra-sim-report.json").read_text())
-        if cgra_report.get("status") != "blocked" or cgra_report.get("workload") != "dotproduct":
+        if cgra_report.get("status") != "pass" or cgra_report.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct CGRA-sim report: {cgra_report}")
         if cgra_report.get("mapping_id") != "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected dotproduct CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("hardware_aware_cycles") != 1027:
+        if cgra_report.get("hardware_aware_cycles") != 1256:
             raise AssertionError(f"unexpected dotproduct CGRA-sim cycles: {cgra_report}")
-        if cgra_report.get("difference_classification") != "unsupported_scope":
-            raise AssertionError(f"dotproduct blocked CGRA report should classify unsupported scope: {cgra_report}")
+        if cgra_report.get("difference_classification") != "expected_hardware_constraint":
+            raise AssertionError(f"dotproduct CGRA report should classify expected hardware cost: {cgra_report}")
         if cgra_report.get("hardware_aware_cycles") < dfg_report.get("optimistic_cycles"):
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
 
@@ -113,19 +113,19 @@ def main() -> int:
         if len(dotproduct_sim_rows) != 1:
             raise AssertionError(f"expected one dotproduct sim row, got {sim_rows}")
         sim_row = dotproduct_sim_rows[0]
-        expected_cycles = {"dfg_sim_cycles": "1027", "cgra_sim_cycles": "", "status": "blocked"}
+        expected_cycles = {"dfg_sim_cycles": "1219", "cgra_sim_cycles": "1256", "status": "pass"}
         for key, value in expected_cycles.items():
             if sim_row[key] != value:
                 raise AssertionError(f"unexpected dotproduct sim row {key}: {sim_row}")
 
         comparison = json.loads((out_dir / "sim-comparison-report.json").read_text())
-        if comparison.get("status") != "blocked" or comparison.get("workload") != "dotproduct":
+        if comparison.get("status") != "pass" or comparison.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct comparison report: {comparison}")
-        if comparison.get("dfg_sim_cycles") != 1027 or comparison.get("cgra_sim_cycles") != 1027:
+        if comparison.get("dfg_sim_cycles") != 1219 or comparison.get("cgra_sim_cycles") != 1256:
             raise AssertionError(f"comparison should preserve dotproduct cycles: {comparison}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
-        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != "dotproduct":
+        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != (
             "work-package::dotproduct::dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg"
@@ -158,15 +158,15 @@ def main() -> int:
         dotproduct_dse = dotproduct_dse_rows[0]
         expected_dse = {
             "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
-            "cgra_sim_cycles": "",
-            "selection_status": "blocked",
+            "cgra_sim_cycles": "1256",
+            "selection_status": "selected",
         }
         for key, value in expected_dse.items():
             if dotproduct_dse[key] != value:
                 raise AssertionError(f"unexpected dotproduct DSE {key}: {dotproduct_dse}")
 
         workload_bundle = json.loads((out_dir / "workload-report-bundle.json").read_text())
-        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != "dotproduct":
+        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
