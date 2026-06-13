@@ -54,6 +54,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
   CASES=(
     vecsum
     dotproduct
+    downsample_avg
     prefix_sum
     cumsum
     prefix_sum_inclusive
