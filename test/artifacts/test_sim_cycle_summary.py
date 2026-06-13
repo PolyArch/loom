@@ -204,6 +204,207 @@ def main() -> int:
         if discovered_audit_data.get("verdict") != "pass":
             raise AssertionError(f"discovered sim cycle audit should pass: {discovered_audit_data}")
 
+        stale_evidence_dir = out_dir / "stale-current-sim-cycle" / "current-sim-cycle"
+        stale_evidence_dir.mkdir(parents=True)
+        stale_dfg = stale_evidence_dir / "stale-dfg-sim-report.json"
+        stale_cgra = stale_evidence_dir / "stale-cgra-sim-report.json"
+        stale_dfg.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "dfg_sim_report",
+                    "workload": "stale",
+                    "graph": "g_stale",
+                    "status": "pass",
+                    "metric_definition": "fixture",
+                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                    "operation_cost_model_source": "loom.sim.operation_cost.v1",
+                    "optimistic_cycles": 10,
+                    "wavefront_steps": 1,
+                    "event_count": 1,
+                    "dynamic_work_items": 1,
+                    "operation_fire_counts": {"arith.addi": 1},
+                    "final_outputs": ["i32:3"],
+                    "final_memory_state": {},
+                    "diagnostics": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        stale_cgra.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "cgra_sim_report",
+                    "workload": "stale",
+                    "hardware": "shared_reduction_adg",
+                    "mapping_id": "stale__shared_reduction_adg",
+                    "status": "pass",
+                    "fidelity_level": "mapping_constraint_estimate",
+                    "metric_definition": "mapping_constraint_estimate",
+                    "operation_semantics_source": "loom.sim.operation_semantics.v1",
+                    "operation_cost_model_source": "loom.sim.operation_cost.v1",
+                    "difference_classification": "expected_hardware_constraint",
+                    "hardware_bound_classification": "within_modeled_bounds",
+                    "dfg_cycles": 10,
+                    "modeled_lower_bound_cycles": 12,
+                    "performance_delta_cycles": 2,
+                    "route_latency_cycles": 2,
+                    "memory_latency_cycles": 0,
+                    "temporal_penalty_cycles": 0,
+                    "hardware_aware_cycles": 12,
+                    "placed_records": 1,
+                    "routed_edges": 1,
+                    "route_segments": 1,
+                    "config_records": 1,
+                    "spatial_placements": 1,
+                    "temporal_placements": 0,
+                    "cycle_breakdown": [],
+                    "unmodeled_constraints": [],
+                    "first_principles_checks": [],
+                    "diagnostics": [],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        stale_sim = stale_evidence_dir.parent / "stale-sim-cycle-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--output",
+                str(stale_sim),
+            ],
+            "stale discovered sim cycle summary",
+        )
+        stale_rows = artifact_test_common.read_csv_rows(stale_sim, HEADER)
+        stale_by_kernel = {row["kernel"]: row for row in stale_rows}
+        if set(stale_by_kernel) != {"stale"}:
+            raise AssertionError(f"expected one stale evidence row, got {stale_rows}")
+        stale_row = stale_by_kernel["stale"]
+        if (
+            stale_row.get("status") != "blocked"
+            or stale_row["dfg_sim_cycles"] != ""
+            or stale_row["cgra_sim_cycles"] != ""
+        ):
+            raise AssertionError(f"invalid discovered evidence must not be summarized as CGRA pass: {stale_row}")
+        if "discovered simulator evidence failed artifact audit" not in stale_row.get("diagnostic", ""):
+            raise AssertionError(f"stale evidence diagnostic should name artifact audit failure: {stale_row}")
+        stale_audit = stale_evidence_dir.parent / "stale-sim-cycle-summary-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(stale_audit),
+                str(stale_sim),
+            ],
+            "stale sim cycle summary artifact audit",
+        )
+
+        malformed_evidence_dir = out_dir / "malformed-current-sim-cycle" / "current-sim-cycle"
+        malformed_evidence_dir.mkdir(parents=True)
+        malformed_dfg = malformed_evidence_dir / "malformed-dfg-sim-report.json"
+        malformed_cgra = malformed_evidence_dir / "malformed-cgra-sim-report.json"
+        malformed_dfg.write_text(stale_dfg.read_text().replace('"stale"', '"malformed"'))
+        malformed_cgra.write_text("{not-json\n")
+        malformed_sim = malformed_evidence_dir.parent / "malformed-sim-cycle-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--output",
+                str(malformed_sim),
+            ],
+            "malformed discovered sim cycle summary",
+        )
+        malformed_rows = artifact_test_common.read_csv_rows(malformed_sim, HEADER)
+        malformed_by_kernel = {row["kernel"]: row for row in malformed_rows}
+        if set(malformed_by_kernel) != {"malformed"}:
+            raise AssertionError(f"expected one malformed evidence row, got {malformed_rows}")
+        malformed_row = malformed_by_kernel["malformed"]
+        if malformed_row.get("status") != "blocked" or malformed_row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"malformed discovered evidence must become blocked: {malformed_row}")
+        if "discovered simulator evidence failed artifact audit" not in malformed_row.get("diagnostic", ""):
+            raise AssertionError(f"malformed evidence diagnostic should name artifact audit failure: {malformed_row}")
+
+        missing_kind_evidence_dir = out_dir / "missing-kind-current-sim-cycle" / "current-sim-cycle"
+        missing_kind_evidence_dir.mkdir(parents=True)
+        missing_kind_cgra = missing_kind_evidence_dir / "missing-kind-cgra-sim-report.json"
+        missing_kind_cgra.write_text(
+            json.dumps({"schema_version": 1, "status": "pass"}, indent=2, sort_keys=True) + "\n"
+        )
+        missing_kind_sim = missing_kind_evidence_dir.parent / "missing-kind-sim-cycle-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--output",
+                str(missing_kind_sim),
+            ],
+            "missing-kind discovered sim cycle summary",
+        )
+        missing_kind_rows = artifact_test_common.read_csv_rows(missing_kind_sim, HEADER)
+        missing_kind_by_kernel = {row["kernel"]: row for row in missing_kind_rows}
+        if set(missing_kind_by_kernel) != {"missing-kind"}:
+            raise AssertionError(f"fallback workload should strip report suffixes: {missing_kind_rows}")
+        missing_kind_row = missing_kind_by_kernel["missing-kind"]
+        if missing_kind_row.get("status") != "blocked" or missing_kind_row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"missing-kind discovered evidence must become blocked: {missing_kind_row}")
+
+        cgra_only_evidence_dir = out_dir / "cgra-only-current-sim-cycle" / "current-sim-cycle"
+        cgra_only_evidence_dir.mkdir(parents=True)
+        cgra_only_report = cgra_only_evidence_dir / "cgra-only-cgra-sim-report.json"
+        cgra_only_data = json.loads(stale_cgra.read_text())
+        cgra_only_data["workload"] = "cgra_only"
+        cgra_only_data["final_outputs"] = ["i32:3"]
+        cgra_only_data["final_memory_state"] = {}
+        cgra_only_data["functional_state_source"] = "carried_from_dfg_sim_report"
+        cgra_only_data["cycle_breakdown"] = [
+            {
+                "category": "route_latency",
+                "cycles": 2,
+                "evidence": "mapping.route_segments",
+                "modeled": True,
+            }
+        ]
+        cgra_only_data["first_principles_checks"] = [
+            {
+                "name": "cgra_not_more_optimistic_than_dfg",
+                "status": "pass",
+                "evidence": "hardware_aware_cycles >= dfg_cycles",
+            }
+        ]
+        cgra_only_report.write_text(json.dumps(cgra_only_data, indent=2, sort_keys=True) + "\n")
+        cgra_only_sim = cgra_only_evidence_dir.parent / "cgra-only-sim-cycle-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/app/run_sim_cycle_summary.sh",
+                "--output",
+                str(cgra_only_sim),
+            ],
+            "CGRA-only discovered sim cycle summary",
+        )
+        cgra_only_rows = artifact_test_common.read_csv_rows(cgra_only_sim, HEADER)
+        cgra_only_by_kernel = {row["kernel"]: row for row in cgra_only_rows}
+        if set(cgra_only_by_kernel) != {"cgra_only"}:
+            raise AssertionError(f"CGRA-only evidence should keep workload identity: {cgra_only_rows}")
+        cgra_only_row = cgra_only_by_kernel["cgra_only"]
+        if cgra_only_row.get("status") != "blocked" or cgra_only_row["cgra_sim_cycles"] != "":
+            raise AssertionError(f"CGRA-only evidence must block until DFG report exists: {cgra_only_row}")
+        if "lacks matching DFG-sim report evidence" not in cgra_only_row.get("diagnostic", ""):
+            raise AssertionError(f"CGRA-only diagnostic should name missing DFG report: {cgra_only_row}")
+
         artifact_test_common.require_success(
             repo,
             [

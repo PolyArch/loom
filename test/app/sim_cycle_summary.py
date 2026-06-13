@@ -58,12 +58,48 @@ def find_tool() -> Path | None:
 
 
 def classify_report(path: Path) -> str:
+    filename_kind = report_kind_from_filename(path)
+    if filename_kind is not None:
+        return filename_kind
     with path.open() as handle:
         data = json.load(handle)
     kind = data.get("kind")
     if kind not in {"dfg_sim_report", "cgra_sim_report"}:
         raise ValueError(f"{path} has unsupported simulator report kind {kind!r}")
     return kind
+
+
+def report_kind_from_filename(path: Path) -> str | None:
+    name = path.name
+    if name.endswith("-dfg-sim-report.json") or ".dfg." in name:
+        return "dfg_sim_report"
+    if name.endswith("-cgra-sim-report.json") or ".cgra." in name:
+        return "cgra_sim_report"
+    return None
+
+
+def read_report(path: Path) -> dict[str, object]:
+    try:
+        with path.open() as handle:
+            data = json.load(handle)
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def workload_from_report_path(path: Path) -> str:
+    name = path.name
+    for suffix in ("-dfg-sim-report.json", "-cgra-sim-report.json"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    for marker in (".dfg.", ".cgra."):
+        if marker in name:
+            return name.split(marker, 1)[0]
+    if name.endswith(".report.json"):
+        return name[: -len(".report.json")]
+    if name.endswith(".json"):
+        return name[: -len(".json")]
+    return path.stem
 
 
 def discover_report_inputs(evidence_dir: Path) -> tuple[list[Path], list[Path]]:
@@ -85,6 +121,82 @@ def discover_report_inputs(evidence_dir: Path) -> tuple[list[Path], list[Path]]:
         else:
             cgra_reports.append(report)
     return dfg_reports, cgra_reports
+
+
+def first_audit_diagnostic(audit: dict[str, object]) -> str:
+    diagnostics = audit.get("diagnostics")
+    if isinstance(diagnostics, list) and diagnostics:
+        return str(diagnostics[0])
+    return "artifact audit failed"
+
+
+def write_blocked_discovered_evidence(
+    output: Path,
+    dfg_reports: list[Path],
+    cgra_reports: list[Path],
+    diagnostic: str,
+) -> None:
+    workloads: dict[str, dict[str, str]] = {}
+    for report in dfg_reports:
+        data = read_report(report)
+        workload = data.get("workload")
+        if not isinstance(workload, str) or not workload:
+            workload = workload_from_report_path(report)
+        row = workloads.setdefault(
+            workload,
+            {
+                "kernel": workload,
+                "dfg_sim_cycles": "",
+                "cgra_sim_cycles": "",
+                "status": "blocked",
+                "diagnostic": diagnostic,
+            },
+        )
+    for report in cgra_reports:
+        data = read_report(report)
+        workload = data.get("workload")
+        if not isinstance(workload, str) or not workload:
+            workload = workload_from_report_path(report)
+        workloads.setdefault(
+            workload,
+            {
+                "kernel": workload,
+                "dfg_sim_cycles": "",
+                "cgra_sim_cycles": "",
+                "status": "blocked",
+                "diagnostic": diagnostic,
+            },
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    intermediate_artifacts.write_csv_rows(
+        "sim_cycle",
+        output,
+        [workloads[name] for name in sorted(workloads)],
+    )
+
+
+def audit_discovered_report_inputs(output: Path, dfg_reports: list[Path], cgra_reports: list[Path]) -> bool:
+    audit = intermediate_artifacts.audit([*dfg_reports, *cgra_reports])
+    if audit.get("verdict") == "pass":
+        return True
+    diagnostic = (
+        "discovered simulator evidence failed artifact audit: "
+        + first_audit_diagnostic(audit)
+    )
+    write_blocked_discovered_evidence(output, dfg_reports, cgra_reports, diagnostic)
+    return False
+
+
+def discovered_reports_lack_dfg(output: Path, dfg_reports: list[Path], cgra_reports: list[Path]) -> bool:
+    if dfg_reports or not cgra_reports:
+        return False
+    write_blocked_discovered_evidence(
+        output,
+        dfg_reports,
+        cgra_reports,
+        "discovered CGRA-sim report lacks matching DFG-sim report evidence",
+    )
+    return True
 
 
 def dfg_sim_candidates() -> list[Path]:
@@ -266,7 +378,11 @@ def main(argv: list[str]) -> int:
         discovered_dfg_reports, discovered_cgra_reports = discover_report_inputs(
             output.parent / "current-sim-cycle"
         )
-        if discovered_dfg_reports:
+        if discovered_dfg_reports or discovered_cgra_reports:
+            if not audit_discovered_report_inputs(output, discovered_dfg_reports, discovered_cgra_reports):
+                return 0
+            if discovered_reports_lack_dfg(output, discovered_dfg_reports, discovered_cgra_reports):
+                return 0
             tool = find_tool()
             if tool is not None:
                 return summarize_reports(output, discovered_dfg_reports, discovered_cgra_reports)
