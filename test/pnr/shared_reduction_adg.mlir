@@ -15,30 +15,33 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                                     %i32d : !fabric.bits<32>,
                                     %ctrl : !fabric.bits<0>) {
   // CHECK: fabric.op [@dataflow.stream]
-  %idx, %running =
+  %idx, %running, %carried_scan =
       fabric.pe [spatial] (%pa = %i64a : !fabric.bits<64> to !fabric.bits<32>,
                            %pb = %i64b : !fabric.bits<64> to !fabric.bits<32>,
                            %pc = %i64c : !fabric.bits<64> to !fabric.bits<32>,
                            %pd = %data0 : !fabric.bits<32>,
-                           %pi = %i32a : !fabric.bits<32>)
-          -> (!fabric.bits<32>, !fabric.bits<32>) {
+                           %pi = %i32a : !fabric.bits<32>,
+                           %pn = %scan_feedback : !fabric.bits<32>)
+          -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
     fabric.fu(%fa = %pa : !fabric.bits<32>,
               %fb = %pb : !fabric.bits<32>,
               %fc = %pc : !fabric.bits<32>,
               %data = %pd : !fabric.bits<32>,
-              %init = %pi : !fabric.bits<32>)
-        -> (!fabric.bits<32>, !fabric.bits<32>) {
+              %init = %pi : !fabric.bits<32>,
+              %next = %pn : !fabric.bits<32>)
+        -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) {
       %idx, %rwc = fabric.op [@dataflow.stream] (%fa, %fb, %fc)
                    {hw_params = [{step_op = ["+="], cont_cond = ["<"]}],
                     sw_configs = {step_op = "+=", cont_cond = "<"}}
                    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
                      -> (!fabric.bits<32>, !fabric.bits<1>)
-      %carried = fabric.op [@dataflow.carry] (%rwc, %init, %sum)
+      %carried = fabric.op [@dataflow.carry] (%rwc, %init, %next)
                  : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
                    -> !fabric.bits<32>
       %sum = fabric.op [@arith.addi] (%data, %carried)
              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %idx, %sum : !fabric.bits<32>, !fabric.bits<32>
+      fabric.yield %idx, %sum, %carried
+        : !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
@@ -90,16 +93,22 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+  %fp_running =
+      fabric.pe [spatial] (%pa = %carried_scan : !fabric.bits<32>,
+                        %pb = %data0 : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@arith.addf]
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
-              %rhs = %pb : !fabric.bits<32>) -> () {
+              %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %sum = fabric.op [@arith.addf] (%lhs, %rhs)
              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield
+      fabric.yield %sum : !fabric.bits<32>
     }
   }
+  %scan_feedback, %scan_store_value =
+      fabric.switch [spatial] %running, %fp_running
+        [{connectivity_table = ["11", "11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>)
+        -> (!fabric.bits<32>, !fabric.bits<32>)
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
                     %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
     // CHECK: fabric.op [@arith.subf]
@@ -317,7 +326,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %store_done0, %store_done1 =
       fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %i32b, %ctrl,
                                           %i32c, %ctrl, %i32d, %ctrl)
-                            store(%idx, %running, %ctrl,
+                            store(%idx, %scan_store_value, %ctrl,
                                   %i32c, %i32d, %ctrl)
         [{load_group_size = 4 : i32, store_group_size = 2 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>,

@@ -51,10 +51,10 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
     row = matches[0]
     expected = {
         "topology_class": "fabric_module_template",
-        "node_count": "25",
+        "node_count": "26",
         "link_count": "0",
         "verify_status": "pass",
-        "tile_kinds": "mem;pe",
+        "tile_kinds": "mem;pe;switch",
         "schedule_kinds": "spatial",
         "adg_builder_recipe_identity": "adg-builder::shared-reduction",
     }

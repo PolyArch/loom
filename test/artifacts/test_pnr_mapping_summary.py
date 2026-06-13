@@ -156,13 +156,13 @@ def main() -> int:
             "routed_edges": 6,
             "unrouted_edges": 0,
             "unplaced_records": 0,
-            "config_records": 73,
+            "config_records": 89,
             "status": "pass",
         }
         for key, value in expected_json.items():
             if data.get(key) != value:
                 raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
-        if len(data.get("config_bitstream", [])) != 73:
+        if len(data.get("config_bitstream", [])) != 89:
             raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
         if data.get("unrouted_edge_details") != []:
             raise AssertionError(f"passing mapping should have no unrouted edge details: {data}")
@@ -174,6 +174,18 @@ def main() -> int:
         required_endpoints = {
             (
                 "shared_reduction_adg::fabric.op#2.result0",
+                "shared_reduction_adg::fabric.fu#0.result1",
+            ),
+            (
+                "shared_reduction_adg::fabric.pe#0.result1",
+                "shared_reduction_adg::fabric.switch#0.operand0",
+            ),
+            (
+                "shared_reduction_adg::fabric.switch#0.operand0",
+                "shared_reduction_adg::fabric.switch#0.result0",
+            ),
+            (
+                "shared_reduction_adg::fabric.switch#0.result0",
                 "shared_reduction_adg::fabric.op#1.operand2",
             ),
             (
@@ -220,6 +232,10 @@ def main() -> int:
             )
 
         graph_mapping_ids: dict[str, str] = {}
+        expected_graph_status = {
+            "g_t_vecadd_0_0": "fail",
+            "g_t_main_red_0_0": "pass",
+        }
         for graph_name in ("g_t_vecadd_0_0", "g_t_main_red_0_0"):
             graph_csv = out_dir / f"{graph_name}.mapping.csv"
             graph_artifact = out_dir / f"{graph_name}.mapping.json"
@@ -245,10 +261,14 @@ def main() -> int:
             if len(graph_rows) != 1:
                 raise AssertionError(f"expected one mapping row for {graph_name}, got {graph_rows}")
             graph_row = graph_rows[0]
-            if graph_row["status"] != "fail":
-                raise AssertionError(f"mapping row for {graph_name} should fail without Fabric ADG routes: {graph_row}")
-            if "unrouted software edges lack Fabric ADG connectivity" not in graph_row.get("diagnostic", ""):
-                raise AssertionError(f"mapping row for {graph_name} should diagnose unrouted edges: {graph_row}")
+            expected_status = expected_graph_status[graph_name]
+            if graph_row["status"] != expected_status:
+                raise AssertionError(f"mapping row for {graph_name} status changed: {graph_row}")
+            if expected_status == "fail":
+                if "unrouted software edges lack Fabric ADG connectivity" not in graph_row.get("diagnostic", ""):
+                    raise AssertionError(f"mapping row for {graph_name} should diagnose unrouted edges: {graph_row}")
+            elif graph_row["unrouted_edges"] != "0":
+                raise AssertionError(f"passing mapping row for {graph_name} should have no unrouted edges: {graph_row}")
             mapping_id = graph_row["mapping_id"]
             if graph_name not in mapping_id:
                 raise AssertionError(
@@ -268,8 +288,11 @@ def main() -> int:
                         f"{graph_name} mapping artifact {key}={graph_data.get(key)!r}, expected {value!r}"
                     )
             unrouted_details = graph_data.get("unrouted_edge_details")
-            if not isinstance(unrouted_details, list) or len(unrouted_details) != graph_data.get("unrouted_edges"):
-                raise AssertionError(f"{graph_name} should expose exact unrouted edge details: {graph_data}")
+            if expected_status == "fail":
+                if not isinstance(unrouted_details, list) or len(unrouted_details) != graph_data.get("unrouted_edges"):
+                    raise AssertionError(f"{graph_name} should expose exact unrouted edge details: {graph_data}")
+            elif unrouted_details != []:
+                raise AssertionError(f"{graph_name} passing mapping should not carry unrouted details: {graph_data}")
             graph_mapping_ids[graph_name] = mapping_id
 
         if len(set(graph_mapping_ids.values())) != len(graph_mapping_ids):

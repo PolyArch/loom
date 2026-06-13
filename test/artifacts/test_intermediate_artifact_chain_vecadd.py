@@ -125,8 +125,8 @@ def main() -> int:
         expected_mapping = {
             "hardware": "shared_reduction_adg",
             "mapping_id": AGGREGATE_MAPPING_ID,
-            "routed_edges": "0",
-            "unrouted_edges": "8",
+            "routed_edges": "6",
+            "unrouted_edges": "4",
             "unplaced_records": "0",
             "status": "blocked",
         }
@@ -147,22 +147,32 @@ def main() -> int:
         for key, value in expected_mapping_artifact.items():
             if mapping_artifact.get(key) != value:
                 raise AssertionError(f"unexpected vecadd mapping artifact {key}: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 0:
-            raise AssertionError(f"blocked vecadd mapping should not emit config records: {mapping_artifact}")
+        if mapping_artifact.get("config_records") != 97:
+            raise AssertionError(f"blocked vecadd mapping should preserve routed component config: {mapping_artifact}")
         component_mapping_ids = set(mapping_artifact.get("component_mapping_ids", []))
         if component_mapping_ids != EXPECTED_MAPPING_IDS:
             raise AssertionError(f"aggregate mapping must cite both component mappings: {mapping_artifact}")
 
         component_expectations = {
-            "pnr-mapping-main.json": ("g_t_vecadd_0_0", MAIN_MAPPING_ID),
-            "pnr-mapping-reduction.json": ("g_t_main_red_0_0", REDUCTION_MAPPING_ID),
+            "pnr-mapping-main.json": ("g_t_vecadd_0_0", MAIN_MAPPING_ID, "fail", 0, 4, 0),
+            "pnr-mapping-reduction.json": ("g_t_main_red_0_0", REDUCTION_MAPPING_ID, "pass", 6, 0, 97),
         }
-        for name, (graph, mapping_id) in component_expectations.items():
+        for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():
             component = json.loads((out_dir / name).read_text())
             if component.get("graph") != graph or component.get("mapping_id") != mapping_id:
                 raise AssertionError(f"unexpected component mapping {name}: {component}")
-            if component.get("status") != "fail":
-                raise AssertionError(f"component mapping {name} should expose unrouted failure: {component}")
+            if (
+                component.get("status") != status
+                or component.get("routed_edges") != routed_edges
+                or component.get("unrouted_edges") != unrouted_edges
+                or component.get("config_records") != config_records
+            ):
+                raise AssertionError(f"unexpected component routing state for {name}: {component}")
+            component_unrouted_details = component.get("unrouted_edge_details", [])
+            if status == "fail" and not component_unrouted_details:
+                raise AssertionError(f"failing component should expose unrouted details: {component}")
+            if status == "pass" and component_unrouted_details:
+                raise AssertionError(f"passing component should not expose unrouted details: {component}")
 
         dfg_report = json.loads((out_dir / "vecadd-dfg-sim-report.json").read_text())
         if dfg_report.get("status") != "pass" or dfg_report.get("workload") != "vecadd":
@@ -185,8 +195,10 @@ def main() -> int:
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected vecadd CGRA mapping identity: {cgra_report}")
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "vecadd CGRA-sim cycles")
-        if cgra_cycles != 1603:
-            raise AssertionError(f"vecadd aggregate CGRA report should be blocked at DFG cycles: {cgra_report}")
+        if cgra_cycles != 1621:
+            raise AssertionError(f"vecadd aggregate CGRA report should preserve routed component latency: {cgra_report}")
+        if cgra_report.get("performance_delta_cycles") != 18 or cgra_report.get("route_segments") != 14:
+            raise AssertionError(f"vecadd aggregate CGRA report should expose partial routed component cost: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
         if dfg_cycles in {579, 1027, 448} or cgra_cycles in {589, 1044, 466}:

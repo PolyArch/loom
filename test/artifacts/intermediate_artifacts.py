@@ -8421,7 +8421,12 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
             for report in blocked_cgra_reports
             if isinstance(report.get("hardware_aware_cycles"), int)
         ]
-        if blocked_cgra_report_cycles and sum(blocked_cgra_report_cycles) == dfg_cycles:
+        blocked_cgra_dfg_cycles = [
+            int(report["dfg_cycles"])
+            for report in blocked_cgra_reports
+            if isinstance(report.get("dfg_cycles"), int)
+        ]
+        if blocked_cgra_report_cycles and sum(blocked_cgra_dfg_cycles) == dfg_cycles:
             mapping_ids: list[str] = []
             component_mapping_ids: list[str] = []
             hardware_refs: list[str] = []
@@ -8483,6 +8488,7 @@ def cross_artifact_checks(paths: Iterable[Path]) -> list[dict[str, object]]:
                         "workload": workload,
                         "dfg_sim_cycles": dfg_cycles,
                         "dfg_report_cycles": dfg_report_cycles,
+                        "cgra_dfg_cycles": blocked_cgra_dfg_cycles,
                         "cgra_report_cycles": blocked_cgra_report_cycles,
                         "dynamic_work_items": dynamic_work_items,
                         "mapping_ids": sorted(mapping_ids),

@@ -89,9 +89,9 @@ def main() -> int:
         mapping_row = relu_rows[0]
         if mapping_row["mapping_id"] != AGGREGATE_MAPPING_ID or mapping_row["status"] != "blocked":
             raise AssertionError(f"unexpected relu aggregate mapping row: {mapping_row}")
-        if mapping_row["placed_records"] != "10" or mapping_row["routed_edges"] != "0":
+        if mapping_row["placed_records"] != "10" or mapping_row["routed_edges"] != "6":
             raise AssertionError(f"relu aggregate mapping missed component placement evidence: {mapping_row}")
-        if mapping_row["unrouted_edges"] != "7" or mapping_row["unplaced_records"] != "0":
+        if mapping_row["unrouted_edges"] != "4" or mapping_row["unplaced_records"] != "0":
             raise AssertionError(f"relu aggregate mapping should preserve unrouted edges: {mapping_row}")
 
         mapping_artifact = json.loads((out_dir / "pnr-mapping.json").read_text())
@@ -103,10 +103,10 @@ def main() -> int:
             raise AssertionError(f"relu aggregate mapping missed component mappings: {mapping_artifact}")
         if set(mapping_artifact.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"relu aggregate mapping missed component graphs: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 0 or mapping_artifact.get("status") != "blocked":
+        if mapping_artifact.get("config_records") != 97 or mapping_artifact.get("status") != "blocked":
             raise AssertionError(f"relu aggregate mapping should preserve blocked route evidence: {mapping_artifact}")
         unrouted_details = mapping_artifact.get("unrouted_edge_details")
-        if not isinstance(unrouted_details, list) or len(unrouted_details) != 7:
+        if not isinstance(unrouted_details, list) or len(unrouted_details) != 4:
             raise AssertionError(f"relu aggregate mapping should preserve unrouted edge details: {mapping_artifact}")
         for detail in unrouted_details:
             if detail.get("status") != "unrouted":
@@ -116,15 +116,25 @@ def main() -> int:
                     raise AssertionError(f"relu aggregate unrouted edge missed {key}: {detail}")
 
         component_expectations = {
-            "pnr-mapping-main.json": ("g_t_relu_0_0", MAIN_MAPPING_ID),
-            "pnr-mapping-checksum.json": ("g_t_main_red_0_0", CHECKSUM_MAPPING_ID),
+            "pnr-mapping-main.json": ("g_t_relu_0_0", MAIN_MAPPING_ID, "fail", 0, 4, 0),
+            "pnr-mapping-checksum.json": ("g_t_main_red_0_0", CHECKSUM_MAPPING_ID, "pass", 6, 0, 97),
         }
-        for name, (graph, mapping_id) in component_expectations.items():
+        for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():
             component = json.loads((out_dir / name).read_text())
             if component.get("graph") != graph or component.get("mapping_id") != mapping_id:
                 raise AssertionError(f"unexpected relu component mapping {name}: {component}")
-            if component.get("status") != "fail":
-                raise AssertionError(f"relu component mapping {name} should expose unrouted failure: {component}")
+            if (
+                component.get("status") != status
+                or component.get("routed_edges") != routed_edges
+                or component.get("unrouted_edges") != unrouted_edges
+                or component.get("config_records") != config_records
+            ):
+                raise AssertionError(f"unexpected relu component routing state for {name}: {component}")
+            component_unrouted_details = component.get("unrouted_edge_details", [])
+            if status == "fail" and not component_unrouted_details:
+                raise AssertionError(f"failing relu component should expose unrouted details: {component}")
+            if status == "pass" and component_unrouted_details:
+                raise AssertionError(f"passing relu component should not expose unrouted details: {component}")
 
         dfg_report = json.loads((out_dir / "relu-dfg-sim-report.json").read_text())
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "relu DFG-sim cycles")
@@ -137,8 +147,10 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "relu CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected relu CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("status") != "blocked" or cgra_cycles != 707:
-            raise AssertionError(f"relu aggregate CGRA report should be blocked at DFG cycles: {cgra_report}")
+        if cgra_report.get("status") != "blocked" or cgra_cycles != 725:
+            raise AssertionError(f"relu aggregate CGRA report should preserve routed component latency: {cgra_report}")
+        if cgra_report.get("performance_delta_cycles") != 18 or cgra_report.get("route_segments") != 14:
+            raise AssertionError(f"relu aggregate CGRA report should expose partial routed component cost: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"relu CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
         if dfg_cycles in {448, 546, 579, 1027, 1603} or cgra_cycles in {466, 576, 589, 1044, 1631}:

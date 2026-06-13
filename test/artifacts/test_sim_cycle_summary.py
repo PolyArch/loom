@@ -164,7 +164,7 @@ def main() -> int:
             raise AssertionError(f"default sim cycle row should pass with routed CGRA evidence: {default_row}")
         if default_row["dfg_sim_cycles"] != "579":
             raise AssertionError(f"default sim cycle row should include vecsum DFG-sim evidence: {default_row}")
-        if default_row["cgra_sim_cycles"] != "591":
+        if default_row["cgra_sim_cycles"] != "595":
             raise AssertionError(f"default sim cycle row should include vecsum CGRA-sim evidence: {default_row}")
         if "DFG-sim and CGRA-sim reports available" not in default_row.get("diagnostic", ""):
             raise AssertionError(f"default sim cycle row should report available simulator evidence: {default_row}")

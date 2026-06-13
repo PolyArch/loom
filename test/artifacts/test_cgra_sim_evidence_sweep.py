@@ -260,6 +260,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "prefix_sum",
                 "--case",
+                "cumsum",
+                "--case",
                 "prefix_sum_inclusive",
                 "--case",
                 "vecadd",
@@ -273,6 +275,7 @@ def main(argv: list[str]) -> int:
             "xor_block",
             "vecmul",
             "prefix_sum",
+            "cumsum",
             "prefix_sum_inclusive",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
@@ -284,6 +287,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "cumsum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
@@ -318,6 +322,7 @@ def main(argv: list[str]) -> int:
             "xor_block",
             "vecmul",
             "prefix_sum",
+            "cumsum",
             "prefix_sum_inclusive",
         ):
             assert_promoted_row(repo, rows, case)
@@ -336,13 +341,16 @@ def main(argv: list[str]) -> int:
         prefix_sum_row = one_row(rows, "prefix_sum")
         if prefix_sum_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"prefix_sum should use shared reduction hardware: {prefix_sum_row}")
+        cumsum_row = one_row(rows, "cumsum")
+        if cumsum_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"cumsum should use shared reduction hardware: {cumsum_row}")
         prefix_sum_inclusive_row = one_row(rows, "prefix_sum_inclusive")
         if prefix_sum_inclusive_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(
                 f"prefix_sum_inclusive should use shared reduction hardware: {prefix_sum_inclusive_row}"
             )
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 8:
+        if counts["pass"] < 9:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [

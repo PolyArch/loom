@@ -99,7 +99,7 @@ def main() -> int:
             raise AssertionError(f"expected one vecsum sim row, got {sim_rows}")
         if (
             vecsum_rows[0]["dfg_sim_cycles"] != "579"
-            or vecsum_rows[0]["cgra_sim_cycles"] != "591"
+            or vecsum_rows[0]["cgra_sim_cycles"] != "595"
             or vecsum_rows[0].get("status") != "pass"
         ):
             raise AssertionError(f"expected passing vecsum simulator cycle evidence: {vecsum_rows[0]}")
@@ -113,7 +113,7 @@ def main() -> int:
             raise AssertionError(f"comparison should preserve performance pass evidence: {comparison}")
         if comparison.get("difference_classification") != "expected_hardware_constraint":
             raise AssertionError(f"comparison should classify mapped hardware constraints: {comparison}")
-        if comparison.get("dfg_sim_cycles") != 579 or comparison.get("cgra_sim_cycles") != 591:
+        if comparison.get("dfg_sim_cycles") != 579 or comparison.get("cgra_sim_cycles") != 595:
             raise AssertionError(f"comparison should preserve simulator cycle values: {comparison}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
@@ -140,12 +140,12 @@ def main() -> int:
         vecsum_dse = vecsum_dse_rows[0]
         expected_dse = {
             "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
-            "cgra_sim_cycles": "591",
-            "frequency_mhz": "250.000",
-            "area_um2": "7250.000",
-            "dynamic_power_mw": "6.000",
-            "leakage_power_mw": "0.825",
-            "energy_nj": "16.134",
+            "cgra_sim_cycles": "595",
+            "frequency_mhz": "240.000",
+            "area_um2": "7500.000",
+            "dynamic_power_mw": "6.200",
+            "leakage_power_mw": "0.850",
+            "energy_nj": "17.478",
             "selection_status": "selected",
             "hardware_evidence_kind": "analytic_model_only",
         }
@@ -173,12 +173,12 @@ def main() -> int:
                 raise AssertionError(f"vecsum DSE input artifacts missed {artifact_name}: {vecsum_dse}")
         metric_records = {entry for entry in vecsum_dse.get("metric_records", "").split(";") if entry}
         required_dse_metrics = {
-            "cgra_sim_cycles=591",
-            "frequency_mhz=250.000",
-            "area_um2=7250.000",
-            "dynamic_power_mw=6.000",
-            "leakage_power_mw=0.825",
-            "energy_nj=16.134",
+            "cgra_sim_cycles=595",
+            "frequency_mhz=240.000",
+            "area_um2=7500.000",
+            "dynamic_power_mw=6.200",
+            "leakage_power_mw=0.850",
+            "energy_nj=17.478",
         }
         if not required_dse_metrics.issubset(metric_records):
             raise AssertionError(f"selected vecsum DSE row missed objective metrics: {vecsum_dse}")

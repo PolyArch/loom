@@ -98,6 +98,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,PREFIX-SUM-INCLUSIVE < %t.dir/prefix_sum_inclusive.mapping.csv
 // RUN: FileCheck %s --check-prefix=PREFIX-SUM-INCLUSIVE-JSON < %t.dir/prefix_sum_inclusive.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,CUMSUM < %t.dir/cumsum.mapping.csv
+// RUN: FileCheck %s --check-prefix=CUMSUM-JSON < %t.dir/cumsum.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,TRAPZ < %t.dir/integrate_trapz.mapping.csv
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
@@ -105,11 +106,11 @@
 
 // RELU-NEXT: relu,shared_reduction_adg,relu__g_t_relu_0_0__shared_reduction_adg,5,0,4,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__g_t_main_red_0_0__shared_reduction_adg,5,0,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
 // ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,0,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// VARIANCE-MEAN-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_0_0__shared_reduction_adg,7,0,6,0,fail,unrouted software edges lack Fabric ADG connectivity
+// VARIANCE-MEAN-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_0_0__shared_reduction_adg,7,0,3,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,0,10,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -117,7 +118,7 @@
 
 // BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,0,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// DOWNSAMPLE-AVG-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_downsample_avg_0_0__shared_reduction_adg,7,0,6,0,fail,unrouted software edges lack Fabric ADG connectivity
+// DOWNSAMPLE-AVG-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_downsample_avg_0_0__shared_reduction_adg,7,0,3,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,6,0,5,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -141,7 +142,7 @@
 
 // GEMV-CHECKSUM-NEXT: gemv,shared_reduction_adg,gemv__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__g_t_main_red_0_0__shared_reduction_adg,{{[0-9]+}},0,{{[1-9][0-9]*}},0,fail,unrouted software edges lack Fabric ADG connectivity
+// VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
 // VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg,5,0,5,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -209,6 +210,20 @@
 // PREFIX-SUM-INCLUSIVE-JSON-NOT: ".out"
 // PREFIX-SUM-INCLUSIVE-JSON-NOT: ".in"
 
-// CUMSUM-NEXT: cumsum,shared_reduction_adg,cumsum__g_t_cumsum_kernel_red_0_0__shared_reduction_adg,6,0,4,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CUMSUM-NEXT: cumsum,shared_reduction_adg,cumsum__g_t_cumsum_kernel_red_0_0__shared_reduction_adg,6,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+
+// CUMSUM-JSON-DAG: "workload": "cumsum"
+// CUMSUM-JSON-DAG: "hardware": "shared_reduction_adg"
+// CUMSUM-JSON-DAG: "status": "pass"
+// CUMSUM-JSON-DAG: "placed_records": 6
+// CUMSUM-JSON-DAG: "unrouted_edges": 0
+// CUMSUM-JSON-DAG: "edge_ref": "arith.addf#0.result0->dataflow.carry#0.operand2"
+// CUMSUM-JSON-DAG: "edge_ref": "arith.addf#0.result0->dataflow.store#0.operand2"
+// CUMSUM-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->arith.addf#0.operand0"
+// CUMSUM-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.addf#0.operand1"
+// CUMSUM-JSON-DAG: "segment_kind": "resource_edge"
+// CUMSUM-JSON-DAG: "segment_kind": "module_path"
+// CUMSUM-JSON-NOT: ".out"
+// CUMSUM-JSON-NOT: ".in"
 
 // TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,0,22,0,fail,unrouted software edges lack Fabric ADG connectivity

@@ -221,6 +221,10 @@ def aggregate_mapping(
     unplaced_records = sum_int(mapping_artifacts, "unplaced_records")
     unrouted_edges = sum_int(mapping_artifacts, "unrouted_edges")
     config_records = sum_int(mapping_artifacts, "config_records")
+    route_segments = sum(
+        intermediate_artifacts.route_segment_count(artifact.get("routes", []))
+        for artifact in mapping_artifacts
+    )
     components_pass = all(status == "pass" for status in component_statuses)
     status = "pass" if components_pass and unplaced_records == 0 and unrouted_edges == 0 else "blocked"
     diagnostics = ["derived workload graph-set mapping artifact from component PnR mapping artifacts"]
@@ -246,6 +250,7 @@ def aggregate_mapping(
         "routed_edges": routed_edges,
         "unrouted_edges": unrouted_edges,
         "unplaced_records": unplaced_records,
+        "route_segments": route_segments,
         "config_records": config_records,
         "placements": merge_records(mapping_artifacts, "placements"),
         "routes": merge_records(mapping_artifacts, "routes", id_key="record_id"),
@@ -430,7 +435,7 @@ def main(argv: list[str]) -> int:
     dfg = aggregate_dfg(args, dfg_paths, dfg_reports)
     mapping = aggregate_mapping(args, mapping_paths, mapping_artifacts)
     cgra = aggregate_cgra(args, cgra_paths, cgra_reports, mapping, dfg_paths, dfg_reports)
-    require(cgra["route_segments"] == mapping["routed_edges"], "aggregate CGRA route segments do not match mapping")
+    require(cgra["route_segments"] == mapping["route_segments"], "aggregate CGRA route segments do not match mapping")
     require(cgra["config_records"] == mapping["config_records"], "aggregate CGRA config records do not match mapping")
     require(cgra["hardware_aware_cycles"] >= dfg["optimistic_cycles"], "aggregate CGRA cycles are too optimistic")
 
