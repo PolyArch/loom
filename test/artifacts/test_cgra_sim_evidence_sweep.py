@@ -258,10 +258,23 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "vecmul",
                 "--case",
+                "prefix_sum",
+                "--case",
+                "prefix_sum_inclusive",
+                "--case",
                 "vecadd",
             ],
         )
-        for case in ("vecsum", "reduction", "dotproduct", "byte_swap", "xor_block", "vecmul"):
+        for case in (
+            "vecsum",
+            "reduction",
+            "dotproduct",
+            "byte_swap",
+            "xor_block",
+            "vecmul",
+            "prefix_sum",
+            "prefix_sum_inclusive",
+        ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
@@ -270,6 +283,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
+        assert_mapping_hardware(evidence_dir, "prefix_sum", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -295,7 +310,16 @@ def main(argv: list[str]) -> int:
             ],
         )
         rows = read_rows(status_csv)
-        for case in ("vecsum", "reduction", "dotproduct", "byte_swap", "xor_block", "vecmul"):
+        for case in (
+            "vecsum",
+            "reduction",
+            "dotproduct",
+            "byte_swap",
+            "xor_block",
+            "vecmul",
+            "prefix_sum",
+            "prefix_sum_inclusive",
+        ):
             assert_promoted_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "dotproduct_fmuladd_adg":
@@ -309,8 +333,16 @@ def main(argv: list[str]) -> int:
         vecmul_row = one_row(rows, "vecmul")
         if vecmul_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"vecmul should use shared vector hardware: {vecmul_row}")
+        prefix_sum_row = one_row(rows, "prefix_sum")
+        if prefix_sum_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"prefix_sum should use shared reduction hardware: {prefix_sum_row}")
+        prefix_sum_inclusive_row = one_row(rows, "prefix_sum_inclusive")
+        if prefix_sum_inclusive_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(
+                f"prefix_sum_inclusive should use shared reduction hardware: {prefix_sum_inclusive_row}"
+            )
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 6:
+        if counts["pass"] < 8:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
