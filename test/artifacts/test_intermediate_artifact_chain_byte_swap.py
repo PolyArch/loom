@@ -42,7 +42,8 @@ EXPECTED_FILES = [
 
 WORKLOAD = "byte_swap"
 GRAPH = "g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
-MAPPING_ID = f"{WORKLOAD}__{GRAPH}__shared_reduction_adg"
+HARDWARE = "shared_vector_alu_adg"
+MAPPING_ID = f"{WORKLOAD}__{GRAPH}__{HARDWARE}"
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -111,13 +112,13 @@ def main() -> int:
         assert_fields(
             mapping,
             {
-                "hardware": "shared_reduction_adg",
+                "hardware": HARDWARE,
                 "mapping_id": MAPPING_ID,
                 "placed_records": "4",
-                "routed_edges": "0",
-                "unrouted_edges": "3",
+                "routed_edges": "4",
+                "unrouted_edges": "0",
                 "unplaced_records": "0",
-                "status": "fail",
+                "status": "pass",
             },
             label="byte_swap mapping",
         )
@@ -130,9 +131,9 @@ def main() -> int:
                 "graph": GRAPH,
                 "mapping_id": MAPPING_ID,
                 "placed_records": 4,
-                "routed_edges": 0,
-                "config_records": 0,
-                "status": "fail",
+                "routed_edges": 4,
+                "config_records": 85,
+                "status": "pass",
             },
             label="byte_swap mapping artifact",
         )
@@ -167,12 +168,14 @@ def main() -> int:
         assert_fields(
             cgra_report,
             {
-                "status": "blocked",
+                "status": "pass",
                 "workload": WORKLOAD,
                 "mapping_id": MAPPING_ID,
                 "dfg_cycles": 320,
-                "hardware_aware_cycles": 320,
-                "difference_classification": "unsupported_scope",
+                "hardware": HARDWARE,
+                "hardware_aware_cycles": 342,
+                "difference_classification": "expected_hardware_constraint",
+                "route_segments": 14,
             },
             label="byte_swap CGRA-sim report",
         )
@@ -187,7 +190,7 @@ def main() -> int:
         )
         assert_fields(
             sim_row,
-            {"dfg_sim_cycles": "320", "cgra_sim_cycles": "", "status": "blocked"},
+            {"dfg_sim_cycles": "320", "cgra_sim_cycles": "342", "status": "pass"},
             label="byte_swap sim row",
         )
         if int(sim_row["dfg_sim_cycles"]) in {448, 579, 1027}:
@@ -197,17 +200,17 @@ def main() -> int:
         assert_fields(
             comparison,
             {
-                "status": "blocked",
+                "status": "pass",
                 "workload": WORKLOAD,
                 "dfg_sim_cycles": 320,
-                "cgra_sim_cycles": 320,
-                "difference_classification": "unsupported_scope",
+                "cgra_sim_cycles": 342,
+                "difference_classification": "expected_hardware_constraint",
             },
             label="byte_swap simulation comparison",
         )
 
         runtime_package = read_json_object(out_dir / "runtime-package.json")
-        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != WORKLOAD:
+        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected byte_swap runtime package: {runtime_package}")
         if runtime_package.get("work_package_identity") != f"work-package::{WORKLOAD}::{MAPPING_ID}":
             raise AssertionError(f"unexpected byte_swap work package identity: {runtime_package}")
@@ -243,12 +246,12 @@ def main() -> int:
             dse_row,
             {
                 "mapping_id": MAPPING_ID,
-                "cgra_sim_cycles": "",
-                "frequency_mhz": "",
-                "area_um2": "",
-                "dynamic_power_mw": "",
-                "energy_nj": "",
-                "selection_status": "blocked",
+                "cgra_sim_cycles": "342",
+                "frequency_mhz": "430.000",
+                "area_um2": "2750.000",
+                "dynamic_power_mw": "2.400",
+                "energy_nj": "2.207",
+                "selection_status": "selected",
             },
             label="byte_swap DSE",
         )
@@ -256,7 +259,7 @@ def main() -> int:
             raise AssertionError(f"byte_swap DSE should consume FPA evidence: {dse_row}")
 
         workload_bundle = read_json_object(out_dir / "workload-report-bundle.json")
-        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != WORKLOAD:
+        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected byte_swap workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
@@ -266,7 +269,8 @@ def main() -> int:
         for metric_id in (
             "metric::byte_swap::dfg_sim_cycles",
             "metric::byte_swap::workload_size_items",
-            "metric::shared_reduction_adg::frequency_mhz",
+            "metric::byte_swap::cgra_sim_cycles",
+            "metric::shared_vector_alu_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")
@@ -322,7 +326,7 @@ def main() -> int:
         }
         expected_cross_checks = {
             "sim_cycle_dfg_report_evidence",
-            "sim_cycle_blocked_mapping_evidence",
+            "sim_cycle_report_mapping_evidence",
         }
         if not expected_cross_checks <= cross_checks:
             raise AssertionError(

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|adg-builder] [--legacy-app-root DIR]
+usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -193,7 +193,10 @@ for case_name in "${CASES[@]}"; do
     case_hardware_source="dotproduct-fmuladd"
   fi
   if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "byte_swap" ]]; then
-    case_hardware_source="byte-swap-store"
+    case_hardware_source="shared-vector-alu"
+  fi
+  if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "xor_block" ]]; then
+    case_hardware_source="shared-vector-alu"
   fi
   bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
     --output-dir "${case_out}" \

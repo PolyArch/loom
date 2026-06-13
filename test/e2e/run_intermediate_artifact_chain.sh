@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -133,6 +133,10 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
+    if [[ "${CASE}" == "byte_swap" || "${CASE}" == "xor_block" ]]; then
+      hardware_mlir="${ROOT}/test/pnr/shared_vector_alu_adg.mlir"
+      hardware_name="shared_vector_alu_adg"
+    fi
     ;;
   dotproduct-fmuladd)
     hardware_mlir="${ROOT}/test/pnr/dotproduct_fmuladd_adg.mlir"
@@ -141,6 +145,10 @@ case "${HARDWARE_SOURCE}" in
   byte-swap-store)
     hardware_mlir="${ROOT}/test/pnr/byte_swap_store_adg.mlir"
     hardware_name="byte_swap_store_adg"
+    ;;
+  shared-vector-alu)
+    hardware_mlir="${ROOT}/test/pnr/shared_vector_alu_adg.mlir"
+    hardware_name="shared_vector_alu_adg"
     ;;
   adg-builder)
     hardware_mlir="${OUT_DIR}/adg-builder-shared-reduction-adg.mlir"

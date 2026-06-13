@@ -39,6 +39,11 @@ EXPECTED_FILES = [
     "artifact-audit-summary.json",
 ]
 
+WORKLOAD = "xor_block"
+GRAPH = "g_t_xor_block_0_0"
+HARDWARE = "shared_vector_alu_adg"
+MAPPING_ID = f"{WORKLOAD}__{GRAPH}__{HARDWARE}"
+
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
@@ -88,7 +93,7 @@ def main() -> int:
                 "--output-dir",
                 str(out_dir),
                 "--case",
-                "xor_block",
+                WORKLOAD,
             ],
             "xor_block intermediate artifact chain",
         )
@@ -100,19 +105,19 @@ def main() -> int:
         mapping = single_row(
             read_csv_rows(out_dir / "pnr-mapping-summary.csv"),
             key="workload",
-            value="xor_block",
+            value=WORKLOAD,
             label="xor_block mapping",
         )
         assert_fields(
             mapping,
             {
-                "hardware": "shared_reduction_adg",
-                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
+                "hardware": HARDWARE,
+                "mapping_id": MAPPING_ID,
                 "placed_records": "5",
-                "routed_edges": "0",
-                "unrouted_edges": "5",
+                "routed_edges": "6",
+                "unrouted_edges": "0",
                 "unplaced_records": "0",
-                "status": "fail",
+                "status": "pass",
             },
             label="xor_block mapping",
         )
@@ -121,17 +126,20 @@ def main() -> int:
         assert_fields(
             mapping_artifact,
             {
-                "workload": "xor_block",
-                "graph": "g_t_xor_block_0_0",
-                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
+                "workload": WORKLOAD,
+                "graph": GRAPH,
+                "mapping_id": MAPPING_ID,
+                "placed_records": 5,
+                "routed_edges": 6,
+                "unrouted_edges": 0,
+                "config_records": 119,
+                "status": "pass",
             },
             label="xor_block mapping artifact",
         )
-        if mapping_artifact.get("status") != "fail" or mapping_artifact.get("config_records") != 0:
-            raise AssertionError(f"mapping artifact should expose unrouted blocked evidence: {mapping_artifact}")
 
         dfg_report = read_json_object(out_dir / "xor_block-dfg-sim-report.json")
-        if dfg_report.get("status") != "pass" or dfg_report.get("workload") != "xor_block":
+        if dfg_report.get("status") != "pass" or dfg_report.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block DFG-sim report: {dfg_report}")
         if dfg_report.get("optimistic_cycles") != 448 or dfg_report.get("dynamic_work_items") != 32:
             raise AssertionError(f"unexpected xor_block DFG-sim cycles: {dfg_report}")
@@ -147,45 +155,45 @@ def main() -> int:
         assert_fields(fire_counts, expected_fire_counts, label="xor_block fire count")
 
         cgra_report = read_json_object(out_dir / "xor_block-cgra-sim-report.json")
-        if cgra_report.get("status") != "blocked" or cgra_report.get("workload") != "xor_block":
+        if cgra_report.get("status") != "pass" or cgra_report.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block CGRA-sim report: {cgra_report}")
-        if cgra_report.get("mapping_id") != "xor_block__g_t_xor_block_0_0__shared_reduction_adg":
+        if cgra_report.get("mapping_id") != MAPPING_ID or cgra_report.get("hardware") != HARDWARE:
             raise AssertionError(f"unexpected xor_block CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("hardware_aware_cycles") != 448:
+        if cgra_report.get("hardware_aware_cycles") != 480:
             raise AssertionError(f"unexpected xor_block CGRA-sim cycles: {cgra_report}")
-        if cgra_report.get("difference_classification") != "unsupported_scope":
-            raise AssertionError(f"xor_block blocked CGRA report should classify unsupported scope: {cgra_report}")
+        if cgra_report.get("route_segments") != 20:
+            raise AssertionError(f"unexpected xor_block route segment count: {cgra_report}")
+        if cgra_report.get("difference_classification") != "expected_hardware_constraint":
+            raise AssertionError(f"xor_block CGRA report should classify hardware constraints: {cgra_report}")
         if cgra_report.get("hardware_aware_cycles") < dfg_report.get("optimistic_cycles"):
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
 
         sim_row = single_row(
             read_csv_rows(out_dir / "sim-cycle-summary.csv"),
             key="kernel",
-            value="xor_block",
+            value=WORKLOAD,
             label="xor_block sim",
         )
         assert_fields(
             sim_row,
-            {"dfg_sim_cycles": "448", "cgra_sim_cycles": "", "status": "blocked"},
+            {"dfg_sim_cycles": "448", "cgra_sim_cycles": "480", "status": "pass"},
             label="xor_block sim row",
         )
         if int(sim_row["dfg_sim_cycles"]) in {579, 1027}:
             raise AssertionError(f"xor_block cycles should differ from existing vecsum/dotproduct evidence: {sim_row}")
 
         comparison = read_json_object(out_dir / "sim-comparison-report.json")
-        if comparison.get("status") != "blocked" or comparison.get("workload") != "xor_block":
+        if comparison.get("status") != "pass" or comparison.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block comparison report: {comparison}")
-        if comparison.get("dfg_sim_cycles") != 448 or comparison.get("cgra_sim_cycles") != 448:
+        if comparison.get("dfg_sim_cycles") != 448 or comparison.get("cgra_sim_cycles") != 480:
             raise AssertionError(f"comparison should preserve xor_block cycles: {comparison}")
-        if comparison.get("difference_classification") != "unsupported_scope":
-            raise AssertionError(f"comparison should classify unsupported route evidence: {comparison}")
+        if comparison.get("difference_classification") != "expected_hardware_constraint":
+            raise AssertionError(f"comparison should classify mapped hardware evidence: {comparison}")
 
         runtime_package = read_json_object(out_dir / "runtime-package.json")
-        if runtime_package.get("status") != "blocked" or runtime_package.get("workload") != "xor_block":
+        if runtime_package.get("status") != "pass" or runtime_package.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block runtime package: {runtime_package}")
-        if runtime_package.get("work_package_identity") != (
-            "work-package::xor_block::xor_block__g_t_xor_block_0_0__shared_reduction_adg"
-        ):
+        if runtime_package.get("work_package_identity") != f"work-package::{WORKLOAD}::{MAPPING_ID}":
             raise AssertionError(f"unexpected xor_block work package identity: {runtime_package}")
         memory_descriptors = runtime_package.get("memory_descriptors")
         if not isinstance(memory_descriptors, list) or len(memory_descriptors) != 1:
@@ -218,13 +226,13 @@ def main() -> int:
         assert_fields(
             xor_dse,
             {
-                "mapping_id": "xor_block__g_t_xor_block_0_0__shared_reduction_adg",
-                "cgra_sim_cycles": "",
-                "frequency_mhz": "",
-                "area_um2": "",
-                "dynamic_power_mw": "",
-                "energy_nj": "",
-                "selection_status": "blocked",
+                "mapping_id": MAPPING_ID,
+                "cgra_sim_cycles": "480",
+                "frequency_mhz": "430.000",
+                "area_um2": "2750.000",
+                "dynamic_power_mw": "2.400",
+                "energy_nj": "3.098",
+                "selection_status": "selected",
             },
             label="xor_block DSE",
         )
@@ -232,7 +240,7 @@ def main() -> int:
             raise AssertionError(f"xor_block DSE should consume FPA evidence: {xor_dse}")
 
         workload_bundle = read_json_object(out_dir / "workload-report-bundle.json")
-        if workload_bundle.get("report_status") != "blocked" or workload_bundle.get("workload") != "xor_block":
+        if workload_bundle.get("report_status") != "pass" or workload_bundle.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block workload report bundle: {workload_bundle}")
         metric_ids = {
             metric.get("metric_id")
@@ -242,7 +250,8 @@ def main() -> int:
         for metric_id in (
             "metric::xor_block::dfg_sim_cycles",
             "metric::xor_block::workload_size_items",
-            "metric::shared_reduction_adg::frequency_mhz",
+            "metric::xor_block::cgra_sim_cycles",
+            "metric::shared_vector_alu_adg::frequency_mhz",
         ):
             if metric_id not in metric_ids:
                 raise AssertionError(f"workload report bundle missed {metric_id}: {workload_bundle}")

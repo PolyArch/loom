@@ -132,6 +132,38 @@ def assert_mapping_hardware(evidence_dir: Path, case: str, expected_hardware: st
         raise AssertionError(f"{case} should map to {expected_hardware}: {path}: {data}")
 
 
+def assert_mapping_uses_switch_multihop(evidence_dir: Path, case: str) -> None:
+    path = evidence_dir / f"{case}.mapping.json"
+    data = json.loads(path.read_text())
+    routes = data.get("routes")
+    if not isinstance(routes, list):
+        raise AssertionError(f"{case} mapping lacks routes array: {path}: {data}")
+    saw_switch_multihop_route = False
+    for route in routes:
+        if not isinstance(route, dict):
+            continue
+        segments = route.get("segments")
+        if not isinstance(segments, list):
+            continue
+        route_uses_switch = False
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            endpoints = (
+                str(segment.get("source_endpoint", "")),
+                str(segment.get("sink_endpoint", "")),
+                str(segment.get("hardware_ref", "")),
+            )
+            if any("fabric.switch" in endpoint for endpoint in endpoints):
+                route_uses_switch = True
+            if any(endpoint.endswith(".out") or endpoint.endswith(".in") for endpoint in endpoints):
+                raise AssertionError(f"{case} mapping uses placeholder endpoint: {path}: {data}")
+        if route_uses_switch and len(segments) >= 3:
+            saw_switch_multihop_route = True
+    if not saw_switch_multihop_route:
+        raise AssertionError(f"{case} should route through real switch multihop paths: {path}: {data}")
+
+
 def assert_component_references_resolve(evidence_dir: Path, case: str) -> None:
     aggregate_specs = (
         (
@@ -222,16 +254,21 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "byte_swap",
                 "--case",
+                "xor_block",
+                "--case",
                 "vecadd",
             ],
         )
-        for case in ("vecsum", "reduction", "dotproduct", "byte_swap"):
+        for case in ("vecsum", "reduction", "dotproduct", "byte_swap", "xor_block"):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
         assert_mapping_hardware(evidence_dir, "dotproduct", "dotproduct_fmuladd_adg")
-        assert_mapping_hardware(evidence_dir, "byte_swap", "byte_swap_store_adg")
+        assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
+        assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
+        assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
+        assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_comparison_artifact(evidence_dir, "vecadd", "blocked")
         assert_component_references_resolve(evidence_dir, "vecadd")
 
@@ -254,16 +291,19 @@ def main(argv: list[str]) -> int:
             ],
         )
         rows = read_rows(status_csv)
-        for case in ("vecsum", "reduction", "dotproduct", "byte_swap"):
+        for case in ("vecsum", "reduction", "dotproduct", "byte_swap", "xor_block"):
             assert_promoted_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "dotproduct_fmuladd_adg":
             raise AssertionError(f"dotproduct should use fmuladd hardware: {dotproduct_row}")
         byte_swap_row = one_row(rows, "byte_swap")
-        if byte_swap_row["hardware_system"] != "byte_swap_store_adg":
-            raise AssertionError(f"byte_swap should use store hardware: {byte_swap_row}")
+        if byte_swap_row["hardware_system"] != "shared_vector_alu_adg":
+            raise AssertionError(f"byte_swap should use shared vector hardware: {byte_swap_row}")
+        xor_block_row = one_row(rows, "xor_block")
+        if xor_block_row["hardware_system"] != "shared_vector_alu_adg":
+            raise AssertionError(f"xor_block should use shared vector hardware: {xor_block_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 4:
+        if counts["pass"] < 5:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [

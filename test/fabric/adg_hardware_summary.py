@@ -26,6 +26,7 @@ DEFAULT_INPUTS = (
     ROOT / "test" / "pnr" / "shared_reduction_adg.mlir",
     ROOT / "test" / "pnr" / "dotproduct_fmuladd_adg.mlir",
     ROOT / "test" / "pnr" / "byte_swap_store_adg.mlir",
+    ROOT / "test" / "pnr" / "shared_vector_alu_adg.mlir",
 )
 ADG_BUILDER_RECIPES = {
     "test/pnr/minimal_spatial_adg.mlir.inc": "adg-builder::minimal-spatial",
