@@ -8,6 +8,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -313,6 +314,8 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "source_row",
             "software_root",
             "graph_ids",
+            "dfg_mlir",
+            "dfg_mlir_fingerprint",
             "required_slice_count",
             "hardware_system",
             "spatialcore_template",
@@ -349,6 +352,8 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         scaffold_row=(
             "scaffold",
             "scaffold",
+            "",
+            "",
             "",
             "",
             "",
@@ -1333,6 +1338,96 @@ def validate_cgra_status_pass_row(
     validate_cgra_status_pass_referenced_json(anchor, row, diagnostics, row_index)
 
 
+def validate_cgra_status_cmsis_dfg_mlir_row(
+    anchor: Path,
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    diagnostic_class = row.get("diagnostic_class", "")
+    if diagnostic_class not in {
+        "cmsis_dfg_mlir_ready_for_dfg_sim",
+        "cmsis_no_dataflow_graph",
+        "cmsis_dfg_mlir_identity_mismatch",
+    }:
+        return
+    validate_referenced_artifact_fingerprint(
+        anchor,
+        row,
+        diagnostics,
+        row_index,
+        "dfg_mlir",
+        "dfg_mlir_fingerprint",
+    )
+    if row.get("owner", "") != "compiler_pipeline":
+        diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row owner must be compiler_pipeline")
+    if row.get("dfg_report", "") or row.get("dfg_report_fingerprint", ""):
+        diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence must not be stored as DFG-sim report evidence")
+    expected_name = f"{Path(row.get('source_row', '')).stem}.dfg.mlir"
+    if row.get("dfg_mlir", "") and Path(row.get("dfg_mlir", "")).name != expected_name:
+        diagnostics.append(f"row {row_index}: CMSIS dfg_mlir basename must be {expected_name}")
+    resolved_dfg_mlir = resolve_artifact_reference(anchor, row.get("dfg_mlir", ""))
+    actual_graph_ids: list[str] = []
+    if resolved_dfg_mlir.is_file():
+        text = resolved_dfg_mlir.read_text(errors="replace")
+        definitions = re.findall(r"\bdataflow\.graph\.func\s+(?:private\s+)?@([A-Za-z_.$][\w.$-]*)", text)
+        launches = re.findall(r"\bdataflow\.graph\.launch\s+@([A-Za-z_.$][\w.$-]*)", text)
+        for item in [*definitions, *launches]:
+            if item not in actual_graph_ids:
+                actual_graph_ids.append(item)
+    row_graph_ids = [item for item in row.get("graph_ids", "").split(",") if item]
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row.get(column, "") != "not_run":
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row requires {column}=not_run")
+    for column in (
+        "mapping_artifact",
+        "mapping_artifact_fingerprint",
+        "cgra_report",
+        "cgra_report_fingerprint",
+        "comparison_report",
+        "comparison_report_fingerprint",
+    ):
+        if row.get(column, ""):
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row must not carry {column}")
+    if diagnostic_class == "cmsis_dfg_mlir_ready_for_dfg_sim":
+        if row.get("status", "") != "blocked":
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row requires status=blocked")
+        if row.get("blocking_prerequisite", "") != "dfg_sim_report":
+            diagnostics.append(
+                f"row {row_index}: CMSIS DFG MLIR ready row requires blocking_prerequisite=dfg_sim_report"
+            )
+        if not row.get("graph_ids", ""):
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row requires graph_ids")
+        slice_count = nonnegative_int_cell(row, "required_slice_count")
+        if slice_count is None or slice_count <= 0 or slice_count != len(row_graph_ids):
+            diagnostics.append(
+                f"row {row_index}: CMSIS DFG MLIR ready row required_slice_count must match graph_ids count"
+            )
+        if not actual_graph_ids:
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row requires dfg_mlir content graph_ids")
+        elif row_graph_ids != actual_graph_ids:
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row graph_ids must match dfg_mlir content")
+    elif diagnostic_class == "cmsis_no_dataflow_graph":
+        if row.get("status", "") != "unsupported":
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires status=unsupported")
+        if row.get("blocking_prerequisite", "") != "dataflow_graph":
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires blocking_prerequisite=dataflow_graph")
+        if row.get("required_slice_count", "") != "0":
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires required_slice_count=0")
+        if row.get("graph_ids", ""):
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires empty graph_ids")
+        if actual_graph_ids:
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row dfg_mlir must not contain dataflow graph ids")
+    elif diagnostic_class == "cmsis_dfg_mlir_identity_mismatch":
+        if row.get("status", "") != "fail":
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR identity mismatch row requires status=fail")
+        if row.get("blocking_prerequisite", "") != "dataflow_graph_identity":
+            diagnostics.append(
+                f"row {row_index}: CMSIS DFG MLIR identity mismatch row requires "
+                "blocking_prerequisite=dataflow_graph_identity"
+            )
+
+
 def validate_kind_invariants(
     schema: CsvSchema,
     row: dict[str, str],
@@ -1341,8 +1436,11 @@ def validate_kind_invariants(
     anchor: Path,
 ) -> None:
     statuses = dict(row_statuses(schema, row))
-    if schema.kind == "cgra_status" and statuses.get("status") == "pass":
-        validate_cgra_status_pass_row(anchor, row, diagnostics, row_index)
+    if schema.kind == "cgra_status":
+        if statuses.get("status") == "pass":
+            validate_cgra_status_pass_row(anchor, row, diagnostics, row_index)
+        else:
+            validate_cgra_status_cmsis_dfg_mlir_row(anchor, row, diagnostics, row_index)
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
         for column in ("dfg_sim_cycles", "cgra_sim_cycles"):
             if row.get(column, "") and nonnegative_int_cell(row, column) is None:

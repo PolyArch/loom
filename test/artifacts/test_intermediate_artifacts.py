@@ -81,6 +81,8 @@ CSV_COMMANDS = [
             "source_row",
             "software_root",
             "graph_ids",
+            "dfg_mlir",
+            "dfg_mlir_fingerprint",
             "required_slice_count",
             "hardware_system",
             "spatialcore_template",

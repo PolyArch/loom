@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Iterable
@@ -37,11 +38,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--comparison-output-dir",
         help="Directory for generated simulation comparison reports. Defaults next to the CSV output.",
     )
+    parser.add_argument(
+        "--cmsis-dsp-dfg-dir",
+        help="Directory containing CMSIS-DSP lowered .dfg.mlir evidence.",
+    )
+    parser.add_argument(
+        "--cmsis-nn-dfg-dir",
+        help="Directory containing CMSIS-NN lowered .dfg.mlir evidence.",
+    )
     return parser.parse_args(argv)
 
 
 def empty_stage_fields() -> dict[str, str]:
     return {
+        "dfg_mlir": "",
+        "dfg_mlir_fingerprint": "",
         "hardware_system": "",
         "spatialcore_template": "",
         "mapping_id": "",
@@ -153,7 +164,102 @@ def positive_shape(columns: list[str]) -> bool:
     return False
 
 
-def cmsis_rows(suite: str, directory: str, targets_name: str, software_root: str) -> list[dict[str, str]]:
+def expected_symbols(columns: list[str]) -> list[str]:
+    if len(columns) > 4:
+        symbols: list[str] = []
+        for symbol in columns[4].split(","):
+            stripped = symbol.strip()
+            if stripped:
+                symbols.append(stripped)
+        if symbols:
+            return symbols
+    return [Path(columns[0]).stem] if columns else []
+
+
+def source_stem(columns: list[str]) -> str:
+    return Path(columns[0]).stem if columns else ""
+
+
+def ordered_unique(items: Iterable[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def dfg_graph_ids_from_text(text: str) -> list[str]:
+    definitions = re.findall(r"\bdataflow\.graph\.func\s+(?:private\s+)?@([A-Za-z_.$][\w.$-]*)", text)
+    launches = re.findall(r"\bdataflow\.graph\.launch\s+@([A-Za-z_.$][\w.$-]*)", text)
+    return ordered_unique([*definitions, *launches])
+
+
+def mlir_mentions_symbol(text: str, symbol: str) -> bool:
+    return re.search(rf"@{re.escape(symbol)}\b", text) is not None
+
+
+def apply_cmsis_dfg_mlir_evidence(
+    row_data: dict[str, str],
+    columns: list[str],
+    dfg_dir: Path | None,
+) -> None:
+    if dfg_dir is None:
+        return
+    stem = source_stem(columns)
+    if not stem:
+        return
+    dfg_mlir = dfg_dir / f"{stem}.dfg.mlir"
+    if not dfg_mlir.is_file():
+        return
+    text = dfg_mlir.read_text(errors="replace")
+    graph_ids = dfg_graph_ids_from_text(text)
+    evidence_path = relative_path_text(dfg_mlir)
+    row_data["dfg_mlir"] = evidence_path
+    row_data["dfg_mlir_fingerprint"] = artifact_fingerprint(dfg_mlir)
+    row_data["owner"] = "compiler_pipeline"
+    symbols = expected_symbols(columns)
+    if symbols and not any(mlir_mentions_symbol(text, symbol) for symbol in symbols):
+        row_data["graph_ids"] = ",".join(graph_ids)
+        row_data["required_slice_count"] = str(len(graph_ids))
+        row_data["status"] = "fail"
+        row_data["diagnostic_class"] = "cmsis_dfg_mlir_identity_mismatch"
+        row_data["blocking_prerequisite"] = "dataflow_graph_identity"
+        row_data["diagnostic"] = (
+            f"CMSIS DFG MLIR evidence exists at {evidence_path} but does not contain "
+            f"any expected symbol: {','.join(symbols)}"
+        )
+        return
+    if graph_ids:
+        row_data["graph_ids"] = ",".join(graph_ids)
+        row_data["required_slice_count"] = str(len(graph_ids))
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "cmsis_dfg_mlir_ready_for_dfg_sim"
+        row_data["blocking_prerequisite"] = "dfg_sim_report"
+        row_data["diagnostic"] = (
+            f"CMSIS DFG MLIR evidence exists at {evidence_path} with "
+            f"{len(graph_ids)} dataflow graph(s); DFG-sim, mapping, and CGRA-sim reports are absent"
+        )
+        return
+    row_data["graph_ids"] = ""
+    row_data["required_slice_count"] = "0"
+    row_data["status"] = "unsupported"
+    row_data["diagnostic_class"] = "cmsis_no_dataflow_graph"
+    row_data["blocking_prerequisite"] = "dataflow_graph"
+    row_data["diagnostic"] = (
+        f"CMSIS DFG MLIR evidence exists at {evidence_path} but contains no "
+        "dataflow.graph.func or dataflow.graph.launch operation"
+    )
+
+
+def cmsis_rows(
+    suite: str,
+    directory: str,
+    targets_name: str,
+    software_root: str,
+    dfg_dir: Path | None = None,
+) -> list[dict[str, str]]:
     targets = ROOT / "test" / directory / targets_name
     rows: list[dict[str, str]] = []
     for columns in iter_target_rows(targets):
@@ -165,17 +271,17 @@ def cmsis_rows(suite: str, directory: str, targets_name: str, software_root: str
             if has_shape
             else "CGRA status missing because CMSIS row emits no dataflow graph/thread shape"
         )
-        rows.append(
-            row(
-                suite=suite,
-                case=source,
-                source_row=source,
-                software_root=software_root,
-                required_slice_count="1" if has_shape else "0",
-                blocking_prerequisite=prerequisite,
-                diagnostic=diagnostic,
-            )
+        row_data = row(
+            suite=suite,
+            case=source,
+            source_row=source,
+            software_root=software_root,
+            required_slice_count="1" if has_shape else "0",
+            blocking_prerequisite=prerequisite,
+            diagnostic=diagnostic,
         )
+        apply_cmsis_dfg_mlir_evidence(row_data, columns, dfg_dir)
+        rows.append(row_data)
     return rows
 
 
@@ -510,6 +616,12 @@ def json_path_for(csv_output: Path, explicit: str | None) -> Path:
     return csv_output.with_suffix(".json")
 
 
+def default_cmsis_dfg_dir(output: Path, suite: str, explicit: str | None) -> Path | None:
+    if explicit:
+        return Path(explicit)
+    return None
+
+
 def write_json(path: Path, csv_output: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
@@ -526,6 +638,8 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     legacy_root = Path(args.legacy_loombench_root)
     output = Path(args.output)
+    cmsis_dsp_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-dsp", args.cmsis_dsp_dfg_dir)
+    cmsis_nn_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-nn", args.cmsis_nn_dfg_dir)
     rows = []
     rows.extend(app_rows())
     rows.extend(
@@ -534,6 +648,7 @@ def main(argv: list[str]) -> int:
             "cmsis-dsp",
             "cmsis_dsp_targets.txt",
             "externals/cmsis-dsp/Source",
+            cmsis_dsp_dfg_dir,
         )
     )
     rows.extend(
@@ -542,6 +657,7 @@ def main(argv: list[str]) -> int:
             "cmsis-nn",
             "cmsis_nn_targets.txt",
             "externals/cmsis-nn/Source",
+            cmsis_nn_dfg_dir,
         )
     )
     rows.extend(loombench_rows(legacy_root))

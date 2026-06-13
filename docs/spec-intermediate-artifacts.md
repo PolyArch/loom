@@ -287,6 +287,80 @@ Rules:
   value; unrelated kernels such as elementwise arithmetic, mean, and
   norm reductions must not be accepted as equivalent without evidence.
 
+### CGRA Status Summary
+
+Purpose: provide row-complete status for app, CMSIS-DSP, CMSIS-NN, and
+loombench cases as they move toward CGRA-sim.
+
+Required first columns:
+
+* `suite`;
+* `case`;
+* `source_row`;
+* `software_root`;
+* `graph_ids`;
+* `dfg_mlir`;
+* `dfg_mlir_fingerprint`;
+* `required_slice_count`;
+* `hardware_system`;
+* `spatialcore_template`;
+* `mapping_id`;
+* `dfg_report`;
+* `dfg_report_fingerprint`;
+* `dfg_status`;
+* `mapping_artifact`;
+* `mapping_artifact_fingerprint`;
+* `mapping_status`;
+* `cgra_report`;
+* `cgra_report_fingerprint`;
+* `cgra_status`;
+* `comparison_report`;
+* `comparison_report_fingerprint`;
+* `comparison_status`;
+* `final_outputs_present`;
+* `final_memory_state_present`;
+* `status`;
+* `diagnostic_class`;
+* `owner`;
+* `blocking_prerequisite`;
+* `diagnostic`.
+
+Rules:
+
+* `suite`, `case`, and `source_row` are the row identity. They must be
+  stable across CSV and JSON projections.
+* `dfg_mlir` identifies compiler-lowering evidence, such as CMSIS
+  lowered MLIR containing `dataflow.graph.func` or
+  `dataflow.graph.launch`. It is not a DFG-sim report and must never be
+  used to satisfy `dfg_report`.
+* For CMSIS rows, `dfg_mlir` is selected by the source row basename,
+  matching the drop-in DFG runner's emitted filename. Expected exported
+  symbols from the CMSIS target manifest are used to validate MLIR
+  identity, not to choose a different evidence filename.
+* When a row's diagnostic class says CMSIS DFG MLIR evidence exists,
+  `dfg_mlir` and `dfg_mlir_fingerprint` are required and must resolve to
+  the referenced MLIR file. This records row-specific compiler evidence
+  while keeping simulator stages at `not_run`.
+* A CMSIS DFG MLIR row must bind evidence to row identity: the
+  referenced MLIR filename basename matches `source_row`, graph ids in
+  the row match graph ids discovered from the MLIR, and
+  `required_slice_count` matches the graph id count for graph-ready rows.
+* If a referenced CMSIS DFG MLIR file does not mention any expected
+  symbol for the row, the row is `fail` with an identity-mismatch
+  diagnostic. It must not be silently treated as missing evidence for a
+  different row.
+* A CMSIS row with DFG MLIR graph evidence but without DFG-sim, mapping,
+  CGRA-sim, and comparison reports is `blocked`, not `pass`.
+* A CMSIS row with DFG MLIR evidence but no dataflow graph launch or
+  graph definition is `unsupported` or otherwise structured non-pass.
+* `pass` requires DFG-sim report, PnR mapping artifact, CGRA-sim report,
+  simulation comparison report, and matching final output or memory-state
+  evidence. `dfg_mlir` alone cannot contribute to pass status.
+* Default status generation must not silently consume stale local CMSIS
+  DFG evidence. A producer that wants to use compiler-lowering evidence
+  must provide an explicit evidence directory or an equivalent
+  same-run-provenance mechanism.
+
 ### RTL FPA Summary
 
 Purpose: prove Fabric-to-RTL and FPA evidence are connected. This CSV

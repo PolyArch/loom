@@ -209,6 +209,96 @@ def validate_pass_row_referenced_jsons(
         diagnostics.append(f"row {row_index}: referenced reports lack matching final state")
 
 
+def validate_cmsis_dfg_mlir_evidence(
+    csv_input: Path,
+    row_index: int,
+    row: dict[str, str],
+    diagnostics: list[str],
+) -> None:
+    diagnostic_class = row.get("diagnostic_class", "")
+    if diagnostic_class not in {
+        "cmsis_dfg_mlir_ready_for_dfg_sim",
+        "cmsis_no_dataflow_graph",
+        "cmsis_dfg_mlir_identity_mismatch",
+    }:
+        return
+    validate_artifact_fingerprint(
+        csv_input=csv_input,
+        row_index=row_index,
+        row=row,
+        artifact_column="dfg_mlir",
+        fingerprint_column="dfg_mlir_fingerprint",
+        diagnostics=diagnostics,
+    )
+    if row.get("owner", "") != "compiler_pipeline":
+        diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row owner must be compiler_pipeline")
+    if row.get("dfg_report", "") or row.get("dfg_report_fingerprint", ""):
+        diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence must not be stored as DFG-sim report evidence")
+    expected_name = f"{Path(row.get('source_row', '')).stem}.dfg.mlir"
+    if row.get("dfg_mlir", "") and Path(row.get("dfg_mlir", "")).name != expected_name:
+        diagnostics.append(f"row {row_index}: CMSIS dfg_mlir basename must be {expected_name}")
+    resolved_dfg_mlir = resolve_artifact_reference(csv_input, row.get("dfg_mlir", ""))
+    actual_graph_ids: list[str] = []
+    if resolved_dfg_mlir.is_file():
+        actual_graph_ids = cgra_status_summary.dfg_graph_ids_from_text(
+            resolved_dfg_mlir.read_text(errors="replace")
+        )
+    row_graph_ids = [item for item in row.get("graph_ids", "").split(",") if item]
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row.get(column, "") != "not_run":
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row requires {column}=not_run")
+    for column in (
+        "mapping_artifact",
+        "mapping_artifact_fingerprint",
+        "cgra_report",
+        "cgra_report_fingerprint",
+        "comparison_report",
+        "comparison_report_fingerprint",
+    ):
+        if row.get(column, ""):
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row must not carry {column}")
+    if diagnostic_class == "cmsis_dfg_mlir_ready_for_dfg_sim":
+        if row.get("status", "") != "blocked":
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row requires status=blocked")
+        if row.get("blocking_prerequisite", "") != "dfg_sim_report":
+            diagnostics.append(
+                f"row {row_index}: CMSIS DFG MLIR ready row requires blocking_prerequisite=dfg_sim_report"
+            )
+        if not row.get("graph_ids", ""):
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row requires graph_ids")
+        try:
+            slice_count = int(row.get("required_slice_count", ""))
+        except ValueError:
+            slice_count = -1
+        if slice_count <= 0 or slice_count != len(row_graph_ids):
+            diagnostics.append(
+                f"row {row_index}: CMSIS DFG MLIR ready row required_slice_count must match graph_ids count"
+            )
+        if not actual_graph_ids:
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row requires dfg_mlir content graph_ids")
+        elif row_graph_ids != actual_graph_ids:
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR ready row graph_ids must match dfg_mlir content")
+    elif diagnostic_class == "cmsis_no_dataflow_graph":
+        if row.get("status", "") != "unsupported":
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires status=unsupported")
+        if row.get("blocking_prerequisite", "") != "dataflow_graph":
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires blocking_prerequisite=dataflow_graph")
+        if row.get("required_slice_count", "") != "0":
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires required_slice_count=0")
+        if row.get("graph_ids", ""):
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row requires empty graph_ids")
+        if actual_graph_ids:
+            diagnostics.append(f"row {row_index}: CMSIS no-graph row dfg_mlir must not contain dataflow graph ids")
+    elif diagnostic_class == "cmsis_dfg_mlir_identity_mismatch":
+        if row.get("status", "") != "fail":
+            diagnostics.append(f"row {row_index}: CMSIS DFG MLIR identity mismatch row requires status=fail")
+        if row.get("blocking_prerequisite", "") != "dataflow_graph_identity":
+            diagnostics.append(
+                f"row {row_index}: CMSIS DFG MLIR identity mismatch row requires "
+                "blocking_prerequisite=dataflow_graph_identity"
+            )
+
+
 def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     allowed = intermediate_artifacts.BASE_STATUSES
     seen: set[tuple[str, str, str]] = set()
@@ -254,6 +344,8 @@ def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list
                     diagnostics=diagnostics,
                 )
             validate_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
+        else:
+            validate_cmsis_dfg_mlir_evidence(csv_input, index, row, diagnostics)
 
 
 def validate_coverage(rows: list[dict[str, str]], expected: list[dict[str, str]], diagnostics: list[str]) -> None:

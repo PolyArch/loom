@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -19,6 +20,8 @@ HEADER = [
     "source_row",
     "software_root",
     "graph_ids",
+    "dfg_mlir",
+    "dfg_mlir_fingerprint",
     "required_slice_count",
     "hardware_system",
     "spatialcore_template",
@@ -238,6 +241,44 @@ def write_sim_evidence_case(
     write_json(evidence_dir / f"{case}.cgra.report.json", cgra_report)
 
 
+def write_cmsis_dfg_mlir(path: Path, *, symbol: str, graph: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if graph:
+        body = f"""
+module {{
+  func.func @{symbol}() {{
+    return
+  }}
+  dataflow.thread private @t_{symbol}_0() ctrl (%arg0: none) iv (%arg1: index) {{
+    %done = dataflow.graph.launch @g_{symbol}_0(%arg0) : (none) -> none
+    dataflow.thread.yield
+  }}
+  dataflow.graph.func private @g_{symbol}_0(%arg0: none) -> none {{
+    dataflow.graph.return %arg0 : none
+  }}
+}}
+"""
+    else:
+        body = f"""
+module {{
+  func.func @{symbol}() {{
+    return
+  }}
+}}
+"""
+    path.write_text(body.strip() + "\n")
+
+
+def import_cgra_status_summary(repo: Path):
+    module_path = repo / "test" / "e2e" / "cgra_status_summary.py"
+    spec = importlib.util.spec_from_file_location("cgra_status_summary_under_test", module_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"failed to import {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def write_component_only_evidence(evidence_dir: Path, case: str) -> None:
     write_json(
         evidence_dir / f"{case}.dfg.report.json",
@@ -340,6 +381,7 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
 
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
+    cgra_status_summary = import_cgra_status_summary(repo)
     with artifact_test_common.repo_temp_dir(repo, "loom-cgra-status-") as tmp:
         out_dir = Path(tmp)
         csv_output = out_dir / "cgra-status-summary.csv"
@@ -428,6 +470,366 @@ def main() -> int:
             raise AssertionError(f"expected one vecsum CGRA status gap, got {ledger_rows[:10]}")
         if "not_run" not in vecsum_gaps[0]["reason"]:
             raise AssertionError(f"ledger row should preserve not_run status: {vecsum_gaps[0]}")
+
+        basename_dfg_dir = out_dir / "basename-dfg"
+        write_cmsis_dfg_mlir(basename_dfg_dir / "arm_source_name.dfg.mlir", symbol="different_exported_symbol", graph=True)
+        basename_row = cgra_status_summary.row(
+            suite="cmsis-dsp",
+            case="Synthetic/arm_source_name.c",
+            source_row="Synthetic/arm_source_name.c",
+            software_root="externals/cmsis-dsp/Source",
+            required_slice_count="1",
+            blocking_prerequisite="mapping_artifact",
+            diagnostic="synthetic baseline",
+        )
+        cgra_status_summary.apply_cmsis_dfg_mlir_evidence(
+            basename_row,
+            [
+                "Synthetic/arm_source_name.c",
+                "thumbv7em-none-eabi",
+                "cortex-m4",
+                "thumbv7em-unknown-none-eabi",
+                "different_exported_symbol",
+                "",
+                "1",
+                "1",
+                "1",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+                "0",
+            ],
+            basename_dfg_dir,
+        )
+        if (
+            basename_row["status"] != "blocked"
+            or not basename_row["dfg_mlir"].endswith("arm_source_name.dfg.mlir")
+            or "g_different_exported_symbol_0" not in basename_row["graph_ids"]
+        ):
+            raise AssertionError(f"CMSIS DFG evidence filename should follow source basename: {basename_row}")
+
+        stale_default_dir = out_dir / "stale-default"
+        stale_default_dfg = stale_default_dir / "test-runs" / "cmsis-dsp" / "dfg"
+        write_cmsis_dfg_mlir(stale_default_dfg / "arm_add_q15.dfg.mlir", symbol="arm_add_q15", graph=True)
+        stale_default_csv = stale_default_dir / "cgra-status-summary.csv"
+        stale_default_json = stale_default_dir / "cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(stale_default_csv),
+                "--json-output",
+                str(stale_default_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+        )
+        stale_default_rows = read_rows(stale_default_csv)
+        stale_default_add = one_row(stale_default_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        if stale_default_add["status"] != "not_run" or stale_default_add["diagnostic_class"] != "missing_status":
+            raise AssertionError(f"default CGRA status must not consume stale CMSIS DFG evidence: {stale_default_add}")
+
+        cmsis_dsp_dfg_dir = out_dir / "cmsis-dsp-dfg"
+        cmsis_nn_dfg_dir = out_dir / "cmsis-nn-dfg"
+        write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_add_q15.dfg.mlir", symbol="arm_add_q15", graph=True)
+        write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_mult_f32.dfg.mlir", symbol="wrong_symbol", graph=True)
+        write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_sin_f32.dfg.mlir", symbol="arm_sin_f32", graph=False)
+        write_cmsis_dfg_mlir(cmsis_nn_dfg_dir / "arm_relu_q15.dfg.mlir", symbol="arm_relu_q15", graph=True)
+        write_cmsis_dfg_mlir(cmsis_nn_dfg_dir / "arm_reshape_s8.dfg.mlir", symbol="arm_reshape_s8", graph=False)
+        cmsis_evidence_csv = out_dir / "cmsis-evidence-cgra-status-summary.csv"
+        cmsis_evidence_json = out_dir / "cmsis-evidence-cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(cmsis_evidence_csv),
+                "--json-output",
+                str(cmsis_evidence_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--cmsis-dsp-dfg-dir",
+                str(cmsis_dsp_dfg_dir),
+                "--cmsis-nn-dfg-dir",
+                str(cmsis_nn_dfg_dir),
+            ],
+        )
+        cmsis_evidence_rows = read_rows(cmsis_evidence_csv)
+        cmsis_evidence_data = json.loads(cmsis_evidence_json.read_text())
+        cmsis_counts = cmsis_evidence_data.get("counts", {})
+        if cmsis_counts.get("cmsis-dsp") != {
+            "total": 16,
+            "pass": 0,
+            "fail": 1,
+            "blocked": 1,
+            "unsupported": 1,
+            "missing_status": 13,
+        }:
+            raise AssertionError(f"unexpected CMSIS-DSP evidence counts: {cmsis_counts.get('cmsis-dsp')}")
+        if cmsis_counts.get("cmsis-nn") != {
+            "total": 18,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 1,
+            "unsupported": 1,
+            "missing_status": 16,
+        }:
+            raise AssertionError(f"unexpected CMSIS-NN evidence counts: {cmsis_counts.get('cmsis-nn')}")
+        cmsis_add = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        if (
+            cmsis_add["status"] != "blocked"
+            or cmsis_add["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or cmsis_add["blocking_prerequisite"] != "dfg_sim_report"
+            or cmsis_add["owner"] != "compiler_pipeline"
+            or cmsis_add["dfg_status"] != "not_run"
+            or "g_arm_add_q15_0" not in cmsis_add["graph_ids"]
+        ):
+            raise AssertionError(f"CMSIS-DSP DFG MLIR evidence should become an exact DFG-sim blocker: {cmsis_add}")
+        assert_sha256_file(cmsis_add["dfg_mlir"], cmsis_add["dfg_mlir_fingerprint"], repo)
+        cmsis_sin = one_row(cmsis_evidence_rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        if (
+            cmsis_sin["status"] != "unsupported"
+            or cmsis_sin["diagnostic_class"] != "cmsis_no_dataflow_graph"
+            or cmsis_sin["blocking_prerequisite"] != "dataflow_graph"
+            or cmsis_sin["required_slice_count"] != "0"
+        ):
+            raise AssertionError(f"CMSIS-DSP no-graph DFG MLIR should become structured unsupported: {cmsis_sin}")
+        assert_sha256_file(cmsis_sin["dfg_mlir"], cmsis_sin["dfg_mlir_fingerprint"], repo)
+        cmsis_mult = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_mult_f32.c")
+        if (
+            cmsis_mult["status"] != "fail"
+            or cmsis_mult["diagnostic_class"] != "cmsis_dfg_mlir_identity_mismatch"
+            or cmsis_mult["blocking_prerequisite"] != "dataflow_graph_identity"
+        ):
+            raise AssertionError(f"CMSIS DFG MLIR with wrong symbol should become a row-specific failure: {cmsis_mult}")
+        cmsis_relu = one_row(cmsis_evidence_rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
+        if (
+            cmsis_relu["status"] != "blocked"
+            or cmsis_relu["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or "g_arm_relu_q15_0" not in cmsis_relu["graph_ids"]
+        ):
+            raise AssertionError(f"CMSIS-NN DFG MLIR evidence should become an exact DFG-sim blocker: {cmsis_relu}")
+        cmsis_reshape = one_row(cmsis_evidence_rows, "cmsis-nn", "ReshapeFunctions/arm_reshape_s8.c")
+        if cmsis_reshape["status"] != "unsupported" or cmsis_reshape["diagnostic_class"] != "cmsis_no_dataflow_graph":
+            raise AssertionError(f"CMSIS-NN no-graph DFG MLIR should become structured unsupported: {cmsis_reshape}")
+        forged_cmsis_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_cmsis = one_row(forged_cmsis_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        forged_cmsis["dfg_mlir"] = str(out_dir / "missing-cmsis-dfg.mlir")
+        forged_cmsis["dfg_mlir_fingerprint"] = "0" * 64
+        forged_cmsis_csv = out_dir / "forged-cmsis-cgra-status-summary.csv"
+        forged_cmsis_json = out_dir / "forged-cmsis-cgra-status-summary.json"
+        write_rows(forged_cmsis_csv, forged_cmsis_rows)
+        write_json_projection(forged_cmsis_json, forged_cmsis_csv, forged_cmsis_rows)
+        failed_forged_cmsis = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_cmsis_csv),
+                "--json-input",
+                str(forged_cmsis_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "dfg_mlir" not in failed_forged_cmsis.stderr:
+            raise AssertionError(f"forged CMSIS DFG evidence should fail CGRA status audit: {failed_forged_cmsis.stderr}")
+        forged_cmsis_generic_audit = out_dir / "forged-cmsis-generic-audit.json"
+        failed_forged_cmsis_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_cmsis_generic_audit),
+                str(forged_cmsis_csv),
+            ],
+            expect_success=False,
+        )
+        forged_cmsis_generic_data = json.loads(forged_cmsis_generic_audit.read_text())
+        forged_cmsis_generic_diagnostics = "\n".join(
+            str(item) for item in forged_cmsis_generic_data.get("diagnostics", [])
+        )
+        if "dfg_mlir" not in forged_cmsis_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS DFG evidence: "
+                f"stdout={failed_forged_cmsis_generic.stdout} stderr={failed_forged_cmsis_generic.stderr} "
+                f"audit={forged_cmsis_generic_data}"
+            )
+        forged_binding_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_binding = one_row(forged_binding_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        forged_binding["dfg_mlir"] = cmsis_sin["dfg_mlir"]
+        forged_binding["dfg_mlir_fingerprint"] = cmsis_sin["dfg_mlir_fingerprint"]
+        forged_binding["required_slice_count"] = "99"
+        forged_binding_csv = out_dir / "forged-cmsis-binding-cgra-status-summary.csv"
+        forged_binding_json = out_dir / "forged-cmsis-binding-cgra-status-summary.json"
+        write_rows(forged_binding_csv, forged_binding_rows)
+        write_json_projection(forged_binding_json, forged_binding_csv, forged_binding_rows)
+        failed_forged_binding = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_binding_csv),
+                "--json-input",
+                str(forged_binding_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "dfg_mlir basename" not in failed_forged_binding.stderr or "required_slice_count" not in failed_forged_binding.stderr:
+            raise AssertionError(
+                "forged CMSIS binding should fail CGRA status audit on basename and slice count: "
+                f"{failed_forged_binding.stderr}"
+            )
+        forged_binding_generic_audit = out_dir / "forged-cmsis-binding-generic-audit.json"
+        run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_binding_generic_audit),
+                str(forged_binding_csv),
+            ],
+            expect_success=False,
+        )
+        forged_binding_generic_data = json.loads(forged_binding_generic_audit.read_text())
+        forged_binding_generic_diagnostics = "\n".join(
+            str(item) for item in forged_binding_generic_data.get("diagnostics", [])
+        )
+        if "dfg_mlir basename" not in forged_binding_generic_diagnostics or "required_slice_count" not in forged_binding_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS DFG binding: "
+                f"{forged_binding_generic_data}"
+            )
+        forged_ready_no_graph_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_ready_no_graph = one_row(forged_ready_no_graph_rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        forged_ready_no_graph.update(
+            {
+                "status": "blocked",
+                "diagnostic_class": "cmsis_dfg_mlir_ready_for_dfg_sim",
+                "blocking_prerequisite": "dfg_sim_report",
+                "graph_ids": "g_forged",
+                "required_slice_count": "1",
+            }
+        )
+        forged_ready_no_graph_csv = out_dir / "forged-cmsis-ready-no-graph-cgra-status-summary.csv"
+        forged_ready_no_graph_json = out_dir / "forged-cmsis-ready-no-graph-cgra-status-summary.json"
+        write_rows(forged_ready_no_graph_csv, forged_ready_no_graph_rows)
+        write_json_projection(forged_ready_no_graph_json, forged_ready_no_graph_csv, forged_ready_no_graph_rows)
+        failed_ready_no_graph = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_ready_no_graph_csv),
+                "--json-input",
+                str(forged_ready_no_graph_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "ready row requires dfg_mlir content graph_ids" not in failed_ready_no_graph.stderr:
+            raise AssertionError(
+                "forged CMSIS ready row over no-graph MLIR should fail CGRA status audit: "
+                f"{failed_ready_no_graph.stderr}"
+            )
+        forged_ready_no_graph_generic_audit = out_dir / "forged-cmsis-ready-no-graph-generic-audit.json"
+        run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_ready_no_graph_generic_audit),
+                str(forged_ready_no_graph_csv),
+            ],
+            expect_success=False,
+        )
+        forged_ready_no_graph_generic_data = json.loads(forged_ready_no_graph_generic_audit.read_text())
+        forged_ready_no_graph_generic_diagnostics = "\n".join(
+            str(item) for item in forged_ready_no_graph_generic_data.get("diagnostics", [])
+        )
+        if "ready row requires dfg_mlir content graph_ids" not in forged_ready_no_graph_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS ready row over no-graph MLIR: "
+                f"{forged_ready_no_graph_generic_data}"
+            )
+        forged_semantic_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_semantic = one_row(forged_semantic_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        forged_semantic["dfg_status"] = "pass"
+        forged_semantic["blocking_prerequisite"] = ""
+        forged_semantic_csv = out_dir / "forged-cmsis-semantic-cgra-status-summary.csv"
+        forged_semantic_json = out_dir / "forged-cmsis-semantic-cgra-status-summary.json"
+        write_rows(forged_semantic_csv, forged_semantic_rows)
+        write_json_projection(forged_semantic_json, forged_semantic_csv, forged_semantic_rows)
+        failed_forged_semantic = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_semantic_csv),
+                "--json-input",
+                str(forged_semantic_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "CMSIS DFG MLIR ready row" not in failed_forged_semantic.stderr:
+            raise AssertionError(
+                "forged CMSIS semantic status should fail CGRA status audit: "
+                f"{failed_forged_semantic.stderr}"
+            )
+        forged_semantic_generic_audit = out_dir / "forged-cmsis-semantic-generic-audit.json"
+        run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_semantic_generic_audit),
+                str(forged_semantic_csv),
+            ],
+            expect_success=False,
+        )
+        forged_semantic_generic_data = json.loads(forged_semantic_generic_audit.read_text())
+        forged_semantic_generic_diagnostics = "\n".join(
+            str(item) for item in forged_semantic_generic_data.get("diagnostics", [])
+        )
+        if "CMSIS DFG MLIR ready row" not in forged_semantic_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS semantic status: "
+                f"{forged_semantic_generic_data}"
+            )
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(cmsis_evidence_csv),
+                "--json-input",
+                str(cmsis_evidence_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+        )
 
         sim_evidence = out_dir / "sim-evidence"
         write_sim_evidence_case(sim_evidence, "vecsum", cgra_final_state=True)
