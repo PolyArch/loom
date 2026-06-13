@@ -64,6 +64,20 @@ def write_blocked_mapping_artifact(path: Path, repo: Path, workload: str) -> Non
         "config_records": 0,
         "placements": [],
         "routes": [],
+        "unrouted_edge_details": [
+            {
+                "edge_ref": "arith.addi#0.result0->arith.muli#0.operand0",
+                "producer_binding": "placement:arith.addi#0",
+                "consumer_binding": "placement:arith.muli#0",
+                "payload_kind": "data",
+                "from": "arith.addi#0",
+                "to": "arith.muli#0",
+                "status": "unrouted",
+                "source_endpoint": "blocked_adg::fabric.op#0.result0",
+                "sink_endpoint": "blocked_adg::fabric.op#1.operand0",
+                "diagnostic": "structured test mapping has no Fabric ADG route",
+            }
+        ],
         "config_bitstream": [],
         "diagnostics": ["structured test mapping blocks CGRA-sim"],
     }

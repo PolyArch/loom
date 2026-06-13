@@ -798,6 +798,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "config_records",
             "placements",
             "routes",
+            "unrouted_edge_details",
             "config_bitstream",
         },
     },
@@ -5975,6 +5976,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("PnR mapping artifact status must be a known status")
         placements = data.get("placements")
         routes = data.get("routes")
+        unrouted_edge_details = data.get("unrouted_edge_details")
         bitstream = data.get("config_bitstream")
         placed_records = data.get("placed_records")
         routed_edges = data.get("routed_edges")
@@ -5985,6 +5987,8 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("PnR mapping artifact placements must be a list")
         if not isinstance(routes, list):
             diagnostics.append("PnR mapping artifact routes must be a list")
+        if not isinstance(unrouted_edge_details, list):
+            diagnostics.append("PnR mapping artifact unrouted_edge_details must be a list")
         if not isinstance(bitstream, list):
             diagnostics.append("PnR mapping artifact config_bitstream must be a list")
         if not isinstance(placed_records, int) or placed_records < 0:
@@ -6001,6 +6005,20 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("PnR mapping artifact placed_records does not match placements size")
         if isinstance(routes, list) and isinstance(routed_edges, int) and routed_edges != len(routes):
             diagnostics.append("PnR mapping artifact routed_edges does not match routes size")
+        if (
+            isinstance(unrouted_edge_details, list)
+            and isinstance(unrouted_edges, int)
+            and unrouted_edges != len(unrouted_edge_details)
+        ):
+            diagnostics.append("PnR mapping artifact unrouted_edge_details does not match unrouted_edges")
+        if (
+            data.get("status") == "pass"
+            and isinstance(unrouted_edges, int)
+            and unrouted_edges != 0
+        ):
+            diagnostics.append("PnR mapping artifact pass status cannot have unrouted_edges")
+        if data.get("status") == "pass" and isinstance(unrouted_edge_details, list) and unrouted_edge_details:
+            diagnostics.append("PnR mapping artifact pass status cannot have unrouted_edge_details")
         if isinstance(routes, list):
             for index, route in enumerate(routes, start=1):
                 if not isinstance(route, dict):
@@ -6054,6 +6072,32 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                                 f"PnR mapping artifact route {index} segment {segment_index} is not contiguous"
                             )
                     previous_sink = sink_endpoint if isinstance(sink_endpoint, str) else None
+        if isinstance(unrouted_edge_details, list):
+            for index, edge in enumerate(unrouted_edge_details, start=1):
+                if not isinstance(edge, dict):
+                    diagnostics.append(f"PnR mapping artifact unrouted edge {index} must be an object")
+                    continue
+                for key in (
+                    "edge_ref",
+                    "producer_binding",
+                    "consumer_binding",
+                    "payload_kind",
+                    "from",
+                    "to",
+                    "status",
+                    "diagnostic",
+                ):
+                    if not isinstance(edge.get(key), str) or not edge.get(key):
+                        diagnostics.append(f"PnR mapping artifact unrouted edge {index} lacks {key}")
+                if edge.get("status") != "unrouted":
+                    diagnostics.append(f"PnR mapping artifact unrouted edge {index} has invalid status")
+                for key in ("source_endpoint", "sink_endpoint"):
+                    if not isinstance(edge.get(key), str):
+                        diagnostics.append(f"PnR mapping artifact unrouted edge {index} lacks {key}")
+                    elif edge.get(key) and is_placeholder_route_endpoint(edge[key]):
+                        diagnostics.append(
+                            f"PnR mapping artifact unrouted edge {index} uses placeholder {key}"
+                        )
         if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
             diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
         if is_workload_graph_set_aggregate(data):
@@ -6096,6 +6140,16 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     )
                     if isinstance(value, int) and value != component_sum:
                         diagnostics.append(f"PnR mapping aggregate {key} does not match component sum")
+                component_statuses = [component.get("status") for component in components]
+                if data.get("status") == "pass" and any(status != "pass" for status in component_statuses):
+                    diagnostics.append("PnR mapping aggregate pass status requires passing components")
+                detail_mapping_ids = {
+                    detail.get("component_mapping_id")
+                    for detail in data.get("unrouted_edge_details", [])
+                    if isinstance(detail, dict) and isinstance(detail.get("component_mapping_id"), str)
+                }
+                if data.get("unrouted_edges", 0) and not detail_mapping_ids:
+                    diagnostics.append("PnR mapping aggregate unrouted edges lack component provenance")
     if kind == "runtime_package":
         if data.get("kind") != "runtime_package":
             diagnostics.append("runtime package kind must be runtime_package")

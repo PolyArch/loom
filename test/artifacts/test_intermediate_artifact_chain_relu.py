@@ -105,6 +105,15 @@ def main() -> int:
             raise AssertionError(f"relu aggregate mapping missed component graphs: {mapping_artifact}")
         if mapping_artifact.get("config_records") != 0 or mapping_artifact.get("status") != "blocked":
             raise AssertionError(f"relu aggregate mapping should preserve blocked route evidence: {mapping_artifact}")
+        unrouted_details = mapping_artifact.get("unrouted_edge_details")
+        if not isinstance(unrouted_details, list) or len(unrouted_details) != 7:
+            raise AssertionError(f"relu aggregate mapping should preserve unrouted edge details: {mapping_artifact}")
+        for detail in unrouted_details:
+            if detail.get("status") != "unrouted":
+                raise AssertionError(f"relu aggregate unrouted edge should stay unrouted: {detail}")
+            for key in ("component_graph", "component_mapping_id", "edge_ref", "source_endpoint", "sink_endpoint"):
+                if not detail.get(key):
+                    raise AssertionError(f"relu aggregate unrouted edge missed {key}: {detail}")
 
         component_expectations = {
             "pnr-mapping-main.json": ("g_t_relu_0_0", MAIN_MAPPING_ID),

@@ -309,6 +309,8 @@ Rules:
 * `unplaced_records` counts software nodes that could not claim a
   hardware resource. `unrouted_edges` counts software edges whose
   endpoints were placed but whose route could not be established.
+* Summary CSV rows may carry only aggregate unrouted counts; the JSON
+  mapping artifact is the SSOT for per-edge unrouted diagnostics.
 * Blocked or unsupported rows must include a diagnostic column explaining
   the missing upstream artifact, profile, or mapping implementation.
 * `status = pass` requires a non-empty `mapping_id`, positive placed
@@ -644,6 +646,7 @@ Required top-level keys:
 * `config_records`;
 * `placements`;
 * `routes`;
+* `unrouted_edge_details`;
 * `config_bitstream`.
 
 Rules:
@@ -655,6 +658,11 @@ Rules:
 * Each routed edge record must carry stable mapping identity fields,
   producer and consumer binding references, payload kind, and a
   non-empty ordered `segments` list.
+* Each unrouted edge record must carry stable mapping identity fields,
+  producer and consumer binding references, payload kind, source and
+  sink endpoints when they can be resolved, and an actionable diagnostic.
+  These records explain `unrouted_edges`; they are blocker evidence, not
+  routed-edge evidence.
 * Each route segment must identify its segment id, segment kind, source
   endpoint, and sink endpoint. Optional hardware references may point to
   a Fabric link, module path, resource path, adapter, or buffer.
@@ -667,6 +675,10 @@ Rules:
   records.
 * A pass mapping artifact with routes lacking segment records is
   invalid, even if `routed_edges` matches the route list size.
+* A pass mapping artifact must have `unrouted_edges = 0` and an empty
+  `unrouted_edge_details` list. A failed or blocked artifact must not
+  hide unrouted edges behind only a summary count when software and
+  hardware endpoints are known.
 * The config bitstream must cover placement configuration and route
   endpoint or segment configuration required by downstream consumers.
 * `config_fingerprint` identifies the canonical resolved configuration

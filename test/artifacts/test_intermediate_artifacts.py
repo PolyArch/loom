@@ -430,6 +430,7 @@ def write_mapping_artifact(path: Path, workload: str, graph: str, mapping_id: st
                         ],
                     }
                 ],
+                "unrouted_edge_details": [],
                 "config_bitstream": [],
             }
         )

@@ -215,11 +215,20 @@ def aggregate_mapping(
 ) -> dict[str, Any]:
     mapping_ids = [str(artifact["mapping_id"]) for artifact in mapping_artifacts]
     graphs = [str(artifact["graph"]) for artifact in mapping_artifacts]
+    component_statuses = [str(artifact.get("status", "")) for artifact in mapping_artifacts]
     placed_records = sum_int(mapping_artifacts, "placed_records")
     routed_edges = sum_int(mapping_artifacts, "routed_edges")
     unplaced_records = sum_int(mapping_artifacts, "unplaced_records")
     unrouted_edges = sum_int(mapping_artifacts, "unrouted_edges")
     config_records = sum_int(mapping_artifacts, "config_records")
+    components_pass = all(status == "pass" for status in component_statuses)
+    status = "pass" if components_pass and unplaced_records == 0 and unrouted_edges == 0 else "blocked"
+    diagnostics = ["derived workload graph-set mapping artifact from component PnR mapping artifacts"]
+    if not components_pass:
+        diagnostics.append(
+            "one or more component mapping artifacts are not passing: "
+            + ",".join(component_statuses)
+        )
     return {
         "schema_version": 1,
         "kind": "pnr_mapping",
@@ -232,7 +241,7 @@ def aggregate_mapping(
         "component_mapping_ids": mapping_ids,
         "component_mapping_artifact_identities": component_identity_list(mapping_paths),
         "input_artifact_fingerprints": component_fingerprint_map(mapping_paths),
-        "status": "pass" if unplaced_records == 0 and unrouted_edges == 0 else "blocked",
+        "status": status,
         "placed_records": placed_records,
         "routed_edges": routed_edges,
         "unrouted_edges": unrouted_edges,
@@ -240,8 +249,9 @@ def aggregate_mapping(
         "config_records": config_records,
         "placements": merge_records(mapping_artifacts, "placements"),
         "routes": merge_records(mapping_artifacts, "routes", id_key="record_id"),
+        "unrouted_edge_details": merge_records(mapping_artifacts, "unrouted_edge_details"),
         "config_bitstream": merge_records(mapping_artifacts, "config_bitstream"),
-        "diagnostics": ["derived workload graph-set mapping artifact from component PnR mapping artifacts"],
+        "diagnostics": diagnostics,
     }
 
 

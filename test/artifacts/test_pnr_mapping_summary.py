@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import argparse
+import copy
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -20,6 +23,35 @@ HEADER = [
     "unplaced_records",
     "status",
 ]
+
+
+def load_aggregate_module(repo: Path):
+    module_path = repo / "test/e2e/aggregate_workload_graph_artifacts.py"
+    spec = importlib.util.spec_from_file_location("aggregate_workload_graph_artifacts", module_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load aggregate helper from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def expect_audit_failure(repo: Path, artifact: Path, audit_output: Path, expected_fragment: str) -> None:
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/e2e/audit_intermediate_artifacts.py",
+            "--output",
+            str(audit_output),
+            str(artifact),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{artifact.name} unexpectedly passed audit")
+    audit = json.loads(audit_output.read_text())
+    diagnostics = json.dumps(audit.get("diagnostics", []), sort_keys=True)
+    if expected_fragment not in diagnostics:
+        raise AssertionError(f"audit missed {expected_fragment!r}: {audit}")
 
 
 def main() -> int:
@@ -132,6 +164,8 @@ def main() -> int:
                 raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
         if len(data.get("config_bitstream", [])) != 73:
             raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
+        if data.get("unrouted_edge_details") != []:
+            raise AssertionError(f"passing mapping should have no unrouted edge details: {data}")
         endpoint_pairs = {
             (segment.get("source_endpoint"), segment.get("sink_endpoint"))
             for route in data.get("routes", [])
@@ -233,10 +267,52 @@ def main() -> int:
                     raise AssertionError(
                         f"{graph_name} mapping artifact {key}={graph_data.get(key)!r}, expected {value!r}"
                     )
+            unrouted_details = graph_data.get("unrouted_edge_details")
+            if not isinstance(unrouted_details, list) or len(unrouted_details) != graph_data.get("unrouted_edges"):
+                raise AssertionError(f"{graph_name} should expose exact unrouted edge details: {graph_data}")
             graph_mapping_ids[graph_name] = mapping_id
 
         if len(set(graph_mapping_ids.values())) != len(graph_mapping_ids):
             raise AssertionError(f"multi-graph workload mapping ids collided: {graph_mapping_ids}")
+
+        missing_unrouted_details = out_dir / "missing-unrouted-details-pnr-mapping.json"
+        missing_unrouted_details_data = json.loads((out_dir / "g_t_vecadd_0_0.mapping.json").read_text())
+        missing_unrouted_details_data.pop("unrouted_edge_details", None)
+        missing_unrouted_details.write_text(
+            json.dumps(missing_unrouted_details_data, indent=2, sort_keys=True) + "\n"
+        )
+        expect_audit_failure(
+            repo,
+            missing_unrouted_details,
+            out_dir / "missing-unrouted-details-audit.json",
+            "unrouted_edge_details",
+        )
+
+        empty_unrouted_details = out_dir / "empty-unrouted-details-pnr-mapping.json"
+        empty_unrouted_details_data = json.loads((out_dir / "g_t_vecadd_0_0.mapping.json").read_text())
+        empty_unrouted_details_data["unrouted_edge_details"] = []
+        empty_unrouted_details.write_text(
+            json.dumps(empty_unrouted_details_data, indent=2, sort_keys=True) + "\n"
+        )
+        expect_audit_failure(
+            repo,
+            empty_unrouted_details,
+            out_dir / "empty-unrouted-details-audit.json",
+            "unrouted_edge_details",
+        )
+
+        aggregate = load_aggregate_module(repo)
+        failed_zero_count_component = copy.deepcopy(data)
+        failed_zero_count_component["status"] = "fail"
+        failed_zero_count_component["diagnostics"] = ["synthetic component failure"]
+        aggregate_mapping = aggregate.aggregate_mapping(
+            argparse.Namespace(workload="vecadd", hardware="shared_reduction_adg", graph="workload_graph_set",
+                               mapping_id="vecadd__workload_graph_set__shared_reduction_adg"),
+            [artifact],
+            [failed_zero_count_component],
+        )
+        if aggregate_mapping.get("status") == "pass":
+            raise AssertionError(f"aggregate mapping should not pass failed components: {aggregate_mapping}")
 
         punctuation_mlir = out_dir / "mapping-punctuation.mlir"
         punctuation_mlir.write_text(

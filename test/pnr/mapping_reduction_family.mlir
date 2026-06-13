@@ -87,6 +87,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,VECSCALE < %t.dir/vecscale.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,MEAN < %t.dir/mean.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,VECNORM-L1 < %t.dir/vecnorm_l1.mapping.csv
+// RUN: FileCheck %s --check-prefix=VECNORM-L1-JSON < %t.dir/vecnorm_l1.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VECNORM-L2 < %t.dir/vecnorm_l2.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,REDUCTION < %t.dir/reduction.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,VECSUM < %t.dir/vecsum.mapping.csv
@@ -149,6 +150,18 @@
 // MEAN-NEXT: mean,shared_reduction_adg,mean__g_t_mean_kernel_red_0_0__shared_reduction_adg,{{[0-9]+}},0,{{[1-9][0-9]*}},0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // VECNORM-L1-NEXT: vecnorm_l1,shared_reduction_adg,vecnorm_l1__g_t_vecnorm_l1_red_0_0__shared_reduction_adg,{{[0-9]+}},0,{{[1-9][0-9]*}},0,fail,unrouted software edges lack Fabric ADG connectivity
+
+// VECNORM-L1-JSON-DAG: "workload": "vecnorm_l1"
+// VECNORM-L1-JSON-DAG: "hardware": "shared_reduction_adg"
+// VECNORM-L1-JSON-DAG: "status": "fail"
+// VECNORM-L1-JSON-DAG: "unrouted_edges": 2
+// VECNORM-L1-JSON-DAG: "unrouted_edge_details"
+// VECNORM-L1-JSON-DAG: "edge_ref": "dataflow.load#0.result0->llvm.intr.abs#0.operand0"
+// VECNORM-L1-JSON-DAG: "edge_ref": "llvm.intr.abs#0.result0->arith.addi#0.operand0"
+// VECNORM-L1-JSON-DAG: "source_endpoint"
+// VECNORM-L1-JSON-DAG: "sink_endpoint"
+// VECNORM-L1-JSON-NOT: ".out"
+// VECNORM-L1-JSON-NOT: ".in"
 
 // VECNORM-L2-NEXT: vecnorm_l2,shared_reduction_adg,vecnorm_l2__g_t_vecnorm_l2_red_0_0__shared_reduction_adg,{{[0-9]+}},0,{{[1-9][0-9]*}},0,fail,unrouted software edges lack Fabric ADG connectivity
 

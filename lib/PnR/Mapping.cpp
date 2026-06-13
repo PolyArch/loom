@@ -91,6 +91,7 @@ struct HardwareModel {
 
 struct RouteCollection {
   llvm::SmallVector<RouteRecord, 0> routes;
+  llvm::SmallVector<UnroutedEdgeRecord, 0> unroutedEdgeDetails;
   std::uint64_t unroutedEdges = 0;
 };
 
@@ -896,6 +897,33 @@ findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
   return path;
 }
 
+std::string edgeRefFor(const RouteBuilder::EdgeKey &edge) {
+  return edge.producerSoftwareId + ".result" +
+         std::to_string(edge.producerResultIndex) + "->" +
+         edge.consumerSoftwareId + ".operand" +
+         std::to_string(edge.consumerOperandIndex);
+}
+
+void addUnroutedEdge(RouteCollection &collection,
+                     const RouteBuilder::EdgeKey &edge,
+                     llvm::StringRef payloadKind,
+                     llvm::StringRef sourceEndpoint,
+                     llvm::StringRef sinkEndpoint,
+                     llvm::StringRef diagnostic) {
+  UnroutedEdgeRecord record;
+  record.edgeRef = edgeRefFor(edge);
+  record.producerBinding = "placement:" + edge.producerSoftwareId;
+  record.consumerBinding = "placement:" + edge.consumerSoftwareId;
+  record.payloadKind = payloadKind.str();
+  record.fromSoftwareId = edge.producerSoftwareId;
+  record.toSoftwareId = edge.consumerSoftwareId;
+  record.sourceEndpoint = sourceEndpoint.str();
+  record.sinkEndpoint = sinkEndpoint.str();
+  record.diagnostic = diagnostic.str();
+  collection.unroutedEdgeDetails.push_back(std::move(record));
+  ++collection.unroutedEdges;
+}
+
 RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
                               mlir::Operation *graph,
                               llvm::ArrayRef<PlacementRecord> placements,
@@ -947,7 +975,8 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
         hardwareOperandIndexForSoftwareEndpoint(toKind->second,
                                                 edge.consumerOperandIndex);
     if (!producerResultIndex || !consumerOperandIndex) {
-      ++collection.unroutedEdges;
+      addUnroutedEdge(collection, edge, kind, "", "",
+                      "software endpoint has no hardware endpoint");
       continue;
     }
     std::string sourceEndpoint =
@@ -957,13 +986,12 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
     std::optional<llvm::SmallVector<RouteSegment, 2>> path =
         findRoute(topology, sourceEndpoint, sinkEndpoint);
     if (!path) {
-      ++collection.unroutedEdges;
+      addUnroutedEdge(collection, edge, kind, sourceEndpoint, sinkEndpoint,
+                      "no Fabric ADG route connects source to sink");
       continue;
     }
     std::string recordId = "route#" + std::to_string(index++);
-    std::string edgeRef =
-        from + ".result" + std::to_string(edge.producerResultIndex) + "->" +
-        to + ".operand" + std::to_string(edge.consumerOperandIndex);
+    std::string edgeRef = edgeRefFor(edge);
     RouteRecord route;
     route.recordId = recordId;
     route.edgeRef = edgeRef;
@@ -1011,6 +1039,21 @@ llvm::json::Object routeJson(const RouteRecord &route) {
       {"to", route.toSoftwareId},
       {"status", "routed"},
       {"segments", std::move(segments)},
+  };
+}
+
+llvm::json::Object unroutedEdgeJson(const UnroutedEdgeRecord &edge) {
+  return llvm::json::Object{
+      {"edge_ref", edge.edgeRef},
+      {"producer_binding", edge.producerBinding},
+      {"consumer_binding", edge.consumerBinding},
+      {"payload_kind", edge.payloadKind},
+      {"from", edge.fromSoftwareId},
+      {"to", edge.toSoftwareId},
+      {"status", "unrouted"},
+      {"source_endpoint", edge.sourceEndpoint},
+      {"sink_endpoint", edge.sinkEndpoint},
+      {"diagnostic", edge.diagnostic},
   };
 }
 
@@ -1282,6 +1325,8 @@ loom::pnr::createMapping(const MappingOptions &options) {
   RouteCollection routeCollection = collectRoutes(
       *nodesOrErr, graph, summary.placements, hardwareModelOrErr->topology);
   summary.routes = std::move(routeCollection.routes);
+  summary.unroutedEdgeDetails =
+      std::move(routeCollection.unroutedEdgeDetails);
   summary.unroutedEdges = routeCollection.unroutedEdges;
   if (summary.status == "pass" && summary.unroutedEdges != 0) {
     summary.status = "fail";
@@ -1336,6 +1381,10 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
   for (const RouteRecord &route : summary.routes)
     routes.push_back(routeJson(route));
 
+  llvm::json::Array unroutedEdgeDetails;
+  for (const UnroutedEdgeRecord &edge : summary.unroutedEdgeDetails)
+    unroutedEdgeDetails.push_back(unroutedEdgeJson(edge));
+
   llvm::json::Array configEntries;
   for (const ConfigEntry &entry : summary.configEntries)
     configEntries.push_back(configJson(entry));
@@ -1359,6 +1408,7 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
       {"config_records", static_cast<int64_t>(summary.configEntries.size())},
       {"placements", std::move(placements)},
       {"routes", std::move(routes)},
+      {"unrouted_edge_details", std::move(unroutedEdgeDetails)},
       {"config_bitstream", std::move(configEntries)},
   };
   if (!summary.diagnostic.empty()) {
