@@ -27,7 +27,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def read_json(path: Path) -> dict[str, object]:
     if not path.is_file():
         return {}
-    return json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return {"status": "fail", "_json_error": str(exc)}
+    return data if isinstance(data, dict) else {}
 
 
 def string_field(data: dict[str, object], key: str) -> str:
@@ -202,7 +206,8 @@ def build_report(
     if (
         cgra_status == "pass"
         and (functional_status == "pass" or memory_status == "pass")
-        and string_field(cgra, "functional_state_source") != "carried_from_dfg_sim_report"
+        and string_field(cgra, "functional_state_source")
+        not in intermediate_artifacts.CGRA_FUNCTIONAL_STATE_SOURCES
     ):
         diagnostics.append("CGRA-sim report lacks functional state provenance")
         if functional_status == "pass":

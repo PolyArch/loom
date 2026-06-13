@@ -124,6 +124,91 @@ def validate_artifact_fingerprint(
             )
 
 
+def read_referenced_json(csv_input: Path, row: dict[str, str], column: str) -> dict[str, object]:
+    path = resolve_artifact_reference(csv_input, row.get(column, ""))
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def valid_string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def valid_memory_state(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return all(isinstance(key, str) and valid_string_list(item) for key, item in value.items())
+
+
+def validate_workload_identity(
+    row_index: int,
+    row: dict[str, str],
+    label: str,
+    data: dict[str, object],
+    diagnostics: list[str],
+) -> None:
+    workload = data.get("workload")
+    case = row.get("case", "")
+    if not isinstance(workload, str) or not workload:
+        diagnostics.append(f"row {row_index}: referenced {label} JSON lacks workload identity")
+    elif workload != case:
+        diagnostics.append(
+            f"row {row_index}: referenced {label} JSON workload identity {workload!r} does not match row case {case!r}"
+        )
+
+
+def validate_pass_row_referenced_jsons(
+    csv_input: Path,
+    row_index: int,
+    row: dict[str, str],
+    diagnostics: list[str],
+) -> None:
+    dfg = read_referenced_json(csv_input, row, "dfg_report")
+    mapping = read_referenced_json(csv_input, row, "mapping_artifact")
+    cgra = read_referenced_json(csv_input, row, "cgra_report")
+    comparison = read_referenced_json(csv_input, row, "comparison_report")
+    for label, data, expected_kind in (
+        ("dfg_report", dfg, "dfg_sim_report"),
+        ("mapping_artifact", mapping, "pnr_mapping"),
+        ("cgra_report", cgra, "cgra_sim_report"),
+        ("comparison_report", comparison, "sim_comparison_report"),
+    ):
+        if data.get("kind") != expected_kind:
+            diagnostics.append(f"row {row_index}: referenced {label} JSON kind is not {expected_kind}")
+        if data.get("status") != "pass":
+            diagnostics.append(f"row {row_index}: referenced {label} JSON status is not pass")
+        validate_workload_identity(row_index, row, label, data, diagnostics)
+    if comparison.get("functional_comparison_status") != "pass":
+        diagnostics.append(f"row {row_index}: referenced comparison_report functional status is not pass")
+    if comparison.get("memory_comparison_status") != "pass":
+        diagnostics.append(f"row {row_index}: referenced comparison_report memory status is not pass")
+    if comparison.get("performance_comparison_status") != "pass":
+        diagnostics.append(f"row {row_index}: referenced comparison_report performance status is not pass")
+    if cgra.get("functional_state_source") not in intermediate_artifacts.CGRA_FUNCTIONAL_STATE_SOURCES:
+        diagnostics.append(f"row {row_index}: referenced cgra_report lacks final-state provenance")
+    outputs_match = (
+        valid_string_list(dfg.get("final_outputs"))
+        and valid_string_list(cgra.get("final_outputs"))
+        and dfg.get("final_outputs") == cgra.get("final_outputs")
+    )
+    memory_match = (
+        valid_memory_state(dfg.get("final_memory_state"))
+        and valid_memory_state(cgra.get("final_memory_state"))
+        and dfg.get("final_memory_state") == cgra.get("final_memory_state")
+    )
+    if row.get("final_outputs_present") == "true" and not outputs_match:
+        diagnostics.append(f"row {row_index}: final_outputs_present contradicts referenced reports")
+    if row.get("final_memory_state_present") == "true" and not memory_match:
+        diagnostics.append(f"row {row_index}: final_memory_state_present contradicts referenced reports")
+    if not outputs_match and not memory_match:
+        diagnostics.append(f"row {row_index}: referenced reports lack matching final state")
+
+
 def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     allowed = intermediate_artifacts.BASE_STATUSES
     seen: set[tuple[str, str, str]] = set()
@@ -168,6 +253,7 @@ def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list
                     fingerprint_column=fingerprint_column,
                     diagnostics=diagnostics,
                 )
+            validate_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
 
 
 def validate_coverage(rows: list[dict[str, str]], expected: list[dict[str, str]], diagnostics: list[str]) -> None:

@@ -1213,6 +1213,95 @@ def validate_referenced_artifact_fingerprint(
         diagnostics.append(f"row {row_index}: pass row {fingerprint_column} does not match {artifact_column}")
 
 
+def read_row_json_reference(anchor: Path, row: dict[str, str], column: str) -> dict[str, object]:
+    reference = row.get(column, "")
+    if not reference:
+        return {}
+    resolved = resolve_artifact_reference(anchor, reference)
+    if not resolved.is_file():
+        return {}
+    try:
+        data = json.loads(resolved.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def valid_string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def valid_memory_state(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return all(isinstance(key, str) and valid_string_list(item) for key, item in value.items())
+
+
+def validate_workload_identity(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+    label: str,
+    data: dict[str, object],
+) -> None:
+    workload = data.get("workload")
+    case = row.get("case", "")
+    if not isinstance(workload, str) or not workload:
+        diagnostics.append(f"row {row_index}: referenced {label} JSON lacks workload identity")
+    elif workload != case:
+        diagnostics.append(
+            f"row {row_index}: referenced {label} JSON workload identity {workload!r} does not match row case {case!r}"
+        )
+
+
+def validate_cgra_status_pass_referenced_json(
+    anchor: Path,
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    dfg = read_row_json_reference(anchor, row, "dfg_report")
+    mapping = read_row_json_reference(anchor, row, "mapping_artifact")
+    cgra = read_row_json_reference(anchor, row, "cgra_report")
+    comparison = read_row_json_reference(anchor, row, "comparison_report")
+    for label, data, expected_kind in (
+        ("dfg_report", dfg, "dfg_sim_report"),
+        ("mapping_artifact", mapping, "pnr_mapping"),
+        ("cgra_report", cgra, "cgra_sim_report"),
+        ("comparison_report", comparison, "sim_comparison_report"),
+    ):
+        if data.get("kind") != expected_kind:
+            diagnostics.append(f"row {row_index}: referenced {label} JSON kind is not {expected_kind}")
+        if data.get("status") != "pass":
+            diagnostics.append(f"row {row_index}: referenced {label} JSON status is not pass")
+        validate_workload_identity(row, diagnostics, row_index, label, data)
+    for field, label in (
+        ("functional_comparison_status", "functional"),
+        ("memory_comparison_status", "memory"),
+        ("performance_comparison_status", "performance"),
+    ):
+        if comparison.get(field) != "pass":
+            diagnostics.append(f"row {row_index}: referenced comparison_report {label} status is not pass")
+    if cgra.get("functional_state_source") not in CGRA_FUNCTIONAL_STATE_SOURCES:
+        diagnostics.append(f"row {row_index}: referenced cgra_report lacks final-state provenance")
+    outputs_match = (
+        valid_string_list(dfg.get("final_outputs"))
+        and valid_string_list(cgra.get("final_outputs"))
+        and dfg.get("final_outputs") == cgra.get("final_outputs")
+    )
+    memory_match = (
+        valid_memory_state(dfg.get("final_memory_state"))
+        and valid_memory_state(cgra.get("final_memory_state"))
+        and dfg.get("final_memory_state") == cgra.get("final_memory_state")
+    )
+    if row.get("final_outputs_present") == "true" and not outputs_match:
+        diagnostics.append(f"row {row_index}: final_outputs_present contradicts referenced reports")
+    if row.get("final_memory_state_present") == "true" and not memory_match:
+        diagnostics.append(f"row {row_index}: final_memory_state_present contradicts referenced reports")
+    if not outputs_match and not memory_match:
+        diagnostics.append(f"row {row_index}: referenced reports lack matching final state")
+
+
 def validate_cgra_status_pass_row(
     anchor: Path,
     row: dict[str, str],
@@ -1241,6 +1330,7 @@ def validate_cgra_status_pass_row(
             artifact_column,
             fingerprint_column,
         )
+    validate_cgra_status_pass_referenced_json(anchor, row, diagnostics, row_index)
 
 
 def validate_kind_invariants(
