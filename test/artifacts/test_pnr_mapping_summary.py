@@ -178,26 +178,26 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::fabric.pe#0.result1",
-                "shared_reduction_adg::fabric.switch#1.operand0",
+                "shared_reduction_adg::fabric.switch#2.operand0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#1.operand0",
-                "shared_reduction_adg::fabric.switch#1.result0",
+                "shared_reduction_adg::fabric.switch#2.operand0",
+                "shared_reduction_adg::fabric.switch#2.result0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#1.result0",
+                "shared_reduction_adg::fabric.switch#2.result0",
                 "shared_reduction_adg::fabric.op#1.operand2",
             ),
             (
                 "shared_reduction_adg::mem.load#0.result0",
-                "shared_reduction_adg::fabric.switch#0.operand0",
+                "shared_reduction_adg::fabric.switch#1.operand0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#0.operand0",
-                "shared_reduction_adg::fabric.switch#0.result0",
+                "shared_reduction_adg::fabric.switch#1.operand0",
+                "shared_reduction_adg::fabric.switch#1.result0",
             ),
             (
-                "shared_reduction_adg::fabric.switch#0.result0",
+                "shared_reduction_adg::fabric.switch#1.result0",
                 "shared_reduction_adg::fabric.op#2.operand0",
             ),
             (

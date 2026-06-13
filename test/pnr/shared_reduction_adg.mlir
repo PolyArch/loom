@@ -63,7 +63,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
   %squared_data =
-      fabric.pe [spatial] (%pa = %data0 : !fabric.bits<32>,
+      fabric.pe [spatial] (%pa = %mul_lhs_input : !fabric.bits<32>,
                         %pb = %data0 : !fabric.bits<32>)
           -> !fabric.bits<32> {
     // CHECK: fabric.op [@arith.muli]
@@ -74,6 +74,11 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %product : !fabric.bits<32>
     }
   }
+  %mul_lhs_input =
+      fabric.switch [spatial] %data0, %data1, %data2
+        [{connectivity_table = ["111"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+        -> !fabric.bits<32>
   %reduction_input =
       fabric.switch [spatial] %data0, %abs_data, %squared_data
         [{connectivity_table = ["111"]}]
@@ -346,8 +351,14 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %selected : !fabric.bits<32>
     }
   }
+  %sync_aux_done =
+      fabric.switch [spatial] %store_done0, %done1, %done2, %done3
+        [{connectivity_table = ["1111"]}]
+        : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>,
+           !fabric.bits<0>)
+        -> !fabric.bits<0>
   fabric.pe [spatial] (%pa = %done0 : !fabric.bits<0>,
-                       %pb = %store_done0 : !fabric.bits<0>)
+                       %pb = %sync_aux_done : !fabric.bits<0>)
       -> !fabric.bits<0> {
     fabric.fu(%fa = %pa : !fabric.bits<0>,
               %fb = %pb : !fabric.bits<0>) -> !fabric.bits<0> {
@@ -359,9 +370,13 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %sync_done0 : !fabric.bits<0>
     }
   }
+  %load1_addr =
+      fabric.switch [spatial] %idx, %i32b
+        [{connectivity_table = ["11"]}]
+        : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   // CHECK: fabric.mem [spatial]
   %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %store_done0, %store_done1 =
-      fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %i32b, %ctrl,
+      fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %load1_addr, %ctrl,
                                           %i32c, %ctrl, %i32d, %ctrl)
                             store(%idx, %scan_store_value, %ctrl,
                                   %i32c, %i32d, %ctrl)

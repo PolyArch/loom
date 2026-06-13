@@ -81,6 +81,7 @@
 // RUN: FileCheck %s --check-prefix=VARIANCE-MEAN-JSON < %t.dir/variance.mean.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VARIANCE-VAR < %t.dir/variance.var.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,MATVEC < %t.dir/matvec.core.mapping.csv
+// RUN: FileCheck %s --check-prefix=MATVEC-JSON < %t.dir/matvec.core.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,MATVEC-CHECKSUM < %t.dir/matvec.checksum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,GEMV < %t.dir/gemv.core.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,GEMV-CHECKSUM < %t.dir/gemv.checksum.mapping.csv
@@ -106,13 +107,13 @@
 // RUN: FileCheck %s --check-prefixes=CSV,TRAPZ < %t.dir/integrate_trapz.mapping.csv
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,0,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,0,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // RELU-NEXT: relu,shared_reduction_adg,relu__g_t_relu_0_0__shared_reduction_adg,5,0,4,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,0,11,0,fail,unrouted software edges lack Fabric ADG connectivity
+// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,0,10,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // VARIANCE-MEAN-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_0_0__shared_reduction_adg,7,9,0,0,pass,mapped software graph to fabric resources
 
@@ -152,23 +153,36 @@
 
 // CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg,{{[0-9]+}},0,{{[1-9][0-9]*}},0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,0,13,0,fail,unrouted software edges lack Fabric ADG connectivity
+// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,0,12,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,0,12,0,fail,unrouted software edges lack Fabric ADG connectivity
+// HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,0,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,0,5,0,fail,unrouted software edges lack Fabric ADG connectivity
+// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,0,4,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// MATVEC-NEXT: matvec,shared_reduction_adg,matvec__g_t_matvec_kernel_0_0__shared_reduction_adg,7,0,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// MATVEC-NEXT: matvec,shared_reduction_adg,matvec__g_t_matvec_kernel_0_0__shared_reduction_adg,7,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+
+// MATVEC-JSON-DAG: "workload": "matvec"
+// MATVEC-JSON-DAG: "hardware": "shared_reduction_adg"
+// MATVEC-JSON-DAG: "status": "pass"
+// MATVEC-JSON-DAG: "placed_records": 7
+// MATVEC-JSON-DAG: "unrouted_edges": 0
+// MATVEC-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.muli#0.operand0"
+// MATVEC-JSON-DAG: "edge_ref": "dataflow.load#1.result1->dataflow.sync#0.operand1"
+// MATVEC-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.load#1.operand1"
+// MATVEC-JSON-DAG: "segment_kind": "resource_edge"
+// MATVEC-JSON-DAG: "segment_kind": "module_path"
+// MATVEC-JSON-NOT: ".out"
+// MATVEC-JSON-NOT: ".in"
 
 // MATVEC-CHECKSUM-NEXT: matvec,shared_reduction_adg,matvec__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// GEMV-NEXT: gemv,shared_reduction_adg,gemv__g_t_gemv_kernel_0_0__shared_reduction_adg,9,0,5,0,fail,unrouted software edges lack Fabric ADG connectivity
+// GEMV-NEXT: gemv,shared_reduction_adg,gemv__g_t_gemv_kernel_0_0__shared_reduction_adg,9,0,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // GEMV-CHECKSUM-NEXT: gemv,shared_reduction_adg,gemv__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
 // VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg,5,0,5,0,fail,unrouted software edges lack Fabric ADG connectivity
+// VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg,5,0,4,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // VECSCALE-NEXT: vecscale,shared_reduction_adg,vecscale__g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0__shared_reduction_adg,4,0,1,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -277,4 +291,4 @@
 // CUMSUM-JSON-NOT: ".out"
 // CUMSUM-JSON-NOT: ".in"
 
-// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,0,20,0,fail,unrouted software edges lack Fabric ADG connectivity
+// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,0,18,0,fail,unrouted software edges lack Fabric ADG connectivity

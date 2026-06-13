@@ -126,7 +126,7 @@ def main() -> int:
             "hardware": "shared_reduction_adg",
             "mapping_id": AGGREGATE_MAPPING_ID,
             "routed_edges": "6",
-            "unrouted_edges": "4",
+            "unrouted_edges": "3",
             "unplaced_records": "0",
             "status": "blocked",
         }
@@ -154,7 +154,7 @@ def main() -> int:
             raise AssertionError(f"aggregate mapping must cite both component mappings: {mapping_artifact}")
 
         component_expectations = {
-            "pnr-mapping-main.json": ("g_t_vecadd_0_0", MAIN_MAPPING_ID, "fail", 0, 4, 0),
+            "pnr-mapping-main.json": ("g_t_vecadd_0_0", MAIN_MAPPING_ID, "fail", 0, 3, 0),
             "pnr-mapping-reduction.json": ("g_t_main_red_0_0", REDUCTION_MAPPING_ID, "pass", 6, 0, 97),
         }
         for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():

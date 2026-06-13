@@ -870,7 +870,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addPe(std::move(absPe));
 
   PeSpec squaredPe;
-  squaredPe.inputs = {{"pa", "mem0_data0", "!fabric.bits<32>", ""},
+  squaredPe.inputs = {{"pa", "mul_lhs_input", "!fabric.bits<32>", ""},
                       {"pb", "mem0_data0", "!fabric.bits<32>", ""}};
   squaredPe.resultNames = {"squared_data"};
   squaredPe.resultTypes = {"!fabric.bits<32>"};
@@ -950,27 +950,35 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addPe(std::move(reductionPe));
 
   PeSpec syncPe;
-  syncPe.inputs = {{"pc", "mem0_done0", "!fabric.bits<0>", ""}};
+  syncPe.inputs = {{"pc", "mem0_done0", "!fabric.bits<0>", ""},
+                   {"pd", "sync_aux_done", "!fabric.bits<0>", ""}};
   syncPe.resultTypes = {"!fabric.bits<0>"};
-  syncPe.fus.push_back(FuSpec{{{"fc", "pc", "!fabric.bits<0>", ""}},
+  syncPe.fus.push_back(FuSpec{{{"fc", "pc", "!fabric.bits<0>", ""},
+                               {"fd", "pd", "!fabric.bits<0>", ""}},
                               {"!fabric.bits<0>"},
-                              {FabricOpSpec{{"done"},
+                              {FabricOpSpec{{"sync_done0", "sync_done1"},
                                             {"dataflow.sync"},
-                                            {"fc"},
-                                            {"!fabric.bits<0>"},
-                                            {"!fabric.bits<0>"},
+                                            {"fc", "fd"},
+                                            {"!fabric.bits<0>",
+                                             "!fabric.bits<0>"},
+                                            {"!fabric.bits<0>",
+                                             "!fabric.bits<0>"},
                                             {},
-                                            {{"bitmask", "1"}}}},
-                              {"done"}});
+                                            {{"bitmask", "11"}}}},
+                              {"sync_done0"}});
   module.addPe(std::move(syncPe));
 
+  module.addExactBodyLine("%load1_addr = fabric.switch [spatial] %idx, %i32b");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%mem0_data0, %mem0_done0, %mem0_data1, %mem0_done1, %mem0_data2, "
       "%mem0_done2, %mem0_data3, %mem0_done3, %mem0_store_done0, "
       "%mem0_store_done1 =");
   module.addExactBodyLine(
-      "    fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %i32b, %ctrl, "
-      "%i32c, %ctrl, %i32d, %ctrl)");
+      "    fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %load1_addr, "
+      "%ctrl, %i32c, %ctrl, %i32d, %ctrl)");
   module.addExactBodyLine(
       "                              store(%i32a, %i32b, %ctrl, %i32c, "
       "%i32d, %ctrl)");
@@ -989,12 +997,27 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>, "
       "!fabric.bits<0>)");
   module.addExactBodyLine(
+      "%mul_lhs_input = fabric.switch [spatial] %mem0_data0, %mem0_data1, "
+      "%mem0_data2");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
       "%reduction_input = fabric.switch [spatial] %mem0_data0, %abs_data, "
       "%squared_data");
   module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%sync_aux_done = fabric.switch [spatial] %mem0_store_done0, "
+      "%mem0_done1, %mem0_done2, %mem0_done3");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>)");
+  module.addExactBodyLine("  -> !fabric.bits<0>");
   return module;
 }
 

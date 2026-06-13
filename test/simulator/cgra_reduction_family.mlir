@@ -139,6 +139,7 @@
 // RUN: FileCheck %s --check-prefix=MEAN-CGRA < %t.dir/mean.cgra.report.json
 // RUN: FileCheck %s --check-prefix=DOWNSAMPLE-CORE-CGRA < %t.dir/downsample_avg.cgra.report.json
 // RUN: FileCheck %s --check-prefix=VARIANCE-MEAN-CGRA < %t.dir/variance.mean.cgra.report.json
+// RUN: FileCheck %s --check-prefix=MATVEC-CGRA < %t.dir/matvec.cgra.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L1-CGRA < %t.dir/vecnorm_l1.cgra.report.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2-CGRA < %t.dir/vecnorm_l2.cgra.report.json
 // RUN: bash %S/../app/run_sim_cycle_summary.sh --dfg-report %t.dir/axpy.dfg.report.json --cgra-report %t.dir/axpy.cgra.report.json --dfg-report %t.dir/bit_reverse.dfg.report.json --cgra-report %t.dir/bit_reverse.cgra.report.json --dfg-report %t.dir/byte_swap.dfg.report.json --cgra-report %t.dir/byte_swap.cgra.report.json --dfg-report %t.dir/downsample_avg.dfg.init.report.json --dfg-report %t.dir/downsample_avg.dfg.report.json --dfg-report %t.dir/downsample_avg.dfg.row1.report.json --dfg-report %t.dir/downsample_avg.dfg.row2.report.json --dfg-report %t.dir/downsample_avg.dfg.row3.report.json --cgra-report %t.dir/downsample_avg.init.cgra.report.json --cgra-report %t.dir/downsample_avg.cgra.report.json --cgra-report %t.dir/downsample_avg.row1.cgra.report.json --cgra-report %t.dir/downsample_avg.row2.cgra.report.json --cgra-report %t.dir/downsample_avg.row3.cgra.report.json --dfg-report %t.dir/conv1d.dfg.report.json --cgra-report %t.dir/conv1d.cgra.report.json --dfg-report %t.dir/convolve_1d.dfg.report.json --cgra-report %t.dir/convolve_1d.cgra.report.json --dfg-report %t.dir/correlation.dfg.report.json --cgra-report %t.dir/correlation.cgra.report.json --dfg-report %t.dir/compare_swap.dfg.report.json --cgra-report %t.dir/compare_swap.cgra.report.json --dfg-report %t.dir/hash_mix.dfg.report.json --cgra-report %t.dir/hash_mix.cgra.report.json --dfg-report %t.dir/xor_block.dfg.report.json --cgra-report %t.dir/xor_block.cgra.report.json --dfg-report %t.dir/relu.dfg.report.json --dfg-report %t.dir/relu.dfg.checksum.report.json --cgra-report %t.dir/relu.cgra.report.json --cgra-report %t.dir/relu.checksum.cgra.report.json --dfg-report %t.dir/rotate_bits.dfg.report.json --cgra-report %t.dir/rotate_bits.cgra.report.json --dfg-report %t.dir/variance.dfg.report.json --dfg-report %t.dir/variance.dfg.var.report.json --cgra-report %t.dir/variance.mean.cgra.report.json --cgra-report %t.dir/variance.var.cgra.report.json --dfg-report %t.dir/matvec.dfg.report.json --dfg-report %t.dir/matvec.dfg.row1.report.json --dfg-report %t.dir/matvec.dfg.row2.report.json --dfg-report %t.dir/matvec.dfg.row3.report.json --dfg-report %t.dir/matvec.dfg.checksum.report.json --cgra-report %t.dir/matvec.cgra.report.json --cgra-report %t.dir/matvec.row1.cgra.report.json --cgra-report %t.dir/matvec.row2.cgra.report.json --cgra-report %t.dir/matvec.row3.cgra.report.json --cgra-report %t.dir/matvec.checksum.cgra.report.json --dfg-report %t.dir/gemv.dfg.report.json --dfg-report %t.dir/gemv.dfg.row1.report.json --dfg-report %t.dir/gemv.dfg.row2.report.json --dfg-report %t.dir/gemv.dfg.row3.report.json --dfg-report %t.dir/gemv.dfg.checksum.report.json --cgra-report %t.dir/gemv.cgra.report.json --cgra-report %t.dir/gemv.row1.cgra.report.json --cgra-report %t.dir/gemv.row2.cgra.report.json --cgra-report %t.dir/gemv.row3.cgra.report.json --cgra-report %t.dir/gemv.checksum.cgra.report.json --dfg-report %t.dir/vecadd.dfg.report.json --dfg-report %t.dir/vecadd.dfg.reduction.report.json --cgra-report %t.dir/vecadd.core.cgra.report.json --cgra-report %t.dir/vecadd.reduction.cgra.report.json --dfg-report %t.dir/vecmul.dfg.report.json --cgra-report %t.dir/vecmul.cgra.report.json --dfg-report %t.dir/vecscale.dfg.report.json --cgra-report %t.dir/vecscale.cgra.report.json --dfg-report %t.dir/mean.dfg.report.json --cgra-report %t.dir/mean.cgra.report.json --dfg-report %t.dir/vecnorm_l1.dfg.report.json --cgra-report %t.dir/vecnorm_l1.cgra.report.json --dfg-report %t.dir/vecnorm_l2.dfg.report.json --cgra-report %t.dir/vecnorm_l2.cgra.report.json --dfg-report %t.dir/reduction.dfg.report.json --cgra-report %t.dir/reduction.cgra.report.json --dfg-report %t.dir/vecsum.dfg.report.json --cgra-report %t.dir/vecsum.cgra.report.json --dfg-report %t.dir/dotproduct.dfg.report.json --cgra-report %t.dir/dotproduct.cgra.report.json --dfg-report %t.dir/spmv.dfg.report.json --cgra-report %t.dir/spmv.cgra.report.json --dfg-report %t.dir/prefix_sum.dfg.report.json --cgra-report %t.dir/prefix_sum.cgra.report.json --dfg-report %t.dir/prefix_sum_inclusive.dfg.report.json --cgra-report %t.dir/prefix_sum_inclusive.cgra.report.json --dfg-report %t.dir/cumsum.dfg.report.json --cgra-report %t.dir/cumsum.cgra.report.json --dfg-report %t.dir/integrate_trapz.dfg.report.json --cgra-report %t.dir/integrate_trapz.cgra.report.json --output %t.dir/summary.csv
@@ -169,6 +170,16 @@
 // VARIANCE-MEAN-CGRA-DAG: "hardware_aware_cycles": 257
 // VARIANCE-MEAN-CGRA-DAG: "routed_edges": 9
 
+// MATVEC-CGRA-DAG: "workload": "matvec"
+// MATVEC-CGRA-DAG: "hardware": "shared_reduction_adg"
+// MATVEC-CGRA-DAG: "status": "pass"
+// MATVEC-CGRA-DAG: "mapping_id": "matvec__g_t_matvec_kernel_0_0__shared_reduction_adg"
+// MATVEC-CGRA-DAG: "dfg_cycles": 83
+// MATVEC-CGRA-DAG: "hardware_aware_cycles": 119
+// MATVEC-CGRA-DAG: "routed_edges": 10
+// MATVEC-CGRA-DAG: "route_segments": 28
+// MATVEC-CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
+
 // VECNORM-L1-CGRA-DAG: "workload": "vecnorm_l1"
 // VECNORM-L1-CGRA-DAG: "hardware": "shared_reduction_adg"
 // VECNORM-L1-CGRA-DAG: "status": "pass"
@@ -197,7 +208,7 @@
 // SUMMARY-DAG: gemv,423,,blocked
 // SUMMARY-DAG: hash_mix,1280,,blocked
 // SUMMARY-DAG: xor_block,448,,blocked
-// SUMMARY-DAG: matvec,371,,blocked
+// SUMMARY-DAG: matvec,371,533,pass
 // SUMMARY-DAG: vecadd,1603,,blocked
 // SUMMARY-DAG: vecmul,256,,blocked
 // SUMMARY-DAG: vecscale,384,,blocked
@@ -211,7 +222,7 @@
 // SUMMARY-DAG: vecsum,579,597,pass
 // SUMMARY-DAG: dotproduct,1027,,blocked
 // SUMMARY-DAG: spmv,47,,blocked
-// SUMMARY-DAG: prefix_sum,835,866,pass
-// SUMMARY-DAG: prefix_sum_inclusive,13302,13333,pass
-// SUMMARY-DAG: cumsum,14339,14370,pass
+// SUMMARY-DAG: prefix_sum,835,868,pass
+// SUMMARY-DAG: prefix_sum_inclusive,13302,13335,pass
+// SUMMARY-DAG: cumsum,14339,14372,pass
 // SUMMARY-DAG: integrate_trapz,299,,blocked
