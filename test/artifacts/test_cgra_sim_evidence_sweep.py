@@ -37,6 +37,12 @@ DEFAULT_SWEEP_CASES = (
     "vecmul",
     "variance",
 )
+BLOCKED_SWEEP_CASES = (
+    "integrate_trapz",
+    "correlation",
+    "convolve_1d",
+    "relu",
+)
 
 HEADER = [
     "suite",
@@ -133,6 +139,15 @@ def assert_sweep_artifact(evidence_dir: Path, case: str, suffix: str) -> None:
         raise AssertionError(f"sweep artifact has wrong workload identity: {path}: {data}")
     if data.get("status") != "pass":
         raise AssertionError(f"sweep artifact is not pass: {path}: {data}")
+
+
+def assert_sweep_artifact_status(evidence_dir: Path, case: str, suffix: str, expected_status: str) -> None:
+    path = evidence_dir / f"{case}.{suffix}"
+    if not path.is_file():
+        raise AssertionError(f"missing sweep artifact: {path}")
+    data = json.loads(path.read_text())
+    if data.get("workload") != case or data.get("status") != expected_status:
+        raise AssertionError(f"sweep artifact has wrong identity or status: {path}: {data}")
 
 
 def artifact_id(path: Path) -> str:
@@ -275,6 +290,47 @@ def assert_promoted_row(repo: Path, rows: list[dict[str, str]], case: str) -> No
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
 
 
+def assert_structured_blocker_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    case: str,
+    expected_status: str,
+    expected_mapping_status: str,
+) -> None:
+    row = one_row(rows, case)
+    if row["status"] != expected_status:
+        raise AssertionError(f"{case} should have status {expected_status}: {row}")
+    if row["dfg_status"] != "pass":
+        raise AssertionError(f"{case} should preserve DFG evidence before blocking: {row}")
+    if row["mapping_status"] != expected_mapping_status:
+        raise AssertionError(f"{case} should have mapping_status={expected_mapping_status}: {row}")
+    if row["cgra_status"] != "blocked":
+        raise AssertionError(f"{case} should have cgra_status=blocked: {row}")
+    if row["comparison_status"] != "blocked":
+        raise AssertionError(f"{case} should have comparison_status=blocked: {row}")
+    if row["hardware_system"] != "shared_reduction_adg":
+        raise AssertionError(f"{case} should stay on shared reduction hardware: {row}")
+    expected_diagnostic_class = "mapping_artifact_blocked" if expected_status == "blocked" else "mapping_artifact_failed"
+    if row["diagnostic_class"] != expected_diagnostic_class:
+        raise AssertionError(f"{case} should name the mapping artifact blocker: {row}")
+    if row["blocking_prerequisite"] != "mapping_artifact":
+        raise AssertionError(f"{case} should block on mapping_artifact: {row}")
+    if row["final_outputs_present"] != "true" or row["final_memory_state_present"] != "true":
+        raise AssertionError(f"{case} should preserve final-state evidence while blocked: {row}")
+    for artifact_column, fingerprint_column in (
+        ("dfg_report", "dfg_report_fingerprint"),
+        ("mapping_artifact", "mapping_artifact_fingerprint"),
+        ("cgra_report", "cgra_report_fingerprint"),
+        ("comparison_report", "comparison_report_fingerprint"),
+    ):
+        path = repo / row[artifact_column]
+        if not path.is_file():
+            raise AssertionError(f"{case} row references missing artifact {artifact_column}: {row}")
+        actual = artifact_test_common.fingerprint(path)
+        if actual != row[fingerprint_column]:
+            raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit(f"usage: {argv[0]} <repo>")
@@ -326,6 +382,14 @@ def main(argv: list[str]) -> int:
                 "conv1d",
                 "--case",
                 "variance",
+                "--case",
+                "integrate_trapz",
+                "--case",
+                "correlation",
+                "--case",
+                "convolve_1d",
+                "--case",
+                "relu",
             ],
         )
         for case in (
@@ -352,6 +416,12 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
+        for case in BLOCKED_SWEEP_CASES:
+            assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
+            expected_mapping_status = "blocked" if case == "relu" else "fail"
+            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
+            assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
+            assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
@@ -368,6 +438,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
+        for case in BLOCKED_SWEEP_CASES:
+            assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -375,6 +447,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
+        assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "variance")
 
@@ -418,6 +491,10 @@ def main(argv: list[str]) -> int:
             "variance",
         ):
             assert_promoted_row(repo, rows, case)
+        for case in BLOCKED_SWEEP_CASES:
+            expected_status = "blocked" if case == "relu" else "fail"
+            expected_mapping_status = "blocked" if case == "relu" else "fail"
+            assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"dotproduct should use shared reduction hardware: {dotproduct_row}")
