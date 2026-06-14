@@ -60,6 +60,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     bit_reverse
     downsample
     downsample_avg
+    delta_encode
     prefix_sum
     cumsum
     prefix_sum_inclusive

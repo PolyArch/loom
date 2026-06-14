@@ -81,6 +81,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "f32[16];f32[4]",
         "alignment_bytes": 4,
     },
+    "delta_encode": {
+        "byte_size": 80,
+        "element_layout": "u32[10];u32[10]",
+        "alignment_bytes": 4,
+    },
     "relu": {
         "byte_size": 256,
         "element_layout": "f32[32];f32[32]",

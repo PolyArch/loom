@@ -74,6 +74,9 @@ case "${CASE}" in
   downsample_avg)
     case_graph="g_t_downsample_avg_0_0"
     ;;
+  delta_encode)
+    case_graph="g_t_delta_encode_0_0"
+    ;;
   prefix_sum)
     case_graph="g_t_prefix_sum_red_0_0"
     ;;

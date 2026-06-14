@@ -663,6 +663,16 @@ case "${CASE}" in
             --workload downsample
         )
         ;;
+    delta_encode)
+        append_ctrl_tokens 10
+        append_raw_memref 1 "100,102,105,110,115,122,130,135,142,150"
+        append_constant_memref 2 10 "0"
+        append_index_tokens 3 10
+        sim_args+=(
+            --graph g_t_delta_encode_0_0
+            --workload delta_encode
+        )
+        ;;
     fir_filter)
         append_ctrl_tokens 3
         sim_args+=(

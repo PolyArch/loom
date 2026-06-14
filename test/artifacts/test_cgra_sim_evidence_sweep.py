@@ -22,6 +22,7 @@ DEFAULT_SWEEP_CASES = (
     "bit_reverse",
     "downsample",
     "downsample_avg",
+    "delta_encode",
     "prefix_sum",
     "cumsum",
     "prefix_sum_inclusive",
@@ -68,6 +69,7 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
     "convolve_1d_same",
     "crc32",
+    "delta_encode",
     "fir_filter",
     "pack_bits",
     "prefix_sum_exclusive",
@@ -398,6 +400,14 @@ def assert_unsupported_operation(evidence_dir: Path, case: str, operation: str) 
         )
 
 
+def assert_dfg_unsupported_operation(evidence_dir: Path, case: str, operation: str) -> None:
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    expected_dfg = f"unsupported op: {operation}"
+    if expected_dfg not in dfg.get("diagnostics", []):
+        raise AssertionError(f"{case} DFG unsupported diagnostic should be {expected_dfg}: {dfg_path}: {dfg}")
+
+
 def assert_dfg_unsupported_row(repo: Path, rows: list[dict[str, str]], case: str) -> None:
     row = one_row(rows, case)
     if row["status"] != "blocked":
@@ -463,6 +473,8 @@ def main(argv: list[str]) -> int:
                 "bit_reverse",
                 "--case",
                 "downsample",
+                "--case",
+                "delta_encode",
                 "--case",
                 "spmv",
                 "--case",
@@ -580,11 +592,14 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "blocked")
         for case in ("autocorrelation", "convolve_1d_same", "crc32", "fir_filter"):
             assert_unsupported_operation(evidence_dir, case, "scf.for")
+        assert_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
+        assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
@@ -741,9 +756,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 7,
-            "blocked": 8,
+            "blocked": 9,
             "unsupported": 0,
-            "missing_status": 70,
+            "missing_status": 69,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
