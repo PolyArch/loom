@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +68,128 @@ def find_tool() -> Path | None:
     return None
 
 
+def config_tool_candidates() -> list[Path]:
+    env_tool = os.environ.get("LOOM_CONFIG_TEST")
+    candidates = []
+    if env_tool:
+        candidates.append(Path(env_tool))
+    candidates.extend(
+        [
+            ROOT / "build/tools/loom-config-test/loom-config-test",
+            ROOT / "build/bin/loom-config-test",
+        ]
+    )
+    return candidates
+
+
+def find_config_tool() -> Path | None:
+    for candidate in config_tool_candidates():
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def run_config_tool(*argv: str) -> str:
+    tool = find_config_tool()
+    if tool is None:
+        raise RuntimeError("missing loom-config-test; build the config tool first")
+    result = subprocess.run(
+        [str(tool), *argv],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "loom-config-test failed")
+    return result.stdout.strip()
+
+
+def escaped_identity_part(value: str) -> str:
+    escaped = []
+    for byte in value.encode("utf-8"):
+        char = chr(byte)
+        if char.isalnum() or char == "_":
+            escaped.append(char)
+        else:
+            escaped.append(f"%{byte:02X}")
+    return "".join(escaped)
+
+
+def mapping_id(workload: str, graph: str, hardware: str) -> str:
+    return "__".join(
+        (
+            escaped_identity_part(workload),
+            escaped_identity_part(graph),
+            escaped_identity_part(hardware),
+        )
+    )
+
+
+def unsupported_graph_operation(output: str) -> str | None:
+    match = re.search(
+        r"graph contains unsupported operation for PnR mapping:\s*([^\r\n]+)",
+        output,
+    )
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+def write_unsupported_mapping(args: argparse.Namespace, operation: str) -> None:
+    map_id = mapping_id(args.workload, args.graph, args.hardware)
+    diagnostic = f"unsupported PnR graph operation: {operation}"
+    row = {
+        "workload": args.workload,
+        "hardware": args.hardware,
+        "mapping_id": map_id,
+        "placed_records": "",
+        "routed_edges": "",
+        "unrouted_edges": "",
+        "unplaced_records": "",
+        "status": "unsupported",
+        "diagnostic": diagnostic,
+    }
+    intermediate_artifacts.write_csv_rows(
+        "pnr_mapping",
+        intermediate_artifacts.output_path(args.output),
+        [row],
+    )
+    if not args.artifact:
+        return
+    artifact_path = Path(args.artifact)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact = {
+        "schema_version": 1,
+        "kind": "pnr_mapping",
+        "workload": args.workload,
+        "hardware": args.hardware,
+        "graph": args.graph,
+        "mapping_id": map_id,
+        "config_id": "loom.default",
+        "config_fingerprint": run_config_tool("--resolved-fingerprint"),
+        "component_config_view": "pnr.mapping.v1",
+        "component_config_fingerprint": run_config_tool(
+            "--component-fingerprint",
+            "--component-view",
+            "pnr.mapping.v1",
+        ),
+        "status": "unsupported",
+        "placed_records": 0,
+        "routed_edges": 0,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 0,
+        "placements": [],
+        "routes": [],
+        "unrouted_edge_details": [],
+        "config_bitstream": [],
+        "diagnostics": [diagnostic],
+    }
+    artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+
+
 def explicit_mapper_args(args: argparse.Namespace) -> bool:
     explicit = [
         args.dfg_mlir,
@@ -121,6 +245,15 @@ def run_explicit_mapper(args: argparse.Namespace) -> int:
         check=False,
     )
     if result.returncode != 0:
+        combined_output = result.stdout + result.stderr
+        operation = unsupported_graph_operation(combined_output)
+        if operation:
+            try:
+                write_unsupported_mapping(args, operation)
+            except RuntimeError as exc:
+                sys.stderr.write(str(exc) + "\n")
+                return 1
+            return 0
         sys.stderr.write(result.stdout)
         sys.stderr.write(result.stderr)
     return result.returncode

@@ -5704,13 +5704,20 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if not isinstance(dynamic_work_items, int) or dynamic_work_items < 0:
             diagnostics.append("DFG simulator report dynamic_work_items must be non-negative integer")
         operation_fire_counts = data.get("operation_fire_counts")
-        if not isinstance(operation_fire_counts, dict) or not operation_fire_counts:
+        if not isinstance(operation_fire_counts, dict):
+            diagnostics.append("DFG simulator report needs operation_fire_counts object")
+        elif data.get("status") != "unsupported" and not operation_fire_counts:
             diagnostics.append("DFG simulator report needs non-empty operation_fire_counts")
         elif not all(
             isinstance(name, str) and isinstance(count, int) and count >= 0
             for name, count in operation_fire_counts.items()
         ):
             diagnostics.append("DFG simulator report operation_fire_counts must map op names to non-negative integers")
+        report_diagnostics = data.get("diagnostics")
+        if data.get("status") == "unsupported" and (
+            not isinstance(report_diagnostics, list) or not report_diagnostics
+        ):
+            diagnostics.append("DFG simulator unsupported report needs diagnostics")
         if isinstance(cycles, int) and isinstance(event_count, int) and cycles < event_count:
             diagnostics.append("DFG simulator optimistic_cycles must not be below event_count")
         if is_workload_graph_set_aggregate(data):

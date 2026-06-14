@@ -117,6 +117,53 @@ def assert_generator_blocks_missing_input_status(
         raise AssertionError(f"{label} comparison should diagnose missing status: {data}")
 
 
+def assert_generator_blocks_nonpass_dfg_state(
+    repo: Path,
+    out_dir: Path,
+    dfg_data: dict[str, object],
+    cgra_data: dict[str, object],
+    *,
+    label: str,
+) -> None:
+    dfg_report = out_dir / f"{label}-dfg-sim-report.json"
+    cgra_report = out_dir / f"{label}-cgra-sim-report.json"
+    comparison_report = out_dir / f"{label}-sim-comparison-report.json"
+    write_json(dfg_report, dfg_data)
+    write_json(cgra_report, cgra_data)
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "bash",
+            "test/simulator/run_sim_comparison_report.sh",
+            "--dfg-report",
+            str(dfg_report),
+            "--cgra-report",
+            str(cgra_report),
+            "--output",
+            str(comparison_report),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{label} comparison unexpectedly passed")
+    data = json.loads(comparison_report.read_text())
+    if data.get("status") != "blocked":
+        raise AssertionError(f"{label} comparison should be blocked: {data}")
+    if data.get("functional_comparison_status") != "blocked":
+        raise AssertionError(f"{label} functional comparison should be blocked: {data}")
+    if data.get("memory_comparison_status") != "blocked":
+        raise AssertionError(f"{label} memory comparison should be blocked: {data}")
+    if data.get("performance_comparison_status") != "blocked":
+        raise AssertionError(f"{label} performance comparison should be blocked: {data}")
+    diagnostics = data.get("diagnostics", [])
+    if not any("DFG-sim report status unsupported" in str(item) for item in diagnostics):
+        raise AssertionError(f"{label} should diagnose unsupported DFG-sim status: {data}")
+    if "skipped" in {
+        data.get("functional_comparison_status"),
+        data.get("memory_comparison_status"),
+    }:
+        raise AssertionError(f"{label} comparison must not silently skip final-state checks: {data}")
+
+
 def assert_comparison_audit_fails(
     repo: Path,
     out_dir: Path,
@@ -505,6 +552,36 @@ def main() -> int:
             dfg_data,
             missing_status_cgra,
             label="missing-cgra-status",
+        )
+
+        unsupported_dfg = json.loads(json.dumps(dfg_data))
+        unsupported_dfg["workload"] = "unsupported_vecsum"
+        unsupported_dfg["status"] = "unsupported"
+        unsupported_dfg["optimistic_cycles"] = 0
+        unsupported_dfg["event_count"] = 0
+        unsupported_dfg["wavefront_steps"] = 0
+        unsupported_dfg["dynamic_work_items"] = 0
+        unsupported_dfg["operation_fire_counts"] = {}
+        unsupported_dfg["final_outputs"] = []
+        unsupported_dfg["final_memory_state"] = {}
+        unsupported_dfg["diagnostics"] = ["unsupported op: scf.for"]
+        unsupported_cgra = json.loads(json.dumps(pass_like_cgra_data))
+        unsupported_cgra["workload"] = "unsupported_vecsum"
+        unsupported_cgra["status"] = "blocked"
+        unsupported_cgra["hardware_aware_cycles"] = 0
+        unsupported_cgra["performance_delta_cycles"] = 0
+        unsupported_cgra["final_outputs"] = []
+        unsupported_cgra["final_memory_state"] = {}
+        unsupported_cgra["functional_state_source"] = "carried_from_dfg_sim_report"
+        unsupported_cgra["diagnostics"] = [
+            "DFG-sim report status unsupported blocks CGRA-sim: unsupported op: scf.for"
+        ]
+        assert_generator_blocks_nonpass_dfg_state(
+            repo,
+            out_dir,
+            unsupported_dfg,
+            unsupported_cgra,
+            label="unsupported-dfg-state",
         )
 
         mismatched_runtime_input = out_dir / "mismatch-runtime-input-sim-comparison-report.json"

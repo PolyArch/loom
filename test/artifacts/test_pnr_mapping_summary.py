@@ -308,6 +308,84 @@ def main() -> int:
         if len(set(graph_mapping_ids.values())) != len(graph_mapping_ids):
             raise AssertionError(f"multi-graph workload mapping ids collided: {graph_mapping_ids}")
 
+        unsupported_mlir = out_dir / "unsupported-loop.mlir"
+        unsupported_mlir.write_text(
+            """module {
+  dataflow.graph.func private @unsupported_loop(%ctrl: none,
+                                                %lower: index,
+                                                %upper: index,
+                                                %step: index)
+      -> (none) {
+    scf.for %i = %lower to %upper step %step {
+    }
+    dataflow.graph.return %ctrl : none
+  }
+}
+"""
+        )
+        unsupported_csv = out_dir / "unsupported-loop.mapping.csv"
+        unsupported_artifact = out_dir / "unsupported-loop.mapping.json"
+        unsupported_rows = artifact_test_common.run_csv_summary(
+            repo,
+            "test/pnr/run_mapping_summary.sh",
+            unsupported_csv,
+            HEADER,
+            "--dfg-mlir",
+            str(unsupported_mlir),
+            "--graph",
+            "unsupported_loop",
+            "--hardware-mlir",
+            "test/pnr/shared_reduction_adg.mlir",
+            "--hardware",
+            "shared_reduction_adg",
+            "--workload",
+            "unsupported_loop",
+            "--artifact",
+            str(unsupported_artifact),
+            label="PnR mapping summary for unsupported graph op",
+        )
+        if len(unsupported_rows) != 1:
+            raise AssertionError(f"expected one unsupported mapping row, got {unsupported_rows}")
+        unsupported_row = unsupported_rows[0]
+        expected_unsupported_row = {
+            "workload": "unsupported_loop",
+            "hardware": "shared_reduction_adg",
+            "mapping_id": "unsupported_loop__unsupported_loop__shared_reduction_adg",
+            "status": "unsupported",
+        }
+        for key, value in expected_unsupported_row.items():
+            if unsupported_row[key] != value:
+                raise AssertionError(f"unsupported mapping {key}={unsupported_row[key]!r}, expected {value!r}")
+        for column in ("placed_records", "routed_edges", "unrouted_edges", "unplaced_records"):
+            if unsupported_row[column] != "":
+                raise AssertionError(f"unsupported CSV row must not fake {column}: {unsupported_row}")
+        if "scf.for" not in unsupported_row.get("diagnostic", ""):
+            raise AssertionError(f"unsupported CSV row should name scf.for: {unsupported_row}")
+        unsupported_data = json.loads(unsupported_artifact.read_text())
+        expected_unsupported_json = {
+            "kind": "pnr_mapping",
+            "workload": "unsupported_loop",
+            "graph": "unsupported_loop",
+            "hardware": "shared_reduction_adg",
+            "mapping_id": "unsupported_loop__unsupported_loop__shared_reduction_adg",
+            "placed_records": 0,
+            "routed_edges": 0,
+            "unrouted_edges": 0,
+            "unplaced_records": 0,
+            "config_records": 0,
+            "status": "unsupported",
+        }
+        for key, value in expected_unsupported_json.items():
+            if unsupported_data.get(key) != value:
+                raise AssertionError(
+                    f"unsupported mapping artifact {key}={unsupported_data.get(key)!r}, expected {value!r}"
+                )
+        for key in ("placements", "routes", "unrouted_edge_details", "config_bitstream"):
+            if unsupported_data.get(key) != []:
+                raise AssertionError(f"unsupported mapping artifact should leave {key} empty: {unsupported_data}")
+        if not any("scf.for" in str(item) for item in unsupported_data.get("diagnostics", [])):
+            raise AssertionError(f"unsupported mapping artifact should diagnose scf.for: {unsupported_data}")
+
         failed_unrouted_component = copy.deepcopy(data)
         failed_unrouted_component["status"] = "fail"
         failed_unrouted_component["unrouted_edges"] = 1

@@ -1007,19 +1007,25 @@ requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
   return value->str();
 }
 
-llvm::Error requireKindAndPass(const llvm::json::Object &object,
-                               llvm::StringRef expectedKind,
-                               llvm::StringRef path) {
+llvm::Expected<std::string>
+requireKindAndStatus(const llvm::json::Object &object,
+                     llvm::StringRef expectedKind, llvm::StringRef path) {
   std::optional<llvm::StringRef> kind = object.getString("kind");
   if (!kind || *kind != expectedKind)
     return llvm::createStringError(std::errc::invalid_argument,
                                    "%s has wrong kind", path.str().c_str());
   std::optional<llvm::StringRef> status = object.getString("status");
-  if (!status || *status != "pass")
+  if (!status || status->empty())
     return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s is not a pass report",
+                                   "%s lacks string field status",
                                    path.str().c_str());
-  return llvm::Error::success();
+  if (*status != "pass" && *status != "fail" && *status != "unsupported" &&
+      *status != "skipped" && *status != "blocked" &&
+      *status != "not_run")
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "DFG report status %s is not supported",
+                                   status->str().c_str());
+  return status->str();
 }
 
 llvm::Error
@@ -1427,9 +1433,10 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   if (!mappingOrErr)
     return mappingOrErr.takeError();
 
-  if (llvm::Error err = requireKindAndPass(*dfgOrErr, "dfg_sim_report",
-                                           options.dfgReportPath))
-    return std::move(err);
+  auto dfgStatusOrErr =
+      requireKindAndStatus(*dfgOrErr, "dfg_sim_report", options.dfgReportPath);
+  if (!dfgStatusOrErr)
+    return dfgStatusOrErr.takeError();
   std::optional<llvm::StringRef> mappingKind = mappingOrErr->getString("kind");
   if (!mappingKind || *mappingKind != "pnr_mapping")
     return llvm::createStringError(std::errc::invalid_argument,
@@ -1512,6 +1519,40 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     return finalMemoryStateOrErr.takeError();
   report.finalMemoryState = *finalMemoryStateOrErr;
   report.functionalStateSource = "carried_from_dfg_sim_report";
+
+  if (*dfgStatusOrErr != "pass") {
+    auto routeStatsOrErr =
+        collectRouteStats(*mappingOrErr, options.mappingArtifactPath);
+    if (!routeStatsOrErr)
+      return routeStatsOrErr.takeError();
+    report.routedEdges = routeStatsOrErr->routeCount;
+    report.routeSegments = routeStatsOrErr->segmentCount;
+    auto configRecordsOrErr = requireNonNegativeInteger(
+        *mappingOrErr, "config_records", options.mappingArtifactPath);
+    if (!configRecordsOrErr)
+      return configRecordsOrErr.takeError();
+    report.configRecords = *configRecordsOrErr;
+    if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
+      return std::move(err);
+    report.memoryLatencyCycles = 0;
+    report.temporalPenaltyCycles = 0;
+    report.hardwareAwareCycles = report.dfgCycles;
+    report.modeledLowerBoundCycles = report.dfgCycles;
+    report.performanceDeltaCycles = 0;
+    report.status = "blocked";
+    report.diagnostic = "DFG-sim report status ";
+    report.diagnostic += *dfgStatusOrErr;
+    report.diagnostic += " blocks CGRA-sim";
+    if (const llvm::json::Array *diagnostics =
+            dfgOrErr->getArray("diagnostics")) {
+      if (!diagnostics->empty()) {
+        if (std::optional<llvm::StringRef> detail =
+                (*diagnostics)[0].getAsString())
+          report.diagnostic += ": " + detail->str();
+      }
+    }
+    return report;
+  }
 
   if (*mappingStatus != "pass") {
     auto routeStatsOrErr =

@@ -648,12 +648,14 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
         row_data["required_slice_count"] = "1"
 
     final_outputs_present = (
-        valid_string_list(dfg.get("final_outputs"))
+        dfg_status == "pass"
+        and valid_string_list(dfg.get("final_outputs"))
         and valid_string_list(cgra.get("final_outputs"))
         and dfg.get("final_outputs") == cgra.get("final_outputs")
     )
     final_memory_present = (
-        valid_memory_state(dfg.get("final_memory_state"))
+        dfg_status == "pass"
+        and valid_memory_state(dfg.get("final_memory_state"))
         and valid_memory_state(cgra.get("final_memory_state"))
         and dfg.get("final_memory_state") == cgra.get("final_memory_state")
     )

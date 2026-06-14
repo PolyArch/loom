@@ -60,6 +60,9 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     prefix_sum
     cumsum
     prefix_sum_inclusive
+    prefix_sum_exclusive
+    pack_bits
+    unpack_bits
     integrate_trapz
     reduction
     mean

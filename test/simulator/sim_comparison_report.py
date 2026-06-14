@@ -99,6 +99,10 @@ def compare_memory_state(dfg: dict[str, object], cgra: dict[str, object]) -> tup
     return "fail", ["visible memory-state mismatch between DFG-sim and CGRA-sim reports"]
 
 
+def dfg_status_text(status: str) -> str:
+    return status if status else "missing"
+
+
 def build_report(
     dfg_path: Path,
     cgra_path: Path,
@@ -203,6 +207,20 @@ def build_report(
     memory_status, memory_diagnostics = compare_memory_state(dfg, cgra)
     diagnostics.extend(functional_diagnostics)
     diagnostics.extend(memory_diagnostics)
+    if dfg_status != "pass":
+        diagnostic_status = dfg_status_text(dfg_status)
+        if functional_status == "pass":
+            diagnostics.append(
+                "functional output comparison blocked because "
+                f"DFG-sim report status {diagnostic_status} is not pass"
+            )
+            functional_status = "blocked"
+        if memory_status == "pass":
+            diagnostics.append(
+                "visible memory-state comparison blocked because "
+                f"DFG-sim report status {diagnostic_status} is not pass"
+            )
+            memory_status = "blocked"
     if (
         cgra_status == "pass"
         and (functional_status == "pass" or memory_status == "pass")

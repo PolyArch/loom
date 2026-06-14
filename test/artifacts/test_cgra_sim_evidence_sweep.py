@@ -22,6 +22,9 @@ DEFAULT_SWEEP_CASES = (
     "prefix_sum",
     "cumsum",
     "prefix_sum_inclusive",
+    "prefix_sum_exclusive",
+    "pack_bits",
+    "unpack_bits",
     "integrate_trapz",
     "reduction",
     "mean",
@@ -54,6 +57,11 @@ BLOCKED_SWEEP_CASES = (
     "relu",
     "rotate_bits",
     "vecscale",
+)
+DFG_UNSUPPORTED_SWEEP_CASES = (
+    "pack_bits",
+    "prefix_sum_exclusive",
+    "unpack_bits",
 )
 
 HEADER = [
@@ -343,6 +351,40 @@ def assert_structured_blocker_row(
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
 
 
+def assert_dfg_unsupported_row(repo: Path, rows: list[dict[str, str]], case: str) -> None:
+    row = one_row(rows, case)
+    if row["status"] != "blocked":
+        raise AssertionError(f"{case} should stay blocked while DFG-sim is unsupported: {row}")
+    if row["dfg_status"] != "unsupported":
+        raise AssertionError(f"{case} should have dfg_status=unsupported: {row}")
+    if row["mapping_status"] != "unsupported":
+        raise AssertionError(f"{case} should have mapping_status=unsupported: {row}")
+    if row["cgra_status"] != "blocked":
+        raise AssertionError(f"{case} should have cgra_status=blocked: {row}")
+    if row["comparison_status"] != "blocked":
+        raise AssertionError(f"{case} should have comparison_status=blocked: {row}")
+    if row["hardware_system"] != "shared_reduction_adg":
+        raise AssertionError(f"{case} should use the shared reduction hardware blocker: {row}")
+    if row["diagnostic_class"] != "dfg_report_unsupported":
+        raise AssertionError(f"{case} should block first on unsupported DFG-sim evidence: {row}")
+    if row["blocking_prerequisite"] != "dfg_report":
+        raise AssertionError(f"{case} should name dfg_report as the prerequisite: {row}")
+    if row["final_outputs_present"] != "false" or row["final_memory_state_present"] != "false":
+        raise AssertionError(f"{case} should not treat unsupported DFG state as functional evidence: {row}")
+    for artifact_column, fingerprint_column in (
+        ("dfg_report", "dfg_report_fingerprint"),
+        ("mapping_artifact", "mapping_artifact_fingerprint"),
+        ("cgra_report", "cgra_report_fingerprint"),
+        ("comparison_report", "comparison_report_fingerprint"),
+    ):
+        path = repo / row[artifact_column]
+        if not path.is_file():
+            raise AssertionError(f"{case} row references missing artifact {artifact_column}: {row}")
+        actual = artifact_test_common.fingerprint(path)
+        if actual != row[fingerprint_column]:
+            raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit(f"usage: {argv[0]} <repo>")
@@ -388,6 +430,12 @@ def main(argv: list[str]) -> int:
                 "cumsum",
                 "--case",
                 "prefix_sum_inclusive",
+                "--case",
+                "prefix_sum_exclusive",
+                "--case",
+                "pack_bits",
+                "--case",
+                "unpack_bits",
                 "--case",
                 "mean",
                 "--case",
@@ -450,6 +498,11 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
+        for case in DFG_UNSUPPORTED_SWEEP_CASES:
+            assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
+            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
+            assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
+            assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
@@ -460,6 +513,9 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "prefix_sum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "cumsum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "prefix_sum_exclusive", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "pack_bits", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "unpack_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l1", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l2", "shared_reduction_adg")
@@ -536,6 +592,8 @@ def main(argv: list[str]) -> int:
             expected_status = "blocked" if case == "relu" else "fail"
             expected_mapping_status = "blocked" if case == "relu" else "fail"
             assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
+        for case in DFG_UNSUPPORTED_SWEEP_CASES:
+            assert_dfg_unsupported_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"dotproduct should use shared reduction hardware: {dotproduct_row}")

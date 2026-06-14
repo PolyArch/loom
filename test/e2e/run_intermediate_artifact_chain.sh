@@ -74,6 +74,15 @@ case "${CASE}" in
   prefix_sum_inclusive)
     case_graph="g_t_prefix_sum_inclusive_kernel_red_0_0"
     ;;
+  prefix_sum_exclusive)
+    case_graph="g_t_prefix_sum_exclusive_kernel_red_0_0"
+    ;;
+  pack_bits)
+    case_graph="g_t_pack_bits_kernel_red_0_0"
+    ;;
+  unpack_bits)
+    case_graph="g_t_unpack_bits_kernel_red_0_0"
+    ;;
   integrate_trapz)
     case_graph="g_t_integrate_trapz_red_0_0"
     ;;

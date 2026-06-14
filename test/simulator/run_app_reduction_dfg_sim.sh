@@ -698,6 +698,58 @@ case "${CASE}" in
             --arg 6=1
         )
         ;;
+    prefix_sum_exclusive)
+        sim_args+=(
+            --graph g_t_prefix_sum_exclusive_kernel_red_0_0
+            --workload prefix_sum_exclusive
+            --arg 0=none
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --memref 4=1,2,3,4,5,6,7,8
+            --memref 5=0,0,0,0,0,0,0,0
+            --arg 6=0
+        )
+        ;;
+    pack_bits)
+        sim_args+=(
+            --graph g_t_pack_bits_kernel_red_0_0
+            --workload pack_bits
+            --arg 0=none
+            --arg 1=5
+            --arg 2=0
+            --arg 3=32
+            --arg 4=100
+            --arg 5=0
+            --arg 6=1
+            --arg 7=0
+            --memref 8=1,0,1,1,0,1,0,0,1,1,1,0,0,0,1,0,1,0,1,0,1,0,1,0,1,1,0,0,1,0,1,1
+            --arg 9=1
+            --arg 10=0
+            --memref 11=0,0,0,0
+            --arg 12=0
+            --arg 13=1
+        )
+        ;;
+    unpack_bits)
+        sim_args+=(
+            --graph g_t_unpack_bits_kernel_red_0_0
+            --workload unpack_bits
+            --arg 0=none
+            --arg 1=5
+            --arg 2=0
+            --arg 3=32
+            --memref 4=1431655765,252645135,858993459,305419896
+            --arg 5=0
+            --arg 6=0
+            --arg 7=100
+            --arg 8=1
+            --arg 9=1
+            --memref 10=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+            --arg 11=0
+            --arg 12=1
+        )
+        ;;
     integrate_trapz)
         append_ctrl_tokens 8
         append_trapz_memrefs
