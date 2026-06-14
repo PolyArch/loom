@@ -81,6 +81,48 @@ def assert_manifest_projection(json_path: Path, csv_path: Path) -> None:
 
 
 def assert_no_legacy_mode(repo: Path, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stale_synthetic_root = out_dir / "no-legacy-loombench-root"
+    stale_synthetic_root.mkdir()
+    (stale_synthetic_root / "stale_case").mkdir()
+    stale_manifest = out_dir / "loombench-manifest.json"
+    stale_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "loombench_manifest",
+                "csv_projection": "",
+                "case_count": 1,
+                "cases": [
+                    {
+                        "case": "stale_legacy_case",
+                        "source_row": "stale_legacy_case",
+                        "software_root": "stale",
+                        "source_fingerprint": "0" * 64,
+                        "main_source": "main.cpp",
+                        "implementation_sources": [],
+                        "headers": [],
+                        "feature_tags": [],
+                        "import_state": "deferred",
+                        "manifest_case": "",
+                        "oracle": "legacy_reference",
+                        "input_profile": "legacy_default",
+                        "tier_states": {
+                            "source": "blocked",
+                            "raise": "blocked",
+                            "dataflow": "blocked",
+                            "cgra_status": "blocked",
+                        },
+                        "owner": "test",
+                        "reason": "stale sidecar should not be consumed without a legacy root",
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
     run(
         repo,
         [
@@ -94,8 +136,11 @@ def assert_no_legacy_mode(repo: Path, out_dir: Path) -> None:
     loombench_rows = [row for row in rows if row["suite"] == "loombench"]
     if loombench_rows:
         raise AssertionError(f"no-legacy rollup should not emit LoomBench rows: {loombench_rows[:3]}")
-    if (out_dir / "loombench-manifest.json").exists() or (out_dir / "loombench-manifest.csv").exists():
-        raise AssertionError("no-legacy rollup should not emit LoomBench manifest artifacts")
+    if (out_dir / "loombench-manifest.csv").exists():
+        raise AssertionError("no-legacy rollup should not emit LoomBench manifest CSV artifacts")
+    stale_data = json.loads(stale_manifest.read_text())
+    if stale_data.get("cases", [{}])[0].get("case") != "stale_legacy_case":
+        raise AssertionError("no-legacy rollup should not overwrite stale LoomBench manifest sidecar")
 
 
 def write_legacy_case(root: Path, name: str, *, with_header: bool = True) -> None:

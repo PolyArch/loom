@@ -28,6 +28,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=str(ROOT / "temp" / "old_implementation_loom" / "loom" / "tests" / "app"),
     )
     parser.add_argument("--loombench-manifest")
+    parser.add_argument(
+        "--no-legacy-loombench",
+        action="store_true",
+        help="Audit a status rollup that intentionally omits legacy LoomBench rows.",
+    )
     return parser.parse_args(argv)
 
 
@@ -51,7 +56,11 @@ def read_csv_rows(path: Path, diagnostics: list[str]) -> list[dict[str, str]]:
     return rows
 
 
-def expected_rows(legacy_root: Path, loombench_manifest_path: Path | None) -> list[dict[str, str]]:
+def expected_rows(
+    legacy_root: Path,
+    loombench_manifest_path: Path | None,
+    include_legacy_loombench: bool,
+) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     app_rows = cgra_status_summary.app_rows()
     rows.extend(app_rows)
@@ -71,13 +80,14 @@ def expected_rows(legacy_root: Path, loombench_manifest_path: Path | None) -> li
             "externals/cmsis-nn/Source",
         )
     )
-    rows.extend(
-        cgra_status_summary.loombench_rows(
-            legacy_root,
-            loombench_manifest_path,
-            {row["case"]: row for row in app_rows},
+    if include_legacy_loombench:
+        rows.extend(
+            cgra_status_summary.loombench_rows(
+                legacy_root,
+                loombench_manifest_path,
+                {row["case"]: row for row in app_rows},
+            )
         )
-    )
     return rows
 
 
@@ -475,12 +485,15 @@ def validate_json(path: Path, csv_input: Path, rows: list[dict[str, str]], diagn
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.no_legacy_loombench and args.loombench_manifest:
+        raise SystemExit("--no-legacy-loombench cannot be combined with --loombench-manifest")
     diagnostics: list[str] = []
     csv_input = Path(args.input)
     rows = read_csv_rows(csv_input, diagnostics)
     expected = expected_rows(
         Path(args.legacy_loombench_root),
         Path(args.loombench_manifest) if args.loombench_manifest else None,
+        not args.no_legacy_loombench,
     )
     validate_rows(csv_input, rows, diagnostics)
     validate_coverage(rows, expected, diagnostics)

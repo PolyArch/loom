@@ -37,6 +37,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Dedicated LoomBench manifest JSON. Without it, legacy rows remain blocked on manifest reconciliation.",
     )
     parser.add_argument(
+        "--no-legacy-loombench",
+        action="store_true",
+        help="Do not include legacy LoomBench rows in this status rollup.",
+    )
+    parser.add_argument(
         "--sim-evidence-dir",
         help="Directory containing per-workload DFG, mapping, CGRA, and comparison evidence.",
     )
@@ -749,6 +754,8 @@ def write_json(path: Path, csv_output: Path, rows: list[dict[str, str]]) -> None
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.no_legacy_loombench and args.loombench_manifest:
+        raise SystemExit("--no-legacy-loombench cannot be combined with --loombench-manifest")
     legacy_root = Path(args.legacy_loombench_root)
     output = Path(args.output)
     cmsis_dsp_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-dsp", args.cmsis_dsp_dfg_dir)
@@ -781,13 +788,14 @@ def main(argv: list[str]) -> int:
             cmsis_nn_dfg_dir,
         )
     )
-    rows.extend(
-        loombench_rows(
-            legacy_root,
-            Path(args.loombench_manifest) if args.loombench_manifest else None,
-            {row_data["case"]: row_data for row_data in app_status_rows},
+    if not args.no_legacy_loombench:
+        rows.extend(
+            loombench_rows(
+                legacy_root,
+                Path(args.loombench_manifest) if args.loombench_manifest else None,
+                {row_data["case"]: row_data for row_data in app_status_rows},
+            )
         )
-    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     intermediate_artifacts.write_csv_rows("cgra_status", output, rows)

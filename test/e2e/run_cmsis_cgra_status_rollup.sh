@@ -66,10 +66,6 @@ if [[ -z "${OUT_DIR}" ]]; then
 fi
 
 mkdir -p "${OUT_DIR}"
-if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 0 ]]; then
-    LEGACY_LOOMBENCH_ROOT="${OUT_DIR}/no-legacy-loombench-root"
-fi
-
 CMSIS_DSP_DFG_DIR="${OUT_DIR}/cmsis-dsp-dfg"
 CMSIS_NN_DFG_DIR="${OUT_DIR}/cmsis-nn-dfg"
 STATUS_CSV="${OUT_DIR}/cgra-status-summary.csv"
@@ -110,11 +106,14 @@ audit_args=(
     --json-input "${STATUS_JSON}"
 )
 
-summary_args+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
-audit_args+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
 if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then
+    summary_args+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
+    audit_args+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
     summary_args+=(--loombench-manifest "${LOOMBENCH_MANIFEST_JSON}")
     audit_args+=(--loombench-manifest "${LOOMBENCH_MANIFEST_JSON}")
+else
+    summary_args+=(--no-legacy-loombench)
+    audit_args+=(--no-legacy-loombench)
 fi
 if [[ -n "${SIM_EVIDENCE_DIR}" ]]; then
     summary_args+=(--sim-evidence-dir "${SIM_EVIDENCE_DIR}")

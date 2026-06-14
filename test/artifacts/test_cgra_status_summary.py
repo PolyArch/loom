@@ -170,6 +170,19 @@ def write_json(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def write_loombench_manifest(path: Path, cases: list[dict[str, object]]) -> None:
+    write_json(
+        path,
+        {
+            "schema_version": 1,
+            "kind": "loombench_manifest",
+            "csv_projection": "",
+            "case_count": len(cases),
+            "cases": cases,
+        },
+    )
+
+
 def write_sim_evidence_case(
     evidence_dir: Path,
     case: str,
@@ -372,11 +385,23 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
             raise AssertionError(f"missing counts for {suite}: {counts}")
         if suite_counts.get("total") != total:
             raise AssertionError(f"{suite} total={suite_counts.get('total')}, expected {total}")
-        if suite_counts.get("missing_status") != total:
-            raise AssertionError(f"{suite} missing_status should equal total in baseline: {suite_counts}")
-        for key in ("pass", "fail", "blocked", "unsupported"):
-            if suite_counts.get(key) != 0:
-                raise AssertionError(f"{suite} {key} should be zero in baseline: {suite_counts}")
+        if suite == "loombench":
+            expected = {
+                "total": total,
+                "pass": 0,
+                "fail": 0,
+                "blocked": 0,
+                "unsupported": total,
+                "missing_status": 0,
+            }
+            if suite_counts != expected:
+                raise AssertionError(f"LoomBench baseline should consume generated manifest: {suite_counts}")
+        else:
+            if suite_counts.get("missing_status") != total:
+                raise AssertionError(f"{suite} missing_status should equal total in baseline: {suite_counts}")
+            for key in ("pass", "fail", "blocked", "unsupported"):
+                if suite_counts.get(key) != 0:
+                    raise AssertionError(f"{suite} {key} should be zero in baseline: {suite_counts}")
 
 
 def main() -> int:
@@ -429,8 +454,83 @@ def main() -> int:
             raise AssertionError(f"unexpected CMSIS-NN root: {cmsis_nn}")
 
         loombench = one_row(rows, "loombench", "breadth_first_search")
-        if loombench["blocking_prerequisite"] != "loombench_manifest":
-            raise AssertionError(f"LoomBench legacy rows should require manifest reconciliation: {loombench}")
+        if (
+            loombench["status"] != "unsupported"
+            or loombench["diagnostic_class"] != "loombench_import_excluded"
+            or loombench["blocking_prerequisite"] != "legacy_source"
+        ):
+            raise AssertionError(f"LoomBench legacy rows should consume generated manifest: {loombench}")
+
+        explicit_manifest = out_dir / "explicit-loombench-manifest.json"
+        write_loombench_manifest(
+            explicit_manifest,
+            [
+                {
+                    "case": "breadth_first_search",
+                    "source_row": "breadth_first_search",
+                    "software_root": "synthetic-explicit-root/breadth_first_search",
+                    "source_fingerprint": "0" * 64,
+                    "main_source": "main.cpp",
+                    "implementation_sources": [],
+                    "headers": [],
+                    "feature_tags": [],
+                    "import_state": "deferred",
+                    "manifest_case": "",
+                    "oracle": "legacy_reference",
+                    "input_profile": "legacy_default",
+                    "tier_states": {
+                        "source": "blocked",
+                        "raise": "blocked",
+                        "dataflow": "blocked",
+                        "cgra_status": "blocked",
+                    },
+                    "owner": "test",
+                    "reason": "explicit manifest should win",
+                }
+            ],
+        )
+        explicit_csv = out_dir / "explicit-form-cgra-status-summary.csv"
+        explicit_json = out_dir / "explicit-form-cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(explicit_csv),
+                "--json-output",
+                str(explicit_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                f"--loombench-manifest={explicit_manifest}",
+            ],
+        )
+        explicit_rows = read_rows(explicit_csv)
+        explicit_loombench = [row for row in explicit_rows if row["suite"] == "loombench"]
+        if len(explicit_loombench) != 1:
+            raise AssertionError(f"explicit manifest should define LoomBench row coverage: {explicit_loombench[:3]}")
+        explicit_bfs = explicit_loombench[0]
+        if (
+            explicit_bfs["case"] != "breadth_first_search"
+            or explicit_bfs["status"] != "blocked"
+            or explicit_bfs["diagnostic_class"] != "loombench_import_deferred"
+            or explicit_bfs["diagnostic"] != "explicit manifest should win"
+        ):
+            raise AssertionError(f"explicit --loombench-manifest= form should not be overridden: {explicit_bfs}")
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(explicit_csv),
+                "--json-input",
+                str(explicit_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                f"--loombench-manifest={explicit_manifest}",
+            ],
+        )
 
         run(
             repo,
