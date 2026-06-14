@@ -86,6 +86,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "u32[12];u32[12]",
         "alignment_bytes": 4,
     },
+    "merge": {
+        "byte_size": 88,
+        "element_layout": "f32[5];f32[6];f32[11]",
+        "alignment_bytes": 4,
+    },
     "downsample": {
         "byte_size": 80,
         "element_layout": "f32[16];f32[4]",

@@ -175,6 +175,15 @@ append_compact_memrefs() {
     append_constant_memref "${output_index}" 12 "0"
 }
 
+append_merge_memrefs() {
+    local lhs_index="$1"
+    local rhs_index="$2"
+    local output_index="$3"
+    sim_args+=(--memref "${lhs_index}=1.000000e+00,4.000000e+00,9.000000e+00,1.300000e+01,2.100000e+01")
+    sim_args+=(--memref "${rhs_index}=2.000000e+00,3.000000e+00,1.000000e+01,1.400000e+01,2.000000e+01,2.200000e+01")
+    append_constant_memref "${output_index}" 11 "0.000000e+00"
+}
+
 append_sbox_lookup_memrefs() {
     local input_index="$1"
     local table_index="$2"
@@ -1081,6 +1090,24 @@ case "${CASE}" in
         sim_args+=(
             --graph g_t_main_1_0
             --workload hash_mix
+        )
+        ;;
+    merge)
+        append_ctrl_tokens 1
+        append_merge_memrefs 7 8 10
+        sim_args+=(
+            --graph g_t_merge_red_0_0
+            --workload merge
+            --arg 1=0
+            --arg 2=11
+            --arg 3=1
+            --arg 4=5
+            --arg 5=0
+            --arg 6=0
+            --arg 9=true
+            --arg 11=1
+            --arg 12=0
+            --arg 13=0
         )
         ;;
     xor_block)

@@ -77,6 +77,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     compare_swap
     compact
     hash_mix
+    merge
     spmv
     convolve_1d
     conv1d

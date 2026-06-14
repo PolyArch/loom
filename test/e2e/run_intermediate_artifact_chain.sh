@@ -125,6 +125,9 @@ case "${CASE}" in
   hash_mix)
     case_graph="g_t_main_1_0"
     ;;
+  merge)
+    case_graph="g_t_merge_red_0_0"
+    ;;
   spmv)
     case_graph="g_t_spmv_kernel_red_0_0"
     ;;

@@ -39,6 +39,7 @@ DEFAULT_SWEEP_CASES = (
     "compare_swap",
     "compact",
     "hash_mix",
+    "merge",
     "spmv",
     "convolve_1d",
     "conv1d",
@@ -79,6 +80,7 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "crc32",
     "delta_encode",
     "fir_filter",
+    "merge",
     "pack_bits",
     "prefix_sum_exclusive",
     "unpack_bits",
@@ -534,6 +536,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "hash_mix",
                 "--case",
+                "merge",
+                "--case",
                 "prefix_sum",
                 "--case",
                 "cumsum",
@@ -655,7 +659,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
-        for case in ("autocorrelation", "compact", "convolve_1d_same", "crc32", "fir_filter"):
+        for case in ("autocorrelation", "compact", "convolve_1d_same", "crc32", "fir_filter", "merge"):
             assert_unsupported_operation(evidence_dir, case, "scf.for")
         assert_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
         assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
@@ -704,6 +708,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
@@ -836,9 +841,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 9,
-            "blocked": 11,
+            "blocked": 12,
             "unsupported": 0,
-            "missing_status": 65,
+            "missing_status": 64,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
