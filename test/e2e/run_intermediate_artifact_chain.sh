@@ -53,6 +53,9 @@ case "${CASE}" in
   vecsum)
     case_graph="g_t_vecsum_red_0_0"
     ;;
+  vecsum-while)
+    case_graph="g_t_vecsum_while_kernel_red_0_0"
+    ;;
   dotproduct)
     case_graph="g_t_dotproduct_red_0_0"
     ;;

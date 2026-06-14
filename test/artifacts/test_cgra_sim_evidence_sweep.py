@@ -15,6 +15,7 @@ import artifact_test_common
 
 DEFAULT_SWEEP_CASES = (
     "vecsum",
+    "vecsum-while",
     "dotproduct",
     "axpy",
     "bit_reverse",
@@ -403,6 +404,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "vecsum",
                 "--case",
+                "vecsum-while",
+                "--case",
                 "reduction",
                 "--case",
                 "dotproduct",
@@ -468,6 +471,7 @@ def main(argv: list[str]) -> int:
         )
         for case in (
             "vecsum",
+            "vecsum-while",
             "reduction",
             "dotproduct",
             "spmv",
@@ -504,6 +508,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
@@ -537,6 +542,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
         assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
+        assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
@@ -567,6 +573,7 @@ def main(argv: list[str]) -> int:
         rows = read_rows(status_csv)
         for case in (
             "vecsum",
+            "vecsum-while",
             "reduction",
             "dotproduct",
             "spmv",

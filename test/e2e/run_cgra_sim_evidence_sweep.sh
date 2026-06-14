@@ -53,6 +53,7 @@ fi
 if [[ ${#CASES[@]} -eq 0 ]]; then
   CASES=(
     vecsum
+    vecsum-while
     dotproduct
     axpy
     bit_reverse

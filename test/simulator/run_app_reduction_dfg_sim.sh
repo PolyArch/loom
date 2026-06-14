@@ -593,6 +593,18 @@ case "${CASE}" in
             --arg 5=100
         )
         ;;
+    vecsum-while)
+        append_ctrl_tokens 16
+        append_linear_memref 4 16 1 "%d"
+        sim_args+=(
+            --graph g_t_vecsum_while_kernel_red_0_0
+            --workload vecsum-while
+            --arg 1=0
+            --arg 2=16
+            --arg 3=1
+            --arg 5=0
+        )
+        ;;
     reduction)
         append_ctrl_tokens 128
         append_linear_memref 4 128 1 "%d"
