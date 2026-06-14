@@ -91,6 +91,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "f32[5];f32[6];f32[11]",
         "alignment_bytes": 4,
     },
+    "partition": {
+        "byte_size": 84,
+        "element_layout": "f32[10];f32[10];u32[1]",
+        "alignment_bytes": 4,
+    },
     "downsample": {
         "byte_size": 80,
         "element_layout": "f32[16];f32[4]",

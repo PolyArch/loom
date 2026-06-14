@@ -536,6 +536,46 @@ variance_input_values() {
     printf "%s" "${values}"
 }
 
+partition_input_values() {
+    printf "3.000000e+00,7.000000e+00,1.000000e+00,9.000000e+00,5.000000e+00,2.000000e+00,8.000000e+00,4.000000e+00,6.000000e+00,1.000000e+01"
+}
+
+partition_upper_output_values() {
+    printf "3.000000e+00,1.000000e+00,5.000000e+00,2.000000e+00,4.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00"
+}
+
+configure_partition_lower_args() {
+    append_ctrl_tokens 10
+    append_raw_memref 4 "$(partition_input_values)"
+    append_constant_memref 6 10 "0.000000e+00"
+    sim_args+=(
+        --graph g_t_partition_red_0_0
+        --workload partition
+        --arg 1=0
+        --arg 2=10
+        --arg 3=1
+        --arg 5=5.500000e+00
+        --arg 7=1
+        --arg 8=0
+    )
+}
+
+configure_partition_upper_args() {
+    append_ctrl_tokens 10
+    append_raw_memref 4 "$(partition_input_values)"
+    append_raw_memref 6 "$(partition_upper_output_values)"
+    sim_args+=(
+        --graph g_t_partition_red_1_0
+        --workload partition
+        --arg 1=0
+        --arg 2=10
+        --arg 3=1
+        --arg 5=5.500000e+00
+        --arg 7=1
+        --arg 8=5
+    )
+}
+
 configure_relu_core_args() {
     append_ctrl_tokens 32
     append_raw_memref 1 "$(relu_input_values)"
@@ -1142,6 +1182,9 @@ case "${CASE}" in
     relu)
         configure_relu_core_args
         ;;
+    partition)
+        configure_partition_lower_args
+        ;;
     variance)
         configure_variance_mean_args
         ;;
@@ -1258,6 +1301,14 @@ if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "variance" ]]; then
     configure_variance_var_args
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${variance_report}"
     extra_reports+=("${variance_report}")
+fi
+
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "partition" ]]; then
+    upper_report="${REPORT_JSON%.report.json}.upper.report.json"
+    sim_args=()
+    configure_partition_upper_args
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${upper_report}"
+    extra_reports+=("${upper_report}")
 fi
 
 declare -a summary_reports=()

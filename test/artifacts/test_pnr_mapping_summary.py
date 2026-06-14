@@ -447,6 +447,170 @@ def main() -> int:
         if aggregate_mapping.get("status") == "pass":
             raise AssertionError(f"aggregate mapping should not pass failed components: {aggregate_mapping}")
 
+        unsupported_component_mapping = copy.deepcopy(unsupported_data)
+        unsupported_aggregate_mapping = aggregate.aggregate_mapping(
+            argparse.Namespace(
+                workload="unsupported_loop",
+                hardware="shared_reduction_adg",
+                graph="workload_graph_set",
+                mapping_id="unsupported_loop__workload_graph_set__shared_reduction_adg",
+            ),
+            [unsupported_artifact],
+            [unsupported_component_mapping],
+        )
+        if unsupported_aggregate_mapping.get("status") != "unsupported":
+            raise AssertionError(
+                f"aggregate mapping should preserve unsupported components: {unsupported_aggregate_mapping}"
+            )
+        unsupported_dfg_path = out_dir / "unsupported-loop.dfg.report.json"
+        unsupported_dfg_report = {
+            "schema_version": 1,
+            "kind": "dfg_sim_report",
+            "workload": "unsupported_loop",
+            "graph": "unsupported_loop",
+            "status": "unsupported",
+            "metric_definition": "optimistic_pipeline_latency_throughput_sum",
+            "operation_semantics_source": "loom.sim.operation_semantics.v1",
+            "operation_cost_model_source": "loom.sim.operation_cost.v1",
+            "optimistic_cycles": 0,
+            "wavefront_steps": 0,
+            "event_count": 0,
+            "dynamic_work_items": 0,
+            "operation_fire_counts": {},
+            "final_outputs": [],
+            "final_memory_state": {},
+            "diagnostics": ["unsupported op: scf.for"],
+        }
+        unsupported_dfg_path.write_text(json.dumps(unsupported_dfg_report, indent=2, sort_keys=True) + "\n")
+        unsupported_aggregate_dfg = aggregate.aggregate_dfg(
+            argparse.Namespace(
+                workload="unsupported_loop",
+                hardware="shared_reduction_adg",
+                graph="workload_graph_set",
+                mapping_id="unsupported_loop__workload_graph_set__shared_reduction_adg",
+            ),
+            [unsupported_dfg_path],
+            [unsupported_dfg_report],
+        )
+        if unsupported_aggregate_dfg.get("status") != "unsupported":
+            raise AssertionError(f"aggregate DFG should preserve unsupported components: {unsupported_aggregate_dfg}")
+        if "unsupported op: scf.for" not in unsupported_aggregate_dfg.get("diagnostics", []):
+            raise AssertionError(f"aggregate DFG should retain unsupported diagnostics: {unsupported_aggregate_dfg}")
+        unsupported_cgra_report = {
+            "schema_version": 1,
+            "kind": "cgra_sim_report",
+            "workload": "unsupported_loop",
+            "graph": "unsupported_loop",
+            "hardware": "shared_reduction_adg",
+            "hardware_artifact": "shared_reduction_adg",
+            "mapping_id": unsupported_component_mapping["mapping_id"],
+            "status": "blocked",
+            "fidelity_level": "hardware_mapping_estimate",
+            "metric_definition": "hardware_aware_latency",
+            "operation_semantics_source": "loom.sim.operation_semantics.v1",
+            "operation_cost_model_source": "loom.sim.operation_cost.v1",
+            "hardware_bound_classification": "unsupported_scope",
+            "dfg_cycles": 0,
+            "hardware_aware_cycles": 0,
+            "route_latency_cycles": 0,
+            "memory_latency_cycles": 0,
+            "temporal_penalty_cycles": 0,
+            "cycle_breakdown": [],
+            "unmodeled_constraints": ["unsupported op: scf.for"],
+            "final_outputs": [],
+            "final_memory_state": {},
+            "spatial_placements": 0,
+            "temporal_placements": 0,
+            "diagnostics": ["DFG-sim report status unsupported blocks CGRA-sim: unsupported op: scf.for"],
+        }
+        aggregate.validate_components(
+            argparse.Namespace(workload="unsupported_loop", hardware="shared_reduction_adg"),
+            [unsupported_dfg_report],
+            [unsupported_component_mapping],
+            [unsupported_cgra_report],
+        )
+        for blocked_status in ("blocked", "fail"):
+            blocked_dfg_path = out_dir / f"{blocked_status}-loop.dfg.report.json"
+            blocked_dfg_report = copy.deepcopy(unsupported_dfg_report)
+            blocked_dfg_report["graph"] = f"{blocked_status}_loop"
+            blocked_dfg_report["status"] = blocked_status
+            blocked_dfg_report["diagnostics"] = [f"synthetic DFG {blocked_status} component"]
+            blocked_dfg_path.write_text(json.dumps(blocked_dfg_report, indent=2, sort_keys=True) + "\n")
+            blocked_mapping = copy.deepcopy(unsupported_component_mapping)
+            blocked_mapping["graph"] = blocked_dfg_report["graph"]
+            blocked_mapping["mapping_id"] = (
+                f"unsupported_loop__{blocked_dfg_report['graph']}__shared_reduction_adg"
+            )
+            blocked_mapping["status"] = "blocked"
+            blocked_mapping["diagnostics"] = [f"synthetic mapping for DFG {blocked_status} component"]
+            blocked_cgra_report = copy.deepcopy(unsupported_cgra_report)
+            blocked_cgra_report["graph"] = blocked_dfg_report["graph"]
+            blocked_cgra_report["mapping_id"] = blocked_mapping["mapping_id"]
+            blocked_cgra_report["diagnostics"] = [f"synthetic CGRA for DFG {blocked_status} component"]
+            aggregate.validate_components(
+                argparse.Namespace(workload="unsupported_loop", hardware="shared_reduction_adg"),
+                [blocked_dfg_report],
+                [blocked_mapping],
+                [blocked_cgra_report],
+            )
+            blocked_aggregate_dfg = aggregate.aggregate_dfg(
+                argparse.Namespace(
+                    workload="unsupported_loop",
+                    hardware="shared_reduction_adg",
+                    graph="workload_graph_set",
+                    mapping_id="unsupported_loop__workload_graph_set__shared_reduction_adg",
+                ),
+                [blocked_dfg_path],
+                [blocked_dfg_report],
+            )
+            if blocked_aggregate_dfg.get("status") != "blocked":
+                raise AssertionError(
+                    f"aggregate DFG should collapse {blocked_status} components to blocked: "
+                    f"{blocked_aggregate_dfg}"
+                )
+            diagnostics = blocked_aggregate_dfg.get("diagnostics", [])
+            if blocked_status not in ",".join(str(item) for item in diagnostics):
+                raise AssertionError(
+                    f"aggregate DFG should retain {blocked_status} component status: {blocked_aggregate_dfg}"
+                )
+            if f"synthetic DFG {blocked_status} component" not in diagnostics:
+                raise AssertionError(
+                    f"aggregate DFG should retain {blocked_status} component diagnostic: {blocked_aggregate_dfg}"
+                )
+        pass_dfg_path = out_dir / "passing-loop.dfg.report.json"
+        pass_dfg_report = copy.deepcopy(unsupported_dfg_report)
+        pass_dfg_report["graph"] = "passing_loop"
+        pass_dfg_report["status"] = "pass"
+        pass_dfg_report["optimistic_cycles"] = 1
+        pass_dfg_report["wavefront_steps"] = 1
+        pass_dfg_report["event_count"] = 1
+        pass_dfg_report["dynamic_work_items"] = 1
+        pass_dfg_report["operation_fire_counts"] = {"arith.addi": 1}
+        pass_dfg_report["diagnostics"] = []
+        pass_dfg_path.write_text(json.dumps(pass_dfg_report, indent=2, sort_keys=True) + "\n")
+        fabricated_blocked_dfg = aggregate.aggregate_dfg(
+            argparse.Namespace(
+                workload="unsupported_loop",
+                hardware="shared_reduction_adg",
+                graph="workload_graph_set",
+                mapping_id="unsupported_loop__workload_graph_set__shared_reduction_adg",
+            ),
+            [pass_dfg_path],
+            [pass_dfg_report],
+        )
+        fabricated_blocked_dfg["status"] = "blocked"
+        fabricated_blocked_dfg["diagnostics"] = ["fabricated blocked aggregate with passing components"]
+        fabricated_blocked_dfg_path = out_dir / "fabricated-blocked-dfg-report.json"
+        fabricated_blocked_dfg_path.write_text(
+            json.dumps(fabricated_blocked_dfg, indent=2, sort_keys=True) + "\n"
+        )
+        expect_audit_failure(
+            repo,
+            fabricated_blocked_dfg_path,
+            out_dir / "fabricated-blocked-dfg-audit.json",
+            "DFG simulator aggregate blocked status requires non-passing components",
+        )
+
         punctuation_mlir = out_dir / "mapping-punctuation.mlir"
         punctuation_mlir.write_text(
             """module {

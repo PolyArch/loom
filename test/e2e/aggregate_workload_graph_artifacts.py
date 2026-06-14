@@ -18,6 +18,9 @@ sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 import intermediate_artifacts  # noqa: E402
 
 
+AGGREGATABLE_DFG_COMPONENT_STATUSES = {"pass", "unsupported", "blocked", "fail"}
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workload", required=True)
@@ -107,6 +110,36 @@ def unique_strings(items: list[dict[str, Any]], key: str) -> list[str]:
     return sorted(values)
 
 
+def component_statuses(items: list[dict[str, Any]]) -> list[str]:
+    statuses: list[str] = []
+    for item in items:
+        status = item.get("status")
+        require(isinstance(status, str) and status, "component artifact lacks status")
+        statuses.append(status)
+    return statuses
+
+
+def aggregate_component_status(items: list[dict[str, Any]]) -> str:
+    statuses = component_statuses(items)
+    if all(status == "pass" for status in statuses):
+        return "pass"
+    if any(status == "unsupported" for status in statuses):
+        return "unsupported"
+    return "blocked"
+
+
+def component_diagnostics(items: list[dict[str, Any]]) -> list[str]:
+    diagnostics: set[str] = set()
+    for item in items:
+        raw = item.get("diagnostics")
+        if not isinstance(raw, list):
+            continue
+        for diagnostic in raw:
+            if isinstance(diagnostic, str) and diagnostic:
+                diagnostics.add(diagnostic)
+    return sorted(diagnostics)
+
+
 def merge_records(
     items: list[dict[str, Any]],
     key: str,
@@ -153,6 +186,14 @@ def aggregate_dfg(
     graphs = [str(report["graph"]) for report in dfg_reports]
     final_outputs = merge_final_outputs(dfg_reports)
     final_memory_state = merge_final_memory_state(dfg_reports, graphs)
+    status = aggregate_component_status(dfg_reports)
+    diagnostics = ["derived workload graph-set DFG report from component DFG simulator reports"]
+    if status != "pass":
+        diagnostics.append(
+            "one or more component DFG simulator reports are not passing: "
+            + ",".join(component_statuses(dfg_reports))
+        )
+        diagnostics.extend(component_diagnostics(dfg_reports))
     return {
         "schema_version": 1,
         "kind": "dfg_sim_report",
@@ -162,7 +203,7 @@ def aggregate_dfg(
         "component_graphs": graphs,
         "component_dfg_sim_report_identities": component_identity_list(dfg_paths),
         "input_artifact_fingerprints": component_fingerprint_map(dfg_paths),
-        "status": "pass",
+        "status": status,
         "metric_definition": same_string(dfg_reports, "metric_definition"),
         "operation_semantics_source": same_string(dfg_reports, "operation_semantics_source"),
         "operation_cost_model_source": same_string(dfg_reports, "operation_cost_model_source"),
@@ -173,7 +214,7 @@ def aggregate_dfg(
         "operation_fire_counts": merge_counts(dfg_reports, "operation_fire_counts"),
         "final_outputs": final_outputs,
         "final_memory_state": final_memory_state,
-        "diagnostics": ["derived workload graph-set DFG report from component DFG simulator reports"],
+        "diagnostics": diagnostics,
     }
 
 
@@ -215,7 +256,7 @@ def aggregate_mapping(
 ) -> dict[str, Any]:
     mapping_ids = [str(artifact["mapping_id"]) for artifact in mapping_artifacts]
     graphs = [str(artifact["graph"]) for artifact in mapping_artifacts]
-    component_statuses = [str(artifact.get("status", "")) for artifact in mapping_artifacts]
+    statuses = component_statuses(mapping_artifacts)
     placed_records = sum_int(mapping_artifacts, "placed_records")
     routed_edges = sum_int(mapping_artifacts, "routed_edges")
     unplaced_records = sum_int(mapping_artifacts, "unplaced_records")
@@ -225,14 +266,20 @@ def aggregate_mapping(
         intermediate_artifacts.route_segment_count(artifact.get("routes", []))
         for artifact in mapping_artifacts
     )
-    components_pass = all(status == "pass" for status in component_statuses)
-    status = "pass" if components_pass and unplaced_records == 0 and unrouted_edges == 0 else "blocked"
+    components_pass = all(status == "pass" for status in statuses)
+    if components_pass and unplaced_records == 0 and unrouted_edges == 0:
+        status = "pass"
+    elif any(component_status == "unsupported" for component_status in statuses):
+        status = "unsupported"
+    else:
+        status = "blocked"
     diagnostics = ["derived workload graph-set mapping artifact from component PnR mapping artifacts"]
     if not components_pass:
         diagnostics.append(
             "one or more component mapping artifacts are not passing: "
-            + ",".join(component_statuses)
+            + ",".join(statuses)
         )
+        diagnostics.extend(component_diagnostics(mapping_artifacts))
     return {
         "schema_version": 1,
         "kind": "pnr_mapping",
@@ -399,7 +446,10 @@ def validate_components(
     require(len(dfg_reports) > 0, "at least one component graph is required")
     for index, report in enumerate(dfg_reports):
         require(report.get("kind") == "dfg_sim_report", "DFG component has wrong kind")
-        require(report.get("status") == "pass", "DFG component is not passing")
+        require(
+            report.get("status") in AGGREGATABLE_DFG_COMPONENT_STATUSES,
+            "DFG component status cannot be aggregated",
+        )
         require(report.get("workload") == args.workload, "DFG component workload mismatch")
         graph = report.get("graph")
         require(isinstance(graph, str) and graph, "DFG component lacks graph")

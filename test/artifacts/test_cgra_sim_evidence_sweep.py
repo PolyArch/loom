@@ -29,6 +29,7 @@ DEFAULT_SWEEP_CASES = (
     "prefix_sum_inclusive",
     "prefix_sum_exclusive",
     "pack_bits",
+    "partition",
     "unpack_bits",
     "integrate_trapz",
     "reduction",
@@ -82,6 +83,7 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "fir_filter",
     "merge",
     "pack_bits",
+    "partition",
     "prefix_sum_exclusive",
     "unpack_bits",
 )
@@ -548,6 +550,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "pack_bits",
                 "--case",
+                "partition",
+                "--case",
                 "unpack_bits",
                 "--case",
                 "mean",
@@ -659,7 +663,15 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
-        for case in ("autocorrelation", "compact", "convolve_1d_same", "crc32", "fir_filter", "merge"):
+        for case in (
+            "autocorrelation",
+            "compact",
+            "convolve_1d_same",
+            "crc32",
+            "fir_filter",
+            "merge",
+            "partition",
+        ):
             assert_unsupported_operation(evidence_dir, case, "scf.for")
         assert_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
         assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
@@ -709,6 +721,22 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
+        assert_component_references_resolve(evidence_dir, "partition")
+        assert_component_mapping_status(
+            evidence_dir,
+            "partition",
+            "g_t_partition_red_0_0",
+            "unsupported",
+            "unsupported PnR graph operation: scf.for",
+        )
+        assert_component_mapping_status(
+            evidence_dir,
+            "partition",
+            "g_t_partition_red_1_0",
+            "unsupported",
+            "unsupported PnR graph operation: scf.for",
+        )
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
@@ -841,9 +869,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 9,
-            "blocked": 12,
+            "blocked": 13,
             "unsupported": 0,
-            "missing_status": 64,
+            "missing_status": 63,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")

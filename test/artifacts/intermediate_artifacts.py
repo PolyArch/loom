@@ -5005,6 +5005,7 @@ def aggregate_component_reports(
     label: str,
     *,
     require_pass: bool = True,
+    allowed_statuses: set[str] | None = None,
 ) -> list[dict[str, object]]:
     identities = aggregate_component_identities(data, key)
     if not identities:
@@ -5028,7 +5029,12 @@ def aggregate_component_reports(
         if not isinstance(report, dict) or json_kind_for_path(resolved) != expected_kind:
             diagnostics.append(f"{label} component reference {identity!r} has wrong artifact kind")
             continue
-        if require_pass and report.get("status") != "pass":
+        status = report.get("status")
+        if allowed_statuses is not None and status not in allowed_statuses:
+            diagnostics.append(
+                f"{label} component reference {identity!r} has status outside aggregate contract"
+            )
+        elif allowed_statuses is None and require_pass and status != "pass":
             diagnostics.append(f"{label} component reference {identity!r} is not passing")
         fingerprint = fingerprints.get(identity)
         if not valid_sha256_hex(fingerprint):
@@ -5721,6 +5727,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if isinstance(cycles, int) and isinstance(event_count, int) and cycles < event_count:
             diagnostics.append("DFG simulator optimistic_cycles must not be below event_count")
         if is_workload_graph_set_aggregate(data):
+            aggregate_status = data.get("status")
             components = aggregate_component_reports(
                 path,
                 data,
@@ -5728,11 +5735,21 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "dfg_sim_report",
                 diagnostics,
                 "DFG simulator aggregate report",
+                allowed_statuses={"pass"} if aggregate_status == "pass" else BASE_STATUSES,
             )
             if components:
                 workload = data.get("workload")
                 if any(component.get("workload") != workload for component in components):
                     diagnostics.append("DFG simulator aggregate components have mismatched workload")
+                component_statuses = [component.get("status") for component in components]
+                if aggregate_status == "pass" and any(status != "pass" for status in component_statuses):
+                    diagnostics.append("DFG simulator aggregate pass status requires passing components")
+                if aggregate_status == "unsupported" and "unsupported" not in component_statuses:
+                    diagnostics.append("DFG simulator aggregate unsupported status requires unsupported components")
+                if aggregate_status in {"blocked", "fail"} and all(
+                    status == "pass" for status in component_statuses
+                ):
+                    diagnostics.append("DFG simulator aggregate blocked status requires non-passing components")
                 component_graphs = {
                     component.get("graph")
                     for component in components
@@ -5826,6 +5843,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         elif any(not isinstance(check, dict) or check.get("status") != "pass" for check in checks):
             diagnostics.append("CGRA simulator report has failing first-principles check")
         if is_workload_graph_set_aggregate(data):
+            aggregate_status = data.get("status")
             dfg_components = aggregate_component_reports(
                 path,
                 data,
@@ -5833,11 +5851,15 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "dfg_sim_report",
                 diagnostics,
                 "CGRA simulator aggregate report",
+                allowed_statuses={"pass"} if aggregate_status == "pass" else BASE_STATUSES,
             )
             if dfg_components:
                 workload = data.get("workload")
                 if any(component.get("workload") != workload for component in dfg_components):
                     diagnostics.append("CGRA simulator aggregate DFG components have mismatched workload")
+                dfg_component_statuses = [component.get("status") for component in dfg_components]
+                if aggregate_status == "pass" and any(status != "pass" for status in dfg_component_statuses):
+                    diagnostics.append("CGRA simulator aggregate pass status requires passing DFG components")
                 component_dfg_cycles = sum(
                     int(component["optimistic_cycles"])
                     for component in dfg_components
@@ -5852,7 +5874,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "cgra_sim_report",
                 diagnostics,
                 "CGRA simulator aggregate report",
-                require_pass=data.get("status") == "pass",
+                allowed_statuses={"pass"} if aggregate_status == "pass" else BASE_STATUSES,
             )
             if components:
                 workload = data.get("workload")
@@ -5861,6 +5883,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     diagnostics.append("CGRA simulator aggregate components have mismatched workload")
                 if any(component.get("hardware") != hardware for component in components):
                     diagnostics.append("CGRA simulator aggregate components have mismatched hardware")
+                component_statuses = [component.get("status") for component in components]
+                if aggregate_status == "pass" and any(status != "pass" for status in component_statuses):
+                    diagnostics.append("CGRA simulator aggregate pass status requires passing components")
+                if aggregate_status != "pass" and all(status == "pass" for status in component_statuses):
+                    diagnostics.append("CGRA simulator aggregate blocked status requires non-passing components")
                 component_mapping_ids = {
                     component.get("mapping_id")
                     for component in components
@@ -6108,6 +6135,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         if isinstance(bitstream, list) and isinstance(config_records, int) and config_records != len(bitstream):
             diagnostics.append("PnR mapping artifact config_records does not match config_bitstream size")
         if is_workload_graph_set_aggregate(data):
+            aggregate_status = data.get("status")
             components = aggregate_component_reports(
                 path,
                 data,
@@ -6115,7 +6143,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 "pnr_mapping_artifact",
                 diagnostics,
                 "PnR mapping aggregate artifact",
-                require_pass=data.get("status") == "pass",
+                allowed_statuses={"pass"} if aggregate_status == "pass" else BASE_STATUSES,
             )
             if components:
                 workload = data.get("workload")
@@ -6148,8 +6176,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                     if isinstance(value, int) and value != component_sum:
                         diagnostics.append(f"PnR mapping aggregate {key} does not match component sum")
                 component_statuses = [component.get("status") for component in components]
-                if data.get("status") == "pass" and any(status != "pass" for status in component_statuses):
+                if aggregate_status == "pass" and any(status != "pass" for status in component_statuses):
                     diagnostics.append("PnR mapping aggregate pass status requires passing components")
+                if aggregate_status == "unsupported" and "unsupported" not in component_statuses:
+                    diagnostics.append("PnR mapping aggregate unsupported status requires unsupported components")
+                if aggregate_status == "blocked" and all(status == "pass" for status in component_statuses):
+                    diagnostics.append("PnR mapping aggregate blocked status requires non-passing components")
                 detail_mapping_ids = {
                     detail.get("component_mapping_id")
                     for detail in data.get("unrouted_edge_details", [])

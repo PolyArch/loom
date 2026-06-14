@@ -95,6 +95,9 @@ case "${CASE}" in
   pack_bits)
     case_graph="g_t_pack_bits_kernel_red_0_0"
     ;;
+  partition)
+    case_graph="g_t_partition_red_0_0"
+    ;;
   unpack_bits)
     case_graph="g_t_unpack_bits_kernel_red_0_0"
     ;;
@@ -561,6 +564,71 @@ elif [[ "${CASE}" == "variance" ]]; then
     "${mapping_var_artifact}"
     "${cgra_mean_report}"
     "${cgra_var_report}"
+  )
+elif [[ "${CASE}" == "partition" ]]; then
+  dfg_lower_report="${OUT_DIR}/partition-dfg-sim-lower.report.json"
+  dfg_upper_report="${OUT_DIR}/partition-dfg-sim-upper.report.json"
+  dfg_upper_generated_report="${OUT_DIR}/partition-dfg-sim-lower.upper.report.json"
+  mapping_lower_artifact="${OUT_DIR}/pnr-mapping-lower.json"
+  mapping_upper_artifact="${OUT_DIR}/pnr-mapping-upper.json"
+  mapping_lower_summary="${OUT_DIR}/pnr-mapping-lower-summary.csv"
+  mapping_upper_summary="${OUT_DIR}/pnr-mapping-upper-summary.csv"
+  cgra_lower_report="${OUT_DIR}/partition-cgra-sim-lower-report.json"
+  cgra_upper_report="${OUT_DIR}/partition-cgra-sim-upper-report.json"
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_lower_report}" \
+    "${dfg_cycle}"
+  mv "${dfg_upper_generated_report}" "${dfg_upper_report}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_partition_red_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_lower_artifact}" \
+    --output "${mapping_lower_summary}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_partition_red_1_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_upper_artifact}" \
+    --output "${mapping_upper_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_lower_report}" \
+    --mapping-artifact "${mapping_lower_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_lower_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_upper_report}" \
+    --mapping-artifact "${mapping_upper_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_upper_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "partition__workload_graph_set__shared_reduction_adg" \
+    --dfg-report "${dfg_lower_report}" \
+    --dfg-report "${dfg_upper_report}" \
+    --mapping-artifact "${mapping_lower_artifact}" \
+    --mapping-artifact "${mapping_upper_artifact}" \
+    --cgra-report "${cgra_lower_report}" \
+    --cgra-report "${cgra_upper_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${dfg_lower_report}"
+    "${dfg_upper_report}"
+    "${mapping_lower_artifact}"
+    "${mapping_upper_artifact}"
+    "${cgra_lower_report}"
+    "${cgra_upper_report}"
   )
 else
   env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
