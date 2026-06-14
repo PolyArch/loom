@@ -827,6 +827,17 @@ case "${CASE}" in
     rotate_bits)
         configure_rotate_bits_args
         ;;
+    upsample)
+        append_ctrl_tokens 4
+        append_raw_memref 1 "2.000000e+00,5.000000e+00,8.000000e+00,1.100000e+01"
+        append_repeated_arg 2 4 4
+        append_constant_memref 3 16 "0.000000e+00"
+        append_index_tokens 4 4
+        sim_args+=(
+            --graph g_t_upsample_0_0
+            --workload upsample
+        )
+        ;;
     spmv)
         append_ctrl_tokens 2
         sim_args+=(

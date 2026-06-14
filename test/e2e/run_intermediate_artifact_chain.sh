@@ -161,6 +161,9 @@ case "${CASE}" in
   rotate_bits)
     case_graph="g_t_rotate_bits_0_0"
     ;;
+  upsample)
+    case_graph="g_t_upsample_0_0"
+    ;;
   vecadd)
     case_graph="g_t_vecadd_0_0"
     ;;

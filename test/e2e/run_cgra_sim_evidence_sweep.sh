@@ -89,6 +89,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     xor_block
     relu
     rotate_bits
+    upsample
     vecadd
     vecmul
     vecscale
