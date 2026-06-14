@@ -207,6 +207,9 @@ for case_name in "${CASES[@]}"; do
   case_out="${chain_root}/${case_name}"
   rm -rf "${case_out}"
   case_hardware_source="${HARDWARE_SOURCE}"
+  if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "vecscale" ]]; then
+    case_hardware_source="shared-vector-alu"
+  fi
   bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
     --output-dir "${case_out}" \
     --case "${case_name}" \

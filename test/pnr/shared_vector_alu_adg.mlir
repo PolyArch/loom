@@ -65,12 +65,24 @@ fabric.module @shared_vector_alu_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
 
+  // CHECK: fabric.op [@arith.muli]
+  %int_product = fabric.pe [spatial] (%lhs = %bin0 : !fabric.bits<32>,
+                                      %rhs = %i32b : !fabric.bits<32>)
+      -> !fabric.bits<32> {
+    fabric.fu(%a = %lhs : !fabric.bits<32>,
+              %b = %rhs : !fabric.bits<32>) -> !fabric.bits<32> {
+      %value = fabric.op [@arith.muli] (%a, %b)
+               : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %value : !fabric.bits<32>
+    }
+  }
+
   // CHECK: fabric.switch [spatial]
   %store_value =
-      fabric.switch [spatial] %xored, %swapped, %product, %i32b
-        [{connectivity_table = ["1111"]}]
+      fabric.switch [spatial] %xored, %swapped, %product, %int_product, %i32b
+        [{connectivity_table = ["11111"]}]
         : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>,
-           !fabric.bits<32>)
+           !fabric.bits<32>, !fabric.bits<32>)
         -> !fabric.bits<32>
 
   // CHECK: fabric.switch [spatial]

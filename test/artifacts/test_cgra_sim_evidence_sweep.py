@@ -63,7 +63,6 @@ BLOCKED_SWEEP_CASES = (
     "integrate_trapz",
     "relu",
     "rotate_bits",
-    "vecscale",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -535,6 +534,7 @@ def main(argv: list[str]) -> int:
             "byte_swap",
             "xor_block",
             "vecmul",
+            "vecscale",
             "prefix_sum",
             "cumsum",
             "prefix_sum_inclusive",
@@ -584,6 +584,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
+        assert_mapping_hardware(evidence_dir, "vecscale", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "cumsum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
@@ -600,7 +601,6 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d_same", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "crc32", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "vecscale", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
@@ -615,6 +615,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
+        assert_mapping_uses_switch_multihop(evidence_dir, "vecscale")
         assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
@@ -663,6 +664,7 @@ def main(argv: list[str]) -> int:
             "matvec",
             "downsample_avg",
             "vecadd",
+            "vecscale",
             "conv1d",
             "variance",
             "correlation",
@@ -690,6 +692,9 @@ def main(argv: list[str]) -> int:
         vecmul_row = one_row(rows, "vecmul")
         if vecmul_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"vecmul should use shared vector hardware: {vecmul_row}")
+        vecscale_row = one_row(rows, "vecscale")
+        if vecscale_row["hardware_system"] != "shared_vector_alu_adg":
+            raise AssertionError(f"vecscale should use shared vector hardware: {vecscale_row}")
         prefix_sum_row = one_row(rows, "prefix_sum")
         if prefix_sum_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"prefix_sum should use shared reduction hardware: {prefix_sum_row}")
@@ -717,8 +722,16 @@ def main(argv: list[str]) -> int:
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 20:
-            raise AssertionError(f"app pass count should include sweep cases: {counts}")
+        expected_counts = {
+            "total": 109,
+            "pass": 22,
+            "fail": 8,
+            "blocked": 8,
+            "unsupported": 0,
+            "missing_status": 71,
+        }
+        if counts != expected_counts:
+            raise AssertionError(f"app counter shape should reflect vecscale promotion: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
             "bash",
