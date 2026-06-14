@@ -119,6 +119,9 @@ case "${CASE}" in
   compare_swap)
     case_graph="g_t_main_0_0"
     ;;
+  compact)
+    case_graph="g_t_compact_red_0_0"
+    ;;
   hash_mix)
     case_graph="g_t_main_1_0"
     ;;

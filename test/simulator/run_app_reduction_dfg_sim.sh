@@ -168,6 +168,13 @@ append_hash_mix_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+append_compact_memrefs() {
+    local input_index="$1"
+    local output_index="$2"
+    sim_args+=(--memref "${input_index}=10,0,20,0,30,40,0,50,0,60,70,0")
+    append_constant_memref "${output_index}" 12 "0"
+}
+
 append_sbox_lookup_memrefs() {
     local input_index="$1"
     local table_index="$2"
@@ -1048,6 +1055,20 @@ case "${CASE}" in
         sim_args+=(
             --graph g_t_main_0_0
             --workload compare_swap
+        )
+        ;;
+    compact)
+        append_ctrl_tokens 1
+        append_compact_memrefs 4 6
+        sim_args+=(
+            --graph g_t_compact_red_0_0
+            --workload compact
+            --arg 1=0
+            --arg 2=12
+            --arg 3=1
+            --arg 5=0
+            --arg 7=1
+            --arg 8=0
         )
         ;;
     hash_mix)

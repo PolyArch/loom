@@ -75,6 +75,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     vecnorm_l2
     correlation
     compare_swap
+    compact
     hash_mix
     spmv
     convolve_1d
