@@ -8,43 +8,80 @@ OUTPUT=""
 LEGACY_LOOMBENCH_ROOT=""
 LOOMBENCH_MANIFEST=""
 NO_LEGACY_LOOMBENCH=0
+CMSIS_DFG_AUTO=0
+CMSIS_DSP_DFG_DIR=""
+CMSIS_NN_DFG_DIR=""
+declare -a FORWARD_ARGS=()
 
 index=0
 while [[ "${index}" -lt "${#ARGS[@]}" ]]; do
     case "${ARGS[${index}]}" in
         --no-legacy-loombench)
             NO_LEGACY_LOOMBENCH=1
+            FORWARD_ARGS+=("${ARGS[${index}]}")
+            index=$((index + 1))
+            ;;
+        --cmsis-dfg-auto)
+            CMSIS_DFG_AUTO=1
             index=$((index + 1))
             ;;
         --output)
             OUTPUT="${ARGS[$((index + 1))]:-}"
+            FORWARD_ARGS+=("${ARGS[${index}]}" "${ARGS[$((index + 1))]:-}")
             index=$((index + 2))
             ;;
         --output=*)
             OUTPUT="${ARGS[${index}]#--output=}"
+            FORWARD_ARGS+=("${ARGS[${index}]}")
             index=$((index + 1))
             ;;
         --legacy-loombench-root)
             LEGACY_LOOMBENCH_ROOT="${ARGS[$((index + 1))]:-}"
+            FORWARD_ARGS+=("${ARGS[${index}]}" "${ARGS[$((index + 1))]:-}")
             index=$((index + 2))
             ;;
         --legacy-loombench-root=*)
             LEGACY_LOOMBENCH_ROOT="${ARGS[${index}]#--legacy-loombench-root=}"
+            FORWARD_ARGS+=("${ARGS[${index}]}")
             index=$((index + 1))
             ;;
         --loombench-manifest)
             LOOMBENCH_MANIFEST="${ARGS[$((index + 1))]:-}"
+            FORWARD_ARGS+=("${ARGS[${index}]}" "${ARGS[$((index + 1))]:-}")
             index=$((index + 2))
             ;;
         --loombench-manifest=*)
             LOOMBENCH_MANIFEST="${ARGS[${index}]#--loombench-manifest=}"
+            FORWARD_ARGS+=("${ARGS[${index}]}")
+            index=$((index + 1))
+            ;;
+        --cmsis-dsp-dfg-dir)
+            CMSIS_DSP_DFG_DIR="${ARGS[$((index + 1))]:-}"
+            FORWARD_ARGS+=("${ARGS[${index}]}" "${ARGS[$((index + 1))]:-}")
+            index=$((index + 2))
+            ;;
+        --cmsis-dsp-dfg-dir=*)
+            CMSIS_DSP_DFG_DIR="${ARGS[${index}]#--cmsis-dsp-dfg-dir=}"
+            FORWARD_ARGS+=("${ARGS[${index}]}")
+            index=$((index + 1))
+            ;;
+        --cmsis-nn-dfg-dir)
+            CMSIS_NN_DFG_DIR="${ARGS[$((index + 1))]:-}"
+            FORWARD_ARGS+=("${ARGS[${index}]}" "${ARGS[$((index + 1))]:-}")
+            index=$((index + 2))
+            ;;
+        --cmsis-nn-dfg-dir=*)
+            CMSIS_NN_DFG_DIR="${ARGS[${index}]#--cmsis-nn-dfg-dir=}"
+            FORWARD_ARGS+=("${ARGS[${index}]}")
             index=$((index + 1))
             ;;
         *)
+            FORWARD_ARGS+=("${ARGS[${index}]}")
             index=$((index + 1))
             ;;
     esac
 done
+ARGS=("${FORWARD_ARGS[@]}")
 
 if [[ "${NO_LEGACY_LOOMBENCH}" -eq 0 && -n "${OUTPUT}" && -n "${LEGACY_LOOMBENCH_ROOT}" && -z "${LOOMBENCH_MANIFEST}" && -d "${LEGACY_LOOMBENCH_ROOT}" ]]; then
     output_dir="$(dirname "${OUTPUT}")"
@@ -67,6 +104,25 @@ if [[ "${NO_LEGACY_LOOMBENCH}" -eq 0 && -n "${OUTPUT}" && -n "${LEGACY_LOOMBENCH
         --output "${manifest_json}" \
         --csv-output "${manifest_csv}"
     ARGS+=(--loombench-manifest "${manifest_json}")
+fi
+
+if [[ "${CMSIS_DFG_AUTO}" -eq 1 ]]; then
+    if [[ -z "${OUTPUT}" ]]; then
+        echo "--cmsis-dfg-auto requires --output" >&2
+        exit 2
+    fi
+    output_dir="$(dirname "${OUTPUT}")"
+    mkdir -p "${output_dir}"
+    if [[ -z "${CMSIS_DSP_DFG_DIR}" ]]; then
+        CMSIS_DSP_DFG_DIR="${output_dir}/cmsis-dsp-dfg"
+        OUT_OVERRIDE="${CMSIS_DSP_DFG_DIR}" bash "${ROOT}/test/cmsis-dsp/run_cmsis_dsp_dfg.sh"
+        ARGS+=(--cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}")
+    fi
+    if [[ -z "${CMSIS_NN_DFG_DIR}" ]]; then
+        CMSIS_NN_DFG_DIR="${output_dir}/cmsis-nn-dfg"
+        OUT_OVERRIDE="${CMSIS_NN_DFG_DIR}" bash "${ROOT}/test/cmsis-nn/run_cmsis_nn_dfg.sh"
+        ARGS+=(--cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}")
+    fi
 fi
 
 python3 "${ROOT}/test/e2e/cgra_status_summary.py" "${ARGS[@]}"

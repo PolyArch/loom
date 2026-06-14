@@ -143,6 +143,82 @@ def assert_no_legacy_mode(repo: Path, out_dir: Path) -> None:
         raise AssertionError("no-legacy rollup should not overwrite stale LoomBench manifest sidecar")
 
 
+def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    csv_output = out_dir / "cgra-status-summary.csv"
+    json_output = out_dir / "cgra-status-summary.json"
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_status_summary.sh",
+            "--output",
+            str(csv_output),
+            "--json-output",
+            str(json_output),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--cmsis-dfg-auto",
+        ],
+    )
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_status_audit.sh",
+            "--input",
+            str(csv_output),
+            "--json-input",
+            str(json_output),
+            "--legacy-loombench-root",
+            str(legacy_root),
+        ],
+    )
+    rows = read_rows(csv_output)
+    data = json.loads(json_output.read_text())
+    assert_counts(
+        data,
+        "cmsis-dsp",
+        {
+            "total": 16,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 14,
+            "unsupported": 2,
+            "missing_status": 0,
+        },
+    )
+    assert_counts(
+        data,
+        "cmsis-nn",
+        {
+            "total": 18,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 10,
+            "unsupported": 8,
+            "missing_status": 0,
+        },
+    )
+    assert_no_cmsis_pass(rows)
+    for artifact in (
+        out_dir / "cmsis-dsp-dfg" / "arm_add_q15.dfg.mlir",
+        out_dir / "cmsis-nn-dfg" / "arm_relu_q15.dfg.mlir",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"direct CMSIS DFG mode should emit {artifact}")
+    dsp_add = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+    nn_relu = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
+    for row in (dsp_add, nn_relu):
+        if (
+            row["status"] != "blocked"
+            or row["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or row["blocking_prerequisite"] != "dfg_sim_report"
+            or not row["graph_ids"]
+        ):
+            raise AssertionError(f"direct CMSIS DFG mode should publish exact DFG blockers: {row}")
+        assert_sha256_file(row["dfg_mlir"], row["dfg_mlir_fingerprint"], repo)
+
+
 def write_legacy_case(root: Path, name: str, *, with_header: bool = True) -> None:
     case_dir = root / name
     case_dir.mkdir(parents=True)
@@ -161,6 +237,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "legacy_missing")
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
+        assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         run(
             repo,
             [
