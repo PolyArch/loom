@@ -39,6 +39,7 @@ struct FuSpec {
   std::vector<std::string> resultTypes;
   std::vector<FabricOpSpec> operations;
   std::vector<std::string> yieldValues;
+  std::vector<std::string> yieldTypes = {};
 };
 
 struct TemporalPeConfig {

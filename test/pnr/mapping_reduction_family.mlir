@@ -105,6 +105,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,CUMSUM < %t.dir/cumsum.mapping.csv
 // RUN: FileCheck %s --check-prefix=CUMSUM-JSON < %t.dir/cumsum.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,TRAPZ < %t.dir/integrate_trapz.mapping.csv
+// RUN: FileCheck %s --check-prefix=TRAPZ-JSON < %t.dir/integrate_trapz.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,6,1,0,fail,unrouted software edges lack Fabric ADG connectivity
@@ -127,7 +128,7 @@
 // VARIANCE-MEAN-JSON-NOT: ".out"
 // VARIANCE-MEAN-JSON-NOT: ".in"
 
-// VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,8,5,0,fail,unrouted software edges lack Fabric ADG connectivity
+// VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
 
 // BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,2,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -145,13 +146,13 @@
 // DOWNSAMPLE-AVG-JSON-NOT: ".out"
 // DOWNSAMPLE-AVG-JSON-NOT: ".in"
 
-// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,6,1,4,0,fail,unrouted software edges lack Fabric ADG connectivity
+// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,5,1,3,1,fail,missing hardware resource for software op llvm.trunc
 
 // CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 
-// CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__g_t_convolve_1d_kernel_red_0_0__shared_reduction_adg,10,9,6,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CONVOLVE-1D-NEXT: convolve_1d,shared_reduction_adg,convolve_1d__g_t_convolve_1d_kernel_red_0_0__shared_reduction_adg,10,10,5,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg,10,9,6,0,fail,unrouted software edges lack Fabric ADG connectivity
+// CORRELATION-NEXT: correlation,shared_reduction_adg,correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg,10,10,5,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,3,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -291,4 +292,21 @@
 // CUMSUM-JSON-NOT: ".out"
 // CUMSUM-JSON-NOT: ".in"
 
-// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,8,17,0,fail,unrouted software edges lack Fabric ADG connectivity
+// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,11,14,0,fail,unrouted software edges lack Fabric ADG connectivity
+// TRAPZ-JSON-DAG: "workload": "integrate_trapz"
+// TRAPZ-JSON-DAG: "hardware": "shared_reduction_adg"
+// TRAPZ-JSON-DAG: "status": "fail"
+// TRAPZ-JSON-DAG: "unrouted_edges": 14
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.subf#0.operand0"
+// TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::mem.load#0.result0"
+// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#10.operand1"
+// TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#10.result0"
+// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#9.operand0"
+// TRAPZ-JSON-DAG: "edge_ref": "arith.subf#0.result0->llvm.intr.fmuladd#0.operand1"
+// TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.pe#5.result0"
+// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#13.operand2"
+// TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#13.result0"
+// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#20.operand1"
+// TRAPZ-JSON-DAG: "segment_kind": "module_path"
+// TRAPZ-JSON-NOT: ".out"
+// TRAPZ-JSON-NOT: ".in"

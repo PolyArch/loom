@@ -6,6 +6,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <string>
+#include <utility>
 
 static llvm::cl::opt<bool>
     sharedReduction("shared-reduction",
@@ -37,6 +38,16 @@ static llvm::cl::opt<std::string> topologyMatrixCase(
     llvm::cl::desc("emit a named topology-matrix SpatialCore ADG"),
     llvm::cl::init(""));
 
+static llvm::cl::opt<bool> invalidYieldTypes(
+    "invalid-yield-types",
+    llvm::cl::desc("emit an invalid ADG with mismatched FU yield types"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> invalidYieldCount(
+    "invalid-yield-count",
+    llvm::cl::desc("emit an invalid ADG with mismatched FU yield values"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("output Fabric MLIR path"),
                llvm::cl::Required);
@@ -51,6 +62,7 @@ int main(int argc, char **argv) {
       (sharedReduction ? 1 : 0) + (fullSpatialCore ? 1 : 0) +
       (minimalSpatial ? 1 : 0) + (minimalTemporal ? 1 : 0) +
       (heterogeneousSoc ? 1 : 0) + (!topologyMatrixCase.empty() ? 1 : 0);
+  selectedRecipes += (invalidYieldTypes ? 1 : 0) + (invalidYieldCount ? 1 : 0);
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
     return 1;
@@ -80,6 +92,35 @@ int main(int argc, char **argv) {
     if (!topologyMatrixCase.empty())
       return loom::adg::writeSpatialTopologyMatrixAdg(out,
                                                       topologyMatrixCase);
+    if (invalidYieldTypes) {
+      loom::adg::ModuleBuilder module("invalid_yield_types_adg");
+      module.addInput("lhs", "!fabric.bits<32>");
+      loom::adg::PeSpec pe;
+      pe.inputs = {{"pa", "lhs", "!fabric.bits<32>", ""}};
+      pe.resultTypes = {"!fabric.bits<32>"};
+      loom::adg::FuSpec fu;
+      fu.inputs = {{"value", "pa", "!fabric.bits<32>", ""}};
+      fu.resultTypes = {"!fabric.bits<32>"};
+      fu.yieldValues = {"value"};
+      fu.yieldTypes = {"!fabric.bits<32>", "!fabric.bits<1>"};
+      pe.fus.push_back(std::move(fu));
+      module.addPe(std::move(pe));
+      return module.print(out);
+    }
+    if (invalidYieldCount) {
+      loom::adg::ModuleBuilder module("invalid_yield_count_adg");
+      module.addInput("lhs", "!fabric.bits<32>");
+      loom::adg::PeSpec pe;
+      pe.inputs = {{"pa", "lhs", "!fabric.bits<32>", ""}};
+      pe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
+      loom::adg::FuSpec fu;
+      fu.inputs = {{"value", "pa", "!fabric.bits<32>", ""}};
+      fu.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
+      fu.yieldValues = {"value"};
+      pe.fus.push_back(std::move(fu));
+      module.addPe(std::move(pe));
+      return module.print(out);
+    }
     return loom::adg::writeSharedReductionAdg(out);
   };
 

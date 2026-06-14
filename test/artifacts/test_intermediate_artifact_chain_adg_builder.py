@@ -37,6 +37,18 @@ def main() -> int:
         generated_adg = out_dir / "adg-builder-shared-reduction-adg.mlir"
         if not generated_adg.is_file():
             raise AssertionError(f"ADG Builder chain missed generated hardware MLIR: {generated_adg}")
+        checked_in_adg = repo / "test/pnr/shared_reduction_adg.mlir"
+
+        def canonical_adg_text(path: Path) -> str:
+            return "\n".join(
+                line for line in path.read_text().splitlines()
+                if not line.lstrip().startswith("//")
+            ).strip()
+
+        if canonical_adg_text(generated_adg) != canonical_adg_text(checked_in_adg):
+            raise AssertionError(
+                "ADG Builder shared-reduction output diverged from checked-in PnR fixture"
+            )
 
         generated_hardware_identity = (
             f"{generated_adg.resolve().relative_to(repo).as_posix()}::shared_reduction_adg"
@@ -51,7 +63,7 @@ def main() -> int:
             hardware_row,
             {
                 "topology_class": "fabric_module_template",
-                "node_count": "25",
+                "node_count": "44",
                 "link_count": "0",
                 "verify_status": "pass",
                 "tile_kinds": "mem;pe;switch",
@@ -60,6 +72,41 @@ def main() -> int:
             },
             label="ADG Builder hardware summary",
         )
+        fixture_summary = out_dir / "checked-in-shared-reduction-summary.csv"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "bash",
+                "test/fabric/run_adg_hardware_summary.sh",
+                "--input",
+                "test/pnr/shared_reduction_adg.mlir",
+                "--input-recipe-identity",
+                "test/pnr/shared_reduction_adg.mlir=adg-builder::shared-reduction",
+                "--output",
+                str(fixture_summary),
+            ],
+            "checked-in shared reduction hardware summary",
+        )
+        fixture_row = single_row(
+            read_csv_rows(fixture_summary),
+            key="hardware",
+            value="test/pnr/shared_reduction_adg.mlir::shared_reduction_adg",
+            label="checked-in shared reduction hardware",
+        )
+        for key in (
+            "topology_class",
+            "node_count",
+            "link_count",
+            "verify_status",
+            "tile_kinds",
+            "schedule_kinds",
+            "adg_builder_recipe_identity",
+        ):
+            if hardware_row[key] != fixture_row[key]:
+                raise AssertionError(
+                    f"ADG Builder shared reduction summary diverged from checked-in fabric {key}: "
+                    f"builder={hardware_row} fixture={fixture_row}"
+                )
 
         dotproduct_dir = out_dir / "dotproduct-dfg"
         artifact_test_common.require_success(
