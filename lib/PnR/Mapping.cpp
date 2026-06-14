@@ -780,6 +780,16 @@ claimResource(SoftwareNode &node,
   return nullptr;
 }
 
+bool resourceIsCompatible(const SoftwareNode &node,
+                          const HardwareResource &resource) {
+  if (resource.kind != node.resourceKind)
+    return false;
+  if (resource.kind == ResourceKind::FabricOp &&
+      !resource.supportedOps.contains(node.operation))
+    return false;
+  return resourceSupportsSoftwareConfigs(node, resource);
+}
+
 std::optional<std::string> configFor(const HardwareResource &resource,
                                      llvm::StringRef key) {
   auto it = resource.swConfigs.find(key.str());
@@ -1004,6 +1014,59 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
     collection.routes.push_back(std::move(route));
   }
   return collection;
+}
+
+bool partialPlacementRoutes(llvm::ArrayRef<SoftwareNode> nodes,
+                            mlir::Operation *graph,
+                            llvm::ArrayRef<PlacementRecord> placements,
+                            const HardwareTopology &topology) {
+  RouteCollection partial = collectRoutes(nodes, graph, placements, topology);
+  return partial.unroutedEdges == 0;
+}
+
+bool chooseRouteFeasiblePlacements(
+    llvm::MutableArrayRef<SoftwareNode> nodes,
+    llvm::MutableArrayRef<HardwareResource> resources, mlir::Operation *graph,
+    const HardwareTopology &topology,
+    llvm::SmallVectorImpl<PlacementRecord> &placements, unsigned nodeIndex) {
+  if (nodeIndex == nodes.size())
+    return true;
+
+  SoftwareNode &node = nodes[nodeIndex];
+  for (HardwareResource &resource : resources) {
+    if (resource.used || !resourceIsCompatible(node, resource))
+      continue;
+    resource.used = true;
+    placements.push_back(PlacementRecord{
+        node.id, node.operation, resourceKindName(node.resourceKind).str(),
+        resource.id, resource.schedule});
+
+    if (partialPlacementRoutes(nodes, graph, placements, topology) &&
+        chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
+                                      placements, nodeIndex + 1))
+      return true;
+
+    placements.pop_back();
+    resource.used = false;
+  }
+  return false;
+}
+
+bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
+                        llvm::MutableArrayRef<HardwareResource> resources,
+                        mlir::Operation *graph,
+                        const HardwareTopology &topology,
+                        llvm::SmallVectorImpl<PlacementRecord> &placements) {
+  for (HardwareResource &resource : resources)
+    resource.used = false;
+  placements.clear();
+  if (chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
+                                    placements, 0))
+    return true;
+  for (HardwareResource &resource : resources)
+    resource.used = false;
+  placements.clear();
+  return false;
 }
 
 llvm::json::Object placementJson(const PlacementRecord &placement) {
@@ -1305,20 +1368,41 @@ loom::pnr::createMapping(const MappingOptions &options) {
       resolvedConfig, summary.componentConfigView);
   summary.status = "pass";
 
-  for (SoftwareNode &node : *nodesOrErr) {
-    HardwareResource *resource =
-        claimResource(node, hardwareModelOrErr->resources);
-    if (!resource) {
-      summary.status = "fail";
-      summary.diagnostic =
-          "missing hardware resource for software op " + node.operation;
-      ++summary.unplacedRecords;
-      continue;
+  if (!placeRouteFeasible(*nodesOrErr, hardwareModelOrErr->resources, graph,
+                          hardwareModelOrErr->topology, summary.placements)) {
+    for (HardwareResource &resource : hardwareModelOrErr->resources)
+      resource.used = false;
+    for (SoftwareNode &node : *nodesOrErr) {
+      HardwareResource *resource =
+          claimResource(node, hardwareModelOrErr->resources);
+      if (!resource) {
+        summary.status = "fail";
+        summary.diagnostic =
+            "missing hardware resource for software op " + node.operation;
+        ++summary.unplacedRecords;
+        continue;
+      }
+      summary.placements.push_back(PlacementRecord{
+          node.id, node.operation, resourceKindName(node.resourceKind).str(),
+          resource->id, resource->schedule});
     }
-    summary.placements.push_back(PlacementRecord{
-        node.id, node.operation, resourceKindName(node.resourceKind).str(),
-        resource->id, resource->schedule});
-    if (llvm::Error err = appendPlacementConfig(summary, node, *resource))
+  }
+
+  llvm::StringMap<const SoftwareNode *> nodeById;
+  for (const SoftwareNode &node : *nodesOrErr)
+    nodeById.try_emplace(node.id, &node);
+  llvm::StringMap<const HardwareResource *> resourceById;
+  for (const HardwareResource &resource : hardwareModelOrErr->resources)
+    resourceById.try_emplace(resource.id, &resource);
+  for (const PlacementRecord &placement : summary.placements) {
+    auto nodeIt = nodeById.find(placement.softwareId);
+    auto resourceIt = resourceById.find(placement.hardwareId);
+    if (nodeIt == nodeById.end() || resourceIt == resourceById.end())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "mapping placement references unknown software or hardware id");
+    if (llvm::Error err =
+            appendPlacementConfig(summary, *nodeIt->second, *resourceIt->second))
       return std::move(err);
   }
 

@@ -7,6 +7,7 @@ import argparse
 import copy
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -156,13 +157,13 @@ def main() -> int:
             "routed_edges": 6,
             "unrouted_edges": 0,
             "unplaced_records": 0,
-            "config_records": 97,
+            "config_records": 105,
             "status": "pass",
         }
         for key, value in expected_json.items():
             if data.get(key) != value:
                 raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
-        if len(data.get("config_bitstream", [])) != 97:
+        if len(data.get("config_bitstream", [])) != 105:
             raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
         if data.get("unrouted_edge_details") != []:
             raise AssertionError(f"passing mapping should have no unrouted edge details: {data}")
@@ -177,30 +178,6 @@ def main() -> int:
                 "shared_reduction_adg::fabric.fu#0.result1",
             ),
             (
-                "shared_reduction_adg::fabric.pe#0.result1",
-                "shared_reduction_adg::fabric.switch#15.operand0",
-            ),
-            (
-                "shared_reduction_adg::fabric.switch#15.operand0",
-                "shared_reduction_adg::fabric.switch#15.result0",
-            ),
-            (
-                "shared_reduction_adg::fabric.switch#15.result0",
-                "shared_reduction_adg::fabric.op#1.operand2",
-            ),
-            (
-                "shared_reduction_adg::mem.load#0.result0",
-                "shared_reduction_adg::fabric.switch#7.operand0",
-            ),
-            (
-                "shared_reduction_adg::fabric.switch#7.operand0",
-                "shared_reduction_adg::fabric.switch#7.result0",
-            ),
-            (
-                "shared_reduction_adg::fabric.switch#7.result0",
-                "shared_reduction_adg::fabric.op#2.operand0",
-            ),
-            (
                 "shared_reduction_adg::fabric.op#1.result0",
                 "shared_reduction_adg::fabric.op#2.operand1",
             ),
@@ -209,16 +186,41 @@ def main() -> int:
                 "shared_reduction_adg::fabric.op#31.operand0",
             ),
             (
-                "shared_reduction_adg::fabric.pe#0.result0",
-                "shared_reduction_adg::mem.load#0.operand0",
-            ),
-            (
                 "shared_reduction_adg::fabric.op#0.result1",
                 "shared_reduction_adg::fabric.op#1.operand0",
             ),
         }
         if not required_endpoints.issubset(endpoint_pairs):
             raise AssertionError(f"explicit mapping route endpoints changed: {endpoint_pairs}")
+        switch_operand = re.compile(r"shared_reduction_adg::fabric\.switch#[0-9]+\.operand0")
+        switch_result = re.compile(r"shared_reduction_adg::fabric\.switch#[0-9]+\.result0")
+        required_switch_paths = (
+            (
+                "shared_reduction_adg::fabric.pe#0.result1",
+                switch_operand,
+                switch_result,
+                "shared_reduction_adg::fabric.op#1.operand2",
+            ),
+            (
+                "shared_reduction_adg::mem.load#0.result0",
+                switch_operand,
+                switch_result,
+                "shared_reduction_adg::fabric.op#2.operand0",
+            ),
+            (
+                "shared_reduction_adg::fabric.pe#0.result0",
+                switch_operand,
+                switch_result,
+                "shared_reduction_adg::mem.load#0.operand0",
+            ),
+        )
+        for source, operand_pattern, result_pattern, sink in required_switch_paths:
+            if not any(pair_source == source and operand_pattern.fullmatch(str(pair_sink))
+                       for pair_source, pair_sink in endpoint_pairs):
+                raise AssertionError(f"explicit mapping missed switch input from {source}: {endpoint_pairs}")
+            if not any(result_pattern.fullmatch(str(pair_source)) and pair_sink == sink
+                       for pair_source, pair_sink in endpoint_pairs):
+                raise AssertionError(f"explicit mapping missed switch output to {sink}: {endpoint_pairs}")
         for source, sink in endpoint_pairs:
             if (source and source.endswith(".out")) or (sink and sink.endswith(".in")):
                 raise AssertionError(f"explicit mapping used legacy string endpoint: {(source, sink)}")

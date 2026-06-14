@@ -1464,6 +1464,44 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"sync_done0"}});
   module.addPe(std::move(syncPe));
 
+  PeSpec addrAddPe;
+  addrAddPe.inputs = {{"pa", "addr_add_lhs", "!fabric.bits<32>", ""},
+                      {"pb", "addr_add_rhs", "!fabric.bits<32>", ""}};
+  addrAddPe.resultNames = {"addr_sum"};
+  addrAddPe.resultTypes = {"!fabric.bits<32>"};
+  addrAddPe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"sum"},
+                           {"arith.addi"},
+                           {"lhs", "rhs"},
+                           {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"sum"}});
+  module.addPe(std::move(addrAddPe));
+
+  PeSpec addrMaskPe;
+  addrMaskPe.inputs = {{"pa", "addr_mask_lhs", "!fabric.bits<32>", ""},
+                       {"pb", "addr_mask_rhs", "!fabric.bits<32>", ""}};
+  addrMaskPe.resultNames = {"addr_masked"};
+  addrMaskPe.resultTypes = {"!fabric.bits<32>"};
+  addrMaskPe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"masked"},
+                           {"arith.andi"},
+                           {"lhs", "rhs"},
+                           {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"masked"}});
+  module.addPe(std::move(addrMaskPe));
+
   module.addExactBodyLine("%load1_addr = fabric.switch [spatial] %idx, %i32b");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
@@ -1497,10 +1535,43 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
   module.addExactBodyLine(
+      "%addr_add_lhs = fabric.switch [spatial] %idx, %i32a, %i32b, %i32c");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%addr_add_rhs = fabric.switch [spatial] %fp_invariant, "
+      "%reduction_scale, %i32a, %i32b");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%addr_mask_lhs = fabric.switch [spatial] %addr_sum, %idx");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%addr_mask_rhs = fabric.switch [spatial] %reduction_scale, "
+      "%fp_invariant, %i32b, %i32c");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%load0_addr = fabric.switch [spatial] %idx, %addr_masked");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
       "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
       "%store_done0, %store_done1 =");
   module.addExactBodyLine(
-      "    fabric.mem [spatial] mgr(%mgr) load(%idx, %ctrl, %load1_addr, "
+      "    fabric.mem [spatial] mgr(%mgr) load(%load0_addr, %ctrl, %load1_addr, "
       "%ctrl, %load2_addr, %ctrl, %i32d, %ctrl)");
   module.addExactBodyLine(
       "                              store(%idx, %store0_value, %ctrl, "

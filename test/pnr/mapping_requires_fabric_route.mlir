@@ -10,8 +10,15 @@
 // JSON-DAG: "unrouted_edges": 2
 // JSON-DAG: "diagnostics": [
 // JSON-DAG: "unrouted software edges lack Fabric ADG connectivity"
-// JSON-NOT: "source_endpoint"
-// JSON-NOT: "sink_endpoint"
+// JSON-DAG: "unrouted_edge_details": [
+// JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.addi#1.operand0"
+// JSON-DAG: "source_endpoint": "disconnected_adg::fabric.op#0.result0"
+// JSON-DAG: "sink_endpoint": "disconnected_adg::fabric.op#1.operand0"
+// JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.addi#1.operand1"
+// JSON-DAG: "source_endpoint": "disconnected_adg::fabric.op#0.result0"
+// JSON-DAG: "sink_endpoint": "disconnected_adg::fabric.op#1.operand1"
+// JSON-NOT: ".out"
+// JSON-NOT: ".in"
 
 module {
   dataflow.graph.func private @disconnected_route(%ctrl: none, %lhs: i32, %rhs: i32)

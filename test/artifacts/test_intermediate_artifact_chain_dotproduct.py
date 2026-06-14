@@ -87,7 +87,7 @@ def main() -> int:
             raise AssertionError(f"mapping artifact should carry dotproduct workload: {mapping_artifact}")
         if mapping_artifact.get("graph") != "g_t_dotproduct_red_0_0":
             raise AssertionError(f"mapping artifact should carry dotproduct graph: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 170 or mapping_artifact.get("status") != "pass":
+        if mapping_artifact.get("config_records") != 178 or mapping_artifact.get("status") != "pass":
             raise AssertionError(f"mapping artifact should expose routed evidence: {mapping_artifact}")
 
         dfg_report = json.loads((out_dir / "dotproduct-dfg-sim-report.json").read_text())
@@ -101,7 +101,7 @@ def main() -> int:
             raise AssertionError(f"unexpected dotproduct CGRA-sim report: {cgra_report}")
         if cgra_report.get("mapping_id") != "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg":
             raise AssertionError(f"unexpected dotproduct CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("hardware_aware_cycles") != 1256:
+        if cgra_report.get("hardware_aware_cycles") != 1258:
             raise AssertionError(f"unexpected dotproduct CGRA-sim cycles: {cgra_report}")
         if cgra_report.get("difference_classification") != "expected_hardware_constraint":
             raise AssertionError(f"dotproduct CGRA report should classify expected hardware cost: {cgra_report}")
@@ -113,7 +113,7 @@ def main() -> int:
         if len(dotproduct_sim_rows) != 1:
             raise AssertionError(f"expected one dotproduct sim row, got {sim_rows}")
         sim_row = dotproduct_sim_rows[0]
-        expected_cycles = {"dfg_sim_cycles": "1219", "cgra_sim_cycles": "1256", "status": "pass"}
+        expected_cycles = {"dfg_sim_cycles": "1219", "cgra_sim_cycles": "1258", "status": "pass"}
         for key, value in expected_cycles.items():
             if sim_row[key] != value:
                 raise AssertionError(f"unexpected dotproduct sim row {key}: {sim_row}")
@@ -121,7 +121,7 @@ def main() -> int:
         comparison = json.loads((out_dir / "sim-comparison-report.json").read_text())
         if comparison.get("status") != "pass" or comparison.get("workload") != "dotproduct":
             raise AssertionError(f"unexpected dotproduct comparison report: {comparison}")
-        if comparison.get("dfg_sim_cycles") != 1219 or comparison.get("cgra_sim_cycles") != 1256:
+        if comparison.get("dfg_sim_cycles") != 1219 or comparison.get("cgra_sim_cycles") != 1258:
             raise AssertionError(f"comparison should preserve dotproduct cycles: {comparison}")
 
         runtime_package = json.loads((out_dir / "runtime-package.json").read_text())
@@ -158,7 +158,7 @@ def main() -> int:
         dotproduct_dse = dotproduct_dse_rows[0]
         expected_dse = {
             "mapping_id": "dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg",
-            "cgra_sim_cycles": "1256",
+            "cgra_sim_cycles": "1258",
             "selection_status": "selected",
         }
         for key, value in expected_dse.items():

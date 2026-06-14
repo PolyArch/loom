@@ -63,7 +63,7 @@ def main() -> int:
             hardware_row,
             {
                 "topology_class": "fabric_module_template",
-                "node_count": "44",
+                "node_count": "51",
                 "link_count": "0",
                 "verify_status": "pass",
                 "tile_kinds": "mem;pe;switch",

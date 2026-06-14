@@ -39,8 +39,6 @@ DEFAULT_SWEEP_CASES = (
 )
 BLOCKED_SWEEP_CASES = (
     "integrate_trapz",
-    "correlation",
-    "convolve_1d",
     "relu",
 )
 
@@ -411,6 +409,8 @@ def main(argv: list[str]) -> int:
             "vecadd",
             "conv1d",
             "variance",
+            "correlation",
+            "convolve_1d",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -438,6 +438,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         for case in BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
@@ -447,6 +449,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
+        assert_mapping_uses_switch_multihop(evidence_dir, "correlation")
+        assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "variance")
@@ -489,6 +493,8 @@ def main(argv: list[str]) -> int:
             "vecadd",
             "conv1d",
             "variance",
+            "correlation",
+            "convolve_1d",
         ):
             assert_promoted_row(repo, rows, case)
         for case in BLOCKED_SWEEP_CASES:
@@ -537,7 +543,7 @@ def main(argv: list[str]) -> int:
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 18:
+        if counts["pass"] < 20:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
