@@ -55,6 +55,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     vecsum
     dotproduct
     axpy
+    bit_reverse
     downsample_avg
     prefix_sum
     cumsum
@@ -65,6 +66,8 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     vecnorm_l1
     vecnorm_l2
     correlation
+    compare_swap
+    hash_mix
     spmv
     convolve_1d
     conv1d
@@ -73,6 +76,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     byte_swap
     xor_block
     relu
+    rotate_bits
     vecadd
     vecmul
     vecscale

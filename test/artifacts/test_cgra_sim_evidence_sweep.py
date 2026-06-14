@@ -17,6 +17,7 @@ DEFAULT_SWEEP_CASES = (
     "vecsum",
     "dotproduct",
     "axpy",
+    "bit_reverse",
     "downsample_avg",
     "prefix_sum",
     "cumsum",
@@ -27,6 +28,8 @@ DEFAULT_SWEEP_CASES = (
     "vecnorm_l1",
     "vecnorm_l2",
     "correlation",
+    "compare_swap",
+    "hash_mix",
     "spmv",
     "convolve_1d",
     "conv1d",
@@ -35,6 +38,7 @@ DEFAULT_SWEEP_CASES = (
     "byte_swap",
     "xor_block",
     "relu",
+    "rotate_bits",
     "vecadd",
     "vecmul",
     "vecscale",
@@ -42,9 +46,13 @@ DEFAULT_SWEEP_CASES = (
 )
 BLOCKED_SWEEP_CASES = (
     "axpy",
+    "bit_reverse",
+    "compare_swap",
     "gemv",
+    "hash_mix",
     "integrate_trapz",
     "relu",
+    "rotate_bits",
     "vecscale",
 )
 
@@ -359,6 +367,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "axpy",
                 "--case",
+                "bit_reverse",
+                "--case",
                 "spmv",
                 "--case",
                 "byte_swap",
@@ -368,6 +378,10 @@ def main(argv: list[str]) -> int:
                 "vecmul",
                 "--case",
                 "vecscale",
+                "--case",
+                "compare_swap",
+                "--case",
+                "hash_mix",
                 "--case",
                 "prefix_sum",
                 "--case",
@@ -400,6 +414,8 @@ def main(argv: list[str]) -> int:
                 "convolve_1d",
                 "--case",
                 "relu",
+                "--case",
+                "rotate_bits",
             ],
         )
         for case in (
@@ -436,6 +452,7 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
@@ -454,7 +471,10 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecscale", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         for case in BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")

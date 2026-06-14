@@ -59,6 +59,9 @@ case "${CASE}" in
   axpy)
     case_graph="g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
     ;;
+  bit_reverse)
+    case_graph="g_t_bit_reverse_kernel_red_0_0"
+    ;;
   downsample_avg)
     case_graph="g_t_downsample_avg_0_0"
     ;;
@@ -89,6 +92,12 @@ case "${CASE}" in
   correlation)
     case_graph="g_t_correlation_kernel_red_0_0"
     ;;
+  compare_swap)
+    case_graph="g_t_main_0_0"
+    ;;
+  hash_mix)
+    case_graph="g_t_main_1_0"
+    ;;
   spmv)
     case_graph="g_t_spmv_kernel_red_0_0"
     ;;
@@ -112,6 +121,9 @@ case "${CASE}" in
     ;;
   relu)
     case_graph="g_t_relu_0_0"
+    ;;
+  rotate_bits)
+    case_graph="g_t_rotate_bits_0_0"
     ;;
   vecadd)
     case_graph="g_t_vecadd_0_0"
