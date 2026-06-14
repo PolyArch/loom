@@ -27,6 +27,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--legacy-loombench-root",
         default=str(ROOT / "temp" / "old_implementation_loom" / "loom" / "tests" / "app"),
     )
+    parser.add_argument("--loombench-manifest")
     return parser.parse_args(argv)
 
 
@@ -50,9 +51,10 @@ def read_csv_rows(path: Path, diagnostics: list[str]) -> list[dict[str, str]]:
     return rows
 
 
-def expected_rows(legacy_root: Path) -> list[dict[str, str]]:
+def expected_rows(legacy_root: Path, loombench_manifest_path: Path | None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    rows.extend(cgra_status_summary.app_rows())
+    app_rows = cgra_status_summary.app_rows()
+    rows.extend(app_rows)
     rows.extend(
         cgra_status_summary.cmsis_rows(
             "cmsis-dsp",
@@ -69,7 +71,13 @@ def expected_rows(legacy_root: Path) -> list[dict[str, str]]:
             "externals/cmsis-nn/Source",
         )
     )
-    rows.extend(cgra_status_summary.loombench_rows(legacy_root))
+    rows.extend(
+        cgra_status_summary.loombench_rows(
+            legacy_root,
+            loombench_manifest_path,
+            {row["case"]: row for row in app_rows},
+        )
+    )
     return rows
 
 
@@ -357,6 +365,76 @@ def validate_coverage(rows: list[dict[str, str]], expected: list[dict[str, str]]
         diagnostics.append(f"row coverage mismatch: missing={missing[:10]} extra={extra[:10]}")
 
 
+def load_loombench_manifest_map(path: Path | None, diagnostics: list[str]) -> dict[str, dict[str, object]]:
+    if path is None:
+        return {}
+    try:
+        cases = cgra_status_summary.load_loombench_manifest(path)
+    except SystemExit as exc:
+        diagnostics.append(str(exc))
+        return {}
+    return {str(case_data["case"]): case_data for case_data in cases}
+
+
+def row_has_sim_artifacts(row: dict[str, str]) -> bool:
+    return any(
+        row.get(column, "")
+        for column in (
+            "dfg_report",
+            "dfg_report_fingerprint",
+            "mapping_artifact",
+            "mapping_artifact_fingerprint",
+            "cgra_report",
+            "cgra_report_fingerprint",
+            "comparison_report",
+            "comparison_report_fingerprint",
+        )
+    )
+
+
+def validate_loombench_manifest_semantics(
+    rows: list[dict[str, str]],
+    manifest_path: Path | None,
+    diagnostics: list[str],
+) -> None:
+    manifest_by_case = load_loombench_manifest_map(manifest_path, diagnostics)
+    if not manifest_by_case:
+        return
+    rows_by_case = {row.get("case", ""): row for row in rows if row.get("suite", "") == "loombench"}
+    for case, manifest_case in manifest_by_case.items():
+        row = rows_by_case.get(case)
+        if row is None:
+            continue
+        import_state = str(manifest_case.get("import_state", ""))
+        manifest_app_case = str(manifest_case.get("manifest_case", ""))
+        if import_state == "excluded":
+            if row.get("status", "") != "unsupported":
+                diagnostics.append(f"LoomBench excluded row {case} must stay unsupported")
+            if row.get("diagnostic_class", "") != "loombench_import_excluded":
+                diagnostics.append(f"LoomBench excluded row {case} has wrong diagnostic_class")
+            if row_has_sim_artifacts(row):
+                diagnostics.append(f"LoomBench excluded row {case} must not carry simulator artifacts")
+        elif import_state == "deferred":
+            if row.get("status", "") != "blocked":
+                diagnostics.append(f"LoomBench deferred row {case} must stay blocked")
+            if row.get("diagnostic_class", "") != "loombench_import_deferred":
+                diagnostics.append(f"LoomBench deferred row {case} has wrong diagnostic_class")
+            if row_has_sim_artifacts(row):
+                diagnostics.append(f"LoomBench deferred row {case} must not carry simulator artifacts")
+        elif import_state == "accepted":
+            if row.get("status", "") == "pass":
+                diagnostics.append(
+                    f"LoomBench accepted row {case} cannot pass without explicit workload identity bridge"
+                )
+            if manifest_app_case != case:
+                if row.get("diagnostic_class", "") != "loombench_workload_identity_bridge_missing":
+                    diagnostics.append(f"LoomBench accepted alias row {case} must block on identity bridge")
+            elif row.get("diagnostic_class", "") != "loombench_workload_identity_fingerprint_missing":
+                diagnostics.append(f"LoomBench accepted row {case} must block on fingerprint bridge")
+            if row_has_sim_artifacts(row):
+                diagnostics.append(f"LoomBench accepted row {case} must not reuse simulator artifacts by name alone")
+
+
 def validate_json(path: Path, csv_input: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     if not path.is_file():
         diagnostics.append(f"missing CGRA status JSON: {path}")
@@ -400,9 +478,17 @@ def main(argv: list[str]) -> int:
     diagnostics: list[str] = []
     csv_input = Path(args.input)
     rows = read_csv_rows(csv_input, diagnostics)
-    expected = expected_rows(Path(args.legacy_loombench_root))
+    expected = expected_rows(
+        Path(args.legacy_loombench_root),
+        Path(args.loombench_manifest) if args.loombench_manifest else None,
+    )
     validate_rows(csv_input, rows, diagnostics)
     validate_coverage(rows, expected, diagnostics)
+    validate_loombench_manifest_semantics(
+        rows,
+        Path(args.loombench_manifest) if args.loombench_manifest else None,
+        diagnostics,
+    )
     validate_json(json_path_for(csv_input, args.json_input), csv_input, rows, diagnostics)
 
     if diagnostics:

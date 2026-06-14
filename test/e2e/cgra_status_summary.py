@@ -13,9 +13,11 @@ from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
+sys.path.insert(0, str(ROOT / "test" / "loombench"))
 sys.path.insert(0, str(ROOT / "test" / "simulator"))
 
 import intermediate_artifacts  # noqa: E402
+import loombench_manifest  # noqa: E402
 import sim_comparison_report  # noqa: E402
 
 
@@ -29,6 +31,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--legacy-loombench-root",
         default=str(ROOT / "temp" / "old_implementation_loom" / "loom" / "tests" / "app"),
+    )
+    parser.add_argument(
+        "--loombench-manifest",
+        help="Dedicated LoomBench manifest JSON. Without it, legacy rows remain blocked on manifest reconciliation.",
     )
     parser.add_argument(
         "--sim-evidence-dir",
@@ -285,7 +291,112 @@ def cmsis_rows(
     return rows
 
 
-def loombench_rows(source_root: Path) -> list[dict[str, str]]:
+def load_loombench_manifest(path: Path) -> list[dict[str, object]]:
+    data = read_json(path)
+    if data.get("schema_version") != 1 or data.get("kind") != "loombench_manifest":
+        raise SystemExit(f"invalid LoomBench manifest: {path}")
+    cases = data.get("cases")
+    if not isinstance(cases, list):
+        raise SystemExit(f"LoomBench manifest cases must be a list: {path}")
+    typed_cases: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for index, case_data in enumerate(cases):
+        if not isinstance(case_data, dict):
+            raise SystemExit(f"LoomBench manifest case {index} is not an object: {path}")
+        case = case_data.get("case")
+        if not isinstance(case, str) or not case:
+            raise SystemExit(f"LoomBench manifest case {index} lacks case identity: {path}")
+        if case in seen:
+            raise SystemExit(f"LoomBench manifest has duplicate case: {case}")
+        seen.add(case)
+        typed_cases.append(case_data)
+    return typed_cases
+
+
+def loombench_row_from_manifest_case(
+    manifest_case: dict[str, object],
+    app_row_by_case: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    case = str(manifest_case["case"])
+    source_row = str(manifest_case.get("source_row", case))
+    import_state = str(manifest_case.get("import_state", ""))
+    app_case = str(manifest_case.get("manifest_case", ""))
+    reason = str(manifest_case.get("reason", ""))
+    row_data = row(
+        suite="loombench",
+        case=case,
+        source_row=source_row,
+        software_root=str(manifest_case.get("software_root", "")),
+        blocking_prerequisite="loombench_manifest",
+        diagnostic=reason or "LoomBench manifest row has no CGRA status evidence yet",
+    )
+    row_data["owner"] = "loombench_manifest"
+
+    if import_state == "excluded":
+        row_data["status"] = "unsupported"
+        row_data["diagnostic_class"] = "loombench_import_excluded"
+        row_data["blocking_prerequisite"] = "legacy_source"
+        row_data["diagnostic"] = reason or "legacy LoomBench source row is excluded from migration"
+        return row_data
+
+    if import_state == "deferred":
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = f"loombench_import_{import_state}"
+        row_data["blocking_prerequisite"] = "app_import"
+        row_data["diagnostic"] = reason or f"legacy LoomBench source row import is {import_state}"
+        return row_data
+
+    if import_state not in loombench_manifest.VALID_IMPORT_STATES:
+        row_data["status"] = "fail"
+        row_data["diagnostic_class"] = "loombench_manifest_invalid_import_state"
+        row_data["blocking_prerequisite"] = "loombench_manifest"
+        row_data["diagnostic"] = f"invalid LoomBench import_state {import_state!r}"
+        return row_data
+
+    if not app_case:
+        row_data["status"] = "fail"
+        row_data["diagnostic_class"] = "loombench_manifest_missing_app_case"
+        row_data["blocking_prerequisite"] = "app_import"
+        row_data["diagnostic"] = "accepted LoomBench row lacks manifest_case"
+        return row_data
+    if app_case != case:
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "loombench_workload_identity_bridge_missing"
+        row_data["blocking_prerequisite"] = "loombench_workload_identity_bridge"
+        row_data["diagnostic"] = (
+            f"accepted LoomBench row maps to app case {app_case!r}; row-level CGRA evidence "
+            "cannot be reused until workload identity bridging is explicit"
+        )
+        return row_data
+    app_row = app_row_by_case.get(app_case)
+    if app_row is None:
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "loombench_app_row_missing"
+        row_data["blocking_prerequisite"] = "app_manifest"
+        row_data["diagnostic"] = f"accepted LoomBench row maps to missing app case {app_case!r}"
+        return row_data
+
+    row_data["status"] = "blocked"
+    row_data["diagnostic_class"] = "loombench_workload_identity_fingerprint_missing"
+    row_data["blocking_prerequisite"] = "loombench_workload_identity_fingerprint"
+    row_data["diagnostic"] = (
+        f"accepted LoomBench row maps to app case {app_case!r}, but source/oracle/input "
+        "equivalence is not proven by an explicit fingerprint bridge"
+    )
+    return row_data
+
+
+def loombench_rows(
+    source_root: Path,
+    manifest_path: Path | None = None,
+    app_row_by_case: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    if manifest_path is not None:
+        app_rows_by_case = app_row_by_case or {}
+        return [
+            loombench_row_from_manifest_case(case_data, app_rows_by_case)
+            for case_data in load_loombench_manifest(manifest_path)
+        ]
     if not source_root.is_dir():
         return []
     rows: list[dict[str, str]] = []
@@ -640,8 +751,16 @@ def main(argv: list[str]) -> int:
     output = Path(args.output)
     cmsis_dsp_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-dsp", args.cmsis_dsp_dfg_dir)
     cmsis_nn_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-nn", args.cmsis_nn_dfg_dir)
+    sim_evidence_dir = Path(args.sim_evidence_dir) if args.sim_evidence_dir else output.parent / "current-sim-cycle"
+    comparison_dir = (
+        Path(args.comparison_output_dir)
+        if args.comparison_output_dir
+        else output.parent / "cgra-status-comparisons"
+    )
+    app_status_rows = app_rows()
+    apply_sim_evidence(app_status_rows, sim_evidence_dir, comparison_dir)
     rows = []
-    rows.extend(app_rows())
+    rows.extend(app_status_rows)
     rows.extend(
         cmsis_rows(
             "cmsis-dsp",
@@ -660,14 +779,13 @@ def main(argv: list[str]) -> int:
             cmsis_nn_dfg_dir,
         )
     )
-    rows.extend(loombench_rows(legacy_root))
-    sim_evidence_dir = Path(args.sim_evidence_dir) if args.sim_evidence_dir else output.parent / "current-sim-cycle"
-    comparison_dir = (
-        Path(args.comparison_output_dir)
-        if args.comparison_output_dir
-        else output.parent / "cgra-status-comparisons"
+    rows.extend(
+        loombench_rows(
+            legacy_root,
+            Path(args.loombench_manifest) if args.loombench_manifest else None,
+            {row_data["case"]: row_data for row_data in app_status_rows},
+        )
     )
-    apply_sim_evidence(rows, sim_evidence_dir, comparison_dir)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     intermediate_artifacts.write_csv_rows("cgra_status", output, rows)
