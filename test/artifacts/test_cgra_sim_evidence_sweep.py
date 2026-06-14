@@ -324,6 +324,8 @@ def main(argv: list[str]) -> int:
                 "vecadd",
                 "--case",
                 "conv1d",
+                "--case",
+                "variance",
             ],
         )
         for case in (
@@ -344,6 +346,7 @@ def main(argv: list[str]) -> int:
             "downsample_avg",
             "vecadd",
             "conv1d",
+            "variance",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -364,6 +367,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "downsample_avg", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -372,6 +376,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
         assert_component_references_resolve(evidence_dir, "vecadd")
+        assert_component_references_resolve(evidence_dir, "variance")
 
         status_csv = out_dir / "cgra-status-summary.csv"
         status_json = out_dir / "cgra-status-summary.json"
@@ -410,6 +415,7 @@ def main(argv: list[str]) -> int:
             "downsample_avg",
             "vecadd",
             "conv1d",
+            "variance",
         ):
             assert_promoted_row(repo, rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
@@ -454,7 +460,7 @@ def main(argv: list[str]) -> int:
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
-        if counts["pass"] < 17:
+        if counts["pass"] < 18:
             raise AssertionError(f"app pass count should include sweep cases: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
