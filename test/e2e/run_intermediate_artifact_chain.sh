@@ -56,6 +56,9 @@ case "${CASE}" in
   dotproduct)
     case_graph="g_t_dotproduct_red_0_0"
     ;;
+  axpy)
+    case_graph="g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
+    ;;
   downsample_avg)
     case_graph="g_t_downsample_avg_0_0"
     ;;
@@ -95,6 +98,9 @@ case "${CASE}" in
   conv1d)
     case_graph="g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
     ;;
+  gemv)
+    case_graph="g_t_gemv_kernel_0_0"
+    ;;
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
     ;;
@@ -112,6 +118,9 @@ case "${CASE}" in
     ;;
   vecmul)
     case_graph="g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0"
+    ;;
+  vecscale)
+    case_graph="g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0"
     ;;
   variance)
     case_graph="g_t_variance_red_0_0"

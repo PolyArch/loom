@@ -16,6 +16,7 @@ import artifact_test_common
 DEFAULT_SWEEP_CASES = (
     "vecsum",
     "dotproduct",
+    "axpy",
     "downsample_avg",
     "prefix_sum",
     "cumsum",
@@ -29,17 +30,22 @@ DEFAULT_SWEEP_CASES = (
     "spmv",
     "convolve_1d",
     "conv1d",
+    "gemv",
     "matvec",
     "byte_swap",
     "xor_block",
     "relu",
     "vecadd",
     "vecmul",
+    "vecscale",
     "variance",
 )
 BLOCKED_SWEEP_CASES = (
+    "axpy",
+    "gemv",
     "integrate_trapz",
     "relu",
+    "vecscale",
 )
 
 HEADER = [
@@ -351,6 +357,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "dotproduct",
                 "--case",
+                "axpy",
+                "--case",
                 "spmv",
                 "--case",
                 "byte_swap",
@@ -358,6 +366,8 @@ def main(argv: list[str]) -> int:
                 "xor_block",
                 "--case",
                 "vecmul",
+                "--case",
+                "vecscale",
                 "--case",
                 "prefix_sum",
                 "--case",
@@ -370,6 +380,8 @@ def main(argv: list[str]) -> int:
                 "vecnorm_l1",
                 "--case",
                 "vecnorm_l2",
+                "--case",
+                "gemv",
                 "--case",
                 "matvec",
                 "--case",
@@ -423,6 +435,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "axpy", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
@@ -433,10 +446,12 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l1", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l2", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "gemv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "matvec", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample_avg", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "vecscale", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")

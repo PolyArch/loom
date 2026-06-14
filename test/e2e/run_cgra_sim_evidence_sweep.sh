@@ -54,6 +54,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
   CASES=(
     vecsum
     dotproduct
+    axpy
     downsample_avg
     prefix_sum
     cumsum
@@ -67,12 +68,14 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     spmv
     convolve_1d
     conv1d
+    gemv
     matvec
     byte_swap
     xor_block
     relu
     vecadd
     vecmul
+    vecscale
     variance
   )
 fi
