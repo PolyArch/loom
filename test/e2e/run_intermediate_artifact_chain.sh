@@ -68,6 +68,9 @@ case "${CASE}" in
   bit_reverse)
     case_graph="g_t_bit_reverse_kernel_red_0_0"
     ;;
+  downsample)
+    case_graph="g_t_downsample_0_0"
+    ;;
   downsample_avg)
     case_graph="g_t_downsample_avg_0_0"
     ;;

@@ -93,12 +93,48 @@ struct BridgeKeyInfo {
 struct AddrResolution {
   ::mlir::Value ptr;
   ::mlir::Value intIndex;
+  unsigned byteToElementShift = 0;
   ::mlir::Operation *gepToErase = nullptr;
 };
 
+unsigned getElementByteWidth(::mlir::Type elemTy) {
+  unsigned bitWidth = 0;
+  if (auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(elemTy))
+    bitWidth = intTy.getWidth();
+  else if (auto floatTy = ::llvm::dyn_cast<::mlir::FloatType>(elemTy))
+    bitWidth = floatTy.getWidth();
+  if (bitWidth == 0 || bitWidth % 8 != 0)
+    return 0;
+  return bitWidth / 8;
+}
+
+bool isPowerOfTwo(unsigned value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
+unsigned log2PowerOfTwo(unsigned value) {
+  unsigned shift = 0;
+  while (value > 1) {
+    value >>= 1;
+    ++shift;
+  }
+  return shift;
+}
+
+unsigned getByteToElementShift(::mlir::LLVM::GEPOp gep,
+                               ::mlir::Type elemTy) {
+  auto gepElemTy = ::llvm::dyn_cast<::mlir::IntegerType>(gep.getElemType());
+  if (!gepElemTy || gepElemTy.getWidth() != 8)
+    return 0;
+  unsigned byteWidth = getElementByteWidth(elemTy);
+  if (byteWidth <= 1 || !isPowerOfTwo(byteWidth))
+    return 0;
+  return log2PowerOfTwo(byteWidth);
+}
+
 std::optional<AddrResolution>
 resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
-               bool topLevel) {
+               bool topLevel, ::mlir::Type elemTy) {
   if (topLevel) {
     if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
       ::mlir::Value base = gep.getBase();
@@ -108,15 +144,16 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
       ::mlir::Value idx = dynIdxs.front();
       if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
         return std::nullopt;
-      return AddrResolution{base, idx, gep.getOperation()};
+      return AddrResolution{base, idx, getByteToElementShift(gep, elemTy),
+                            gep.getOperation()};
     }
     if (auto carry = loadStorePtr.getDefiningOp<::dataflow::CarryOp>()) {
       if (!isGraphPtrBlockArg(carry.getInit(), graph))
         return std::nullopt;
-      return AddrResolution{carry.getOutput(), {}, nullptr};
+      return AddrResolution{carry.getOutput(), {}, 0, nullptr};
     }
     if (isGraphPtrBlockArg(loadStorePtr, graph))
-      return AddrResolution{loadStorePtr, {}, nullptr};
+      return AddrResolution{loadStorePtr, {}, 0, nullptr};
     return std::nullopt;
   }
   // Nested permissive fallback.
@@ -127,10 +164,12 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
     if (dynIdxs.size() == 1) {
       ::mlir::Value idx = dynIdxs.front();
       if (::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
-        return AddrResolution{gep.getBase(), idx, gep.getOperation()};
+        return AddrResolution{gep.getBase(), idx,
+                              getByteToElementShift(gep, elemTy),
+                              gep.getOperation()};
     }
   }
-  return AddrResolution{loadStorePtr, {}, nullptr};
+  return AddrResolution{loadStorePtr, {}, 0, nullptr};
 }
 
 // Materialize (or look up) an unrealized_conversion_cast bridging
@@ -187,6 +226,36 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   return out;
 }
 
+::mlir::Value
+getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
+                ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache,
+                ::mlir::Value intIndex, unsigned byteToElementShift,
+                ::mlir::Value ctrl, ::mlir::Location loc, bool topLevel,
+                ::mlir::Operation *insertBeforeIfNested) {
+  if (byteToElementShift == 0)
+    return getIndexCast(builder, graph, cache, intIndex, loc, topLevel,
+                        insertBeforeIfNested);
+  auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(intIndex.getType());
+  if (!intTy)
+    return getIndexCast(builder, graph, cache, intIndex, loc, topLevel,
+                        insertBeforeIfNested);
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  if (topLevel)
+    builder.setInsertionPointToStart(&graph.getBody().front());
+  else
+    builder.setInsertionPoint(insertBeforeIfNested);
+  auto shiftAttr = builder.getIntegerAttr(intTy, byteToElementShift);
+  ::mlir::Value shiftAmount =
+      ::dataflow::ConstantOp::create(builder, loc, intTy, ctrl, shiftAttr)
+          .getValue();
+  ::mlir::Value elemIndex =
+      ::mlir::arith::ShRUIOp::create(builder, loc, intIndex, shiftAmount)
+          .getResult();
+  return getIndexCast(builder, graph, cache, elemIndex, loc, topLevel,
+                      insertBeforeIfNested);
+}
+
 ::mlir::Value getZeroIndex(::mlir::OpBuilder &builder,
                            ::dataflow::GraphFuncOp graph,
                            ::mlir::Value &cached, ::mlir::Location loc,
@@ -238,7 +307,7 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   // Pointer-element loads/stores trip the streaming verifier; skip.
   if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(elemTy))
     return false;
-  auto resolved = resolvePointer(ptrArg, ctx.graph, topLevel);
+  auto resolved = resolvePointer(ptrArg, ctx.graph, topLevel, elemTy);
   if (!resolved)
     return false;
   ::mlir::Location loc = op->getLoc();
@@ -249,8 +318,10 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
                       elemTy, loc, topLevel, op);
   ::mlir::Value addr =
       resolved->intIndex
-          ? getIndexCast(builder, ctx.graph, ctx.indexCastCache,
-                         resolved->intIndex, loc, topLevel, op)
+          ? getElementIndex(builder, ctx.graph, ctx.indexCastCache,
+                            resolved->intIndex,
+                            resolved->byteToElementShift, ctx.ctrl, loc,
+                            topLevel, op)
           : getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
   if (isLoad) {
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);

@@ -182,16 +182,19 @@ def main() -> int:
                 "shared_reduction_adg::fabric.op#2.operand1",
             ),
             (
-                "shared_reduction_adg::mem.load#0.result1",
-                "shared_reduction_adg::fabric.op#31.operand0",
-            ),
-            (
                 "shared_reduction_adg::fabric.op#0.result1",
                 "shared_reduction_adg::fabric.op#1.operand0",
             ),
         }
         if not required_endpoints.issubset(endpoint_pairs):
             raise AssertionError(f"explicit mapping route endpoints changed: {endpoint_pairs}")
+        sync_endpoint = re.compile(r"shared_reduction_adg::fabric\.op#[0-9]+\.operand0")
+        if not any(
+            source == "shared_reduction_adg::mem.load#0.result1"
+            and sync_endpoint.fullmatch(str(sink))
+            for source, sink in endpoint_pairs
+        ):
+            raise AssertionError(f"explicit mapping missed load-done sync endpoint: {endpoint_pairs}")
         switch_operand = re.compile(r"shared_reduction_adg::fabric\.switch#[0-9]+\.operand0")
         switch_result = re.compile(r"shared_reduction_adg::fabric\.switch#[0-9]+\.result0")
         required_switch_paths = (

@@ -1280,8 +1280,60 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   };
   addBinary32SinkPe("sum", "arith.addi");
   addBinary32SinkPe("product", "arith.muli");
-  addBinary32SinkPe("shifted", "arith.shrui");
-  addBinary32SinkPe("shifted", "arith.shli");
+  PeSpec addrShiftConstPe;
+  addrShiftConstPe.inputs = {{"pa", "ctrl", "!fabric.bits<0>",
+                              "!fabric.bits<32>"}};
+  addrShiftConstPe.resultNames = {"addr_shift_const"};
+  addrShiftConstPe.resultTypes = {"!fabric.bits<32>"};
+  addrShiftConstPe.fus.push_back(
+      FuSpec{{{"ctrl_in", "pa", "!fabric.bits<32>", "!fabric.bits<0>"}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"value"},
+                           {"dataflow.constant"},
+                           {"ctrl_in"},
+                           {"!fabric.bits<0>"},
+                           {"!fabric.bits<32>"},
+                           {{"const_hex_value", {"0x00000002"}}},
+                           {}}},
+             {"value"}});
+  module.addPe(std::move(addrShiftConstPe));
+
+  PeSpec addrUnscalePe;
+  addrUnscalePe.inputs = {{"pa", "addr_unscale_lhs", "!fabric.bits<32>", ""},
+                          {"pb", "addr_unscale_rhs", "!fabric.bits<32>", ""}};
+  addrUnscalePe.resultNames = {"addr_unscaled"};
+  addrUnscalePe.resultTypes = {"!fabric.bits<32>"};
+  addrUnscalePe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"shifted"},
+                           {"arith.shrui"},
+                           {"lhs", "rhs"},
+                           {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"shifted"}});
+  module.addPe(std::move(addrUnscalePe));
+  PeSpec addrShiftPe;
+  addrShiftPe.inputs = {{"pa", "i32a", "!fabric.bits<32>", ""},
+                        {"pb", "i32b", "!fabric.bits<32>", ""}};
+  addrShiftPe.resultNames = {"addr_shifted"};
+  addrShiftPe.resultTypes = {"!fabric.bits<32>"};
+  addrShiftPe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"shifted"},
+                           {"arith.shli"},
+                           {"lhs", "rhs"},
+                           {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"shifted"}});
+  module.addPe(std::move(addrShiftPe));
   addBinary32SinkPe("masked", "arith.andi");
   addBinary32SinkPe("combined", "arith.ori");
   addBinary32SinkPe("combined", "arith.xori");
@@ -1518,11 +1570,11 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%store0_value = fabric.switch [spatial] %scan_store_value, "
-      "%fp_running, %running, %mac_result");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+      "%fp_running, %running, %mac_result, %data0");
+  module.addExactBodyLine("  [{connectivity_table = [\"11111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%vector_sync_mid = fabric.switch [spatial] %done1, %store_done0");
@@ -1563,10 +1615,23 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
-      "%load0_addr = fabric.switch [spatial] %idx, %addr_masked");
+      "%addr_unscale_lhs = fabric.switch [spatial] %i32a, %addr_shifted");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%addr_unscale_rhs = fabric.switch [spatial] %i32b, %addr_shift_const");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%load0_addr = fabric.switch [spatial] %idx, %addr_masked, "
+      "%addr_shifted, %addr_unscaled");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> "
+      "!fabric.bits<32>");
   module.addExactBodyLine(
       "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
       "%store_done0, %store_done1 =");

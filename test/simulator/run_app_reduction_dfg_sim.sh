@@ -312,6 +312,19 @@ downsample_avg_row_values() {
     printf "%s" "${values}"
 }
 
+downsample_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 15); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", i * 3 + 1 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
 matrix_vector_row_values() {
     local row="$1"
     local values=""
@@ -638,6 +651,17 @@ case "${CASE}" in
         ;;
     downsample_avg)
         configure_downsample_avg_args 0
+        ;;
+    downsample)
+        append_ctrl_tokens 4
+        append_repeated_arg 1 4 4
+        append_raw_memref 2 "$(downsample_input_values)"
+        append_constant_memref 3 4 "0.000000e+00"
+        append_index_tokens 4 4
+        sim_args+=(
+            --graph g_t_downsample_0_0
+            --workload downsample
+        )
         ;;
     fir_filter)
         append_ctrl_tokens 3

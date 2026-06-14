@@ -58,6 +58,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     dotproduct
     axpy
     bit_reverse
+    downsample
     downsample_avg
     prefix_sum
     cumsum

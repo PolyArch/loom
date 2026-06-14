@@ -1,6 +1,7 @@
 // RUN: rm -rf %t.dir
 // RUN: env BUILD_DIR=%t.dir/bit_reverse LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/bit_reverse/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/byte_swap LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/byte_swap/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/downsample LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/downsample/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/downsample_avg LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/downsample_avg/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/conv1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/conv1d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/convolve_1d LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/convolve_1d/dfg_check.sh
@@ -30,6 +31,7 @@
 // RUN: env BUILD_DIR=%t.dir/integrate_trapz LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/integrate_trapz/dfg_check.sh
 // RUN: loom-pnr-map --dfg-mlir %t.dir/bit_reverse/main_func.dfg.mlir --graph g_t_bit_reverse_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload bit_reverse --output %t.dir/bit_reverse.mapping.csv --artifact %t.dir/bit_reverse.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/byte_swap/main_func.dfg.mlir --graph g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload byte_swap --output %t.dir/byte_swap.mapping.csv --artifact %t.dir/byte_swap.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/downsample/main_func.dfg.mlir --graph g_t_downsample_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload downsample --output %t.dir/downsample.mapping.csv --artifact %t.dir/downsample.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/downsample_avg/main_func.dfg.mlir --graph g_t_downsample_avg_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload downsample_avg --output %t.dir/downsample_avg.mapping.csv --artifact %t.dir/downsample_avg.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/downsample_avg/main_func.dfg.mlir --graph g_t_main_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload downsample_avg --output %t.dir/downsample_avg.init.mapping.csv --artifact %t.dir/downsample_avg.init.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/conv1d/main_func.dfg.mlir --graph g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload conv1d --output %t.dir/conv1d.mapping.csv --artifact %t.dir/conv1d.mapping.json
@@ -64,6 +66,8 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/integrate_trapz/main_func.dfg.mlir --graph g_t_integrate_trapz_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload integrate_trapz --output %t.dir/integrate_trapz.mapping.csv --artifact %t.dir/integrate_trapz.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,BIT-REVERSE < %t.dir/bit_reverse.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,BYTE-SWAP < %t.dir/byte_swap.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,DOWNSAMPLE < %t.dir/downsample.mapping.csv
+// RUN: FileCheck %s --check-prefix=DOWNSAMPLE-JSON < %t.dir/downsample.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,DOWNSAMPLE-AVG < %t.dir/downsample_avg.mapping.csv
 // RUN: FileCheck %s --check-prefix=DOWNSAMPLE-AVG-JSON < %t.dir/downsample_avg.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,DOWNSAMPLE-AVG-INIT < %t.dir/downsample_avg.init.mapping.csv
@@ -135,6 +139,22 @@
 // BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,2,11,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,2,2,0,fail,unrouted software edges lack Fabric ADG connectivity
+
+// DOWNSAMPLE-NEXT: downsample,shared_reduction_adg,downsample__g_t_downsample_0_0__shared_reduction_adg,6,6,0,0,pass,mapped software graph to fabric resources
+
+// DOWNSAMPLE-JSON-DAG: "workload": "downsample"
+// DOWNSAMPLE-JSON-DAG: "hardware": "shared_reduction_adg"
+// DOWNSAMPLE-JSON-DAG: "status": "pass"
+// DOWNSAMPLE-JSON-DAG: "placed_records": 6
+// DOWNSAMPLE-JSON-DAG: "routed_edges": 6
+// DOWNSAMPLE-JSON-DAG: "unrouted_edges": 0
+// DOWNSAMPLE-JSON-DAG: "edge_ref": "dataflow.constant#0.result0->arith.shrui#0.operand1"
+// DOWNSAMPLE-JSON-DAG: "edge_ref": "arith.shli#0.result0->arith.shrui#0.operand0"
+// DOWNSAMPLE-JSON-DAG: "edge_ref": "arith.shrui#0.result0->dataflow.load#0.operand1"
+// DOWNSAMPLE-JSON-DAG: "edge_ref": "dataflow.load#0.result0->dataflow.store#0.operand2"
+// DOWNSAMPLE-JSON-DAG: "segment_kind": "module_path"
+// DOWNSAMPLE-JSON-NOT: ".out"
+// DOWNSAMPLE-JSON-NOT: ".in"
 
 // DOWNSAMPLE-AVG-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_downsample_avg_0_0__shared_reduction_adg,7,9,0,0,pass,mapped software graph to fabric resources
 
@@ -323,12 +343,12 @@
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::mem.load#0.result0"
 // TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand1"
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.result0"
-// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#9.operand0"
+// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#{{[0-9]+}}.operand0"
 // TRAPZ-JSON-DAG: "edge_ref": "arith.subf#0.result0->llvm.intr.fmuladd#0.operand1"
-// TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.pe#5.result0"
+// TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.pe#{{[0-9]+}}.result0"
 // TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand2"
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.result0"
-// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#20.operand1"
+// TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#{{[0-9]+}}.operand1"
 // TRAPZ-JSON-DAG: "segment_kind": "module_path"
 // TRAPZ-JSON-NOT: ".out"
 // TRAPZ-JSON-NOT: ".in"

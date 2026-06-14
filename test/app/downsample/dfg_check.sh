@@ -5,7 +5,9 @@ set -euo pipefail
 export LC_ALL=C
 
 KERNEL="downsample"
-EXPECT_GRAPH="no"
+EXPECT_GRAPH="yes"
+EXPECT_STREAM="no"
+EXPECT_STORE="yes"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "${HERE}/../../.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-${REPO}/temp/test-runs/${KERNEL}-dfg}"

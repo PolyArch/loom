@@ -20,6 +20,7 @@ DEFAULT_SWEEP_CASES = (
     "dotproduct",
     "axpy",
     "bit_reverse",
+    "downsample",
     "downsample_avg",
     "prefix_sum",
     "cumsum",
@@ -461,6 +462,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "bit_reverse",
                 "--case",
+                "downsample",
+                "--case",
                 "spmv",
                 "--case",
                 "byte_swap",
@@ -532,6 +535,7 @@ def main(argv: list[str]) -> int:
             "spmv",
             "axpy",
             "byte_swap",
+            "downsample",
             "xor_block",
             "vecmul",
             "vecscale",
@@ -564,7 +568,7 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "gemm",
             {
-                "arith.shli#0.result0->dataflow.load#1.operand1",
+                "arith.shrui#0.result0->dataflow.load#1.operand1",
                 "dataflow.invariant#0.result0->arith.shli#0.operand1",
                 "dataflow.stream#0.result0->arith.shli#0.operand0",
             },
@@ -580,6 +584,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
@@ -621,6 +626,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
+        assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "correlation")
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
@@ -655,6 +661,7 @@ def main(argv: list[str]) -> int:
             "spmv",
             "axpy",
             "byte_swap",
+            "downsample",
             "xor_block",
             "vecmul",
             "prefix_sum",
@@ -691,6 +698,9 @@ def main(argv: list[str]) -> int:
         byte_swap_row = one_row(rows, "byte_swap")
         if byte_swap_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"byte_swap should use shared vector hardware: {byte_swap_row}")
+        downsample_row = one_row(rows, "downsample")
+        if downsample_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"downsample should use shared reduction hardware: {downsample_row}")
         xor_block_row = one_row(rows, "xor_block")
         if xor_block_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"xor_block should use shared vector hardware: {xor_block_row}")
@@ -729,14 +739,14 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 23,
+            "pass": 24,
             "fail": 7,
             "blocked": 8,
             "unsupported": 0,
-            "missing_status": 71,
+            "missing_status": 70,
         }
         if counts != expected_counts:
-            raise AssertionError(f"app counter shape should reflect vecscale promotion: {counts}")
+            raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
             "bash",

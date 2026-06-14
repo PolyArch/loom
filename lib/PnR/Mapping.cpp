@@ -12,11 +12,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/AsmState.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
@@ -248,6 +250,54 @@ std::string configValue(mlir::Attribute attr) {
   return text;
 }
 
+std::string apintToHexString(const llvm::APInt &value) {
+  llvm::SmallString<32> hex;
+  value.toString(hex, /*Radix=*/16, /*Signed=*/false,
+                 /*formatAsCLiteral=*/false);
+  for (char &ch : hex) {
+    if (ch >= 'A' && ch <= 'F')
+      ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  std::string out = "0x";
+  out += hex.c_str();
+  return out;
+}
+
+std::optional<std::string> encodeConstHex(mlir::Attribute attr) {
+  if (auto integer = llvm::dyn_cast_if_present<mlir::IntegerAttr>(attr))
+    return apintToHexString(integer.getValue());
+  if (auto fp = llvm::dyn_cast_if_present<mlir::FloatAttr>(attr))
+    return apintToHexString(fp.getValue().bitcastToAPInt());
+  if (auto stringAttr = llvm::dyn_cast_if_present<mlir::StringAttr>(attr)) {
+    llvm::StringRef value = stringAttr.getValue();
+    if (value.starts_with("0x") || value.starts_with("0X"))
+      return value.str();
+    return ("0x" + value).str();
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> canonicalHexValue(llvm::StringRef value) {
+  if (!(value.starts_with("0x") || value.starts_with("0X")))
+    return std::nullopt;
+  llvm::StringRef digits = value.drop_front(2);
+  if (digits.empty())
+    return std::nullopt;
+  std::string lowered;
+  lowered.reserve(digits.size());
+  for (char ch : digits) {
+    if (!llvm::isHexDigit(ch))
+      return std::nullopt;
+    if (ch >= 'A' && ch <= 'F')
+      ch = static_cast<char>(ch - 'A' + 'a');
+    lowered.push_back(ch);
+  }
+  std::size_t firstNonZero = lowered.find_first_not_of('0');
+  if (firstNonZero == std::string::npos)
+    return std::string("0x0");
+  return "0x" + lowered.substr(firstNonZero);
+}
+
 std::string scheduleName(fabric::Schedule schedule) {
   return fabric::stringifySchedule(schedule).str();
 }
@@ -260,11 +310,19 @@ std::optional<std::string> predicateConfig(mlir::Operation *op) {
   return std::nullopt;
 }
 
+std::optional<std::string> constantConfig(mlir::Operation *op) {
+  if (op->getName().getStringRef() != "dataflow.constant")
+    return std::nullopt;
+  return encodeConstHex(op->getAttr("const_value"));
+}
+
 std::map<std::string, std::string>
 softwareConfigsFor(const SoftwareNode &node) {
   std::map<std::string, std::string> configs;
   if (std::optional<std::string> predicate = predicateConfig(node.op))
     configs.try_emplace("predicate", *predicate);
+  if (std::optional<std::string> constant = constantConfig(node.op))
+    configs.try_emplace("const_hex_value", *constant);
   return configs;
 }
 
@@ -743,15 +801,39 @@ llvm::Expected<HardwareModel> collectHardwareModel(mlir::Operation *hardware,
   return model;
 }
 
-bool resourceSupportsConfig(const HardwareResource &resource,
+bool configValuesMatch(llvm::StringRef key, llvm::StringRef hardwareValue,
+                       llvm::StringRef softwareValue) {
+  if (key == "const_hex_value") {
+    std::optional<std::string> hardwareHex = canonicalHexValue(hardwareValue);
+    std::optional<std::string> softwareHex = canonicalHexValue(softwareValue);
+    if (hardwareHex && softwareHex)
+      return *hardwareHex == *softwareHex;
+  }
+  return hardwareValue == softwareValue;
+}
+
+std::optional<std::string>
+resolvedSoftwareConfigValue(const HardwareResource &resource,
                             llvm::StringRef key, llvm::StringRef value) {
   auto fixed = resource.swConfigs.find(key.str());
-  if (fixed != resource.swConfigs.end())
-    return fixed->second == value;
+  if (fixed != resource.swConfigs.end()) {
+    if (configValuesMatch(key, fixed->second, value))
+      return fixed->second;
+    return std::nullopt;
+  }
   auto allowed = resource.hwParamOptions.find(key.str());
   if (allowed == resource.hwParamOptions.end() || allowed->second.empty())
-    return true;
-  return allowed->second.count(value.str()) != 0;
+    return value.str();
+  for (const std::string &allowedValue : allowed->second) {
+    if (configValuesMatch(key, allowedValue, value))
+      return allowedValue;
+  }
+  return std::nullopt;
+}
+
+bool resourceSupportsConfig(const HardwareResource &resource,
+                            llvm::StringRef key, llvm::StringRef value) {
+  return resolvedSoftwareConfigValue(resource, key, value).has_value();
 }
 
 bool resourceSupportsSoftwareConfigs(const SoftwareNode &node,
@@ -1157,13 +1239,15 @@ llvm::Error appendPlacementConfig(MappingSummary &summary,
     emittedSwConfigKeys.insert("op_sel");
   }
   for (const auto &[key, value] : softwareConfigsFor(node)) {
-    if (!resourceSupportsConfig(resource, key, value))
+    std::optional<std::string> resolvedValue =
+        resolvedSoftwareConfigValue(resource, key, value);
+    if (!resolvedValue)
       return llvm::createStringError(
           std::errc::invalid_argument,
           "hardware resource %s does not support software config %s=%s",
           resource.id.c_str(), key.c_str(), value.c_str());
-    addConfig(summary.configEntries, resource.id, "sw_configs." + key, value,
-              source);
+    addConfig(summary.configEntries, resource.id, "sw_configs." + key,
+              *resolvedValue, source);
     emittedSwConfigKeys.insert(key);
   }
   for (const auto &[key, value] : resource.swConfigs) {
