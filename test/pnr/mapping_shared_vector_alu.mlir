@@ -19,6 +19,11 @@
 // RUN: FileCheck %s --check-prefix=VECSCALE-CSV < %t.dir/vecscale.mapping.csv
 // RUN: FileCheck %s --check-prefix=VECSCALE-JSON < %t.dir/vecscale.mapping.json
 
+// RUN: env BUILD_DIR=%t.dir/axpy LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/axpy/dfg_check.sh
+// RUN: loom-pnr-map --dfg-mlir %t.dir/axpy/main_func.dfg.mlir --graph g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0 --hardware-mlir %S/shared_vector_alu_adg.mlir --hardware shared_vector_alu_adg --workload axpy --output %t.dir/axpy.mapping.csv --artifact %t.dir/axpy.mapping.json
+// RUN: FileCheck %s --check-prefix=AXPY-CSV < %t.dir/axpy.mapping.csv
+// RUN: FileCheck %s --check-prefix=AXPY-JSON < %t.dir/axpy.mapping.json
+
 // BYTE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // BYTE-CSV-NEXT: byte_swap,shared_vector_alu_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_vector_alu_adg,4,4,0,0,pass,mapped software graph to fabric resources
 
@@ -106,3 +111,26 @@
 // VECSCALE-JSON-DAG: "segment_kind": "module_path"
 // VECSCALE-JSON-NOT: ".out"
 // VECSCALE-JSON-NOT: ".in"
+
+// AXPY-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// AXPY-CSV-NEXT: axpy,shared_vector_alu_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_vector_alu_adg,6,7,0,0,pass,mapped software graph to fabric resources
+
+// AXPY-JSON-DAG: "kind": "pnr_mapping"
+// AXPY-JSON-DAG: "workload": "axpy"
+// AXPY-JSON-DAG: "hardware": "shared_vector_alu_adg"
+// AXPY-JSON-DAG: "status": "pass"
+// AXPY-JSON-DAG: "placed_records": 6
+// AXPY-JSON-DAG: "routed_edges": 7
+// AXPY-JSON-DAG: "unrouted_edges": 0
+// AXPY-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.muli#0.operand0"
+// AXPY-JSON-DAG: "edge_ref": "arith.muli#0.result0->arith.addi#0.operand0"
+// AXPY-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.addi#0.operand1"
+// AXPY-JSON-DAG: "edge_ref": "arith.addi#0.result0->dataflow.store#0.operand2"
+// AXPY-JSON-DAG: "source_endpoint": "shared_vector_alu_adg::fabric.switch#0.result1"
+// AXPY-JSON-DAG: "sink_endpoint": "shared_vector_alu_adg::fabric.op#4.operand1"
+// AXPY-JSON-DAG: "source_endpoint": "shared_vector_alu_adg::fabric.switch#1.result0"
+// AXPY-JSON-DAG: "sink_endpoint": "shared_vector_alu_adg::mem.store#0.operand1"
+// AXPY-JSON-DAG: "segment_kind": "resource_edge"
+// AXPY-JSON-DAG: "segment_kind": "module_path"
+// AXPY-JSON-NOT: ".out"
+// AXPY-JSON-NOT: ".in"

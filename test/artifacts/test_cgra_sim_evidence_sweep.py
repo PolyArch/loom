@@ -54,7 +54,6 @@ DEFAULT_SWEEP_CASES = (
     "variance",
 )
 BLOCKED_SWEEP_CASES = (
-    "axpy",
     "bit_reverse",
     "compare_swap",
     "gemm",
@@ -531,6 +530,7 @@ def main(argv: list[str]) -> int:
             "reduction",
             "dotproduct",
             "spmv",
+            "axpy",
             "byte_swap",
             "xor_block",
             "vecmul",
@@ -578,7 +578,7 @@ def main(argv: list[str]) -> int:
             assert_unsupported_operation(evidence_dir, case, "scf.for")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "axpy", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
@@ -616,6 +616,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecscale")
+        assert_mapping_uses_switch_multihop(evidence_dir, "axpy")
         assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
@@ -652,6 +653,7 @@ def main(argv: list[str]) -> int:
             "reduction",
             "dotproduct",
             "spmv",
+            "axpy",
             "byte_swap",
             "xor_block",
             "vecmul",
@@ -683,6 +685,9 @@ def main(argv: list[str]) -> int:
         spmv_row = one_row(rows, "spmv")
         if spmv_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"spmv should use shared reduction hardware: {spmv_row}")
+        axpy_row = one_row(rows, "axpy")
+        if axpy_row["hardware_system"] != "shared_vector_alu_adg":
+            raise AssertionError(f"axpy should use shared vector hardware: {axpy_row}")
         byte_swap_row = one_row(rows, "byte_swap")
         if byte_swap_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"byte_swap should use shared vector hardware: {byte_swap_row}")
@@ -724,8 +729,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 22,
-            "fail": 8,
+            "pass": 23,
+            "fail": 7,
             "blocked": 8,
             "unsupported": 0,
             "missing_status": 71,

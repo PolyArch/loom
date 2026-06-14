@@ -187,7 +187,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "byte_swap" || "${CASE}" == "xor_block" || "${CASE}" == "vecmul" || "${CASE}" == "vecscale" ]]; then
+    if [[ "${CASE}" == "axpy" || "${CASE}" == "byte_swap" || "${CASE}" == "xor_block" || "${CASE}" == "vecmul" || "${CASE}" == "vecscale" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_vector_alu_adg.mlir"
       hardware_name="shared_vector_alu_adg"
     fi
