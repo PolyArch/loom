@@ -168,6 +168,37 @@ append_hash_mix_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+append_sbox_lookup_memrefs() {
+    local input_index="$1"
+    local table_index="$2"
+    local output_index="$3"
+    local input_count=64
+    local table_count=256
+    local input_values=""
+    local table_values=""
+    local output_values=""
+    local value=""
+    for i in $(seq 0 $((input_count - 1))); do
+        value=$(((i * 13 + 17) & 255))
+        if [[ -n "${input_values}" ]]; then
+            input_values+=","
+            output_values+=","
+        fi
+        input_values+="${value}"
+        output_values+="0"
+    done
+    for i in $(seq 0 $((table_count - 1))); do
+        value=$(((i * 7 + 31) & 255))
+        if [[ -n "${table_values}" ]]; then
+            table_values+=","
+        fi
+        table_values+="${value}"
+    done
+    sim_args+=(--memref "${input_index}=${input_values}")
+    sim_args+=(--memref "${table_index}=${table_values}")
+    sim_args+=(--memref "${output_index}=${output_values}")
+}
+
 to_i32_literal() {
     local value=$(( $1 & 0xffffffff ))
     if (( value >= 2147483648 )); then
@@ -826,6 +857,16 @@ case "${CASE}" in
         ;;
     rotate_bits)
         configure_rotate_bits_args
+        ;;
+    sbox_lookup)
+        append_ctrl_tokens 64
+        append_sbox_lookup_memrefs 1 3 4
+        append_repeated_arg 2 64 255
+        append_index_tokens 5 64
+        sim_args+=(
+            --graph g_t_main_2_0
+            --workload sbox_lookup
+        )
         ;;
     upsample)
         append_ctrl_tokens 4

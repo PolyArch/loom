@@ -51,6 +51,7 @@ DEFAULT_SWEEP_CASES = (
     "xor_block",
     "relu",
     "rotate_bits",
+    "sbox_lookup",
     "upsample",
     "vecadd",
     "vecmul",
@@ -67,6 +68,7 @@ BLOCKED_SWEEP_CASES = (
     "integrate_trapz",
     "relu",
     "rotate_bits",
+    "sbox_lookup",
     "upsample",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
@@ -576,6 +578,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "rotate_bits",
                 "--case",
+                "sbox_lookup",
+                "--case",
                 "upsample",
             ],
         )
@@ -630,6 +634,17 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "upsample",
             {"arith.shrui#0.result0->dataflow.store#0.operand1"},
+        )
+        assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
+        assert_mapping_unrouted_edges(
+            evidence_dir,
+            "sbox_lookup",
+            {
+                "arith.andi#0.result0->llvm.zext#0.operand0",
+                "dataflow.load#0.result0->arith.andi#0.operand0",
+                "dataflow.load#1.result0->dataflow.store#0.operand2",
+                "llvm.zext#0.result0->dataflow.load#1.operand1",
+            },
         )
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
@@ -686,6 +701,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
@@ -814,10 +830,10 @@ def main(argv: list[str]) -> int:
         expected_counts = {
             "total": 109,
             "pass": 24,
-            "fail": 8,
+            "fail": 9,
             "blocked": 10,
             "unsupported": 0,
-            "missing_status": 67,
+            "missing_status": 66,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
