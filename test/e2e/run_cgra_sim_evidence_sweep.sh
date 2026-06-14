@@ -52,6 +52,7 @@ fi
 
 if [[ ${#CASES[@]} -eq 0 ]]; then
   CASES=(
+    autocorrelation
     vecsum
     vecsum-while
     dotproduct
@@ -75,7 +76,11 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     spmv
     convolve_1d
     conv1d
+    convolve_1d_same
+    crc32
+    fir_filter
     gemv
+    gemm
     matvec
     byte_swap
     xor_block

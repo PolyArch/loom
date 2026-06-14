@@ -50,6 +50,9 @@ if [[ -z "${OUT_DIR}" ]]; then
 fi
 
 case "${CASE}" in
+  autocorrelation)
+    case_graph="g_t_autocorrelation_kernel_red_0_0"
+    ;;
   vecsum)
     case_graph="g_t_vecsum_red_0_0"
     ;;
@@ -119,8 +122,20 @@ case "${CASE}" in
   conv1d)
     case_graph="g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
     ;;
+  convolve_1d_same)
+    case_graph="g_t_convolve_1d_same_kernel_red_0_0"
+    ;;
+  crc32)
+    case_graph="g_t_crc32_kernel_red_0_0"
+    ;;
+  fir_filter)
+    case_graph="g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0"
+    ;;
   gemv)
     case_graph="g_t_gemv_kernel_0_0"
+    ;;
+  gemm)
+    case_graph="g_t__ZN12_GLOBAL__N_14gemmEPKfS1_Pfiii_0_0"
     ;;
   matvec)
     case_graph="g_t_matvec_kernel_0_0"

@@ -259,6 +259,44 @@ append_byte_swap_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+append_crc32_input_memref() {
+    local index="$1"
+    local count=16
+    local values=""
+    local value=""
+    for i in $(seq 0 $((count - 1))); do
+        value="$(to_i32_literal $((i * 0x12345678)))"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    sim_args+=(--memref "${index}=${values}")
+}
+
+append_crc32_table_memref() {
+    local index="$1"
+    local values
+    values="$(python3 - <<'PY'
+poly = 0xEDB88320
+values = []
+for i in range(256):
+    crc = i
+    for _ in range(8):
+        if crc & 1:
+            crc = (crc >> 1) ^ poly
+        else:
+            crc >>= 1
+    crc &= 0xFFFFFFFF
+    if crc >= 2**31:
+        crc -= 2**32
+    values.append(str(crc))
+print(",".join(values))
+PY
+)"
+    sim_args+=(--memref "${index}=${values}")
+}
+
 downsample_avg_row_values() {
     local row="$1"
     local values=""
@@ -465,6 +503,24 @@ configure_downsample_avg_init_args() {
 }
 
 case "${CASE}" in
+    autocorrelation)
+        sim_args+=(
+            --graph g_t_autocorrelation_kernel_red_0_0
+            --workload autocorrelation
+            --arg 0=none
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 4=0
+            --arg 5=0.000000e+00
+            --arg 6=8
+            --memref 7=1,2,3,4,5,6,7,8
+            --arg 8=0
+            --memref 9=0,0,0,0,0,0,0,0
+            --arg 10=0
+            --arg 11=0
+        )
+        ;;
     axpy)
         configure_axpy_args
         ;;
@@ -502,6 +558,22 @@ case "${CASE}" in
             --arg 6=0.000000e+00
         )
         ;;
+    convolve_1d_same)
+        append_ctrl_tokens 7
+        append_linear_memref 7 128 1 "%.6e"
+        append_constant_memref 8 7 "1.42857149e-01"
+        sim_args+=(
+            --graph g_t_convolve_1d_same_kernel_red_0_0
+            --workload convolve_1d_same
+            --arg 1=0
+            --arg 2=7
+            --arg 3=1
+            --arg 4=-3
+            --arg 5=-1
+            --arg 6=128
+            --arg 9=0.000000e+00
+        )
+        ;;
     convolve_1d)
         append_ctrl_tokens 7
         append_constant_memref 6 7 "1.000000e+00"
@@ -515,6 +587,25 @@ case "${CASE}" in
             --arg 4=4294967295
             --arg 5=0
             --arg 8=0.000000e+00
+        )
+        ;;
+    crc32)
+        append_ctrl_tokens 16
+        append_crc32_input_memref 4
+        append_crc32_table_memref 8
+        sim_args+=(
+            --graph g_t_crc32_kernel_red_0_0
+            --workload crc32
+            --arg 1=0
+            --arg 2=16
+            --arg 3=1
+            --arg 5=8
+            --arg 6=3
+            --arg 7=255
+            --arg 9=0
+            --arg 10=4
+            --arg 11=1
+            --arg 12=-1
         )
         ;;
     correlation)
@@ -547,6 +638,21 @@ case "${CASE}" in
         ;;
     downsample_avg)
         configure_downsample_avg_args 0
+        ;;
+    fir_filter)
+        append_ctrl_tokens 3
+        sim_args+=(
+            --graph g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0
+            --workload fir_filter
+            --arg 1=0
+            --arg 2=3
+            --arg 3=1
+            --arg 4=0
+            --arg 5=-1
+            --memref 6=2.500000e-01,5.000000e-01,2.500000e-01
+            --memref 7=1,2,3,4,5,6,7,8
+            --arg 8=0.000000e+00
+        )
         ;;
     vecadd)
         append_ctrl_tokens 64
@@ -814,6 +920,20 @@ case "${CASE}" in
         ;;
     gemv)
         configure_gemv_row_args 0
+        ;;
+    gemm)
+        append_ctrl_tokens 8
+        append_linear_memref 4 8 1 "%.6e"
+        append_constant_memref 6 225 "1.000000e+00"
+        sim_args+=(
+            --graph g_t__ZN12_GLOBAL__N_14gemmEPKfS1_Pfiii_0_0
+            --workload gemm
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 5=5
+            --arg 7=0.000000e+00
+        )
         ;;
     relu)
         configure_relu_core_args

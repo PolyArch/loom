@@ -14,6 +14,7 @@ import artifact_test_common
 
 
 DEFAULT_SWEEP_CASES = (
+    "autocorrelation",
     "vecsum",
     "vecsum-while",
     "dotproduct",
@@ -37,7 +38,11 @@ DEFAULT_SWEEP_CASES = (
     "spmv",
     "convolve_1d",
     "conv1d",
+    "convolve_1d_same",
+    "crc32",
+    "fir_filter",
     "gemv",
+    "gemm",
     "matvec",
     "byte_swap",
     "xor_block",
@@ -52,6 +57,7 @@ BLOCKED_SWEEP_CASES = (
     "axpy",
     "bit_reverse",
     "compare_swap",
+    "gemm",
     "gemv",
     "hash_mix",
     "integrate_trapz",
@@ -60,6 +66,10 @@ BLOCKED_SWEEP_CASES = (
     "vecscale",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
+    "autocorrelation",
+    "convolve_1d_same",
+    "crc32",
+    "fir_filter",
     "pack_bits",
     "prefix_sum_exclusive",
     "unpack_bits",
@@ -352,6 +362,43 @@ def assert_structured_blocker_row(
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
 
 
+def assert_dfg_dynamic_work_items(evidence_dir: Path, case: str, expected_count: int) -> None:
+    path = evidence_dir / f"{case}.dfg.report.json"
+    data = json.loads(path.read_text())
+    if data.get("dynamic_work_items") != expected_count:
+        raise AssertionError(f"{case} should have {expected_count} dynamic work items: {path}: {data}")
+
+
+def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
+    path = evidence_dir / f"{case}.mapping.json"
+    data = json.loads(path.read_text())
+    details = data.get("unrouted_edge_details")
+    if not isinstance(details, list):
+        raise AssertionError(f"{case} mapping lacks unrouted edge details: {path}: {data}")
+    actual_edges = {
+        str(edge.get("edge_ref"))
+        for edge in details
+        if isinstance(edge, dict) and edge.get("status") == "unrouted"
+    }
+    if actual_edges != expected_edges:
+        raise AssertionError(f"{case} should expose exact unrouted edges {expected_edges}: {path}: {data}")
+
+
+def assert_unsupported_operation(evidence_dir: Path, case: str, operation: str) -> None:
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    dfg = json.loads(dfg_path.read_text())
+    mapping = json.loads(mapping_path.read_text())
+    expected_dfg = f"unsupported op: {operation}"
+    expected_mapping = f"unsupported PnR graph operation: {operation}"
+    if expected_dfg not in dfg.get("diagnostics", []):
+        raise AssertionError(f"{case} DFG unsupported diagnostic should be {expected_dfg}: {dfg_path}: {dfg}")
+    if expected_mapping not in mapping.get("diagnostics", []):
+        raise AssertionError(
+            f"{case} mapping unsupported diagnostic should be {expected_mapping}: {mapping_path}: {mapping}"
+        )
+
+
 def assert_dfg_unsupported_row(repo: Path, rows: list[dict[str, str]], case: str) -> None:
     row = one_row(rows, case)
     if row["status"] != "blocked":
@@ -401,6 +448,8 @@ def main(argv: list[str]) -> int:
                 "test/e2e/run_cgra_sim_evidence_sweep.sh",
                 "--output-dir",
                 str(evidence_dir),
+                "--case",
+                "autocorrelation",
                 "--case",
                 "vecsum",
                 "--case",
@@ -456,9 +505,17 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "conv1d",
                 "--case",
+                "convolve_1d_same",
+                "--case",
+                "crc32",
+                "--case",
                 "variance",
                 "--case",
                 "integrate_trapz",
+                "--case",
+                "fir_filter",
+                "--case",
+                "gemm",
                 "--case",
                 "correlation",
                 "--case",
@@ -502,11 +559,23 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
+        assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
+        assert_mapping_unrouted_edges(
+            evidence_dir,
+            "gemm",
+            {
+                "arith.shli#0.result0->dataflow.load#1.operand1",
+                "dataflow.invariant#0.result0->arith.shli#0.operand1",
+                "dataflow.stream#0.result0->arith.shli#0.operand0",
+            },
+        )
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
+        for case in ("autocorrelation", "convolve_1d_same", "crc32", "fir_filter"):
+            assert_unsupported_operation(evidence_dir, case, "scf.for")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_reduction_adg")
@@ -529,9 +598,14 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "downsample_avg", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "convolve_1d_same", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "crc32", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecscale", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "fir_filter", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
