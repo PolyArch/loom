@@ -56,6 +56,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "f32[64];f32[64]",
         "alignment_bytes": 4,
     },
+    "dot_product_3d": {
+        "byte_size": 448,
+        "element_layout": "f32[48];f32[48];f32[16]",
+        "alignment_bytes": 4,
+    },
     "vecadd": {
         "byte_size": 768,
         "element_layout": "f32[64];f32[64];f32[64]",

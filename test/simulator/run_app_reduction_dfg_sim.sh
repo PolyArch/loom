@@ -383,6 +383,73 @@ configure_axpy_args() {
     )
 }
 
+dot_product_3d_lhs_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 15); do
+        for value in "$((i + 1))" "$(((i % 5) - 2))" "$(((i % 3) + 1))"; do
+            value="$(awk -v value="${value}" 'BEGIN { printf "%.6e", value }')"
+            if [[ -n "${values}" ]]; then
+                values+=","
+            fi
+            values+="${value}"
+        done
+    done
+    printf "%s" "${values}"
+}
+
+dot_product_3d_rhs_values() {
+    local values=""
+    for _ in $(seq 0 15); do
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="2.000000e+00,-3.000000e+00,4.000000e+00"
+    done
+    printf "%s" "${values}"
+}
+
+dot_product_3d_output_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 15); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 2 * (i + 1) - 3 * ((i % 5) - 2) + 4 * ((i % 3) + 1) }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+configure_dot_product_3d_core_args() {
+    append_ctrl_tokens 16
+    append_raw_memref 2 "$(dot_product_3d_lhs_values)"
+    append_raw_memref 5 "$(dot_product_3d_rhs_values)"
+    append_constant_memref 6 16 "0.000000e+00"
+    append_index_tokens 7 16
+    sim_args+=(
+        --graph g_t_dot_product_3d_0_0
+        --workload dot_product_3d
+        --arg 1=3
+        --arg 3=1
+        --arg 4=2
+    )
+}
+
+configure_dot_product_3d_reduction_args() {
+    append_ctrl_tokens 16
+    append_raw_memref 4 "$(dot_product_3d_output_values)"
+    sim_args+=(
+        --graph g_t_main_red_0_0
+        --workload dot_product_3d
+        --arg 1=0
+        --arg 2=16
+        --arg 3=1
+        --arg 5=0.000000e+00
+    )
+}
+
 relu_input_values() {
     local values=""
     local value=""
@@ -800,6 +867,9 @@ case "${CASE}" in
             --arg 6=0.000000e+00
         )
         ;;
+    dot_product_3d)
+        configure_dot_product_3d_core_args
+        ;;
     vecnorm_l2)
         append_ctrl_tokens 64
         append_mod_shift_memref 4 64 11 -5
@@ -996,6 +1066,14 @@ if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "vecadd" ]]; then
         --arg 3=1
         --arg 5=0.000000e+00
     )
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
+    extra_reports+=("${extra_report}")
+fi
+
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "dot_product_3d" ]]; then
+    extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
+    sim_args=()
+    configure_dot_product_3d_reduction_args
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
     extra_reports+=("${extra_report}")
 fi

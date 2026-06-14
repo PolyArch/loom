@@ -56,6 +56,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     vecsum
     vecsum-while
     dotproduct
+    dot_product_3d
     axpy
     bit_reverse
     downsample

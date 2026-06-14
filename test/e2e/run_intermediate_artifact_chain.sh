@@ -62,6 +62,9 @@ case "${CASE}" in
   dotproduct)
     case_graph="g_t_dotproduct_red_0_0"
     ;;
+  dot_product_3d)
+    case_graph="g_t_dot_product_3d_0_0"
+    ;;
   axpy)
     case_graph="g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
     ;;
@@ -350,6 +353,71 @@ if [[ "${CASE}" == "vecadd" ]]; then
     "${mapping_main_artifact}"
     "${mapping_reduction_artifact}"
     "${cgra_main_report}"
+    "${cgra_reduction_report}"
+  )
+elif [[ "${CASE}" == "dot_product_3d" ]]; then
+  dfg_core_report="${OUT_DIR}/dot_product_3d-dfg-sim-core.report.json"
+  dfg_reduction_report="${OUT_DIR}/dot_product_3d-dfg-sim-reduction.report.json"
+  dfg_reduction_generated_report="${OUT_DIR}/dot_product_3d-dfg-sim-core.reduction.report.json"
+  mapping_core_artifact="${OUT_DIR}/pnr-mapping-core.json"
+  mapping_reduction_artifact="${OUT_DIR}/pnr-mapping-reduction.json"
+  mapping_core_summary="${OUT_DIR}/pnr-mapping-core-summary.csv"
+  mapping_reduction_summary="${OUT_DIR}/pnr-mapping-reduction-summary.csv"
+  cgra_core_report="${OUT_DIR}/dot_product_3d-cgra-sim-core-report.json"
+  cgra_reduction_report="${OUT_DIR}/dot_product_3d-cgra-sim-reduction-report.json"
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_core_report}" \
+    "${dfg_cycle}"
+  mv "${dfg_reduction_generated_report}" "${dfg_reduction_report}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_dot_product_3d_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_core_artifact}" \
+    --output "${mapping_core_summary}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_main_red_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_reduction_artifact}" \
+    --output "${mapping_reduction_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_core_report}" \
+    --mapping-artifact "${mapping_core_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_core_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_reduction_report}" \
+    --mapping-artifact "${mapping_reduction_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_reduction_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "dot_product_3d__workload_graph_set__shared_reduction_adg" \
+    --dfg-report "${dfg_core_report}" \
+    --dfg-report "${dfg_reduction_report}" \
+    --mapping-artifact "${mapping_core_artifact}" \
+    --mapping-artifact "${mapping_reduction_artifact}" \
+    --cgra-report "${cgra_core_report}" \
+    --cgra-report "${cgra_reduction_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${dfg_core_report}"
+    "${dfg_reduction_report}"
+    "${mapping_core_artifact}"
+    "${mapping_reduction_artifact}"
+    "${cgra_core_report}"
     "${cgra_reduction_report}"
   )
 elif [[ "${CASE}" == "relu" ]]; then

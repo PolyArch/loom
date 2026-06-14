@@ -18,6 +18,7 @@ DEFAULT_SWEEP_CASES = (
     "vecsum",
     "vecsum-while",
     "dotproduct",
+    "dot_product_3d",
     "axpy",
     "bit_reverse",
     "downsample",
@@ -58,6 +59,7 @@ DEFAULT_SWEEP_CASES = (
 BLOCKED_SWEEP_CASES = (
     "bit_reverse",
     "compare_swap",
+    "dot_product_3d",
     "gemm",
     "gemv",
     "hash_mix",
@@ -400,6 +402,38 @@ def assert_unsupported_operation(evidence_dir: Path, case: str, operation: str) 
         )
 
 
+def assert_component_mapping_status(
+    evidence_dir: Path,
+    case: str,
+    graph: str,
+    expected_status: str,
+    expected_diagnostic: str | None = None,
+) -> None:
+    aggregate_path = evidence_dir / f"{case}.mapping.json"
+    aggregate = json.loads(aggregate_path.read_text())
+    identities = aggregate.get("component_mapping_artifact_identities")
+    if not isinstance(identities, list):
+        raise AssertionError(f"{case} aggregate mapping lacks component identities: {aggregate_path}: {aggregate}")
+    for identity in identities:
+        if not isinstance(identity, str) or not identity:
+            continue
+        component_path = evidence_dir / f"{identity}.json"
+        if not component_path.is_file():
+            raise AssertionError(f"{case} component mapping identity does not resolve: {component_path}")
+        component = json.loads(component_path.read_text())
+        if component.get("graph") != graph:
+            continue
+        if component.get("status") != expected_status:
+            raise AssertionError(f"{case} component {graph} should have status {expected_status}: {component}")
+        diagnostics = component.get("diagnostics", [])
+        if expected_diagnostic is not None and expected_diagnostic not in diagnostics:
+            raise AssertionError(
+                f"{case} component {graph} should include diagnostic {expected_diagnostic}: {component}"
+            )
+        return
+    raise AssertionError(f"{case} aggregate mapping should include component graph {graph}: {aggregate}")
+
+
 def assert_dfg_unsupported_operation(evidence_dir: Path, case: str, operation: str) -> None:
     dfg_path = evidence_dir / f"{case}.dfg.report.json"
     dfg = json.loads(dfg_path.read_text())
@@ -467,6 +501,8 @@ def main(argv: list[str]) -> int:
                 "reduction",
                 "--case",
                 "dotproduct",
+                "--case",
+                "dot_product_3d",
                 "--case",
                 "axpy",
                 "--case",
@@ -571,7 +607,7 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "pass")
         for case in BLOCKED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
-            expected_mapping_status = "blocked" if case == "relu" else "fail"
+            expected_mapping_status = "blocked" if case in {"dot_product_3d", "relu"} else "fail"
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
@@ -595,6 +631,16 @@ def main(argv: list[str]) -> int:
         assert_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
         assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
+        assert_component_references_resolve(evidence_dir, "dot_product_3d")
+        assert_component_mapping_status(
+            evidence_dir,
+            "dot_product_3d",
+            "g_t_dot_product_3d_0_0",
+            "fail",
+            "missing hardware resource for software op llvm.intr.fmuladd",
+        )
+        assert_component_mapping_status(evidence_dir, "dot_product_3d", "g_t_main_red_0_0", "pass")
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
@@ -697,7 +743,9 @@ def main(argv: list[str]) -> int:
             assert_promoted_row(repo, rows, case)
         for case in BLOCKED_SWEEP_CASES:
             expected_status = "blocked" if case == "relu" else "fail"
-            expected_mapping_status = "blocked" if case == "relu" else "fail"
+            if case == "dot_product_3d":
+                expected_status = "blocked"
+            expected_mapping_status = "blocked" if case in {"dot_product_3d", "relu"} else "fail"
             assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_dfg_unsupported_row(repo, rows, case)
@@ -756,9 +804,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 7,
-            "blocked": 9,
+            "blocked": 10,
             "unsupported": 0,
-            "missing_status": 69,
+            "missing_status": 68,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
