@@ -58,6 +58,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     dotproduct
     dot_product_3d
     axpy
+    binary_search
     bit_reverse
     clz
     ctz
@@ -90,14 +91,21 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     convolve_1d_same
     crc32
     fir_filter
+    gather
     gemv
     gemm
+    lower_bound
     matvec
+    moving_avg
+    outer
     byte_swap
+    scatter_add
     xor_block
     relu
     rotate_bits
     sbox_lookup
+    transpose
+    upper_bound
     upsample
     vecadd
     vecmul

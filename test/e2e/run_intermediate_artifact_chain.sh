@@ -68,6 +68,9 @@ case "${CASE}" in
   axpy)
     case_graph="g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
     ;;
+  binary_search)
+    case_graph="missing_primary_graph"
+    ;;
   bit_reverse)
     case_graph="g_t_bit_reverse_kernel_red_0_0"
     ;;
@@ -164,17 +167,32 @@ case "${CASE}" in
   fir_filter)
     case_graph="g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0"
     ;;
+  gather)
+    case_graph="missing_primary_graph"
+    ;;
   gemv)
     case_graph="g_t_gemv_kernel_0_0"
     ;;
   gemm)
     case_graph="g_t__ZN12_GLOBAL__N_14gemmEPKfS1_Pfiii_0_0"
     ;;
+  lower_bound)
+    case_graph="missing_primary_graph"
+    ;;
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
     ;;
+  moving_avg)
+    case_graph="missing_primary_graph"
+    ;;
+  outer)
+    case_graph="missing_primary_graph"
+    ;;
   byte_swap)
     case_graph="g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
+    ;;
+  scatter_add)
+    case_graph="missing_primary_graph"
     ;;
   xor_block)
     case_graph="g_t_xor_block_0_0"
@@ -187,6 +205,12 @@ case "${CASE}" in
     ;;
   sbox_lookup)
     case_graph="g_t_main_2_0"
+    ;;
+  transpose)
+    case_graph="missing_primary_graph"
+    ;;
+  upper_bound)
+    case_graph="missing_primary_graph"
     ;;
   upsample)
     case_graph="g_t_upsample_0_0"
@@ -645,8 +669,11 @@ elif [[ "${CASE}" == "partition" ]]; then
     "${cgra_lower_report}"
     "${cgra_upper_report}"
   )
-elif [[ "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "parity" || "${CASE}" == "popcount" ]]; then
+elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "gather" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "outer" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "transpose" || "${CASE}" == "upper_bound" ]]; then
   case "${CASE}" in
+    binary_search)
+      expected_primary_graph_token="binary_search_candidate"
+      ;;
     clz)
       expected_primary_graph_token="clz_candidate"
       ;;
@@ -656,11 +683,32 @@ elif [[ "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set
     find_first_set)
       expected_primary_graph_token="find_first_set_candidate"
       ;;
+    gather)
+      expected_primary_graph_token="gather"
+      ;;
+    lower_bound)
+      expected_primary_graph_token="lower_bound_candidate"
+      ;;
+    moving_avg)
+      expected_primary_graph_token="moving_avg_kernel"
+      ;;
+    outer)
+      expected_primary_graph_token="outer_kernel"
+      ;;
     parity)
       expected_primary_graph_token="parity"
       ;;
     popcount)
       expected_primary_graph_token="popcount_candidate"
+      ;;
+    scatter_add)
+      expected_primary_graph_token="scatter_add"
+      ;;
+    transpose)
+      expected_primary_graph_token="transpose"
+      ;;
+    upper_bound)
+      expected_primary_graph_token="upper_bound_candidate"
       ;;
   esac
   python3 "${ROOT}/test/e2e/emit_primary_graph_absence_artifacts.py" \

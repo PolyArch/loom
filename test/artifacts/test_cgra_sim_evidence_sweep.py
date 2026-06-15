@@ -20,6 +20,7 @@ DEFAULT_SWEEP_CASES = (
     "dotproduct",
     "dot_product_3d",
     "axpy",
+    "binary_search",
     "bit_reverse",
     "clz",
     "ctz",
@@ -52,14 +53,21 @@ DEFAULT_SWEEP_CASES = (
     "convolve_1d_same",
     "crc32",
     "fir_filter",
+    "gather",
     "gemv",
     "gemm",
+    "lower_bound",
     "matvec",
+    "moving_avg",
+    "outer",
     "byte_swap",
+    "scatter_add",
     "xor_block",
     "relu",
     "rotate_bits",
     "sbox_lookup",
+    "transpose",
+    "upper_bound",
     "upsample",
     "vecadd",
     "vecmul",
@@ -81,6 +89,7 @@ BLOCKED_SWEEP_CASES = (
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
+    "binary_search",
     "clz",
     "compact",
     "convolve_1d_same",
@@ -89,20 +98,35 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "delta_encode",
     "find_first_set",
     "fir_filter",
+    "gather",
+    "lower_bound",
     "merge",
+    "moving_avg",
+    "outer",
     "pack_bits",
     "parity",
     "partition",
     "popcount",
     "prefix_sum_exclusive",
+    "scatter_add",
+    "transpose",
     "unpack_bits",
+    "upper_bound",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
+    ("binary_search", "binary_search_candidate"),
     ("clz", "clz_candidate"),
     ("ctz", "ctz_candidate"),
     ("find_first_set", "find_first_set_candidate"),
+    ("gather", "gather"),
+    ("lower_bound", "lower_bound_candidate"),
+    ("moving_avg", "moving_avg_kernel"),
+    ("outer", "outer_kernel"),
     ("parity", "parity"),
     ("popcount", "popcount_candidate"),
+    ("scatter_add", "scatter_add"),
+    ("transpose", "transpose"),
+    ("upper_bound", "upper_bound_candidate"),
 )
 
 HEADER = [
@@ -548,6 +572,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "axpy",
                 "--case",
+                "binary_search",
+                "--case",
                 "bit_reverse",
                 "--case",
                 "clz",
@@ -561,6 +587,8 @@ def main(argv: list[str]) -> int:
                 "find_first_set",
                 "--case",
                 "spmv",
+                "--case",
+                "gather",
                 "--case",
                 "byte_swap",
                 "--case",
@@ -586,6 +614,12 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "prefix_sum_exclusive",
                 "--case",
+                "lower_bound",
+                "--case",
+                "moving_avg",
+                "--case",
+                "outer",
+                "--case",
                 "pack_bits",
                 "--case",
                 "parity",
@@ -593,6 +627,8 @@ def main(argv: list[str]) -> int:
                 "partition",
                 "--case",
                 "popcount",
+                "--case",
+                "scatter_add",
                 "--case",
                 "unpack_bits",
                 "--case",
@@ -633,6 +669,10 @@ def main(argv: list[str]) -> int:
                 "rotate_bits",
                 "--case",
                 "sbox_lookup",
+                "--case",
+                "transpose",
+                "--case",
+                "upper_bound",
                 "--case",
                 "upsample",
             ],
@@ -732,6 +772,7 @@ def main(argv: list[str]) -> int:
         assert_component_mapping_status(evidence_dir, "dot_product_3d", "g_t_main_red_0_0", "pass")
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
+        assert_mapping_hardware(evidence_dir, "binary_search", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "clz", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "ctz", "shared_reduction_adg")
@@ -766,11 +807,16 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "fir_filter", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "gather", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "lower_bound", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "moving_avg", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "scatter_add", "shared_reduction_adg")
         assert_component_references_resolve(evidence_dir, "partition")
         assert_component_mapping_status(
             evidence_dir,
@@ -789,6 +835,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "upper_bound", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
@@ -918,9 +966,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 9,
-            "blocked": 18,
+            "blocked": 26,
             "unsupported": 0,
-            "missing_status": 58,
+            "missing_status": 50,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
