@@ -219,6 +219,51 @@ def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -
         assert_sha256_file(row["dfg_mlir"], row["dfg_mlir_fingerprint"], repo)
 
 
+def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    sim_evidence = out_dir / "cmsis-sim-evidence"
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--sim-evidence-dir",
+            str(sim_evidence),
+        ],
+    )
+    report = sim_evidence / "arm_abs_f32.dfg.report.json"
+    if not report.is_file():
+        raise AssertionError(f"CMSIS DFG-sim evidence mode should emit {report}")
+    report_data = json.loads(report.read_text())
+    if (
+        report_data.get("kind") != "dfg_sim_report"
+        or report_data.get("workload") != "BasicMathFunctions/arm_abs_f32.c"
+        or report_data.get("status") != "unsupported"
+        or "unsupported op: llvm.intr.fabs" not in report_data.get("diagnostics", [])
+    ):
+        raise AssertionError(f"unexpected CMSIS DFG-sim report: {report_data}")
+    input_fingerprints = report_data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict) or "arm_abs_f32.dfg" not in input_fingerprints:
+        raise AssertionError(f"CMSIS DFG-sim report should fingerprint its input DFG MLIR: {report_data}")
+
+    rows = read_rows(out_dir / "cgra-status-summary.csv")
+    dsp_abs = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
+    if (
+        dsp_abs["status"] != "blocked"
+        or dsp_abs["diagnostic_class"] != "dfg_report_unsupported"
+        or dsp_abs["blocking_prerequisite"] != "dfg_report"
+        or dsp_abs["owner"] != "sim_report"
+        or dsp_abs["dfg_status"] != "unsupported"
+        or "unsupported op: llvm.intr.fabs" not in dsp_abs["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS DFG-sim evidence should become an exact report blocker: {dsp_abs}")
+    assert_sha256_file(dsp_abs["dfg_mlir"], dsp_abs["dfg_mlir_fingerprint"], repo)
+    assert_sha256_file(dsp_abs["dfg_report"], dsp_abs["dfg_report_fingerprint"], repo)
+
+
 def write_legacy_case(root: Path, name: str, *, with_header: bool = True) -> None:
     case_dir = root / name
     case_dir.mkdir(parents=True)
@@ -238,6 +283,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
+        assert_cmsis_dfg_sim_evidence_mode(repo, out_dir / "cmsis-dfg-sim-evidence", legacy_root)
         run(
             repo,
             [

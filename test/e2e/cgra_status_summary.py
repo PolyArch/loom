@@ -545,13 +545,16 @@ def generate_comparison_report(
     return output
 
 
-def has_component_evidence(evidence_dir: Path, case: str) -> bool:
-    patterns = (
-        f"{case}.*.mapping.json",
-        f"{case}.*.cgra.report.json",
-        f"{case}.dfg.*.report.json",
-    )
-    return any(any(evidence_dir.glob(pattern)) for pattern in patterns)
+def has_component_evidence(evidence_dir: Path, stems: Iterable[str]) -> bool:
+    for stem in stems:
+        patterns = (
+            f"{stem}.*.mapping.json",
+            f"{stem}.*.cgra.report.json",
+            f"{stem}.dfg.*.report.json",
+        )
+        if any(any(evidence_dir.glob(pattern)) for pattern in patterns):
+            return True
+    return False
 
 
 def first_problem(
@@ -605,6 +608,17 @@ def comparison_diagnostic(comparison: dict[str, object]) -> str:
     return f"simulation comparison status is {status}" if status else "simulation comparison is unavailable"
 
 
+def artifact_diagnostic(label: str, data: dict[str, object], path: Path, status: str) -> str:
+    if not path.is_file():
+        return f"{label} is absent"
+    if "_json_error" in data:
+        return f"{label} is not valid JSON: {data['_json_error']}"
+    diagnostics = data.get("diagnostics")
+    if isinstance(diagnostics, list) and diagnostics:
+        return "; ".join(str(item) for item in diagnostics)
+    return f"{label} status is {status}"
+
+
 def workload_identity_diagnostics(
     case: str,
     artifacts: tuple[tuple[str, dict[str, object], Path], ...],
@@ -623,16 +637,43 @@ def workload_identity_diagnostics(
     return diagnostics
 
 
+def sim_evidence_stems(row_data: dict[str, str]) -> list[str]:
+    candidates: list[str] = []
+    for value in (row_data.get("case", ""), row_data.get("source_row", "")):
+        if not value:
+            continue
+        candidates.append(value)
+        stem = Path(value).stem
+        if stem:
+            candidates.append(stem)
+    return ordered_unique(candidates)
+
+
+def first_sim_evidence_path(evidence_dir: Path, stems: list[str], suffix: str) -> Path:
+    for stem in stems:
+        path = evidence_dir / f"{stem}{suffix}"
+        if path.is_file():
+            return path
+    return evidence_dir / f"{stems[0]}{suffix}"
+
+
 def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comparison_dir: Path) -> None:
-    if row_data.get("suite") != "app":
-        return
-    if row_data.get("diagnostic_class") == "app_dataflow_tier_missing":
+    suite = row_data.get("suite")
+    if suite == "app":
+        if row_data.get("diagnostic_class") == "app_dataflow_tier_missing":
+            return
+    elif suite in {"cmsis-dsp", "cmsis-nn"}:
+        if row_data.get("diagnostic_class") != "cmsis_dfg_mlir_ready_for_dfg_sim":
+            return
+    else:
         return
     case = row_data["case"]
-    dfg_path = evidence_dir / f"{case}.dfg.report.json"
-    mapping_path = evidence_dir / f"{case}.mapping.json"
-    cgra_path = evidence_dir / f"{case}.cgra.report.json"
-    component_evidence = has_component_evidence(evidence_dir, case)
+    stems = sim_evidence_stems(row_data)
+    dfg_path = first_sim_evidence_path(evidence_dir, stems, ".dfg.report.json")
+    mapping_path = first_sim_evidence_path(evidence_dir, stems, ".mapping.json")
+    cgra_path = first_sim_evidence_path(evidence_dir, stems, ".cgra.report.json")
+    component_evidence = suite == "app" and has_component_evidence(evidence_dir, stems)
+    original_graph_ids = [item for item in row_data.get("graph_ids", "").split(",") if item]
 
     if not any(path.is_file() for path in (dfg_path, mapping_path, cgra_path)):
         if component_evidence:
@@ -674,8 +715,15 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
         row_data["comparison_status"] = comparison_status
 
     graph = string_field(dfg, "graph") or string_field(mapping, "graph")
+    graph_identity_diagnostics: list[str] = []
     if graph:
-        row_data["graph_ids"] = graph
+        if suite in {"cmsis-dsp", "cmsis-nn"} and original_graph_ids:
+            if graph not in original_graph_ids:
+                graph_identity_diagnostics.append(
+                    f"dfg_report graph {graph!r} is not listed in row graph_ids {','.join(original_graph_ids)!r}"
+                )
+        else:
+            row_data["graph_ids"] = graph
     mapping_id = string_field(mapping, "mapping_id") or string_field(cgra, "mapping_id")
     if mapping_id:
         row_data["mapping_id"] = mapping_id
@@ -710,6 +758,7 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
             ("comparison_report", comparison, comparison_path),
         ),
     )
+    identity_diagnostics.extend(graph_identity_diagnostics)
     if identity_diagnostics:
         row_data["status"] = "fail"
         row_data["diagnostic_class"] = "evidence_identity_mismatch"
@@ -749,6 +798,12 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
             "component simulator evidence exists, but row-level aggregate DFG, mapping, "
             "CGRA, and comparison artifacts are incomplete"
         )
+    elif prerequisite == "dfg_report":
+        row_data["diagnostic"] = artifact_diagnostic("DFG-sim report", dfg, dfg_path, dfg_status)
+    elif prerequisite == "mapping_artifact":
+        row_data["diagnostic"] = artifact_diagnostic("PnR mapping artifact", mapping, mapping_path, mapping_status)
+    elif prerequisite == "cgra_report":
+        row_data["diagnostic"] = artifact_diagnostic("CGRA-sim report", cgra, cgra_path, cgra_status)
     elif prerequisite == "sim_comparison_report":
         row_data["diagnostic"] = comparison_diagnostic(comparison)
     else:
@@ -801,7 +856,6 @@ def main(argv: list[str]) -> int:
         else output.parent / "cgra-status-comparisons"
     )
     app_status_rows = app_rows()
-    apply_sim_evidence(app_status_rows, sim_evidence_dir, comparison_dir)
     rows = []
     rows.extend(app_status_rows)
     rows.extend(
@@ -831,6 +885,7 @@ def main(argv: list[str]) -> int:
             )
         )
 
+    apply_sim_evidence(rows, sim_evidence_dir, comparison_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     intermediate_artifacts.write_csv_rows("cgra_status", output, rows)
     write_json(json_path_for(output, args.json_output), output, rows)

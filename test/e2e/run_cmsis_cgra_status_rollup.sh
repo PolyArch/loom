@@ -8,7 +8,9 @@ usage() {
 usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
-outputs through the CGRA status summary and both status audits. When a
+outputs through the CGRA status summary and both status audits. When
+--sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
+attempts into that directory before consuming the reports. When a
 legacy LoomBench root is supplied, the rollup also generates and consumes
 the dedicated LoomBench manifest so legacy rows are structured status
 records rather than manifest omissions.
@@ -78,6 +80,13 @@ LOOMBENCH_MANIFEST_CSV="${OUT_DIR}/loombench-manifest.csv"
 
 OUT_OVERRIDE="${CMSIS_DSP_DFG_DIR}" bash "${ROOT}/test/cmsis-dsp/run_cmsis_dsp_dfg.sh"
 OUT_OVERRIDE="${CMSIS_NN_DFG_DIR}" bash "${ROOT}/test/cmsis-nn/run_cmsis_nn_dfg.sh"
+
+if [[ -n "${SIM_EVIDENCE_DIR}" ]]; then
+    python3 "${ROOT}/test/e2e/run_cmsis_dfg_sim_attempts.py" \
+        --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}" \
+        --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}" \
+        --output-dir "${SIM_EVIDENCE_DIR}"
+fi
 
 if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then
     python3 "${ROOT}/test/app/old_app_corpus_inventory.py" \

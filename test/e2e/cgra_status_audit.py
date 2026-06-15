@@ -142,6 +142,38 @@ def validate_artifact_fingerprint(
             )
 
 
+def validate_optional_artifact_fingerprint(
+    *,
+    csv_input: Path,
+    row_index: int,
+    row: dict[str, str],
+    artifact_column: str,
+    fingerprint_column: str,
+    diagnostics: list[str],
+) -> None:
+    raw_path = row.get(artifact_column, "")
+    raw_fingerprint = row.get(fingerprint_column, "")
+    if not raw_path and not raw_fingerprint:
+        return
+    if not raw_path:
+        diagnostics.append(f"row {row_index}: referenced artifact row lacks {artifact_column}")
+        return
+    if not fingerprint_is_sha256(raw_fingerprint):
+        diagnostics.append(f"row {row_index}: referenced artifact row has invalid {fingerprint_column}")
+    artifact_path = resolve_artifact_reference(csv_input, raw_path)
+    if not artifact_path.is_file():
+        diagnostics.append(
+            f"row {row_index}: referenced artifact path does not exist in {artifact_column}: {raw_path}"
+        )
+        return
+    if fingerprint_is_sha256(raw_fingerprint):
+        actual = intermediate_artifacts.artifact_fingerprint(artifact_path)
+        if raw_fingerprint != actual:
+            diagnostics.append(
+                f"row {row_index}: referenced artifact row {fingerprint_column} does not match {artifact_column}"
+            )
+
+
 def read_referenced_json(csv_input: Path, row: dict[str, str], column: str) -> dict[str, object]:
     path = resolve_artifact_reference(csv_input, row.get(column, ""))
     if not path.is_file():
@@ -225,6 +257,53 @@ def validate_pass_row_referenced_jsons(
         diagnostics.append(f"row {row_index}: final_memory_state_present contradicts referenced reports")
     if not outputs_match and not memory_match:
         diagnostics.append(f"row {row_index}: referenced reports lack matching final state")
+
+
+def validate_non_pass_row_referenced_jsons(
+    csv_input: Path,
+    row_index: int,
+    row: dict[str, str],
+    diagnostics: list[str],
+) -> None:
+    row_graph_ids = {item for item in row.get("graph_ids", "").split(",") if item}
+    for label, expected_kind, status_column in (
+        ("dfg_report", "dfg_sim_report", "dfg_status"),
+        ("mapping_artifact", "pnr_mapping", "mapping_status"),
+        ("cgra_report", "cgra_sim_report", "cgra_status"),
+        ("comparison_report", "sim_comparison_report", "comparison_status"),
+    ):
+        if not row.get(label, ""):
+            continue
+        data = read_referenced_json(csv_input, row, label)
+        if not data:
+            diagnostics.append(f"row {row_index}: referenced {label} JSON is not parseable")
+            continue
+        if data.get("kind") != expected_kind:
+            diagnostics.append(f"row {row_index}: referenced {label} JSON kind is not {expected_kind}")
+        row_status = row.get(status_column, "")
+        if row_status == "not_run":
+            diagnostics.append(f"row {row_index}: referenced {label} requires {status_column} to match JSON status")
+        elif data.get("status") != row_status:
+            diagnostics.append(
+                f"row {row_index}: referenced {label} JSON status does not match {status_column}"
+            )
+        graph = data.get("graph")
+        if isinstance(graph, str) and graph and row_graph_ids and graph not in row_graph_ids:
+            diagnostics.append(f"row {row_index}: referenced {label} graph is not listed in row graph_ids")
+        if label == "dfg_report" and row.get("dfg_mlir", ""):
+            input_fingerprints = data.get("input_artifact_fingerprints")
+            if not isinstance(input_fingerprints, dict):
+                diagnostics.append(f"row {row_index}: referenced dfg_report lacks input_artifact_fingerprints")
+            else:
+                dfg_mlir = resolve_artifact_reference(csv_input, row.get("dfg_mlir", ""))
+                identity = intermediate_artifacts.artifact_id_for_path(dfg_mlir)
+                expected = row.get("dfg_mlir_fingerprint", "")
+                actual = input_fingerprints.get(identity)
+                if actual != expected:
+                    diagnostics.append(
+                        f"row {row_index}: referenced dfg_report input_artifact_fingerprints stale for dfg_mlir"
+                    )
+        validate_workload_identity(row_index, row, label, data, diagnostics)
 
 
 def validate_cmsis_dfg_mlir_evidence(
@@ -507,6 +586,21 @@ def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list
                 )
             validate_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
         else:
+            for artifact_column, fingerprint_column in (
+                ("dfg_report", "dfg_report_fingerprint"),
+                ("mapping_artifact", "mapping_artifact_fingerprint"),
+                ("cgra_report", "cgra_report_fingerprint"),
+                ("comparison_report", "comparison_report_fingerprint"),
+            ):
+                validate_optional_artifact_fingerprint(
+                    csv_input=csv_input,
+                    row_index=index,
+                    row=row,
+                    artifact_column=artifact_column,
+                    fingerprint_column=fingerprint_column,
+                    diagnostics=diagnostics,
+                )
+            validate_non_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
             validate_cmsis_dfg_mlir_evidence(csv_input, index, row, diagnostics)
         validate_cmsis_no_missing_status(index, row, diagnostics)
         validate_cmsis_dfg_mlir_reference(csv_input, index, row, diagnostics)

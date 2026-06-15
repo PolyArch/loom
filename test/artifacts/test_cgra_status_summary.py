@@ -885,6 +885,33 @@ def main() -> int:
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_sin_f32.dfg.mlir", symbol="arm_sin_f32", graph=False)
         write_cmsis_dfg_mlir(cmsis_nn_dfg_dir / "arm_relu_q15.dfg.mlir", symbol="arm_relu_q15", graph=True)
         write_cmsis_dfg_mlir(cmsis_nn_dfg_dir / "arm_reshape_s8.dfg.mlir", symbol="arm_reshape_s8", graph=False)
+        cmsis_sim_evidence = out_dir / "cmsis-sim-evidence"
+        write_json(
+            cmsis_sim_evidence / "arm_add_q15.dfg.report.json",
+            {
+                "schema_version": 1,
+                "kind": "dfg_sim_report",
+                "workload": "BasicMathFunctions/arm_add_q15.c",
+                "graph": "g_arm_add_q15_0",
+                "status": "unsupported",
+                "optimistic_cycles": 0,
+                "wavefront_steps": 0,
+                "event_count": 0,
+                "dynamic_work_items": 0,
+                "operation_fire_counts": {},
+                "final_outputs": [],
+                "final_memory_state": {},
+                "diagnostics": ["unsupported op: llvm.getelementptr"],
+                "input_artifact_fingerprints": {
+                    "arm_add_q15.dfg": hashlib.sha256(
+                        (cmsis_dsp_dfg_dir / "arm_add_q15.dfg.mlir").read_bytes()
+                    ).hexdigest(),
+                },
+                "metric_definition": "fixture",
+                "operation_semantics_source": "fixture",
+                "operation_cost_model_source": "fixture",
+            },
+        )
         cmsis_evidence_csv = out_dir / "cmsis-evidence-cgra-status-summary.csv"
         cmsis_evidence_json = out_dir / "cmsis-evidence-cgra-status-summary.json"
         run(
@@ -902,6 +929,8 @@ def main() -> int:
                 str(cmsis_dsp_dfg_dir),
                 "--cmsis-nn-dfg-dir",
                 str(cmsis_nn_dfg_dir),
+                "--sim-evidence-dir",
+                str(cmsis_sim_evidence),
             ],
         )
         cmsis_evidence_rows = read_rows(cmsis_evidence_csv)
@@ -928,14 +957,183 @@ def main() -> int:
         cmsis_add = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         if (
             cmsis_add["status"] != "blocked"
-            or cmsis_add["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
-            or cmsis_add["blocking_prerequisite"] != "dfg_sim_report"
-            or cmsis_add["owner"] != "compiler_pipeline"
-            or cmsis_add["dfg_status"] != "not_run"
+            or cmsis_add["diagnostic_class"] != "dfg_report_unsupported"
+            or cmsis_add["blocking_prerequisite"] != "dfg_report"
+            or cmsis_add["owner"] != "sim_report"
+            or cmsis_add["dfg_status"] != "unsupported"
+            or "unsupported op: llvm.getelementptr" not in cmsis_add["diagnostic"]
             or "g_arm_add_q15_0" not in cmsis_add["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-DSP DFG MLIR evidence should become an exact DFG-sim blocker: {cmsis_add}")
+            raise AssertionError(f"CMSIS-DSP DFG-sim evidence should become an exact report blocker: {cmsis_add}")
         assert_sha256_file(cmsis_add["dfg_mlir"], cmsis_add["dfg_mlir_fingerprint"], repo)
+        assert_sha256_file(cmsis_add["dfg_report"], cmsis_add["dfg_report_fingerprint"], repo)
+        forged_cmsis_report_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_cmsis_report = one_row(
+            forged_cmsis_report_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_add_q15.c",
+        )
+        forged_cmsis_report["dfg_report_fingerprint"] = "0" * 64
+        forged_cmsis_report_csv = out_dir / "forged-cmsis-dfg-report-cgra-status-summary.csv"
+        forged_cmsis_report_json = out_dir / "forged-cmsis-dfg-report-cgra-status-summary.json"
+        write_rows(forged_cmsis_report_csv, forged_cmsis_report_rows)
+        write_json_projection(forged_cmsis_report_json, forged_cmsis_report_csv, forged_cmsis_report_rows)
+        failed_forged_cmsis_report = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_cmsis_report_csv),
+                "--json-input",
+                str(forged_cmsis_report_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "dfg_report_fingerprint" not in failed_forged_cmsis_report.stderr:
+            raise AssertionError(
+                "forged CMSIS DFG-sim report fingerprint should fail CGRA status audit: "
+                f"{failed_forged_cmsis_report.stderr}"
+            )
+        forged_cmsis_report_generic = out_dir / "forged-cmsis-dfg-report-generic-audit.json"
+        failed_forged_cmsis_report_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_cmsis_report_generic),
+                str(forged_cmsis_report_csv),
+            ],
+            expect_success=False,
+        )
+        forged_cmsis_report_generic_data = json.loads(forged_cmsis_report_generic.read_text())
+        forged_cmsis_report_generic_diagnostics = "\n".join(
+            str(item) for item in forged_cmsis_report_generic_data.get("diagnostics", [])
+        )
+        if "dfg_report_fingerprint" not in forged_cmsis_report_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS DFG-sim report fingerprint: "
+                f"stdout={failed_forged_cmsis_report_generic.stdout} "
+                f"stderr={failed_forged_cmsis_report_generic.stderr} "
+                f"audit={forged_cmsis_report_generic_data}"
+            )
+        forged_cmsis_bad_json_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_cmsis_bad_json = one_row(
+            forged_cmsis_bad_json_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_add_q15.c",
+        )
+        bad_json_report = out_dir / "cmsis-bad-json.dfg.report.json"
+        bad_json_report.write_text("{bad-json\n")
+        forged_cmsis_bad_json["dfg_report"] = str(bad_json_report)
+        forged_cmsis_bad_json["dfg_report_fingerprint"] = hashlib.sha256(bad_json_report.read_bytes()).hexdigest()
+        forged_cmsis_bad_json_csv = out_dir / "forged-cmsis-dfg-report-bad-json-cgra-status-summary.csv"
+        forged_cmsis_bad_json_json = out_dir / "forged-cmsis-dfg-report-bad-json-cgra-status-summary.json"
+        write_rows(forged_cmsis_bad_json_csv, forged_cmsis_bad_json_rows)
+        write_json_projection(forged_cmsis_bad_json_json, forged_cmsis_bad_json_csv, forged_cmsis_bad_json_rows)
+        failed_cmsis_bad_json = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_cmsis_bad_json_csv),
+                "--json-input",
+                str(forged_cmsis_bad_json_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "referenced dfg_report JSON is not parseable" not in failed_cmsis_bad_json.stderr:
+            raise AssertionError(
+                "malformed CMSIS DFG-sim report JSON should fail CGRA status audit: "
+                f"{failed_cmsis_bad_json.stderr}"
+            )
+        forged_cmsis_bad_json_generic = out_dir / "forged-cmsis-dfg-report-bad-json-generic-audit.json"
+        failed_cmsis_bad_json_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_cmsis_bad_json_generic),
+                str(forged_cmsis_bad_json_csv),
+            ],
+            expect_success=False,
+        )
+        forged_cmsis_bad_json_generic_data = json.loads(forged_cmsis_bad_json_generic.read_text())
+        forged_cmsis_bad_json_generic_diagnostics = "\n".join(
+            str(item) for item in forged_cmsis_bad_json_generic_data.get("diagnostics", [])
+        )
+        if "referenced dfg_report JSON is not parseable" not in forged_cmsis_bad_json_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject malformed CMSIS DFG-sim report JSON: "
+                f"stdout={failed_cmsis_bad_json_generic.stdout} "
+                f"stderr={failed_cmsis_bad_json_generic.stderr} "
+                f"audit={forged_cmsis_bad_json_generic_data}"
+            )
+        forged_cmsis_wrong_graph_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_cmsis_wrong_graph = one_row(
+            forged_cmsis_wrong_graph_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_add_q15.c",
+        )
+        wrong_graph_report = out_dir / "cmsis-wrong-graph.dfg.report.json"
+        wrong_graph_data = json.loads((cmsis_sim_evidence / "arm_add_q15.dfg.report.json").read_text())
+        wrong_graph_data["graph"] = "g_not_in_cmsis_dfg_mlir"
+        write_json(wrong_graph_report, wrong_graph_data)
+        forged_cmsis_wrong_graph["dfg_report"] = str(wrong_graph_report)
+        forged_cmsis_wrong_graph["dfg_report_fingerprint"] = hashlib.sha256(wrong_graph_report.read_bytes()).hexdigest()
+        forged_cmsis_wrong_graph_csv = out_dir / "forged-cmsis-dfg-report-wrong-graph-cgra-status-summary.csv"
+        forged_cmsis_wrong_graph_json = out_dir / "forged-cmsis-dfg-report-wrong-graph-cgra-status-summary.json"
+        write_rows(forged_cmsis_wrong_graph_csv, forged_cmsis_wrong_graph_rows)
+        write_json_projection(forged_cmsis_wrong_graph_json, forged_cmsis_wrong_graph_csv, forged_cmsis_wrong_graph_rows)
+        failed_cmsis_wrong_graph = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_cmsis_wrong_graph_csv),
+                "--json-input",
+                str(forged_cmsis_wrong_graph_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "referenced dfg_report graph is not listed in row graph_ids" not in failed_cmsis_wrong_graph.stderr:
+            raise AssertionError(
+                "wrong-graph CMSIS DFG-sim report should fail CGRA status audit: "
+                f"{failed_cmsis_wrong_graph.stderr}"
+            )
+        forged_cmsis_wrong_graph_generic = out_dir / "forged-cmsis-dfg-report-wrong-graph-generic-audit.json"
+        failed_cmsis_wrong_graph_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_cmsis_wrong_graph_generic),
+                str(forged_cmsis_wrong_graph_csv),
+            ],
+            expect_success=False,
+        )
+        forged_cmsis_wrong_graph_generic_data = json.loads(forged_cmsis_wrong_graph_generic.read_text())
+        forged_cmsis_wrong_graph_generic_diagnostics = "\n".join(
+            str(item) for item in forged_cmsis_wrong_graph_generic_data.get("diagnostics", [])
+        )
+        if "referenced dfg_report graph is not listed in row graph_ids" not in forged_cmsis_wrong_graph_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject wrong-graph CMSIS DFG-sim report: "
+                f"stdout={failed_cmsis_wrong_graph_generic.stdout} "
+                f"stderr={failed_cmsis_wrong_graph_generic.stderr} "
+                f"audit={forged_cmsis_wrong_graph_generic_data}"
+            )
         cmsis_sin = one_row(cmsis_evidence_rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
         if (
             cmsis_sin["status"] != "unsupported"
@@ -1009,9 +1207,9 @@ def main() -> int:
                 f"audit={forged_cmsis_generic_data}"
             )
         forged_binding_rows = [dict(row) for row in cmsis_evidence_rows]
-        forged_binding = one_row(forged_binding_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
-        forged_binding["dfg_mlir"] = cmsis_sin["dfg_mlir"]
-        forged_binding["dfg_mlir_fingerprint"] = cmsis_sin["dfg_mlir_fingerprint"]
+        forged_binding = one_row(forged_binding_rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
+        forged_binding["dfg_mlir"] = cmsis_reshape["dfg_mlir"]
+        forged_binding["dfg_mlir_fingerprint"] = cmsis_reshape["dfg_mlir_fingerprint"]
         forged_binding["required_slice_count"] = "99"
         forged_binding_csv = out_dir / "forged-cmsis-binding-cgra-status-summary.csv"
         forged_binding_json = out_dir / "forged-cmsis-binding-cgra-status-summary.json"
@@ -1113,7 +1311,7 @@ def main() -> int:
                 f"{forged_ready_no_graph_generic_data}"
             )
         forged_semantic_rows = [dict(row) for row in cmsis_evidence_rows]
-        forged_semantic = one_row(forged_semantic_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        forged_semantic = one_row(forged_semantic_rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         forged_semantic["dfg_status"] = "pass"
         forged_semantic["blocking_prerequisite"] = ""
         forged_semantic_csv = out_dir / "forged-cmsis-semantic-cgra-status-summary.csv"
@@ -1481,7 +1679,21 @@ def main() -> int:
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
         write_sim_evidence_case(sim_evidence, "batchnorm", cgra_final_state=True)
-        (sim_evidence / "mean.dfg.report.json").write_text("{invalid-json\n")
+        write_json(
+            sim_evidence / "mean.dfg.report.json",
+            {
+                "schema_version": 1,
+                "kind": "dfg_sim_report",
+                "workload": "mean",
+                "graph": "g_mean_0",
+                "status": "fail",
+                "optimistic_cycles": 0,
+                "final_outputs": [],
+                "final_memory_state": {},
+                "diagnostics": ["fixture DFG-sim failure"],
+                "metric_definition": "fixture",
+            },
+        )
         promoted_csv = out_dir / "promoted-cgra-status-summary.csv"
         promoted_json = out_dir / "promoted-cgra-status-summary.json"
         run(
