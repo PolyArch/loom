@@ -105,13 +105,13 @@ def main() -> int:
             mapping_artifact.get("status") != "pass"
             or mapping_artifact.get("routed_edges") != 22
             or mapping_artifact.get("unrouted_edges") != 0
-            or mapping_artifact.get("config_records") != 424
+            or mapping_artifact.get("config_records") != 440
         ):
             raise AssertionError(f"variance aggregate mapping should expose fully routed evidence: {mapping_artifact}")
 
         component_expectations = {
-            "pnr-mapping-mean.json": ("g_t_variance_red_0_0", MEAN_MAPPING_ID, "pass", 9, 0, 166),
-            "pnr-mapping-var.json": ("g_t_variance_red_1_0", VAR_MAPPING_ID, "pass", 13, 0, 258),
+            "pnr-mapping-mean.json": ("g_t_variance_red_0_0", MEAN_MAPPING_ID, "pass", 9, 0, 174),
+            "pnr-mapping-var.json": ("g_t_variance_red_1_0", VAR_MAPPING_ID, "pass", 13, 0, 266),
         }
         for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():
             component = json.loads((out_dir / name).read_text())
@@ -136,9 +136,9 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "variance CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected variance CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("status") != "pass" or cgra_cycles != 674:
+        if cgra_report.get("status") != "pass" or cgra_cycles != 678:
             raise AssertionError(f"variance aggregate CGRA report should preserve routed component cost: {cgra_report}")
-        if cgra_report.get("routed_edges") != 22 or cgra_report.get("config_records") != 424:
+        if cgra_report.get("routed_edges") != 22 or cgra_report.get("config_records") != 440:
             raise AssertionError(f"variance aggregate CGRA report should expose fully routed evidence: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"variance CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")
@@ -185,12 +185,12 @@ def main() -> int:
         if dse_row["mapping_id"] != AGGREGATE_MAPPING_ID or dse_row["selection_status"] != "selected":
             raise AssertionError(f"unexpected variance DSE row: {dse_row}")
         expected_dse = {
-            "cgra_sim_cycles": "674",
+            "cgra_sim_cycles": "678",
             "frequency_mhz": "50.000",
-            "area_um2": "21000.000",
-            "dynamic_power_mw": "17.000",
-            "leakage_power_mw": "2.200",
-            "energy_nj": "258.816",
+            "area_um2": "22000.000",
+            "dynamic_power_mw": "17.800",
+            "leakage_power_mw": "2.300",
+            "energy_nj": "272.556",
             "hardware_evidence_kind": "analytic_model_only",
         }
         for key, value in expected_dse.items():
@@ -198,12 +198,12 @@ def main() -> int:
                 raise AssertionError(f"unexpected variance DSE {key}: {dse_row}")
         metric_records = {entry for entry in dse_row.get("metric_records", "").split(";") if entry}
         required_dse_metrics = {
-            "cgra_sim_cycles=674",
+            "cgra_sim_cycles=678",
             "frequency_mhz=50.000",
-            "area_um2=21000.000",
-            "dynamic_power_mw=17.000",
-            "leakage_power_mw=2.200",
-            "energy_nj=258.816",
+            "area_um2=22000.000",
+            "dynamic_power_mw=17.800",
+            "leakage_power_mw=2.300",
+            "energy_nj=272.556",
         }
         if not required_dse_metrics.issubset(metric_records):
             raise AssertionError(f"selected variance DSE row missed objective metrics: {dse_row}")

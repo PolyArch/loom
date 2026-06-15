@@ -76,7 +76,6 @@ DEFAULT_SWEEP_CASES = (
 )
 BLOCKED_SWEEP_CASES = (
     "dot_product_3d",
-    "integrate_trapz",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -795,6 +794,7 @@ def main(argv: list[str]) -> int:
             "vecadd",
             "conv1d",
             "variance",
+            "integrate_trapz",
             "correlation",
             "convolve_1d",
             "compare_swap",
@@ -1055,6 +1055,7 @@ def main(argv: list[str]) -> int:
             "vecscale",
             "conv1d",
             "variance",
+            "integrate_trapz",
             "correlation",
             "convolve_1d",
             "compare_swap",
@@ -1132,8 +1133,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 33,
-            "fail": 1,
+            "pass": 34,
+            "fail": 0,
             "blocked": 75,
             "unsupported": 0,
             "missing_status": 0,

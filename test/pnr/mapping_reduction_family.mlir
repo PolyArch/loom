@@ -469,12 +469,25 @@
 // CUMSUM-JSON-NOT: ".out"
 // CUMSUM-JSON-NOT: ".in"
 
-// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,13,12,0,fail,unrouted software edges lack Fabric ADG connectivity
+// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,25,0,0,pass,mapped software graph to fabric resources
 // TRAPZ-JSON-DAG: "workload": "integrate_trapz"
 // TRAPZ-JSON-DAG: "hardware": "shared_reduction_adg"
-// TRAPZ-JSON-DAG: "status": "fail"
-// TRAPZ-JSON-DAG: "unrouted_edges": 12
+// TRAPZ-JSON-DAG: "status": "pass"
+// TRAPZ-JSON-DAG: "routed_edges": 25
+// TRAPZ-JSON-DAG: "unrouted_edges": 0
 // TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.subf#0.operand0"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.subf#0.operand1"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#2.result0->arith.addf#0.operand0"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#3.result0->arith.addf#0.operand1"
+// TRAPZ-JSON-DAG: "edge_ref": "arith.addf#0.result0->arith.mulf#0.operand0"
+// TRAPZ-JSON-DAG: "edge_ref": "arith.mulf#0.result0->llvm.intr.fmuladd#0.operand0"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.carry#1.result0->llvm.intr.fmuladd#0.operand2"
+// TRAPZ-JSON-DAG: "edge_ref": "llvm.intr.fmuladd#0.result0->dataflow.carry#1.operand2"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->dataflow.load#0.operand1"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->dataflow.load#3.operand1"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.load#2.operand1"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->arith.addi#0.operand0"
+// TRAPZ-JSON-DAG: "edge_ref": "dataflow.invariant#1.result0->arith.addi#0.operand1"
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::mem.load#0.result0"
 // TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand1"
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.result0"

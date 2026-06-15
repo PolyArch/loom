@@ -150,9 +150,9 @@
 // MEAN-CGRA-DAG: "status": "pass"
 // MEAN-CGRA-DAG: "mapping_id": "mean__g_t_mean_kernel_red_0_0__shared_reduction_adg"
 // MEAN-CGRA-DAG: "dfg_cycles": 904
-// MEAN-CGRA-DAG: "hardware_aware_cycles": 935
+// MEAN-CGRA-DAG: "hardware_aware_cycles": 937
 // MEAN-CGRA-DAG: "routed_edges": 9
-// MEAN-CGRA-DAG: "route_segments": 27
+// MEAN-CGRA-DAG: "route_segments": 29
 // MEAN-CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 // MEAN-CGRA-DAG: "functional_state_source": "carried_from_dfg_sim_report"
 
@@ -160,14 +160,14 @@
 // DOWNSAMPLE-CORE-CGRA-DAG: "status": "pass"
 // DOWNSAMPLE-CORE-CGRA-DAG: "mapping_id": "downsample_avg__g_t_downsample_avg_0_0__shared_reduction_adg"
 // DOWNSAMPLE-CORE-CGRA-DAG: "dfg_cycles": 64
-// DOWNSAMPLE-CORE-CGRA-DAG: "hardware_aware_cycles": 95
+// DOWNSAMPLE-CORE-CGRA-DAG: "hardware_aware_cycles": 97
 // DOWNSAMPLE-CORE-CGRA-DAG: "routed_edges": 9
 
 // VARIANCE-MEAN-CGRA-DAG: "workload": "variance"
 // VARIANCE-MEAN-CGRA-DAG: "status": "pass"
 // VARIANCE-MEAN-CGRA-DAG: "mapping_id": "variance__g_t_variance_red_0_0__shared_reduction_adg"
 // VARIANCE-MEAN-CGRA-DAG: "dfg_cycles": 232
-// VARIANCE-MEAN-CGRA-DAG: "hardware_aware_cycles": 263
+// VARIANCE-MEAN-CGRA-DAG: "hardware_aware_cycles": 265
 // VARIANCE-MEAN-CGRA-DAG: "routed_edges": 9
 
 // MATVEC-CGRA-DAG: "workload": "matvec"
@@ -175,9 +175,9 @@
 // MATVEC-CGRA-DAG: "status": "pass"
 // MATVEC-CGRA-DAG: "mapping_id": "matvec__g_t_matvec_kernel_0_0__shared_reduction_adg"
 // MATVEC-CGRA-DAG: "dfg_cycles": 83
-// MATVEC-CGRA-DAG: "hardware_aware_cycles": 121
+// MATVEC-CGRA-DAG: "hardware_aware_cycles": 127
 // MATVEC-CGRA-DAG: "routed_edges": 10
-// MATVEC-CGRA-DAG: "route_segments": 30
+// MATVEC-CGRA-DAG: "route_segments": 36
 // MATVEC-CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 
 // VECNORM-L1-CGRA-DAG: "workload": "vecnorm_l1"
@@ -205,24 +205,24 @@
 // SUMMARY-DAG: correlation,394,457,pass
 // SUMMARY-DAG: downsample_avg,480,,blocked
 // SUMMARY-DAG: compare_swap,336,{{[0-9]+}},pass
-// SUMMARY-DAG: gemv,423,639,pass
+// SUMMARY-DAG: gemv,423,669,pass
 // SUMMARY-DAG: hash_mix,1280,{{[0-9]+}},pass
 // SUMMARY-DAG: xor_block,448,,blocked
-// SUMMARY-DAG: matvec,371,543,pass
+// SUMMARY-DAG: matvec,371,573,pass
 // SUMMARY-DAG: vecadd,1603,1657,pass
 // SUMMARY-DAG: vecmul,256,,blocked
 // SUMMARY-DAG: vecscale,384,,blocked
-// SUMMARY-DAG: mean,904,935,pass
+// SUMMARY-DAG: mean,904,937,pass
 // SUMMARY-DAG: vecnorm_l1,643,{{[0-9]+}},pass
 // SUMMARY-DAG: vecnorm_l2,771,{{[0-9]+}},pass
-// SUMMARY-DAG: reduction,1155,1175,pass
+// SUMMARY-DAG: reduction,1155,1181,pass
 // SUMMARY-DAG: relu,707,759,pass
 // SUMMARY-DAG: rotate_bits,544,{{[0-9]+}},pass
-// SUMMARY-DAG: variance,594,674,pass
-// SUMMARY-DAG: vecsum,579,599,pass
+// SUMMARY-DAG: variance,594,678,pass
+// SUMMARY-DAG: vecsum,579,605,pass
 // SUMMARY-DAG: dotproduct,1219,1258,pass
-// SUMMARY-DAG: spmv,47,100,pass
-// SUMMARY-DAG: prefix_sum,835,872,pass
-// SUMMARY-DAG: prefix_sum_inclusive,13302,13339,pass
+// SUMMARY-DAG: spmv,47,106,pass
+// SUMMARY-DAG: prefix_sum,835,878,pass
+// SUMMARY-DAG: prefix_sum_inclusive,13302,13345,pass
 // SUMMARY-DAG: cumsum,14339,14380,pass
-// SUMMARY-DAG: integrate_trapz,323,,blocked
+// SUMMARY-DAG: integrate_trapz,323,434,pass

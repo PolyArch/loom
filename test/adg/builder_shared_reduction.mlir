@@ -57,7 +57,7 @@
 // MAPPING-DAG: "placed_records": 5
 // MAPPING-DAG: "routed_edges": 6
 // MAPPING-DAG: "unrouted_edges": 0
-// MAPPING-DAG: "config_records": 105
+// MAPPING-DAG: "config_records": 129
 // MAPPING-DAG: "status": "pass"
 
 // VECNORM-L1-DAG: "workload": "vecnorm_l1"

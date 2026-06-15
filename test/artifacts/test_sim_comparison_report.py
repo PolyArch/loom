@@ -343,9 +343,9 @@ def main() -> int:
         }
         if definitions != expected_definitions:
             raise AssertionError(f"comparison should preserve metric definitions: {data}")
-        if data.get("dfg_sim_cycles") != 579 or data.get("cgra_sim_cycles") != 599:
+        if data.get("dfg_sim_cycles") != 579 or data.get("cgra_sim_cycles") != 605:
             raise AssertionError(f"comparison should preserve simulator cycle values: {data}")
-        if data.get("performance_delta_cycles") != 20:
+        if data.get("performance_delta_cycles") != 26:
             raise AssertionError(f"comparison should preserve mapped hardware delta: {data}")
         if "explicit_fabric_route_paths" not in data.get("explanation_categories", []):
             raise AssertionError(f"comparison should explain mapped route evidence: {data}")

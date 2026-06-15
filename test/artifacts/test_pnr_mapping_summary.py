@@ -157,13 +157,13 @@ def main() -> int:
             "routed_edges": 6,
             "unrouted_edges": 0,
             "unplaced_records": 0,
-            "config_records": 105,
+            "config_records": 129,
             "status": "pass",
         }
         for key, value in expected_json.items():
             if data.get(key) != value:
                 raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
-        if len(data.get("config_bitstream", [])) != 105:
+        if len(data.get("config_bitstream", [])) != 129:
             raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
         if data.get("unrouted_edge_details") != []:
             raise AssertionError(f"passing mapping should have no unrouted edge details: {data}")
@@ -179,7 +179,7 @@ def main() -> int:
             ),
             (
                 "shared_reduction_adg::fabric.op#1.result0",
-                "shared_reduction_adg::fabric.op#2.operand1",
+                "shared_reduction_adg::fabric.fu#0.result2",
             ),
             (
                 "shared_reduction_adg::fabric.op#0.result1",
@@ -203,6 +203,12 @@ def main() -> int:
                 switch_operand,
                 switch_result,
                 "shared_reduction_adg::fabric.op#1.operand2",
+            ),
+            (
+                "shared_reduction_adg::fabric.pe#0.result2",
+                switch_operand,
+                switch_result,
+                "shared_reduction_adg::fabric.op#2.operand1",
             ),
             (
                 "shared_reduction_adg::mem.load#0.result0",
