@@ -317,9 +317,75 @@ def validate_cmsis_dfg_mlir_evidence(
             )
 
 
+def app_manifest_no_dfg_cases(diagnostics: list[str]) -> set[str]:
+    try:
+        manifest = cgra_status_summary.load_app_manifest()
+    except (SystemExit, OSError, json.JSONDecodeError) as exc:
+        diagnostics.append(f"failed to load app manifest for no-DFG audit: {exc}")
+        return set()
+    cases = manifest.get("cases", [])
+    if not isinstance(cases, list):
+        diagnostics.append("app manifest cases must be a list for no-DFG audit")
+        return set()
+    result: set[str] = set()
+    for entry in cases:
+        if not isinstance(entry, dict):
+            continue
+        case = entry.get("case")
+        tiers = entry.get("tiers", [])
+        if isinstance(case, str) and case and (not isinstance(tiers, list) or "dfg" not in tiers):
+            result.add(case)
+    return result
+
+
+def validate_app_no_dfg_row(
+    row_index: int,
+    row: dict[str, str],
+    diagnostics: list[str],
+) -> None:
+    if row.get("status", "") != "blocked":
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires status=blocked")
+    if row.get("diagnostic_class", "") != "app_dataflow_tier_missing":
+        diagnostics.append(
+            f"row {row_index}: app row without dfg tier requires diagnostic_class=app_dataflow_tier_missing"
+        )
+    if row.get("owner", "") != "compiler_pipeline":
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires owner=compiler_pipeline")
+    if row.get("blocking_prerequisite", "") != "dataflow":
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires blocking_prerequisite=dataflow")
+    if row.get("required_slice_count", "") != "0":
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires required_slice_count=0")
+    if row.get("graph_ids", ""):
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires empty graph_ids")
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row.get(column, "") != "not_run":
+            diagnostics.append(f"row {row_index}: app row without dfg tier requires {column}=not_run")
+    for column in (
+        "dfg_mlir",
+        "dfg_mlir_fingerprint",
+        "dfg_report",
+        "dfg_report_fingerprint",
+        "mapping_artifact",
+        "mapping_artifact_fingerprint",
+        "cgra_report",
+        "cgra_report_fingerprint",
+        "comparison_report",
+        "comparison_report_fingerprint",
+    ):
+        if row.get(column, ""):
+            diagnostics.append(f"row {row_index}: app row without dfg tier must not carry {column}")
+    if row.get("final_outputs_present", "") != "false":
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires final_outputs_present=false")
+    if row.get("final_memory_state_present", "") != "false":
+        diagnostics.append(f"row {row_index}: app row without dfg tier requires final_memory_state_present=false")
+    if "app manifest has no dfg tier" not in row.get("diagnostic", ""):
+        diagnostics.append(f"row {row_index}: app row without dfg tier diagnostic must cite the app manifest")
+
+
 def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     allowed = intermediate_artifacts.BASE_STATUSES
     seen: set[tuple[str, str, str]] = set()
+    no_dfg_app_cases = app_manifest_no_dfg_cases(diagnostics)
     for index, row in enumerate(rows):
         row_id = identity(row)
         if row_id in seen:
@@ -364,6 +430,8 @@ def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list
             validate_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
         else:
             validate_cmsis_dfg_mlir_evidence(csv_input, index, row, diagnostics)
+        if row.get("suite", "") == "app" and row.get("case", "") in no_dfg_app_cases:
+            validate_app_no_dfg_row(index, row, diagnostics)
 
 
 def validate_coverage(rows: list[dict[str, str]], expected: list[dict[str, str]], diagnostics: list[str]) -> None:

@@ -137,17 +137,24 @@ def app_rows() -> list[dict[str, str]]:
             if has_dfg
             else "CGRA status missing because app row has no dataflow tier yet"
         )
-        rows.append(
-            row(
-                suite="app",
-                case=case,
-                source_row=case,
-                software_root=f"test/app/{case}",
-                required_slice_count="1" if has_dfg else "0",
-                blocking_prerequisite=prerequisite,
-                diagnostic=diagnostic,
-            )
+        row_data = row(
+            suite="app",
+            case=case,
+            source_row=case,
+            software_root=f"test/app/{case}",
+            required_slice_count="1" if has_dfg else "0",
+            blocking_prerequisite=prerequisite,
+            diagnostic=diagnostic,
         )
+        if not has_dfg:
+            row_data["status"] = "blocked"
+            row_data["diagnostic_class"] = "app_dataflow_tier_missing"
+            row_data["owner"] = "compiler_pipeline"
+            row_data["diagnostic"] = (
+                f"app manifest has no dfg tier for {case}; dataflow lowering, DFG-sim, "
+                "mapping, and CGRA-sim evidence are absent"
+            )
+        rows.append(row_data)
     return rows
 
 
@@ -593,6 +600,8 @@ def workload_identity_diagnostics(
 
 def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comparison_dir: Path) -> None:
     if row_data.get("suite") != "app":
+        return
+    if row_data.get("diagnostic_class") == "app_dataflow_tier_missing":
         return
     case = row_data["case"]
     dfg_path = evidence_dir / f"{case}.dfg.report.json"

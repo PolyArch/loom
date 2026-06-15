@@ -47,6 +47,8 @@ HEADER = [
     "diagnostic",
 ]
 LEGACY_CASE_COUNT = 127
+APP_CASE_COUNT = 109
+APP_NO_DFG_TIER_COUNT = 50
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -365,7 +367,7 @@ def artifact_exists(path_text: str, repo: Path) -> bool:
 
 def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
     expected_totals = {
-        "app": 109,
+        "app": APP_CASE_COUNT,
         "cmsis-dsp": 16,
         "cmsis-nn": 18,
         "loombench": LEGACY_CASE_COUNT,
@@ -396,6 +398,17 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
             }
             if suite_counts != expected:
                 raise AssertionError(f"LoomBench baseline should consume generated manifest: {suite_counts}")
+        elif suite == "app":
+            expected = {
+                "total": total,
+                "pass": 0,
+                "fail": 0,
+                "blocked": APP_NO_DFG_TIER_COUNT,
+                "unsupported": 0,
+                "missing_status": total - APP_NO_DFG_TIER_COUNT,
+            }
+            if suite_counts != expected:
+                raise AssertionError(f"app baseline should structure app rows without dfg tier: {suite_counts}")
         else:
             if suite_counts.get("missing_status") != total:
                 raise AssertionError(f"{suite} missing_status should equal total in baseline: {suite_counts}")
@@ -444,6 +457,39 @@ def main() -> int:
         app_batchnorm = one_row(rows, "app", "batchnorm")
         if app_batchnorm["blocking_prerequisite"] != "dataflow":
             raise AssertionError(f"batchnorm should be blocked before CGRA mapping: {app_batchnorm}")
+        if app_batchnorm["status"] != "blocked" or app_batchnorm["diagnostic_class"] != "app_dataflow_tier_missing":
+            raise AssertionError(f"batchnorm should be structured blocked until a dataflow tier exists: {app_batchnorm}")
+        tampered_no_dfg_rows = [dict(row) for row in rows]
+        tampered_batchnorm = one_row(tampered_no_dfg_rows, "app", "batchnorm")
+        tampered_batchnorm.update(
+            {
+                "status": "not_run",
+                "diagnostic_class": "missing_status",
+                "owner": "implementation",
+                "blocking_prerequisite": "dataflow",
+                "diagnostic": "CGRA status missing because app row has no dataflow tier yet",
+            }
+        )
+        tampered_no_dfg_csv = out_dir / "tampered-no-dfg-cgra-status-summary.csv"
+        tampered_no_dfg_json = out_dir / "tampered-no-dfg-cgra-status-summary.json"
+        write_rows(tampered_no_dfg_csv, tampered_no_dfg_rows)
+        write_json_projection(tampered_no_dfg_json, tampered_no_dfg_csv, tampered_no_dfg_rows)
+        failed_no_dfg_audit = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(tampered_no_dfg_csv),
+                "--json-input",
+                str(tampered_no_dfg_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "app row without dfg tier" not in failed_no_dfg_audit.stderr:
+            raise AssertionError(f"tampered app no-DFG row should fail status audit: {failed_no_dfg_audit.stderr}")
 
         cmsis_dsp = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         if cmsis_dsp["software_root"] != "externals/cmsis-dsp/Source":
@@ -941,6 +987,7 @@ def main() -> int:
             functional_state_source="component_cgra_sim_reports_carried_from_dfg_sim_reports",
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
+        write_sim_evidence_case(sim_evidence, "batchnorm", cgra_final_state=True)
         (sim_evidence / "mean.dfg.report.json").write_text("{invalid-json\n")
         promoted_csv = out_dir / "promoted-cgra-status-summary.csv"
         promoted_json = out_dir / "promoted-cgra-status-summary.json"
@@ -966,12 +1013,12 @@ def main() -> int:
         promoted_counts = promoted_data.get("counts", {})
         app_counts = promoted_counts.get("app") if isinstance(promoted_counts, dict) else None
         if app_counts != {
-            "total": 109,
+            "total": APP_CASE_COUNT,
             "pass": 2,
             "fail": 1,
-            "blocked": 1,
+            "blocked": 1 + APP_NO_DFG_TIER_COUNT,
             "unsupported": 0,
-            "missing_status": 105,
+            "missing_status": 105 - APP_NO_DFG_TIER_COUNT,
         }:
             raise AssertionError(f"unexpected promoted app counts: {app_counts}")
         vecsum = one_row(promoted_rows, "app", "vecsum")
@@ -982,6 +1029,23 @@ def main() -> int:
                 raise AssertionError(f"vecsum pass row should have {column}=pass: {vecsum}")
         if vecsum["final_outputs_present"] != "true" or vecsum["final_memory_state_present"] != "true":
             raise AssertionError(f"vecsum pass row should preserve final-state evidence: {vecsum}")
+        promoted_batchnorm = one_row(promoted_rows, "app", "batchnorm")
+        if promoted_batchnorm["status"] != "blocked":
+            raise AssertionError(f"no-DFG batchnorm must not consume simulator evidence: {promoted_batchnorm}")
+        if promoted_batchnorm["diagnostic_class"] != "app_dataflow_tier_missing":
+            raise AssertionError(f"no-DFG batchnorm should preserve app no-DFG blocker: {promoted_batchnorm}")
+        for column in (
+            "dfg_report",
+            "dfg_report_fingerprint",
+            "mapping_artifact",
+            "mapping_artifact_fingerprint",
+            "cgra_report",
+            "cgra_report_fingerprint",
+            "comparison_report",
+            "comparison_report_fingerprint",
+        ):
+            if promoted_batchnorm[column]:
+                raise AssertionError(f"no-DFG batchnorm should not reference sim evidence in {column}: {promoted_batchnorm}")
         for artifact_column, fingerprint_column in (
             ("dfg_report", "dfg_report_fingerprint"),
             ("mapping_artifact", "mapping_artifact_fingerprint"),
@@ -1221,12 +1285,12 @@ def main() -> int:
         current_like_rows = read_rows(current_like_csv)
         current_like_counts = json.loads(current_like_json.read_text())["counts"]["app"]
         if current_like_counts != {
-            "total": 109,
+            "total": APP_CASE_COUNT,
             "pass": 0,
             "fail": 0,
-            "blocked": len(CURRENT_SIM_CYCLE_CASES),
+            "blocked": len(CURRENT_SIM_CYCLE_CASES) + APP_NO_DFG_TIER_COUNT,
             "unsupported": 0,
-            "missing_status": 109 - len(CURRENT_SIM_CYCLE_CASES),
+            "missing_status": APP_CASE_COUNT - len(CURRENT_SIM_CYCLE_CASES) - APP_NO_DFG_TIER_COUNT,
         }:
             raise AssertionError(f"current-like evidence should produce 29 blocked app rows: {current_like_counts}")
         vecadd_like = one_row(current_like_rows, "app", "vecadd")

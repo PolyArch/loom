@@ -215,6 +215,25 @@ def one_row(rows: list[dict[str, str]], case: str) -> dict[str, str]:
     return matches[0]
 
 
+def app_manifest_no_dfg_cases(repo: Path) -> tuple[str, ...]:
+    manifest_path = repo / "test/app/manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    cases = manifest.get("cases")
+    if not isinstance(cases, list):
+        raise AssertionError(f"app manifest cases should be a list: {manifest_path}")
+    no_dfg_cases: list[str] = []
+    for entry in cases:
+        if not isinstance(entry, dict):
+            continue
+        case = entry.get("case")
+        tiers = entry.get("tiers", [])
+        if isinstance(case, str) and case and (not isinstance(tiers, list) or "dfg" not in tiers):
+            no_dfg_cases.append(case)
+    if len(no_dfg_cases) != 50:
+        raise AssertionError(f"expected 50 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
+    return tuple(no_dfg_cases)
+
+
 def assert_sweep_artifact(evidence_dir: Path, case: str, suffix: str) -> None:
     path = evidence_dir / f"{case}.{suffix}"
     if not path.is_file():
@@ -540,6 +559,43 @@ def assert_dfg_unsupported_row(repo: Path, rows: list[dict[str, str]], case: str
         actual = artifact_test_common.fingerprint(path)
         if actual != row[fingerprint_column]:
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
+
+
+def assert_app_no_dfg_tier_blocked_row(rows: list[dict[str, str]], case: str) -> None:
+    row = one_row(rows, case)
+    if row["status"] != "blocked":
+        raise AssertionError(f"{case} should be structured blocked until a dataflow tier exists: {row}")
+    if row["diagnostic_class"] != "app_dataflow_tier_missing":
+        raise AssertionError(f"{case} should expose the app no-DFG diagnostic class: {row}")
+    if row["owner"] != "compiler_pipeline":
+        raise AssertionError(f"{case} should assign the blocker to compiler_pipeline: {row}")
+    if row["blocking_prerequisite"] != "dataflow":
+        raise AssertionError(f"{case} should block on dataflow: {row}")
+    if row["required_slice_count"] != "0":
+        raise AssertionError(f"{case} should not claim required DFG slices before dataflow exists: {row}")
+    if row["graph_ids"]:
+        raise AssertionError(f"{case} should not claim graph ids before dataflow exists: {row}")
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row[column] != "not_run":
+            raise AssertionError(f"{case} should keep {column}=not_run before dataflow evidence exists: {row}")
+    for column in (
+        "dfg_mlir",
+        "dfg_mlir_fingerprint",
+        "dfg_report",
+        "dfg_report_fingerprint",
+        "mapping_artifact",
+        "mapping_artifact_fingerprint",
+        "cgra_report",
+        "cgra_report_fingerprint",
+        "comparison_report",
+        "comparison_report_fingerprint",
+    ):
+        if row[column]:
+            raise AssertionError(f"{case} should not reference fabricated artifact evidence in {column}: {row}")
+    if row["final_outputs_present"] != "false" or row["final_memory_state_present"] != "false":
+        raise AssertionError(f"{case} should not claim final-state evidence before dataflow exists: {row}")
+    if "app manifest has no dfg tier" not in row["diagnostic"]:
+        raise AssertionError(f"{case} diagnostic should identify the app manifest no-DFG blocker: {row}")
 
 
 def main(argv: list[str]) -> int:
@@ -911,6 +967,8 @@ def main(argv: list[str]) -> int:
             assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_dfg_unsupported_row(repo, rows, case)
+        for case in app_manifest_no_dfg_cases(repo):
+            assert_app_no_dfg_tier_blocked_row(rows, case)
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"dotproduct should use shared reduction hardware: {dotproduct_row}")
@@ -966,9 +1024,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 9,
-            "blocked": 26,
+            "blocked": 76,
             "unsupported": 0,
-            "missing_status": 50,
+            "missing_status": 0,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
