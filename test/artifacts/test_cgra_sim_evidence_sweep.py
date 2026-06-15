@@ -74,9 +74,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-BLOCKED_SWEEP_CASES = (
-    "dot_product_3d",
-)
+BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
     "binary_search",
@@ -773,6 +771,7 @@ def main(argv: list[str]) -> int:
             "vecsum-while",
             "reduction",
             "dotproduct",
+            "dot_product_3d",
             "spmv",
             "axpy",
             "bit_reverse",
@@ -843,10 +842,22 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "dot_product_3d",
             "g_t_dot_product_3d_0_0",
-            "fail",
-            "missing hardware resource for software op llvm.intr.fmuladd",
+            "pass",
         )
         assert_component_mapping_status(evidence_dir, "dot_product_3d", "g_t_main_red_0_0", "pass")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "dot_product_3d",
+            {
+                "arith.mulf#0.result0->llvm.intr.fmuladd#0.operand2",
+                "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand0",
+                "dataflow.load#2.result0->llvm.intr.fmuladd#1.operand0",
+                "dataflow.load#3.result0->llvm.intr.fmuladd#0.operand1",
+                "dataflow.load#5.result0->llvm.intr.fmuladd#1.operand1",
+                "llvm.intr.fmuladd#0.result0->llvm.intr.fmuladd#1.operand2",
+                "llvm.intr.fmuladd#1.result0->dataflow.store#0.operand2",
+            },
+        )
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "binary_search", "shared_reduction_adg")
@@ -1034,6 +1045,7 @@ def main(argv: list[str]) -> int:
             "vecsum-while",
             "reduction",
             "dotproduct",
+            "dot_product_3d",
             "spmv",
             "axpy",
             "bit_reverse",
@@ -1133,9 +1145,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 34,
+            "pass": 35,
             "fail": 0,
-            "blocked": 75,
+            "blocked": 74,
             "unsupported": 0,
             "missing_status": 0,
         }

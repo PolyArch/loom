@@ -7,6 +7,7 @@
 // RUN: env BUILD_DIR=%t.dir/downsample LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/downsample/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/gemv LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gemv/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/dot_product_3d LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dot_product_3d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/sbox_lookup LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/sbox_lookup/dfg_check.sh
@@ -18,6 +19,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/downsample/main_func.dfg.mlir --graph g_t_downsample_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload downsample --output %t.dir/downsample.mapping.csv --artifact %t.dir/downsample.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matvec/main_func.dfg.mlir --graph g_t_matvec_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matvec --output %t.dir/matvec.mapping.csv --artifact %t.dir/matvec.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/gemv/main_func.dfg.mlir --graph g_t_gemv_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload gemv --output %t.dir/gemv.mapping.csv --artifact %t.dir/gemv.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/dot_product_3d/main_func.dfg.mlir --graph g_t_dot_product_3d_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload dot_product_3d --output %t.dir/dot_product_3d.mapping.csv --artifact %t.dir/dot_product_3d.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/sbox_lookup/main_func.dfg.mlir --graph g_t_main_2_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload sbox_lookup --output %t.dir/sbox_lookup.mapping.csv --artifact %t.dir/sbox_lookup.mapping.json
@@ -29,6 +31,7 @@
 // RUN: FileCheck %s --check-prefix=DOWNSAMPLE < %t.dir/downsample.mapping.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/matvec.mapping.json
 // RUN: FileCheck %s --check-prefix=GEMV < %t.dir/gemv.mapping.json
+// RUN: FileCheck %s --check-prefix=DOT3D < %t.dir/dot_product_3d.mapping.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
 // RUN: FileCheck %s --check-prefix=SPMV < %t.dir/spmv.mapping.json
 // RUN: FileCheck %s --check-prefix=SBOX < %t.dir/sbox_lookup.mapping.json
@@ -115,6 +118,17 @@
 // GEMV-NOT: ".out"
 // GEMV-NOT: ".in"
 
+// DOT3D-DAG: "workload": "dot_product_3d"
+// DOT3D-DAG: "hardware": "shared_reduction_adg"
+// DOT3D-DAG: "placed_records": 14
+// DOT3D-DAG: "unrouted_edges": 0
+// DOT3D-DAG: "status": "pass"
+// DOT3D-DAG: "edge_ref": "llvm.intr.fmuladd#0.result0->llvm.intr.fmuladd#1.operand2"
+// DOT3D-DAG: "edge_ref": "llvm.intr.fmuladd#1.result0->dataflow.store#0.operand2"
+// DOT3D-DAG: "segment_kind": "module_path"
+// DOT3D-NOT: ".out"
+// DOT3D-NOT: ".in"
+
 // VECADD-DAG: "workload": "vecadd"
 // VECADD-DAG: "hardware": "shared_reduction_adg"
 // VECADD-DAG: "placed_records": 5
@@ -186,10 +200,10 @@
 // VARIANCE-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.result0"
 // VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#{{[0-9]+}}.operand1"
 // VARIANCE-DAG: "source_endpoint": "shared_reduction_adg::fabric.pe#{{[0-9]+}}.result0"
-// VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand2"
+// VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand4"
 // VARIANCE-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.result0"
 // VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#{{[0-9]+}}.operand0"
-// VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand2"
+// VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand4"
 // VARIANCE-DAG: "source_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.result0"
 // VARIANCE-DAG: "sink_endpoint": "shared_reduction_adg::fabric.op#{{[0-9]+}}.operand1"
 // VARIANCE-DAG: "source_endpoint": "shared_reduction_adg::fabric.pe#{{[0-9]+}}.result4"

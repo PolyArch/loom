@@ -150,9 +150,9 @@
 // MEAN-CGRA-DAG: "status": "pass"
 // MEAN-CGRA-DAG: "mapping_id": "mean__g_t_mean_kernel_red_0_0__shared_reduction_adg"
 // MEAN-CGRA-DAG: "dfg_cycles": 904
-// MEAN-CGRA-DAG: "hardware_aware_cycles": 937
+// MEAN-CGRA-DAG: "hardware_aware_cycles": 939
 // MEAN-CGRA-DAG: "routed_edges": 9
-// MEAN-CGRA-DAG: "route_segments": 29
+// MEAN-CGRA-DAG: "route_segments": 31
 // MEAN-CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 // MEAN-CGRA-DAG: "functional_state_source": "carried_from_dfg_sim_report"
 
@@ -160,14 +160,14 @@
 // DOWNSAMPLE-CORE-CGRA-DAG: "status": "pass"
 // DOWNSAMPLE-CORE-CGRA-DAG: "mapping_id": "downsample_avg__g_t_downsample_avg_0_0__shared_reduction_adg"
 // DOWNSAMPLE-CORE-CGRA-DAG: "dfg_cycles": 64
-// DOWNSAMPLE-CORE-CGRA-DAG: "hardware_aware_cycles": 97
+// DOWNSAMPLE-CORE-CGRA-DAG: "hardware_aware_cycles": 99
 // DOWNSAMPLE-CORE-CGRA-DAG: "routed_edges": 9
 
 // VARIANCE-MEAN-CGRA-DAG: "workload": "variance"
 // VARIANCE-MEAN-CGRA-DAG: "status": "pass"
 // VARIANCE-MEAN-CGRA-DAG: "mapping_id": "variance__g_t_variance_red_0_0__shared_reduction_adg"
 // VARIANCE-MEAN-CGRA-DAG: "dfg_cycles": 232
-// VARIANCE-MEAN-CGRA-DAG: "hardware_aware_cycles": 265
+// VARIANCE-MEAN-CGRA-DAG: "hardware_aware_cycles": 267
 // VARIANCE-MEAN-CGRA-DAG: "routed_edges": 9
 
 // MATVEC-CGRA-DAG: "workload": "matvec"
@@ -212,17 +212,17 @@
 // SUMMARY-DAG: vecadd,1603,1657,pass
 // SUMMARY-DAG: vecmul,256,,blocked
 // SUMMARY-DAG: vecscale,384,,blocked
-// SUMMARY-DAG: mean,904,937,pass
+// SUMMARY-DAG: mean,904,939,pass
 // SUMMARY-DAG: vecnorm_l1,643,{{[0-9]+}},pass
 // SUMMARY-DAG: vecnorm_l2,771,{{[0-9]+}},pass
 // SUMMARY-DAG: reduction,1155,1181,pass
 // SUMMARY-DAG: relu,707,759,pass
 // SUMMARY-DAG: rotate_bits,544,{{[0-9]+}},pass
-// SUMMARY-DAG: variance,594,678,pass
+// SUMMARY-DAG: variance,594,682,pass
 // SUMMARY-DAG: vecsum,579,605,pass
 // SUMMARY-DAG: dotproduct,1219,1258,pass
 // SUMMARY-DAG: spmv,47,106,pass
 // SUMMARY-DAG: prefix_sum,835,878,pass
 // SUMMARY-DAG: prefix_sum_inclusive,13302,13345,pass
 // SUMMARY-DAG: cumsum,14339,14380,pass
-// SUMMARY-DAG: integrate_trapz,323,434,pass
+// SUMMARY-DAG: integrate_trapz,323,436,pass

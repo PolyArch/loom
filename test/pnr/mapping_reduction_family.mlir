@@ -26,6 +26,7 @@
 // RUN: env BUILD_DIR=%t.dir/reduction LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/reduction/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecsum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecsum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dotproduct LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dotproduct/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/dot_product_3d LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dot_product_3d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/prefix_sum LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/prefix_sum_inclusive LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/prefix_sum_inclusive/dfg_check.sh
@@ -63,6 +64,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/reduction/main_func.dfg.mlir --graph g_t_reduce_sum_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload reduction --output %t.dir/reduction.mapping.csv --artifact %t.dir/reduction.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecsum/main_func.dfg.mlir --graph g_t_vecsum_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload vecsum --output %t.dir/vecsum.mapping.csv --artifact %t.dir/vecsum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/dotproduct/main_func.dfg.mlir --graph g_t_dotproduct_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload dotproduct --output %t.dir/dotproduct.mapping.csv --artifact %t.dir/dotproduct.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/dot_product_3d/main_func.dfg.mlir --graph g_t_dot_product_3d_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload dot_product_3d --output %t.dir/dot_product_3d.mapping.csv --artifact %t.dir/dot_product_3d.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/prefix_sum/main_func.dfg.mlir --graph g_t_prefix_sum_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload prefix_sum --output %t.dir/prefix_sum.mapping.csv --artifact %t.dir/prefix_sum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/prefix_sum_inclusive/main_func.dfg.mlir --graph g_t_prefix_sum_inclusive_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload prefix_sum_inclusive --output %t.dir/prefix_sum_inclusive.mapping.csv --artifact %t.dir/prefix_sum_inclusive.mapping.json
@@ -117,6 +119,8 @@
 // RUN: FileCheck %s --check-prefixes=CSV,REDUCTION < %t.dir/reduction.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,VECSUM < %t.dir/vecsum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,DOTPRODUCT < %t.dir/dotproduct.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,DOT3D < %t.dir/dot_product_3d.mapping.csv
+// RUN: FileCheck %s --check-prefix=DOT3D-JSON < %t.dir/dot_product_3d.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,SPMV < %t.dir/spmv.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,PREFIX-SUM < %t.dir/prefix_sum.mapping.csv
 // RUN: FileCheck %s --check-prefix=PREFIX-SUM-JSON < %t.dir/prefix_sum.mapping.json
@@ -360,7 +364,7 @@
 
 // VECADD-NEXT: vecadd,shared_reduction_adg,vecadd__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg,5,3,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// VECMUL-NEXT: vecmul,shared_reduction_adg,vecmul__g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0__shared_reduction_adg,5,4,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // VECSCALE-NEXT: vecscale,shared_reduction_adg,vecscale__g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0__shared_reduction_adg,4,3,1,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -414,6 +418,24 @@
 // VECSUM-NEXT: vecsum,shared_reduction_adg,vecsum__g_t_vecsum_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
 // DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
+
+// DOT3D-NEXT: dot_product_3d,shared_reduction_adg,dot_product_3d__g_t_dot_product_3d_0_0__shared_reduction_adg,14,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+// DOT3D-JSON-DAG: "workload": "dot_product_3d"
+// DOT3D-JSON-DAG: "hardware": "shared_reduction_adg"
+// DOT3D-JSON-DAG: "status": "pass"
+// DOT3D-JSON-DAG: "placed_records": 14
+// DOT3D-JSON-DAG: "unrouted_edges": 0
+// DOT3D-JSON-DAG: "edge_ref": "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand0"
+// DOT3D-JSON-DAG: "edge_ref": "dataflow.load#3.result0->llvm.intr.fmuladd#0.operand1"
+// DOT3D-JSON-DAG: "edge_ref": "arith.mulf#0.result0->llvm.intr.fmuladd#0.operand2"
+// DOT3D-JSON-DAG: "edge_ref": "dataflow.load#2.result0->llvm.intr.fmuladd#1.operand0"
+// DOT3D-JSON-DAG: "edge_ref": "dataflow.load#5.result0->llvm.intr.fmuladd#1.operand1"
+// DOT3D-JSON-DAG: "edge_ref": "llvm.intr.fmuladd#0.result0->llvm.intr.fmuladd#1.operand2"
+// DOT3D-JSON-DAG: "edge_ref": "llvm.intr.fmuladd#1.result0->dataflow.store#0.operand2"
+// DOT3D-JSON-DAG: "segment_kind": "resource_edge"
+// DOT3D-JSON-DAG: "segment_kind": "module_path"
+// DOT3D-JSON-NOT: ".out"
+// DOT3D-JSON-NOT: ".in"
 
 // SPMV-NEXT: spmv,shared_reduction_adg,spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
 
