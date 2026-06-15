@@ -78,7 +78,6 @@ BLOCKED_SWEEP_CASES = (
     "bit_reverse",
     "compare_swap",
     "dot_product_3d",
-    "gemm",
     "hash_mix",
     "integrate_trapz",
     "relu",
@@ -323,6 +322,51 @@ def assert_mapping_uses_switch_multihop(evidence_dir: Path, case: str) -> None:
             saw_switch_multihop_route = True
     if not saw_switch_multihop_route:
         raise AssertionError(f"{case} should route through real switch multihop paths: {path}: {data}")
+
+
+def assert_mapping_edges_use_switch_multihop(
+    evidence_dir: Path,
+    case: str,
+    expected_edges: set[str],
+) -> None:
+    path = evidence_dir / f"{case}.mapping.json"
+    data = json.loads(path.read_text())
+    routes = data.get("routes")
+    if not isinstance(routes, list):
+        raise AssertionError(f"{case} mapping lacks routes array: {path}: {data}")
+    by_edge = {
+        str(route.get("edge_ref")): route
+        for route in routes
+        if isinstance(route, dict) and route.get("edge_ref") is not None
+    }
+    for edge_ref in expected_edges:
+        route = by_edge.get(edge_ref)
+        if route is None:
+            raise AssertionError(f"{case} mapping lacks route for {edge_ref}: {path}: {data}")
+        if route.get("status") != "routed":
+            raise AssertionError(f"{case} route should be routed for {edge_ref}: {path}: {route}")
+        segments = route.get("segments")
+        if not isinstance(segments, list) or len(segments) < 3:
+            raise AssertionError(f"{case} route should be multihop for {edge_ref}: {path}: {route}")
+        saw_switch = False
+        segment_kinds = set()
+        for segment in segments:
+            if not isinstance(segment, dict):
+                raise AssertionError(f"{case} route has malformed segment for {edge_ref}: {path}: {route}")
+            segment_kinds.add(str(segment.get("segment_kind", "")))
+            endpoints = (
+                str(segment.get("source_endpoint", "")),
+                str(segment.get("sink_endpoint", "")),
+                str(segment.get("hardware_ref", "")),
+            )
+            if any("fabric.switch" in endpoint for endpoint in endpoints):
+                saw_switch = True
+            if any(endpoint.endswith(".out") or endpoint.endswith(".in") for endpoint in endpoints):
+                raise AssertionError(f"{case} mapping uses placeholder endpoint for {edge_ref}: {path}: {route}")
+        if not saw_switch:
+            raise AssertionError(f"{case} route should use a real switch for {edge_ref}: {path}: {route}")
+        if not {"module_path", "resource_edge"}.issubset(segment_kinds):
+            raise AssertionError(f"{case} route should expose concrete path segments for {edge_ref}: {path}: {route}")
 
 
 def assert_component_references_resolve(evidence_dir: Path, case: str) -> None:
@@ -750,6 +794,7 @@ def main(argv: list[str]) -> int:
             "vecnorm_l1",
             "vecnorm_l2",
             "gemv",
+            "gemm",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -770,14 +815,6 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
-        assert_mapping_unrouted_edges(
-            evidence_dir,
-            "gemm",
-            {
-                "arith.shrui#0.result0->dataflow.load#1.operand1",
-                "dataflow.stream#0.result0->arith.shli#0.operand0",
-            },
-        )
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_mapping_unrouted_edges(
@@ -899,6 +936,15 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "gemv")
+        assert_mapping_uses_switch_multihop(evidence_dir, "gemm")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "gemm",
+            {
+                "arith.shrui#0.result0->dataflow.load#1.operand1",
+                "dataflow.stream#0.result0->arith.shli#0.operand0",
+            },
+        )
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
@@ -946,6 +992,7 @@ def main(argv: list[str]) -> int:
             "vecnorm_l1",
             "vecnorm_l2",
             "gemv",
+            "gemm",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1014,6 +1061,9 @@ def main(argv: list[str]) -> int:
         gemv_row = one_row(rows, "gemv")
         if gemv_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"gemv should use shared reduction hardware: {gemv_row}")
+        gemm_row = one_row(rows, "gemm")
+        if gemm_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"gemm should use shared reduction hardware: {gemm_row}")
         matvec_row = one_row(rows, "matvec")
         if matvec_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"matvec should use shared reduction hardware: {matvec_row}")
@@ -1023,8 +1073,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 26,
-            "fail": 7,
+            "pass": 27,
+            "fail": 6,
             "blocked": 76,
             "unsupported": 0,
             "missing_status": 0,
