@@ -21,15 +21,20 @@ DEFAULT_SWEEP_CASES = (
     "dot_product_3d",
     "axpy",
     "bit_reverse",
+    "clz",
+    "ctz",
     "downsample",
     "downsample_avg",
     "delta_encode",
+    "find_first_set",
     "prefix_sum",
     "cumsum",
     "prefix_sum_inclusive",
     "prefix_sum_exclusive",
     "pack_bits",
+    "parity",
     "partition",
+    "popcount",
     "unpack_bits",
     "integrate_trapz",
     "reduction",
@@ -76,16 +81,28 @@ BLOCKED_SWEEP_CASES = (
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
+    "clz",
     "compact",
     "convolve_1d_same",
     "crc32",
+    "ctz",
     "delta_encode",
+    "find_first_set",
     "fir_filter",
     "merge",
     "pack_bits",
+    "parity",
     "partition",
+    "popcount",
     "prefix_sum_exclusive",
     "unpack_bits",
+)
+PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
+    ("clz", "clz_candidate"),
+    ("ctz", "ctz_candidate"),
+    ("find_first_set", "find_first_set_candidate"),
+    ("parity", "parity"),
+    ("popcount", "popcount_candidate"),
 )
 
 HEADER = [
@@ -412,6 +429,21 @@ def assert_unsupported_operation(evidence_dir: Path, case: str, operation: str) 
         )
 
 
+def assert_primary_graph_missing(evidence_dir: Path, case: str, expected_token: str) -> None:
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    dfg = json.loads(dfg_path.read_text())
+    mapping = json.loads(mapping_path.read_text())
+    expected = f"primary workload graph absent: expected token {expected_token}"
+    for artifact_path, artifact in ((dfg_path, dfg), (mapping_path, mapping)):
+        diagnostics = artifact.get("diagnostics")
+        if not isinstance(diagnostics, list) or expected not in diagnostics:
+            raise AssertionError(f"{case} should report primary graph absence: {artifact_path}: {artifact}")
+    graph_ids = dfg.get("discovered_graph_ids")
+    if not isinstance(graph_ids, list) or any(expected_token in str(graph_id) for graph_id in graph_ids):
+        raise AssertionError(f"{case} should not expose its primary graph token yet: {dfg_path}: {dfg}")
+
+
 def assert_component_mapping_status(
     evidence_dir: Path,
     case: str,
@@ -518,9 +550,15 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "bit_reverse",
                 "--case",
+                "clz",
+                "--case",
+                "ctz",
+                "--case",
                 "downsample",
                 "--case",
                 "delta_encode",
+                "--case",
+                "find_first_set",
                 "--case",
                 "spmv",
                 "--case",
@@ -550,7 +588,11 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "pack_bits",
                 "--case",
+                "parity",
+                "--case",
                 "partition",
+                "--case",
+                "popcount",
                 "--case",
                 "unpack_bits",
                 "--case",
@@ -673,6 +715,8 @@ def main(argv: list[str]) -> int:
             "partition",
         ):
             assert_unsupported_operation(evidence_dir, case, "scf.for")
+        for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
+            assert_primary_graph_missing(evidence_dir, case, expected_token)
         assert_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
         assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
@@ -689,8 +733,11 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "clz", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "ctz", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "find_first_set", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
@@ -701,7 +748,9 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_exclusive", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "pack_bits", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "parity", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "unpack_bits", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "popcount", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l1", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l2", "shared_reduction_adg")
@@ -869,9 +918,9 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 24,
             "fail": 9,
-            "blocked": 13,
+            "blocked": 18,
             "unsupported": 0,
-            "missing_status": 63,
+            "missing_status": 58,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")

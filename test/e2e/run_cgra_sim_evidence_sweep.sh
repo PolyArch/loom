@@ -59,15 +59,20 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     dot_product_3d
     axpy
     bit_reverse
+    clz
+    ctz
     downsample
     downsample_avg
     delta_encode
+    find_first_set
     prefix_sum
     cumsum
     prefix_sum_inclusive
     prefix_sum_exclusive
     pack_bits
+    parity
     partition
+    popcount
     unpack_bits
     integrate_trapz
     reduction

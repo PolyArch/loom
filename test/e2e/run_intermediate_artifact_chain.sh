@@ -71,6 +71,12 @@ case "${CASE}" in
   bit_reverse)
     case_graph="g_t_bit_reverse_kernel_red_0_0"
     ;;
+  clz)
+    case_graph="missing_primary_graph"
+    ;;
+  ctz)
+    case_graph="missing_primary_graph"
+    ;;
   downsample)
     case_graph="g_t_downsample_0_0"
     ;;
@@ -79,6 +85,9 @@ case "${CASE}" in
     ;;
   delta_encode)
     case_graph="g_t_delta_encode_0_0"
+    ;;
+  find_first_set)
+    case_graph="missing_primary_graph"
     ;;
   prefix_sum)
     case_graph="g_t_prefix_sum_red_0_0"
@@ -95,8 +104,14 @@ case "${CASE}" in
   pack_bits)
     case_graph="g_t_pack_bits_kernel_red_0_0"
     ;;
+  parity)
+    case_graph="missing_primary_graph"
+    ;;
   partition)
     case_graph="g_t_partition_red_0_0"
+    ;;
+  popcount)
+    case_graph="missing_primary_graph"
     ;;
   unpack_bits)
     case_graph="g_t_unpack_bits_kernel_red_0_0"
@@ -630,6 +645,39 @@ elif [[ "${CASE}" == "partition" ]]; then
     "${cgra_lower_report}"
     "${cgra_upper_report}"
   )
+elif [[ "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "parity" || "${CASE}" == "popcount" ]]; then
+  case "${CASE}" in
+    clz)
+      expected_primary_graph_token="clz_candidate"
+      ;;
+    ctz)
+      expected_primary_graph_token="ctz_candidate"
+      ;;
+    find_first_set)
+      expected_primary_graph_token="find_first_set_candidate"
+      ;;
+    parity)
+      expected_primary_graph_token="parity"
+      ;;
+    popcount)
+      expected_primary_graph_token="popcount_candidate"
+      ;;
+  esac
+  python3 "${ROOT}/test/e2e/emit_primary_graph_absence_artifacts.py" \
+    --workload "${CASE}" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --expected-graph-token "${expected_primary_graph_token}" \
+    --hardware "${hardware_name}" \
+    --graph "${case_graph}" \
+    --dfg-output "${dfg_report}" \
+    --dfg-cycle-output "${dfg_cycle}" \
+    --mapping-output "${mapping_artifact}" \
+    --mapping-summary-output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
 else
   env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
     bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
