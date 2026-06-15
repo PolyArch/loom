@@ -6,6 +6,7 @@
 // RUN: env BUILD_DIR=%t.dir/vecnorm_l2 LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecnorm_l2/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/downsample LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/downsample/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/gemv LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gemv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/variance LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/variance/dfg_check.sh
@@ -14,6 +15,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l2/main_func.dfg.mlir --graph g_t_vecnorm_l2_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecnorm_l2 --output %t.dir/vecnorm_l2.mapping.csv --artifact %t.dir/vecnorm_l2.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/downsample/main_func.dfg.mlir --graph g_t_downsample_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload downsample --output %t.dir/downsample.mapping.csv --artifact %t.dir/downsample.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matvec/main_func.dfg.mlir --graph g_t_matvec_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matvec --output %t.dir/matvec.mapping.csv --artifact %t.dir/matvec.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/gemv/main_func.dfg.mlir --graph g_t_gemv_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload gemv --output %t.dir/gemv.mapping.csv --artifact %t.dir/gemv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/variance/main_func.dfg.mlir --graph g_t_variance_red_1_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload variance --output %t.dir/variance.mapping.csv --artifact %t.dir/variance.mapping.json
@@ -22,6 +24,7 @@
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/vecnorm_l2.mapping.json
 // RUN: FileCheck %s --check-prefix=DOWNSAMPLE < %t.dir/downsample.mapping.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/matvec.mapping.json
+// RUN: FileCheck %s --check-prefix=GEMV < %t.dir/gemv.mapping.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
 // RUN: FileCheck %s --check-prefix=SPMV < %t.dir/spmv.mapping.json
 // RUN: FileCheck %s --check-prefix=VARIANCE < %t.dir/variance.mapping.json
@@ -93,6 +96,18 @@
 // MATVEC-DAG: "edge_ref": "dataflow.load#1.result0->arith.muli#0.operand0"
 // MATVEC-DAG: "edge_ref": "dataflow.load#1.result1->dataflow.sync#0.operand1"
 // MATVEC-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.load#1.operand1"
+
+// GEMV-DAG: "workload": "gemv"
+// GEMV-DAG: "hardware": "shared_reduction_adg"
+// GEMV-DAG: "placed_records": 9
+// GEMV-DAG: "routed_edges": {{[1-9][0-9]*}}
+// GEMV-DAG: "unrouted_edges": 0
+// GEMV-DAG: "status": "pass"
+// GEMV-DAG: "edge_ref": "dataflow.carry#0.result0->arith.shli#0.operand0"
+// GEMV-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.shli#0.operand1"
+// GEMV-DAG: "segment_kind": "module_path"
+// GEMV-NOT: ".out"
+// GEMV-NOT: ".in"
 
 // VECADD-DAG: "workload": "vecadd"
 // VECADD-DAG: "hardware": "shared_reduction_adg"

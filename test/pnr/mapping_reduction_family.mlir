@@ -90,6 +90,7 @@
 // RUN: FileCheck %s --check-prefix=MATVEC-JSON < %t.dir/matvec.core.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,MATVEC-CHECKSUM < %t.dir/matvec.checksum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,GEMV < %t.dir/gemv.core.mapping.csv
+// RUN: FileCheck %s --check-prefix=GEMV-JSON < %t.dir/gemv.core.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,GEMV-CHECKSUM < %t.dir/gemv.checksum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,VECADD < %t.dir/vecadd.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,VECMUL < %t.dir/vecmul.mapping.csv
@@ -136,7 +137,7 @@
 
 // VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
 
-// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,2,11,0,fail,unrouted software edges lack Fabric ADG connectivity
+// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,4,9,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,2,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -219,7 +220,19 @@
 
 // MATVEC-CHECKSUM-NEXT: matvec,shared_reduction_adg,matvec__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// GEMV-NEXT: gemv,shared_reduction_adg,gemv__g_t_gemv_kernel_0_0__shared_reduction_adg,9,11,2,0,fail,unrouted software edges lack Fabric ADG connectivity
+// GEMV-NEXT: gemv,shared_reduction_adg,gemv__g_t_gemv_kernel_0_0__shared_reduction_adg,9,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+
+// GEMV-JSON-DAG: "workload": "gemv"
+// GEMV-JSON-DAG: "hardware": "shared_reduction_adg"
+// GEMV-JSON-DAG: "status": "pass"
+// GEMV-JSON-DAG: "placed_records": 9
+// GEMV-JSON-DAG: "unrouted_edges": 0
+// GEMV-JSON-DAG: "edge_ref": "dataflow.carry#0.result0->arith.shli#0.operand0"
+// GEMV-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.shli#0.operand1"
+// GEMV-JSON-DAG: "segment_kind": "resource_edge"
+// GEMV-JSON-DAG: "segment_kind": "module_path"
+// GEMV-JSON-NOT: ".out"
+// GEMV-JSON-NOT: ".in"
 
 // GEMV-CHECKSUM-NEXT: gemv,shared_reduction_adg,gemv__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 

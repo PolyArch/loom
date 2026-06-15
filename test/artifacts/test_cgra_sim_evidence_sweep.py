@@ -79,7 +79,6 @@ BLOCKED_SWEEP_CASES = (
     "compare_swap",
     "dot_product_3d",
     "gemm",
-    "gemv",
     "hash_mix",
     "integrate_trapz",
     "relu",
@@ -750,6 +749,7 @@ def main(argv: list[str]) -> int:
             "mean",
             "vecnorm_l1",
             "vecnorm_l2",
+            "gemv",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -775,7 +775,6 @@ def main(argv: list[str]) -> int:
             "gemm",
             {
                 "arith.shrui#0.result0->dataflow.load#1.operand1",
-                "dataflow.invariant#0.result0->arith.shli#0.operand1",
                 "dataflow.stream#0.result0->arith.shli#0.operand0",
             },
         )
@@ -899,6 +898,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
+        assert_mapping_uses_switch_multihop(evidence_dir, "gemv")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
@@ -945,6 +945,7 @@ def main(argv: list[str]) -> int:
             "mean",
             "vecnorm_l1",
             "vecnorm_l2",
+            "gemv",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1010,6 +1011,9 @@ def main(argv: list[str]) -> int:
         vecnorm_l2_row = one_row(rows, "vecnorm_l2")
         if vecnorm_l2_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"vecnorm_l2 should use shared reduction hardware: {vecnorm_l2_row}")
+        gemv_row = one_row(rows, "gemv")
+        if gemv_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"gemv should use shared reduction hardware: {gemv_row}")
         matvec_row = one_row(rows, "matvec")
         if matvec_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"matvec should use shared reduction hardware: {matvec_row}")
@@ -1019,8 +1023,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 25,
-            "fail": 8,
+            "pass": 26,
+            "fail": 7,
             "blocked": 76,
             "unsupported": 0,
             "missing_status": 0,
