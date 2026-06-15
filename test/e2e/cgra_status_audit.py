@@ -235,23 +235,25 @@ def validate_cmsis_dfg_mlir_evidence(
 ) -> None:
     diagnostic_class = row.get("diagnostic_class", "")
     if diagnostic_class not in {
+        "cmsis_dfg_mlir_missing",
         "cmsis_dfg_mlir_ready_for_dfg_sim",
         "cmsis_no_dataflow_graph",
         "cmsis_dfg_mlir_identity_mismatch",
     }:
         return
-    validate_artifact_fingerprint(
-        csv_input=csv_input,
-        row_index=row_index,
-        row=row,
-        artifact_column="dfg_mlir",
-        fingerprint_column="dfg_mlir_fingerprint",
-        diagnostics=diagnostics,
-    )
     if row.get("owner", "") != "compiler_pipeline":
         diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row owner must be compiler_pipeline")
     if row.get("dfg_report", "") or row.get("dfg_report_fingerprint", ""):
         diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence must not be stored as DFG-sim report evidence")
+    if diagnostic_class != "cmsis_dfg_mlir_missing":
+        validate_artifact_fingerprint(
+            csv_input=csv_input,
+            row_index=row_index,
+            row=row,
+            artifact_column="dfg_mlir",
+            fingerprint_column="dfg_mlir_fingerprint",
+            diagnostics=diagnostics,
+        )
     expected_name = f"{Path(row.get('source_row', '')).stem}.dfg.mlir"
     if row.get("dfg_mlir", "") and Path(row.get("dfg_mlir", "")).name != expected_name:
         diagnostics.append(f"row {row_index}: CMSIS dfg_mlir basename must be {expected_name}")
@@ -315,6 +317,82 @@ def validate_cmsis_dfg_mlir_evidence(
                 f"row {row_index}: CMSIS DFG MLIR identity mismatch row requires "
                 "blocking_prerequisite=dataflow_graph_identity"
             )
+    elif diagnostic_class == "cmsis_dfg_mlir_missing":
+        if row.get("status", "") != "blocked":
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row requires status=blocked")
+        if row.get("blocking_prerequisite", "") != "dfg_mlir":
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row requires blocking_prerequisite=dfg_mlir")
+        if row.get("graph_ids", ""):
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row requires empty graph_ids")
+        if row.get("dfg_mlir", "") or row.get("dfg_mlir_fingerprint", ""):
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row must not carry dfg_mlir evidence")
+
+
+def validate_cmsis_no_missing_status(row_index: int, row: dict[str, str], diagnostics: list[str]) -> None:
+    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
+        return
+    if row.get("diagnostic_class", "") == "missing_status":
+        diagnostics.append(f"row {row_index}: CMSIS row must not use missing_status")
+
+
+def validate_cmsis_dfg_mlir_reference(
+    csv_input: Path,
+    row_index: int,
+    row: dict[str, str],
+    diagnostics: list[str],
+) -> None:
+    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
+        return
+    if not row.get("dfg_mlir", ""):
+        return
+    validate_artifact_fingerprint(
+        csv_input=csv_input,
+        row_index=row_index,
+        row=row,
+        artifact_column="dfg_mlir",
+        fingerprint_column="dfg_mlir_fingerprint",
+        diagnostics=diagnostics,
+    )
+    expected_name = f"{Path(row.get('source_row', '')).stem}.dfg.mlir"
+    if Path(row.get("dfg_mlir", "")).name != expected_name:
+        diagnostics.append(f"row {row_index}: CMSIS dfg_mlir basename must be {expected_name}")
+
+
+def validate_cmsis_dfg_mlir_requirement(row_index: int, row: dict[str, str], diagnostics: list[str]) -> None:
+    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
+        return
+    has_dfg_mlir = bool(row.get("dfg_mlir", ""))
+    if row.get("status", "") == "pass" and not has_dfg_mlir:
+        diagnostics.append(f"row {row_index}: CMSIS pass row requires DFG MLIR evidence")
+    if row.get("status", "") != "pass" and not has_dfg_mlir:
+        if row.get("diagnostic_class", "") != "cmsis_dfg_mlir_missing":
+            diagnostics.append(
+                f"row {row_index}: CMSIS row without DFG MLIR evidence must use cmsis_dfg_mlir_missing"
+            )
+
+
+def validate_loombench_no_missing_status(row_index: int, row: dict[str, str], diagnostics: list[str]) -> None:
+    if row.get("suite", "") != "loombench":
+        return
+    if row.get("diagnostic_class", "") == "missing_status":
+        diagnostics.append(f"row {row_index}: LoomBench row must not use missing_status")
+
+
+def validate_loombench_no_manifest_row(row_index: int, row: dict[str, str], diagnostics: list[str]) -> None:
+    if row.get("suite", "") != "loombench":
+        return
+    if row.get("diagnostic_class", "") != "loombench_manifest_missing":
+        return
+    if row.get("status", "") != "blocked":
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires status=blocked")
+    if row.get("owner", "") != "loombench_manifest":
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires owner=loombench_manifest")
+    if row.get("blocking_prerequisite", "") != "loombench_manifest":
+        diagnostics.append(
+            f"row {row_index}: LoomBench row without manifest requires blocking_prerequisite=loombench_manifest"
+        )
+    if row_has_sim_artifacts(row):
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest must not carry simulator artifacts")
 
 
 def app_manifest_no_dfg_cases(diagnostics: list[str]) -> set[str]:
@@ -430,6 +508,11 @@ def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list
             validate_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
         else:
             validate_cmsis_dfg_mlir_evidence(csv_input, index, row, diagnostics)
+        validate_cmsis_no_missing_status(index, row, diagnostics)
+        validate_cmsis_dfg_mlir_reference(csv_input, index, row, diagnostics)
+        validate_cmsis_dfg_mlir_requirement(index, row, diagnostics)
+        validate_loombench_no_missing_status(index, row, diagnostics)
+        validate_loombench_no_manifest_row(index, row, diagnostics)
         if row.get("suite", "") == "app" and row.get("case", "") in no_dfg_app_cases:
             validate_app_no_dfg_row(index, row, diagnostics)
 
@@ -475,6 +558,26 @@ def validate_loombench_manifest_semantics(
     manifest_path: Path | None,
     diagnostics: list[str],
 ) -> None:
+    if manifest_path is None:
+        for row in rows:
+            if row.get("suite", "") != "loombench":
+                continue
+            case = row.get("case", "")
+            if row.get("status", "") != "blocked":
+                diagnostics.append(f"LoomBench row without manifest {case} must stay blocked")
+            if row.get("diagnostic_class", "") == "missing_status":
+                diagnostics.append(f"LoomBench row without manifest must not use missing_status: {case}")
+            elif row.get("diagnostic_class", "") != "loombench_manifest_missing":
+                diagnostics.append(f"LoomBench row without manifest {case} has wrong diagnostic_class")
+            if row.get("owner", "") != "loombench_manifest":
+                diagnostics.append(f"LoomBench row without manifest {case} requires owner=loombench_manifest")
+            if row.get("blocking_prerequisite", "") != "loombench_manifest":
+                diagnostics.append(
+                    f"LoomBench row without manifest {case} requires blocking_prerequisite=loombench_manifest"
+                )
+            if row_has_sim_artifacts(row):
+                diagnostics.append(f"LoomBench row without manifest {case} must not carry simulator artifacts")
+        return
     manifest_by_case = load_loombench_manifest_map(manifest_path, diagnostics)
     if not manifest_by_case:
         return

@@ -1375,23 +1375,25 @@ def validate_cgra_status_cmsis_dfg_mlir_row(
 ) -> None:
     diagnostic_class = row.get("diagnostic_class", "")
     if diagnostic_class not in {
+        "cmsis_dfg_mlir_missing",
         "cmsis_dfg_mlir_ready_for_dfg_sim",
         "cmsis_no_dataflow_graph",
         "cmsis_dfg_mlir_identity_mismatch",
     }:
         return
-    validate_referenced_artifact_fingerprint(
-        anchor,
-        row,
-        diagnostics,
-        row_index,
-        "dfg_mlir",
-        "dfg_mlir_fingerprint",
-    )
     if row.get("owner", "") != "compiler_pipeline":
         diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence row owner must be compiler_pipeline")
     if row.get("dfg_report", "") or row.get("dfg_report_fingerprint", ""):
         diagnostics.append(f"row {row_index}: CMSIS DFG MLIR evidence must not be stored as DFG-sim report evidence")
+    if diagnostic_class != "cmsis_dfg_mlir_missing":
+        validate_referenced_artifact_fingerprint(
+            anchor,
+            row,
+            diagnostics,
+            row_index,
+            "dfg_mlir",
+            "dfg_mlir_fingerprint",
+        )
     expected_name = f"{Path(row.get('source_row', '')).stem}.dfg.mlir"
     if row.get("dfg_mlir", "") and Path(row.get("dfg_mlir", "")).name != expected_name:
         diagnostics.append(f"row {row_index}: CMSIS dfg_mlir basename must be {expected_name}")
@@ -1455,6 +1457,119 @@ def validate_cgra_status_cmsis_dfg_mlir_row(
                 f"row {row_index}: CMSIS DFG MLIR identity mismatch row requires "
                 "blocking_prerequisite=dataflow_graph_identity"
             )
+    elif diagnostic_class == "cmsis_dfg_mlir_missing":
+        if row.get("status", "") != "blocked":
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row requires status=blocked")
+        if row.get("blocking_prerequisite", "") != "dfg_mlir":
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row requires blocking_prerequisite=dfg_mlir")
+        if row.get("graph_ids", ""):
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row requires empty graph_ids")
+        if row.get("dfg_mlir", "") or row.get("dfg_mlir_fingerprint", ""):
+            diagnostics.append(f"row {row_index}: CMSIS missing DFG MLIR row must not carry dfg_mlir evidence")
+
+
+def validate_cgra_status_cmsis_no_missing_status(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
+        return
+    if row.get("diagnostic_class", "") == "missing_status":
+        diagnostics.append(f"row {row_index}: CMSIS row must not use missing_status")
+
+
+def validate_cgra_status_cmsis_dfg_mlir_reference(
+    anchor: Path,
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
+        return
+    if not row.get("dfg_mlir", ""):
+        return
+    validate_referenced_artifact_fingerprint(
+        anchor,
+        row,
+        diagnostics,
+        row_index,
+        "dfg_mlir",
+        "dfg_mlir_fingerprint",
+    )
+    expected_name = f"{Path(row.get('source_row', '')).stem}.dfg.mlir"
+    if Path(row.get("dfg_mlir", "")).name != expected_name:
+        diagnostics.append(f"row {row_index}: CMSIS dfg_mlir basename must be {expected_name}")
+
+
+def validate_cgra_status_cmsis_dfg_mlir_requirement(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
+        return
+    has_dfg_mlir = bool(row.get("dfg_mlir", ""))
+    if row.get("status", "") == "pass" and not has_dfg_mlir:
+        diagnostics.append(f"row {row_index}: CMSIS pass row requires DFG MLIR evidence")
+    if row.get("status", "") != "pass" and not has_dfg_mlir:
+        if row.get("diagnostic_class", "") != "cmsis_dfg_mlir_missing":
+            diagnostics.append(
+                f"row {row_index}: CMSIS row without DFG MLIR evidence must use cmsis_dfg_mlir_missing"
+            )
+
+
+def validate_cgra_status_loombench_no_manifest_row(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") != "loombench":
+        return
+    if row.get("diagnostic_class", "") != "loombench_manifest_missing":
+        return
+    if row.get("status", "") != "blocked":
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires status=blocked")
+    if row.get("owner", "") != "loombench_manifest":
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires owner=loombench_manifest")
+    if row.get("blocking_prerequisite", "") != "loombench_manifest":
+        diagnostics.append(
+            f"row {row_index}: LoomBench row without manifest requires blocking_prerequisite=loombench_manifest"
+        )
+    if row.get("graph_ids", ""):
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires empty graph_ids")
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row.get(column, "") != "not_run":
+            diagnostics.append(f"row {row_index}: LoomBench row without manifest requires {column}=not_run")
+    for column in (
+        "dfg_mlir",
+        "dfg_mlir_fingerprint",
+        "dfg_report",
+        "dfg_report_fingerprint",
+        "mapping_artifact",
+        "mapping_artifact_fingerprint",
+        "cgra_report",
+        "cgra_report_fingerprint",
+        "comparison_report",
+        "comparison_report_fingerprint",
+    ):
+        if row.get(column, ""):
+            diagnostics.append(f"row {row_index}: LoomBench row without manifest must not carry {column}")
+    if row.get("final_outputs_present", "") != "false":
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires final_outputs_present=false")
+    if row.get("final_memory_state_present", "") != "false":
+        diagnostics.append(f"row {row_index}: LoomBench row without manifest requires final_memory_state_present=false")
+
+
+def validate_cgra_status_loombench_no_missing_status(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") != "loombench":
+        return
+    if row.get("diagnostic_class", "") == "missing_status":
+        diagnostics.append(f"row {row_index}: LoomBench row must not use missing_status")
 
 
 def validate_kind_invariants(
@@ -1470,6 +1585,11 @@ def validate_kind_invariants(
             validate_cgra_status_pass_row(anchor, row, diagnostics, row_index)
         else:
             validate_cgra_status_cmsis_dfg_mlir_row(anchor, row, diagnostics, row_index)
+        validate_cgra_status_cmsis_no_missing_status(row, diagnostics, row_index)
+        validate_cgra_status_cmsis_dfg_mlir_reference(anchor, row, diagnostics, row_index)
+        validate_cgra_status_cmsis_dfg_mlir_requirement(row, diagnostics, row_index)
+        validate_cgra_status_loombench_no_manifest_row(row, diagnostics, row_index)
+        validate_cgra_status_loombench_no_missing_status(row, diagnostics, row_index)
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
         for column in ("dfg_sim_cycles", "cgra_sim_cycles"):
             if row.get(column, "") and nonnegative_int_cell(row, column) is None:

@@ -224,12 +224,35 @@ def apply_cmsis_dfg_mlir_evidence(
     dfg_dir: Path | None,
 ) -> None:
     if dfg_dir is None:
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "cmsis_dfg_mlir_missing"
+        row_data["owner"] = "compiler_pipeline"
+        row_data["blocking_prerequisite"] = "dfg_mlir"
+        row_data["diagnostic"] = (
+            "CMSIS DFG MLIR evidence is absent; DFG-sim, mapping, and CGRA-sim "
+            "reports cannot be produced for this row"
+        )
         return
     stem = source_stem(columns)
     if not stem:
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "cmsis_dfg_mlir_missing"
+        row_data["owner"] = "compiler_pipeline"
+        row_data["blocking_prerequisite"] = "dfg_mlir"
+        row_data["diagnostic"] = (
+            "CMSIS target row lacks a source basename for DFG MLIR evidence lookup"
+        )
         return
     dfg_mlir = dfg_dir / f"{stem}.dfg.mlir"
     if not dfg_mlir.is_file():
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "cmsis_dfg_mlir_missing"
+        row_data["owner"] = "compiler_pipeline"
+        row_data["blocking_prerequisite"] = "dfg_mlir"
+        row_data["diagnostic"] = (
+            f"CMSIS DFG MLIR evidence is absent at {relative_path_text(dfg_mlir)}; "
+            "DFG-sim, mapping, and CGRA-sim reports cannot be produced for this row"
+        )
         return
     text = dfg_mlir.read_text(errors="replace")
     graph_ids = dfg_graph_ids_from_text(text)
@@ -414,18 +437,20 @@ def loombench_rows(
     rows: list[dict[str, str]] = []
     for case_dir in sorted(path for path in source_root.iterdir() if path.is_dir()):
         case = case_dir.name
-        rows.append(
-            row(
-                suite="loombench",
-                case=case,
-                source_row=case,
-                software_root=case_dir.relative_to(ROOT).as_posix()
-                if case_dir.is_relative_to(ROOT)
-                else case_dir.as_posix(),
-                blocking_prerequisite="loombench_manifest",
-                diagnostic="CGRA status missing because dedicated LoomBench manifest reconciliation is absent",
-            )
+        row_data = row(
+            suite="loombench",
+            case=case,
+            source_row=case,
+            software_root=case_dir.relative_to(ROOT).as_posix()
+            if case_dir.is_relative_to(ROOT)
+            else case_dir.as_posix(),
+            blocking_prerequisite="loombench_manifest",
+            diagnostic="dedicated LoomBench manifest reconciliation is absent",
         )
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "loombench_manifest_missing"
+        row_data["owner"] = "loombench_manifest"
+        rows.append(row_data)
     return rows
 
 

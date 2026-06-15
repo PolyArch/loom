@@ -409,6 +409,17 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
             }
             if suite_counts != expected:
                 raise AssertionError(f"app baseline should structure app rows without dfg tier: {suite_counts}")
+        elif suite in {"cmsis-dsp", "cmsis-nn"}:
+            expected = {
+                "total": total,
+                "pass": 0,
+                "fail": 0,
+                "blocked": total,
+                "unsupported": 0,
+                "missing_status": 0,
+            }
+            if suite_counts != expected:
+                raise AssertionError(f"{suite} baseline should structure rows without DFG MLIR evidence: {suite_counts}")
         else:
             if suite_counts.get("missing_status") != total:
                 raise AssertionError(f"{suite} missing_status should equal total in baseline: {suite_counts}")
@@ -494,10 +505,58 @@ def main() -> int:
         cmsis_dsp = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         if cmsis_dsp["software_root"] != "externals/cmsis-dsp/Source":
             raise AssertionError(f"unexpected CMSIS-DSP root: {cmsis_dsp}")
+        if (
+            cmsis_dsp["status"] != "blocked"
+            or cmsis_dsp["diagnostic_class"] != "cmsis_dfg_mlir_missing"
+            or cmsis_dsp["blocking_prerequisite"] != "dfg_mlir"
+            or cmsis_dsp["owner"] != "compiler_pipeline"
+        ):
+            raise AssertionError(f"CMSIS-DSP baseline row should block on missing DFG MLIR: {cmsis_dsp}")
 
         cmsis_nn = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         if cmsis_nn["software_root"] != "externals/cmsis-nn/Source":
             raise AssertionError(f"unexpected CMSIS-NN root: {cmsis_nn}")
+        if (
+            cmsis_nn["status"] != "blocked"
+            or cmsis_nn["diagnostic_class"] != "cmsis_dfg_mlir_missing"
+            or cmsis_nn["blocking_prerequisite"] != "dfg_mlir"
+            or cmsis_nn["owner"] != "compiler_pipeline"
+        ):
+            raise AssertionError(f"CMSIS-NN baseline row should block on missing DFG MLIR: {cmsis_nn}")
+
+        tampered_cmsis_rows = [dict(row) for row in rows]
+        tampered_cmsis = one_row(tampered_cmsis_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        tampered_cmsis.update(
+            {
+                "status": "not_run",
+                "diagnostic_class": "missing_status",
+                "owner": "implementation",
+                "blocking_prerequisite": "mapping_artifact",
+                "diagnostic": "CGRA status missing after CMSIS dataflow-shape row",
+            }
+        )
+        tampered_cmsis_csv = out_dir / "tampered-cmsis-missing-cgra-status-summary.csv"
+        tampered_cmsis_json = out_dir / "tampered-cmsis-missing-cgra-status-summary.json"
+        write_rows(tampered_cmsis_csv, tampered_cmsis_rows)
+        write_json_projection(tampered_cmsis_json, tampered_cmsis_csv, tampered_cmsis_rows)
+        failed_cmsis_missing_audit = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(tampered_cmsis_csv),
+                "--json-input",
+                str(tampered_cmsis_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "CMSIS row must not use missing_status" not in failed_cmsis_missing_audit.stderr:
+            raise AssertionError(
+                f"tampered CMSIS missing_status row should fail status audit: {failed_cmsis_missing_audit.stderr}"
+            )
 
         loombench = one_row(rows, "loombench", "breadth_first_search")
         if (
@@ -577,6 +636,144 @@ def main() -> int:
                 f"--loombench-manifest={explicit_manifest}",
             ],
         )
+
+        direct_no_manifest_csv = out_dir / "direct-no-manifest-cgra-status-summary.csv"
+        direct_no_manifest_json = out_dir / "direct-no-manifest-cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "python3",
+                "test/e2e/cgra_status_summary.py",
+                "--output",
+                str(direct_no_manifest_csv),
+                "--json-output",
+                str(direct_no_manifest_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+        )
+        direct_no_manifest_rows = read_rows(direct_no_manifest_csv)
+        direct_no_manifest_data = json.loads(direct_no_manifest_json.read_text())
+        loombench_counts = direct_no_manifest_data.get("counts", {}).get("loombench")
+        if loombench_counts != {
+            "total": LEGACY_CASE_COUNT,
+            "pass": 0,
+            "fail": 0,
+            "blocked": LEGACY_CASE_COUNT,
+            "unsupported": 0,
+            "missing_status": 0,
+        }:
+            raise AssertionError(f"LoomBench rows without a manifest should be structured blockers: {loombench_counts}")
+        direct_no_manifest_bfs = one_row(direct_no_manifest_rows, "loombench", "breadth_first_search")
+        if (
+            direct_no_manifest_bfs["status"] != "blocked"
+            or direct_no_manifest_bfs["diagnostic_class"] != "loombench_manifest_missing"
+            or direct_no_manifest_bfs["blocking_prerequisite"] != "loombench_manifest"
+            or direct_no_manifest_bfs["owner"] != "loombench_manifest"
+        ):
+            raise AssertionError(
+                f"LoomBench row without a manifest should block on manifest reconciliation: {direct_no_manifest_bfs}"
+            )
+        direct_no_manifest_audit = out_dir / "direct-no-manifest-artifact-audit.json"
+        run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(direct_no_manifest_audit),
+                str(direct_no_manifest_csv),
+            ],
+        )
+        tampered_loombench_rows = [dict(row) for row in direct_no_manifest_rows]
+        tampered_loombench = one_row(tampered_loombench_rows, "loombench", "breadth_first_search")
+        tampered_loombench.update(
+            {
+                "status": "not_run",
+                "diagnostic_class": "missing_status",
+                "owner": "implementation",
+                "blocking_prerequisite": "loombench_manifest",
+                "diagnostic": "CGRA status missing because dedicated LoomBench manifest reconciliation is absent",
+            }
+        )
+        tampered_loombench_csv = out_dir / "tampered-loombench-missing-cgra-status-summary.csv"
+        tampered_loombench_json = out_dir / "tampered-loombench-missing-cgra-status-summary.json"
+        write_rows(tampered_loombench_csv, tampered_loombench_rows)
+        write_json_projection(tampered_loombench_json, tampered_loombench_csv, tampered_loombench_rows)
+        tampered_loombench_audit = out_dir / "tampered-loombench-artifact-audit.json"
+        failed_loombench_missing_audit = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(tampered_loombench_audit),
+                str(tampered_loombench_csv),
+            ],
+            expect_success=False,
+        )
+        tampered_loombench_audit_data = (
+            json.loads(tampered_loombench_audit.read_text())
+            if tampered_loombench_audit.is_file()
+            else {}
+        )
+        tampered_loombench_diagnostics = "\n".join(
+            str(item) for item in tampered_loombench_audit_data.get("diagnostics", [])
+        )
+        if "LoomBench row must not use missing_status" not in tampered_loombench_diagnostics:
+            raise AssertionError(
+                "tampered LoomBench missing_status row should fail generic artifact audit: "
+                f"stdout={failed_loombench_missing_audit.stdout} "
+                f"stderr={failed_loombench_missing_audit.stderr} audit={tampered_loombench_audit_data}"
+            )
+        forged_loombench_pass_rows = [dict(row) for row in direct_no_manifest_rows]
+        forged_loombench_pass = one_row(forged_loombench_pass_rows, "loombench", "breadth_first_search")
+        forged_loombench_pass.update(
+            {
+                "dfg_status": "pass",
+                "mapping_status": "pass",
+                "cgra_status": "pass",
+                "comparison_status": "pass",
+                "status": "pass",
+                "diagnostic_class": "loombench_manifest_missing",
+                "final_outputs_present": "true",
+                "final_memory_state_present": "true",
+            }
+        )
+        for artifact_column, fingerprint_column in (
+            ("dfg_report", "dfg_report_fingerprint"),
+            ("mapping_artifact", "mapping_artifact_fingerprint"),
+            ("cgra_report", "cgra_report_fingerprint"),
+            ("comparison_report", "comparison_report_fingerprint"),
+        ):
+            forged_loombench_pass[artifact_column] = str(out_dir / f"missing-loombench-{artifact_column}.json")
+            forged_loombench_pass[fingerprint_column] = "0" * 64
+        forged_loombench_pass_csv = out_dir / "forged-loombench-pass-cgra-status-summary.csv"
+        forged_loombench_pass_json = out_dir / "forged-loombench-pass-cgra-status-summary.json"
+        write_rows(forged_loombench_pass_csv, forged_loombench_pass_rows)
+        write_json_projection(forged_loombench_pass_json, forged_loombench_pass_csv, forged_loombench_pass_rows)
+        forged_loombench_pass_audit = out_dir / "forged-loombench-pass-generic-audit.json"
+        failed_loombench_pass = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_loombench_pass_audit),
+                str(forged_loombench_pass_csv),
+            ],
+            expect_success=False,
+        )
+        forged_loombench_pass_data = json.loads(forged_loombench_pass_audit.read_text())
+        forged_loombench_pass_diagnostics = "\n".join(
+            str(item) for item in forged_loombench_pass_data.get("diagnostics", [])
+        )
+        if "LoomBench row without manifest requires status=blocked" not in forged_loombench_pass_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged LoomBench no-manifest pass rows: "
+                f"stdout={failed_loombench_pass.stdout} stderr={failed_loombench_pass.stderr} "
+                f"audit={forged_loombench_pass_data}"
+            )
 
         run(
             repo,
@@ -678,7 +875,7 @@ def main() -> int:
         )
         stale_default_rows = read_rows(stale_default_csv)
         stale_default_add = one_row(stale_default_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
-        if stale_default_add["status"] != "not_run" or stale_default_add["diagnostic_class"] != "missing_status":
+        if stale_default_add["status"] != "blocked" or stale_default_add["diagnostic_class"] != "cmsis_dfg_mlir_missing":
             raise AssertionError(f"default CGRA status must not consume stale CMSIS DFG evidence: {stale_default_add}")
 
         cmsis_dsp_dfg_dir = out_dir / "cmsis-dsp-dfg"
@@ -714,18 +911,18 @@ def main() -> int:
             "total": 16,
             "pass": 0,
             "fail": 1,
-            "blocked": 1,
+            "blocked": 14,
             "unsupported": 1,
-            "missing_status": 13,
+            "missing_status": 0,
         }:
             raise AssertionError(f"unexpected CMSIS-DSP evidence counts: {cmsis_counts.get('cmsis-dsp')}")
         if cmsis_counts.get("cmsis-nn") != {
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 17,
             "unsupported": 1,
-            "missing_status": 16,
+            "missing_status": 0,
         }:
             raise AssertionError(f"unexpected CMSIS-NN evidence counts: {cmsis_counts.get('cmsis-nn')}")
         cmsis_add = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
@@ -962,6 +1159,302 @@ def main() -> int:
             raise AssertionError(
                 "generic artifact audit should reject forged CMSIS semantic status: "
                 f"{forged_semantic_generic_data}"
+            )
+        forged_missing_blocker_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_missing_blocker = one_row(
+            forged_missing_blocker_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_offset_f32.c",
+        )
+        forged_missing_blocker.update(
+            {
+                "diagnostic_class": "bogus_structured_blocker",
+                "blocking_prerequisite": "bogus_prerequisite",
+                "diagnostic": "bogus CMSIS structured blocker",
+            }
+        )
+        forged_missing_blocker_csv = out_dir / "forged-cmsis-missing-blocker-cgra-status-summary.csv"
+        forged_missing_blocker_json = out_dir / "forged-cmsis-missing-blocker-cgra-status-summary.json"
+        write_rows(forged_missing_blocker_csv, forged_missing_blocker_rows)
+        write_json_projection(forged_missing_blocker_json, forged_missing_blocker_csv, forged_missing_blocker_rows)
+        failed_missing_blocker = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_missing_blocker_csv),
+                "--json-input",
+                str(forged_missing_blocker_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "CMSIS row without DFG MLIR evidence must use cmsis_dfg_mlir_missing" not in failed_missing_blocker.stderr:
+            raise AssertionError(
+                "forged CMSIS missing-DFG blocker should fail CGRA status audit: "
+                f"{failed_missing_blocker.stderr}"
+            )
+        forged_missing_blocker_generic = out_dir / "forged-cmsis-missing-blocker-generic-audit.json"
+        failed_missing_blocker_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_missing_blocker_generic),
+                str(forged_missing_blocker_csv),
+            ],
+            expect_success=False,
+        )
+        forged_missing_blocker_generic_data = json.loads(forged_missing_blocker_generic.read_text())
+        forged_missing_blocker_generic_diagnostics = "\n".join(
+            str(item) for item in forged_missing_blocker_generic_data.get("diagnostics", [])
+        )
+        if "CMSIS row without DFG MLIR evidence must use cmsis_dfg_mlir_missing" not in forged_missing_blocker_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS missing-DFG blocker: "
+                f"stdout={failed_missing_blocker_generic.stdout} stderr={failed_missing_blocker_generic.stderr} "
+                f"audit={forged_missing_blocker_generic_data}"
+            )
+        forged_missing_pass_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_missing_pass = one_row(
+            forged_missing_pass_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_offset_f32.c",
+        )
+        forged_missing_case = forged_missing_pass["case"]
+        forged_missing_artifact_dir = out_dir / "forged-cmsis-missing-pass-artifacts"
+        final_outputs = ["i32:17"]
+        final_memory_state = {"arg0": ["i32:17"]}
+        forged_missing_artifacts = {
+            "dfg_report": forged_missing_artifact_dir / "arm_offset_f32.dfg.report.json",
+            "mapping_artifact": forged_missing_artifact_dir / "arm_offset_f32.mapping.json",
+            "cgra_report": forged_missing_artifact_dir / "arm_offset_f32.cgra.report.json",
+            "comparison_report": forged_missing_artifact_dir / "arm_offset_f32.sim-comparison-report.json",
+        }
+        write_json(
+            forged_missing_artifacts["dfg_report"],
+            {
+                "schema_version": 1,
+                "kind": "dfg_sim_report",
+                "workload": forged_missing_case,
+                "graph": "g_arm_offset_f32_forged",
+                "status": "pass",
+                "metric_definition": "fixture",
+                "optimistic_cycles": 17,
+                "final_outputs": final_outputs,
+                "final_memory_state": final_memory_state,
+            },
+        )
+        write_json(
+            forged_missing_artifacts["mapping_artifact"],
+            {
+                "schema_version": 1,
+                "kind": "pnr_mapping",
+                "workload": forged_missing_case,
+                "graph": "g_arm_offset_f32_forged",
+                "hardware": "shared_reduction_adg",
+                "mapping_id": "arm_offset_f32__forged",
+                "status": "pass",
+                "placed_records": 1,
+                "routed_edges": 1,
+                "unrouted_edges": 0,
+                "unplaced_records": 0,
+                "config_records": 0,
+                "placements": [],
+                "routes": [],
+                "config_bitstream": [],
+                "diagnostics": [],
+            },
+        )
+        write_json(
+            forged_missing_artifacts["cgra_report"],
+            {
+                "schema_version": 1,
+                "kind": "cgra_sim_report",
+                "workload": forged_missing_case,
+                "hardware": "shared_reduction_adg",
+                "mapping_id": "arm_offset_f32__forged",
+                "status": "pass",
+                "dfg_cycles": 17,
+                "hardware_aware_cycles": 19,
+                "performance_delta_cycles": 2,
+                "difference_classification": "expected_hardware_constraint",
+                "metric_definition": "fixture",
+                "cycle_breakdown": [],
+                "diagnostics": [],
+                "final_outputs": final_outputs,
+                "final_memory_state": final_memory_state,
+                "functional_state_source": "carried_from_dfg_sim_report",
+            },
+        )
+        write_json(
+            forged_missing_artifacts["comparison_report"],
+            {
+                "schema_version": 1,
+                "kind": "sim_comparison_report",
+                "workload": forged_missing_case,
+                "status": "pass",
+                "functional_comparison_status": "pass",
+                "memory_comparison_status": "pass",
+                "performance_comparison_status": "pass",
+                "diagnostics": [],
+            },
+        )
+        forged_missing_pass.update(
+            {
+                "dfg_status": "pass",
+                "mapping_status": "pass",
+                "cgra_status": "pass",
+                "comparison_status": "pass",
+                "status": "pass",
+                "diagnostic_class": "",
+                "owner": "",
+                "blocking_prerequisite": "",
+                "diagnostic": "",
+                "final_outputs_present": "true",
+                "final_memory_state_present": "true",
+            }
+        )
+        for artifact_column, fingerprint_column in (
+            ("dfg_report", "dfg_report_fingerprint"),
+            ("mapping_artifact", "mapping_artifact_fingerprint"),
+            ("cgra_report", "cgra_report_fingerprint"),
+            ("comparison_report", "comparison_report_fingerprint"),
+        ):
+            artifact_path = forged_missing_artifacts[artifact_column]
+            forged_missing_pass[artifact_column] = str(artifact_path)
+            forged_missing_pass[fingerprint_column] = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
+        forged_missing_pass_csv = out_dir / "forged-cmsis-missing-pass-cgra-status-summary.csv"
+        forged_missing_pass_json = out_dir / "forged-cmsis-missing-pass-cgra-status-summary.json"
+        write_rows(forged_missing_pass_csv, forged_missing_pass_rows)
+        write_json_projection(forged_missing_pass_json, forged_missing_pass_csv, forged_missing_pass_rows)
+        failed_missing_pass = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_missing_pass_csv),
+                "--json-input",
+                str(forged_missing_pass_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "CMSIS pass row requires DFG MLIR evidence" not in failed_missing_pass.stderr:
+            raise AssertionError(
+                "forged CMSIS pass without DFG MLIR should fail CGRA status audit: "
+                f"{failed_missing_pass.stderr}"
+            )
+        forged_missing_pass_generic = out_dir / "forged-cmsis-missing-pass-generic-audit.json"
+        failed_missing_pass_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_missing_pass_generic),
+                str(forged_missing_pass_csv),
+            ],
+            expect_success=False,
+        )
+        forged_missing_pass_generic_data = json.loads(forged_missing_pass_generic.read_text())
+        forged_missing_pass_generic_diagnostics = "\n".join(
+            str(item) for item in forged_missing_pass_generic_data.get("diagnostics", [])
+        )
+        if "CMSIS pass row requires DFG MLIR evidence" not in forged_missing_pass_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS pass without DFG MLIR: "
+                f"stdout={failed_missing_pass_generic.stdout} stderr={failed_missing_pass_generic.stderr} "
+                f"audit={forged_missing_pass_generic_data}"
+            )
+        forged_missing_pass_with_bad_dfg_rows = [dict(row) for row in forged_missing_pass_rows]
+        forged_missing_pass_with_bad_dfg = one_row(
+            forged_missing_pass_with_bad_dfg_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_offset_f32.c",
+        )
+        forged_missing_pass_with_bad_dfg["dfg_mlir"] = str(out_dir / "missing-arm-offset-f32.dfg.mlir")
+        forged_missing_pass_with_bad_dfg["dfg_mlir_fingerprint"] = "0" * 64
+        forged_missing_pass_with_bad_dfg_csv = out_dir / "forged-cmsis-missing-pass-bad-dfg-cgra-status-summary.csv"
+        forged_missing_pass_with_bad_dfg_json = out_dir / "forged-cmsis-missing-pass-bad-dfg-cgra-status-summary.json"
+        write_rows(forged_missing_pass_with_bad_dfg_csv, forged_missing_pass_with_bad_dfg_rows)
+        write_json_projection(forged_missing_pass_with_bad_dfg_json, forged_missing_pass_with_bad_dfg_csv, forged_missing_pass_with_bad_dfg_rows)
+        failed_missing_pass_with_bad_dfg = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_missing_pass_with_bad_dfg_csv),
+                "--json-input",
+                str(forged_missing_pass_with_bad_dfg_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "dfg_mlir" not in failed_missing_pass_with_bad_dfg.stderr:
+            raise AssertionError(
+                "forged CMSIS pass with bad DFG MLIR should fail CGRA status audit: "
+                f"{failed_missing_pass_with_bad_dfg.stderr}"
+            )
+        forged_missing_pass_with_bad_dfg_generic = out_dir / "forged-cmsis-missing-pass-bad-dfg-generic-audit.json"
+        failed_missing_pass_with_bad_dfg_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_missing_pass_with_bad_dfg_generic),
+                str(forged_missing_pass_with_bad_dfg_csv),
+            ],
+            expect_success=False,
+        )
+        forged_missing_pass_with_bad_dfg_generic_data = json.loads(forged_missing_pass_with_bad_dfg_generic.read_text())
+        forged_missing_pass_with_bad_dfg_generic_diagnostics = "\n".join(
+            str(item) for item in forged_missing_pass_with_bad_dfg_generic_data.get("diagnostics", [])
+        )
+        if "dfg_mlir" not in forged_missing_pass_with_bad_dfg_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS pass with bad DFG MLIR: "
+                f"stdout={failed_missing_pass_with_bad_dfg_generic.stdout} "
+                f"stderr={failed_missing_pass_with_bad_dfg_generic.stderr} "
+                f"audit={forged_missing_pass_with_bad_dfg_generic_data}"
+            )
+        forged_missing_pass_status_rows = [dict(row) for row in forged_missing_pass_rows]
+        forged_missing_pass_status = one_row(
+            forged_missing_pass_status_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_offset_f32.c",
+        )
+        forged_missing_pass_status["diagnostic_class"] = "missing_status"
+        forged_missing_pass_status_csv = out_dir / "forged-cmsis-pass-missing-status-cgra-status-summary.csv"
+        forged_missing_pass_status_json = out_dir / "forged-cmsis-pass-missing-status-cgra-status-summary.json"
+        write_rows(forged_missing_pass_status_csv, forged_missing_pass_status_rows)
+        write_json_projection(forged_missing_pass_status_json, forged_missing_pass_status_csv, forged_missing_pass_status_rows)
+        failed_missing_pass_status = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_missing_pass_status_csv),
+                "--json-input",
+                str(forged_missing_pass_status_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "CMSIS row must not use missing_status" not in failed_missing_pass_status.stderr:
+            raise AssertionError(
+                "CMSIS pass row with missing_status diagnostic should fail CGRA status audit: "
+                f"{failed_missing_pass_status.stderr}"
             )
         run(
             repo,
