@@ -81,6 +81,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,CORRELATION < %t.dir/correlation.mapping.csv
 // RUN: FileCheck %s --check-prefix=CORRELATION-JSON < %t.dir/correlation.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,COMPARE-SWAP < %t.dir/compare_swap.mapping.csv
+// RUN: FileCheck %s --check-prefix=COMPARE-SWAP-JSON < %t.dir/compare_swap.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,HASH-MIX < %t.dir/hash_mix.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,XOR-BLOCK < %t.dir/xor_block.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,AXPY < %t.dir/axpy.mapping.csv
@@ -253,7 +254,20 @@
 // CORRELATION-JSON-NOT: ".out"
 // CORRELATION-JSON-NOT: ".in"
 
-// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,11,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,14,0,0,pass,mapped software graph to fabric resources
+// COMPARE-SWAP-JSON-DAG: "workload": "compare_swap"
+// COMPARE-SWAP-JSON-DAG: "hardware": "shared_reduction_adg"
+// COMPARE-SWAP-JSON-DAG: "status": "pass"
+// COMPARE-SWAP-JSON-DAG: "placed_records": 8
+// COMPARE-SWAP-JSON-DAG: "routed_edges": 14
+// COMPARE-SWAP-JSON-DAG: "unrouted_edges": 0
+// COMPARE-SWAP-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.cmpf#0.operand1"
+// COMPARE-SWAP-JSON-DAG: "edge_ref": "arith.select#1.result0->dataflow.store#1.operand2"
+// COMPARE-SWAP-JSON-DAG: "edge_ref": "dataflow.store#1.result0->dataflow.sync#0.operand3"
+// COMPARE-SWAP-JSON-DAG: "segment_kind": "resource_edge"
+// COMPARE-SWAP-JSON-DAG: "segment_kind": "module_path"
+// COMPARE-SWAP-JSON-NOT: ".out"
+// COMPARE-SWAP-JSON-NOT: ".in"
 
 // HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,3,10,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -416,11 +430,11 @@
 // CUMSUM-JSON-NOT: ".out"
 // CUMSUM-JSON-NOT: ".in"
 
-// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,11,14,0,fail,unrouted software edges lack Fabric ADG connectivity
+// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,12,13,0,fail,unrouted software edges lack Fabric ADG connectivity
 // TRAPZ-JSON-DAG: "workload": "integrate_trapz"
 // TRAPZ-JSON-DAG: "hardware": "shared_reduction_adg"
 // TRAPZ-JSON-DAG: "status": "fail"
-// TRAPZ-JSON-DAG: "unrouted_edges": 14
+// TRAPZ-JSON-DAG: "unrouted_edges": 13
 // TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.subf#0.operand0"
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::mem.load#0.result0"
 // TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand1"

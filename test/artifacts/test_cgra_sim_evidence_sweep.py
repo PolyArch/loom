@@ -76,7 +76,6 @@ DEFAULT_SWEEP_CASES = (
 )
 BLOCKED_SWEEP_CASES = (
     "bit_reverse",
-    "compare_swap",
     "dot_product_3d",
     "hash_mix",
     "integrate_trapz",
@@ -799,6 +798,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "correlation",
             "convolve_1d",
+            "compare_swap",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -918,7 +918,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
-        assert_mapping_unrouted_edges(
+        assert_mapping_edges_use_switch_multihop(
             evidence_dir,
             "compare_swap",
             {
@@ -1027,6 +1027,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "correlation",
             "convolve_1d",
+            "compare_swap",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -1100,8 +1101,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 30,
-            "fail": 4,
+            "pass": 31,
+            "fail": 3,
             "blocked": 75,
             "unsupported": 0,
             "missing_status": 0,
