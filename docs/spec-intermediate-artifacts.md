@@ -330,6 +330,12 @@ Required first columns:
 * `dfg_sim_cycles`;
 * `cgra_sim_cycles`.
 
+Optional equivalence columns:
+
+* `cycle_equivalence_group`;
+* `cycle_equivalence_members`;
+* `cycle_equivalence_evidence`.
+
 Rules:
 
 * Cycle fields are non-negative numeric values only when the
@@ -360,6 +366,14 @@ Rules:
   example, same-length integer sum-reduction kernels may share a cycle
   value; unrelated kernels such as elementwise arithmetic, mean, and
   norm reductions must not be accepted as equivalent without evidence.
+  In the compact CSV projection, that exception is recorded by filling
+  `cycle_equivalence_group`, `cycle_equivalence_members`, and
+  `cycle_equivalence_evidence` on every duplicated `pass` row. Audit must
+  reject duplicate cycle values when those fields are absent, disagree
+  across members, or lack matching JSON evidence. The CSV evidence cell is
+  explanatory text only: the audit must validate the equivalence facts from
+  DFG-sim reports (`dynamic_work_items` and `operation_fire_counts`) and
+  CGRA-sim reports (`route_segments` and `memory_latency_cycles`).
 
 ### CGRA Status Summary
 

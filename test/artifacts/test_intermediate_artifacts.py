@@ -467,6 +467,7 @@ def write_cgra_report(
                 "dfg_cycles": dfg_cycles,
                 "modeled_lower_bound_cycles": cgra_cycles,
                 "performance_delta_cycles": delta,
+                "route_segments": route_cycles,
                 "route_latency_cycles": route_cycles,
                 "memory_latency_cycles": memory_cycles,
                 "temporal_penalty_cycles": 0,
@@ -966,6 +967,124 @@ def main() -> int:
         messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
         if "DFG-sim cycles 64" not in messages or "CGRA-sim cycles 80" not in messages:
             raise AssertionError(f"duplicate simulator diagnostics missing: {audit_data}")
+
+        duplicate_equivalence_sim = out_dir / "duplicate-equivalence-sim-cycle-summary.csv"
+        duplicate_equivalence_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic,"
+            "cycle_equivalence_group,cycle_equivalence_members,cycle_equivalence_evidence\n"
+            "downsample,56,86,pass,synthetic stride-load/store dual,"
+            "stride-sample-dual-n4,downsample;upsample,"
+            "operation_fire_counts=identical;dynamic_work_items=4;route_segments=1;memory_latency_cycles=29\n"
+            "upsample,56,86,pass,synthetic stride-load/store dual,"
+            "stride-sample-dual-n4,downsample;upsample,"
+            "operation_fire_counts=identical;dynamic_work_items=4;route_segments=1;memory_latency_cycles=29\n"
+        )
+        write_dfg_report(
+            out_dir / "downsample-dfg-sim-report.json",
+            "downsample",
+            "g_downsample",
+            56,
+            dynamic_work_items=4,
+        )
+        write_dfg_report(
+            out_dir / "upsample-dfg-sim-report.json",
+            "upsample",
+            "g_upsample",
+            56,
+            dynamic_work_items=4,
+        )
+        write_mapping_artifact(
+            out_dir / "downsample-pnr-mapping.json",
+            "downsample",
+            "g_downsample",
+            "map_downsample",
+        )
+        write_mapping_artifact(
+            out_dir / "upsample-pnr-mapping.json",
+            "upsample",
+            "g_upsample",
+            "map_upsample",
+        )
+        write_cgra_report(
+            out_dir / "downsample-cgra-sim-report.json",
+            "downsample",
+            "map_downsample",
+            56,
+            86,
+        )
+        write_cgra_report(
+            out_dir / "upsample-cgra-sim-report.json",
+            "upsample",
+            "map_upsample",
+            56,
+            86,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-duplicate-equivalence-sim.json"),
+                str(duplicate_equivalence_sim),
+                str(out_dir / "downsample-dfg-sim-report.json"),
+                str(out_dir / "upsample-dfg-sim-report.json"),
+                str(out_dir / "downsample-pnr-mapping.json"),
+                str(out_dir / "upsample-pnr-mapping.json"),
+                str(out_dir / "downsample-cgra-sim-report.json"),
+                str(out_dir / "upsample-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError("documented simulator cycle equivalence group failed audit")
+
+        mismatched_equivalence_sim = out_dir / "mismatched-equivalence-sim-cycle-summary.csv"
+        mismatched_equivalence_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic,"
+            "cycle_equivalence_group,cycle_equivalence_members,cycle_equivalence_evidence\n"
+            "downsample,56,86,pass,synthetic stride-load/store dual,"
+            "stride-sample-dual-n4,downsample;upsample,"
+            "operation_fire_counts=identical;dynamic_work_items=4;route_segments=1;memory_latency_cycles=29\n"
+            "upsample,56,86,pass,synthetic stride-load/store dual,"
+            "stride-sample-dual-n4,downsample;upsample,"
+            "operation_fire_counts=identical;dynamic_work_items=4;route_segments=1;memory_latency_cycles=29\n"
+        )
+        write_dfg_report(
+            out_dir / "mismatched-downsample-dfg-sim-report.json",
+            "downsample",
+            "g_downsample",
+            56,
+            dynamic_work_items=4,
+        )
+        write_dfg_report(
+            out_dir / "mismatched-upsample-dfg-sim-report.json",
+            "upsample",
+            "g_upsample",
+            56,
+            dynamic_work_items=999,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-equivalence-sim.json"),
+                str(mismatched_equivalence_sim),
+                str(out_dir / "mismatched-downsample-dfg-sim-report.json"),
+                str(out_dir / "mismatched-upsample-dfg-sim-report.json"),
+                str(out_dir / "downsample-pnr-mapping.json"),
+                str(out_dir / "upsample-pnr-mapping.json"),
+                str(out_dir / "downsample-cgra-sim-report.json"),
+                str(out_dir / "upsample-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("cycle equivalence group with mismatched DFG facts unexpectedly passed audit")
+        audit_data = json.loads((out_dir / "artifact-audit-summary-mismatched-equivalence-sim.json").read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "cycle equivalence group" not in messages or "dynamic_work_items" not in messages:
+            raise AssertionError(f"mismatched cycle equivalence diagnostics missing: {audit_data}")
 
         unequal_extent_reduction_sim = out_dir / "unequal-extent-reduction-sim-cycle-summary.csv"
         unequal_extent_reduction_sim.write_text(

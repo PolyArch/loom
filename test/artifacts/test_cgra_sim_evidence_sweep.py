@@ -85,7 +85,6 @@ BLOCKED_SWEEP_CASES = (
     "relu",
     "rotate_bits",
     "sbox_lookup",
-    "upsample",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -758,6 +757,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "correlation",
             "convolve_1d",
+            "upsample",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -780,11 +780,6 @@ def main(argv: list[str]) -> int:
             },
         )
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
-        assert_mapping_unrouted_edges(
-            evidence_dir,
-            "upsample",
-            {"arith.shrui#0.result0->dataflow.store#0.operand1"},
-        )
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_mapping_unrouted_edges(
             evidence_dir,
@@ -908,6 +903,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "correlation")
+        assert_mapping_uses_switch_multihop(evidence_dir, "upsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_component_references_resolve(evidence_dir, "vecadd")
@@ -957,6 +953,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "correlation",
             "convolve_1d",
+            "upsample",
         ):
             assert_promoted_row(repo, rows, case)
         for case in BLOCKED_SWEEP_CASES:
@@ -1022,8 +1019,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 24,
-            "fail": 9,
+            "pass": 25,
+            "fail": 8,
             "blocked": 76,
             "unsupported": 0,
             "missing_status": 0,

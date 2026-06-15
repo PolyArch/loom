@@ -295,7 +295,13 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         filename="sim-cycle-summary.csv",
         first_columns=("kernel", "dfg_sim_cycles", "cgra_sim_cycles"),
         status_columns=("status",),
-        extra_columns=("status", "diagnostic"),
+        extra_columns=(
+            "status",
+            "diagnostic",
+            "cycle_equivalence_group",
+            "cycle_equivalence_members",
+            "cycle_equivalence_evidence",
+        ),
         numeric_columns=("dfg_sim_cycles", "cgra_sim_cycles"),
         identity_columns=("kernel",),
         scaffold_row=(
@@ -304,6 +310,9 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "",
             "blocked",
             "DFG-sim and CGRA-sim cycle evidence is not available yet",
+            "",
+            "",
+            "",
         ),
     ),
     "cgra_status": CsvSchema(
@@ -1793,28 +1802,65 @@ def validate_kind_invariants(
 def validate_sim_cycle_uniqueness(rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     dfg_cycles: dict[int, list[str]] = {}
     cgra_cycles: dict[int, list[str]] = {}
+    rows_by_kernel: dict[str, dict[str, str]] = {}
     for row in rows:
         if row.get("status") != "pass":
             continue
         kernel = row.get("kernel", "")
         if not valid_identity(kernel):
             continue
+        rows_by_kernel[kernel] = row
         dfg = nonnegative_int_cell(row, "dfg_sim_cycles")
         cgra = nonnegative_int_cell(row, "cgra_sim_cycles")
         if dfg is not None:
             dfg_cycles.setdefault(dfg, []).append(kernel)
         if cgra is not None:
             cgra_cycles.setdefault(cgra, []).append(kernel)
-    validate_unique_sim_cycles("DFG-sim", dfg_cycles, diagnostics)
-    validate_unique_sim_cycles("CGRA-sim", cgra_cycles, diagnostics)
+    validate_unique_sim_cycles("DFG-sim", dfg_cycles, rows_by_kernel, diagnostics)
+    validate_unique_sim_cycles("CGRA-sim", cgra_cycles, rows_by_kernel, diagnostics)
+
+
+def sim_cycle_equivalence_evidence_is_valid(label: str, evidence: str) -> bool:
+    required = {"operation_fire_counts", "dynamic_work_items"}
+    if label == "CGRA-sim":
+        required.update({"route_segments", "memory_latency_cycles"})
+    return all(token in evidence for token in required)
+
+
+def sim_cycle_equivalence_group_covers(
+    label: str,
+    kernels: list[str],
+    rows_by_kernel: dict[str, dict[str, str]],
+) -> bool:
+    unique_kernels = sorted(set(kernels))
+    expected_members = ";".join(unique_kernels)
+    groups: set[str] = set()
+    evidences: set[str] = set()
+    for kernel in unique_kernels:
+        row = rows_by_kernel.get(kernel, {})
+        group = row.get("cycle_equivalence_group", "").strip()
+        members = row.get("cycle_equivalence_members", "").strip()
+        evidence = row.get("cycle_equivalence_evidence", "").strip()
+        if not group or members != expected_members or not evidence:
+            return False
+        if not sim_cycle_equivalence_evidence_is_valid(label, evidence):
+            return False
+        groups.add(group)
+        evidences.add(evidence)
+    return len(groups) == 1 and len(evidences) == 1
 
 
 def validate_unique_sim_cycles(
-    label: str, cycles_by_value: dict[int, list[str]], diagnostics: list[str]
+    label: str,
+    cycles_by_value: dict[int, list[str]],
+    rows_by_kernel: dict[str, dict[str, str]],
+    diagnostics: list[str],
 ) -> None:
     for cycle, kernels in sorted(cycles_by_value.items(), key=lambda item: item[0]):
         unique_kernels = sorted(set(kernels))
         if len(unique_kernels) > 1:
+            if sim_cycle_equivalence_group_covers(label, unique_kernels, rows_by_kernel):
+                continue
             diagnostics.append(
                 f"{label} cycles {cycle} are shared by multiple kernels "
                 f"{unique_kernels}; identical simulator numbers require independent equivalence audit"
@@ -7811,6 +7857,71 @@ def nearly_equal(lhs: float, rhs: float, *, tolerance: float = 0.001) -> bool:
     return abs(lhs - rhs) <= tolerance
 
 
+def parse_semicolon_identities(value: str) -> list[str] | None:
+    members = [member for member in value.split(";") if member]
+    if len(members) < 2 or len(set(members)) != len(members):
+        return None
+    if any(not valid_identity(member) for member in members):
+        return None
+    return sorted(members)
+
+
+def aggregate_dfg_equivalence_signature(
+    reports: list[dict[str, object]],
+) -> tuple[int, tuple[tuple[str, int], ...]] | None:
+    if not reports:
+        return None
+    dynamic_work_items = 0
+    operation_counts: dict[str, int] = {}
+    for report in reports:
+        work_items = report.get("dynamic_work_items")
+        if not isinstance(work_items, int):
+            return None
+        dynamic_work_items += work_items
+        counts = report.get("operation_fire_counts")
+        if not isinstance(counts, dict):
+            return None
+        for operation, count in counts.items():
+            if not isinstance(operation, str) or not isinstance(count, int):
+                return None
+            operation_counts[operation] = operation_counts.get(operation, 0) + count
+    return dynamic_work_items, tuple(sorted(operation_counts.items()))
+
+
+def aggregate_cgra_equivalence_signature(
+    reports: list[dict[str, object]],
+) -> tuple[int, int, int | None, int | None] | None:
+    if not reports:
+        return None
+    route_segments = 0
+    memory_latency_cycles = 0
+    route_latency_cycles: int | None = 0
+    temporal_penalty_cycles: int | None = 0
+    for report in reports:
+        segments = report.get("route_segments")
+        memory = report.get("memory_latency_cycles")
+        if not isinstance(segments, int) or not isinstance(memory, int):
+            return None
+        route_segments += segments
+        memory_latency_cycles += memory
+        route_latency = report.get("route_latency_cycles")
+        if isinstance(route_latency, int) and route_latency_cycles is not None:
+            route_latency_cycles += route_latency
+        else:
+            route_latency_cycles = None
+        temporal_penalty = report.get("temporal_penalty_cycles")
+        if isinstance(temporal_penalty, int) and temporal_penalty_cycles is not None:
+            temporal_penalty_cycles += temporal_penalty
+        else:
+            temporal_penalty_cycles = None
+    return (
+        route_segments,
+        memory_latency_cycles,
+        route_latency_cycles,
+        temporal_penalty_cycles,
+    )
+
+
 def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
     path_list = list(paths)
     grouped = rows_by_kind(path_list)
@@ -7853,10 +7964,11 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
     ]
     pnr_pairs = {(row["workload"], row["hardware"]) for row in pnr_rows}
     pass_mapping_artifacts_by_workload = build_pass_mapping_artifacts_by_workload(json_grouped)
+    dfg_reports_by_workload = build_pass_dfg_reports_by_workload(json_grouped)
     dfg_report_cycles_by_workload: dict[str, list[int]] = {}
     dfg_report_semantics_by_workload: dict[str, set[str]] = {}
     dfg_reports_by_workload_graph: dict[tuple[str, str], list[dict[str, object]]] = {}
-    for workload, reports in build_pass_dfg_reports_by_workload(json_grouped).items():
+    for workload, reports in dfg_reports_by_workload.items():
         for report in reports:
             graph = report.get("graph")
             cycles = report.get("optimistic_cycles")
@@ -7905,6 +8017,143 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             previous_extent = extent
             previous_cycles = cycles
     cgra_reports_by_workload = build_pass_cgra_reports_by_workload(json_grouped)
+
+    sim_rows_by_kernel: dict[str, list[dict[str, str]]] = {}
+    for row in grouped.get("sim_cycle", []):
+        if row.get("status") != "pass":
+            continue
+        kernel = row.get("kernel")
+        if valid_identity(kernel):
+            assert kernel is not None
+            sim_rows_by_kernel.setdefault(kernel, []).append(row)
+
+    checked_cycle_equivalence_groups: set[tuple[str, tuple[str, ...]]] = set()
+    for row in grouped.get("sim_cycle", []):
+        group = row.get("cycle_equivalence_group", "").strip()
+        if row.get("status") != "pass" or not group:
+            continue
+        members = parse_semicolon_identities(row.get("cycle_equivalence_members", ""))
+        if members is None:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_members_valid",
+                    f"cycle equivalence group {group!r} has invalid member list",
+                    row,
+                )
+            )
+            continue
+        key = (group, tuple(members))
+        if key in checked_cycle_equivalence_groups:
+            continue
+        checked_cycle_equivalence_groups.add(key)
+        member_rows: dict[str, dict[str, str]] = {}
+        valid_rows = True
+        for member in members:
+            candidates = [
+                candidate
+                for candidate in sim_rows_by_kernel.get(member, [])
+                if candidate.get("cycle_equivalence_group", "").strip() == group
+                and parse_semicolon_identities(candidate.get("cycle_equivalence_members", "")) == members
+                and candidate.get("cycle_equivalence_evidence", "").strip()
+            ]
+            if len(candidates) != 1:
+                findings.append(
+                    cross_finding(
+                        "sim_cycle_equivalence_members_match_rows",
+                        (
+                            f"cycle equivalence group {group!r} member {member!r} "
+                            f"matches {len(candidates)} simulator rows"
+                        ),
+                        row,
+                    )
+                )
+                valid_rows = False
+                continue
+            member_rows[member] = candidates[0]
+        if not valid_rows:
+            continue
+        dfg_cycle_values = {
+            member: nonnegative_int_cell(member_row, "dfg_sim_cycles")
+            for member, member_row in member_rows.items()
+        }
+        cgra_cycle_values = {
+            member: nonnegative_int_cell(member_row, "cgra_sim_cycles")
+            for member, member_row in member_rows.items()
+        }
+        if len(set(dfg_cycle_values.values())) != 1:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_dfg_cycles_match",
+                    (
+                        f"cycle equivalence group {group!r} has mismatched "
+                        f"DFG-sim cycles: {dfg_cycle_values}"
+                    ),
+                    row,
+                )
+            )
+        if len(set(cgra_cycle_values.values())) != 1:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_cgra_cycles_match",
+                    (
+                        f"cycle equivalence group {group!r} has mismatched "
+                        f"CGRA-sim cycles: {cgra_cycle_values}"
+                    ),
+                    row,
+                )
+            )
+        dfg_signatures = {
+            member: aggregate_dfg_equivalence_signature(dfg_reports_by_workload.get(member, []))
+            for member in members
+        }
+        if any(signature is None for signature in dfg_signatures.values()):
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_dfg_reports_present",
+                    (
+                        f"cycle equivalence group {group!r} lacks complete "
+                        "DFG operation_fire_counts or dynamic_work_items evidence"
+                    ),
+                    row,
+                )
+            )
+        elif len(set(dfg_signatures.values())) != 1:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_dfg_facts_match",
+                    (
+                        f"cycle equivalence group {group!r} has mismatched "
+                        f"DFG dynamic_work_items or operation_fire_counts: {dfg_signatures}"
+                    ),
+                    row,
+                )
+            )
+        cgra_signatures = {
+            member: aggregate_cgra_equivalence_signature(cgra_reports_by_workload.get(member, []))
+            for member in members
+        }
+        if any(signature is None for signature in cgra_signatures.values()):
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_cgra_reports_present",
+                    (
+                        f"cycle equivalence group {group!r} lacks complete "
+                        "CGRA route_segments or memory_latency_cycles evidence"
+                    ),
+                    row,
+                )
+            )
+        elif len(set(cgra_signatures.values())) != 1:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_equivalence_cgra_facts_match",
+                    (
+                        f"cycle equivalence group {group!r} has mismatched "
+                        f"CGRA route_segments or memory_latency_cycles: {cgra_signatures}"
+                    ),
+                    row,
+                )
+            )
 
     def matching_pass_pnr_rows(
         workload: str,

@@ -322,9 +322,12 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %load0_addr = fabric.switch [spatial] %idx, %addr_masked, %addr_shifted, %addr_unscaled
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %store0_addr = fabric.switch [spatial] %idx, %addr_unscaled
+    [{connectivity_table = ["11"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %store_done0, %store_done1 =
       fabric.mem [spatial] mgr(%mgr) load(%load0_addr, %ctrl, %load1_addr, %ctrl, %load2_addr, %ctrl, %i32d, %ctrl)
-                                store(%idx, %store0_value, %ctrl, %i32c, %i32d, %ctrl)
+                                store(%store0_addr, %store0_value, %ctrl, %i32c, %i32d, %ctrl)
         [{load_group_size = 4 : i32, store_group_size = 2 : i32}]
         : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)
         -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)

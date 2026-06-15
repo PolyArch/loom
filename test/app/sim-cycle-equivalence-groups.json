@@ -1,0 +1,14 @@
+{
+  "groups": [
+    {
+      "evidence": "operation_fire_counts=identical;dynamic_work_items=4;route_segments=22;memory_latency_cycles=8;graph_shape=stride_load_store_dual",
+      "group": "stride-sample-dual-n4",
+      "members": [
+        "downsample",
+        "upsample"
+      ]
+    }
+  ],
+  "kind": "sim_cycle_equivalence_groups",
+  "schema_version": 1
+}

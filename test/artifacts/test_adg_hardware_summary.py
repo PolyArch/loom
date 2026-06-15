@@ -51,7 +51,7 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
     row = matches[0]
     expected = {
         "topology_class": "fabric_module_template",
-        "node_count": "54",
+        "node_count": "55",
         "link_count": "0",
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",

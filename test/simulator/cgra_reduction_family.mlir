@@ -222,7 +222,7 @@
 // SUMMARY-DAG: vecsum,579,599,pass
 // SUMMARY-DAG: dotproduct,1219,1258,pass
 // SUMMARY-DAG: spmv,47,100,pass
-// SUMMARY-DAG: prefix_sum,835,870,pass
-// SUMMARY-DAG: prefix_sum_inclusive,13302,13337,pass
-// SUMMARY-DAG: cumsum,14339,14378,pass
+// SUMMARY-DAG: prefix_sum,835,872,pass
+// SUMMARY-DAG: prefix_sum_inclusive,13302,13339,pass
+// SUMMARY-DAG: cumsum,14339,14380,pass
 // SUMMARY-DAG: integrate_trapz,323,,blocked

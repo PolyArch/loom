@@ -24,6 +24,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--primitive-coverage")
     parser.add_argument("--dfg-report", action="append", default=[])
     parser.add_argument("--cgra-report", action="append", default=[])
+    parser.add_argument(
+        "--equivalence-groups",
+        default=str(ROOT / "test/app/sim-cycle-equivalence-groups.json"),
+        help="JSON file describing simulator cycle equivalence groups",
+    )
     return parser.parse_args(argv)
 
 
@@ -175,6 +180,81 @@ def write_blocked_discovered_evidence(
     )
 
 
+def load_cycle_equivalence_groups(path: Path) -> list[dict[str, object]]:
+    if not path.is_file():
+        return []
+    with path.open() as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    groups = data.get("groups", [])
+    if not isinstance(groups, list):
+        raise ValueError(f"{path} groups must be a list")
+    parsed: list[dict[str, object]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            raise ValueError(f"{path} contains a non-object equivalence group")
+        name = group.get("group")
+        members = group.get("members")
+        evidence = group.get("evidence")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"{path} equivalence group is missing group")
+        if not isinstance(members, list) or not all(isinstance(member, str) for member in members):
+            raise ValueError(f"{path} equivalence group {name} has invalid members")
+        if len(set(members)) < 2:
+            raise ValueError(f"{path} equivalence group {name} needs at least two members")
+        if not isinstance(evidence, str) or not evidence:
+            raise ValueError(f"{path} equivalence group {name} is missing evidence")
+        parsed.append({"group": name, "members": sorted(set(members)), "evidence": evidence})
+    return parsed
+
+
+def annotate_cycle_equivalence(output: Path, groups_path: Path) -> None:
+    groups = load_cycle_equivalence_groups(groups_path)
+    if not groups or not output.is_file():
+        return
+    with output.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    if not rows:
+        return
+    by_kernel = {row.get("kernel", ""): row for row in rows}
+    annotated = False
+    for group in groups:
+        members = group["members"]
+        assert isinstance(members, list)
+        matching = [by_kernel.get(member) for member in members]
+        if any(row is None or row.get("status") != "pass" for row in matching):
+            continue
+        dfg_values = {row.get("dfg_sim_cycles", "") for row in matching if row is not None}
+        cgra_values = {row.get("cgra_sim_cycles", "") for row in matching if row is not None}
+        if len(dfg_values) != 1 or len(cgra_values) != 1:
+            continue
+        if "" in dfg_values or "" in cgra_values:
+            continue
+        member_text = ";".join(members)
+        for row in matching:
+            assert row is not None
+            row["cycle_equivalence_group"] = str(group["group"])
+            row["cycle_equivalence_members"] = member_text
+            row["cycle_equivalence_evidence"] = str(group["evidence"])
+            annotated = True
+    if not annotated:
+        return
+    for column in (
+        "cycle_equivalence_group",
+        "cycle_equivalence_members",
+        "cycle_equivalence_evidence",
+    ):
+        if column not in fieldnames:
+            fieldnames.append(column)
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def audit_discovered_report_inputs(output: Path, dfg_reports: list[Path], cgra_reports: list[Path]) -> bool:
     audit = intermediate_artifacts.audit([*dfg_reports, *cgra_reports])
     if audit.get("verdict") == "pass":
@@ -260,7 +340,12 @@ def run_command(command: list[str], env: dict[str, str] | None = None) -> int:
     return result.returncode
 
 
-def summarize_reports(output: Path, dfg_reports: list[Path], cgra_reports: list[Path]) -> int:
+def summarize_reports(
+    output: Path,
+    dfg_reports: list[Path],
+    cgra_reports: list[Path],
+    equivalence_groups: Path,
+) -> int:
     tool = find_tool()
     if tool is None:
         write_blocked_default(output, "missing loom-sim-cycle-summary tool")
@@ -271,10 +356,13 @@ def summarize_reports(output: Path, dfg_reports: list[Path], cgra_reports: list[
     for report in cgra_reports:
         command.extend(["--cgra-report", str(report)])
     command.extend(["--output", str(output)])
-    return run_command(command)
+    status = run_command(command)
+    if status == 0:
+        annotate_cycle_equivalence(output, equivalence_groups)
+    return status
 
 
-def emit_default_vecsum_summary(output: Path) -> int:
+def emit_default_vecsum_summary(output: Path, equivalence_groups: Path) -> int:
     dfg_tool = find_existing_tool(dfg_sim_candidates())
     cgra_tool = find_existing_tool(cgra_sim_candidates())
     if dfg_tool is None:
@@ -364,12 +452,13 @@ def emit_default_vecsum_summary(output: Path) -> int:
     if status != 0:
         return status
 
-    return summarize_reports(output, [dfg_report], [cgra_report])
+    return summarize_reports(output, [dfg_report], [cgra_report], equivalence_groups)
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     output = Path(args.output)
+    equivalence_groups = Path(args.equivalence_groups)
     dfg_reports = [Path(path) for path in args.dfg_report]
     valid_dfg_reports = [path for path in dfg_reports if path.is_file()]
     cgra_reports = [Path(path) for path in args.cgra_report]
@@ -385,14 +474,19 @@ def main(argv: list[str]) -> int:
                 return 0
             tool = find_tool()
             if tool is not None:
-                return summarize_reports(output, discovered_dfg_reports, discovered_cgra_reports)
+                return summarize_reports(
+                    output,
+                    discovered_dfg_reports,
+                    discovered_cgra_reports,
+                    equivalence_groups,
+                )
             intermediate_artifacts.write_csv("sim_cycle", output)
             return 0
-        return emit_default_vecsum_summary(output)
+        return emit_default_vecsum_summary(output, equivalence_groups)
     if valid_dfg_reports:
         tool = find_tool()
         if tool is not None:
-            return summarize_reports(output, valid_dfg_reports, valid_cgra_reports)
+            return summarize_reports(output, valid_dfg_reports, valid_cgra_reports, equivalence_groups)
         intermediate_artifacts.write_csv("sim_cycle", output)
         return 0
     primitive_path = Path(args.primitive_coverage)

@@ -1633,13 +1633,18 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<32>) -> "
       "!fabric.bits<32>");
   module.addExactBodyLine(
+      "%store0_addr = fabric.switch [spatial] %idx, %addr_unscaled");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
       "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
       "%store_done0, %store_done1 =");
   module.addExactBodyLine(
       "    fabric.mem [spatial] mgr(%mgr) load(%load0_addr, %ctrl, %load1_addr, "
       "%ctrl, %load2_addr, %ctrl, %i32d, %ctrl)");
   module.addExactBodyLine(
-      "                              store(%idx, %store0_value, %ctrl, "
+      "                              store(%store0_addr, %store0_value, %ctrl, "
       "%i32c, %i32d, %ctrl)");
   module.addExactBodyLine(
       "      [{load_group_size = 4 : i32, store_group_size = 2 : i32}]");
