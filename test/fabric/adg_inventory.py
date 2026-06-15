@@ -63,6 +63,11 @@ BUILDER_RECIPES = (
         "filename": "shared-reduction.mlir",
     },
     {
+        "recipe_id": "adg-builder::shared-vector-alu",
+        "arguments": ["--shared-vector-alu"],
+        "filename": "shared-vector-alu.mlir",
+    },
+    {
         "recipe_id": "adg-builder::full-spatialcore",
         "arguments": ["--full-spatialcore"],
         "filename": "full-spatialcore.mlir",
@@ -196,6 +201,8 @@ def classify_layout(recipe_id: str, root_kind: str, root_symbol: str) -> tuple[s
         return "regular", "small_array"
     if "shared-reduction" in recipe_id:
         return "irregular", "reduction_network"
+    if "shared-vector-alu" in recipe_id:
+        return "irregular", "vector_alu_network"
     if "full-spatialcore" in recipe_id:
         return "irregular", "mixed_spatial_temporal"
     if "pe_" in root_symbol:

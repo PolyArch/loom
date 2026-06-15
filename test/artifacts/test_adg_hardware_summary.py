@@ -119,7 +119,7 @@ def assert_shared_vector_alu_adg(rows: list[dict[str, str]]) -> None:
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",
         "schedule_kinds": "spatial",
-        "adg_builder_recipe_identity": "",
+        "adg_builder_recipe_identity": "adg-builder::shared-vector-alu",
     }
     for key, value in expected.items():
         if row[key] != value:

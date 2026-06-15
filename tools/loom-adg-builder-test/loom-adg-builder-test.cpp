@@ -13,6 +13,11 @@ static llvm::cl::opt<bool>
                     llvm::cl::desc("emit a shared reduction SpatialCore ADG"),
                     llvm::cl::init(false));
 
+static llvm::cl::opt<bool>
+    sharedVectorAlu("shared-vector-alu",
+                    llvm::cl::desc("emit a shared vector ALU SpatialCore ADG"),
+                    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> fullSpatialCore(
     "full-spatialcore",
     llvm::cl::desc("emit a full-construct SpatialCore ADG"),
@@ -59,9 +64,10 @@ int main(int argc, char **argv) {
       "Builder C++ API\n");
 
   unsigned selectedRecipes =
-      (sharedReduction ? 1 : 0) + (fullSpatialCore ? 1 : 0) +
-      (minimalSpatial ? 1 : 0) + (minimalTemporal ? 1 : 0) +
-      (heterogeneousSoc ? 1 : 0) + (!topologyMatrixCase.empty() ? 1 : 0);
+      (sharedReduction ? 1 : 0) + (sharedVectorAlu ? 1 : 0) +
+      (fullSpatialCore ? 1 : 0) + (minimalSpatial ? 1 : 0) +
+      (minimalTemporal ? 1 : 0) + (heterogeneousSoc ? 1 : 0) +
+      (!topologyMatrixCase.empty() ? 1 : 0);
   selectedRecipes += (invalidYieldTypes ? 1 : 0) + (invalidYieldCount ? 1 : 0);
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
@@ -85,6 +91,8 @@ int main(int argc, char **argv) {
       return loom::adg::writeMinimalSpatialAdg(out);
     if (minimalTemporal)
       return loom::adg::writeMinimalTemporalAdg(out);
+    if (sharedVectorAlu)
+      return loom::adg::writeSharedVectorAluAdg(out);
     if (fullSpatialCore)
       return loom::adg::writeFullSpatialCoreAdg(out);
     if (heterogeneousSoc)

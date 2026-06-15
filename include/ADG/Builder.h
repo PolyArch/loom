@@ -171,12 +171,14 @@ private:
 ModuleBuilder buildMinimalSpatialAdg();
 ModuleBuilder buildMinimalTemporalAdg();
 ModuleBuilder buildSharedReductionAdg();
+ModuleBuilder buildSharedVectorAluAdg();
 ModuleBuilder buildFullSpatialCoreAdg();
 SystemBuilder buildHeterogeneousSocAdg();
 
 llvm::Error writeMinimalSpatialAdg(llvm::raw_ostream &os);
 llvm::Error writeMinimalTemporalAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedReductionAdg(llvm::raw_ostream &os);
+llvm::Error writeSharedVectorAluAdg(llvm::raw_ostream &os);
 llvm::Error writeFullSpatialCoreAdg(llvm::raw_ostream &os);
 llvm::Error writeHeterogeneousSocAdg(llvm::raw_ostream &os);
 llvm::Error writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,

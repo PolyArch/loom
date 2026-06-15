@@ -32,6 +32,7 @@ ADG_BUILDER_RECIPES = {
     "test/pnr/minimal_spatial_adg.mlir.inc": "adg-builder::minimal-spatial",
     "test/pnr/minimal_temporal_adg.mlir.inc": "adg-builder::minimal-temporal",
     "test/pnr/shared_reduction_adg.mlir": "adg-builder::shared-reduction",
+    "test/pnr/shared_vector_alu_adg.mlir": "adg-builder::shared-vector-alu",
 }
 SYMBOL_PATTERN = r'"(?:\\.|[^"\\])*"|[A-Za-z_.$-][A-Za-z0-9_.$-]*'
 MODULE_RE = re.compile(rf"^\s*fabric\.module @(?P<name>{SYMBOL_PATTERN})")

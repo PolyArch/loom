@@ -42,6 +42,12 @@ REQUIRED_TOPOLOGY_FAMILIES = {
 }
 
 EXPECTED_TOPOLOGY_SIGNATURES = {
+    "vector_alu_network": {
+        "layout_class": "irregular",
+        "fabric_root": "shared_vector_alu_adg",
+        "tile_counts": {"mem": 1, "pe": 6, "switch": 3},
+        "schedule_kinds": {"spatial"},
+    },
     "chain_1d": {
         "layout_class": "regular",
         "fabric_root": "matrix_chain1d_adg",
@@ -201,6 +207,9 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
                 f"inventory missed {layout_class} topology families {sorted(missing)}: "
                 f"{families_by_layout[layout_class]}"
             )
+    shared_vector_id = "adg-builder::shared-vector-alu::shared_vector_alu_adg"
+    if shared_vector_id not in ids:
+        raise AssertionError(f"inventory missed reusable shared-vector ALU ADG: {ids}")
     duplicate_fingerprints = len(set(topology_fingerprints.values())) != len(
         topology_fingerprints
     )
