@@ -382,7 +382,7 @@ def main() -> int:
         expected_metrics = {
             "metric::test/pnr/shared_reduction_adg.mlir::shared_reduction_adg::node_count": (
                 "hardware_nodes",
-                59,
+                67,
                 "count",
                 "fabric_verified",
             ),
@@ -400,7 +400,7 @@ def main() -> int:
             ),
             "metric::test/pnr/shared_reduction_adg.mlir::shared_reduction_adg::area_um2": (
                 "area",
-                15750.0,
+                17750.0,
                 "um2",
                 "analytic",
             ),

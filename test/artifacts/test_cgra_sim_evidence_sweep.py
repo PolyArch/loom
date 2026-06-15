@@ -80,8 +80,6 @@ BLOCKED_SWEEP_CASES = (
     "dot_product_3d",
     "hash_mix",
     "integrate_trapz",
-    "relu",
-    "rotate_bits",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -801,8 +799,10 @@ def main(argv: list[str]) -> int:
             "variance",
             "correlation",
             "convolve_1d",
+            "relu",
             "upsample",
             "sbox_lookup",
+            "rotate_bits",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -810,7 +810,7 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "pass")
         for case in BLOCKED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
-            expected_mapping_status = "blocked" if case in {"dot_product_3d", "relu"} else "fail"
+            expected_mapping_status = "blocked" if case == "dot_product_3d" else "fail"
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
@@ -910,6 +910,7 @@ def main(argv: list[str]) -> int:
             "unsupported PnR graph operation: scf.for",
         )
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "relu", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
@@ -917,6 +918,15 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
+        assert_mapping_unrouted_edges(
+            evidence_dir,
+            "compare_swap",
+            {
+                "arith.select#1.result0->dataflow.store#1.operand2",
+                "dataflow.load#1.result0->arith.cmpf#0.operand1",
+                "dataflow.store#1.result0->dataflow.sync#0.operand3",
+            },
+        )
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -951,6 +961,21 @@ def main(argv: list[str]) -> int:
                 "dataflow.load#0.result0->arith.andi#0.operand0",
                 "dataflow.load#1.result0->dataflow.store#0.operand2",
                 "llvm.zext#0.result0->dataflow.load#1.operand1",
+            },
+        )
+        assert_mapping_uses_switch_multihop(evidence_dir, "rotate_bits")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "rotate_bits",
+            {
+                "arith.andi#0.result0->arith.cmpi#0.operand0",
+                "arith.cmpi#0.result0->arith.select#0.operand0",
+                "arith.select#0.result0->dataflow.store#0.operand2",
+                "dataflow.load#0.result0->llvm.intr.fshl#0.operand2",
+                "dataflow.load#1.result0->arith.select#0.operand1",
+                "dataflow.load#1.result0->llvm.intr.fshl#0.operand0",
+                "dataflow.load#1.result0->llvm.intr.fshl#0.operand1",
+                "llvm.intr.fshl#0.result0->arith.select#0.operand2",
             },
         )
         assert_component_references_resolve(evidence_dir, "vecadd")
@@ -1002,15 +1027,15 @@ def main(argv: list[str]) -> int:
             "variance",
             "correlation",
             "convolve_1d",
+            "relu",
             "upsample",
             "sbox_lookup",
+            "rotate_bits",
         ):
             assert_promoted_row(repo, rows, case)
         for case in BLOCKED_SWEEP_CASES:
-            expected_status = "blocked" if case == "relu" else "fail"
-            if case == "dot_product_3d":
-                expected_status = "blocked"
-            expected_mapping_status = "blocked" if case in {"dot_product_3d", "relu"} else "fail"
+            expected_status = "blocked" if case == "dot_product_3d" else "fail"
+            expected_mapping_status = "blocked" if case == "dot_product_3d" else "fail"
             assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_dfg_unsupported_row(repo, rows, case)
@@ -1075,9 +1100,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 28,
-            "fail": 5,
-            "blocked": 76,
+            "pass": 30,
+            "fail": 4,
+            "blocked": 75,
             "unsupported": 0,
             "missing_status": 0,
         }

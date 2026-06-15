@@ -216,8 +216,8 @@
 // SUMMARY-DAG: vecnorm_l1,643,{{[0-9]+}},pass
 // SUMMARY-DAG: vecnorm_l2,771,{{[0-9]+}},pass
 // SUMMARY-DAG: reduction,1155,1175,pass
-// SUMMARY-DAG: relu,707,,blocked
-// SUMMARY-DAG: rotate_bits,544,,blocked
+// SUMMARY-DAG: relu,707,759,pass
+// SUMMARY-DAG: rotate_bits,544,{{[0-9]+}},pass
 // SUMMARY-DAG: variance,594,674,pass
 // SUMMARY-DAG: vecsum,579,599,pass
 // SUMMARY-DAG: dotproduct,1219,1258,pass

@@ -173,20 +173,20 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %mac : !fabric.bits<32>
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>,
-                    %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+  %rotated = fabric.pe [spatial] (%pa = %rotate_lhs : !fabric.bits<32>,
+                    %pb = %rotate_rhs : !fabric.bits<32>,
+                    %pc = %rotate_amount : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
               %rhs = %pb : !fabric.bits<32>,
               %amount = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
-      %rotated = fabric.op [@llvm.intr.fshl] (%lhs, %rhs, %amount) : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %rotated : !fabric.bits<32>
+      %rotated_value = fabric.op [@llvm.intr.fshl] (%lhs, %rhs, %amount) : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %rotated_value : !fabric.bits<32>
     }
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
               %rhs = %pb : !fabric.bits<32>,
               %amount = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
-      %rotated = fabric.op [@llvm.intr.fshl] (%lhs, %rhs, %amount) : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %rotated : !fabric.bits<32>
+      %rotated_value = fabric.op [@llvm.intr.fshl] (%lhs, %rhs, %amount) : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %rotated_value : !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -213,36 +213,36 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %fp : !fabric.bits<32>
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+  %cmpf_pred = fabric.pe [spatial] (%pa = %cmp_lhs : !fabric.bits<32>,
+                    %pb = %cmp_rhs : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
-              %rhs = %pb : !fabric.bits<32>) -> () {
+              %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %pred = fabric.op [@arith.cmpf] (%lhs, %rhs) {hw_params = [{predicate = ["oeq", "ogt", "ugt", "ule"]}]} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
-      fabric.yield
+      fabric.yield %pred : !fabric.bits<1> to !fabric.bits<32>
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+  %cmpi_pred = fabric.pe [spatial] (%pa = %cmp_lhs : !fabric.bits<32>,
+                    %pb = %cmp_rhs : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
-              %rhs = %pb : !fabric.bits<32>) -> () {
+              %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %pred = fabric.op [@arith.cmpi] (%lhs, %rhs) {hw_params = [{predicate = ["eq", "ne", "slt", "sgt", "ult", "ule"]}]} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
-      fabric.yield
+      fabric.yield %pred : !fabric.bits<1> to !fabric.bits<32>
     }
   }
-  fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>,
-                    %pc = %i32c : !fabric.bits<32>) -> !fabric.bits<32> {
+  %selected = fabric.pe [spatial] (%pa = %select_pred : !fabric.bits<32>,
+                    %pb = %select_true : !fabric.bits<32>,
+                    %pc = %select_false : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%sel = %pa : !fabric.bits<32> to !fabric.bits<1>,
               %when_true = %pb : !fabric.bits<32>,
               %when_false = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
-      %selected = fabric.op [@arith.select] (%sel, %when_true, %when_false) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %selected : !fabric.bits<32>
+      %selected_value = fabric.op [@arith.select] (%sel, %when_true, %when_false) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %selected_value : !fabric.bits<32>
     }
     fabric.fu(%sel = %pa : !fabric.bits<32> to !fabric.bits<1>,
               %when_true = %pb : !fabric.bits<32>,
               %when_false = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
-      %selected = fabric.op [@arith.select] (%sel, %when_true, %when_false) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-      fabric.yield %selected : !fabric.bits<32>
+      %selected_value = fabric.op [@arith.select] (%sel, %when_true, %when_false) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %selected_value : !fabric.bits<32>
     }
   }
   fabric.pe [spatial] (%pa = %done0 : !fabric.bits<0>,
@@ -285,6 +285,30 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %logic_mask_rhs = fabric.switch [spatial] %i32b, %i32c, %reduction_scale
     [{connectivity_table = ["111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %rotate_lhs = fabric.switch [spatial] %i32a, %data1, %data0, %logic_masked
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %rotate_rhs = fabric.switch [spatial] %i32b, %data1, %data0, %logic_masked
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %rotate_amount = fabric.switch [spatial] %i32c, %data0, %reduction_scale, %addr_shift_const
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %cmp_lhs = fabric.switch [spatial] %i32a, %logic_masked, %data0, %data1
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %cmp_rhs = fabric.switch [spatial] %i32b, %i32c, %reduction_scale
+    [{connectivity_table = ["111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %select_pred = fabric.switch [spatial] %i32a, %cmpi_pred, %cmpf_pred
+    [{connectivity_table = ["111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %select_true = fabric.switch [spatial] %i32b, %data1, %rotated, %data0
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %select_false = fabric.switch [spatial] %i32c, %rotated, %data0, %data1
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %load1_addr = fabric.switch [spatial] %idx, %i32b, %addr_unscaled, %zext_index
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -294,9 +318,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %load2_addr = fabric.switch [spatial] %i32c, %zext_index
     [{connectivity_table = ["11"]}]
     : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %store0_value = fabric.switch [spatial] %scan_store_value, %fp_running, %running, %mac_result, %data0, %data1
-    [{connectivity_table = ["111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+  %store0_value = fabric.switch [spatial] %scan_store_value, %fp_running, %running, %mac_result, %data0, %data1, %selected
+    [{connectivity_table = ["1111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
     -> !fabric.bits<32>
   %vector_sync_mid = fabric.switch [spatial] %done1, %store_done0
     [{connectivity_table = ["11"]}]

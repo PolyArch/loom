@@ -85,8 +85,10 @@
 // RUN: FileCheck %s --check-prefixes=CSV,XOR-BLOCK < %t.dir/xor_block.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,AXPY < %t.dir/axpy.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,RELU < %t.dir/relu.core.mapping.csv
+// RUN: FileCheck %s --check-prefix=RELU-JSON < %t.dir/relu.core.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,RELU-CHECKSUM < %t.dir/relu.checksum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,ROTATE-BITS < %t.dir/rotate_bits.mapping.csv
+// RUN: FileCheck %s --check-prefix=ROTATE-BITS-JSON < %t.dir/rotate_bits.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,SBOX < %t.dir/sbox_lookup.mapping.csv
 // RUN: FileCheck %s --check-prefix=SBOX-JSON < %t.dir/sbox_lookup.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VARIANCE-MEAN < %t.dir/variance.mean.mapping.csv
@@ -125,11 +127,41 @@
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,6,1,0,fail,unrouted software edges lack Fabric ADG connectivity
 
-// RELU-NEXT: relu,shared_reduction_adg,relu__g_t_relu_0_0__shared_reduction_adg,5,2,4,0,fail,unrouted software edges lack Fabric ADG connectivity
+// RELU-NEXT: relu,shared_reduction_adg,relu__g_t_relu_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
+// RELU-JSON-DAG: "workload": "relu"
+// RELU-JSON-DAG: "hardware": "shared_reduction_adg"
+// RELU-JSON-DAG: "status": "pass"
+// RELU-JSON-DAG: "placed_records": 5
+// RELU-JSON-DAG: "routed_edges": 6
+// RELU-JSON-DAG: "unrouted_edges": 0
+// RELU-JSON-DAG: "edge_ref": "arith.cmpf#0.result0->arith.select#0.operand0"
+// RELU-JSON-DAG: "edge_ref": "arith.select#0.result0->dataflow.store#0.operand2"
+// RELU-JSON-DAG: "segment_kind": "resource_edge"
+// RELU-JSON-DAG: "segment_kind": "module_path"
+// RELU-JSON-NOT: ".out"
+// RELU-JSON-NOT: ".in"
 
 // RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,4,8,0,fail,unrouted software edges lack Fabric ADG connectivity
+// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,12,0,0,pass,mapped software graph to fabric resources
+// ROTATE-BITS-JSON-DAG: "workload": "rotate_bits"
+// ROTATE-BITS-JSON-DAG: "hardware": "shared_reduction_adg"
+// ROTATE-BITS-JSON-DAG: "status": "pass"
+// ROTATE-BITS-JSON-DAG: "placed_records": 8
+// ROTATE-BITS-JSON-DAG: "routed_edges": 12
+// ROTATE-BITS-JSON-DAG: "unrouted_edges": 0
+// ROTATE-BITS-JSON-DAG: "edge_ref": "dataflow.load#1.result0->llvm.intr.fshl#0.operand0"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "dataflow.load#1.result0->llvm.intr.fshl#0.operand1"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "dataflow.load#0.result0->llvm.intr.fshl#0.operand2"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "arith.andi#0.result0->arith.cmpi#0.operand0"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "arith.cmpi#0.result0->arith.select#0.operand0"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.select#0.operand1"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "llvm.intr.fshl#0.result0->arith.select#0.operand2"
+// ROTATE-BITS-JSON-DAG: "edge_ref": "arith.select#0.result0->dataflow.store#0.operand2"
+// ROTATE-BITS-JSON-DAG: "segment_kind": "resource_edge"
+// ROTATE-BITS-JSON-DAG: "segment_kind": "module_path"
+// ROTATE-BITS-JSON-NOT: ".out"
+// ROTATE-BITS-JSON-NOT: ".in"
 
 // SBOX-NEXT: sbox_lookup,shared_reduction_adg,sbox_lookup__g_t_main_2_0__shared_reduction_adg,6,7,0,0,pass,mapped software graph to fabric resources
 // SBOX-JSON-DAG: "workload": "sbox_lookup"
@@ -221,7 +253,7 @@
 // CORRELATION-JSON-NOT: ".out"
 // CORRELATION-JSON-NOT: ".in"
 
-// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,3,11,0,fail,unrouted software edges lack Fabric ADG connectivity
+// COMPARE-SWAP-NEXT: compare_swap,shared_reduction_adg,compare_swap__g_t_main_0_0__shared_reduction_adg,8,11,3,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,3,10,0,fail,unrouted software edges lack Fabric ADG connectivity
 
