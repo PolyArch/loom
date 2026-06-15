@@ -12,6 +12,7 @@
 // RUN: env BUILD_DIR=%t.dir/axpy LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/axpy/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/relu LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/relu/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/rotate_bits LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/rotate_bits/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/sbox_lookup LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/sbox_lookup/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/variance LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/variance/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/gemv LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gemv/dfg_check.sh
@@ -45,6 +46,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/relu/main_func.dfg.mlir --graph g_t_relu_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload relu --output %t.dir/relu.core.mapping.csv --artifact %t.dir/relu.core.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/relu/main_func.dfg.mlir --graph g_t_main_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload relu --output %t.dir/relu.checksum.mapping.csv --artifact %t.dir/relu.checksum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/rotate_bits/main_func.dfg.mlir --graph g_t_rotate_bits_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload rotate_bits --output %t.dir/rotate_bits.mapping.csv --artifact %t.dir/rotate_bits.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/sbox_lookup/main_func.dfg.mlir --graph g_t_main_2_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload sbox_lookup --output %t.dir/sbox_lookup.mapping.csv --artifact %t.dir/sbox_lookup.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/variance/main_func.dfg.mlir --graph g_t_variance_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload variance --output %t.dir/variance.mean.mapping.csv --artifact %t.dir/variance.mean.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/variance/main_func.dfg.mlir --graph g_t_variance_red_1_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload variance --output %t.dir/variance.var.mapping.csv --artifact %t.dir/variance.var.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matvec/main_func.dfg.mlir --graph g_t_matvec_kernel_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload matvec --output %t.dir/matvec.core.mapping.csv --artifact %t.dir/matvec.core.mapping.json
@@ -85,6 +87,8 @@
 // RUN: FileCheck %s --check-prefixes=CSV,RELU < %t.dir/relu.core.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,RELU-CHECKSUM < %t.dir/relu.checksum.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,ROTATE-BITS < %t.dir/rotate_bits.mapping.csv
+// RUN: FileCheck %s --check-prefixes=CSV,SBOX < %t.dir/sbox_lookup.mapping.csv
+// RUN: FileCheck %s --check-prefix=SBOX-JSON < %t.dir/sbox_lookup.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VARIANCE-MEAN < %t.dir/variance.mean.mapping.csv
 // RUN: FileCheck %s --check-prefix=VARIANCE-MEAN-JSON < %t.dir/variance.mean.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VARIANCE-VAR < %t.dir/variance.var.mapping.csv
@@ -125,7 +129,23 @@
 
 // RELU-CHECKSUM-NEXT: relu,shared_reduction_adg,relu__g_t_main_red_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 
-// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,3,9,0,fail,unrouted software edges lack Fabric ADG connectivity
+// ROTATE-BITS-NEXT: rotate_bits,shared_reduction_adg,rotate_bits__g_t_rotate_bits_0_0__shared_reduction_adg,8,4,8,0,fail,unrouted software edges lack Fabric ADG connectivity
+
+// SBOX-NEXT: sbox_lookup,shared_reduction_adg,sbox_lookup__g_t_main_2_0__shared_reduction_adg,6,7,0,0,pass,mapped software graph to fabric resources
+// SBOX-JSON-DAG: "workload": "sbox_lookup"
+// SBOX-JSON-DAG: "hardware": "shared_reduction_adg"
+// SBOX-JSON-DAG: "status": "pass"
+// SBOX-JSON-DAG: "placed_records": 6
+// SBOX-JSON-DAG: "routed_edges": 7
+// SBOX-JSON-DAG: "unrouted_edges": 0
+// SBOX-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.andi#0.operand0"
+// SBOX-JSON-DAG: "edge_ref": "arith.andi#0.result0->llvm.zext#0.operand0"
+// SBOX-JSON-DAG: "edge_ref": "llvm.zext#0.result0->dataflow.load#1.operand1"
+// SBOX-JSON-DAG: "edge_ref": "dataflow.load#1.result0->dataflow.store#0.operand2"
+// SBOX-JSON-DAG: "segment_kind": "resource_edge"
+// SBOX-JSON-DAG: "segment_kind": "module_path"
+// SBOX-JSON-NOT: ".out"
+// SBOX-JSON-NOT: ".in"
 
 // VARIANCE-MEAN-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_0_0__shared_reduction_adg,7,9,0,0,pass,mapped software graph to fabric resources
 
@@ -141,7 +161,7 @@
 
 // VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
 
-// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,4,9,0,fail,unrouted software edges lack Fabric ADG connectivity
+// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,5,8,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,2,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 

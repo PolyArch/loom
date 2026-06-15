@@ -9,6 +9,7 @@
 // RUN: env BUILD_DIR=%t.dir/gemv LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gemv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/sbox_lookup LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/sbox_lookup/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/variance LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/variance/dfg_check.sh
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecsum/main_func.dfg.mlir --graph g_t_vecsum_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecsum --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l1/main_func.dfg.mlir --graph g_t_vecnorm_l1_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecnorm_l1 --output %t.dir/vecnorm_l1.mapping.csv --artifact %t.dir/vecnorm_l1.mapping.json
@@ -18,6 +19,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/gemv/main_func.dfg.mlir --graph g_t_gemv_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload gemv --output %t.dir/gemv.mapping.csv --artifact %t.dir/gemv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/sbox_lookup/main_func.dfg.mlir --graph g_t_main_2_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload sbox_lookup --output %t.dir/sbox_lookup.mapping.csv --artifact %t.dir/sbox_lookup.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/variance/main_func.dfg.mlir --graph g_t_variance_red_1_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload variance --output %t.dir/variance.mapping.csv --artifact %t.dir/variance.mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/vecnorm_l1.mapping.json
@@ -27,6 +29,7 @@
 // RUN: FileCheck %s --check-prefix=GEMV < %t.dir/gemv.mapping.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
 // RUN: FileCheck %s --check-prefix=SPMV < %t.dir/spmv.mapping.json
+// RUN: FileCheck %s --check-prefix=SBOX < %t.dir/sbox_lookup.mapping.json
 // RUN: FileCheck %s --check-prefix=VARIANCE < %t.dir/variance.mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_reduction_adg
@@ -131,6 +134,20 @@
 // SPMV-DAG: "segment_kind": "module_path"
 // SPMV-NOT: ".out"
 // SPMV-NOT: ".in"
+
+// SBOX-DAG: "workload": "sbox_lookup"
+// SBOX-DAG: "hardware": "shared_reduction_adg"
+// SBOX-DAG: "placed_records": 6
+// SBOX-DAG: "routed_edges": 7
+// SBOX-DAG: "unrouted_edges": 0
+// SBOX-DAG: "status": "pass"
+// SBOX-DAG: "edge_ref": "dataflow.load#0.result0->arith.andi#0.operand0"
+// SBOX-DAG: "edge_ref": "arith.andi#0.result0->llvm.zext#0.operand0"
+// SBOX-DAG: "edge_ref": "llvm.zext#0.result0->dataflow.load#1.operand1"
+// SBOX-DAG: "edge_ref": "dataflow.load#1.result0->dataflow.store#0.operand2"
+// SBOX-DAG: "segment_kind": "module_path"
+// SBOX-NOT: ".out"
+// SBOX-NOT: ".in"
 
 // VARIANCE-DAG: "workload": "variance"
 // VARIANCE-DAG: "hardware": "shared_reduction_adg"

@@ -82,7 +82,6 @@ BLOCKED_SWEEP_CASES = (
     "integrate_trapz",
     "relu",
     "rotate_bits",
-    "sbox_lookup",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -803,6 +802,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "upsample",
+            "sbox_lookup",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -817,16 +817,6 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
-        assert_mapping_unrouted_edges(
-            evidence_dir,
-            "sbox_lookup",
-            {
-                "arith.andi#0.result0->llvm.zext#0.operand0",
-                "dataflow.load#0.result0->arith.andi#0.operand0",
-                "dataflow.load#1.result0->dataflow.store#0.operand2",
-                "llvm.zext#0.result0->dataflow.load#1.operand1",
-            },
-        )
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -952,6 +942,17 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "upsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
+        assert_mapping_uses_switch_multihop(evidence_dir, "sbox_lookup")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "sbox_lookup",
+            {
+                "arith.andi#0.result0->llvm.zext#0.operand0",
+                "dataflow.load#0.result0->arith.andi#0.operand0",
+                "dataflow.load#1.result0->dataflow.store#0.operand2",
+                "llvm.zext#0.result0->dataflow.load#1.operand1",
+            },
+        )
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "variance")
 
@@ -1002,6 +1003,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "upsample",
+            "sbox_lookup",
         ):
             assert_promoted_row(repo, rows, case)
         for case in BLOCKED_SWEEP_CASES:
@@ -1073,8 +1075,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 27,
-            "fail": 6,
+            "pass": 28,
+            "fail": 5,
             "blocked": 76,
             "unsupported": 0,
             "missing_status": 0,
