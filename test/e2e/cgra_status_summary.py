@@ -649,12 +649,56 @@ def sim_evidence_stems(row_data: dict[str, str]) -> list[str]:
     return ordered_unique(candidates)
 
 
+def has_direct_chain_report(evidence_dir: Path, chain_name: str) -> bool:
+    return (evidence_dir / f"{chain_name}-dfg-sim-report.json").is_file() or (
+        evidence_dir / f"{chain_name}-cgra-sim-report.json"
+    ).is_file()
+
+
+def candidate_sim_evidence_paths(evidence_dir: Path, stem: str, suffix: str) -> list[Path]:
+    candidates = [evidence_dir / f"{stem}{suffix}"]
+    chain_name = Path(stem).stem
+    chain_dirs = [
+        evidence_dir / stem,
+        evidence_dir / chain_name,
+        evidence_dir / "_chains" / stem,
+        evidence_dir / "_chains" / chain_name,
+    ]
+    if suffix == ".dfg.report.json":
+        for directory in chain_dirs:
+            candidates.append(directory / f"{chain_name}-dfg-sim-report.json")
+        candidates.append(evidence_dir / f"{chain_name}-dfg-sim-report.json")
+    elif suffix == ".mapping.json":
+        if has_direct_chain_report(evidence_dir, chain_name):
+            candidates.append(evidence_dir / "pnr-mapping.json")
+        for directory in chain_dirs:
+            candidates.append(directory / "pnr-mapping.json")
+        candidates.append(evidence_dir / f"{chain_name}-pnr-mapping.json")
+    elif suffix == ".cgra.report.json":
+        for directory in chain_dirs:
+            candidates.append(directory / f"{chain_name}-cgra-sim-report.json")
+        candidates.append(evidence_dir / f"{chain_name}-cgra-sim-report.json")
+    return ordered_unique_path(candidates)
+
+
+def ordered_unique_path(paths: Iterable[Path]) -> list[Path]:
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in paths:
+        key = path.as_posix()
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+    return result
+
+
 def first_sim_evidence_path(evidence_dir: Path, stems: list[str], suffix: str) -> Path:
+    fallback = evidence_dir / f"{stems[0]}{suffix}"
     for stem in stems:
-        path = evidence_dir / f"{stem}{suffix}"
-        if path.is_file():
-            return path
-    return evidence_dir / f"{stems[0]}{suffix}"
+        for path in candidate_sim_evidence_paths(evidence_dir, stem, suffix):
+            if path.is_file():
+                return path
+    return fallback
 
 
 def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comparison_dir: Path) -> None:

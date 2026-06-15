@@ -256,6 +256,71 @@ def write_sim_evidence_case(
     write_json(evidence_dir / f"{case}.cgra.report.json", cgra_report)
 
 
+def write_chain_style_sim_evidence_case(evidence_dir: Path, case: str) -> Path:
+    chain_dir = evidence_dir / "_chains" / case
+    mapping_id = f"{case}__shared_reduction_adg"
+    final_outputs = ["i32:7"]
+    final_memory_state = {"arg0": ["i32:7"]}
+    write_json(
+        chain_dir / f"{case}-dfg-sim-report.json",
+        {
+            "schema_version": 1,
+            "kind": "dfg_sim_report",
+            "workload": case,
+            "graph": f"g_{case}_0",
+            "status": "pass",
+            "optimistic_cycles": 10,
+            "final_outputs": final_outputs,
+            "final_memory_state": final_memory_state,
+            "metric_definition": "fixture",
+        },
+    )
+    write_json(
+        chain_dir / "pnr-mapping.json",
+        {
+            "schema_version": 1,
+            "kind": "pnr_mapping",
+            "workload": case,
+            "graph": f"g_{case}_0",
+            "hardware": "shared_reduction_adg",
+            "mapping_id": mapping_id,
+            "status": "pass",
+            "placed_records": 1,
+            "routed_edges": 1,
+            "unrouted_edges": 0,
+            "unplaced_records": 0,
+            "config_records": 0,
+            "placements": [],
+            "routes": [],
+            "config_bitstream": [],
+            "diagnostics": [],
+        },
+    )
+    write_json(
+        chain_dir / f"{case}-cgra-sim-report.json",
+        {
+            "schema_version": 1,
+            "kind": "cgra_sim_report",
+            "workload": case,
+            "hardware": "shared_reduction_adg",
+            "hardware_artifact": "test/pnr/shared_reduction_adg.mlir",
+            "mapping_id": mapping_id,
+            "status": "pass",
+            "dfg_cycles": 10,
+            "hardware_aware_cycles": 12,
+            "performance_delta_cycles": 2,
+            "difference_classification": "expected_hardware_constraint",
+            "metric_definition": "fixture",
+            "final_outputs": final_outputs,
+            "final_memory_state": final_memory_state,
+            "functional_state_source": "carried_from_dfg_sim_report",
+            "cycle_breakdown": [],
+            "diagnostics": [],
+        },
+    )
+    return chain_dir
+
+
 def write_cmsis_dfg_mlir(path: Path, *, symbol: str, graph: bool) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if graph:
@@ -2004,6 +2069,113 @@ def main() -> int:
         axpy_like = one_row(current_like_rows, "app", "axpy")
         if axpy_like["diagnostic_class"] != "sim_comparison_blocked":
             raise AssertionError(f"single-slice axpy should block on final-state comparison: {axpy_like}")
+
+        chain_style_evidence = out_dir / "chain-style-current-sim-cycle"
+        chain_vecsum_dir = write_chain_style_sim_evidence_case(chain_style_evidence, "vecsum")
+        chain_style_csv = out_dir / "chain-style-cgra-status-summary.csv"
+        chain_style_json = out_dir / "chain-style-cgra-status-summary.json"
+        chain_style_comparison_dir = out_dir / "chain-style-comparisons"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(chain_style_csv),
+                "--json-output",
+                str(chain_style_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--sim-evidence-dir",
+                str(chain_style_evidence),
+                "--comparison-output-dir",
+                str(chain_style_comparison_dir),
+            ],
+        )
+        chain_style_rows = read_rows(chain_style_csv)
+        chain_style_counts = json.loads(chain_style_json.read_text())["counts"]["app"]
+        expected_chain_style_counts = {
+            "total": APP_CASE_COUNT,
+            "pass": 1,
+            "fail": 0,
+            "blocked": APP_NO_DFG_TIER_COUNT,
+            "unsupported": 0,
+            "missing_status": APP_CASE_COUNT - APP_NO_DFG_TIER_COUNT - 1,
+        }
+        if chain_style_counts != expected_chain_style_counts:
+            raise AssertionError(f"chain-style evidence should promote one app row: {chain_style_counts}")
+        chain_vecsum = one_row(chain_style_rows, "app", "vecsum")
+        if (
+            chain_vecsum["status"] != "pass"
+            or chain_vecsum["diagnostic_class"] != "cgra_sim_pass"
+            or chain_vecsum["dfg_status"] != "pass"
+            or chain_vecsum["mapping_status"] != "pass"
+            or chain_vecsum["cgra_status"] != "pass"
+            or chain_vecsum["comparison_status"] != "pass"
+            or chain_vecsum["final_outputs_present"] != "true"
+            or chain_vecsum["final_memory_state_present"] != "true"
+        ):
+            raise AssertionError(f"chain-style vecsum should become a complete CGRA-sim pass row: {chain_vecsum}")
+        expected_chain_paths = {
+            "dfg_report": chain_vecsum_dir / "vecsum-dfg-sim-report.json",
+            "mapping_artifact": chain_vecsum_dir / "pnr-mapping.json",
+            "cgra_report": chain_vecsum_dir / "vecsum-cgra-sim-report.json",
+            "comparison_report": chain_style_comparison_dir / "vecsum.sim-comparison-report.json",
+        }
+        for column, expected_path in expected_chain_paths.items():
+            observed = Path(chain_vecsum[column])
+            if not observed.is_absolute():
+                observed = repo / observed
+            if observed.resolve() != expected_path.resolve():
+                raise AssertionError(f"chain-style vecsum {column} path mismatch: {chain_vecsum}")
+            assert_sha256_file(chain_vecsum[column], chain_vecsum[f"{column}_fingerprint"], repo)
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(chain_style_csv),
+                "--json-input",
+                str(chain_style_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+        )
+
+        direct_chain_csv = out_dir / "direct-chain-cgra-status-summary.csv"
+        direct_chain_json = out_dir / "direct-chain-cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(direct_chain_csv),
+                "--json-output",
+                str(direct_chain_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--sim-evidence-dir",
+                str(chain_vecsum_dir),
+                "--comparison-output-dir",
+                str(out_dir / "direct-chain-comparisons"),
+            ],
+        )
+        direct_chain_vecsum = one_row(read_rows(direct_chain_csv), "app", "vecsum")
+        direct_chain_counts = json.loads(direct_chain_json.read_text())["counts"]["app"]
+        if direct_chain_counts != expected_chain_style_counts:
+            raise AssertionError(
+                "direct chain output dir should not let root pnr-mapping.json poison unrelated rows: "
+                f"{direct_chain_counts}"
+            )
+        if direct_chain_vecsum["status"] != "pass":
+            raise AssertionError(f"direct chain output dir should promote vecsum: {direct_chain_vecsum}")
+        observed_direct_mapping = Path(direct_chain_vecsum["mapping_artifact"])
+        if not observed_direct_mapping.is_absolute():
+            observed_direct_mapping = repo / observed_direct_mapping
+        if observed_direct_mapping.resolve() != (chain_vecsum_dir / "pnr-mapping.json").resolve():
+            raise AssertionError(f"direct chain vecsum should use root pnr-mapping.json: {direct_chain_vecsum}")
 
         fake_pass_rows = [dict(row) for row in rows]
         fake_pass = one_row(fake_pass_rows, "app", "vecsum")
