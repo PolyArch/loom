@@ -198,7 +198,7 @@
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
 // SUMMARY-DAG: axpy,136,,blocked
-// SUMMARY-DAG: bit_reverse,267,,blocked
+// SUMMARY-DAG: bit_reverse,267,{{[0-9]+}},pass
 // SUMMARY-DAG: byte_swap,320,,blocked
 // SUMMARY-DAG: conv1d,98,137,pass
 // SUMMARY-DAG: convolve_1d,178,241,pass

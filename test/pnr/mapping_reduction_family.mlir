@@ -69,6 +69,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/cumsum/main_func.dfg.mlir --graph g_t_cumsum_kernel_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload cumsum --output %t.dir/cumsum.mapping.csv --artifact %t.dir/cumsum.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/integrate_trapz/main_func.dfg.mlir --graph g_t_integrate_trapz_red_0_0 --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload integrate_trapz --output %t.dir/integrate_trapz.mapping.csv --artifact %t.dir/integrate_trapz.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,BIT-REVERSE < %t.dir/bit_reverse.mapping.csv
+// RUN: FileCheck %s --check-prefix=BIT-REVERSE-JSON < %t.dir/bit_reverse.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,BYTE-SWAP < %t.dir/byte_swap.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,DOWNSAMPLE < %t.dir/downsample.mapping.csv
 // RUN: FileCheck %s --check-prefix=DOWNSAMPLE-JSON < %t.dir/downsample.mapping.json
@@ -195,7 +196,24 @@
 
 // VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
 
-// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,6,7,0,fail,unrouted software edges lack Fabric ADG connectivity
+// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,13,0,0,pass,mapped software graph to fabric resources
+// BIT-REVERSE-JSON-DAG: "workload": "bit_reverse"
+// BIT-REVERSE-JSON-DAG: "hardware": "shared_reduction_adg"
+// BIT-REVERSE-JSON-DAG: "status": "pass"
+// BIT-REVERSE-JSON-DAG: "placed_records": 8
+// BIT-REVERSE-JSON-DAG: "routed_edges": 13
+// BIT-REVERSE-JSON-DAG: "unrouted_edges": 0
+// BIT-REVERSE-JSON-DAG: "edge_ref": "arith.ori#0.result0->dataflow.carry#0.operand2"
+// BIT-REVERSE-JSON-DAG: "edge_ref": "arith.shli#0.result0->arith.ori#0.operand0"
+// BIT-REVERSE-JSON-DAG: "edge_ref": "arith.shrui#0.result0->dataflow.carry#1.operand2"
+// BIT-REVERSE-JSON-DAG: "edge_ref": "dataflow.carry#1.result0->arith.andi#0.operand0"
+// BIT-REVERSE-JSON-DAG: "edge_ref": "dataflow.carry#1.result0->arith.shrui#0.operand0"
+// BIT-REVERSE-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.shrui#0.operand1"
+// BIT-REVERSE-JSON-DAG: "edge_ref": "dataflow.stream#0.result1->dataflow.carry#1.operand0"
+// BIT-REVERSE-JSON-DAG: "segment_kind": "resource_edge"
+// BIT-REVERSE-JSON-DAG: "segment_kind": "module_path"
+// BIT-REVERSE-JSON-NOT: ".out"
+// BIT-REVERSE-JSON-NOT: ".in"
 
 // BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,2,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -451,11 +469,11 @@
 // CUMSUM-JSON-NOT: ".out"
 // CUMSUM-JSON-NOT: ".in"
 
-// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,12,13,0,fail,unrouted software edges lack Fabric ADG connectivity
+// TRAPZ-NEXT: integrate_trapz,shared_reduction_adg,integrate_trapz__g_t_integrate_trapz_red_0_0__shared_reduction_adg,15,13,12,0,fail,unrouted software edges lack Fabric ADG connectivity
 // TRAPZ-JSON-DAG: "workload": "integrate_trapz"
 // TRAPZ-JSON-DAG: "hardware": "shared_reduction_adg"
 // TRAPZ-JSON-DAG: "status": "fail"
-// TRAPZ-JSON-DAG: "unrouted_edges": 13
+// TRAPZ-JSON-DAG: "unrouted_edges": 12
 // TRAPZ-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.subf#0.operand0"
 // TRAPZ-JSON-DAG: "source_endpoint": "shared_reduction_adg::mem.load#0.result0"
 // TRAPZ-JSON-DAG: "sink_endpoint": "shared_reduction_adg::fabric.switch#{{[0-9]+}}.operand1"

@@ -75,7 +75,6 @@ DEFAULT_SWEEP_CASES = (
     "variance",
 )
 BLOCKED_SWEEP_CASES = (
-    "bit_reverse",
     "dot_product_3d",
     "integrate_trapz",
 )
@@ -777,6 +776,7 @@ def main(argv: list[str]) -> int:
             "dotproduct",
             "spmv",
             "axpy",
+            "bit_reverse",
             "byte_swap",
             "downsample",
             "xor_block",
@@ -943,6 +943,19 @@ def main(argv: list[str]) -> int:
                 "llvm.intr.fshl#1.result0->dataflow.store#0.operand2",
             },
         )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "bit_reverse",
+            {
+                "arith.ori#0.result0->dataflow.carry#0.operand2",
+                "arith.shli#0.result0->arith.ori#0.operand0",
+                "arith.shrui#0.result0->dataflow.carry#1.operand2",
+                "dataflow.carry#1.result0->arith.andi#0.operand0",
+                "dataflow.carry#1.result0->arith.shrui#0.operand0",
+                "dataflow.invariant#0.result0->arith.shrui#0.operand1",
+                "dataflow.stream#0.result1->dataflow.carry#1.operand0",
+            },
+        )
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -1023,6 +1036,7 @@ def main(argv: list[str]) -> int:
             "dotproduct",
             "spmv",
             "axpy",
+            "bit_reverse",
             "byte_swap",
             "downsample",
             "xor_block",
@@ -1118,8 +1132,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 32,
-            "fail": 2,
+            "pass": 33,
+            "fail": 1,
             "blocked": 75,
             "unsupported": 0,
             "missing_status": 0,
