@@ -206,7 +206,7 @@
 // SUMMARY-DAG: downsample_avg,480,,blocked
 // SUMMARY-DAG: compare_swap,336,{{[0-9]+}},pass
 // SUMMARY-DAG: gemv,423,639,pass
-// SUMMARY-DAG: hash_mix,1280,,blocked
+// SUMMARY-DAG: hash_mix,1280,{{[0-9]+}},pass
 // SUMMARY-DAG: xor_block,448,,blocked
 // SUMMARY-DAG: matvec,371,543,pass
 // SUMMARY-DAG: vecadd,1603,1657,pass

@@ -83,6 +83,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,COMPARE-SWAP < %t.dir/compare_swap.mapping.csv
 // RUN: FileCheck %s --check-prefix=COMPARE-SWAP-JSON < %t.dir/compare_swap.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,HASH-MIX < %t.dir/hash_mix.mapping.csv
+// RUN: FileCheck %s --check-prefix=HASH-MIX-JSON < %t.dir/hash_mix.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,XOR-BLOCK < %t.dir/xor_block.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,AXPY < %t.dir/axpy.mapping.csv
 // RUN: FileCheck %s --check-prefixes=CSV,RELU < %t.dir/relu.core.mapping.csv
@@ -194,7 +195,7 @@
 
 // VARIANCE-VAR-NEXT: variance,shared_reduction_adg,variance__g_t_variance_red_1_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
 
-// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,5,8,0,fail,unrouted software edges lack Fabric ADG connectivity
+// BIT-REVERSE-NEXT: bit_reverse,shared_reduction_adg,bit_reverse__g_t_bit_reverse_kernel_red_0_0__shared_reduction_adg,8,6,7,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // BYTE-SWAP-NEXT: byte_swap,shared_reduction_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_reduction_adg,4,2,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
@@ -269,9 +270,29 @@
 // COMPARE-SWAP-JSON-NOT: ".out"
 // COMPARE-SWAP-JSON-NOT: ".in"
 
-// HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,3,10,0,fail,unrouted software edges lack Fabric ADG connectivity
+// HASH-MIX-NEXT: hash_mix,shared_reduction_adg,hash_mix__g_t_main_1_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
+// HASH-MIX-JSON-DAG: "workload": "hash_mix"
+// HASH-MIX-JSON-DAG: "hardware": "shared_reduction_adg"
+// HASH-MIX-JSON-DAG: "status": "pass"
+// HASH-MIX-JSON-DAG: "placed_records": 9
+// HASH-MIX-JSON-DAG: "routed_edges": 13
+// HASH-MIX-JSON-DAG: "unrouted_edges": 0
+// HASH-MIX-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.addi#0.operand1"
+// HASH-MIX-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.addi#0.operand0"
+// HASH-MIX-JSON-DAG: "edge_ref": "arith.addi#0.result0->llvm.intr.fshl#0.operand0"
+// HASH-MIX-JSON-DAG: "edge_ref": "arith.addi#0.result0->llvm.intr.fshl#0.operand1"
+// HASH-MIX-JSON-DAG: "edge_ref": "llvm.intr.fshl#0.result0->arith.xori#0.operand0"
+// HASH-MIX-JSON-DAG: "edge_ref": "dataflow.load#1.result0->arith.xori#0.operand1"
+// HASH-MIX-JSON-DAG: "edge_ref": "arith.xori#0.result0->arith.muli#0.operand0"
+// HASH-MIX-JSON-DAG: "edge_ref": "arith.muli#0.result0->llvm.intr.fshl#1.operand0"
+// HASH-MIX-JSON-DAG: "edge_ref": "arith.muli#0.result0->llvm.intr.fshl#1.operand1"
+// HASH-MIX-JSON-DAG: "edge_ref": "llvm.intr.fshl#1.result0->dataflow.store#0.operand2"
+// HASH-MIX-JSON-DAG: "segment_kind": "resource_edge"
+// HASH-MIX-JSON-DAG: "segment_kind": "module_path"
+// HASH-MIX-JSON-NOT: ".out"
+// HASH-MIX-JSON-NOT: ".in"
 
-// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,3,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,4,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // MATVEC-NEXT: matvec,shared_reduction_adg,matvec__g_t_matvec_kernel_0_0__shared_reduction_adg,7,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
 

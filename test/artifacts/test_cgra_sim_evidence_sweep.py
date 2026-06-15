@@ -77,7 +77,6 @@ DEFAULT_SWEEP_CASES = (
 BLOCKED_SWEEP_CASES = (
     "bit_reverse",
     "dot_product_3d",
-    "hash_mix",
     "integrate_trapz",
 )
 DFG_UNSUPPORTED_SWEEP_CASES = (
@@ -799,6 +798,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "compare_swap",
+            "hash_mix",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -927,6 +927,22 @@ def main(argv: list[str]) -> int:
                 "dataflow.store#1.result0->dataflow.sync#0.operand3",
             },
         )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "hash_mix",
+            {
+                "dataflow.load#0.result0->arith.addi#0.operand1",
+                "dataflow.load#1.result0->arith.addi#0.operand0",
+                "arith.addi#0.result0->llvm.intr.fshl#0.operand0",
+                "arith.addi#0.result0->llvm.intr.fshl#0.operand1",
+                "llvm.intr.fshl#0.result0->arith.xori#0.operand0",
+                "dataflow.load#1.result0->arith.xori#0.operand1",
+                "arith.xori#0.result0->arith.muli#0.operand0",
+                "arith.muli#0.result0->llvm.intr.fshl#1.operand0",
+                "arith.muli#0.result0->llvm.intr.fshl#1.operand1",
+                "llvm.intr.fshl#1.result0->dataflow.store#0.operand2",
+            },
+        )
         assert_mapping_uses_switch_multihop(evidence_dir, "byte_swap")
         assert_mapping_uses_switch_multihop(evidence_dir, "xor_block")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
@@ -1028,6 +1044,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "compare_swap",
+            "hash_mix",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -1101,8 +1118,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 31,
-            "fail": 3,
+            "pass": 32,
+            "fail": 2,
             "blocked": 75,
             "unsupported": 0,
             "missing_status": 0,
