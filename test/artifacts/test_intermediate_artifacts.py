@@ -291,9 +291,12 @@ def assert_manifest_trace_edges(path: Path) -> None:
         "dataflow-primitive-coverage",
         "adg-hardware-summary",
         "pnr-mapping-summary",
-        "pnr-mapping",
-        "vecsum-dfg-sim-report",
-        "vecsum-cgra-sim-report",
+        "axpy.cgra.report",
+        "axpy.dfg.report",
+        "axpy.mapping",
+        "vecsum.cgra.report",
+        "vecsum.dfg.report",
+        "vecsum.mapping",
         "sim-cycle-summary",
         "rtl-manifest",
         "rtl-sim-eda-report",
@@ -305,13 +308,12 @@ def assert_manifest_trace_edges(path: Path) -> None:
 
     edge_pairs = {(edge.get("from"), edge.get("to")) for edge in data.get("edges", [])}
     required_edges = {
-        ("dataflow-primitive-coverage", "pnr-mapping"),
-        ("adg-hardware-summary", "pnr-mapping"),
-        ("pnr-mapping-summary", "pnr-mapping"),
-        ("dataflow-primitive-coverage", "vecsum-dfg-sim-report"),
-        ("pnr-mapping", "vecsum-cgra-sim-report"),
-        ("vecsum-dfg-sim-report", "sim-cycle-summary"),
-        ("vecsum-cgra-sim-report", "sim-cycle-summary"),
+        ("axpy.mapping", "axpy.cgra.report"),
+        ("axpy.dfg.report", "sim-cycle-summary"),
+        ("axpy.cgra.report", "sim-cycle-summary"),
+        ("vecsum.mapping", "vecsum.cgra.report"),
+        ("vecsum.dfg.report", "sim-cycle-summary"),
+        ("vecsum.cgra.report", "sim-cycle-summary"),
         ("adg-hardware-summary", "rtl-manifest"),
         ("rtl-manifest", "rtl-sim-eda-report"),
         ("rtl-manifest", "rtl-fpa-summary"),
@@ -624,6 +626,8 @@ def main() -> int:
                     )
                 produced.append(rtl_sim_eda)
             if filename == "sim-cycle-summary.csv":
+                default_evidence_dir = out_dir / f"{output.stem}-default-evidence" / "current-sim-cycle"
+                produced.extend(sorted(default_evidence_dir.glob("*.json")))
                 for backing_name in (
                     "pnr-mapping.json",
                     "vecsum-dfg-sim-report.json",

@@ -140,7 +140,7 @@ def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-cycle-") as tmp:
         out_dir = Path(tmp)
-        default_sim = out_dir / "sim-cycle-summary-default.csv"
+        default_sim = out_dir / "default-sim-cycle-summary.csv"
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         sim = out_dir / "sim-cycle-summary.csv"
         dfg_report = out_dir / "dfg-sim-report.json"
@@ -156,26 +156,87 @@ def main() -> int:
             "default sim cycle summary",
         )
         default_rows = artifact_test_common.read_csv_rows(default_sim, HEADER)
-        vecsum_default_rows = [row for row in default_rows if row["kernel"] == "vecsum"]
-        if len(vecsum_default_rows) != 1:
-            raise AssertionError(f"expected one default vecsum row, got {default_rows}")
-        default_row = vecsum_default_rows[0]
-        if default_row.get("status") != "pass":
-            raise AssertionError(f"default sim cycle row should pass with routed CGRA evidence: {default_row}")
-        if default_row["dfg_sim_cycles"] != "579":
-            raise AssertionError(f"default sim cycle row should include vecsum DFG-sim evidence: {default_row}")
-        if default_row["cgra_sim_cycles"] != "607":
-            raise AssertionError(f"default sim cycle row should include vecsum CGRA-sim evidence: {default_row}")
-        if "DFG-sim and CGRA-sim reports available" not in default_row.get("diagnostic", ""):
-            raise AssertionError(f"default sim cycle row should report available simulator evidence: {default_row}")
+        default_by_kernel = {row["kernel"]: row for row in default_rows}
+        expected_default_kernels = {
+            "axpy",
+            "byte_swap",
+            "dotproduct",
+            "vecadd",
+            "vecmul",
+            "vecsum",
+        }
+        if set(default_by_kernel) != expected_default_kernels:
+            raise AssertionError(f"default sim cycle summary should cover a shared-ADG batch, got {default_rows}")
+        dfg_cycles = set()
+        cgra_cycles = set()
+        for kernel, default_row in default_by_kernel.items():
+            if default_row.get("status") != "pass":
+                raise AssertionError(f"default {kernel} row should pass with routed CGRA evidence: {default_row}")
+            if not default_row["dfg_sim_cycles"] or not default_row["cgra_sim_cycles"]:
+                raise AssertionError(f"default {kernel} row should expose both simulator counters: {default_row}")
+            if int(default_row["cgra_sim_cycles"]) < int(default_row["dfg_sim_cycles"]):
+                raise AssertionError(f"default {kernel} CGRA cycles must not be more optimistic: {default_row}")
+            if "DFG-sim and CGRA-sim reports available" not in default_row.get("diagnostic", ""):
+                raise AssertionError(f"default {kernel} row should report available simulator evidence: {default_row}")
+            dfg_cycles.add(default_row["dfg_sim_cycles"])
+            cgra_cycles.add(default_row["cgra_sim_cycles"])
+        if len(dfg_cycles) < 2 or len(cgra_cycles) < 2:
+            raise AssertionError(f"default batch should preserve per-kernel cycle differences: {default_rows}")
+        if (out_dir / "current-sim-cycle").exists():
+            raise AssertionError("default sim summary must not leave discovered evidence in the output root")
+        default_evidence_dir = out_dir / f"{default_sim.stem}-default-evidence" / "current-sim-cycle"
+        if not default_evidence_dir.is_dir():
+            raise AssertionError(f"default sim summary should emit private evidence at {default_evidence_dir}")
+        expected_hardware = {
+            "axpy": "shared_vector_alu_adg",
+            "byte_swap": "shared_vector_alu_adg",
+            "dotproduct": "shared_reduction_adg",
+            "vecadd": "shared_reduction_adg",
+            "vecmul": "shared_vector_alu_adg",
+            "vecsum": "shared_reduction_adg",
+        }
+        default_artifacts = [default_sim]
+        for kernel, hardware in expected_hardware.items():
+            mapping = json.loads((default_evidence_dir / f"{kernel}.mapping.json").read_text())
+            cgra = json.loads((default_evidence_dir / f"{kernel}.cgra.report.json").read_text())
+            if mapping.get("hardware") != hardware:
+                raise AssertionError(f"default {kernel} mapping should use shared hardware {hardware}: {mapping}")
+            if mapping.get("status") != "pass" or mapping.get("unrouted_edges") != 0:
+                raise AssertionError(f"default {kernel} mapping must be routed real evidence: {mapping}")
+            if cgra.get("hardware") != hardware or cgra.get("status") != "pass":
+                raise AssertionError(f"default {kernel} CGRA report should pass on shared hardware {hardware}: {cgra}")
+            default_artifacts.extend(
+                [
+                    default_evidence_dir / f"{kernel}.dfg.report.json",
+                    default_evidence_dir / f"{kernel}.mapping.json",
+                    default_evidence_dir / f"{kernel}.cgra.report.json",
+                    default_evidence_dir / f"{kernel}.sim-comparison-report.json",
+                ]
+            )
+        default_audit = out_dir / "sim-cycle-summary-default-audit.json"
+        artifact_test_common.require_success(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(default_audit),
+                *(str(path) for path in default_artifacts),
+            ],
+            "default sim cycle summary artifact audit",
+        )
+        default_audit_data = json.loads(default_audit.read_text())
+        if default_audit_data.get("verdict") != "pass":
+            raise AssertionError(f"default sim cycle audit should pass: {default_audit_data}")
 
-        evidence_dir = out_dir / "current-sim-cycle"
-        evidence_dir.mkdir()
+        discovered_dir = out_dir / "discovered-current-sim-cycle"
+        evidence_dir = discovered_dir / "current-sim-cycle"
+        evidence_dir.mkdir(parents=True)
         discovered_artifacts = [
             *run_discovered_report_pair(repo, evidence_dir, "sum4", "4"),
             *run_discovered_report_pair(repo, evidence_dir, "sum8", "8"),
         ]
-        discovered_sim = out_dir / "discovered-sim-cycle-summary.csv"
+        discovered_sim = discovered_dir / "discovered-sim-cycle-summary.csv"
         artifact_test_common.require_success(
             repo,
             [
