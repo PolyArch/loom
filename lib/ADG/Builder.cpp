@@ -1503,41 +1503,35 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addUnary32YieldPe("abs", "llvm.intr.abs");
   addUnary32YieldPe("swapped", "llvm.intr.bswap");
 
-  PeSpec castPe;
-  castPe.inputs = {{"pa", "cast0_input", "!fabric.bits<32>", ""},
-                   {"pb", "cast1_input", "!fabric.bits<32>", ""},
-                   {"pc", "cast2_input", "!fabric.bits<32>", ""}};
-  castPe.resultNames = {"cast0_result", "cast1_result", "cast2_result"};
-  castPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
-                        "!fabric.bits<32>"};
-  castPe.fus.push_back(FuSpec{
-      {{"value0", "pa", "!fabric.bits<32>", ""},
-       {"value1", "pb", "!fabric.bits<32>", ""},
-       {"value2", "pc", "!fabric.bits<32>", ""}},
-      {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
-      {FabricOpSpec{{"converted0"},
-                    {"llvm.trunc", "llvm.sext", "llvm.zext"},
-                    {"value0"},
-                    {"!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}},
-       FabricOpSpec{{"converted1"},
-                    {"llvm.trunc", "llvm.sext", "llvm.zext"},
-                    {"value1"},
-                    {"!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}},
-       FabricOpSpec{{"converted2"},
-                    {"llvm.trunc", "llvm.sext", "llvm.zext"},
-                    {"value2"},
-                    {"!fabric.bits<32>"},
-                    {"!fabric.bits<32>"},
-                    {},
-                    {}}},
-      {"converted0", "converted1", "converted2"}});
-  module.addPe(std::move(castPe));
+  auto addCastBankPe = [&]() {
+    constexpr unsigned kCastLanes = 3;
+    const char *ports[] = {"pa", "pb", "pc"};
+    PeSpec pe;
+    FuSpec fu;
+    for (unsigned i = 0; i < kCastLanes; ++i) {
+      std::string index = std::to_string(i);
+      std::string value = "value" + index;
+      std::string converted = "converted" + index;
+      pe.inputs.push_back(
+          {ports[i], "cast" + index + "_input", "!fabric.bits<32>", ""});
+      pe.resultNames.push_back("cast" + index + "_result");
+      pe.resultTypes.push_back("!fabric.bits<32>");
+      fu.inputs.push_back({value, ports[i], "!fabric.bits<32>", ""});
+      fu.resultTypes.push_back("!fabric.bits<32>");
+      fu.operations.push_back(
+          FabricOpSpec{{converted},
+                       {"llvm.trunc", "llvm.sext", "llvm.zext"},
+                       {value},
+                       {"!fabric.bits<32>"},
+                       {"!fabric.bits<32>"},
+                       {},
+                       {}});
+      fu.yieldValues.push_back(std::move(converted));
+    }
+    pe.fus.push_back(std::move(fu));
+    module.addPe(std::move(pe));
+  };
+  addCastBankPe();
 
   addUnary32YieldPe("fp", "llvm.uitofp");
 
@@ -1821,18 +1815,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"idx", "i32b", "addr_unscaled", "cast0_result",
                                "running", "addr_sum", "squared_data",
                                "int_sum", "carried_scan"});
-  module.addExactBodyLine("%cast0_input = fabric.switch [spatial] %i32a, "
-                          "%data0, %data1, %logic_masked");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine("%cast1_input = fabric.switch [spatial] %i32a, "
-                          "%data0, %data1, %logic_masked");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
+  addSingleResultBits32Switch("cast0_input",
+                              {"i32a", "data0", "data1", "logic_masked"});
+  addSingleResultBits32Switch("cast1_input",
+                              {"i32a", "data0", "data1", "logic_masked"});
   module.addExactBodyLine("%cast2_input = fabric.switch [spatial] %i32a, "
                           "%data0, %data1, %logic_masked, %packed_sat16");
   module.addExactBodyLine("  [{connectivity_table = [\"11111\"]}]");
