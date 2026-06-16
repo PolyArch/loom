@@ -2,6 +2,8 @@
 // RUN: FileCheck %s --check-prefix=SIGNED < %t.signed.json
 // RUN: loom-dfg-sim %s --graph extend_truncate --arg 0=none --output %t.cast.json
 // RUN: FileCheck %s --check-prefix=CAST < %t.cast.json
+// RUN: loom-dfg-sim %s --graph llvm_sign_extend --arg 0=none --output %t.llvm-sext.json
+// RUN: FileCheck %s --check-prefix=LLVM-SEXT < %t.llvm-sext.json
 // RUN: loom-dfg-sim %s --graph exact_division_poison --arg 0=none --output %t.exact-div.json
 // RUN: FileCheck %s --check-prefix=EXACT-DIV < %t.exact-div.json
 // RUN: loom-dfg-sim %s --graph exact_shift_poison --arg 0=none --output %t.exact-shift.json
@@ -34,6 +36,12 @@
 // CAST-DAG: "arith.trunci": 1
 // CAST-DAG: "i32:-2"
 // CAST-DAG: "i8:52"
+
+// LLVM-SEXT-DAG: "workload": "llvm_sign_extend"
+// LLVM-SEXT-DAG: "graph": "llvm_sign_extend"
+// LLVM-SEXT-DAG: "status": "pass"
+// LLVM-SEXT-DAG: "llvm.sext": 1
+// LLVM-SEXT-DAG: "i32:-2"
 
 // EXACT-DIV-DAG: "workload": "exact_division_poison"
 // EXACT-DIV-DAG: "status": "blocked"
@@ -78,6 +86,12 @@ module {
     %base = dataflow.constant %ctrl {const_value = 4660 : i32} : i32
     %narrow = arith.trunci %base : i32 to i8
     dataflow.graph.return %ctrl, %wide, %narrow : none, i32, i8
+  }
+
+  dataflow.graph.func private @llvm_sign_extend(%ctrl: none) -> (none, i32) {
+    %byte = dataflow.constant %ctrl {const_value = -2 : i8} : i8
+    %wide = llvm.sext %byte : i8 to i32
+    dataflow.graph.return %ctrl, %wide : none, i32
   }
 
   dataflow.graph.func private @exact_division_poison(%ctrl: none) -> (none, i32) {

@@ -1,10 +1,12 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph zext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload zext_graph --output %t.zext.csv --artifact %t.zext.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph sext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload sext_graph --output %t.sext.csv --artifact %t.sext.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph abs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload abs_graph --output %t.abs.csv --artifact %t.abs.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph fabs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fabs_graph --output %t.fabs.csv --artifact %t.fabs.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph fmuladd_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fmuladd_graph --output %t.fmuladd.csv --artifact %t.fmuladd.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph fshl_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fshl_graph --output %t.fshl.csv --artifact %t.fshl.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph bswap_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload bswap_graph --output %t.bswap.csv --artifact %t.bswap.json
 // RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.csv
+// RUN: FileCheck %s --check-prefix=SEXT < %t.sext.csv
 // RUN: FileCheck %s --check-prefix=ABS < %t.abs.csv
 // RUN: FileCheck %s --check-prefix=FABS < %t.fabs.csv
 // RUN: FileCheck %s --check-prefix=FMULADD < %t.fmuladd.csv
@@ -13,6 +15,9 @@
 
 // ZEXT: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // ZEXT-NEXT: zext_graph,llvm_primitive_adg,zext_graph__zext_graph__llvm_primitive_adg,1,0,0,0,pass
+
+// SEXT: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SEXT-NEXT: sext_graph,llvm_primitive_adg,sext_graph__sext_graph__llvm_primitive_adg,1,0,0,0,pass
 
 // ABS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // ABS-NEXT: abs_graph,llvm_primitive_adg,abs_graph__abs_graph__llvm_primitive_adg,1,0,0,0,pass
@@ -34,6 +39,12 @@ module {
       -> (none, i64) {
     %wide = llvm.zext %narrow : i32 to i64
     dataflow.graph.return %ctrl, %wide : none, i64
+  }
+
+  dataflow.graph.func private @sext_graph(%ctrl: none, %narrow: i16)
+      -> (none, i32) {
+    %wide = llvm.sext %narrow : i16 to i32
+    dataflow.graph.return %ctrl, %wide : none, i32
   }
 
   dataflow.graph.func private @abs_graph(%ctrl: none, %value: i32)
@@ -76,6 +87,13 @@ module {
         %wide = fabric.op [@llvm.zext] (%value)
                 : (!fabric.bits<32>) -> !fabric.bits<64>
         fabric.yield
+      }
+    }
+    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+      fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+        %wide = fabric.op [@llvm.sext] (%value)
+                : (!fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %wide : !fabric.bits<32>
       }
     }
     fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {

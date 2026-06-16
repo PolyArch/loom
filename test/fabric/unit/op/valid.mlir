@@ -47,6 +47,42 @@ fabric.module @op_addi_subi_programmed(%a : !fabric.bits<32>, %b : !fabric.bits<
 }
 
 // -----------------------------------------------------------------------------
+// LLVM packed saturating 16-bit add/sub share one lane-wise datapath.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @op_llvm_packed_sat16
+fabric.module @op_llvm_packed_sat16(%a : !fabric.bits<32>, %b : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>,
+                    %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>,
+              %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      // CHECK: fabric.op [@llvm.arm.qadd16, @llvm.arm.qsub16]
+      %0 = fabric.op [@llvm.arm.qadd16, @llvm.arm.qsub16] (%fa, %fb)
+           : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %0 : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
+// LLVM integer casts share one bit extraction / fill datapath.
+// -----------------------------------------------------------------------------
+
+// CHECK-LABEL: fabric.module @op_llvm_int_casts
+fabric.module @op_llvm_int_casts(%a : !fabric.bits<32>) {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      // CHECK: fabric.op [@llvm.trunc, @llvm.sext, @llvm.zext]
+      %0 = fabric.op [@llvm.trunc, @llvm.sext, @llvm.zext] (%fa)
+           : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %0 : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+
+// -----------------------------------------------------------------------------
 // Multi-op group, pure hardware (sw_configs absent => not programmed).
 // -----------------------------------------------------------------------------
 

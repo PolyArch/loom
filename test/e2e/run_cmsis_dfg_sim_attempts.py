@@ -64,6 +64,21 @@ ATTEMPTS = (
     ),
     Attempt(
         suite="cmsis-dsp",
+        case="BasicMathFunctions/arm_add_q15.c",
+        stem="arm_add_q15",
+        graph="g_t_arm_add_q15_red_0_0",
+        dfg_dir_arg="cmsis_dsp_dfg_dir",
+        args=("0=none", "0=none", "0=none", "0=none", "1=0", "2=4", "3=1"),
+        memrefs=(
+            "4=1000,20000,-30000,32760",
+            "5=0,0,0,0",
+            "6=2000,15000,-10000,1000",
+        ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+    ),
+    Attempt(
+        suite="cmsis-dsp",
         case="BasicMathFunctions/arm_offset_f32.c",
         stem="arm_offset_f32",
         graph="g_t_arm_offset_f32_red_0_0",

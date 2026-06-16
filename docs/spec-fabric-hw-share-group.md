@@ -3,7 +3,7 @@
 This document specifies the set of software op kinds that may legally co-occur
 in the `op_list` of a single `fabric.op`. The list is enforced by
 `FuOp::verify`. The table in this spec is normative, and
-`hwShareGroups()` in `lib/Fabric/IR/FabricOps.cpp` must mirror it.
+`hwShareGroups()` in `lib/Common/HwShareGroup.cpp` must mirror it.
 
 ## Why share groups exist
 
@@ -68,9 +68,11 @@ share group is active in the current configuration.
 | 17 | `math.floor`, `math.ceil`, `math.round`, `math.trunc`, `math.roundeven` | One rounding network with mode-select control. |
 | 18 | `math.sqrt`, `math.rsqrt` | Same Newton iteration; reciprocal is one extra division step shared with the iteration result. |
 | 19 | `math.tanh`, `math.erf` | Same Pade or LUT-based approximation core within shared input ranges. |
+| 20 | `llvm.arm.qadd16`, `llvm.arm.qsub16` | One packed signed-saturating 16-bit lane ALU; add vs sub is selected by operand inversion and carry-in control. |
+| 21 | `llvm.trunc`, `llvm.sext`, `llvm.zext` | One integer cast datapath; output width, sign fill, and zero fill are selected by control bits around the same bit extraction network. |
 
 The table above is the normative target. If you update it,
-`hwShareGroups()` in `lib/Fabric/IR/FabricOps.cpp` must be updated to
+`hwShareGroups()` in `lib/Common/HwShareGroup.cpp` must be updated to
 mirror the spec.
 
 ## How to extend
@@ -82,7 +84,7 @@ the fabric backend can synthesize.
 1. Confirm that your hardware really does share its datapath between the
    member ops. If you are not building or buying a custom block that does
    this, do not add the group.
-2. Add the new entry to `hwShareGroups()` in `lib/Fabric/IR/FabricOps.cpp`.
+2. Add the new entry to `hwShareGroups()` in `lib/Common/HwShareGroup.cpp`.
 3. Update this document's table with the rationale for the sharing.
 4. Add a unit test under `test/fabric/unit/fu_match/` (or the closest
    appropriate location) that exercises the new group via a multi-member

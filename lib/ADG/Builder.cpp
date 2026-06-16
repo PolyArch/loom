@@ -1408,8 +1408,24 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                 "arith.ori");
   addBinary32Pe("int_xor", "int_xor_lhs", "int_xor_rhs", "combined",
                 "arith.xori");
-  addBinary32Pe("packed_qsub16", "packed_qsub_lhs", "packed_qsub_rhs",
-                "packed", "llvm.arm.qsub16");
+  PeSpec packedSatPe;
+  packedSatPe.inputs = {{"pa", "packed_sat_lhs", "!fabric.bits<32>", ""},
+                        {"pb", "packed_sat_rhs", "!fabric.bits<32>", ""}};
+  packedSatPe.resultNames = {"packed_sat16"};
+  packedSatPe.resultTypes = {"!fabric.bits<32>"};
+  packedSatPe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"packed"},
+                           {"llvm.arm.qadd16", "llvm.arm.qsub16"},
+                           {"lhs", "rhs"},
+                           {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"packed"}});
+  module.addPe(std::move(packedSatPe));
 
   auto addFmulAddPe = [&](std::string resultName, std::string lhsInput,
                           std::string rhsInput, std::string accInput) {
@@ -1487,21 +1503,41 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addUnary32YieldPe("abs", "llvm.intr.abs");
   addUnary32YieldPe("swapped", "llvm.intr.bswap");
 
-  PeSpec zextPe;
-  zextPe.inputs = {{"pa", "zext_input", "!fabric.bits<32>", ""}};
-  zextPe.resultNames = {"zext_index"};
-  zextPe.resultTypes = {"!fabric.bits<32>"};
-  zextPe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<32>", ""}},
-                              {"!fabric.bits<32>"},
-                              {FabricOpSpec{{"wide"},
-                                            {"llvm.zext"},
-                                            {"value"},
-                                            {"!fabric.bits<32>"},
-                                            {"!fabric.bits<32>"},
-                                            {},
-                                            {}}},
-                              {"wide"}});
-  module.addPe(std::move(zextPe));
+  PeSpec castPe;
+  castPe.inputs = {{"pa", "cast0_input", "!fabric.bits<32>", ""},
+                   {"pb", "cast1_input", "!fabric.bits<32>", ""},
+                   {"pc", "cast2_input", "!fabric.bits<32>", ""}};
+  castPe.resultNames = {"cast0_result", "cast1_result", "cast2_result"};
+  castPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>",
+                        "!fabric.bits<32>"};
+  castPe.fus.push_back(FuSpec{
+      {{"value0", "pa", "!fabric.bits<32>", ""},
+       {"value1", "pb", "!fabric.bits<32>", ""},
+       {"value2", "pc", "!fabric.bits<32>", ""}},
+      {"!fabric.bits<32>", "!fabric.bits<32>", "!fabric.bits<32>"},
+      {FabricOpSpec{{"converted0"},
+                    {"llvm.trunc", "llvm.sext", "llvm.zext"},
+                    {"value0"},
+                    {"!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}},
+       FabricOpSpec{{"converted1"},
+                    {"llvm.trunc", "llvm.sext", "llvm.zext"},
+                    {"value1"},
+                    {"!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}},
+       FabricOpSpec{{"converted2"},
+                    {"llvm.trunc", "llvm.sext", "llvm.zext"},
+                    {"value2"},
+                    {"!fabric.bits<32>"},
+                    {"!fabric.bits<32>"},
+                    {},
+                    {}}},
+      {"converted0", "converted1", "converted2"}});
+  module.addPe(std::move(castPe));
 
   addUnary32YieldPe("fp", "llvm.uitofp");
 
@@ -1705,21 +1741,23 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"i32b", "logic_masked", "data0", "data1"});
   addSingleResultBits32Switch("int_xor_lhs",
                               {"i32a", "rotated", "logic_masked", "data0",
-                               "packed_qsub16"});
+                               "packed_sat16"});
   addSingleResultBits32Switch("int_xor_rhs",
                               {"i32b", "data1", "data0", "logic_masked",
                                "reduction_scale", "fp_invariant",
                                "bit_invariant", "bit_invariant_aux0",
                                "bit_invariant_aux1"});
-  addSingleResultBits32Switch("packed_qsub_lhs",
+  addSingleResultBits32Switch("packed_sat_lhs",
                               {"i32a", "reduction_scale", "fp_invariant",
                                "bit_invariant", "bit_invariant_aux0",
-                               "bit_invariant_aux1"});
-  addSingleResultBits32Switch("packed_qsub_rhs",
+                               "bit_invariant_aux1", "cast0_result",
+                               "cast1_result"});
+  addSingleResultBits32Switch("packed_sat_rhs",
                               {"logic_masked", "addr_masked", "data0",
                                "data1", "i32b", "reduction_scale",
                                "fp_invariant", "bit_invariant",
-                               "bit_invariant_aux0", "bit_invariant_aux1"});
+                               "bit_invariant_aux0", "bit_invariant_aux1",
+                               "cast0_result", "cast1_result"});
   module.addExactBodyLine(
       "%rotate_lhs = fabric.switch [spatial] %i32a, %data1, %data0, "
       "%logic_masked, %int_sum, %int_product");
@@ -1780,33 +1818,45 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>) -> !fabric.bits<32>");
   addSingleResultBits32Switch("load1_addr",
-                              {"idx", "i32b", "addr_unscaled", "zext_index",
+                              {"idx", "i32b", "addr_unscaled", "cast0_result",
                                "running", "addr_sum", "squared_data",
                                "int_sum", "carried_scan"});
+  module.addExactBodyLine("%cast0_input = fabric.switch [spatial] %i32a, "
+                          "%data0, %data1, %logic_masked");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
   module.addExactBodyLine(
-      "%zext_input = fabric.switch [spatial] %i32a, %data1, %logic_masked");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine("%cast1_input = fabric.switch [spatial] %i32a, "
+                          "%data0, %data1, %logic_masked");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
   module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine("%cast2_input = fabric.switch [spatial] %i32a, "
+                          "%data0, %data1, %logic_masked, %packed_sat16");
+  module.addExactBodyLine("  [{connectivity_table = [\"11111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   addSingleResultBits32Switch("load2_addr",
-                              {"i32c", "zext_index", "idx", "addr_sum",
+                              {"i32c", "cast0_result", "idx", "addr_sum",
                                "running", "squared_data", "int_sum"});
   module.addExactBodyLine(
       "%store0_value = fabric.switch [spatial] %scan_store_value, "
       "%fp_running, %running, %mac_result, %mac_result1, %data0, %data1, "
       "%selected, %rotated, %addr_masked, %logic_masked, %int_xor, "
-      "%packed_qsub16, %abs_data, %scaled_reduction, %int_product, "
-      "%reduction_scale");
+      "%packed_sat16, %cast2_result, %abs_data, %scaled_reduction, "
+      "%int_product, %reduction_scale");
   module.addExactBodyLine(
-      "  [{connectivity_table = [\"11111111111111111\"]}]");
+      "  [{connectivity_table = [\"111111111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
@@ -1853,7 +1903,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%addr_mask_rhs = fabric.switch [spatial] %reduction_scale, "
-      "%fp_invariant, %i32b, %i32c, %int_xor, %packed_qsub16, "
+      "%fp_invariant, %i32b, %i32c, %int_xor, %packed_sat16, "
       "%logic_masked, %bit_invariant, %bit_invariant_aux0, "
       "%bit_invariant_aux1");
   module.addExactBodyLine("  [{connectivity_table = [\"1111111111\"]}]");

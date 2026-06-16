@@ -647,11 +647,13 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
       add(n, {pT(0)}, {pT(1)});
     }
     add("llvm.trunc", {pT(0)}, {pT(1)});
+    add("llvm.sext", {pT(0)}, {pT(1)});
     add("llvm.zext", {pT(0)}, {pT(1)});
     add("llvm.intr.abs", {pT(0)}, {pT(0)});
     add("llvm.intr.fabs", {pT(0)}, {pT(0)});
     add("llvm.intr.fshl", {pT(0), pT(0), pT(0)}, {pT(0)});
     add("llvm.intr.bswap", {pT(0)}, {pT(0)});
+    add("llvm.arm.qadd16", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.qsub8", {pT(0), pT(0)}, {pT(0)});
     add("llvm.arm.qsub16", {pT(0), pT(0)}, {pT(0)});
 

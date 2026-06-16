@@ -1,5 +1,5 @@
 // RUN: loom-hwsg-test size | FileCheck %s
 
-// The canonical multi-member hardware-share table has 19 groups.
+// The canonical multi-member hardware-share table has 21 groups.
 
-// CHECK: size=19
+// CHECK: size=21

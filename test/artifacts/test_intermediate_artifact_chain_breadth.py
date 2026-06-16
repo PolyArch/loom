@@ -181,7 +181,7 @@ CASES = {
         "mapping_id": "spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg",
         "placed_records": "9",
         "route_edge_count": "13",
-        "config_records": 274,
+        "config_records": 275,
         "dfg_cycles": 47,
         "dynamic_work_items": 2,
         "cgra_cycles": 108,
