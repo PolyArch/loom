@@ -13,6 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from default_batch_test_common import default_batch_hardware  # noqa: E402
 from test_cgra_status_summary import assert_sha256_file, one_row, read_rows  # noqa: E402
 
 
@@ -252,25 +253,14 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 10,
+            "pass": 35,
             "fail": 0,
             "blocked": 50,
             "unsupported": 0,
-            "missing_status": 49,
+            "missing_status": 24,
         },
     )
-    expected_hardware = {
-        "axpy": "shared_vector_alu_adg",
-        "byte_swap": "shared_vector_alu_adg",
-        "conv1d": "shared_reduction_adg",
-        "downsample": "shared_reduction_adg",
-        "dotproduct": "shared_reduction_adg",
-        "mean": "shared_reduction_adg",
-        "spmv": "shared_reduction_adg",
-        "vecadd": "shared_reduction_adg",
-        "vecmul": "shared_vector_alu_adg",
-        "vecsum": "shared_reduction_adg",
-    }
+    expected_hardware = default_batch_hardware(repo)
     for case, hardware in expected_hardware.items():
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json"):

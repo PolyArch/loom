@@ -6,23 +6,19 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "vecsum-while",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "reduction",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "dotproduct",
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "vecadd",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "conv1d",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "downsample",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "mean",
+      "case": "dot_product_3d",
       "hardware": "shared_reduction_adg"
     },
     {
@@ -34,12 +30,116 @@
       "hardware": "shared_vector_alu_adg"
     },
     {
+      "case": "bit_reverse",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "byte_swap",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "downsample",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "xor_block",
       "hardware": "shared_vector_alu_adg"
     },
     {
       "case": "vecmul",
       "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "prefix_sum",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "cumsum",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "prefix_sum_inclusive",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "mean",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "vecnorm_l1",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "vecnorm_l2",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "gemv",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "gemm",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "matvec",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "downsample_avg",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "vecadd",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "vecscale",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "conv1d",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "variance",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "integrate_trapz",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "correlation",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "convolve_1d",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "compare_swap",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "hash_mix",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "relu",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "upsample",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sbox_lookup",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "rotate_bits",
+      "hardware": "shared_reduction_adg"
     }
   ]
 }

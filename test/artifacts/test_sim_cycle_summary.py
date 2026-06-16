@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import artifact_test_common
+from default_batch_test_common import default_batch_hardware
 
 
 HEADER = ["kernel", "dfg_sim_cycles", "cgra_sim_cycles"]
@@ -345,19 +346,8 @@ def main() -> int:
         )
         default_rows = artifact_test_common.read_csv_rows(default_sim, HEADER)
         default_by_kernel = {row["kernel"]: row for row in default_rows}
-        expected_default_kernels = {
-            "axpy",
-            "byte_swap",
-            "conv1d",
-            "downsample",
-            "dotproduct",
-            "mean",
-            "spmv",
-            "vecadd",
-            "vecmul",
-            "vecsum",
-        }
-        if set(default_by_kernel) != expected_default_kernels:
+        expected_hardware = default_batch_hardware(repo)
+        if set(default_by_kernel) != set(expected_hardware):
             raise AssertionError(f"default sim cycle summary should cover a shared-ADG batch, got {default_rows}")
         dfg_cycles = set()
         cgra_cycles = set()
@@ -379,18 +369,6 @@ def main() -> int:
         default_evidence_dir = out_dir / f"{default_sim.stem}-default-evidence" / "current-sim-cycle"
         if not default_evidence_dir.is_dir():
             raise AssertionError(f"default sim summary should emit private evidence at {default_evidence_dir}")
-        expected_hardware = {
-            "axpy": "shared_vector_alu_adg",
-            "byte_swap": "shared_vector_alu_adg",
-            "conv1d": "shared_reduction_adg",
-            "downsample": "shared_reduction_adg",
-            "dotproduct": "shared_reduction_adg",
-            "mean": "shared_reduction_adg",
-            "spmv": "shared_reduction_adg",
-            "vecadd": "shared_reduction_adg",
-            "vecmul": "shared_vector_alu_adg",
-            "vecsum": "shared_reduction_adg",
-        }
         default_artifacts = [default_sim]
         for kernel, hardware in expected_hardware.items():
             mapping = json.loads((default_evidence_dir / f"{kernel}.mapping.json").read_text())
