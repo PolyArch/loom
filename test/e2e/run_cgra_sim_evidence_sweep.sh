@@ -126,6 +126,7 @@ import hashlib
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 
@@ -142,8 +143,28 @@ def artifact_id(path: Path) -> str:
     return path.stem
 
 
+def wait_for_file(path: Path) -> None:
+    for _ in range(50):
+        if path.is_file():
+            return
+        time.sleep(0.1)
+    raise SystemExit(f"missing component artifact {path}")
+
+
 def read_json(path: Path) -> dict:
-    return json.loads(path.read_text())
+    last_error: Exception | None = None
+    for _ in range(50):
+        if not path.is_file():
+            time.sleep(0.1)
+            continue
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            time.sleep(0.1)
+    if last_error is not None:
+        raise SystemExit(f"artifact is not valid JSON after retry: {path}: {last_error}")
+    raise SystemExit(f"missing component artifact {path}")
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -162,8 +183,7 @@ def copy_component(identity: str, id_map: dict[str, str]) -> None:
     if identity in id_map:
         return
     source = case_out / f"{identity}.json"
-    if not source.is_file():
-        raise SystemExit(f"missing component artifact {source}")
+    wait_for_file(source)
     namespaced = f"{case_name}.{identity}"
     shutil.copy2(source, out_dir / f"{namespaced}.json")
     id_map[identity] = namespaced

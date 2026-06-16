@@ -52,6 +52,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.fptosi", 3, 3, true, true},
     {"llvm.fptoui", 3, 3, true, true},
     {"llvm.select", 1, 1, true, true},
+    {"llvm.getelementptr", 1, 1, false, false},
     {"llvm.intr.fshl", 1, 1, true, true},
     {"llvm.intr.bswap", 1, 1, true, true},
     {"llvm.intr.fmuladd", 7, 7, true, true},

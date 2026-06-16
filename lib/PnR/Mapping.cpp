@@ -1034,6 +1034,11 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
   for (const SoftwareNode &node : nodes) {
     unsigned operandIndex = 0;
     for (mlir::Value operand : node.op->getOperands()) {
+      if (!hardwareOperandIndexForSoftwareEndpoint(node.resourceKind,
+                                                   operandIndex)) {
+        ++operandIndex;
+        continue;
+      }
       std::optional<RouteBuilder::ProducerRef> source =
           builder.resolve(operand);
       if (!source || source->softwareId == node.id) {

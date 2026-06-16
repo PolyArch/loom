@@ -32,14 +32,46 @@ using namespace loom::sim;
 
 namespace {
 
-enum class TokenKind { None, Integer, Float, Bool };
+struct MemoryValue;
+
+struct MemoryView {
+  std::shared_ptr<MemoryValue> memory;
+  mlir::Value root;
+  std::int64_t byteOffset = 0;
+};
+
+enum class TokenKind { None, Integer, Float, Bool, Pointer };
 
 struct Token {
   TokenKind kind = TokenKind::None;
   std::int64_t intValue = 0;
   double floatValue = 0.0;
   bool boolValue = false;
+  MemoryView pointer;
 };
+
+Token noneToken() { return Token{}; }
+
+Token integerValueToken(std::int64_t value) {
+  Token token;
+  token.kind = TokenKind::Integer;
+  token.intValue = value;
+  return token;
+}
+
+Token floatValueToken(double value) {
+  Token token;
+  token.kind = TokenKind::Float;
+  token.floatValue = value;
+  return token;
+}
+
+Token boolValueToken(bool value) {
+  Token token;
+  token.kind = TokenKind::Bool;
+  token.boolValue = value;
+  return token;
+}
 
 using ChannelMap = llvm::DenseMap<const mlir::OpOperand *, std::deque<Token>>;
 using OutputMap = llvm::DenseMap<mlir::Value, llvm::SmallVector<Token>>;
@@ -110,6 +142,8 @@ std::string tokenToString(const Token &token, mlir::Type type) {
     return typePrefix(type) + ":" + (token.boolValue ? "true" : "false");
   if (token.kind == TokenKind::Integer)
     return typePrefix(type) + ":" + std::to_string(token.intValue);
+  if (token.kind == TokenKind::Pointer)
+    return typePrefix(type) + ":ptr+" + std::to_string(token.pointer.byteOffset);
   std::string storage;
   llvm::raw_string_ostream os(storage);
   os << typePrefix(type) << ':';
@@ -124,14 +158,14 @@ std::string tokenToString(const Token &token, mlir::Type type) {
 
 llvm::Expected<Token> tokenFromTypedAttr(mlir::TypedAttr attr) {
   if (mlir::isa<mlir::NoneType>(attr.getType()))
-    return Token{TokenKind::None};
+    return noneToken();
   if (auto intAttr = mlir::dyn_cast<mlir::IntegerAttr>(attr)) {
     if (intAttr.getType().isInteger(1))
-      return Token{TokenKind::Bool, 0, 0.0, intAttr.getValue().isOne()};
-    return Token{TokenKind::Integer, intAttr.getValue().getSExtValue()};
+      return boolValueToken(intAttr.getValue().isOne());
+    return integerValueToken(intAttr.getValue().getSExtValue());
   }
   if (auto floatAttr = mlir::dyn_cast<mlir::FloatAttr>(attr))
-    return Token{TokenKind::Float, 0, floatAttr.getValueAsDouble()};
+    return floatValueToken(floatAttr.getValueAsDouble());
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported dataflow.constant attribute");
 }
@@ -140,16 +174,16 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
   raw = raw.trim();
   if (mlir::isa<mlir::NoneType>(type)) {
     if (raw == "none")
-      return Token{TokenKind::None};
+      return noneToken();
     return llvm::createStringError(std::errc::invalid_argument,
                                    "none argument expects value 'none'");
   }
   if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
     if (intType.getWidth() == 1) {
       if (raw == "true" || raw == "1")
-        return Token{TokenKind::Bool, 0, 0.0, true};
+        return boolValueToken(true);
       if (raw == "false" || raw == "0")
-        return Token{TokenKind::Bool, 0, 0.0, false};
+        return boolValueToken(false);
       return llvm::createStringError(std::errc::invalid_argument,
                                      "i1 argument expects true/false/0/1");
     }
@@ -157,21 +191,21 @@ llvm::Expected<Token> parseRuntimeToken(llvm::StringRef raw, mlir::Type type) {
     if (raw.getAsInteger(10, value))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "integer argument is not base-10");
-    return Token{TokenKind::Integer, value};
+    return integerValueToken(value);
   }
   if (mlir::isa<mlir::IndexType>(type)) {
     std::int64_t value = 0;
     if (raw.getAsInteger(10, value))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "index argument is not base-10");
-    return Token{TokenKind::Integer, value};
+    return integerValueToken(value);
   }
   if (mlir::isa<mlir::FloatType>(type)) {
     double value = 0.0;
     if (raw.getAsDouble(value))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "float argument is not parseable");
-    return Token{TokenKind::Float, 0, value};
+    return floatValueToken(value);
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unsupported runtime argument type");
@@ -192,6 +226,137 @@ llvm::Expected<llvm::SmallVector<Token>> parseMemoryTokens(llvm::StringRef raw,
     tokens.push_back(*tokenOrErr);
   }
   return tokens;
+}
+
+std::int64_t integerToken(const Token &token);
+
+std::string typeToString(mlir::Type type) {
+  std::string storage;
+  llvm::raw_string_ostream os(storage);
+  type.print(os);
+  return os.str();
+}
+
+llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type) {
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return std::max<std::int64_t>(1, (intType.getWidth() + 7) / 8);
+  if (mlir::isa<mlir::IndexType>(type))
+    return 8;
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type)) {
+    if (floatType.isF16())
+      return 2;
+    if (floatType.isF32())
+      return 4;
+    if (floatType.isF64())
+      return 8;
+  }
+  if (auto arrayType = mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(type)) {
+    auto elementSizeOrErr = byteSizeOfType(arrayType.getElementType());
+    if (!elementSizeOrErr)
+      return elementSizeOrErr.takeError();
+    return static_cast<std::int64_t>(arrayType.getNumElements()) *
+           *elementSizeOrErr;
+  }
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported llvm.getelementptr element type: %s",
+                                 typeToString(type).c_str());
+}
+
+llvm::Expected<std::shared_ptr<MemoryValue>>
+materializeMemory(SimulatorState &state, mlir::Value root, llvm::StringRef raw,
+                  mlir::Type elementType) {
+  auto existing = state.memories.find(root);
+  if (existing != state.memories.end()) {
+    if (existing->second->elementType != elementType)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "memory fixture type mismatch: existing %s, requested %s",
+          typeToString(existing->second->elementType).c_str(),
+          typeToString(elementType).c_str());
+    return existing->second;
+  }
+  auto tokensOrErr = parseMemoryTokens(raw, elementType);
+  if (!tokensOrErr)
+    return tokensOrErr.takeError();
+  auto memory = std::make_shared<MemoryValue>(
+      MemoryValue{elementType, std::move(*tokensOrErr)});
+  state.memories[root] = memory;
+  return memory;
+}
+
+Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
+                   std::int64_t byteOffset = 0) {
+  Token token;
+  token.kind = TokenKind::Pointer;
+  token.pointer = MemoryView{std::move(memory), root, byteOffset};
+  return token;
+}
+
+llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
+                                          mlir::Type elementType) {
+  if (token.kind != TokenKind::Pointer)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "memory view operand is not a pointer");
+  if (token.pointer.memory) {
+    if (token.pointer.memory->elementType != elementType)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "memory view type mismatch: existing %s, requested %s",
+          typeToString(token.pointer.memory->elementType).c_str(),
+          typeToString(elementType).c_str());
+    return token;
+  }
+  auto rawIt = state.rawMemoryFixtures.find(token.pointer.root);
+  if (rawIt == state.rawMemoryFixtures.end())
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "pointer memory fixture is missing");
+  auto memoryOrErr =
+      materializeMemory(state, token.pointer.root, rawIt->second, elementType);
+  if (!memoryOrErr)
+    return memoryOrErr.takeError();
+  token.pointer.memory = *memoryOrErr;
+  return token;
+}
+
+llvm::Expected<std::int64_t>
+gepByteOffset(mlir::LLVM::GEPOp op, llvm::ArrayRef<Token> dynamicTokens) {
+  mlir::Type currentType = op.getElemType();
+  std::int64_t offset = 0;
+  unsigned dynamicIndex = 0;
+  bool firstIndex = true;
+  for (std::int32_t rawIndex : op.getRawConstantIndices()) {
+    mlir::Type strideType = currentType;
+    if (!firstIndex) {
+      if (auto arrayType =
+              mlir::dyn_cast<mlir::LLVM::LLVMArrayType>(currentType)) {
+        strideType = arrayType.getElementType();
+      } else {
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "unsupported llvm.getelementptr aggregate index over type: %s",
+            typeToString(currentType).c_str());
+      }
+    }
+    auto strideOrErr = byteSizeOfType(strideType);
+    if (!strideOrErr)
+      return strideOrErr.takeError();
+    std::int64_t index = rawIndex;
+    if (rawIndex == mlir::LLVM::GEPOp::kDynamicIndex) {
+      if (dynamicIndex >= dynamicTokens.size())
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "llvm.getelementptr dynamic index is missing");
+      const Token &token = dynamicTokens[dynamicIndex++];
+      if (token.kind != TokenKind::Integer && token.kind != TokenKind::Bool)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "llvm.getelementptr dynamic index must be integer-like");
+      index = integerToken(token);
+    }
+    offset += index * *strideOrErr;
+    currentType = strideType;
+    firstIndex = false;
+  }
+  return offset;
 }
 
 bool hasToken(ChannelMap &channels, mlir::OpOperand &operand) {
@@ -295,6 +460,8 @@ PrimitiveValue primitiveValueFromToken(const Token &token) {
     return PrimitiveValue::floating(token.floatValue);
   case TokenKind::Bool:
     return PrimitiveValue::boolean(token.boolValue);
+  case TokenKind::Pointer:
+    return PrimitiveValue::none();
   }
   return PrimitiveValue::none();
 }
@@ -302,15 +469,15 @@ PrimitiveValue primitiveValueFromToken(const Token &token) {
 Token tokenFromPrimitiveValue(const PrimitiveValue &value) {
   switch (value.kind) {
   case PrimitiveValueKind::None:
-    return Token{TokenKind::None};
+    return noneToken();
   case PrimitiveValueKind::Integer:
-    return Token{TokenKind::Integer, value.intValue};
+    return integerValueToken(value.intValue);
   case PrimitiveValueKind::Float:
-    return Token{TokenKind::Float, 0, value.floatValue};
+    return floatValueToken(value.floatValue);
   case PrimitiveValueKind::Bool:
-    return Token{TokenKind::Bool, 0, 0.0, value.boolValue};
+    return boolValueToken(value.boolValue);
   }
-  return Token{TokenKind::None};
+  return noneToken();
 }
 
 unsigned integerBitWidth(mlir::Type type) {
@@ -402,8 +569,8 @@ bool fireStream(dataflow::StreamOp op, SimulatorState &state) {
   }
 
   const bool cont = evaluateCont(stream.current, stream.ub, op.getContCond());
-  emitToken(state, op.getIndex(), Token{TokenKind::Integer, stream.current});
-  emitToken(state, op.getRwc(), Token{TokenKind::Bool, 0, 0.0, cont});
+  emitToken(state, op.getIndex(), integerValueToken(stream.current));
+  emitToken(state, op.getRwc(), boolValueToken(cont));
   if (cont) {
     ++stream.trueEmissions;
     stream.current = stepIndex(stream.current, stream.step, op.getStepOp());
@@ -497,10 +664,10 @@ bool fireGate(dataflow::GateOp op, SimulatorState &state) {
   }
 
   if (open) {
-    emitToken(state, op.getAfterCond(), Token{TokenKind::Bool, 0, 0.0, true});
+    emitToken(state, op.getAfterCond(), boolValueToken(true));
     emitToken(state, op.getAfterValue(), value);
   } else {
-    emitToken(state, op.getAfterCond(), Token{TokenKind::Bool, 0, 0.0, false});
+    emitToken(state, op.getAfterCond(), boolValueToken(false));
     state.gateContinueStates.erase(op.getOperation());
   }
   return recordEvent(state, op->getName().getStringRef());
@@ -519,26 +686,108 @@ bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool fireCast(mlir::UnrealizedConversionCastOp op, SimulatorState &state) {
+  if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+    return false;
+  mlir::OpOperand &operand = op->getOpOperand(0);
+  if (!hasToken(state.channels, operand))
+    return false;
+  Token token = popToken(state.channels, operand);
+  if (auto memrefType = mlir::dyn_cast<mlir::MemRefType>(op.getResult(0).getType())) {
+    auto tokenOrErr =
+        ensurePointerMemory(state, token, memrefType.getElementType());
+    if (!tokenOrErr) {
+      state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+      return false;
+    }
+    emitToken(state, op.getResult(0), *tokenOrErr);
+    return true;
+  }
+  emitToken(state, op.getResult(0), token);
+  return true;
+}
+
+bool fireGEP(mlir::LLVM::GEPOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op.getBaseMutable()))
+    return false;
+  for (unsigned i = 1, e = op->getNumOperands(); i < e; ++i) {
+    if (!hasToken(state.channels, op->getOpOperand(i)))
+      return false;
+  }
+  Token base = popToken(state.channels, op.getBaseMutable());
+  if (base.kind != TokenKind::Pointer) {
+    state.diagnostics.push_back("llvm.getelementptr base is not a pointer");
+    return false;
+  }
+  llvm::SmallVector<Token> dynamicTokens;
+  for (unsigned i = 1, e = op->getNumOperands(); i < e; ++i)
+    dynamicTokens.push_back(popToken(state.channels, op->getOpOperand(i)));
+  auto offsetOrErr = gepByteOffset(op, dynamicTokens);
+  if (!offsetOrErr) {
+    state.diagnostics.push_back(llvm::toString(offsetOrErr.takeError()));
+    return false;
+  }
+  base.pointer.byteOffset += *offsetOrErr;
+  emitToken(state, op.getResult(), base);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+std::optional<MemoryView> resolveMemoryView(SimulatorState &state,
+                                            mlir::Value mem,
+                                            mlir::OpOperand &memOperand) {
+  if (hasToken(state.channels, memOperand)) {
+    Token token = popToken(state.channels, memOperand);
+    if (token.kind != TokenKind::Pointer || !token.pointer.memory) {
+      state.diagnostics.push_back("dataflow memory operand is not a memory view");
+      return std::nullopt;
+    }
+    return token.pointer;
+  }
+  auto memIt = state.memories.find(mem);
+  if (memIt != state.memories.end())
+    return MemoryView{memIt->second, mem, 0};
+  return std::nullopt;
+}
+
+std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
+                                               const Token &addr,
+                                               SimulatorState &state,
+                                               llvm::StringRef opName) {
+  auto elementSizeOrErr = byteSizeOfType(view.memory->elementType);
+  if (!elementSizeOrErr) {
+    state.diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
+    return std::nullopt;
+  }
+  if (*elementSizeOrErr == 0 || view.byteOffset % *elementSizeOrErr != 0) {
+    state.diagnostics.push_back("memory view byte offset is not element-aligned");
+    return std::nullopt;
+  }
+  const std::int64_t baseIndex = view.byteOffset / *elementSizeOrErr;
+  const std::int64_t index = baseIndex + integerToken(addr);
+  if (index < 0 ||
+      static_cast<std::size_t>(index) >= view.memory->elements.size()) {
+    state.diagnostics.push_back((opName + " address is out of range").str());
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(index);
+}
+
 bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getAddrMutable()) ||
       !hasToken(state.channels, op.getCtrlMutable()))
     return false;
-  auto memIt = state.memories.find(op.getMem());
-  if (memIt == state.memories.end()) {
-    state.diagnostics.push_back("dataflow.load has no memref fixture");
+  std::optional<MemoryView> view =
+      resolveMemoryView(state, op.getMem(), op.getMemMutable());
+  if (!view)
     return false;
-  }
   Token addr = popToken(state.channels, op.getAddrMutable());
   popToken(state.channels, op.getCtrlMutable());
-  const std::int64_t index = integerToken(addr);
-  if (index < 0 ||
-      static_cast<std::size_t>(index) >= memIt->second->elements.size()) {
-    state.diagnostics.push_back("dataflow.load address is out of range");
+  std::optional<std::size_t> index =
+      resolveElementIndex(*view, addr, state, "dataflow.load");
+  if (!index)
     return false;
-  }
-  emitToken(state, op.getData(),
-            memIt->second->elements[static_cast<std::size_t>(index)]);
-  emitToken(state, op.getDone(), Token{TokenKind::None});
+  emitToken(state, op.getData(), view->memory->elements[*index]);
+  emitToken(state, op.getDone(), noneToken());
   ++state.loadFireCounts[op.getOperation()];
   return recordEvent(state, op->getName().getStringRef());
 }
@@ -548,22 +797,19 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
       !hasToken(state.channels, op.getDataMutable()) ||
       !hasToken(state.channels, op.getCtrlMutable()))
     return false;
-  auto memIt = state.memories.find(op.getMem());
-  if (memIt == state.memories.end()) {
-    state.diagnostics.push_back("dataflow.store has no memref fixture");
+  std::optional<MemoryView> view =
+      resolveMemoryView(state, op.getMem(), op.getMemMutable());
+  if (!view)
     return false;
-  }
   Token addr = popToken(state.channels, op.getAddrMutable());
   Token data = popToken(state.channels, op.getDataMutable());
   popToken(state.channels, op.getCtrlMutable());
-  const std::int64_t index = integerToken(addr);
-  if (index < 0 ||
-      static_cast<std::size_t>(index) >= memIt->second->elements.size()) {
-    state.diagnostics.push_back("dataflow.store address is out of range");
+  std::optional<std::size_t> index =
+      resolveElementIndex(*view, addr, state, "dataflow.store");
+  if (!index)
     return false;
-  }
-  memIt->second->elements[static_cast<std::size_t>(index)] = data;
-  emitToken(state, op.getDone(), Token{TokenKind::None});
+  view->memory->elements[*index] = data;
+  emitToken(state, op.getDone(), noneToken());
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -615,8 +861,7 @@ bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
 }
 
 bool isSupportedNonEvent(mlir::Operation *op) {
-  return mlir::isa<dataflow::GraphReturnOp, mlir::UnrealizedConversionCastOp>(
-      op);
+  return mlir::isa<dataflow::GraphReturnOp>(op);
 }
 
 dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
@@ -646,6 +891,10 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireLoad(typedOp, state); })
       .Case<dataflow::StoreOp>(
           [&](auto typedOp) { return fireStore(typedOp, state); })
+      .Case<mlir::UnrealizedConversionCastOp>(
+          [&](auto typedOp) { return fireCast(typedOp, state); })
+      .Case<mlir::LLVM::GEPOp>(
+          [&](auto typedOp) { return fireGEP(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
@@ -662,6 +911,7 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::LoadOp, dataflow::StoreOp,
+                mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
                 mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
@@ -748,12 +998,11 @@ llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
       auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
       if (rawIt == state.rawMemoryFixtures.end() || !targetMemref)
         continue;
-      auto tokensOrErr =
-          parseMemoryTokens(rawIt->second, targetMemref.getElementType());
-      if (!tokensOrErr)
-        return tokensOrErr.takeError();
-      auto memory = std::make_shared<MemoryValue>(
-          MemoryValue{targetMemref.getElementType(), std::move(*tokensOrErr)});
+      auto memoryOrErr = materializeMemory(state, source, rawIt->second,
+                                           targetMemref.getElementType());
+      if (!memoryOrErr)
+        return memoryOrErr.takeError();
+      auto memory = *memoryOrErr;
       state.memories[source] = memory;
       state.memories[target] = memory;
       state.rawMemoryFixtures[target] = rawIt->second;
@@ -870,7 +1119,13 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
             std::errc::invalid_argument,
             "memory fixture argument %u must not also use --arg",
             unsigned(index));
+      if (!mlir::isa<mlir::LLVM::LLVMPointerType>(arg.getType()))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "memory fixture argument %u must be memref or !llvm.ptr",
+            unsigned(index));
       state.rawMemoryFixtures[arg] = memories.lookup(key);
+      seedBlockArgument(state, arg, pointerToken(arg));
       continue;
     }
     auto argIt = args.find(key);

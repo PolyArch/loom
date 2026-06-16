@@ -505,6 +505,16 @@ def assert_unsupported_operation(evidence_dir: Path, case: str, operation: str) 
         )
 
 
+def assert_mapping_unsupported_operation(evidence_dir: Path, case: str, operation: str) -> None:
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    expected_mapping = f"unsupported PnR graph operation: {operation}"
+    if expected_mapping not in mapping.get("diagnostics", []):
+        raise AssertionError(
+            f"{case} mapping unsupported diagnostic should be {expected_mapping}: {mapping_path}: {mapping}"
+        )
+
+
 def assert_primary_graph_missing(evidence_dir: Path, case: str, expected_token: str) -> None:
     dfg_path = evidence_dir / f"{case}.dfg.report.json"
     mapping_path = evidence_dir / f"{case}.mapping.json"
@@ -833,7 +843,7 @@ def main(argv: list[str]) -> int:
             assert_unsupported_operation(evidence_dir, case, "scf.for")
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
-        assert_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
+        assert_mapping_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
         assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
