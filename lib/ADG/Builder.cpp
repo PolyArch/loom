@@ -1782,7 +1782,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch("load1_addr",
                               {"idx", "i32b", "addr_unscaled", "zext_index",
                                "running", "addr_sum", "squared_data",
-                               "int_sum"});
+                               "int_sum", "carried_scan"});
   module.addExactBodyLine(
       "%zext_input = fabric.switch [spatial] %i32a, %data1, %logic_masked");
   module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
@@ -1796,15 +1796,15 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "%store0_value = fabric.switch [spatial] %scan_store_value, "
       "%fp_running, %running, %mac_result, %mac_result1, %data0, %data1, "
       "%selected, %rotated, %addr_masked, %logic_masked, %int_xor, "
-      "%packed_qsub16, %abs_data");
+      "%packed_qsub16, %abs_data, %scaled_reduction");
   module.addExactBodyLine(
-      "  [{connectivity_table = [\"11111111111111\"]}]");
+      "  [{connectivity_table = [\"111111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
@@ -1950,8 +1950,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  -> !fabric.bits<32>");
   addSingleResultBits32Switch("stream_sum_lhs",
                               {"reduction_input", "carried_scan"});
-  addSingleResultBits32Switch("stream_sum_rhs",
-                              {"carried_scan", "fp_invariant"});
+  addSingleResultBits32Switch(
+      "stream_sum_rhs", {"carried_scan", "fp_invariant", "reduction_scale"});
   addSingleResultBits32Switch(
       "scan_init", {"i32a", "addr_shift_const", "addr_aux_const"});
   addSingleResultBits32Switch(
@@ -1978,7 +1978,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"i32b", "addr_shift_const", "addr_aux_const"});
   addSingleResultBits32Switch(
       "scaled_reduction_lhs",
-      {"carried_scan", "fp_running", "data1", "data3", "data5"});
+      {"carried_scan", "fp_running", "data1", "data3", "data5", "data0"});
   addSingleResultBits32Switch(
       "scaled_reduction_rhs",
       {"reduction_scale", "data4", "data5", "data1", "data3"});
