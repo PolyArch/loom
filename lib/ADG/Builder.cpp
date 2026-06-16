@@ -1721,7 +1721,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       };
   addSingleResultBits32Switch("int_add_lhs",
                               {"i32a", "data1", "data0", "carried_scan",
-                               "squared_data"});
+                               "squared_data", "bit_carry"});
   addSingleResultBits32Switch(
       "int_add_rhs", {"i32b", "data0", "data1", "fp_invariant"});
   addSingleResultBits32Switch("int_mul_lhs",
@@ -1929,8 +1929,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch(
       "load0_addr",
       {"idx", "addr_masked", "addr_shifted", "addr_unscaled",
-       "carried_scan", "squared_data", "running", "addr_sum", "int_product",
-       "int_sum"});
+       "carried_scan", "bit_carry", "squared_data", "running", "addr_sum",
+       "int_product", "int_sum"});
   addSingleResultBits32Switch("load3_addr",
                               {"i32d", "carried_scan", "idx",
                                "squared_data", "running", "addr_sum",
@@ -2044,18 +2044,11 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%bit_carry_init = fabric.switch [spatial] %i32b, %i32c");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%bit_carry_next = fabric.switch [spatial] %i32c, %addr_unscaled, "
-      "%mac_result, %mac_result1");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>) -> !fabric.bits<32>");
+  addSingleResultBits32Switch("bit_carry_init",
+                              {"i32b", "i32c", "addr_shift_const"});
+  addSingleResultBits32Switch(
+      "bit_carry_next",
+      {"i32c", "addr_unscaled", "mac_result", "mac_result1", "int_sum"});
   module.addExactBodyLine(
       "%scan_feedback, %scan_store_value = fabric.switch [spatial] "
       "%running, %fp_running, %mac_result, %mac_result1, %int_or");

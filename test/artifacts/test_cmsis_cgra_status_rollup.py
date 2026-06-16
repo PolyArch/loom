@@ -396,6 +396,85 @@ def assert_cmsis_fill_shared_adg_evidence(sim_evidence: Path) -> None:
             raise AssertionError(f"arm_fill_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
 
 
+def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
+    mapping_artifact = json.loads((sim_evidence / "arm_mean_f32.mapping.json").read_text())
+    expected_mapping = {
+        "hardware": "shared_reduction_adg",
+        "placed_records": 10,
+        "routed_edges": 13,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 304,
+        "status": "pass",
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_mean_f32 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    routes = mapping_artifact.get("routes", [])
+    if len(routes) != 13:
+        raise AssertionError(f"arm_mean_f32 mapping should expose every routed edge: {mapping_artifact}")
+    required_edges = {
+        "arith.addi#0.result0->dataflow.carry#1.operand2",
+        "dataflow.carry#1.result0->arith.addi#0.operand0",
+        "dataflow.carry#1.result0->dataflow.load#0.operand1",
+        "dataflow.constant#0.result0->dataflow.carry#1.operand1",
+    }
+    actual_edges = {route.get("edge_ref") for route in routes if isinstance(route, dict)}
+    if not required_edges.issubset(actual_edges):
+        raise AssertionError(f"arm_mean_f32 mapping missed index-carry route evidence: {mapping_artifact}")
+    expected_endpoints = {
+        "arith.addi#0.result0->dataflow.carry#1.operand2": (
+            "shared_reduction_adg::fabric.op#17.result0",
+            "shared_reduction_adg::fabric.op#15.operand2",
+        ),
+        "dataflow.carry#1.result0->arith.addi#0.operand0": (
+            "shared_reduction_adg::fabric.op#15.result0",
+            "shared_reduction_adg::fabric.op#17.operand0",
+        ),
+        "dataflow.carry#1.result0->dataflow.load#0.operand1": (
+            "shared_reduction_adg::fabric.op#15.result0",
+            "shared_reduction_adg::mem.load#0.operand0",
+        ),
+        "dataflow.constant#0.result0->dataflow.carry#1.operand1": (
+            "shared_reduction_adg::fabric.op#19.result0",
+            "shared_reduction_adg::fabric.op#15.operand1",
+        ),
+    }
+    routes_by_edge = {route.get("edge_ref"): route for route in routes if isinstance(route, dict)}
+    for edge_ref, (source_endpoint, sink_endpoint) in expected_endpoints.items():
+        route = routes_by_edge.get(edge_ref)
+        if route is None:
+            raise AssertionError(f"arm_mean_f32 mapping missed route {edge_ref}: {mapping_artifact}")
+        segments = route.get("segments", [])
+        if (
+            not segments
+            or not isinstance(segments[0], dict)
+            or not isinstance(segments[-1], dict)
+            or segments[0].get("source_endpoint") != source_endpoint
+            or segments[-1].get("sink_endpoint") != sink_endpoint
+        ):
+            raise AssertionError(f"arm_mean_f32 route endpoints changed for {edge_ref}: {route}")
+        if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
+            raise AssertionError(f"arm_mean_f32 index-carry route should traverse Fabric paths: {route}")
+
+    cgra_report = json.loads((sim_evidence / "arm_mean_f32.cgra.report.json").read_text())
+    expected_cgra = {
+        "hardware": "shared_reduction_adg",
+        "status": "pass",
+        "fidelity_level": "mapping_constraint_estimate",
+        "hardware_aware_cycles": 131,
+        "performance_delta_cycles": 59,
+        "route_segments": 55,
+        "config_records": 304,
+        "functional_state_source": "carried_from_dfg_sim_report",
+    }
+    for key, value in expected_cgra.items():
+        if cgra_report.get(key) != value:
+            raise AssertionError(f"arm_mean_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
+    if cgra_report.get("final_outputs") != ["none", "f32:3.750000"]:
+        raise AssertionError(f"arm_mean_f32 CGRA report should carry final reduction output: {cgra_report}")
+
+
 def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
     sim_evidence = out_dir / "cmsis-sim-evidence"
     run(
@@ -456,6 +535,15 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     )
     assert_cmsis_dfg_report(
         sim_evidence,
+        "arm_mean_f32",
+        "StatisticsFunctions/arm_mean_f32.c",
+        "arith.addf",
+        {
+            "arg5": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+        },
+    )
+    assert_cmsis_dfg_report(
+        sim_evidence,
         "arm_copy_f32",
         "SupportFunctions/arm_copy_f32.c",
         "dataflow.load",
@@ -481,9 +569,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 7,
+            "pass": 8,
             "fail": 0,
-            "blocked": 7,
+            "blocked": 6,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -509,10 +597,14 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "MatrixFunctions/arm_mat_add_f32.c", "arm_mat_add_f32"
     )
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_mean_f32.c", "arm_mean_f32"
+    )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
     assert_cmsis_add_q15_shared_adg_evidence(sim_evidence)
     assert_cmsis_fill_shared_adg_evidence(sim_evidence)
+    assert_cmsis_mean_shared_adg_evidence(sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
