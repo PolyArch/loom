@@ -94,7 +94,7 @@ bool isPureScalarEpilogueOp(::mlir::Operation *op) {
       name != "arith.ori" && name != "arith.shli" && name != "arith.shrui" &&
       name != "arith.index_cast" && name != "llvm.zext" &&
       name != "llvm.intr.abs" && name != "llvm.intr.bswap" &&
-      name != "llvm.intr.fmuladd")
+      name != "llvm.intr.fabs" && name != "llvm.intr.fmuladd")
     return false;
   if (auto effects = ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(op))
     return effects.hasNoEffect();

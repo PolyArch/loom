@@ -58,6 +58,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.bswap", 1, 1, true, true},
     {"llvm.intr.fmuladd", 7, 7, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
+    {"llvm.intr.fabs", 1, 1, true, true},
     {"llvm.arm.qsub8", 1, 1, true, true},
     {"llvm.arm.qsub16", 1, 1, true, true},
     {"math.absf", 1, 1, true, true},
@@ -284,7 +285,7 @@ evaluateMathUnary(llvm::StringRef opName,
   if (llvm::Error arity = requireArity(opName, operands, 1))
     return std::move(arity);
   const double value = asFloat(operands[0]);
-  if (opName == "math.absf")
+  if (opName == "math.absf" || opName == "llvm.intr.fabs")
     return PrimitiveValue::floating(std::fabs(value));
   if (opName == "math.sin")
     return PrimitiveValue::floating(std::sin(value));
@@ -783,6 +784,8 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     return PrimitiveValue::floating(
         asFloat(operands[0]) * asFloat(operands[1]) + asFloat(operands[2]));
   }
+  if (opName == "llvm.intr.fabs")
+    return evaluateMathUnary(opName, operands);
   if (opName == "llvm.arm.qsub8" || opName == "llvm.arm.qsub16") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);

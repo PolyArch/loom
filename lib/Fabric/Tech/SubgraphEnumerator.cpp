@@ -116,7 +116,7 @@ static const llvm::StringMap<Flavor> &opFlavors() {
           "math.expm1", "math.log",       "math.log2", "math.log10",
           "math.log1p", "math.floor",     "math.ceil", "math.round",
           "math.trunc", "math.roundeven", "math.sqrt", "math.rsqrt",
-          "math.absf",  "math.erf"})
+          "math.absf",  "llvm.intr.fabs", "math.erf"})
       put(n, Flavor::FloatUnary);
     put("math.absi", Flavor::IntArith);
 

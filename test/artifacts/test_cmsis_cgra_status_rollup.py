@@ -248,8 +248,13 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     if (
         report_data.get("kind") != "dfg_sim_report"
         or report_data.get("workload") != "BasicMathFunctions/arm_abs_f32.c"
-        or report_data.get("status") != "unsupported"
-        or "unsupported op: llvm.intr.fabs" not in report_data.get("diagnostics", [])
+        or report_data.get("status") != "pass"
+        or report_data.get("dynamic_work_items") != 4
+        or report_data.get("operation_fire_counts", {}).get("llvm.intr.fabs") != 4
+        or report_data.get("final_memory_state", {}).get("arg4")
+        != ["f32:-1", "f32:2", "f32:-3.500000", "f32:4.250000"]
+        or report_data.get("final_memory_state", {}).get("arg5")
+        != ["f32:1", "f32:2", "f32:3.500000", "f32:4.250000"]
     ):
         raise AssertionError(f"unexpected CMSIS DFG-sim report: {report_data}")
     input_fingerprints = report_data.get("input_artifact_fingerprints")
@@ -263,9 +268,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 1,
+            "pass": 2,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -284,16 +289,28 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     )
     dsp_abs = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
     if (
-        dsp_abs["status"] != "blocked"
-        or dsp_abs["diagnostic_class"] != "dfg_report_unsupported"
-        or dsp_abs["blocking_prerequisite"] != "dfg_report"
+        dsp_abs["status"] != "pass"
+        or dsp_abs["diagnostic_class"] != "cgra_sim_pass"
+        or dsp_abs["blocking_prerequisite"] != ""
         or dsp_abs["owner"] != "sim_report"
-        or dsp_abs["dfg_status"] != "unsupported"
-        or "unsupported op: llvm.intr.fabs" not in dsp_abs["diagnostic"]
+        or dsp_abs["dfg_status"] != "pass"
+        or dsp_abs["mapping_status"] != "pass"
+        or dsp_abs["cgra_status"] != "pass"
+        or dsp_abs["comparison_status"] != "pass"
+        or dsp_abs["hardware_system"] != "shared_reduction_adg"
+        or dsp_abs["final_outputs_present"] != "true"
+        or dsp_abs["final_memory_state_present"] != "true"
     ):
-        raise AssertionError(f"CMSIS DFG-sim evidence should become an exact report blocker: {dsp_abs}")
-    assert_sha256_file(dsp_abs["dfg_mlir"], dsp_abs["dfg_mlir_fingerprint"], repo)
-    assert_sha256_file(dsp_abs["dfg_report"], dsp_abs["dfg_report_fingerprint"], repo)
+        raise AssertionError(f"CMSIS abs row should expose real CGRA-sim evidence: {dsp_abs}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(dsp_abs[key], dsp_abs[f"{key}_fingerprint"], repo)
+    for artifact in (
+        sim_evidence / "arm_abs_f32.dfg.report.json",
+        sim_evidence / "arm_abs_f32.mapping.json",
+        sim_evidence / "arm_abs_f32.cgra.report.json",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"CMSIS abs evidence mode should emit {artifact}")
 
     dsp_offset = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_offset_f32.c")
     if (
@@ -366,10 +383,10 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     )
     if "CGRA-sim" not in fake_result.stderr and "loom-cgra-sim" not in fake_result.stderr:
         raise AssertionError(f"CMSIS offset should fail at unavailable CGRA-sim: {fake_result.stderr}")
-    if not (no_cgra_evidence / "arm_offset_f32.mapping.json").is_file():
-        raise AssertionError("CMSIS offset should emit mapping evidence before requiring CGRA-sim")
-    if (no_cgra_evidence / "arm_offset_f32.cgra.report.json").exists():
-        raise AssertionError("CMSIS offset should not emit CGRA evidence from a failing CGRA-sim tool")
+    if not (no_cgra_evidence / "arm_abs_f32.mapping.json").is_file():
+        raise AssertionError("CMSIS abs should emit mapping evidence before requiring CGRA-sim")
+    if (no_cgra_evidence / "arm_abs_f32.cgra.report.json").exists():
+        raise AssertionError("CMSIS abs should not emit CGRA evidence from a failing CGRA-sim tool")
 
 
 def write_legacy_case(root: Path, name: str, *, with_header: bool = True) -> None:

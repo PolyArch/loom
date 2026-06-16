@@ -41,6 +41,10 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       %abs = fabric.op [@llvm.intr.abs] (%value) : (!fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %abs : !fabric.bits<32>
     }
+    fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %abs = fabric.op [@llvm.intr.fabs] (%value) : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %abs : !fabric.bits<32>
+    }
   }
   %squared_data = fabric.pe [spatial] (%pa = %mul_lhs_input : !fabric.bits<32>,
                     %pb = %data0 : !fabric.bits<32>) -> !fabric.bits<32> {
@@ -406,9 +410,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %load2_addr = fabric.switch [spatial] %i32c, %zext_index, %idx, %addr_sum, %running, %squared_data, %int_sum
     [{connectivity_table = ["1111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %store0_value = fabric.switch [spatial] %scan_store_value, %fp_running, %running, %mac_result, %mac_result1, %data0, %data1, %selected, %rotated, %addr_masked, %logic_masked, %int_xor, %packed_qsub16
-    [{connectivity_table = ["1111111111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+  %store0_value = fabric.switch [spatial] %scan_store_value, %fp_running, %running, %mac_result, %mac_result1, %data0, %data1, %selected, %rotated, %addr_masked, %logic_masked, %int_xor, %packed_qsub16, %abs_data
+    [{connectivity_table = ["11111111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
     -> !fabric.bits<32>
   %store1_value = fabric.switch [spatial] %i32d, %selected
     [{connectivity_table = ["11"]}]

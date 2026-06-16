@@ -1,10 +1,12 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph zext_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload zext_graph --output %t.zext.csv --artifact %t.zext.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph abs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload abs_graph --output %t.abs.csv --artifact %t.abs.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph fabs_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fabs_graph --output %t.fabs.csv --artifact %t.fabs.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph fmuladd_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fmuladd_graph --output %t.fmuladd.csv --artifact %t.fmuladd.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph fshl_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fshl_graph --output %t.fshl.csv --artifact %t.fshl.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph bswap_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload bswap_graph --output %t.bswap.csv --artifact %t.bswap.json
 // RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.csv
 // RUN: FileCheck %s --check-prefix=ABS < %t.abs.csv
+// RUN: FileCheck %s --check-prefix=FABS < %t.fabs.csv
 // RUN: FileCheck %s --check-prefix=FMULADD < %t.fmuladd.csv
 // RUN: FileCheck %s --check-prefix=FSHL < %t.fshl.csv
 // RUN: FileCheck %s --check-prefix=BSWAP < %t.bswap.csv
@@ -14,6 +16,9 @@
 
 // ABS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // ABS-NEXT: abs_graph,llvm_primitive_adg,abs_graph__abs_graph__llvm_primitive_adg,1,0,0,0,pass
+
+// FABS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// FABS-NEXT: fabs_graph,llvm_primitive_adg,fabs_graph__fabs_graph__llvm_primitive_adg,1,0,0,0,pass
 
 // FMULADD: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // FMULADD-NEXT: fmuladd_graph,llvm_primitive_adg,fmuladd_graph__fmuladd_graph__llvm_primitive_adg,1,0,0,0,pass
@@ -35,6 +40,12 @@ module {
       -> (none, i32) {
     %abs = "llvm.intr.abs"(%value) <{is_int_min_poison = true}> : (i32) -> i32
     dataflow.graph.return %ctrl, %abs : none, i32
+  }
+
+  dataflow.graph.func private @fabs_graph(%ctrl: none, %value: f32)
+      -> (none, f32) {
+    %abs = llvm.intr.fabs(%value) : (f32) -> f32
+    dataflow.graph.return %ctrl, %abs : none, f32
   }
 
   dataflow.graph.func private @fmuladd_graph(%ctrl: none, %lhs: f32,
@@ -70,6 +81,13 @@ module {
     fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
       fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
         %abs = fabric.op [@llvm.intr.abs] (%value)
+               : (!fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %abs : !fabric.bits<32>
+      }
+    }
+    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+      fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+        %abs = fabric.op [@llvm.intr.fabs] (%value)
                : (!fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %abs : !fabric.bits<32>
       }
