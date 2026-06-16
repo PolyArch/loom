@@ -1558,7 +1558,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addPe(std::move(selectPe));
 
   PeSpec vectorSyncPe;
-  vectorSyncPe.inputs = {{"pa", "done0", "!fabric.bits<0>", ""},
+  vectorSyncPe.inputs = {{"pa", "sync_head", "!fabric.bits<0>", ""},
                          {"pb", "vector_sync_mid", "!fabric.bits<0>", ""},
                          {"pc", "sync_tail", "!fabric.bits<0>", ""},
                          {"pd", "sync_extra", "!fabric.bits<0>", ""},
@@ -1796,16 +1796,17 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "%store0_value = fabric.switch [spatial] %scan_store_value, "
       "%fp_running, %running, %mac_result, %mac_result1, %data0, %data1, "
       "%selected, %rotated, %addr_masked, %logic_masked, %int_xor, "
-      "%packed_qsub16, %abs_data, %scaled_reduction, %int_product");
+      "%packed_qsub16, %abs_data, %scaled_reduction, %int_product, "
+      "%reduction_scale");
   module.addExactBodyLine(
-      "  [{connectivity_table = [\"1111111111111111\"]}]");
+      "  [{connectivity_table = [\"11111111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
@@ -1814,6 +1815,11 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%vector_sync_mid = fabric.switch [spatial] %done1, %store_done0");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
+  module.addExactBodyLine(
+      "%sync_head = fabric.switch [spatial] %done0, %store_done0");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
@@ -1901,13 +1907,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"idx", "squared_data", "running", "addr_sum",
                                "int_product", "int_sum", "addr_unscaled",
                                "addr_shifted"});
-  module.addExactBodyLine(
-      "%store0_addr = fabric.switch [spatial] %idx, %addr_unscaled, "
-      "%carried_scan");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
+  addSingleResultBits32Switch("store0_addr",
+                              {"idx", "addr_unscaled", "carried_scan",
+                               "addr_shift_const"});
   module.addExactBodyLine(
       "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
       "%data4, %done4, %data5, %done5, %store_done0, %store_done1 =");

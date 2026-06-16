@@ -251,7 +251,7 @@
 // DOWNSAMPLE-AVG-JSON-NOT: ".out"
 // DOWNSAMPLE-AVG-JSON-NOT: ".in"
 
-// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,5,1,3,1,fail,missing hardware resource for software op llvm.trunc
+// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,5,2,2,1,fail,missing hardware resource for software op llvm.trunc
 
 // CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 

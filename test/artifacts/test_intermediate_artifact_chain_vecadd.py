@@ -147,15 +147,15 @@ def main() -> int:
         for key, value in expected_mapping_artifact.items():
             if mapping_artifact.get(key) != value:
                 raise AssertionError(f"unexpected vecadd mapping artifact {key}: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 232:
+        if mapping_artifact.get("config_records") != 248:
             raise AssertionError(f"vecadd mapping should aggregate component config: {mapping_artifact}")
         component_mapping_ids = set(mapping_artifact.get("component_mapping_ids", []))
         if component_mapping_ids != EXPECTED_MAPPING_IDS:
             raise AssertionError(f"aggregate mapping must cite both component mappings: {mapping_artifact}")
 
         component_expectations = {
-            "pnr-mapping-main.json": ("g_t_vecadd_0_0", MAIN_MAPPING_ID, "pass", 6, 0, 111),
-            "pnr-mapping-reduction.json": ("g_t_main_red_0_0", REDUCTION_MAPPING_ID, "pass", 6, 0, 121),
+            "pnr-mapping-main.json": ("g_t_vecadd_0_0", MAIN_MAPPING_ID, "pass", 6, 0, 119),
+            "pnr-mapping-reduction.json": ("g_t_main_red_0_0", REDUCTION_MAPPING_ID, "pass", 6, 0, 129),
         }
         for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():
             component = json.loads((out_dir / name).read_text())
@@ -195,9 +195,9 @@ def main() -> int:
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected vecadd CGRA mapping identity: {cgra_report}")
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "vecadd CGRA-sim cycles")
-        if cgra_cycles != 1657:
+        if cgra_cycles != 1661:
             raise AssertionError(f"vecadd aggregate CGRA report should include both component latencies: {cgra_report}")
-        if cgra_report.get("performance_delta_cycles") != 54 or cgra_report.get("route_segments") != 38:
+        if cgra_report.get("performance_delta_cycles") != 58 or cgra_report.get("route_segments") != 42:
             raise AssertionError(f"vecadd aggregate CGRA report should expose routed component cost: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")

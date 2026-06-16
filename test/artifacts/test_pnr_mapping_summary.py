@@ -157,13 +157,13 @@ def main() -> int:
             "routed_edges": 6,
             "unrouted_edges": 0,
             "unplaced_records": 0,
-            "config_records": 129,
+            "config_records": 137,
             "status": "pass",
         }
         for key, value in expected_json.items():
             if data.get(key) != value:
                 raise AssertionError(f"explicit mapping artifact {key}={data.get(key)!r}, expected {value!r}")
-        if len(data.get("config_bitstream", [])) != 129:
+        if len(data.get("config_bitstream", [])) != 137:
             raise AssertionError(f"explicit mapping config bitstream size changed: {data}")
         if data.get("unrouted_edge_details") != []:
             raise AssertionError(f"passing mapping should have no unrouted edge details: {data}")
@@ -189,12 +189,27 @@ def main() -> int:
         if not required_endpoints.issubset(endpoint_pairs):
             raise AssertionError(f"explicit mapping route endpoints changed: {endpoint_pairs}")
         sync_endpoint = re.compile(r"shared_reduction_adg::fabric\.op#[0-9]+\.operand0")
-        if not any(
-            source == "shared_reduction_adg::mem.load#0.result1"
-            and sync_endpoint.fullmatch(str(sink))
-            for source, sink in endpoint_pairs
+        load_done_routes = [
+            route
+            for route in data.get("routes", [])
+            if route.get("edge_ref") == "dataflow.load#0.result1->dataflow.sync#0.operand0"
+        ]
+        if len(load_done_routes) != 1:
+            raise AssertionError(f"explicit mapping missed load-done sync route: {data.get('routes', [])}")
+        load_done_segments = load_done_routes[0].get("segments", [])
+        if (
+            not load_done_segments
+            or load_done_segments[0].get("source_endpoint") != "shared_reduction_adg::mem.load#0.result1"
+            or not sync_endpoint.fullmatch(str(load_done_segments[-1].get("sink_endpoint")))
         ):
-            raise AssertionError(f"explicit mapping missed load-done sync endpoint: {endpoint_pairs}")
+            raise AssertionError(f"explicit mapping missed load-done sync endpoints: {load_done_routes[0]}")
+        load_done_segment_kinds = {
+            segment.get("segment_kind")
+            for segment in load_done_segments
+            if isinstance(segment, dict)
+        }
+        if len(load_done_segments) <= 1 or "module_path" not in load_done_segment_kinds:
+            raise AssertionError(f"explicit mapping should keep a multi-hop load-done sync route: {load_done_routes[0]}")
         switch_operand = re.compile(r"shared_reduction_adg::fabric\.switch#[0-9]+\.operand0")
         switch_result = re.compile(r"shared_reduction_adg::fabric\.switch#[0-9]+\.result0")
         required_switch_paths = (

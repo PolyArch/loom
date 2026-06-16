@@ -106,7 +106,7 @@ def main() -> int:
             raise AssertionError(f"unexpected rotate_bits mapping id: {mapping_artifact}")
         if (
             mapping_artifact.get("status") != "pass"
-            or mapping_artifact.get("config_records") != 238
+            or mapping_artifact.get("config_records") != 246
             or mapping_artifact.get("unrouted_edges") != 0
         ):
             raise AssertionError(f"rotate_bits mapping should preserve full route evidence: {mapping_artifact}")
@@ -139,9 +139,9 @@ def main() -> int:
             raise AssertionError(f"unexpected rotate_bits CGRA-sim report: {cgra_report}")
         if cgra_report.get("mapping_id") != MAPPING_ID:
             raise AssertionError(f"unexpected rotate_bits CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("hardware_aware_cycles") != 598:
+        if cgra_report.get("hardware_aware_cycles") != 600:
             raise AssertionError(f"unexpected rotate_bits CGRA-sim cycles: {cgra_report}")
-        if cgra_report.get("performance_delta_cycles") != 54 or cgra_report.get("route_segments") != 42:
+        if cgra_report.get("performance_delta_cycles") != 56 or cgra_report.get("route_segments") != 44:
             raise AssertionError(f"unexpected rotate_bits route cost: {cgra_report}")
         if cgra_report.get("difference_classification") != "expected_hardware_constraint":
             raise AssertionError(f"rotate_bits CGRA report should classify expected hardware cost: {cgra_report}")
@@ -158,7 +158,7 @@ def main() -> int:
         rotate_sim = [row for row in sim_rows if row["kernel"] == "rotate_bits"]
         if len(rotate_sim) != 1:
             raise AssertionError(f"expected one rotate_bits sim row, got {sim_rows}")
-        if rotate_sim[0]["dfg_sim_cycles"] != "544" or rotate_sim[0]["cgra_sim_cycles"] != "598":
+        if rotate_sim[0]["dfg_sim_cycles"] != "544" or rotate_sim[0]["cgra_sim_cycles"] != "600":
             raise AssertionError(f"rotate_bits sim summary missed cycles: {rotate_sim[0]}")
         if rotate_sim[0]["status"] != "pass":
             raise AssertionError(f"rotate_bits sim summary should pass: {rotate_sim[0]}")
@@ -178,12 +178,12 @@ def main() -> int:
         dse_row = rotate_dse[0]
         expected_dse = {
             "mapping_id": MAPPING_ID,
-            "cgra_sim_cycles": "598",
+            "cgra_sim_cycles": "600",
             "frequency_mhz": "50.000",
-            "area_um2": "26250.000",
-            "dynamic_power_mw": "21.200",
-            "leakage_power_mw": "2.725",
-            "energy_nj": "286.143",
+            "area_um2": "26500.000",
+            "dynamic_power_mw": "21.400",
+            "leakage_power_mw": "2.750",
+            "energy_nj": "289.800",
             "selection_status": "selected",
             "hardware_evidence_kind": "analytic_model_only",
         }

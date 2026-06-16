@@ -113,15 +113,15 @@ def main() -> int:
             raise AssertionError(f"relu aggregate mapping missed component mappings: {mapping_artifact}")
         if set(mapping_artifact.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"relu aggregate mapping missed component graphs: {mapping_artifact}")
-        if mapping_artifact.get("config_records") != 241 or mapping_artifact.get("status") != "pass":
+        if mapping_artifact.get("config_records") != 257 or mapping_artifact.get("status") != "pass":
             raise AssertionError(f"relu aggregate mapping should preserve full route evidence: {mapping_artifact}")
         unrouted_details = mapping_artifact.get("unrouted_edge_details")
         if unrouted_details != []:
             raise AssertionError(f"relu aggregate pass mapping should not expose unrouted edge details: {mapping_artifact}")
 
         component_expectations = {
-            "pnr-mapping-main.json": ("g_t_relu_0_0", MAIN_MAPPING_ID, "pass", 6, 0, 120),
-            "pnr-mapping-checksum.json": ("g_t_main_red_0_0", CHECKSUM_MAPPING_ID, "pass", 6, 0, 121),
+            "pnr-mapping-main.json": ("g_t_relu_0_0", MAIN_MAPPING_ID, "pass", 6, 0, 128),
+            "pnr-mapping-checksum.json": ("g_t_main_red_0_0", CHECKSUM_MAPPING_ID, "pass", 6, 0, 129),
         }
         for name, (graph, mapping_id, status, routed_edges, unrouted_edges, config_records) in component_expectations.items():
             component = json.loads((out_dir / name).read_text())
@@ -149,9 +149,9 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "relu CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected relu CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("status") != "pass" or cgra_cycles != 759:
+        if cgra_report.get("status") != "pass" or cgra_cycles != 763:
             raise AssertionError(f"relu aggregate CGRA report should preserve routed component latency: {cgra_report}")
-        if cgra_report.get("performance_delta_cycles") != 52 or cgra_report.get("route_segments") != 40:
+        if cgra_report.get("performance_delta_cycles") != 56 or cgra_report.get("route_segments") != 44:
             raise AssertionError(f"relu aggregate CGRA report should expose routed component cost: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"relu CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")

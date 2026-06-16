@@ -287,6 +287,64 @@ def assert_cmsis_cgra_pass_row(
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
 
 
+def assert_cmsis_fill_shared_adg_evidence(sim_evidence: Path) -> None:
+    mapping_artifact = json.loads((sim_evidence / "arm_fill_f32.mapping.json").read_text())
+    expected_mapping = {
+        "hardware": "shared_reduction_adg",
+        "placed_records": 9,
+        "routed_edges": 11,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 246,
+        "status": "pass",
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_fill_f32 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    routes = mapping_artifact.get("routes", [])
+    if len(routes) != 11:
+        raise AssertionError(f"arm_fill_f32 mapping should expose every routed edge: {mapping_artifact}")
+    required_edges = {
+        "dataflow.carry#0.result0->dataflow.store#0.operand1",
+        "dataflow.invariant#0.result0->dataflow.store#0.operand2",
+        "dataflow.store#0.result0->dataflow.sync#0.operand0",
+    }
+    actual_edges = {
+        route.get("edge_ref")
+        for route in routes
+        if isinstance(route, dict)
+    }
+    if not required_edges.issubset(actual_edges):
+        raise AssertionError(f"arm_fill_f32 mapping missed store route evidence: {mapping_artifact}")
+    multi_hop_routes = [
+        route
+        for route in routes
+        if route.get("edge_ref") in required_edges
+        and any(
+            segment.get("segment_kind") == "module_path"
+            for segment in route.get("segments", [])
+            if isinstance(segment, dict)
+        )
+    ]
+    if len(multi_hop_routes) != len(required_edges):
+        raise AssertionError(f"arm_fill_f32 mapping should route store edges through Fabric paths: {mapping_artifact}")
+
+    cgra_report = json.loads((sim_evidence / "arm_fill_f32.cgra.report.json").read_text())
+    expected_cgra = {
+        "hardware": "shared_reduction_adg",
+        "status": "pass",
+        "fidelity_level": "mapping_constraint_estimate",
+        "hardware_aware_cycles": 112,
+        "performance_delta_cycles": 47,
+        "route_segments": 43,
+        "config_records": 246,
+        "functional_state_source": "carried_from_dfg_sim_report",
+    }
+    for key, value in expected_cgra.items():
+        if cgra_report.get(key) != value:
+            raise AssertionError(f"arm_fill_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
+
+
 def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
     sim_evidence = out_dir / "cmsis-sim-evidence"
     run(
@@ -344,6 +402,15 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "arg5": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
         },
     )
+    assert_cmsis_dfg_report(
+        sim_evidence,
+        "arm_fill_f32",
+        "SupportFunctions/arm_fill_f32.c",
+        "dataflow.store",
+        {
+            "arg5": ["f32:3.250000", "f32:3.250000", "f32:3.250000", "f32:3.250000"],
+        },
+    )
 
     rows = read_rows(out_dir / "cgra-status-summary.csv")
     data = json.loads((out_dir / "cgra-status-summary.json").read_text())
@@ -352,9 +419,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 5,
+            "pass": 6,
             "fail": 0,
-            "blocked": 9,
+            "blocked": 8,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -380,6 +447,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         repo, rows, sim_evidence, "cmsis-dsp", "MatrixFunctions/arm_mat_add_f32.c", "arm_mat_add_f32"
     )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
+    assert_cmsis_fill_shared_adg_evidence(sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
