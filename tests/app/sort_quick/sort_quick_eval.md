@@ -61,7 +61,7 @@ total_cycles =
          untaken path: j-bound check -> load output[j] -> cmp <= pivot -> j++
          taken path:   j-bound check -> load output[j] -> cmp <= pivot
                      -> load output[i] / reuse output[j] -> two stores
-                     -> i++ -> j++
+                     -> i++                                      [loop-latch j++ is a separate carry]
      + final pivot swap using loaded pivot as the output[high] value
      + left/right push tests and selected stack pushes
 + final failing top >= 0 check
@@ -72,7 +72,61 @@ functional-unit throughput. Infinite hardware cannot run the source-level
 partitions in parallel because this implementation serializes them through
 `top` and the stack array. Within a partition, the scan is also sequential:
 `j` advances one element at a time, and taken swap arms update the carried
-partition boundary `i`.
+partition boundary `i`. The `j` iterator still charges the standard
+load/add/store/compare work and feeds the next scan iteration, but its latch
+update is a separate carry that can overlap independent swap work; the next
+scan iteration waits on whichever carried dependency is later.
+
+Per scan iteration, with `pivot`, `high`, and the carried scalar states
+available at the loop head, the local timing is:
+
+```
+Untaken arm (`output[j] > pivot`): 3-cycle carried latch, 4-cycle compare side path
+  C1 load j
+  C2 compare j < high                  || add j + 1
+  C3 load output[j]                    || store updated j
+  C4 compare output[j] <= pivot
+
+Taken arm (`output[j] <= pivot`): j latch still 3 cycles; gated i/update tail reaches C7
+  C1 load j
+  C2 compare j < high                  || add j + 1
+  C3 load output[j]                    || store updated j
+  C4 compare output[j] <= pivot
+  C5 load carried i
+  C6 load output[i] for temp                || add i + 1
+  C7 store output[i], store output[j]       || store updated i
+```
+
+The taken arm reuses the C3 `output[j]` load for `output[i] = output[j]`; it
+does not issue a second `output[j]` load. The loop-latch update of `j` does not
+depend on `output[j] <= pivot`, so it overlaps the compare and swap work. Taken
+arms still matter because the gated `i++` carry and the in-place array stores can
+become the later dependency for final pivot placement and for later taken swaps.
+
+For the full kernel, replay the stack trace as an operation DAG. The dominant
+scan-loop carry is the 3-cycle `j` latch (`load j -> j+1 -> store j`), while the
+`output[j]` compare side path and the taken swap body overlap that latch unless
+their `i`/array dependencies become later. A useful decomposition for the
+checked-in trace is:
+
+```
+dominant scan latch = 3*C = 3*25773 = 77319
+
+total_cycles =
+  77319                     (scan-loop j latch over all partition comparisons)
++ 17689                     (stack pops/pushes, range tests, pivot setup/final
+                              placement, final top check, and later i/array tails
+                              from taken arms)
+
+For the checked-in N = 1024 trace:
+total_cycles = 95008
+```
+
+The taken-swap count `S` is not zero-latency: it affects the replay through the
+gated `i` carry, array stores, and the downstream partition shapes. It is also
+not a simple `+S` term in the exact CP, because consecutive taken iterations and
+the `j` latch overlap in the DAG. The trace replay above is the deterministic
+way to account for those interactions for this input.
 
 Asymptotically:
 - Balanced/average traces have `C = Theta(N log N)` and `S = Theta(N log N)`,
@@ -207,10 +261,7 @@ graph TD
     load_i --> inc_i
     inc_i --> i_state
 
-    cmp_pivot -. F: no swap .-> inc_j
-    st_i --> inc_j
-    st_j --> inc_j
-    inc_i --> inc_j
+    j_state --> inc_j
     inc_j --> j_state
 
     cmp_j -. F: scan done .-> final_load_i
