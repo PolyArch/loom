@@ -45,7 +45,7 @@ EXPECTED_TOPOLOGY_SIGNATURES = {
     "vector_alu_network": {
         "layout_class": "irregular",
         "fabric_root": "shared_vector_alu_adg",
-        "tile_counts": {"mem": 1, "pe": 6, "switch": 3},
+        "tile_counts": {"mem": 1, "pe": 7, "switch": 3},
         "schedule_kinds": {"spatial"},
     },
     "chain_1d": {

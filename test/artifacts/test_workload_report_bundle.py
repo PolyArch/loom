@@ -1121,7 +1121,7 @@ def main() -> int:
             raise AssertionError(f"workload report should ignore unrelated CGRA report: {filtered_cgra_data}")
         filtered_metrics = metric_by_id(filtered_cgra_data.get("metric_records", []))
         filtered_cgra_metric = filtered_metrics.get("metric::vecsum::cgra_sim_cycles")
-        if filtered_cgra_metric is None or filtered_cgra_metric.get("value") != 599:
+        if filtered_cgra_metric is None or filtered_cgra_metric.get("value") != 605:
             raise AssertionError(f"workload report should use selected CGRA cycles: {filtered_cgra_data}")
         if "unrelated-cgra-sim-report" in filtered_cgra_data["input_artifact_fingerprints"]:
             raise AssertionError(f"workload report should not fingerprint unrelated CGRA report: {filtered_cgra_data}")
@@ -1192,38 +1192,38 @@ def main() -> int:
         expected_metrics = {
             "metric::vecsum::dfg_sim_cycles": ("optimistic_steps", 579, "cycles", "dfg_software"),
             "metric::vecsum::workload_size_items": ("workload_size", 64, "items", "dfg_software"),
-            "metric::vecsum::cgra_sim_cycles": ("hardware_cycles", 599, "cycles", "cgra_mapped"),
+            "metric::vecsum::cgra_sim_cycles": ("hardware_cycles", 605, "cycles", "cgra_mapped"),
             "metric::shared_reduction_adg::frequency_mhz": ("frequency", 50.0, "MHz", "analytic"),
-            "metric::shared_reduction_adg::area_um2": ("area", 21000.0, "um2", "analytic"),
+            "metric::shared_reduction_adg::area_um2": ("area", 26250.0, "um2", "analytic"),
             "metric::shared_reduction_adg::dynamic_power_mw": (
                 "dynamic_power",
-                17.0,
+                21.2,
                 "mW",
                 "analytic",
             ),
             "metric::shared_reduction_adg::leakage_power_mw": (
                 "leakage_power",
-                2.2,
+                2.725,
                 "mW",
                 "analytic",
             ),
-            "metric::vecsum::estimated_runtime_us": ("estimated_runtime", 11.98, "us", "analytic"),
-            "metric::vecsum::energy_nj": ("energy", 230.016, "nJ", "analytic"),
+            "metric::vecsum::estimated_runtime_us": ("estimated_runtime", 12.1, "us", "analytic"),
+            "metric::vecsum::energy_nj": ("energy", 289.493, "nJ", "analytic"),
             "metric::vecsum::throughput_items_per_s": (
                 "throughput",
-                5342237.062,
+                5289256.198,
                 "items_per_s",
                 "analytic",
             ),
             "metric::vecsum::performance_per_watt": (
                 "performance_per_watt",
-                278241513.634,
+                221076539.116,
                 "items_per_s_per_w",
                 "analytic",
             ),
             "metric::vecsum::performance_per_area": (
                 "performance_per_area",
-                254.392,
+                201.495,
                 "items_per_s_per_um2",
                 "analytic",
             ),

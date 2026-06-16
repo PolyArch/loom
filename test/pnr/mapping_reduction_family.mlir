@@ -314,7 +314,7 @@
 // HASH-MIX-JSON-NOT: ".out"
 // HASH-MIX-JSON-NOT: ".in"
 
-// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,4,2,0,fail,unrouted software edges lack Fabric ADG connectivity
+// XOR-BLOCK-NEXT: xor_block,shared_reduction_adg,xor_block__g_t_xor_block_0_0__shared_reduction_adg,5,5,1,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // MATVEC-NEXT: matvec,shared_reduction_adg,matvec__g_t_matvec_kernel_0_0__shared_reduction_adg,7,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
 

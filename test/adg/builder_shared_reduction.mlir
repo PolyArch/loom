@@ -52,6 +52,7 @@
 // HARDWARE-DAG: fabric.op [@arith.shli]
 // HARDWARE-DAG: fabric.op [@arith.andi]
 // HARDWARE-DAG: fabric.op [@arith.ori]
+// HARDWARE-DAG: fabric.op [@llvm.arm.qsub16]
 // HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]

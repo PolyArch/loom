@@ -6,6 +6,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <string>
 
 namespace loom {
 namespace sim {
@@ -35,7 +36,7 @@ struct OperationCost {
 };
 
 struct PrimitiveOperationDescriptor {
-  llvm::StringRef name;
+  std::string name;
   llvm::StringRef predicate;
   unsigned resultBitWidth = 0;
   unsigned operandBitWidth = 0;

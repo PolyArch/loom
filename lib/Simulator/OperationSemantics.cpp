@@ -1,5 +1,6 @@
 #include "Simulator/OperationSemantics.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -57,6 +58,8 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.bswap", 1, 1, true, true},
     {"llvm.intr.fmuladd", 7, 7, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
+    {"llvm.arm.qsub8", 1, 1, true, true},
+    {"llvm.arm.qsub16", 1, 1, true, true},
     {"math.absf", 1, 1, true, true},
     {"math.absi", 1, 1, true, true},
     {"math.sin", 16, 16, true, true},
@@ -200,6 +203,42 @@ PrimitiveValue integerFromSigned(std::int64_t value, unsigned bitWidth) {
   return integerFromBits(static_cast<std::uint64_t>(value), bitWidth);
 }
 
+std::int64_t signedMinForBitWidth(unsigned bitWidth) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  if (bitWidth == 64)
+    return std::numeric_limits<std::int64_t>::min();
+  return -(std::int64_t{1} << (bitWidth - 1));
+}
+
+std::int64_t saturateSigned(std::int64_t value, unsigned bitWidth) {
+  bitWidth = normalizeBitWidth(bitWidth);
+  const std::int64_t min = signedMinForBitWidth(bitWidth);
+  const std::int64_t max =
+      bitWidth == 64 ? std::numeric_limits<std::int64_t>::max()
+                     : ((std::int64_t{1} << (bitWidth - 1)) - 1);
+  return std::min(std::max(value, min), max);
+}
+
+PrimitiveValue packedSaturatingSub(llvm::StringRef opName,
+                                   const PrimitiveValue &lhs,
+                                   const PrimitiveValue &rhs,
+                                   unsigned bitWidth, unsigned laneWidth) {
+  std::uint64_t packed = 0;
+  const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
+  const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
+  const std::uint64_t laneMask = maskForBitWidth(laneWidth);
+  for (unsigned offset = 0; offset < bitWidth; offset += laneWidth) {
+    const std::int64_t lhsLane =
+        fromUnsignedBits((lhsBits >> offset) & laneMask, laneWidth);
+    const std::int64_t rhsLane =
+        fromUnsignedBits((rhsBits >> offset) & laneMask, laneWidth);
+    const std::int64_t saturated =
+        saturateSigned(lhsLane - rhsLane, laneWidth);
+    packed |= (static_cast<std::uint64_t>(saturated) & laneMask) << offset;
+  }
+  return integerFromBits(packed, bitWidth);
+}
+
 std::uint64_t arithmeticRightShiftBits(const PrimitiveValue &value,
                                        unsigned bitWidth, unsigned amount) {
   bitWidth = normalizeBitWidth(bitWidth);
@@ -217,13 +256,6 @@ std::uint64_t arithmeticRightShiftBits(const PrimitiveValue &value,
       keptBits == 64 ? ~std::uint64_t{0}
                      : ((std::uint64_t{1} << keptBits) - 1);
   return shifted | (maskForBitWidth(bitWidth) & ~lowMask);
-}
-
-std::int64_t signedMinForBitWidth(unsigned bitWidth) {
-  bitWidth = normalizeBitWidth(bitWidth);
-  if (bitWidth == 64)
-    return std::numeric_limits<std::int64_t>::min();
-  return -(std::int64_t{1} << (bitWidth - 1));
 }
 
 bool exactRightShiftWouldDiscardBits(const PrimitiveValue &value,
@@ -450,8 +482,8 @@ loom::sim::estimateOperationCost(llvm::StringRef opName) {
 llvm::Expected<PrimitiveValue>
 loom::sim::evaluatePrimitiveOperation(llvm::StringRef opName,
                                       llvm::ArrayRef<PrimitiveValue> operands) {
-  return evaluatePrimitiveOperation(PrimitiveOperationDescriptor{opName, "", 0},
-                                    operands);
+  return evaluatePrimitiveOperation(
+      PrimitiveOperationDescriptor{opName.str(), "", 0}, operands);
 }
 
 llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
@@ -750,6 +782,18 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return std::move(arity);
     return PrimitiveValue::floating(
         asFloat(operands[0]) * asFloat(operands[1]) + asFloat(operands[2]));
+  }
+  if (opName == "llvm.arm.qsub8" || opName == "llvm.arm.qsub16") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    const unsigned laneWidth = opName == "llvm.arm.qsub8" ? 8 : 16;
+    if (bitWidth == 0 || bitWidth % laneWidth != 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "%s result bit width must be a positive multiple of lane width %u",
+          opName.str().c_str(), laneWidth);
+    return packedSaturatingSub(opName, operands[0], operands[1], bitWidth,
+                               laneWidth);
   }
   if (opName.starts_with("math.")) {
     if (opName == "math.absi") {

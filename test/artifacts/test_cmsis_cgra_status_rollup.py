@@ -270,6 +270,18 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "missing_status": 0,
         },
     )
+    assert_counts(
+        data,
+        "cmsis-nn",
+        {
+            "total": 18,
+            "pass": 1,
+            "fail": 0,
+            "blocked": 9,
+            "unsupported": 8,
+            "missing_status": 0,
+        },
+    )
     dsp_abs = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
     if (
         dsp_abs["status"] != "blocked"
@@ -307,6 +319,31 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     ):
         if not artifact.is_file():
             raise AssertionError(f"CMSIS offset evidence mode should emit {artifact}")
+
+    nn_relu = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
+    if (
+        nn_relu["status"] != "pass"
+        or nn_relu["diagnostic_class"] != "cgra_sim_pass"
+        or nn_relu["blocking_prerequisite"] != ""
+        or nn_relu["owner"] != "sim_report"
+        or nn_relu["dfg_status"] != "pass"
+        or nn_relu["mapping_status"] != "pass"
+        or nn_relu["cgra_status"] != "pass"
+        or nn_relu["comparison_status"] != "pass"
+        or nn_relu["hardware_system"] != "shared_reduction_adg"
+        or nn_relu["final_outputs_present"] != "true"
+        or nn_relu["final_memory_state_present"] != "true"
+    ):
+        raise AssertionError(f"CMSIS-NN relu row should expose real CGRA-sim evidence: {nn_relu}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(nn_relu[key], nn_relu[f"{key}_fingerprint"], repo)
+    for artifact in (
+        sim_evidence / "arm_relu_q15.dfg.report.json",
+        sim_evidence / "arm_relu_q15.mapping.json",
+        sim_evidence / "arm_relu_q15.cgra.report.json",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"CMSIS-NN relu evidence mode should emit {artifact}")
 
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")

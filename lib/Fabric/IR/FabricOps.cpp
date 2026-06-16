@@ -651,6 +651,8 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("llvm.intr.abs", {pT(0)}, {pT(0)});
     add("llvm.intr.fshl", {pT(0), pT(0), pT(0)}, {pT(0)});
     add("llvm.intr.bswap", {pT(0)}, {pT(0)});
+    add("llvm.arm.qsub8", {pT(0), pT(0)}, {pT(0)});
+    add("llvm.arm.qsub16", {pT(0), pT(0)}, {pT(0)});
 
     // --- math unary ops: 1 in, 1 out, same width ---
     for (StringRef n :

@@ -233,7 +233,12 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
 }
 
 std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
+  std::string nameStorage;
   llvm::StringRef name = op->getName().getStringRef();
+  if (auto intrinsic = mlir::dyn_cast<mlir::LLVM::CallIntrinsicOp>(op)) {
+    nameStorage = intrinsic.getIntrin().str();
+    name = nameStorage;
+  }
   if (name == "dataflow.load")
     return ResourceKind::MemLoad;
   if (name == "dataflow.store")
@@ -241,6 +246,12 @@ std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
   if (fabric::isFabricOpSupported(name))
     return ResourceKind::FabricOp;
   return std::nullopt;
+}
+
+std::string softwareOperationName(mlir::Operation *op) {
+  if (auto intrinsic = mlir::dyn_cast<mlir::LLVM::CallIntrinsicOp>(op))
+    return intrinsic.getIntrin().str();
+  return op->getName().getStringRef().str();
 }
 
 llvm::StringRef resourceKindName(ResourceKind kind) {
@@ -279,7 +290,7 @@ collectSoftwareNodes(mlir::Operation *graph) {
           "graph contains unsupported operation for PnR mapping: %s",
           op.getName().getStringRef().str().c_str());
     }
-    std::string opName = op.getName().getStringRef().str();
+    std::string opName = softwareOperationName(&op);
     unsigned index = counts[opName]++;
     nodes.push_back(
         SoftwareNode{opName + "#" + std::to_string(index), opName, *kind, &op});

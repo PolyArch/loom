@@ -496,11 +496,18 @@ std::string primitivePredicate(mlir::Operation *op) {
   return "";
 }
 
+std::string primitiveOperationName(mlir::Operation *op) {
+  if (auto intrinsic = mlir::dyn_cast<mlir::LLVM::CallIntrinsicOp>(op))
+    return intrinsic.getIntrin().str();
+  return op->getName().getStringRef().str();
+}
+
 PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
                                                  llvm::StringRef predicate,
                                                  mlir::Value result) {
+  std::string opName = primitiveOperationName(op);
   PrimitiveOperationDescriptor descriptor{
-      op->getName().getStringRef(),
+      opName,
       predicate,
       integerBitWidth(result.getType()),
       integerBitWidth(op->getOperand(0).getType())};
@@ -832,7 +839,7 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
     return false;
   }
   emitToken(state, result, tokenFromPrimitiveValue(*valueOrErr));
-  return recordEvent(state, op->getName().getStringRef());
+  return recordEvent(state, primitiveOperationName(op));
 }
 
 bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
@@ -854,8 +861,9 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
 }
 
 bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
-  if (!isSupportedPrimitiveOperation(op->getName().getStringRef()) ||
-      op->getNumResults() != 1)
+  if (op->getNumResults() != 1)
+    return false;
+  if (!isSupportedPrimitiveOperation(primitiveOperationName(op)))
     return false;
   return firePrimitiveOperation(op, op->getResult(0), state);
 }
@@ -905,8 +913,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
 std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (isSupportedNonEvent(op))
     return std::nullopt;
-  if (isSupportedPrimitiveOperation(op->getName().getStringRef()) &&
-      op->getNumResults() == 1)
+  if (op->getNumResults() == 1 &&
+      isSupportedPrimitiveOperation(primitiveOperationName(op)))
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,

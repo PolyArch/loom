@@ -16,9 +16,10 @@
 // HARDWARE-DAG: fabric.op [@arith.mulf]
 // HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.addi]
+// HARDWARE-DAG: fabric.op [@llvm.arm.qsub16]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 
-// SUMMARY: {{.*}}::shared_vector_alu_adg,fabric_module_template,10,0,pass,fabric.module template verified; link_count counts explicit fabric.link records only,mem;pe;switch,spatial,adg-builder::shared-vector-alu,
+// SUMMARY: {{.*}}::shared_vector_alu_adg,fabric_module_template,11,0,pass,fabric.module template verified; link_count counts explicit fabric.link records only,mem;pe;switch,spatial,adg-builder::shared-vector-alu,
 
 // BYTE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // BYTE-CSV-NEXT: byte_swap,shared_vector_alu_adg,byte_swap__g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0__shared_vector_alu_adg,4,4,0,0,pass,mapped software graph to fabric resources

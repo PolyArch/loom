@@ -68,6 +68,26 @@ ATTEMPTS = (
         hardware_mlir="test/pnr/shared_reduction_adg.mlir",
         hardware="shared_reduction_adg",
     ),
+    Attempt(
+        suite="cmsis-nn",
+        case="ActivationFunctions/arm_relu_q15.c",
+        stem="arm_relu_q15",
+        graph="g_t_arm_relu_q15_red_0_0",
+        dfg_dir_arg="cmsis_nn_dfg_dir",
+        args=(
+            "0=none",
+            "1=2",
+            "2=0",
+            "3=-1",
+            "4=15",
+            "5=65537",
+            "6=0",
+            "7=-1",
+        ),
+        memrefs=("8=-2147516401,65538",),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+    ),
 )
 
 
