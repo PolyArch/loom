@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,6 +42,125 @@ def component_config_fingerprint(repo: Path, view: str) -> str:
         f"{view} component config fingerprint",
     )
     return result.stdout.strip()
+
+
+def assert_default_batch_manifest_validation(repo: Path, out_dir: Path) -> None:
+    invalid_hardware_manifest = out_dir / "invalid-default-cgra-sim-batch-hardware.json"
+    invalid_hardware_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "vecsum", "hardware": "not_a_real_shared_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/app/default_cgra_sim_batch.py",
+            "--manifest",
+            str(invalid_hardware_manifest),
+            "--emit-cases",
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"default batch manifest validation should reject unknown hardware: {result.stdout}")
+    if "unsupported hardware" not in result.stderr:
+        raise AssertionError(f"default batch manifest diagnostic should name unsupported hardware: {result.stderr}")
+
+    unknown_case_manifest = out_dir / "invalid-default-cgra-sim-batch-case.json"
+    unknown_case_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "not_a_real_case", "hardware": "shared_reduction_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/app/default_cgra_sim_batch.py",
+            "--manifest",
+            str(unknown_case_manifest),
+            "--emit-cases",
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"default batch manifest validation should reject unknown cases: {result.stdout}")
+    if "unknown default batch case" not in result.stderr:
+        raise AssertionError(f"default batch manifest diagnostic should name unknown cases: {result.stderr}")
+
+    missing_graph_manifest = out_dir / "invalid-default-cgra-sim-batch-missing-graph.json"
+    missing_graph_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "binary_search", "hardware": "shared_reduction_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/app/default_cgra_sim_batch.py",
+            "--manifest",
+            str(missing_graph_manifest),
+            "--emit-cases",
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"default batch manifest validation should reject cases without primary graphs: {result.stdout}")
+    if "missing primary graph" not in result.stderr:
+        raise AssertionError(f"default batch manifest diagnostic should name missing primary graphs: {result.stderr}")
+
+    mismatch_manifest = out_dir / "invalid-default-cgra-sim-batch-evidence-hardware.json"
+    mismatch_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "vecsum", "hardware": "shared_vector_alu_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    mismatch_evidence = out_dir / "mismatch-evidence"
+    mismatch_evidence.mkdir()
+    (mismatch_evidence / "vecsum.mapping.json").write_text(
+        json.dumps({"hardware": "shared_reduction_adg"}, indent=2, sort_keys=True) + "\n"
+    )
+    (mismatch_evidence / "vecsum.cgra.report.json").write_text(
+        json.dumps({"hardware": "shared_reduction_adg"}, indent=2, sort_keys=True) + "\n"
+    )
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/app/default_cgra_sim_batch.py",
+            "--manifest",
+            str(mismatch_manifest),
+            "--validate-evidence-dir",
+            str(mismatch_evidence),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"default batch evidence validation should reject hardware mismatches: {result.stdout}")
+    if "does not match manifest" not in result.stderr:
+        raise AssertionError(f"default batch evidence diagnostic should name hardware mismatches: {result.stderr}")
 
 
 def write_blocked_mapping_artifact(path: Path, repo: Path, workload: str) -> None:
@@ -136,10 +257,77 @@ def run_discovered_report_pair(repo: Path, evidence_dir: Path, workload: str, up
     return [dfg_report, mapping_artifact, cgra_report]
 
 
+def require_success_with_env(repo: Path, argv: list[str], env: dict[str, str], label: str) -> None:
+    result = subprocess.run(
+        argv,
+        cwd=repo,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"{label} failed with {result.returncode}\n"
+            f"command: {' '.join(argv)}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
+def assert_non_default_modes_do_not_load_default_batch(
+    repo: Path,
+    out_dir: Path,
+    primitive: Path,
+    dfg_report: Path,
+) -> None:
+    invalid_manifest = out_dir / "bad-default-batch-override.json"
+    invalid_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "not_a_real_case", "hardware": "shared_reduction_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    env = os.environ.copy()
+    env["LOOM_DEFAULT_CGRA_SIM_BATCH"] = str(invalid_manifest)
+    require_success_with_env(
+        repo,
+        [
+            "bash",
+            "test/app/run_sim_cycle_summary.sh",
+            "--primitive-coverage",
+            str(primitive),
+            "--output",
+            str(out_dir / "primitive-with-bad-default-override.csv"),
+        ],
+        env,
+        "primitive sim cycle summary with invalid default-batch override",
+    )
+    require_success_with_env(
+        repo,
+        [
+            "bash",
+            "test/app/run_sim_cycle_summary.sh",
+            "--dfg-report",
+            str(dfg_report),
+            "--output",
+            str(out_dir / "dfg-with-bad-default-override.csv"),
+        ],
+        env,
+        "DFG-report sim cycle summary with invalid default-batch override",
+    )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-cycle-") as tmp:
         out_dir = Path(tmp)
+        assert_default_batch_manifest_validation(repo, out_dir)
         default_sim = out_dir / "default-sim-cycle-summary.csv"
         primitive = out_dir / "dataflow-primitive-coverage.csv"
         sim = out_dir / "sim-cycle-summary.csv"
@@ -160,7 +348,11 @@ def main() -> int:
         expected_default_kernels = {
             "axpy",
             "byte_swap",
+            "conv1d",
+            "downsample",
             "dotproduct",
+            "mean",
+            "spmv",
             "vecadd",
             "vecmul",
             "vecsum",
@@ -190,7 +382,11 @@ def main() -> int:
         expected_hardware = {
             "axpy": "shared_vector_alu_adg",
             "byte_swap": "shared_vector_alu_adg",
+            "conv1d": "shared_reduction_adg",
+            "downsample": "shared_reduction_adg",
             "dotproduct": "shared_reduction_adg",
+            "mean": "shared_reduction_adg",
+            "spmv": "shared_reduction_adg",
             "vecadd": "shared_reduction_adg",
             "vecmul": "shared_vector_alu_adg",
             "vecsum": "shared_reduction_adg",
@@ -543,6 +739,7 @@ def main() -> int:
             ],
             "DFG simulation report",
         )
+        assert_non_default_modes_do_not_load_default_batch(repo, out_dir, primitive, dfg_report)
         artifact_test_common.require_success(
             repo,
             [

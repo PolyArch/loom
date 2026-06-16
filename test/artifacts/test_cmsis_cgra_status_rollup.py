@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import csv
@@ -16,11 +17,16 @@ from test_cgra_status_summary import assert_sha256_file, one_row, read_rows  # n
 
 
 def run(
-    repo: Path, argv: list[str], *, expect_success: bool = True
+    repo: Path,
+    argv: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    expect_success: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         argv,
         cwd=repo,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -246,17 +252,21 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 6,
+            "pass": 10,
             "fail": 0,
             "blocked": 50,
             "unsupported": 0,
-            "missing_status": 53,
+            "missing_status": 49,
         },
     )
     expected_hardware = {
         "axpy": "shared_vector_alu_adg",
         "byte_swap": "shared_vector_alu_adg",
+        "conv1d": "shared_reduction_adg",
+        "downsample": "shared_reduction_adg",
         "dotproduct": "shared_reduction_adg",
+        "mean": "shared_reduction_adg",
+        "spmv": "shared_reduction_adg",
         "vecadd": "shared_reduction_adg",
         "vecmul": "shared_vector_alu_adg",
         "vecsum": "shared_reduction_adg",
@@ -1086,6 +1096,38 @@ def write_legacy_case(root: Path, name: str, *, with_header: bool = True) -> Non
         (case_dir / f"{name}.h").write_text("#pragma once\n")
 
 
+def assert_app_default_batch_manifest_fail_fast(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    out_dir.mkdir(parents=True)
+    invalid_manifest = out_dir / "invalid-default-cgra-sim-batch.json"
+    invalid_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "vecsum", "hardware": "not_a_real_shared_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    result = run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir / "invalid-default-batch"),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-default-batch",
+        ],
+        env={**os.environ, "LOOM_DEFAULT_CGRA_SIM_BATCH": str(invalid_manifest)},
+        expect_success=False,
+    )
+    if "unsupported hardware" not in result.stderr:
+        raise AssertionError(f"default batch manifest failure should be reported by the shell wrapper: {result.stderr}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "cmsis-cgra-status-rollup-") as raw_out_dir:
@@ -1095,6 +1137,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "legacy_missing")
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
+        assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)
         assert_cmsis_dfg_sim_evidence_mode(repo, out_dir / "cmsis-dfg-sim-evidence", legacy_root)

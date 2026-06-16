@@ -16,17 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "test" / "artifacts"))
 
+import default_cgra_sim_batch  # noqa: E402
 import intermediate_artifacts  # noqa: E402
-
-
-DEFAULT_SIM_CYCLE_CASES = (
-    "vecsum",
-    "dotproduct",
-    "vecadd",
-    "axpy",
-    "byte_swap",
-    "vecmul",
-)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -303,7 +294,7 @@ def discovered_reports_lack_dfg(output: Path, dfg_reports: list[Path], cgra_repo
     return True
 
 
-def write_blocked_default(output: Path, diagnostic: str) -> None:
+def write_blocked_default(output: Path, diagnostic: str, default_cases: tuple[str, ...]) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     intermediate_artifacts.write_csv_rows(
         "sim_cycle",
@@ -316,7 +307,7 @@ def write_blocked_default(output: Path, diagnostic: str) -> None:
                 "status": "blocked",
                 "diagnostic": diagnostic,
             }
-            for case in DEFAULT_SIM_CYCLE_CASES
+            for case in default_cases
         ],
     )
 
@@ -350,10 +341,14 @@ def summarize_reports(
     dfg_reports: list[Path],
     cgra_reports: list[Path],
     equivalence_groups: Path,
+    default_cases: tuple[str, ...] | None = None,
 ) -> int:
     tool = find_tool()
     if tool is None:
-        write_blocked_default(output, "missing loom-sim-cycle-summary tool")
+        if default_cases is not None:
+            write_blocked_default(output, "missing loom-sim-cycle-summary tool", default_cases)
+        else:
+            intermediate_artifacts.write_csv("sim_cycle", output)
         return 0
     command = [str(tool)]
     for report in dfg_reports:
@@ -368,6 +363,7 @@ def summarize_reports(
 
 
 def emit_default_batch_summary(output: Path, equivalence_groups: Path) -> int:
+    default_cases = default_cgra_sim_batch.load_default_cases()
     default_root = output.parent / f"{output.stem}-default-evidence"
     evidence_dir = default_root / "current-sim-cycle"
     shutil.rmtree(default_root, ignore_errors=True)
@@ -378,22 +374,31 @@ def emit_default_batch_summary(output: Path, equivalence_groups: Path) -> int:
         "--output-dir",
         str(evidence_dir),
     ]
-    for case in DEFAULT_SIM_CYCLE_CASES:
+    for case in default_cases:
         command.extend(["--case", case])
     result = run_command(command)
     if result.returncode != 0:
-        write_blocked_default(output, command_failure_diagnostic(result))
+        write_blocked_default(output, command_failure_diagnostic(result), default_cases)
+        return 0
+    try:
+        default_cgra_sim_batch.validate_evidence_dir(evidence_dir)
+    except ValueError as exc:
+        write_blocked_default(output, str(exc), default_cases)
         return 0
 
     dfg_reports, cgra_reports = discover_report_inputs(evidence_dir)
     if not dfg_reports:
-        write_blocked_default(output, "default app CGRA evidence sweep produced no DFG-sim reports")
+        write_blocked_default(
+            output,
+            "default app CGRA evidence sweep produced no DFG-sim reports",
+            default_cases,
+        )
         return 0
     if not audit_discovered_report_inputs(output, dfg_reports, cgra_reports):
         return 0
     if discovered_reports_lack_dfg(output, dfg_reports, cgra_reports):
         return 0
-    return summarize_reports(output, dfg_reports, cgra_reports, equivalence_groups)
+    return summarize_reports(output, dfg_reports, cgra_reports, equivalence_groups, default_cases)
 
 
 def main(argv: list[str]) -> int:

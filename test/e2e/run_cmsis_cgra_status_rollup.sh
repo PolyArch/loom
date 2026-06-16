@@ -24,7 +24,6 @@ LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
-DEFAULT_APP_SIM_CASES=(vecsum dotproduct vecadd axpy byte_swap vecmul)
 declare -a APP_SIM_CASES=()
 
 while [[ $# -gt 0 ]]; do
@@ -78,10 +77,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+load_default_app_sim_cases() {
+    python3 "${ROOT}/test/app/default_cgra_sim_batch.py" --emit-cases
+}
+
 if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
-    for default_case in "${DEFAULT_APP_SIM_CASES[@]}"; do
+    if ! default_case_output="$(load_default_app_sim_cases)"; then
+        exit 1
+    fi
+    while IFS= read -r default_case; do
+        if [[ -z "${default_case}" ]]; then
+            continue
+        fi
         APP_SIM_CASES+=("${default_case}")
-    done
+    done <<< "${default_case_output}"
 fi
 
 if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
@@ -183,6 +192,10 @@ if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
         app_sweep_args+=(--case "${app_case}")
     done
     bash "${ROOT}/test/e2e/run_cgra_sim_evidence_sweep.sh" "${app_sweep_args[@]}"
+    if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
+        python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
+            --validate-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}"
+    fi
 fi
 
 if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then

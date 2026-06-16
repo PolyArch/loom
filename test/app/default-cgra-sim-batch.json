@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case": "vecsum",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "dotproduct",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "vecadd",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "conv1d",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "downsample",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "mean",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "spmv",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "axpy",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "byte_swap",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "vecmul",
+      "hardware": "shared_vector_alu_adg"
+    }
+  ]
+}
