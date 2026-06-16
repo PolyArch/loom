@@ -9,9 +9,9 @@
 // arith.index_cast.
 
 // CHECK-LABEL: dataflow.graph.func private @g_canonical
-// CHECK-DAG: %[[IDX:.*]] = arith.index_cast %index : i64 to index
 // CHECK-DAG: %[[MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
 // CHECK: %[[STREAM:.*]], %[[RWC:.*]] = dataflow.stream
+// CHECK: %[[IDX:.*]] = arith.index_cast %[[STREAM]] : i64 to index
 // CHECK: dataflow.load %[[MEM]][%[[IDX]]] %arg0 : memref<?xf32>
 // CHECK: dataflow.store %[[MEM]][%[[IDX]]] %{{.*}} %arg0 : memref<?xf32>
 // CHECK-NOT: llvm.load
@@ -61,13 +61,13 @@ dataflow.graph.func private @g_global_base(%arg0: none, %arg1: i64, %arg2: i64,
 
 // CHECK-LABEL: dataflow.graph.func private @g_i8_byte_offset_f32
 // CHECK-DAG: %[[BYTE:.*]] = arith.shli %index, %arg5 : i64
-// CHECK-DAG: %[[ELEM0:.*]] = arith.shrui %[[BYTE]], %{{.*}} : i64
-// CHECK-DAG: %[[IDX0:.*]] = arith.index_cast %[[ELEM0]] : i64 to index
-// CHECK-DAG: %[[ELEM1:.*]] = arith.shrui %[[BYTE]], %{{.*}} : i64
-// CHECK-DAG: %[[IDX1:.*]] = arith.index_cast %[[ELEM1]] : i64 to index
 // CHECK-DAG: %[[MEM:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
-// CHECK: dataflow.load %[[MEM]][%[[IDX1]]] %arg0 : memref<?xf32>
-// CHECK: dataflow.store %[[MEM]][%[[IDX0]]] %{{.*}} %arg0 : memref<?xf32>
+// CHECK: %[[ELEM0:.*]] = arith.shrui %[[BYTE]], %{{.*}} : i64
+// CHECK: %[[IDX0:.*]] = arith.index_cast %[[ELEM0]] : i64 to index
+// CHECK: dataflow.load %[[MEM]][%[[IDX0]]] %arg0 : memref<?xf32>
+// CHECK: %[[ELEM1:.*]] = arith.shrui %[[BYTE]], %{{.*}} : i64
+// CHECK: %[[IDX1:.*]] = arith.index_cast %[[ELEM1]] : i64 to index
+// CHECK: dataflow.store %[[MEM]][%[[IDX1]]] %{{.*}} %arg0 : memref<?xf32>
 // CHECK-NOT: llvm.load
 // CHECK-NOT: llvm.store
 dataflow.graph.func private @g_i8_byte_offset_f32(
@@ -82,4 +82,43 @@ dataflow.graph.func private @g_i8_byte_offset_f32(
   %4 = arith.addf %0, %3 : f32
   llvm.store %4, %2 : f32, !llvm.ptr
   dataflow.graph.return %arg0, %0 : none, f32
+}
+
+// Pointer induction through a carried LLVM pointer is a memory-view
+// concern, not a fabric pointer operation. When the carried pointer advances
+// by exactly one element per stream item, memory lowering must bind the
+// memref to the original graph pointer and drive load/store addresses from a
+// zero-based ordinal counter. The loop IV stream may have nonzero lower bounds
+// or non-unit steps, so the raw stream index is not the memory-view offset.
+// The residual pointer bookkeeping may remain for graph results, but it must
+// no longer be the memory address path.
+
+// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_i8_f32
+// CHECK-DAG: %[[SRC:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
+// CHECK-DAG: %[[DST:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xf32>
+// CHECK: %[[STREAM:.*]], %[[RWC:.*]] = dataflow.stream
+// CHECK: %[[ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
+// CHECK: %[[ONE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
+// CHECK: %[[STABLE_ONE:.*]] = dataflow.invariant %[[RWC]], %[[ONE]] : i32
+// CHECK: %[[ORD:.*]] = dataflow.carry %[[RWC]], %[[ZERO]], %[[NEXT:.*]] : i32
+// CHECK: %[[NEXT]] = arith.addi %[[ORD]], %[[STABLE_ONE]] : i32
+// CHECK: %[[IDX:.*]] = arith.index_cast %[[ORD]] : i32 to index
+// CHECK-NOT: arith.index_cast %[[STREAM]] : i32 to index
+// CHECK: dataflow.load %[[SRC]][%[[IDX]]] %arg0 : memref<?xf32>
+// CHECK: dataflow.store %[[DST]][%[[IDX]]] %{{.*}} %arg0 : memref<?xf32>
+// CHECK-NOT: llvm.load
+// CHECK-NOT: llvm.store
+dataflow.graph.func private @g_pointer_carry_i8_f32(
+    %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: !llvm.ptr,
+    %arg5: !llvm.ptr, %bias: f32) -> (none, !llvm.ptr, !llvm.ptr) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i32
+  %src_cur = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
+  %dst_cur = dataflow.carry %rwc, %arg5, %dst_next : !llvm.ptr
+  %src_next = llvm.getelementptr %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+  %data = llvm.load %src_cur : !llvm.ptr -> f32
+  %sum = arith.addf %data, %bias : f32
+  %dst_next = llvm.getelementptr %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %sum, %dst_cur : f32, !llvm.ptr
+  dataflow.graph.return %arg0, %src_cur, %dst_cur : none, !llvm.ptr, !llvm.ptr
 }

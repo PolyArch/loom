@@ -25,8 +25,30 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
   dataflow.thread.yield
 }
 
+// Unused loop results must not become graph user-data returns. Pointer-walking
+// loops often carry source/destination pointers only to drive memory accesses;
+// if the enclosing thread does not use the final pointers, exposing them as
+// graph results forces downstream mapping to model fake live pointer outputs.
+// CHECK-LABEL: dataflow.thread private @t_unused_ptr_walk
+// CHECK: dataflow.graph.launch @g_t_unused_ptr_walk_0(%{{.*}}) : (none, index, index, index, !llvm.ptr, !llvm.ptr) -> none
 // CHECK-LABEL: func.func @host_reduction
 // CHECK: dataflow.thread.launch @t_host_reduction_red_0
+// CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
+// CHECK-SAME: -> none
+// CHECK: dataflow.graph.return %{{.*}} : none
+dataflow.thread private @t_unused_ptr_walk(%src: !llvm.ptr, %dst: !llvm.ptr,
+                                           %n: index) ctrl (%c: none) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %unused:2 = scf.for %i = %c0 to %n step %c1 iter_args(%s = %src, %d = %dst)
+      -> (!llvm.ptr, !llvm.ptr) {
+    %s_next = llvm.getelementptr %s[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %d_next = llvm.getelementptr %d[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    scf.yield %s_next, %d_next : !llvm.ptr, !llvm.ptr
+  }
+  dataflow.thread.yield
+}
+
 func.func @host_reduction(%buf: memref<?xf32>, %n: index) -> f32 {
   %f0 = arith.constant 0.0 : f32
   %c0 = arith.constant 0 : index
@@ -39,6 +61,6 @@ func.func @host_reduction(%buf: memref<?xf32>, %n: index) -> f32 {
   return %r : f32
 }
 
-// CHECK-DAG: dataflow.graph.func private @g_t_existing_0
-// CHECK-DAG: dataflow.thread private @t_host_reduction_red_0
-// CHECK-DAG: dataflow.graph.func private @g_t_host_reduction_red_0_0
+// CHECK: dataflow.graph.func private @g_t_host_reduction_red_0_0
+// CHECK-SAME: -> (none, f32)
+// CHECK: dataflow.graph.return %{{.*}}, %{{.*}} : none, f32

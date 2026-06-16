@@ -93,6 +93,7 @@ struct BridgeKeyInfo {
 struct AddrResolution {
   ::mlir::Value ptr;
   ::mlir::Value intIndex;
+  ::dataflow::StreamOp ordinalStream;
   unsigned byteToElementShift = 0;
   ::mlir::Operation *gepToErase = nullptr;
 };
@@ -132,6 +133,45 @@ unsigned getByteToElementShift(::mlir::LLVM::GEPOp gep,
   return log2PowerOfTwo(byteWidth);
 }
 
+std::optional<std::int64_t>
+getSingleIndexElementStride(::mlir::LLVM::GEPOp gep, ::mlir::Type elemTy) {
+  if (!gep.getDynamicIndices().empty())
+    return std::nullopt;
+  auto rawIndices = gep.getRawConstantIndices();
+  if (rawIndices.size() != 1)
+    return std::nullopt;
+  unsigned gepByteWidth = getElementByteWidth(gep.getElemType());
+  unsigned elementByteWidth = getElementByteWidth(elemTy);
+  if (gepByteWidth == 0 || elementByteWidth == 0)
+    return std::nullopt;
+  std::int64_t byteOffset =
+      static_cast<std::int64_t>(rawIndices.front()) * gepByteWidth;
+  if (byteOffset % static_cast<std::int64_t>(elementByteWidth) != 0)
+    return std::nullopt;
+  return byteOffset / static_cast<std::int64_t>(elementByteWidth);
+}
+
+::dataflow::StreamOp getUnitStridePointerCarryStream(::dataflow::CarryOp carry,
+                                                     ::dataflow::GraphFuncOp graph,
+                                                     ::mlir::Type elemTy) {
+  if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(
+          carry.getOutput().getType()))
+    return {};
+  if (!isGraphPtrBlockArg(carry.getInit(), graph))
+    return {};
+  auto gep = carry.getCarry().getDefiningOp<::mlir::LLVM::GEPOp>();
+  if (!gep || gep.getBase() != carry.getOutput())
+    return {};
+  std::optional<std::int64_t> elementStride =
+      getSingleIndexElementStride(gep, elemTy);
+  if (!elementStride || *elementStride != 1)
+    return {};
+  auto stream = carry.getCond().getDefiningOp<::dataflow::StreamOp>();
+  if (!stream || stream.getRwc() != carry.getCond())
+    return {};
+  return stream;
+}
+
 std::optional<AddrResolution>
 resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
                bool topLevel, ::mlir::Type elemTy) {
@@ -144,16 +184,19 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
       ::mlir::Value idx = dynIdxs.front();
       if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
         return std::nullopt;
-      return AddrResolution{base, idx, getByteToElementShift(gep, elemTy),
+      return AddrResolution{base, idx, {}, getByteToElementShift(gep, elemTy),
                             gep.getOperation()};
     }
     if (auto carry = loadStorePtr.getDefiningOp<::dataflow::CarryOp>()) {
+      if (::dataflow::StreamOp stream =
+              getUnitStridePointerCarryStream(carry, graph, elemTy))
+        return AddrResolution{carry.getInit(), {}, stream, 0, nullptr};
       if (!isGraphPtrBlockArg(carry.getInit(), graph))
         return std::nullopt;
-      return AddrResolution{carry.getOutput(), {}, 0, nullptr};
+      return AddrResolution{carry.getOutput(), {}, {}, 0, nullptr};
     }
     if (isGraphPtrBlockArg(loadStorePtr, graph))
-      return AddrResolution{loadStorePtr, {}, 0, nullptr};
+      return AddrResolution{loadStorePtr, {}, {}, 0, nullptr};
     return std::nullopt;
   }
   // Nested permissive fallback.
@@ -164,12 +207,12 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
     if (dynIdxs.size() == 1) {
       ::mlir::Value idx = dynIdxs.front();
       if (::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
-        return AddrResolution{gep.getBase(), idx,
+        return AddrResolution{gep.getBase(), idx, {},
                               getByteToElementShift(gep, elemTy),
                               gep.getOperation()};
     }
   }
-  return AddrResolution{loadStorePtr, {}, 0, nullptr};
+  return AddrResolution{loadStorePtr, {}, {}, 0, nullptr};
 }
 
 // Materialize (or look up) an unrealized_conversion_cast bridging
@@ -213,8 +256,9 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
     if (auto it = cache.find(iv); it != cache.end())
       return it->second;
   }
+  bool hoist = topLevel && ::llvm::isa<::mlir::BlockArgument>(iv);
   ::mlir::OpBuilder::InsertionGuard g(builder);
-  if (topLevel)
+  if (hoist)
     builder.setInsertionPointToStart(&graph.getBody().front());
   else
     builder.setInsertionPoint(insertBeforeIfNested);
@@ -224,6 +268,53 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   if (topLevel)
     cache.try_emplace(iv, out);
   return out;
+}
+
+::mlir::TypedAttr getIntegerLikeAttr(::mlir::OpBuilder &builder,
+                                     ::mlir::Type type,
+                                     std::int64_t value) {
+  if (auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(type))
+    return builder.getIntegerAttr(intTy, value);
+  if (::llvm::isa<::mlir::IndexType>(type))
+    return builder.getIndexAttr(value);
+  return {};
+}
+
+::mlir::Value getStreamOrdinal(::mlir::OpBuilder &builder,
+                               ::llvm::DenseMap<::mlir::Operation *,
+                                                ::mlir::Value> &cache,
+                               ::dataflow::StreamOp stream,
+                               ::mlir::Value ctrl, ::mlir::Location loc,
+                               ::mlir::Operation *insertBefore) {
+  if (auto it = cache.find(stream.getOperation()); it != cache.end())
+    return it->second;
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(insertBefore);
+  ::mlir::Type indexTy = stream.getIndex().getType();
+  ::mlir::TypedAttr zeroAttr = getIntegerLikeAttr(builder, indexTy, 0);
+  ::mlir::TypedAttr oneAttr = getIntegerLikeAttr(builder, indexTy, 1);
+  if (!zeroAttr || !oneAttr)
+    return {};
+
+  ::mlir::Value zero =
+      ::dataflow::ConstantOp::create(builder, loc, indexTy, ctrl, zeroAttr)
+          .getValue();
+  ::mlir::Value one =
+      ::dataflow::ConstantOp::create(builder, loc, indexTy, ctrl, oneAttr)
+          .getValue();
+  ::mlir::Value stableOne =
+      ::dataflow::InvariantOp::create(builder, loc, indexTy, stream.getRwc(),
+                                      one)
+          .getOutput();
+  auto carry = ::dataflow::CarryOp::create(builder, loc, indexTy,
+                                           stream.getRwc(), zero, zero);
+  ::mlir::Value next =
+      ::mlir::arith::AddIOp::create(builder, loc, carry.getOutput(), stableOne)
+          .getResult();
+  carry.getCarryMutable().set(next);
+  cache.try_emplace(stream.getOperation(), carry.getOutput());
+  return carry.getOutput();
 }
 
 ::mlir::Value
@@ -241,7 +332,8 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
                         insertBeforeIfNested);
 
   ::mlir::OpBuilder::InsertionGuard g(builder);
-  if (topLevel)
+  bool hoist = topLevel && ::llvm::isa<::mlir::BlockArgument>(intIndex);
+  if (hoist)
     builder.setInsertionPointToStart(&graph.getBody().front());
   else
     builder.setInsertionPoint(insertBeforeIfNested);
@@ -284,6 +376,7 @@ struct RewriteCtx {
   ::mlir::Value ctrl;
   ::llvm::DenseMap<BridgeKey, ::mlir::Value, BridgeKeyInfo> bridgeCache;
   ::llvm::DenseMap<::mlir::Value, ::mlir::Value> indexCastCache;
+  ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> ordinalCache;
   ::mlir::Value zeroIdx;
   ::llvm::SmallVector<::mlir::Operation *, 8> deadGeps;
 };
@@ -316,13 +409,23 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   ::mlir::Value mem =
       getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, resolved->ptr,
                       elemTy, loc, topLevel, op);
-  ::mlir::Value addr =
-      resolved->intIndex
-          ? getElementIndex(builder, ctx.graph, ctx.indexCastCache,
-                            resolved->intIndex,
-                            resolved->byteToElementShift, ctx.ctrl, loc,
-                            topLevel, op)
-          : getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
+  ::mlir::Value addr;
+  if (resolved->ordinalStream) {
+    ::mlir::Value ordinal =
+        getStreamOrdinal(builder, ctx.ordinalCache, resolved->ordinalStream,
+                         ctx.ctrl, loc, op);
+    if (!ordinal)
+      return false;
+    addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, ordinal,
+                           resolved->byteToElementShift, ctx.ctrl, loc,
+                           topLevel, op);
+  } else if (resolved->intIndex) {
+    addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache,
+                           resolved->intIndex, resolved->byteToElementShift,
+                           ctx.ctrl, loc, topLevel, op);
+  } else {
+    addr = getZeroIndex(builder, ctx.graph, ctx.zeroIdx, loc, topLevel, op);
+  }
   if (isLoad) {
     auto load = ::llvm::cast<::mlir::LLVM::LoadOp>(op);
     auto newLoad = ::dataflow::LoadOp::create(

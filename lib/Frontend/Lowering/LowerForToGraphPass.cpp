@@ -16,6 +16,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
@@ -100,6 +101,10 @@ bool isPureScalarEpilogueOp(::mlir::Operation *op) {
   return ::mlir::isPure(op);
 }
 
+bool isLlvmPointerType(::mlir::Type type) {
+  return ::llvm::isa<::mlir::LLVM::LLVMPointerType>(type);
+}
+
 void collectEpilogueOps(::mlir::scf::ForOp loop,
                         ::llvm::SmallVectorImpl<::mlir::Operation *> &ops) {
   ops.clear();
@@ -166,10 +171,6 @@ void computeGraphOutputs(::mlir::scf::ForOp loop,
                          ::llvm::ArrayRef<::mlir::Operation *> epilogueOps,
                          ::llvm::SmallVectorImpl<::mlir::Value> &outputs) {
   outputs.clear();
-  if (epilogueOps.empty()) {
-    outputs.append(loop.getResults().begin(), loop.getResults().end());
-    return;
-  }
 
   ::llvm::DenseSet<::mlir::Operation *> epilogueSet;
   for (::mlir::Operation *op : epilogueOps)
@@ -189,7 +190,7 @@ void computeGraphOutputs(::mlir::scf::ForOp loop,
   };
 
   for (::mlir::Value value : loop.getResults()) {
-    if (usedOutsideEpilogue(value))
+    if (!isLlvmPointerType(value.getType()) || usedOutsideEpilogue(value))
       outputs.push_back(value);
   }
   for (::mlir::Operation *op : epilogueOps) {

@@ -15,7 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_cgra_status_summary import assert_sha256_file, one_row, read_rows  # noqa: E402
 
 
-def run(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
+def run(
+    repo: Path, argv: list[str], *, expect_success: bool = True
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         argv,
         cwd=repo,
@@ -24,9 +26,14 @@ def run(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]:
         stderr=subprocess.PIPE,
         check=False,
     )
-    if result.returncode != 0:
+    if expect_success and result.returncode != 0:
         raise AssertionError(
             f"command failed with {result.returncode}: {' '.join(argv)}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    if not expect_success and result.returncode == 0:
+        raise AssertionError(
+            f"command unexpectedly passed: {' '.join(argv)}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     return result
@@ -256,9 +263,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 0,
+            "pass": 1,
             "fail": 0,
-            "blocked": 14,
+            "blocked": 13,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -278,32 +285,33 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
 
     dsp_offset = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_offset_f32.c")
     if (
-        dsp_offset["status"] != "blocked"
-        or dsp_offset["diagnostic_class"] != "mapping_artifact_unsupported"
-        or dsp_offset["blocking_prerequisite"] != "mapping_artifact"
+        dsp_offset["status"] != "pass"
+        or dsp_offset["diagnostic_class"] != "cgra_sim_pass"
+        or dsp_offset["blocking_prerequisite"] != ""
+        or dsp_offset["owner"] != "sim_report"
         or dsp_offset["dfg_status"] != "pass"
-        or dsp_offset["mapping_status"] != "unsupported"
-        or dsp_offset["cgra_status"] != "not_run"
-        or dsp_offset["comparison_status"] != "not_run"
+        or dsp_offset["mapping_status"] != "pass"
+        or dsp_offset["cgra_status"] != "pass"
+        or dsp_offset["comparison_status"] != "pass"
         or dsp_offset["hardware_system"] != "shared_reduction_adg"
-        or dsp_offset["final_memory_state_present"] != "false"
+        or dsp_offset["final_outputs_present"] != "true"
+        or dsp_offset["final_memory_state_present"] != "true"
     ):
-        raise AssertionError(f"CMSIS offset row should expose unsupported mapping: {dsp_offset}")
-    for key in ("dfg_report", "mapping_artifact"):
+        raise AssertionError(f"CMSIS offset row should expose real CGRA-sim evidence: {dsp_offset}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(dsp_offset[key], dsp_offset[f"{key}_fingerprint"], repo)
     for artifact in (
         sim_evidence / "arm_offset_f32.dfg.report.json",
         sim_evidence / "arm_offset_f32.mapping.json",
+        sim_evidence / "arm_offset_f32.cgra.report.json",
     ):
         if not artifact.is_file():
             raise AssertionError(f"CMSIS offset evidence mode should emit {artifact}")
-    if (sim_evidence / "arm_offset_f32.cgra.report.json").exists():
-        raise AssertionError("CMSIS offset evidence mode must not emit CGRA-sim after unsupported mapping")
 
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"
-    run(
+    fake_result = run(
         repo,
         [
             sys.executable,
@@ -317,11 +325,14 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "--loom-cgra-sim",
             str(fake_cgra_tool),
         ],
+        expect_success=False,
     )
+    if "CGRA-sim" not in fake_result.stderr and "loom-cgra-sim" not in fake_result.stderr:
+        raise AssertionError(f"CMSIS offset should fail at unavailable CGRA-sim: {fake_result.stderr}")
     if not (no_cgra_evidence / "arm_offset_f32.mapping.json").is_file():
-        raise AssertionError("CMSIS offset should emit unsupported mapping without requiring CGRA-sim")
+        raise AssertionError("CMSIS offset should emit mapping evidence before requiring CGRA-sim")
     if (no_cgra_evidence / "arm_offset_f32.cgra.report.json").exists():
-        raise AssertionError("CMSIS offset should not run fake CGRA-sim after unsupported mapping")
+        raise AssertionError("CMSIS offset should not emit CGRA evidence from a failing CGRA-sim tool")
 
 
 def write_legacy_case(root: Path, name: str, *, with_header: bool = True) -> None:

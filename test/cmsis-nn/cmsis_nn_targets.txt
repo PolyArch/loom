@@ -64,8 +64,8 @@
 # are still covered by the base symbol; the pipeline asserts presence,
 # not exclusivity.
 #
-ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||1|1|1|1|1|1|1|0|0|0|7
-ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7||2|2|1|2|2|3|1|0|0|0|12
+ActivationFunctions/arm_relu_q15.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q15||1|1|1|1|1|2|1|0|0|0|7
+ActivationFunctions/arm_relu_q7.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu_q7||2|2|1|2|2|4|1|0|0|0|12
 ActivationFunctions/arm_relu6_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_relu6_s8||0|0|0|0|0|0|0|0|0|0|2
 BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_elementwise_add_s8||0|0|0|0|0|0|0|0|0|0|10
 BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8||1|1|0|18|9|27|0|28|0|0|172

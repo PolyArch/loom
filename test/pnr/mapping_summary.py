@@ -137,9 +137,21 @@ def unsupported_graph_operation(output: str) -> str | None:
     return match.group(1).strip()
 
 
-def write_unsupported_mapping(args: argparse.Namespace, operation: str) -> None:
+def unsupported_mapping_diagnostic(output: str) -> str | None:
+    operation = unsupported_graph_operation(output)
+    if operation:
+        return f"unsupported PnR graph operation: {operation}"
+    match = re.search(
+        r"(graph returns unsupported pointer value for PnR mapping)",
+        output,
+    )
+    if match:
+        return match.group(1)
+    return None
+
+
+def write_unsupported_mapping(args: argparse.Namespace, diagnostic: str) -> None:
     map_id = mapping_id(args.workload, args.graph, args.hardware)
-    diagnostic = f"unsupported PnR graph operation: {operation}"
     row = {
         "workload": args.workload,
         "hardware": args.hardware,
@@ -246,10 +258,10 @@ def run_explicit_mapper(args: argparse.Namespace) -> int:
     )
     if result.returncode != 0:
         combined_output = result.stdout + result.stderr
-        operation = unsupported_graph_operation(combined_output)
-        if operation:
+        diagnostic = unsupported_mapping_diagnostic(combined_output)
+        if diagnostic:
             try:
-                write_unsupported_mapping(args, operation)
+                write_unsupported_mapping(args, diagnostic)
             except RuntimeError as exc:
                 sys.stderr.write(str(exc) + "\n")
                 return 1

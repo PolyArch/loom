@@ -190,6 +190,48 @@ bool isAdapterOp(mlir::Operation *op) {
          name == "arith.index_cast";
 }
 
+bool isLlvmPointerType(mlir::Type type) {
+  return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
+}
+
+bool isPointerCarryOp(mlir::Operation *op) {
+  if (op->getName().getStringRef() != "dataflow.carry" ||
+      op->getNumResults() != 1)
+    return false;
+  return isLlvmPointerType(op->getResult(0).getType());
+}
+
+bool isGraphReturnOp(mlir::Operation *op) {
+  return op->getName().getStringRef() == "dataflow.graph.return";
+}
+
+bool isPointerBookkeepingOp(mlir::Operation *op) {
+  llvm::StringRef name = op->getName().getStringRef();
+  if (name == "llvm.getelementptr") {
+    if (op->getNumResults() != 1 ||
+        !isLlvmPointerType(op->getResult(0).getType()))
+      return false;
+    for (mlir::OpOperand &use : op->getResult(0).getUses()) {
+      mlir::Operation *owner = use.getOwner();
+      if (isPointerCarryOp(owner) || isGraphReturnOp(owner))
+        continue;
+      return false;
+    }
+    return true;
+  }
+
+  if (!isPointerCarryOp(op))
+    return false;
+  for (mlir::OpOperand &use : op->getResult(0).getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    llvm::StringRef ownerName = owner->getName().getStringRef();
+    if (ownerName == "llvm.getelementptr" || isGraphReturnOp(owner))
+      continue;
+    return false;
+  }
+  return true;
+}
+
 std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
   if (name == "dataflow.load")
@@ -218,7 +260,17 @@ collectSoftwareNodes(mlir::Operation *graph) {
   llvm::SmallVector<SoftwareNode> nodes;
   llvm::StringMap<unsigned> counts;
   for (mlir::Operation &op : graph->getRegion(0).front()) {
-    if (isIgnoredOp(&op) || isAdapterOp(&op))
+    if (!isGraphReturnOp(&op))
+      continue;
+    for (mlir::Value value : op.getOperands()) {
+      if (isLlvmPointerType(value.getType()))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "graph returns unsupported pointer value for PnR mapping");
+    }
+  }
+  for (mlir::Operation &op : graph->getRegion(0).front()) {
+    if (isIgnoredOp(&op) || isAdapterOp(&op) || isPointerBookkeepingOp(&op))
       continue;
     std::optional<ResourceKind> kind = resourceKindForSoftwareOp(&op);
     if (!kind) {
@@ -942,6 +994,8 @@ void collectValueProducers(
             result, RouteBuilder::ProducerRef{nodeIt->second, resultIndex++});
       continue;
     }
+    if (isPointerBookkeepingOp(&op))
+      continue;
     if (!isAdapterOp(&op) || op.getNumOperands() == 0)
       continue;
     mlir::Value source = op.getOperand(0);

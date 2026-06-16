@@ -45,6 +45,33 @@
 // GEP-JSON-DAG: "placements": []
 // GEP-JSON-DAG: "routes": []
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_pointer_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_bookkeeping --output %t.ptr.mapping.csv --artifact %t.ptr.mapping.json
+// RUN: FileCheck %s --check-prefix=PTR-CSV < %t.ptr.mapping.csv
+// RUN: FileCheck %s --check-prefix=PTR-JSON < %t.ptr.mapping.json
+
+// PTR-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// PTR-CSV-NEXT: mem_pointer_bookkeeping,shared_reduction_adg,mem_pointer_bookkeeping__mem_pointer_bookkeeping__shared_reduction_adg,5,6,0,0,pass
+
+// PTR-JSON-DAG: "status": "pass"
+// PTR-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.load#0.operand1"
+// PTR-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.store#0.operand1"
+// PTR-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.addf#0.operand0"
+// PTR-JSON-DAG: "edge_ref": "arith.addf#0.result0->dataflow.store#0.operand2"
+// PTR-JSON-DAG: "edge_ref": "dataflow.store#0.result0->dataflow.sync#0.operand1"
+// PTR-JSON-NOT: "operation": "llvm.getelementptr"
+// PTR-JSON-NOT: "operation": "dataflow.carry"
+// PTR-JSON-NOT: ".out"
+// PTR-JSON-NOT: ".in"
+
+// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_return --output %t.ptrret.mapping.csv --artifact %t.ptrret.mapping.json
+// RUN: FileCheck %s --check-prefix=PTRRET-CSV < %t.ptrret.mapping.csv
+// RUN: FileCheck %s --check-prefix=PTRRET-JSON < %t.ptrret.mapping.json
+
+// PTRRET-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// PTRRET-CSV-NEXT: mem_pointer_return,shared_reduction_adg,mem_pointer_return__mem_pointer_return__shared_reduction_adg,,,,,unsupported,graph returns unsupported pointer value for PnR mapping
+// PTRRET-JSON-DAG: "status": "unsupported"
+// PTRRET-JSON-DAG: "graph returns unsupported pointer value for PnR mapping"
+
 module {
   dataflow.graph.func private @mem_route(%ctrl: none, %mem: memref<?xi32>,
                                          %idx: index, %rhs: i32)
@@ -103,6 +130,29 @@ module {
     %data, %done = dataflow.load %src_mem[%idx] %ctrl : memref<?xi32>
     %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xi32>
     dataflow.graph.return %stored : none
+  }
+
+  dataflow.graph.func private @mem_pointer_bookkeeping(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> (none) {
+    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
+    %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
+    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %addr = arith.index_cast %idx : i32 to index
+    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
+    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
+    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %data, %done = dataflow.load %src_mem[%addr] %ctrl : memref<?xf32>
+    %sum = arith.addf %data, %bias : f32
+    %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
+    %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
+    dataflow.graph.return %synced#0 : none
+  }
+
+  dataflow.graph.func private @mem_pointer_return(%ctrl: none, %ptr: !llvm.ptr)
+      -> (none, !llvm.ptr) {
+    dataflow.graph.return %ctrl, %ptr : none, !llvm.ptr
   }
 
   fabric.module @mem_store_route_adg(%mgr : memref<?x!fabric.bits<32>>,
