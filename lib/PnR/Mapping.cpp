@@ -205,6 +205,29 @@ bool isGraphReturnOp(mlir::Operation *op) {
   return op->getName().getStringRef() == "dataflow.graph.return";
 }
 
+bool isDataflowMemoryBaseUse(mlir::OpOperand &use) {
+  mlir::Operation *owner = use.getOwner();
+  llvm::StringRef name = owner->getName().getStringRef();
+  return (name == "dataflow.load" || name == "dataflow.store") &&
+         use.getOperandNumber() == 0;
+}
+
+bool isPointerMemrefBaseAdapterOp(mlir::Operation *op) {
+  if (op->getName().getStringRef() != "builtin.unrealized_conversion_cast" ||
+      op->getNumOperands() != 1 || op->getNumResults() == 0 ||
+      !isLlvmPointerType(op->getOperand(0).getType()))
+    return false;
+  for (mlir::Value result : op->getResults()) {
+    if (!mlir::isa<mlir::MemRefType>(result.getType()))
+      return false;
+    for (mlir::OpOperand &use : result.getUses()) {
+      if (!isDataflowMemoryBaseUse(use))
+        return false;
+    }
+  }
+  return true;
+}
+
 bool isPointerBookkeepingOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
   if (name == "llvm.getelementptr") {
@@ -227,9 +250,18 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
     llvm::StringRef ownerName = owner->getName().getStringRef();
     if (ownerName == "llvm.getelementptr" || isGraphReturnOp(owner))
       continue;
+    if (isPointerMemrefBaseAdapterOp(owner))
+      continue;
     return false;
   }
   return true;
+}
+
+bool isPointerBookkeepingReturnValue(mlir::Value value) {
+  mlir::Operation *owner = value.getDefiningOp();
+  if (!owner)
+    return false;
+  return isPointerBookkeepingOp(owner);
 }
 
 std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
@@ -274,7 +306,8 @@ collectSoftwareNodes(mlir::Operation *graph) {
     if (!isGraphReturnOp(&op))
       continue;
     for (mlir::Value value : op.getOperands()) {
-      if (isLlvmPointerType(value.getType()))
+      if (isLlvmPointerType(value.getType()) &&
+          !isPointerBookkeepingReturnValue(value))
         return llvm::createStringError(
             std::errc::invalid_argument,
             "graph returns unsupported pointer value for PnR mapping");

@@ -63,6 +63,51 @@
 // PTR-JSON-NOT: ".out"
 // PTR-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_pointer_bookkeeping_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_bookkeeping_return --output %t.ptrbookret.mapping.csv --artifact %t.ptrbookret.mapping.json
+// RUN: FileCheck %s --check-prefix=PTRBOOKRET-CSV < %t.ptrbookret.mapping.csv
+// RUN: FileCheck %s --check-prefix=PTRBOOKRET-JSON < %t.ptrbookret.mapping.json
+
+// PTRBOOKRET-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// PTRBOOKRET-CSV-NEXT: mem_pointer_bookkeeping_return,shared_reduction_adg,mem_pointer_bookkeeping_return__mem_pointer_bookkeeping_return__shared_reduction_adg,5,6,0,0,pass
+
+// PTRBOOKRET-JSON-DAG: "status": "pass"
+// PTRBOOKRET-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.load#0.operand1"
+// PTRBOOKRET-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.store#0.operand1"
+// PTRBOOKRET-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.addf#0.operand0"
+// PTRBOOKRET-JSON-DAG: "edge_ref": "arith.addf#0.result0->dataflow.store#0.operand2"
+// PTRBOOKRET-JSON-DAG: "edge_ref": "dataflow.store#0.result0->dataflow.sync#0.operand1"
+// PTRBOOKRET-JSON-NOT: "operation": "llvm.getelementptr"
+// PTRBOOKRET-JSON-NOT: "operation": "dataflow.carry"
+// PTRBOOKRET-JSON-NOT: ".out"
+// PTRBOOKRET-JSON-NOT: ".in"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_gep_bookkeeping_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_bookkeeping_return --output %t.gepbookret.mapping.csv --artifact %t.gepbookret.mapping.json
+// RUN: FileCheck %s --check-prefix=GEPBOOKRET-CSV < %t.gepbookret.mapping.csv
+// RUN: FileCheck %s --check-prefix=GEPBOOKRET-JSON < %t.gepbookret.mapping.json
+
+// GEPBOOKRET-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// GEPBOOKRET-CSV-NEXT: mem_gep_bookkeeping_return,shared_reduction_adg,mem_gep_bookkeeping_return__mem_gep_bookkeeping_return__shared_reduction_adg,5,6,0,0,pass
+
+// GEPBOOKRET-JSON-DAG: "status": "pass"
+// GEPBOOKRET-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.load#0.operand1"
+// GEPBOOKRET-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->dataflow.store#0.operand1"
+// GEPBOOKRET-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.addf#0.operand0"
+// GEPBOOKRET-JSON-DAG: "edge_ref": "arith.addf#0.result0->dataflow.store#0.operand2"
+// GEPBOOKRET-JSON-DAG: "edge_ref": "dataflow.store#0.result0->dataflow.sync#0.operand1"
+// GEPBOOKRET-JSON-NOT: "operation": "llvm.getelementptr"
+// GEPBOOKRET-JSON-NOT: "operation": "dataflow.carry"
+// GEPBOOKRET-JSON-NOT: ".out"
+// GEPBOOKRET-JSON-NOT: ".in"
+
+// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json
+// RUN: FileCheck %s --check-prefix=PTRSEM-CSV < %t.ptrsemantic.mapping.csv
+// RUN: FileCheck %s --check-prefix=PTRSEM-JSON < %t.ptrsemantic.mapping.json
+
+// PTRSEM-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// PTRSEM-CSV-NEXT: mem_pointer_semantic_return,shared_reduction_adg,mem_pointer_semantic_return__mem_pointer_semantic_return__shared_reduction_adg,,,,,unsupported,graph returns unsupported pointer value for PnR mapping
+// PTRSEM-JSON-DAG: "status": "unsupported"
+// PTRSEM-JSON-DAG: "graph returns unsupported pointer value for PnR mapping"
+
 // RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_return --output %t.ptrret.mapping.csv --artifact %t.ptrret.mapping.json
 // RUN: FileCheck %s --check-prefix=PTRRET-CSV < %t.ptrret.mapping.csv
 // RUN: FileCheck %s --check-prefix=PTRRET-JSON < %t.ptrret.mapping.json
@@ -148,6 +193,53 @@ module {
     %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
     %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
     dataflow.graph.return %synced#0 : none
+  }
+
+  dataflow.graph.func private @mem_pointer_bookkeeping_return(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> (none, !llvm.ptr) {
+    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
+    %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
+    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %addr = arith.index_cast %idx : i32 to index
+    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
+    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
+    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %data, %done = dataflow.load %src_mem[%addr] %ctrl : memref<?xf32>
+    %sum = arith.addf %data, %bias : f32
+    %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
+    %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
+    dataflow.graph.return %synced#0, %dst_cur : none, !llvm.ptr
+  }
+
+  dataflow.graph.func private @mem_gep_bookkeeping_return(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %bias: f32,
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> (none, !llvm.ptr) {
+    %src_mem = builtin.unrealized_conversion_cast %src : !llvm.ptr to memref<?xf32>
+    %dst_mem = builtin.unrealized_conversion_cast %dst : !llvm.ptr to memref<?xf32>
+    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %addr = arith.index_cast %idx : i32 to index
+    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
+    %dst_cur = dataflow.carry %rwc, %dst, %dst_next : !llvm.ptr
+    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %data, %done = dataflow.load %src_mem[%addr] %ctrl : memref<?xf32>
+    %sum = arith.addf %data, %bias : f32
+    %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
+    %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
+    dataflow.graph.return %synced#0, %dst_next : none, !llvm.ptr
+  }
+
+  dataflow.graph.func private @mem_pointer_semantic_return(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %src: !llvm.ptr)
+      -> (none, !llvm.ptr, i32) {
+    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %src_cur = dataflow.carry %rwc, %src, %src_next : !llvm.ptr
+    %src_next = llvm.getelementptr inbounds|nuw %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %bits = builtin.unrealized_conversion_cast %src_cur : !llvm.ptr to i32
+    %sum = arith.addi %bits, %lb : i32
+    dataflow.graph.return %ctrl, %src_cur, %sum : none, !llvm.ptr, i32
   }
 
   dataflow.graph.func private @mem_pointer_return(%ctrl: none, %ptr: !llvm.ptr)
