@@ -1,4 +1,7 @@
 # ASAP Model Notes
+- Fully unrollable, each i-iter only writes to its own dst[i]
+- Make sure that store operation to dst[i] only happens after idx < src_size is evaluated
+- i does not count for the critical path because of full unrolling, but it is still counted in the total operation count
 
 # Gather Performance
 Parameters (from `main.cpp`): `N = 1024`, `src_size = 256`.
