@@ -101,6 +101,20 @@ ATTEMPTS = (
         hardware="shared_reduction_adg",
     ),
     Attempt(
+        suite="cmsis-dsp",
+        case="SupportFunctions/arm_copy_f32.c",
+        stem="arm_copy_f32",
+        graph="g_t_arm_copy_f32_red_0_0",
+        dfg_dir_arg="cmsis_dsp_dfg_dir",
+        args=("0=none", "0=none", "0=none", "0=none", "1=0", "2=4", "3=1"),
+        memrefs=(
+            "4=1.000000e+00,2.000000e+00,-3.500000e+00,4.250000e+00",
+            "5=0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00",
+        ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+    ),
+    Attempt(
         suite="cmsis-nn",
         case="ActivationFunctions/arm_relu_q15.c",
         stem="arm_relu_q15",

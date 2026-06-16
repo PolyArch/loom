@@ -193,6 +193,55 @@ def assert_comparison_audit_fails(
         raise AssertionError(f"{label} audit missed {expected_fragment!r}: {audit_data}")
 
 
+def assert_comparison_audit_passes(
+    repo: Path,
+    comparison_report: Path,
+    summary: Path,
+    *,
+    label: str,
+) -> None:
+    artifact_test_common.require_success(
+        repo,
+        [
+            "python3",
+            "test/e2e/audit_intermediate_artifacts.py",
+            "--output",
+            str(summary),
+            str(comparison_report),
+        ],
+        label,
+    )
+    audit_data = json.loads(summary.read_text())
+    if audit_data.get("verdict") != "pass":
+        raise AssertionError(f"{label} comparison audit should pass: {audit_data}")
+
+
+def assert_comparison_audit_path_fails(
+    repo: Path,
+    comparison_report: Path,
+    summary: Path,
+    *,
+    label: str,
+    expected_fragment: str,
+) -> None:
+    result = artifact_test_common.run_command(
+        repo,
+        [
+            "python3",
+            "test/e2e/audit_intermediate_artifacts.py",
+            "--output",
+            str(summary),
+            str(comparison_report),
+        ],
+    )
+    if result.returncode == 0:
+        raise AssertionError(f"{label} comparison unexpectedly passed audit")
+    audit_data = json.loads(summary.read_text())
+    diagnostics = json.dumps(audit_data, sort_keys=True)
+    if expected_fragment not in diagnostics:
+        raise AssertionError(f"{label} audit missed {expected_fragment!r}: {audit_data}")
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-sim-comparison-") as tmp:
@@ -458,6 +507,33 @@ def main() -> int:
             out_dir,
             missing_source_comparison,
             label="missing-source-references",
+            expected_fragment="DFG reference does not resolve",
+        )
+
+        nested_run = out_dir / "nested-artifacts"
+        nested_sources = nested_run / "cmsis-sim-evidence"
+        nested_report_dir = nested_run / "cgra-status-comparisons" / "SupportFunctions"
+        nested_sources.mkdir(parents=True)
+        nested_report_dir.mkdir(parents=True)
+        write_json(nested_sources / "pass-source-dfg-sim-report.json", pass_dfg)
+        write_json(nested_sources / "pass-source-cgra-sim-report.json", pass_cgra)
+        nested_comparison = json.loads(json.dumps(claimed_pass_comparison))
+        nested_comparison_report = nested_report_dir / "arm_copy_f32.c-sim-comparison-report.json"
+        write_json(nested_comparison_report, nested_comparison)
+        assert_comparison_audit_passes(
+            repo,
+            nested_comparison_report,
+            out_dir / "nested-source-reference-audit-summary.json",
+            label="nested-source-reference",
+        )
+        ambiguous_sources = nested_run / "ambiguous-source"
+        ambiguous_sources.mkdir()
+        write_json(ambiguous_sources / "pass-source-dfg-sim-report.json", pass_dfg)
+        assert_comparison_audit_path_fails(
+            repo,
+            nested_comparison_report,
+            out_dir / "ambiguous-nested-source-reference-audit-summary.json",
+            label="ambiguous-nested-source-reference",
             expected_fragment="DFG reference does not resolve",
         )
 

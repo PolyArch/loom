@@ -4290,6 +4290,23 @@ def resolve_artifact_identity_reference(anchor: Path, identity: str) -> Path | N
         resolved = resolve_artifact_reference(anchor, reference)
         if resolved.is_file():
             return resolved
+    path = Path(identity)
+    if path.is_absolute() or len(path.parts) != 1:
+        return None
+    comparison_root: Path | None = None
+    for parent in (anchor.parent, *anchor.parents):
+        if parent.name == "cgra-status-comparisons":
+            comparison_root = parent.parent
+            break
+    if comparison_root is None:
+        return None
+    matches: list[Path] = []
+    for name in (identity, f"{identity}.json", f"{identity}.csv"):
+        matches.extend(candidate for candidate in comparison_root.glob(f"**/{name}") if candidate.is_file())
+    anchor_path = anchor.resolve()
+    unique = sorted({candidate.resolve() for candidate in matches if candidate.resolve() != anchor_path})
+    if len(unique) == 1:
+        return unique[0]
     return None
 
 

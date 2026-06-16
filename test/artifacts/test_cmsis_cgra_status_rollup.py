@@ -334,6 +334,16 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "arg6": ["f32:3", "f32:1", "f32:-0.500000", "f32:4.750000"],
         },
     )
+    assert_cmsis_dfg_report(
+        sim_evidence,
+        "arm_copy_f32",
+        "SupportFunctions/arm_copy_f32.c",
+        "dataflow.load",
+        {
+            "arg4": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+            "arg5": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+        },
+    )
 
     rows = read_rows(out_dir / "cgra-status-summary.csv")
     data = json.loads((out_dir / "cgra-status-summary.json").read_text())
@@ -342,9 +352,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 4,
+            "pass": 5,
             "fail": 0,
-            "blocked": 10,
+            "blocked": 9,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -369,6 +379,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "MatrixFunctions/arm_mat_add_f32.c", "arm_mat_add_f32"
     )
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
