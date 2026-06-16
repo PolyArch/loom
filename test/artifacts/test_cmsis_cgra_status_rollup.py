@@ -287,6 +287,133 @@ def assert_cmsis_cgra_pass_row(
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
 
 
+def assert_cmsis_dfg_blocker_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    suite: str,
+    case: str,
+    *,
+    dfg_status: str,
+    diagnostic_class: str,
+    diagnostic_substring: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != diagnostic_class
+        or row["blocking_prerequisite"] != "dfg_report"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != dfg_status
+        or row["mapping_status"] != "not_run"
+        or row["cgra_status"] != "not_run"
+        or diagnostic_substring not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose exact DFG-sim blocker evidence: {row}")
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+
+
+def assert_cmsis_component_blocker_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    row = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
+    expected_graphs = {
+        "g_t_arm_relu_q7_red_0_0",
+        "g_t_arm_relu_q7_red_1_0",
+    }
+    if set(row["graph_ids"].split(",")) != expected_graphs:
+        raise AssertionError(f"arm_relu_q7 row should keep both component graph ids: {row}")
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "component_cgra_status_blocked"
+        or row["blocking_prerequisite"] != "component_graph_evidence"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "unsupported"
+        or row["mapping_status"] != "fail"
+        or row["cgra_status"] != "not_run"
+        or Path(row["dfg_report"]).name != "arm_relu_q7.red1.dfg.report.json"
+        or Path(row["mapping_artifact"]).name != "arm_relu_q7.red0.mapping.json"
+        or row["cgra_report"]
+    ):
+        raise AssertionError(f"arm_relu_q7 should expose exact component blockers: {row}")
+    for key in ("dfg_report", "mapping_artifact"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+    for required in (
+        "arm_relu_q7.red0.mapping.json",
+        "missing hardware resource for software op llvm.arm.qsub8",
+        "arm_relu_q7.red1.dfg.report.json",
+        "unsupported op: scf.for",
+    ):
+        if required not in row["diagnostic"]:
+            raise AssertionError(f"arm_relu_q7 component diagnostic should cite {required}: {row}")
+    for artifact_name in (
+        "arm_relu_q7.red0.dfg.report.json",
+        "arm_relu_q7.red0.mapping.json",
+        "arm_relu_q7.red1.dfg.report.json",
+    ):
+        artifact = sim_evidence / artifact_name
+        if not artifact.is_file():
+            raise AssertionError(f"arm_relu_q7 component evidence should emit {artifact}")
+    red0_mapping = json.loads((sim_evidence / "arm_relu_q7.red0.mapping.json").read_text())
+    red1_dfg = json.loads((sim_evidence / "arm_relu_q7.red1.dfg.report.json").read_text())
+    if red0_mapping.get("status") != "fail" or red1_dfg.get("status") != "unsupported":
+        raise AssertionError(f"arm_relu_q7 component statuses should remain honest: {red0_mapping}, {red1_dfg}")
+
+
+def assert_cgra_status_audit_rejects_bad_component_blockers(
+    repo: Path,
+    out_dir: Path,
+    legacy_root: Path,
+) -> None:
+    mapping = out_dir / "cmsis-sim-evidence" / "arm_relu_q7.red0.mapping.json"
+    original = mapping.read_text()
+    data = json.loads(original)
+    data["status"] = "pass"
+    try:
+        mapping.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        result = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(out_dir / "cgra-status-summary.csv"),
+                "--json-input",
+                str(out_dir / "cgra-status-summary.json"),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+    finally:
+        mapping.write_text(original)
+    combined = result.stdout + result.stderr
+    if "referenced mapping_artifact JSON status does not match mapping_status" not in combined:
+        raise AssertionError(f"CGRA status audit should reject stale component blocker evidence: {combined}")
+
+    try:
+        mapping.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        result = run(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "generic-audit-bad-component.json"),
+                str(out_dir / "cgra-status-summary.csv"),
+            ],
+            expect_success=False,
+        )
+    finally:
+        mapping.write_text(original)
+    combined = result.stdout + result.stderr
+    audit_data = json.loads((out_dir / "generic-audit-bad-component.json").read_text())
+    audit_diagnostics = "\n".join(str(item) for item in audit_data.get("diagnostics", []))
+    if "referenced mapping_artifact JSON status does not match mapping_status" not in combined + audit_diagnostics:
+        raise AssertionError(f"generic audit should reject stale component blocker evidence: {combined} {audit_data}")
+
+
 def assert_cgra_status_audit_rejects_bad_aggregate_graphs(
     repo: Path,
     out_dir: Path,
@@ -790,6 +917,24 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_var_f32.c", "arm_var_f32"
     )
+    assert_cmsis_dfg_blocker_row(
+        repo,
+        rows,
+        "cmsis-dsp",
+        "FilteringFunctions/arm_biquad_cascade_df1_f32.c",
+        dfg_status="blocked",
+        diagnostic_class="dfg_report_blocked",
+        diagnostic_substring="DFG-sim stopped before all returned values produced complete outputs",
+    )
+    assert_cmsis_dfg_blocker_row(
+        repo,
+        rows,
+        "cmsis-dsp",
+        "StatisticsFunctions/arm_max_f32.c",
+        dfg_status="unsupported",
+        diagnostic_class="dfg_report_unsupported",
+        diagnostic_substring="unsupported op: llvm.load",
+    )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
     assert_cmsis_add_q15_shared_adg_evidence(sim_evidence)
@@ -799,9 +944,11 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
     assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)
+    assert_cgra_status_audit_rejects_bad_component_blockers(repo, out_dir, legacy_root)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
+    assert_cmsis_component_blocker_row(repo, rows, sim_evidence)
 
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")

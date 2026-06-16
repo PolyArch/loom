@@ -546,15 +546,118 @@ def generate_comparison_report(
 
 
 def has_component_evidence(evidence_dir: Path, stems: Iterable[str]) -> bool:
+    return any(
+        component_sim_evidence_paths(evidence_dir, stems, suffix)
+        for suffix in (".dfg.report.json", ".mapping.json", ".cgra.report.json")
+    )
+
+
+def component_sim_evidence_paths(evidence_dir: Path, stems: Iterable[str], suffix: str) -> list[Path]:
+    patterns_by_suffix = {
+        ".dfg.report.json": ("{stem}.*.dfg.report.json", "{stem}.dfg.*.report.json"),
+        ".mapping.json": ("{stem}.*.mapping.json",),
+        ".cgra.report.json": ("{stem}.*.cgra.report.json",),
+    }
+    patterns = patterns_by_suffix.get(suffix, (f"{{stem}}.*{suffix}",))
+    candidates: list[Path] = []
     for stem in stems:
-        patterns = (
-            f"{stem}.*.mapping.json",
-            f"{stem}.*.cgra.report.json",
-            f"{stem}.dfg.*.report.json",
+        for pattern_template in patterns:
+            candidates.extend(
+                sorted(path for path in evidence_dir.glob(pattern_template.format(stem=stem)) if path.is_file())
+            )
+    return ordered_unique_path(candidates)
+
+
+def aggregate_component_stage_status(paths: list[Path], preferred_order: tuple[str, ...]) -> str:
+    if not paths:
+        return "not_run"
+    statuses = [stage_status(read_json(path), path) for path in paths]
+    for status in preferred_order:
+        if status in statuses:
+            return status
+    return statuses[0]
+
+
+def first_component_path_with_status(paths: list[Path], status: str) -> Path | None:
+    for path in paths:
+        if stage_status(read_json(path), path) == status:
+            return path
+    return paths[0] if paths else None
+
+
+def component_evidence_diagnostics(
+    dfg_paths: list[Path],
+    mapping_paths: list[Path],
+    cgra_paths: list[Path],
+) -> list[str]:
+    diagnostics: list[str] = []
+    for label, paths in (
+        ("DFG-sim component", dfg_paths),
+        ("PnR component", mapping_paths),
+        ("CGRA-sim component", cgra_paths),
+    ):
+        for path in paths:
+            data = read_json(path)
+            status = stage_status(data, path)
+            if status == "pass":
+                continue
+            diagnostics.append(f"{path.name} ({status}): {artifact_diagnostic(label, data, path, status)}")
+    return diagnostics
+
+
+def apply_component_sim_evidence_to_row(
+    row_data: dict[str, str],
+    evidence_dir: Path,
+    stems: list[str],
+) -> None:
+    dfg_paths = component_sim_evidence_paths(evidence_dir, stems, ".dfg.report.json")
+    mapping_paths = component_sim_evidence_paths(evidence_dir, stems, ".mapping.json")
+    cgra_paths = component_sim_evidence_paths(evidence_dir, stems, ".cgra.report.json")
+    row_data["dfg_status"] = aggregate_component_stage_status(
+        dfg_paths,
+        ("fail", "unsupported", "blocked", "skipped", "not_run", "pass"),
+    )
+    row_data["mapping_status"] = aggregate_component_stage_status(
+        mapping_paths,
+        ("fail", "unsupported", "blocked", "skipped", "not_run", "pass"),
+    )
+    row_data["cgra_status"] = aggregate_component_stage_status(
+        cgra_paths,
+        ("fail", "unsupported", "blocked", "skipped", "not_run", "pass"),
+    )
+    stage_references = (
+        ("dfg_report", dfg_paths, row_data["dfg_status"]),
+        ("mapping_artifact", mapping_paths, row_data["mapping_status"]),
+        ("cgra_report", cgra_paths, row_data["cgra_status"]),
+    )
+    for column, paths, status in stage_references:
+        if status == "not_run":
+            continue
+        component_path = first_component_path_with_status(paths, status)
+        if component_path is not None:
+            fill_artifact_fields(row_data, column, component_path)
+    for path in (*mapping_paths, *cgra_paths):
+        data = read_json(path)
+        hardware = string_field(data, "hardware")
+        if hardware:
+            row_data["hardware_system"] = hardware
+            row_data["spatialcore_template"] = hardware
+            break
+
+    row_data["status"] = "blocked"
+    row_data["diagnostic_class"] = (
+        "component_cgra_status_blocked" if mapping_paths or cgra_paths else "component_dfg_status_blocked"
+    )
+    row_data["owner"] = "sim_report"
+    row_data["blocking_prerequisite"] = "component_graph_evidence"
+    diagnostics = component_evidence_diagnostics(dfg_paths, mapping_paths, cgra_paths)
+    if diagnostics:
+        row_data["diagnostic"] = "component simulator evidence is incomplete: " + "; ".join(diagnostics)
+    else:
+        row_data["diagnostic"] = (
+            "component simulator evidence exists, but row-level aggregate DFG, mapping, "
+            "CGRA, and comparison artifacts are absent"
         )
-        if any(any(evidence_dir.glob(pattern)) for pattern in patterns):
-            return True
-    return False
 
 
 def first_problem(
@@ -723,14 +826,7 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
 
     if not any(path.is_file() for path in (dfg_path, mapping_path, cgra_path)):
         if component_evidence:
-            row_data["status"] = "blocked"
-            row_data["diagnostic_class"] = "missing_aggregate_cgra_status_evidence"
-            row_data["owner"] = "sim_report"
-            row_data["blocking_prerequisite"] = "aggregate_workload_graph_artifact"
-            row_data["diagnostic"] = (
-                "component simulator evidence exists, but row-level aggregate DFG, mapping, "
-                "CGRA, and comparison artifacts are absent"
-            )
+            apply_component_sim_evidence_to_row(row_data, evidence_dir, stems)
         return
 
     dfg = read_json(dfg_path)
