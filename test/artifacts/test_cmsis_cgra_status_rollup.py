@@ -226,6 +226,67 @@ def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -
         assert_sha256_file(row["dfg_mlir"], row["dfg_mlir_fingerprint"], repo)
 
 
+def assert_cmsis_dfg_report(
+    sim_evidence: Path,
+    stem: str,
+    workload: str,
+    fired_op: str,
+    final_memory_state: dict[str, list[str]],
+) -> None:
+    report = sim_evidence / f"{stem}.dfg.report.json"
+    if not report.is_file():
+        raise AssertionError(f"CMSIS DFG-sim evidence mode should emit {report}")
+    report_data = json.loads(report.read_text())
+    if (
+        report_data.get("kind") != "dfg_sim_report"
+        or report_data.get("workload") != workload
+        or report_data.get("status") != "pass"
+        or report_data.get("dynamic_work_items") != 4
+        or report_data.get("operation_fire_counts", {}).get(fired_op) != 4
+    ):
+        raise AssertionError(f"unexpected CMSIS DFG-sim report: {report_data}")
+    for key, expected in final_memory_state.items():
+        if report_data.get("final_memory_state", {}).get(key) != expected:
+            raise AssertionError(f"unexpected CMSIS DFG-sim memory for {stem}: {report_data}")
+    input_fingerprints = report_data.get("input_artifact_fingerprints")
+    if not isinstance(input_fingerprints, dict) or f"{stem}.dfg" not in input_fingerprints:
+        raise AssertionError(f"CMSIS DFG-sim report should fingerprint its input DFG MLIR: {report_data}")
+
+
+def assert_cmsis_cgra_pass_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+    suite: str,
+    case: str,
+    stem: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+    ):
+        raise AssertionError(f"CMSIS row should expose real CGRA-sim evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+    for artifact in (
+        sim_evidence / f"{stem}.dfg.report.json",
+        sim_evidence / f"{stem}.mapping.json",
+        sim_evidence / f"{stem}.cgra.report.json",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
+
+
 def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
     sim_evidence = out_dir / "cmsis-sim-evidence"
     run(
@@ -241,47 +302,38 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             str(sim_evidence),
         ],
     )
-    abs_report = sim_evidence / "arm_abs_f32.dfg.report.json"
-    if not abs_report.is_file():
-        raise AssertionError(f"CMSIS DFG-sim evidence mode should emit {abs_report}")
-    report_data = json.loads(abs_report.read_text())
-    if (
-        report_data.get("kind") != "dfg_sim_report"
-        or report_data.get("workload") != "BasicMathFunctions/arm_abs_f32.c"
-        or report_data.get("status") != "pass"
-        or report_data.get("dynamic_work_items") != 4
-        or report_data.get("operation_fire_counts", {}).get("llvm.intr.fabs") != 4
-        or report_data.get("final_memory_state", {}).get("arg4")
-        != ["f32:-1", "f32:2", "f32:-3.500000", "f32:4.250000"]
-        or report_data.get("final_memory_state", {}).get("arg5")
-        != ["f32:1", "f32:2", "f32:3.500000", "f32:4.250000"]
-    ):
-        raise AssertionError(f"unexpected CMSIS DFG-sim report: {report_data}")
-    input_fingerprints = report_data.get("input_artifact_fingerprints")
-    if not isinstance(input_fingerprints, dict) or "arm_abs_f32.dfg" not in input_fingerprints:
-        raise AssertionError(f"CMSIS DFG-sim report should fingerprint its input DFG MLIR: {report_data}")
-
-    mult_report = sim_evidence / "arm_mult_f32.dfg.report.json"
-    if not mult_report.is_file():
-        raise AssertionError(f"CMSIS DFG-sim evidence mode should emit {mult_report}")
-    mult_report_data = json.loads(mult_report.read_text())
-    if (
-        mult_report_data.get("kind") != "dfg_sim_report"
-        or mult_report_data.get("workload") != "BasicMathFunctions/arm_mult_f32.c"
-        or mult_report_data.get("status") != "pass"
-        or mult_report_data.get("dynamic_work_items") != 4
-        or mult_report_data.get("operation_fire_counts", {}).get("arith.mulf") != 4
-        or mult_report_data.get("final_memory_state", {}).get("arg4")
-        != ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"]
-        or mult_report_data.get("final_memory_state", {}).get("arg5")
-        != ["f32:2", "f32:-2", "f32:-10.500000", "f32:2.125000"]
-        or mult_report_data.get("final_memory_state", {}).get("arg6")
-        != ["f32:2", "f32:-1", "f32:3", "f32:0.500000"]
-    ):
-        raise AssertionError(f"unexpected CMSIS mult DFG-sim report: {mult_report_data}")
-    input_fingerprints = mult_report_data.get("input_artifact_fingerprints")
-    if not isinstance(input_fingerprints, dict) or "arm_mult_f32.dfg" not in input_fingerprints:
-        raise AssertionError(f"CMSIS mult DFG-sim report should fingerprint its input DFG MLIR: {mult_report_data}")
+    assert_cmsis_dfg_report(
+        sim_evidence,
+        "arm_abs_f32",
+        "BasicMathFunctions/arm_abs_f32.c",
+        "llvm.intr.fabs",
+        {
+            "arg4": ["f32:-1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+            "arg5": ["f32:1", "f32:2", "f32:3.500000", "f32:4.250000"],
+        },
+    )
+    assert_cmsis_dfg_report(
+        sim_evidence,
+        "arm_mult_f32",
+        "BasicMathFunctions/arm_mult_f32.c",
+        "arith.mulf",
+        {
+            "arg4": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+            "arg5": ["f32:2", "f32:-2", "f32:-10.500000", "f32:2.125000"],
+            "arg6": ["f32:2", "f32:-1", "f32:3", "f32:0.500000"],
+        },
+    )
+    assert_cmsis_dfg_report(
+        sim_evidence,
+        "arm_mat_add_f32",
+        "MatrixFunctions/arm_mat_add_f32.c",
+        "arith.addf",
+        {
+            "arg4": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+            "arg5": ["f32:2", "f32:-1", "f32:3", "f32:0.500000"],
+            "arg6": ["f32:3", "f32:1", "f32:-0.500000", "f32:4.750000"],
+        },
+    )
 
     rows = read_rows(out_dir / "cgra-status-summary.csv")
     data = json.loads((out_dir / "cgra-status-summary.json").read_text())
@@ -290,9 +342,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 3,
+            "pass": 4,
             "fail": 0,
-            "blocked": 11,
+            "blocked": 10,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -309,105 +361,17 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "missing_status": 0,
         },
     )
-    dsp_abs = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
-    if (
-        dsp_abs["status"] != "pass"
-        or dsp_abs["diagnostic_class"] != "cgra_sim_pass"
-        or dsp_abs["blocking_prerequisite"] != ""
-        or dsp_abs["owner"] != "sim_report"
-        or dsp_abs["dfg_status"] != "pass"
-        or dsp_abs["mapping_status"] != "pass"
-        or dsp_abs["cgra_status"] != "pass"
-        or dsp_abs["comparison_status"] != "pass"
-        or dsp_abs["hardware_system"] != "shared_reduction_adg"
-        or dsp_abs["final_outputs_present"] != "true"
-        or dsp_abs["final_memory_state_present"] != "true"
-    ):
-        raise AssertionError(f"CMSIS abs row should expose real CGRA-sim evidence: {dsp_abs}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-        assert_sha256_file(dsp_abs[key], dsp_abs[f"{key}_fingerprint"], repo)
-    for artifact in (
-        sim_evidence / "arm_abs_f32.dfg.report.json",
-        sim_evidence / "arm_abs_f32.mapping.json",
-        sim_evidence / "arm_abs_f32.cgra.report.json",
-    ):
-        if not artifact.is_file():
-            raise AssertionError(f"CMSIS abs evidence mode should emit {artifact}")
-
-    dsp_mult = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_mult_f32.c")
-    if (
-        dsp_mult["status"] != "pass"
-        or dsp_mult["diagnostic_class"] != "cgra_sim_pass"
-        or dsp_mult["blocking_prerequisite"] != ""
-        or dsp_mult["owner"] != "sim_report"
-        or dsp_mult["dfg_status"] != "pass"
-        or dsp_mult["mapping_status"] != "pass"
-        or dsp_mult["cgra_status"] != "pass"
-        or dsp_mult["comparison_status"] != "pass"
-        or dsp_mult["hardware_system"] != "shared_reduction_adg"
-        or dsp_mult["final_outputs_present"] != "true"
-        or dsp_mult["final_memory_state_present"] != "true"
-    ):
-        raise AssertionError(f"CMSIS mult row should expose real CGRA-sim evidence: {dsp_mult}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-        assert_sha256_file(dsp_mult[key], dsp_mult[f"{key}_fingerprint"], repo)
-    for artifact in (
-        sim_evidence / "arm_mult_f32.dfg.report.json",
-        sim_evidence / "arm_mult_f32.mapping.json",
-        sim_evidence / "arm_mult_f32.cgra.report.json",
-    ):
-        if not artifact.is_file():
-            raise AssertionError(f"CMSIS mult evidence mode should emit {artifact}")
-
-    dsp_offset = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_offset_f32.c")
-    if (
-        dsp_offset["status"] != "pass"
-        or dsp_offset["diagnostic_class"] != "cgra_sim_pass"
-        or dsp_offset["blocking_prerequisite"] != ""
-        or dsp_offset["owner"] != "sim_report"
-        or dsp_offset["dfg_status"] != "pass"
-        or dsp_offset["mapping_status"] != "pass"
-        or dsp_offset["cgra_status"] != "pass"
-        or dsp_offset["comparison_status"] != "pass"
-        or dsp_offset["hardware_system"] != "shared_reduction_adg"
-        or dsp_offset["final_outputs_present"] != "true"
-        or dsp_offset["final_memory_state_present"] != "true"
-    ):
-        raise AssertionError(f"CMSIS offset row should expose real CGRA-sim evidence: {dsp_offset}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-        assert_sha256_file(dsp_offset[key], dsp_offset[f"{key}_fingerprint"], repo)
-    for artifact in (
-        sim_evidence / "arm_offset_f32.dfg.report.json",
-        sim_evidence / "arm_offset_f32.mapping.json",
-        sim_evidence / "arm_offset_f32.cgra.report.json",
-    ):
-        if not artifact.is_file():
-            raise AssertionError(f"CMSIS offset evidence mode should emit {artifact}")
-
-    nn_relu = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
-    if (
-        nn_relu["status"] != "pass"
-        or nn_relu["diagnostic_class"] != "cgra_sim_pass"
-        or nn_relu["blocking_prerequisite"] != ""
-        or nn_relu["owner"] != "sim_report"
-        or nn_relu["dfg_status"] != "pass"
-        or nn_relu["mapping_status"] != "pass"
-        or nn_relu["cgra_status"] != "pass"
-        or nn_relu["comparison_status"] != "pass"
-        or nn_relu["hardware_system"] != "shared_reduction_adg"
-        or nn_relu["final_outputs_present"] != "true"
-        or nn_relu["final_memory_state_present"] != "true"
-    ):
-        raise AssertionError(f"CMSIS-NN relu row should expose real CGRA-sim evidence: {nn_relu}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-        assert_sha256_file(nn_relu[key], nn_relu[f"{key}_fingerprint"], repo)
-    for artifact in (
-        sim_evidence / "arm_relu_q15.dfg.report.json",
-        sim_evidence / "arm_relu_q15.mapping.json",
-        sim_evidence / "arm_relu_q15.cgra.report.json",
-    ):
-        if not artifact.is_file():
-            raise AssertionError(f"CMSIS-NN relu evidence mode should emit {artifact}")
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c", "arm_abs_f32")
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "BasicMathFunctions/arm_mult_f32.c", "arm_mult_f32")
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-dsp", "BasicMathFunctions/arm_offset_f32.c", "arm_offset_f32"
+    )
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-dsp", "MatrixFunctions/arm_mat_add_f32.c", "arm_mat_add_f32"
+    )
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
+    )
 
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
