@@ -5,16 +5,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--app-sim-case NAME]...
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--app-sim-default-batch] [--app-sim-case NAME]...
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
-attempts into that directory before consuming the reports. Each --app-sim-case
-runs the app CGRA evidence sweep for that app row into the status evidence
-directory. When a legacy LoomBench root is supplied, the rollup also generates
-and consumes the dedicated LoomBench manifest so legacy rows are structured
-status records rather than manifest omissions.
+attempts into that directory before consuming the reports. --app-sim-default-batch
+runs the shared-ADG app CGRA evidence batch used by the default simulator cycle
+summary. Each --app-sim-case runs the app CGRA evidence sweep for that app row
+into the status evidence directory. When a legacy LoomBench root is supplied,
+the rollup also generates and consumes the dedicated LoomBench manifest so
+legacy rows are structured status records rather than manifest omissions.
 EOF
 }
 
@@ -22,6 +23,8 @@ OUT_DIR=""
 LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
 LEGACY_ROOT_SUPPLIED=0
+APP_SIM_DEFAULT_BATCH=0
+DEFAULT_APP_SIM_CASES=(vecsum dotproduct vecadd axpy byte_swap vecmul)
 declare -a APP_SIM_CASES=()
 
 while [[ $# -gt 0 ]]; do
@@ -59,6 +62,10 @@ while [[ $# -gt 0 ]]; do
             APP_SIM_CASES+=("$2")
             shift 2
             ;;
+        --app-sim-default-batch)
+            APP_SIM_DEFAULT_BATCH=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -70,6 +77,29 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
+    for default_case in "${DEFAULT_APP_SIM_CASES[@]}"; do
+        APP_SIM_CASES+=("${default_case}")
+    done
+fi
+
+if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
+    deduped_app_sim_cases=()
+    for app_case in "${APP_SIM_CASES[@]}"; do
+        seen=0
+        for existing_case in "${deduped_app_sim_cases[@]}"; do
+            if [[ "${existing_case}" == "${app_case}" ]]; then
+                seen=1
+                break
+            fi
+        done
+        if [[ "${seen}" -eq 0 ]]; then
+            deduped_app_sim_cases+=("${app_case}")
+        fi
+    done
+    APP_SIM_CASES=("${deduped_app_sim_cases[@]}")
+fi
 
 if [[ -z "${OUT_DIR}" ]]; then
     echo "--output-dir is required" >&2

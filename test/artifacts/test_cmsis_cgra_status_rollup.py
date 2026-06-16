@@ -236,10 +236,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             str(out_dir),
             "--legacy-loombench-root",
             str(legacy_root),
-            "--app-sim-case",
-            "vecsum",
-            "--app-sim-case",
-            "dotproduct",
+            "--app-sim-default-batch",
         ],
     )
     rows = read_rows(out_dir / "cgra-status-summary.csv")
@@ -249,25 +246,27 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 2,
+            "pass": 6,
             "fail": 0,
             "blocked": 50,
             "unsupported": 0,
-            "missing_status": 57,
+            "missing_status": 53,
         },
     )
-    assert_app_cgra_pass_row(repo, rows, "vecsum", expected_hardware="shared_reduction_adg")
-    assert_app_cgra_pass_row(repo, rows, "dotproduct", expected_hardware="shared_reduction_adg")
-    for artifact in (
-        out_dir / "current-sim-cycle" / "vecsum.dfg.report.json",
-        out_dir / "current-sim-cycle" / "vecsum.mapping.json",
-        out_dir / "current-sim-cycle" / "vecsum.cgra.report.json",
-        out_dir / "current-sim-cycle" / "dotproduct.dfg.report.json",
-        out_dir / "current-sim-cycle" / "dotproduct.mapping.json",
-        out_dir / "current-sim-cycle" / "dotproduct.cgra.report.json",
-    ):
-        if not artifact.is_file():
-            raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
+    expected_hardware = {
+        "axpy": "shared_vector_alu_adg",
+        "byte_swap": "shared_vector_alu_adg",
+        "dotproduct": "shared_reduction_adg",
+        "vecadd": "shared_reduction_adg",
+        "vecmul": "shared_vector_alu_adg",
+        "vecsum": "shared_reduction_adg",
+    }
+    for case, hardware in expected_hardware.items():
+        assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
+        for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json"):
+            artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
+            if not artifact.is_file():
+                raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
 
     run(
         repo,
