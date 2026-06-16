@@ -211,7 +211,7 @@
 // SUMMARY-DAG: matvec,371,573,pass
 // SUMMARY-DAG: vecadd,1603,1657,pass
 // SUMMARY-DAG: vecmul,256,286,pass
-// SUMMARY-DAG: vecscale,384,,blocked
+// SUMMARY-DAG: vecscale,384,{{[0-9]+}},pass
 // SUMMARY-DAG: mean,904,939,pass
 // SUMMARY-DAG: vecnorm_l1,643,{{[0-9]+}},pass
 // SUMMARY-DAG: vecnorm_l2,771,{{[0-9]+}},pass

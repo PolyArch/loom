@@ -111,6 +111,7 @@
 // RUN: FileCheck %s --check-prefixes=CSV,VECMUL < %t.dir/vecmul.mapping.csv
 // RUN: FileCheck %s --check-prefix=VECMUL-JSON < %t.dir/vecmul.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VECSCALE < %t.dir/vecscale.mapping.csv
+// RUN: FileCheck %s --check-prefix=VECSCALE-JSON < %t.dir/vecscale.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,MEAN < %t.dir/mean.mapping.csv
 // RUN: FileCheck %s --check-prefix=MEAN-JSON < %t.dir/mean.mapping.json
 // RUN: FileCheck %s --check-prefixes=CSV,VECNORM-L1 < %t.dir/vecnorm_l1.mapping.csv
@@ -378,7 +379,16 @@
 // VECMUL-JSON-DAG: "segment_kind": "resource_edge"
 // VECMUL-JSON-DAG: "segment_kind": "module_path"
 
-// VECSCALE-NEXT: vecscale,shared_reduction_adg,vecscale__g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0__shared_reduction_adg,4,3,1,0,fail,unrouted software edges lack Fabric ADG connectivity
+// VECSCALE-NEXT: vecscale,shared_reduction_adg,vecscale__g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0__shared_reduction_adg,4,4,0,0,pass,mapped software graph to fabric resources
+// VECSCALE-JSON-DAG: "workload": "vecscale"
+// VECSCALE-JSON-DAG: "hardware": "shared_reduction_adg"
+// VECSCALE-JSON-DAG: "status": "pass"
+// VECSCALE-JSON-DAG: "placed_records": 4
+// VECSCALE-JSON-DAG: "routed_edges": 4
+// VECSCALE-JSON-DAG: "unrouted_edges": 0
+// VECSCALE-JSON-DAG: "edge_ref": "arith.muli#0.result0->dataflow.store#0.operand2"
+// VECSCALE-JSON-DAG: "segment_kind": "resource_edge"
+// VECSCALE-JSON-DAG: "segment_kind": "module_path"
 
 // MEAN-NEXT: mean,shared_reduction_adg,mean__g_t_mean_kernel_red_0_0__shared_reduction_adg,7,9,0,0,pass,mapped software graph to fabric resources
 
