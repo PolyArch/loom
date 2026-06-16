@@ -226,6 +226,82 @@ def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -
         assert_sha256_file(row["dfg_mlir"], row["dfg_mlir_fingerprint"], repo)
 
 
+def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-case",
+            "vecsum",
+            "--app-sim-case",
+            "dotproduct",
+        ],
+    )
+    rows = read_rows(out_dir / "cgra-status-summary.csv")
+    data = json.loads((out_dir / "cgra-status-summary.json").read_text())
+    assert_counts(
+        data,
+        "app",
+        {
+            "total": 109,
+            "pass": 2,
+            "fail": 0,
+            "blocked": 50,
+            "unsupported": 0,
+            "missing_status": 57,
+        },
+    )
+    assert_app_cgra_pass_row(repo, rows, "vecsum", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "dotproduct", expected_hardware="shared_reduction_adg")
+    for artifact in (
+        out_dir / "current-sim-cycle" / "vecsum.dfg.report.json",
+        out_dir / "current-sim-cycle" / "vecsum.mapping.json",
+        out_dir / "current-sim-cycle" / "vecsum.cgra.report.json",
+        out_dir / "current-sim-cycle" / "dotproduct.dfg.report.json",
+        out_dir / "current-sim-cycle" / "dotproduct.mapping.json",
+        out_dir / "current-sim-cycle" / "dotproduct.cgra.report.json",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
+
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-case",
+            "vecsum",
+        ],
+    )
+    stale_rows = read_rows(out_dir / "cgra-status-summary.csv")
+    stale_data = json.loads((out_dir / "cgra-status-summary.json").read_text())
+    assert_counts(
+        stale_data,
+        "app",
+        {
+            "total": 109,
+            "pass": 1,
+            "fail": 0,
+            "blocked": 50,
+            "unsupported": 0,
+            "missing_status": 58,
+        },
+    )
+    assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
+    dotproduct = one_row(stale_rows, "app", "dotproduct")
+    if dotproduct["status"] == "pass" or dotproduct["dfg_report"]:
+        raise AssertionError(f"app sweep mode should not reuse stale dotproduct evidence: {dotproduct}")
+
+
 def assert_cmsis_dfg_report(
     sim_evidence: Path,
     stem: str,
@@ -285,6 +361,31 @@ def assert_cmsis_cgra_pass_row(
     ):
         if not artifact.is_file():
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
+
+
+def assert_app_cgra_pass_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    case: str,
+    *,
+    expected_hardware: str,
+) -> None:
+    row = one_row(rows, "app", case)
+    if (
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
+        or row["hardware_system"] != expected_hardware
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+    ):
+        raise AssertionError(f"app row should expose real CGRA-sim evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
 
 def assert_cmsis_dfg_blocker_row(
@@ -996,6 +1097,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
+        assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)
         assert_cmsis_dfg_sim_evidence_mode(repo, out_dir / "cmsis-dfg-sim-evidence", legacy_root)
         run(
             repo,
