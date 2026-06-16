@@ -1309,6 +1309,44 @@ def valid_memory_state(value: object) -> bool:
     return all(isinstance(key, str) and valid_string_list(item) for key, item in value.items())
 
 
+def cgra_status_row_graph_ids(row: dict[str, str]) -> list[str]:
+    return [item for item in row.get("graph_ids", "").split(",") if item]
+
+
+def cgra_status_graph_identity_diagnostics(
+    row: dict[str, str],
+    label: str,
+    data: dict[str, object],
+    *,
+    row_index: int | None = None,
+) -> list[str]:
+    row_graph_ids = cgra_status_row_graph_ids(row)
+    if not row_graph_ids:
+        return []
+
+    graph = data.get("graph")
+    is_aggregate = is_workload_graph_set_aggregate(data) or graph == "workload_graph_set"
+    prefix = f"row {row_index}: " if row_index is not None else ""
+    if is_aggregate:
+        diagnostics: list[str] = []
+        if data.get("aggregation_kind") != "workload_graph_set":
+            diagnostics.append(f"{prefix}referenced {label} aggregate lacks workload_graph_set aggregation_kind")
+        if graph != "workload_graph_set":
+            diagnostics.append(f"{prefix}referenced {label} aggregate graph is not workload_graph_set")
+        component_graphs = aggregate_component_identities(data, "component_graphs")
+        if component_graphs != row_graph_ids:
+            diagnostics.append(
+                f"{prefix}referenced {label} aggregate component_graphs do not exactly match row graph_ids"
+            )
+        return diagnostics
+
+    if not isinstance(graph, str) or not graph:
+        return []
+    if graph not in row_graph_ids:
+        return [f"{prefix}referenced {label} graph is not listed in row graph_ids"]
+    return []
+
+
 def validate_workload_identity(
     row: dict[str, str],
     diagnostics: list[str],
@@ -1347,6 +1385,9 @@ def validate_cgra_status_pass_referenced_json(
         if data.get("status") != "pass":
             diagnostics.append(f"row {row_index}: referenced {label} JSON status is not pass")
         validate_workload_identity(row, diagnostics, row_index, label, data)
+        diagnostics.extend(
+            cgra_status_graph_identity_diagnostics(row, label, data, row_index=row_index)
+        )
     for field, label in (
         ("functional_comparison_status", "functional"),
         ("memory_comparison_status", "memory"),
@@ -1380,7 +1421,6 @@ def validate_cgra_status_non_pass_referenced_json(
     diagnostics: list[str],
     row_index: int,
 ) -> None:
-    row_graph_ids = {item for item in row.get("graph_ids", "").split(",") if item}
     for label, expected_kind, status_column in (
         ("dfg_report", "dfg_sim_report", "dfg_status"),
         ("mapping_artifact", "pnr_mapping", "mapping_status"),
@@ -1402,9 +1442,9 @@ def validate_cgra_status_non_pass_referenced_json(
             diagnostics.append(
                 f"row {row_index}: referenced {label} JSON status does not match {status_column}"
             )
-        graph = data.get("graph")
-        if isinstance(graph, str) and graph and row_graph_ids and graph not in row_graph_ids:
-            diagnostics.append(f"row {row_index}: referenced {label} graph is not listed in row graph_ids")
+        diagnostics.extend(
+            cgra_status_graph_identity_diagnostics(row, label, data, row_index=row_index)
+        )
         if label == "dfg_report" and row.get("dfg_mlir", ""):
             input_fingerprints = data.get("input_artifact_fingerprints")
             if not isinstance(input_fingerprints, dict):

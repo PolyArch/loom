@@ -713,11 +713,13 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
         return
     case = row_data["case"]
     stems = sim_evidence_stems(row_data)
+    original_graph_ids = [item for item in row_data.get("graph_ids", "").split(",") if item]
     dfg_path = first_sim_evidence_path(evidence_dir, stems, ".dfg.report.json")
     mapping_path = first_sim_evidence_path(evidence_dir, stems, ".mapping.json")
     cgra_path = first_sim_evidence_path(evidence_dir, stems, ".cgra.report.json")
-    component_evidence = suite == "app" and has_component_evidence(evidence_dir, stems)
-    original_graph_ids = [item for item in row_data.get("graph_ids", "").split(",") if item]
+    component_evidence = has_component_evidence(evidence_dir, stems) and (
+        suite == "app" or (suite in {"cmsis-dsp", "cmsis-nn"} and len(original_graph_ids) > 1)
+    )
 
     if not any(path.is_file() for path in (dfg_path, mapping_path, cgra_path)):
         if component_evidence:
@@ -762,12 +764,26 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
     graph_identity_diagnostics: list[str] = []
     if graph:
         if suite in {"cmsis-dsp", "cmsis-nn"} and original_graph_ids:
-            if graph not in original_graph_ids:
-                graph_identity_diagnostics.append(
-                    f"dfg_report graph {graph!r} is not listed in row graph_ids {','.join(original_graph_ids)!r}"
+            graph_identity_diagnostics.extend(
+                intermediate_artifacts.cgra_status_graph_identity_diagnostics(
+                    row_data, "dfg_report", dfg
                 )
+            )
+            graph_identity_diagnostics.extend(
+                intermediate_artifacts.cgra_status_graph_identity_diagnostics(
+                    row_data, "mapping_artifact", mapping
+                )
+            )
+            graph_identity_diagnostics.extend(
+                intermediate_artifacts.cgra_status_graph_identity_diagnostics(
+                    row_data, "cgra_report", cgra
+                )
+            )
         else:
-            row_data["graph_ids"] = graph
+            component_graphs = intermediate_artifacts.aggregate_component_identities(
+                dfg, "component_graphs"
+            )
+            row_data["graph_ids"] = ",".join(component_graphs) if component_graphs else graph
     mapping_id = string_field(mapping, "mapping_id") or string_field(cgra, "mapping_id")
     if mapping_id:
         row_data["mapping_id"] = mapping_id

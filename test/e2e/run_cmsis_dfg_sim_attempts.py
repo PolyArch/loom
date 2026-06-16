@@ -11,6 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +31,17 @@ class Attempt:
     memrefs: tuple[str, ...]
     hardware_mlir: str = ""
     hardware: str = ""
+    artifact_stem: str = ""
+    aggregate_stem: str = ""
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    attempt: Attempt
+    dfg_report: Path
+    mapping_summary: Path | None = None
+    mapping_artifact: Path | None = None
+    cgra_report: Path | None = None
 
 
 ATTEMPTS = (
@@ -134,6 +146,51 @@ ATTEMPTS = (
         memrefs=("5=1.000000e+00,2.000000e+00,-3.500000e+00,4.250000e+00",),
         hardware_mlir="test/pnr/shared_reduction_adg.mlir",
         hardware="shared_reduction_adg",
+    ),
+    Attempt(
+        suite="cmsis-dsp",
+        case="StatisticsFunctions/arm_var_f32.c",
+        stem="arm_var_f32",
+        graph="g_t_arm_var_f32_red_0_0",
+        dfg_dir_arg="cmsis_dsp_dfg_dir",
+        args=(
+            "0=none",
+            "0=none",
+            "0=none",
+            "0=none",
+            "1=0",
+            "2=4",
+            "3=1",
+            "5=0.000000e+00",
+        ),
+        memrefs=("4=1.000000e+00,2.000000e+00,-3.500000e+00,4.250000e+00",),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+        artifact_stem="arm_var_f32.red0",
+        aggregate_stem="arm_var_f32",
+    ),
+    Attempt(
+        suite="cmsis-dsp",
+        case="StatisticsFunctions/arm_var_f32.c",
+        stem="arm_var_f32",
+        graph="g_t_arm_var_f32_red_1_0",
+        dfg_dir_arg="cmsis_dsp_dfg_dir",
+        args=(
+            "0=none",
+            "0=none",
+            "0=none",
+            "0=none",
+            "1=0",
+            "2=4",
+            "3=1",
+            "4=9.375000e-01",
+            "6=0.000000e+00",
+        ),
+        memrefs=("5=1.000000e+00,2.000000e+00,-3.500000e+00,4.250000e+00",),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+        artifact_stem="arm_var_f32.red1",
+        aggregate_stem="arm_var_f32",
     ),
     Attempt(
         suite="cmsis-dsp",
@@ -254,13 +311,14 @@ def run_attempt(
     output_dir: Path,
     args: argparse.Namespace,
     attempt: Attempt,
-) -> list[Path]:
+) -> AttemptResult:
     dfg_dir = Path(getattr(args, attempt.dfg_dir_arg))
     dfg_mlir = dfg_dir / f"{attempt.stem}.dfg.mlir"
     if not dfg_mlir.is_file():
         raise SystemExit(f"[cmsis-dfg-sim] missing DFG MLIR for {attempt.case}: {dfg_mlir}")
 
-    output = output_dir / f"{attempt.stem}.dfg.report.json"
+    output_stem = attempt.artifact_stem or attempt.stem
+    output = output_dir / f"{output_stem}.dfg.report.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     command = [
         str(dfg_tool),
@@ -285,16 +343,15 @@ def run_attempt(
         raise SystemExit(f"[cmsis-dfg-sim] {attempt.case} report is not a JSON object: {output}")
     data["input_artifact_fingerprints"] = intermediate_artifacts.input_artifact_fingerprints([dfg_mlir])
     output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-    artifacts = [output]
 
     if not attempt.hardware_mlir:
-        return artifacts
+        return AttemptResult(attempt=attempt, dfg_report=output)
     if data.get("status") != "pass":
-        return artifacts
+        return AttemptResult(attempt=attempt, dfg_report=output)
 
     hardware_mlir = ROOT / attempt.hardware_mlir
-    mapping_output = output_dir / f"{attempt.stem}.mapping.csv"
-    mapping_artifact = output_dir / f"{attempt.stem}.mapping.json"
+    mapping_output = output_dir / f"{output_stem}.mapping.csv"
+    mapping_artifact = output_dir / f"{output_stem}.mapping.json"
     run_command(
         [
             sys.executable,
@@ -318,13 +375,17 @@ def run_attempt(
         f"{attempt.case} PnR",
         {"LOOM_PNR_MAP": str(pnr_tool)},
     )
-    artifacts.extend([mapping_output, mapping_artifact])
     mapping_data = json.loads(mapping_artifact.read_text())
     if mapping_data.get("status") != "pass":
-        return artifacts
+        return AttemptResult(
+            attempt=attempt,
+            dfg_report=output,
+            mapping_summary=mapping_output,
+            mapping_artifact=mapping_artifact,
+        )
 
     require_tool(cgra_tool, "loom-cgra-sim")
-    cgra_report = output_dir / f"{attempt.stem}.cgra.report.json"
+    cgra_report = output_dir / f"{output_stem}.cgra.report.json"
     run_command(
         [
             str(cgra_tool),
@@ -340,7 +401,73 @@ def run_attempt(
         args.timeout_seconds,
         f"{attempt.case} CGRA-sim",
     )
-    artifacts.append(cgra_report)
+    return AttemptResult(
+        attempt=attempt,
+        dfg_report=output,
+        mapping_summary=mapping_output,
+        mapping_artifact=mapping_artifact,
+        cgra_report=cgra_report,
+    )
+
+
+def aggregate_mapping_id(case: str, hardware: str) -> str:
+    return f"{quote(case, safe='')}__workload_graph_set__{hardware}"
+
+
+def run_aggregates(
+    output_dir: Path,
+    results: list[AttemptResult],
+    timeout_seconds: int,
+) -> list[Path]:
+    grouped: dict[tuple[str, str, str], list[AttemptResult]] = {}
+    for result in results:
+        stem = result.attempt.aggregate_stem
+        if not stem:
+            continue
+        key = (result.attempt.case, result.attempt.hardware, stem)
+        grouped.setdefault(key, []).append(result)
+
+    artifacts: list[Path] = []
+    for (case, hardware, stem), group in grouped.items():
+        if len(group) < 2:
+            continue
+        if any(
+            item.mapping_artifact is None or item.mapping_summary is None or item.cgra_report is None
+            for item in group
+        ):
+            continue
+        dfg_output = output_dir / f"{stem}.dfg.report.json"
+        mapping_output = output_dir / f"{stem}.mapping.json"
+        cgra_output = output_dir / f"{stem}.cgra.report.json"
+        mapping_summary = output_dir / f"{stem}.mapping.csv"
+        command = [
+            sys.executable,
+            str(ROOT / "test" / "e2e" / "aggregate_workload_graph_artifacts.py"),
+            "--workload",
+            case,
+            "--hardware",
+            hardware,
+            "--mapping-id",
+            aggregate_mapping_id(case, hardware),
+            "--dfg-output",
+            str(dfg_output),
+            "--mapping-output",
+            str(mapping_output),
+            "--cgra-output",
+            str(cgra_output),
+            "--mapping-summary-output",
+            str(mapping_summary),
+        ]
+        for result in group:
+            command.extend(["--dfg-report", str(result.dfg_report)])
+        for result in group:
+            if result.mapping_artifact is not None:
+                command.extend(["--mapping-artifact", str(result.mapping_artifact)])
+        for result in group:
+            if result.cgra_report is not None:
+                command.extend(["--cgra-report", str(result.cgra_report)])
+        run_command(command, timeout_seconds, f"{case} aggregate")
+        artifacts.extend([dfg_output, mapping_output, cgra_output, mapping_summary])
     return artifacts
 
 
@@ -364,9 +491,16 @@ def main(argv: list[str]) -> int:
     require_tool(dfg_tool, "loom-dfg-sim")
     require_tool(pnr_tool, "loom-pnr-map")
     output_dir = Path(args.output_dir)
-    artifacts: list[Path] = []
+    results: list[AttemptResult] = []
     for attempt in ATTEMPTS:
-        artifacts.extend(run_attempt(dfg_tool, pnr_tool, cgra_tool, output_dir, args, attempt))
+        results.append(run_attempt(dfg_tool, pnr_tool, cgra_tool, output_dir, args, attempt))
+    artifacts: list[Path] = []
+    for result in results:
+        artifacts.append(result.dfg_report)
+        for artifact in (result.mapping_summary, result.mapping_artifact, result.cgra_report):
+            if artifact is not None:
+                artifacts.append(artifact)
+    artifacts.extend(run_aggregates(output_dir, results, args.timeout_seconds))
     for artifact in artifacts:
         print(artifact)
     return 0

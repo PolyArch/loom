@@ -287,6 +287,90 @@ def assert_cmsis_cgra_pass_row(
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
 
 
+def assert_cgra_status_audit_rejects_bad_aggregate_graphs(
+    repo: Path,
+    out_dir: Path,
+    legacy_root: Path,
+) -> None:
+    for report_name in ("arm_var_f32.dfg.report.json", "arm_var_f32.cgra.report.json"):
+        report = out_dir / "cmsis-sim-evidence" / report_name
+        original = report.read_text()
+        data = json.loads(original)
+        data["component_graphs"] = ["g_t_arm_var_f32_red_0_0"]
+        try:
+            report.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+            result = run(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_cgra_status_audit.sh",
+                    "--input",
+                    str(out_dir / "cgra-status-summary.csv"),
+                    "--json-input",
+                    str(out_dir / "cgra-status-summary.json"),
+                    "--legacy-loombench-root",
+                    str(legacy_root),
+                ],
+                expect_success=False,
+            )
+        finally:
+            report.write_text(original)
+        combined = result.stdout + result.stderr
+        if "aggregate component_graphs do not exactly match row graph_ids" not in combined:
+            raise AssertionError(f"CGRA status audit should reject stale aggregate graph coverage: {combined}")
+
+        data = json.loads(original)
+        data.pop("aggregation_kind", None)
+        try:
+            report.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+            result = run(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_cgra_status_audit.sh",
+                    "--input",
+                    str(out_dir / "cgra-status-summary.csv"),
+                    "--json-input",
+                    str(out_dir / "cgra-status-summary.json"),
+                    "--legacy-loombench-root",
+                    str(legacy_root),
+                ],
+                expect_success=False,
+            )
+        finally:
+            report.write_text(original)
+        combined = result.stdout + result.stderr
+        if "aggregate lacks workload_graph_set aggregation_kind" not in combined:
+            raise AssertionError(f"CGRA status audit should reject pseudo aggregate evidence: {combined}")
+
+
+def assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo: Path, out_dir: Path) -> None:
+    report = out_dir / "cmsis-sim-evidence" / "arm_var_f32.cgra.report.json"
+    original = report.read_text()
+    data = json.loads(original)
+    data["component_graphs"] = ["g_t_arm_var_f32_red_0_0"]
+    try:
+        report.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+        result = run(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "generic-audit-bad-aggregate.json"),
+                str(out_dir / "cgra-status-summary.csv"),
+            ],
+            expect_success=False,
+        )
+    finally:
+        report.write_text(original)
+    combined = result.stdout + result.stderr
+    audit_data = json.loads((out_dir / "generic-audit-bad-aggregate.json").read_text())
+    audit_diagnostics = "\n".join(str(item) for item in audit_data.get("diagnostics", []))
+    if "aggregate component_graphs do not exactly match row graph_ids" not in combined + audit_diagnostics:
+        raise AssertionError(f"generic audit should reject stale aggregate graph coverage: {combined} {audit_data}")
+
+
 def assert_cmsis_add_q15_shared_adg_evidence(sim_evidence: Path) -> None:
     mapping_artifact = json.loads((sim_evidence / "arm_add_q15.mapping.json").read_text())
     expected_mapping = {
@@ -336,6 +420,42 @@ def assert_cmsis_add_q15_shared_adg_evidence(sim_evidence: Path) -> None:
     for key, value in expected_cgra.items():
         if cgra_report.get(key) != value:
             raise AssertionError(f"arm_add_q15 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
+
+
+def assert_cmsis_offset_shared_adg_evidence(sim_evidence: Path) -> None:
+    mapping_artifact = json.loads((sim_evidence / "arm_offset_f32.mapping.json").read_text())
+    expected_mapping = {
+        "hardware": "shared_reduction_adg",
+        "placed_records": 11,
+        "routed_edges": 15,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "status": "pass",
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_offset_f32 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    routes = mapping_artifact.get("routes", [])
+    if len(routes) != 15:
+        raise AssertionError(f"arm_offset_f32 mapping should expose every routed edge: {mapping_artifact}")
+    actual_edges = {route.get("edge_ref") for route in routes if isinstance(route, dict)}
+    required_edges = {
+        "dataflow.carry#0.result0->arith.addi#0.operand0",
+        "arith.addi#0.result0->dataflow.carry#0.operand2",
+        "dataflow.carry#0.result0->dataflow.load#0.operand1",
+        "dataflow.carry#0.result0->dataflow.store#0.operand1",
+    }
+    if not required_edges.issubset(actual_edges):
+        raise AssertionError(f"arm_offset_f32 mapping missed explicit index-carry route evidence: {mapping_artifact}")
+    if any("llvm.getelementptr" in str(edge) for edge in actual_edges):
+        raise AssertionError(f"arm_offset_f32 mapping must not hide GEP as a routed edge: {mapping_artifact}")
+    config_records = mapping_artifact.get("config_records")
+    if not isinstance(config_records, int) or config_records <= 0:
+        raise AssertionError(f"arm_offset_f32 mapping should emit non-empty configuration evidence: {mapping_artifact}")
+
+    cgra_report = json.loads((sim_evidence / "arm_offset_f32.cgra.report.json").read_text())
+    if cgra_report.get("config_records") != config_records or cgra_report.get("route_segments", 0) <= 0:
+        raise AssertionError(f"arm_offset_f32 CGRA report should consume mapping evidence: {cgra_report}")
 
 
 def assert_cmsis_fill_shared_adg_evidence(sim_evidence: Path) -> None:
@@ -475,6 +595,73 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         raise AssertionError(f"arm_mean_f32 CGRA report should carry final reduction output: {cgra_report}")
 
 
+def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
+    dfg_report = json.loads((sim_evidence / "arm_var_f32.dfg.report.json").read_text())
+    expected_graphs = ["g_t_arm_var_f32_red_0_0", "g_t_arm_var_f32_red_1_0"]
+    expected_outputs = ["none", "f32:3.750000", "none", "f32:31.796875"]
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "StatisticsFunctions/arm_var_f32.c"
+        or dfg_report.get("graph") != "workload_graph_set"
+        or dfg_report.get("aggregation_kind") != "workload_graph_set"
+        or dfg_report.get("component_graphs") != expected_graphs
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("optimistic_cycles") != 178
+        or dfg_report.get("dynamic_work_items") != 8
+        or dfg_report.get("final_outputs") != expected_outputs
+    ):
+        raise AssertionError(f"unexpected arm_var_f32 aggregate DFG report: {dfg_report}")
+    expected_memory = {
+        "g_t_arm_var_f32_red_0_0:arg4": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+        "g_t_arm_var_f32_red_1_0:arg5": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+    }
+    if dfg_report.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"unexpected arm_var_f32 aggregate DFG memory: {dfg_report}")
+
+    mapping_artifact = json.loads((sim_evidence / "arm_var_f32.mapping.json").read_text())
+    expected_mapping = {
+        "hardware": "shared_reduction_adg",
+        "graph": "workload_graph_set",
+        "aggregation_kind": "workload_graph_set",
+        "placed_records": 22,
+        "routed_edges": 30,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 692,
+        "route_segments": 126,
+        "status": "pass",
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_var_f32 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    if mapping_artifact.get("component_graphs") != expected_graphs:
+        raise AssertionError(f"arm_var_f32 mapping should preserve component graph coverage: {mapping_artifact}")
+    if len(mapping_artifact.get("routes", [])) != 30:
+        raise AssertionError(f"arm_var_f32 mapping should expose every component route: {mapping_artifact}")
+
+    cgra_report = json.loads((sim_evidence / "arm_var_f32.cgra.report.json").read_text())
+    expected_cgra = {
+        "hardware": "shared_reduction_adg",
+        "graph": "workload_graph_set",
+        "status": "pass",
+        "aggregation_kind": "workload_graph_set",
+        "fidelity_level": "mapping_constraint_estimate",
+        "dfg_cycles": 178,
+        "hardware_aware_cycles": 312,
+        "performance_delta_cycles": 134,
+        "route_segments": 126,
+        "config_records": 692,
+        "functional_state_source": "component_cgra_sim_reports_carried_from_dfg_sim_reports",
+    }
+    for key, value in expected_cgra.items():
+        if cgra_report.get(key) != value:
+            raise AssertionError(f"arm_var_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
+    if cgra_report.get("component_graphs") != expected_graphs:
+        raise AssertionError(f"arm_var_f32 CGRA report should preserve component graph coverage: {cgra_report}")
+    if cgra_report.get("final_outputs") != expected_outputs or cgra_report.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"arm_var_f32 CGRA report should carry aggregate final state: {cgra_report}")
+
+
 def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
     sim_evidence = out_dir / "cmsis-sim-evidence"
     run(
@@ -569,9 +756,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 8,
+            "pass": 9,
             "fail": 0,
-            "blocked": 6,
+            "blocked": 5,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -600,11 +787,18 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_mean_f32.c", "arm_mean_f32"
     )
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_var_f32.c", "arm_var_f32"
+    )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
     assert_cmsis_add_q15_shared_adg_evidence(sim_evidence)
+    assert_cmsis_offset_shared_adg_evidence(sim_evidence)
     assert_cmsis_fill_shared_adg_evidence(sim_evidence)
     assert_cmsis_mean_shared_adg_evidence(sim_evidence)
+    assert_cmsis_var_shared_adg_evidence(sim_evidence)
+    assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
+    assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )

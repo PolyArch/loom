@@ -233,6 +233,11 @@ def validate_pass_row_referenced_jsons(
         if data.get("status") != "pass":
             diagnostics.append(f"row {row_index}: referenced {label} JSON status is not pass")
         validate_workload_identity(row_index, row, label, data, diagnostics)
+        diagnostics.extend(
+            intermediate_artifacts.cgra_status_graph_identity_diagnostics(
+                row, label, data, row_index=row_index
+            )
+        )
     if comparison.get("functional_comparison_status") != "pass":
         diagnostics.append(f"row {row_index}: referenced comparison_report functional status is not pass")
     if comparison.get("memory_comparison_status") != "pass":
@@ -265,7 +270,6 @@ def validate_non_pass_row_referenced_jsons(
     row: dict[str, str],
     diagnostics: list[str],
 ) -> None:
-    row_graph_ids = {item for item in row.get("graph_ids", "").split(",") if item}
     for label, expected_kind, status_column in (
         ("dfg_report", "dfg_sim_report", "dfg_status"),
         ("mapping_artifact", "pnr_mapping", "mapping_status"),
@@ -287,9 +291,11 @@ def validate_non_pass_row_referenced_jsons(
             diagnostics.append(
                 f"row {row_index}: referenced {label} JSON status does not match {status_column}"
             )
-        graph = data.get("graph")
-        if isinstance(graph, str) and graph and row_graph_ids and graph not in row_graph_ids:
-            diagnostics.append(f"row {row_index}: referenced {label} graph is not listed in row graph_ids")
+        diagnostics.extend(
+            intermediate_artifacts.cgra_status_graph_identity_diagnostics(
+                row, label, data, row_index=row_index
+            )
+        )
         if label == "dfg_report" and row.get("dfg_mlir", ""):
             input_fingerprints = data.get("input_artifact_fingerprints")
             if not isinstance(input_fingerprints, dict):
