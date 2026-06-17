@@ -314,6 +314,58 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         raise AssertionError(f"app sweep mode should not reuse stale dotproduct evidence: {dotproduct}")
 
 
+def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-attempt-manifest",
+            "test/app/shared-cgra-blocker-batch.json",
+        ],
+    )
+    rows = read_rows(out_dir / "cgra-status-summary.csv")
+    data = json.loads((out_dir / "cgra-status-summary.json").read_text())
+    assert_counts(
+        data,
+        "app",
+        {
+            "total": 109,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 54,
+            "unsupported": 0,
+            "missing_status": 55,
+        },
+    )
+    for case in ("crc32", "fir_filter", "merge", "convolve_1d_same"):
+        row = one_row(rows, "app", case)
+        if (
+            row["status"] != "blocked"
+            or row["diagnostic_class"] != "dfg_report_unsupported"
+            or row["owner"] != "sim_report"
+            or row["blocking_prerequisite"] != "dfg_report"
+            or row["dfg_status"] != "unsupported"
+            or row["mapping_status"] != "unsupported"
+            or row["cgra_status"] != "blocked"
+            or row["comparison_status"] != "blocked"
+            or row["hardware_system"] != "shared_reduction_adg"
+            or row["final_outputs_present"] != "false"
+            or row["final_memory_state_present"] != "false"
+            or "unsupported op: scf.for" not in row["diagnostic"]
+        ):
+            raise AssertionError(f"attempted app row should expose structured shared-ADG blocker: {row}")
+        for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+            assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+            artifact = out_dir / "current-sim-cycle" / Path(row[key]).name
+            if not artifact.is_file():
+                raise AssertionError(f"attempt manifest should emit {artifact}")
+
+
 def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
     run(
         repo,
@@ -1204,6 +1256,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
+        assert_app_attempt_manifest_mode(repo, out_dir / "app-attempt-manifest", legacy_root)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)
         assert_cmsis_sim_default_mode(repo, out_dir / "cmsis-sim-default", legacy_root)

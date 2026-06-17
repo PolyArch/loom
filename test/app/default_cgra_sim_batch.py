@@ -132,12 +132,23 @@ def _read_json(path: Path) -> dict[str, object]:
 
 def validate_evidence_dir(evidence_dir: Path, path: Path | None = None) -> None:
     for case, expected_hardware in load_default_hardware(path).items():
+        dfg_path = evidence_dir / f"{case}.dfg.report.json"
         mapping_path = evidence_dir / f"{case}.mapping.json"
         cgra_path = evidence_dir / f"{case}.cgra.report.json"
-        if not mapping_path.is_file():
-            raise ValueError(f"missing default batch mapping evidence: {mapping_path}")
-        if not cgra_path.is_file():
-            raise ValueError(f"missing default batch CGRA evidence: {cgra_path}")
+        comparison_path = evidence_dir / f"{case}.sim-comparison-report.json"
+        for label, artifact_path in (
+            ("DFG-sim", dfg_path),
+            ("mapping", mapping_path),
+            ("CGRA-sim", cgra_path),
+            ("comparison", comparison_path),
+        ):
+            if not artifact_path.is_file():
+                raise ValueError(f"missing default batch {label} evidence: {artifact_path}")
+            data = _read_json(artifact_path)
+            if data.get("status") != "pass":
+                raise ValueError(
+                    f"default batch {label} evidence for {case} has status {data.get('status')!r}"
+                )
         mapping = _read_json(mapping_path)
         cgra = _read_json(cgra_path)
         if mapping.get("hardware") != expected_hardware:

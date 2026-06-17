@@ -244,6 +244,44 @@ for path in (dfg_dest, mapping_dest, cgra_dest):
 PY
 }
 
+case_aggregate_status() {
+  local case_name="$1"
+  python3 - "${case_name}" "${OUT_DIR}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+case_name = sys.argv[1]
+out_dir = Path(sys.argv[2])
+
+
+def status(suffix: str) -> str:
+    path = out_dir / f"{case_name}.{suffix}"
+    if not path.is_file():
+        return "missing"
+    data = json.loads(path.read_text())
+    value = data.get("status")
+    return value if isinstance(value, str) and value else "missing"
+
+
+statuses = {
+    "dfg": status("dfg.report.json"),
+    "mapping": status("mapping.json"),
+    "cgra": status("cgra.report.json"),
+    "comparison": status("sim-comparison-report.json"),
+}
+if all(value == "pass" for value in statuses.values()):
+    print("pass")
+elif any(value == "fail" for value in statuses.values()):
+    print("fail")
+elif any(value == "unsupported" for value in statuses.values()):
+    print("unsupported")
+else:
+    print("blocked")
+PY
+}
+
 for case_name in "${CASES[@]}"; do
   case_out="${chain_root}/${case_name}"
   rm -rf "${case_out}"
@@ -251,10 +289,18 @@ for case_name in "${CASES[@]}"; do
   if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "vecscale" ]]; then
     case_hardware_source="shared-vector-alu"
   fi
-  bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
-    --output-dir "${case_out}" \
-    --case "${case_name}" \
-    --hardware-source "${case_hardware_source}" \
-    --legacy-app-root "${LEGACY_APP_ROOT}"
+  mkdir -p "${case_out}"
+  if ! bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
+      --output-dir "${case_out}" \
+      --case "${case_name}" \
+      --hardware-source "${case_hardware_source}" \
+      --legacy-app-root "${LEGACY_APP_ROOT}" \
+      > "${case_out}/chain.stdout.log" \
+      2> "${case_out}/chain.stderr.log"; then
+    cat "${case_out}/chain.stdout.log"
+    cat "${case_out}/chain.stderr.log" >&2
+    exit 1
+  fi
   normalize_case_artifacts "${case_name}" "${case_out}"
+  echo "[${case_name}] $(case_aggregate_status "${case_name}")"
 done

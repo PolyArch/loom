@@ -141,11 +141,17 @@ def assert_default_batch_manifest_validation(repo: Path, out_dir: Path) -> None:
     )
     mismatch_evidence = out_dir / "mismatch-evidence"
     mismatch_evidence.mkdir()
+    (mismatch_evidence / "vecsum.dfg.report.json").write_text(
+        json.dumps({"status": "pass"}, indent=2, sort_keys=True) + "\n"
+    )
     (mismatch_evidence / "vecsum.mapping.json").write_text(
-        json.dumps({"hardware": "shared_reduction_adg"}, indent=2, sort_keys=True) + "\n"
+        json.dumps({"hardware": "shared_reduction_adg", "status": "pass"}, indent=2, sort_keys=True) + "\n"
     )
     (mismatch_evidence / "vecsum.cgra.report.json").write_text(
-        json.dumps({"hardware": "shared_reduction_adg"}, indent=2, sort_keys=True) + "\n"
+        json.dumps({"hardware": "shared_reduction_adg", "status": "pass"}, indent=2, sort_keys=True) + "\n"
+    )
+    (mismatch_evidence / "vecsum.sim-comparison-report.json").write_text(
+        json.dumps({"status": "pass"}, indent=2, sort_keys=True) + "\n"
     )
     result = artifact_test_common.run_command(
         repo,

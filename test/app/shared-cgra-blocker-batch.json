@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case": "crc32",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "fir_filter",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "merge",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "convolve_1d_same",
+      "hardware": "shared_reduction_adg"
+    }
+  ]
+}

@@ -197,6 +197,64 @@ def read_rows(path: Path) -> list[dict[str, str]]:
         return rows
 
 
+def assert_default_batch_rejects_non_pass_evidence(repo: Path, out_dir: Path) -> None:
+    manifest = out_dir / "invalid-default-cgra-sim-batch.json"
+    evidence = out_dir / "invalid-default-evidence"
+    evidence.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "delta_encode", "hardware": "shared_reduction_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    artifacts = {
+        "dfg.report.json": "dfg_sim_report",
+        "mapping.json": "pnr_mapping",
+        "cgra.report.json": "cgra_sim_report",
+        "sim-comparison-report.json": "sim_comparison_report",
+    }
+    for suffix, kind in artifacts.items():
+        (evidence / f"delta_encode.{suffix}").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": kind,
+                    "workload": "delta_encode",
+                    "hardware": "shared_reduction_adg",
+                    "status": "blocked",
+                    "diagnostics": ["fixture non-pass evidence"],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+    result = subprocess.run(
+        [
+            "python3",
+            "test/app/default_cgra_sim_batch.py",
+            "--manifest",
+            str(manifest),
+            "--validate-evidence-dir",
+            str(evidence),
+        ],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0:
+        raise AssertionError("default batch validation accepted non-pass simulator evidence")
+    if "status" not in result.stderr:
+        raise AssertionError(f"default batch non-pass diagnostic missing status detail: {result.stderr}")
+
+
 def one_row(rows: list[dict[str, str]], case: str) -> dict[str, str]:
     matches = [row for row in rows if row["suite"] == "app" and row["case"] == case]
     if len(matches) != 1:
@@ -650,7 +708,8 @@ def main(argv: list[str]) -> int:
     with artifact_test_common.repo_temp_dir(repo, "cgra-sim-evidence-sweep-") as tmp:
         out_dir = Path(tmp)
         evidence_dir = out_dir / "current-sim-cycle"
-        run(
+        assert_default_batch_rejects_non_pass_evidence(repo, out_dir)
+        sweep_result = run(
             repo,
             [
                 "bash",
@@ -777,6 +836,10 @@ def main(argv: list[str]) -> int:
                 "upsample",
             ],
         )
+        if "[delta_encode] PASS" in sweep_result.stdout:
+            raise AssertionError("unsupported delta_encode sweep row must not be reported as PASS")
+        if "[delta_encode] unsupported" not in sweep_result.stdout:
+            raise AssertionError(f"unsupported delta_encode status missing from sweep stdout: {sweep_result.stdout}")
         for case in (
             "vecsum",
             "vecsum-while",
