@@ -1176,6 +1176,15 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
+    assert_cmsis_dfg_blocker_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        "FullyConnectedFunctions/arm_vector_sum_s8.c",
+        dfg_status="unsupported",
+        diagnostic_class="dfg_report_unsupported",
+        diagnostic_substring="unsupported op: scf.for",
+    )
     assert_cmsis_component_blocker_row(repo, rows, sim_evidence)
 
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"

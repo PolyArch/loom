@@ -322,6 +322,27 @@ ATTEMPTS = (
         artifact_stem="arm_relu_q7.red1",
         aggregate_stem="arm_relu_q7",
     ),
+    Attempt(
+        suite="cmsis-nn",
+        case="FullyConnectedFunctions/arm_vector_sum_s8.c",
+        stem="arm_vector_sum_s8",
+        graph="g_t_arm_vector_sum_s8_red_0_0",
+        dfg_dir_arg="cmsis_nn_dfg_dir",
+        args=(
+            "0=none",
+            "1=0",
+            "2=2",
+            "3=1",
+            "4=2",
+            "5=1",
+            "6=0",
+            "7=1",
+        ),
+        memrefs=(
+            "8=0,0",
+            "9=1,2,3,4",
+        ),
+    ),
 )
 
 
