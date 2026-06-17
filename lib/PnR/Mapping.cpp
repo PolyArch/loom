@@ -201,6 +201,13 @@ bool isPointerCarryOp(mlir::Operation *op) {
   return isLlvmPointerType(op->getResult(0).getType());
 }
 
+bool isPointerGateOp(mlir::Operation *op) {
+  if (op->getName().getStringRef() != "dataflow.gate" ||
+      op->getNumOperands() != 2 || op->getNumResults() != 2)
+    return false;
+  return isLlvmPointerType(op->getResult(1).getType());
+}
+
 bool isGraphReturnOp(mlir::Operation *op) {
   return op->getName().getStringRef() == "dataflow.graph.return";
 }
@@ -245,11 +252,16 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
     return true;
   }
 
-  if (!isPointerCarryOp(op))
+  if (!isPointerCarryOp(op) && !isPointerGateOp(op))
     return false;
-  for (mlir::OpOperand &use : op->getResult(0).getUses()) {
+  if (isPointerGateOp(op) && !op->getResult(0).use_empty())
+    return false;
+  unsigned pointerResultIndex = isPointerGateOp(op) ? 1 : 0;
+  for (mlir::OpOperand &use : op->getResult(pointerResultIndex).getUses()) {
     mlir::Operation *owner = use.getOwner();
     if (mlir::isa<mlir::LLVM::GEPOp>(owner) || isGraphReturnOp(owner))
+      continue;
+    if (isPointerGateOp(owner))
       continue;
     if (isPointerMemrefBaseAdapterOp(owner))
       continue;

@@ -52,6 +52,34 @@ dataflow.graph.func private @g_desc_red(%ctrl: none, %lb: i64, %ub: i64,
   dataflow.graph.return %ctrl, %r : none, f32
 }
 
+// Pointer-carried reductions must not let the false stream sentinel drive
+// address-generation ops. The pointer value consumed by the lifted body is
+// routed through dataflow.gate, while non-pointer loop-carried values keep
+// the plain carry output.
+
+// CHECK-LABEL: dataflow.graph.func private @g_pointer_carried_red
+// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK: %[[PTR_CARRY:.*]] = dataflow.carry %[[RWC]], %arg4,
+// CHECK: %{{.*}}, %[[PTR_BODY:.*]] = dataflow.gate %[[RWC]], %[[PTR_CARRY]] : !llvm.ptr
+// CHECK: %[[ACC_CARRY:.*]] = dataflow.carry %[[RWC]], %arg5,
+// CHECK: llvm.getelementptr %[[PTR_BODY]]
+// CHECK-NOT: scf.for
+// CHECK: dataflow.graph.return %arg0, %[[ACC_CARRY]] : none, i32
+dataflow.graph.func private @g_pointer_carried_red(%ctrl: none, %lb: i32,
+                                                   %ub: i32, %step: i32,
+                                                   %buf: !llvm.ptr,
+                                                   %init: i32)
+    -> (none, i32) {
+  %r:2 = scf.for %i = %lb to %ub step %step
+      iter_args(%ptr = %buf, %acc = %init) -> (!llvm.ptr, i32) : i32 {
+    %next = llvm.getelementptr %ptr[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %v = llvm.load %next : !llvm.ptr -> i32
+    %s = arith.addi %acc, %v : i32
+    scf.yield %next, %s : !llvm.ptr, i32
+  }
+  dataflow.graph.return %ctrl, %r#1 : none, i32
+}
+
 // Negative-bail #1: a graph.func with a nested scf.for in its body is
 // left unchanged. The pass emits a remark; the loop survives as-is.
 

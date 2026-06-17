@@ -51,6 +51,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -191,20 +192,30 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
   ::mlir::Block &origBody = loop.getRegion().front();
   auto yieldOp = ::llvm::cast<::mlir::scf::YieldOp>(origBody.getTerminator());
   ::llvm::SmallVector<::mlir::Value, 4> carryVals;
+  ::llvm::SmallVector<::mlir::Value, 4> bodyIterVals;
   carryVals.reserve(loop.getInitArgs().size());
+  bodyIterVals.reserve(loop.getInitArgs().size());
   for (size_t i = 0, e = loop.getInitArgs().size(); i < e; ++i) {
     ::mlir::Value initVal = loop.getInitArgs()[i];
     ::mlir::Value carryFeed = yieldOp.getOperand(i);
     auto carryOp = ::dataflow::CarryOp::create(
         builder, loc, initVal.getType(), rwcVal, initVal, carryFeed);
     carryVals.push_back(carryOp.getOutput());
+    ::mlir::Value bodyVal = carryOp.getOutput();
+    if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(initVal.getType())) {
+      auto gateOp = ::dataflow::GateOp::create(
+          builder, loc, builder.getI1Type(), initVal.getType(), rwcVal,
+          carryOp.getOutput());
+      bodyVal = gateOp.getAfterValue();
+    }
+    bodyIterVals.push_back(bodyVal);
   }
 
   // 3. Rewrite uses of the loop's induction variable + iter_args
   //    inside the body to use the new SSA values.
   loop.getInductionVar().replaceAllUsesWith(idxVal);
   for (size_t i = 0, e = loop.getInitArgs().size(); i < e; ++i)
-    loop.getRegionIterArgs()[i].replaceAllUsesWith(carryVals[i]);
+    loop.getRegionIterArgs()[i].replaceAllUsesWith(bodyIterVals[i]);
 
   // 4. Replace each loop result with the matching carry's output.
   for (size_t i = 0, e = loop.getResults().size(); i < e; ++i)

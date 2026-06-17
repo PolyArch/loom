@@ -94,6 +94,7 @@ struct AddrResolution {
   ::mlir::Value ptr;
   ::mlir::Value intIndex;
   ::dataflow::StreamOp ordinalStream;
+  std::int64_t ordinalElementBias = 0;
   unsigned byteToElementShift = 0;
   ::mlir::Operation *gepToErase = nullptr;
 };
@@ -160,8 +161,16 @@ getSingleIndexElementStride(::mlir::LLVM::GEPOp gep, ::mlir::Type elemTy) {
   if (!isGraphPtrBlockArg(carry.getInit(), graph))
     return {};
   auto gep = carry.getCarry().getDefiningOp<::mlir::LLVM::GEPOp>();
-  if (!gep || gep.getBase() != carry.getOutput())
+  if (!gep)
     return {};
+  ::mlir::Value gepBase = gep.getBase();
+  if (gepBase != carry.getOutput()) {
+    auto gate = gepBase.getDefiningOp<::dataflow::GateOp>();
+    if (!gate || gate.getAfterValue() != gepBase ||
+        gate.getBeforeValue() != carry.getOutput() ||
+        gate.getBeforeCond() != carry.getCond())
+      return {};
+  }
   std::optional<std::int64_t> elementStride =
       getSingleIndexElementStride(gep, elemTy);
   if (!elementStride || *elementStride != 1)
@@ -172,6 +181,29 @@ getSingleIndexElementStride(::mlir::LLVM::GEPOp gep, ::mlir::Type elemTy) {
   return stream;
 }
 
+std::optional<::dataflow::CarryOp>
+getGatedPointerCarry(::mlir::Value value) {
+  auto gate = value.getDefiningOp<::dataflow::GateOp>();
+  if (!gate || gate.getAfterValue() != value)
+    return std::nullopt;
+  auto carry = gate.getBeforeValue().getDefiningOp<::dataflow::CarryOp>();
+  if (!carry || gate.getBeforeCond() != carry.getCond() ||
+      !::llvm::isa<::mlir::LLVM::LLVMPointerType>(
+          carry.getOutput().getType()))
+    return std::nullopt;
+  return carry;
+}
+
+std::optional<::dataflow::CarryOp> getPointerCarry(::mlir::Value value) {
+  if (auto carry = value.getDefiningOp<::dataflow::CarryOp>()) {
+    if (carry.getOutput() == value &&
+        ::llvm::isa<::mlir::LLVM::LLVMPointerType>(
+            carry.getOutput().getType()))
+      return carry;
+  }
+  return getGatedPointerCarry(value);
+}
+
 std::optional<AddrResolution>
 resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
                bool topLevel, ::mlir::Type elemTy) {
@@ -179,24 +211,43 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
     if (auto gep = loadStorePtr.getDefiningOp<::mlir::LLVM::GEPOp>()) {
       ::mlir::Value base = gep.getBase();
       auto dynIdxs = gep.getDynamicIndices();
+      if (auto carry = getPointerCarry(base)) {
+        if (::dataflow::StreamOp stream =
+                getUnitStridePointerCarryStream(*carry, graph, elemTy)) {
+          std::optional<std::int64_t> bias =
+              getSingleIndexElementStride(gep, elemTy);
+          if (!bias)
+            return std::nullopt;
+          return AddrResolution{carry->getInit(), {}, stream, *bias, 0,
+                                nullptr};
+        }
+      }
       if (!isGraphPtrBlockArg(base, graph) || dynIdxs.size() != 1)
         return std::nullopt;
       ::mlir::Value idx = dynIdxs.front();
       if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
         return std::nullopt;
-      return AddrResolution{base, idx, {}, getByteToElementShift(gep, elemTy),
+      return AddrResolution{base, idx, {}, 0, getByteToElementShift(gep, elemTy),
                             gep.getOperation()};
     }
     if (auto carry = loadStorePtr.getDefiningOp<::dataflow::CarryOp>()) {
       if (::dataflow::StreamOp stream =
               getUnitStridePointerCarryStream(carry, graph, elemTy))
-        return AddrResolution{carry.getInit(), {}, stream, 0, nullptr};
+        return AddrResolution{carry.getInit(), {}, stream, 0, 0, nullptr};
       if (!isGraphPtrBlockArg(carry.getInit(), graph))
         return std::nullopt;
-      return AddrResolution{carry.getOutput(), {}, {}, 0, nullptr};
+      return AddrResolution{carry.getOutput(), {}, {}, 0, 0, nullptr};
+    }
+    if (auto carry = getGatedPointerCarry(loadStorePtr)) {
+      if (::dataflow::StreamOp stream =
+              getUnitStridePointerCarryStream(*carry, graph, elemTy))
+        return AddrResolution{carry->getInit(), {}, stream, 0, 0, nullptr};
+      if (!isGraphPtrBlockArg(carry->getInit(), graph))
+        return std::nullopt;
+      return AddrResolution{loadStorePtr, {}, {}, 0, 0, nullptr};
     }
     if (isGraphPtrBlockArg(loadStorePtr, graph))
-      return AddrResolution{loadStorePtr, {}, {}, 0, nullptr};
+      return AddrResolution{loadStorePtr, {}, {}, 0, 0, nullptr};
     return std::nullopt;
   }
   // Nested permissive fallback.
@@ -207,12 +258,12 @@ resolvePointer(::mlir::Value loadStorePtr, ::dataflow::GraphFuncOp graph,
     if (dynIdxs.size() == 1) {
       ::mlir::Value idx = dynIdxs.front();
       if (::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(idx.getType()))
-        return AddrResolution{gep.getBase(), idx, {},
+        return AddrResolution{gep.getBase(), idx, {}, 0,
                               getByteToElementShift(gep, elemTy),
                               gep.getOperation()};
     }
   }
-  return AddrResolution{loadStorePtr, {}, {}, 0, nullptr};
+  return AddrResolution{loadStorePtr, {}, {}, 0, 0, nullptr};
 }
 
 // Materialize (or look up) an unrealized_conversion_cast bridging
@@ -317,6 +368,33 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   return carry.getOutput();
 }
 
+::mlir::Value getBiasedStreamOrdinal(::mlir::OpBuilder &builder,
+                                     ::dataflow::StreamOp stream,
+                                     ::mlir::Value ordinal,
+                                     std::int64_t bias, ::mlir::Value ctrl,
+                                     ::mlir::Location loc,
+                                     ::mlir::Operation *insertBefore) {
+  if (bias == 0)
+    return ordinal;
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(insertBefore);
+  ::mlir::TypedAttr biasAttr =
+      getIntegerLikeAttr(builder, ordinal.getType(), bias);
+  if (!biasAttr)
+    return {};
+  ::mlir::Value biasValue =
+      ::dataflow::ConstantOp::create(builder, loc, ordinal.getType(), ctrl,
+                                     biasAttr)
+          .getValue();
+  ::mlir::Value stableBias =
+      ::dataflow::InvariantOp::create(builder, loc, ordinal.getType(),
+                                      stream.getRwc(), biasValue)
+          .getOutput();
+  return ::mlir::arith::AddIOp::create(builder, loc, ordinal, stableBias)
+      .getResult();
+}
+
 ::mlir::Value
 getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
                 ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache,
@@ -414,6 +492,11 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
     ::mlir::Value ordinal =
         getStreamOrdinal(builder, ctx.ordinalCache, resolved->ordinalStream,
                          ctx.ctrl, loc, op);
+    if (!ordinal)
+      return false;
+    ordinal = getBiasedStreamOrdinal(builder, resolved->ordinalStream, ordinal,
+                                     resolved->ordinalElementBias, ctx.ctrl,
+                                     loc, op);
     if (!ordinal)
       return false;
     addr = getElementIndex(builder, ctx.graph, ctx.indexCastCache, ordinal,

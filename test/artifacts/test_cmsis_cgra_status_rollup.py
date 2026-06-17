@@ -396,9 +396,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 9,
+            "pass": 10,
             "fail": 0,
-            "blocked": 5,
+            "blocked": 4,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -919,7 +919,7 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         "routed_edges": 13,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 305,
+        "config_records": 296,
         "status": "pass",
     }
     for key, value in expected_mapping.items():
@@ -939,12 +939,12 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         raise AssertionError(f"arm_mean_f32 mapping missed index-carry route evidence: {mapping_artifact}")
     expected_endpoints = {
         "arith.addi#0.result0->dataflow.carry#1.operand2": (
-            "shared_reduction_adg::fabric.op#17.result0",
+            "shared_reduction_adg::fabric.op#2.result0",
             "shared_reduction_adg::fabric.op#15.operand2",
         ),
         "dataflow.carry#1.result0->arith.addi#0.operand0": (
             "shared_reduction_adg::fabric.op#15.result0",
-            "shared_reduction_adg::fabric.op#17.operand0",
+            "shared_reduction_adg::fabric.op#2.operand0",
         ),
         "dataflow.carry#1.result0->dataflow.load#0.operand1": (
             "shared_reduction_adg::fabric.op#15.result0",
@@ -977,10 +977,10 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         "hardware": "shared_reduction_adg",
         "status": "pass",
         "fidelity_level": "mapping_constraint_estimate",
-        "hardware_aware_cycles": 131,
-        "performance_delta_cycles": 59,
-        "route_segments": 55,
-        "config_records": 305,
+        "hardware_aware_cycles": 129,
+        "performance_delta_cycles": 57,
+        "route_segments": 53,
+        "config_records": 296,
         "functional_state_source": "carried_from_dfg_sim_report",
     }
     for key, value in expected_cgra.items():
@@ -988,6 +988,79 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
             raise AssertionError(f"arm_mean_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
     if cgra_report.get("final_outputs") != ["none", "f32:3.750000"]:
         raise AssertionError(f"arm_mean_f32 CGRA report should carry final reduction output: {cgra_report}")
+
+
+def assert_cmsis_max_shared_adg_evidence(sim_evidence: Path) -> None:
+    dfg_report = json.loads((sim_evidence / "arm_max_f32.dfg.report.json").read_text())
+    expected_outputs = ["none", "i32:3", "f32:4.250000"]
+    expected_memory = {
+        "arg7": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+    }
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "StatisticsFunctions/arm_max_f32.c"
+        or dfg_report.get("graph") != "g_t_arm_max_f32_red_0_0"
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("optimistic_cycles") != 90
+        or dfg_report.get("dynamic_work_items") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("arith.cmpf") != 3
+        or dfg_report.get("final_outputs") != expected_outputs
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_max_f32 DFG report: {dfg_report}")
+
+    mapping_artifact = json.loads((sim_evidence / "arm_max_f32.mapping.json").read_text())
+    expected_mapping = {
+        "hardware": "shared_reduction_adg",
+        "graph": "g_t_arm_max_f32_red_0_0",
+        "placed_records": 18,
+        "routed_edges": 28,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 653,
+        "status": "pass",
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_max_f32 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    routes = mapping_artifact.get("routes", [])
+    if len(routes) != 28:
+        raise AssertionError(f"arm_max_f32 mapping should expose every routed edge: {mapping_artifact}")
+    actual_edges = {route.get("edge_ref") for route in routes if isinstance(route, dict)}
+    required_edges = {
+        "dataflow.invariant#2.result0->arith.addi#1.operand1",
+        "arith.addi#1.result0->dataflow.load#0.operand1",
+        "dataflow.load#0.result0->arith.cmpf#0.operand1",
+        "arith.cmpf#0.result0->arith.select#0.operand0",
+        "arith.select#0.result0->dataflow.carry#1.operand2",
+    }
+    if not required_edges.issubset(actual_edges):
+        raise AssertionError(f"arm_max_f32 mapping missed max-reduction route evidence: {mapping_artifact}")
+    for route in routes:
+        if route.get("edge_ref") not in required_edges:
+            continue
+        segments = route.get("segments", [])
+        if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
+            raise AssertionError(f"arm_max_f32 route should traverse Fabric paths: {route}")
+
+    cgra_report = json.loads((sim_evidence / "arm_max_f32.cgra.report.json").read_text())
+    expected_cgra = {
+        "hardware": "shared_reduction_adg",
+        "status": "pass",
+        "fidelity_level": "mapping_constraint_estimate",
+        "dfg_cycles": 90,
+        "hardware_aware_cycles": 216,
+        "performance_delta_cycles": 126,
+        "route_segments": 122,
+        "config_records": 653,
+        "functional_state_source": "carried_from_dfg_sim_report",
+    }
+    for key, value in expected_cgra.items():
+        if cgra_report.get(key) != value:
+            raise AssertionError(f"arm_max_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
+    if cgra_report.get("final_outputs") != expected_outputs or cgra_report.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"arm_max_f32 CGRA report should carry final max state: {cgra_report}")
 
 
 def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
@@ -1022,8 +1095,8 @@ def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
         "routed_edges": 30,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 693,
-        "route_segments": 126,
+        "config_records": 684,
+        "route_segments": 124,
         "status": "pass",
     }
     for key, value in expected_mapping.items():
@@ -1042,10 +1115,10 @@ def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
         "aggregation_kind": "workload_graph_set",
         "fidelity_level": "mapping_constraint_estimate",
         "dfg_cycles": 178,
-        "hardware_aware_cycles": 312,
-        "performance_delta_cycles": 134,
-        "route_segments": 126,
-        "config_records": 693,
+        "hardware_aware_cycles": 310,
+        "performance_delta_cycles": 132,
+        "route_segments": 124,
+        "config_records": 684,
         "functional_state_source": "component_cgra_sim_reports_carried_from_dfg_sim_reports",
     }
     for key, value in expected_cgra.items():
@@ -1151,9 +1224,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 9,
+            "pass": 10,
             "fail": 0,
-            "blocked": 5,
+            "blocked": 4,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -1185,14 +1258,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_var_f32.c", "arm_var_f32"
     )
-    assert_cmsis_dfg_blocker_row(
-        repo,
-        rows,
-        "cmsis-dsp",
-        "StatisticsFunctions/arm_max_f32.c",
-        dfg_status="blocked",
-        diagnostic_class="dfg_report_blocked",
-        diagnostic_substring="llvm.load address is out of range",
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_max_f32.c", "arm_max_f32"
     )
     assert_cmsis_dfg_ready_for_mapping_row(
         repo, rows, "cmsis-dsp", "FilteringFunctions/arm_biquad_cascade_df1_f32.c"
@@ -1203,6 +1270,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_offset_shared_adg_evidence(sim_evidence)
     assert_cmsis_fill_shared_adg_evidence(sim_evidence)
     assert_cmsis_mean_shared_adg_evidence(sim_evidence)
+    assert_cmsis_max_shared_adg_evidence(sim_evidence)
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
     assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)

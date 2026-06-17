@@ -72,8 +72,8 @@ FilteringFunctions/arm_biquad_cascade_df1_f32.c|thumbv7em-none-eabihf|cortex-m4|
 MatrixFunctions/arm_mat_mult_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_mult_f32||1|1|0|2|1|3|0|1|0|0|20
 MatrixFunctions/arm_mat_add_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_mat_add_f32||1|1|1|2|1|2|1|0|0|0|3
 StatisticsFunctions/arm_mean_f32.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_mean_f32||1|1|1|1|0|2|1|0|0|0|5
-StatisticsFunctions/arm_max_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_max_f32||1|1|1|0|0|0|0|0|0|0|5
+StatisticsFunctions/arm_max_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_max_f32||1|1|1|1|0|3|1|0|0|0|5
 StatisticsFunctions/arm_var_f32.c|thumbv7em-none-eabihf|cortex-m4|thumbv7em-unknown-none-eabihf|arm_var_f32|-mfloat-abi=hard|2|2|2|2|0|4|2|0|0|0|7
 SupportFunctions/arm_copy_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_copy_f32||1|1|1|1|1|2|1|0|0|0|3
 SupportFunctions/arm_fill_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fill_f32||1|1|1|0|1|2|1|0|0|0|3
-TransformFunctions/arm_cfft_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_cfft_f32||4|4|4|18|14|4|4|0|0|0|32
+TransformFunctions/arm_cfft_f32.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_cfft_f32||4|4|4|18|14|4|4|25|0|0|32

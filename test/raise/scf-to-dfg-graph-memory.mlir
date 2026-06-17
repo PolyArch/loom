@@ -122,3 +122,69 @@ dataflow.graph.func private @g_pointer_carry_i8_f32(
   llvm.store %sum, %dst_cur : f32, !llvm.ptr
   dataflow.graph.return %arg0, %src_cur, %dst_cur : none, !llvm.ptr, !llvm.ptr
 }
+
+// A preincrement load/store through the carried pointer starts one element
+// after the base pointer. The stream ordinal remains zero-based for the
+// carried pointer state, so the memory address must use ordinal + 1 while the
+// runtime must still provide the memory ctrl tokens for each true item.
+
+// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32
+// CHECK-DAG: %[[SRC_PRE:.*]] = builtin.unrealized_conversion_cast %arg4 : !llvm.ptr to memref<?xf32>
+// CHECK-DAG: %[[DST_PRE:.*]] = builtin.unrealized_conversion_cast %arg5 : !llvm.ptr to memref<?xf32>
+// CHECK: %[[STREAM_PRE:.*]], %[[RWC_PRE:.*]] = dataflow.stream
+// CHECK: %[[ZERO_PRE:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
+// CHECK: %[[ONE_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
+// CHECK: %[[STABLE_ONE_PRE:.*]] = dataflow.invariant %[[RWC_PRE]], %[[ONE_PRE]] : i32
+// CHECK: %[[ORD_PRE:.*]] = dataflow.carry %[[RWC_PRE]], %[[ZERO_PRE]], %[[NEXT_PRE:.*]] : i32
+// CHECK: %[[NEXT_PRE]] = arith.addi %[[ORD_PRE]], %[[STABLE_ONE_PRE]] : i32
+// CHECK: %[[BIAS_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
+// CHECK: %[[STABLE_BIAS_PRE:.*]] = dataflow.invariant %[[RWC_PRE]], %[[BIAS_PRE]] : i32
+// CHECK: %[[ADDR_PRE:.*]] = arith.addi %[[ORD_PRE]], %[[STABLE_BIAS_PRE]] : i32
+// CHECK: %[[IDX_PRE:.*]] = arith.index_cast %[[ADDR_PRE]] : i32 to index
+// CHECK: dataflow.load %[[SRC_PRE]][%[[IDX_PRE]]] %arg0 : memref<?xf32>
+// CHECK: %[[STORE_BIAS_PRE:.*]] = dataflow.constant %arg0 {const_value = 1 : i32} : i32
+// CHECK: %[[STORE_STABLE_BIAS_PRE:.*]] = dataflow.invariant %[[RWC_PRE]], %[[STORE_BIAS_PRE]] : i32
+// CHECK: %[[STORE_ADDR_PRE:.*]] = arith.addi %[[ORD_PRE]], %[[STORE_STABLE_BIAS_PRE]] : i32
+// CHECK: %[[STORE_IDX_PRE:.*]] = arith.index_cast %[[STORE_ADDR_PRE]] : i32 to index
+// CHECK: dataflow.store %[[DST_PRE]][%[[STORE_IDX_PRE]]] %{{.*}} %arg0 : memref<?xf32>
+// CHECK-NOT: llvm.load
+// CHECK-NOT: llvm.store
+dataflow.graph.func private @g_pointer_carry_preincrement_i8_f32(
+    %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: !llvm.ptr,
+    %arg5: !llvm.ptr, %bias: f32) -> (none, !llvm.ptr, !llvm.ptr) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i32
+  %src_cur = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
+  %dst_cur = dataflow.carry %rwc, %arg5, %dst_next : !llvm.ptr
+  %src_next = llvm.getelementptr %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+  %data = llvm.load %src_next : !llvm.ptr -> f32
+  %sum = arith.addf %data, %bias : f32
+  %dst_next = llvm.getelementptr %dst_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %sum, %dst_next : f32, !llvm.ptr
+  dataflow.graph.return %arg0, %src_cur, %dst_cur : none, !llvm.ptr, !llvm.ptr
+}
+
+// A dynamic GEP from a carried pointer is not a constant per-item bias. Until
+// memory lowering can preserve the dynamic index, it must leave the access
+// untouched instead of silently lowering it to ordinal + 0.
+
+// CHECK-LABEL: dataflow.graph.func private @g_pointer_carry_dynamic_offset_i8_f32
+// CHECK: %[[STREAM_DYN:.*]], %[[RWC_DYN:.*]] = dataflow.stream
+// CHECK: %[[SRC_CUR_DYN:.*]] = dataflow.carry %[[RWC_DYN]]
+// CHECK: %[[OFFSET_DYN:.*]] = arith.addi %[[STREAM_DYN]], %arg6 : i32
+// CHECK: %[[SRC_DYN:.*]] = llvm.getelementptr %[[SRC_CUR_DYN]][%[[OFFSET_DYN]]] : (!llvm.ptr, i32) -> !llvm.ptr, i8
+// CHECK: llvm.load %[[SRC_DYN]] : !llvm.ptr -> f32
+// CHECK-NOT: dataflow.load
+dataflow.graph.func private @g_pointer_carry_dynamic_offset_i8_f32(
+    %arg0: none, %arg1: i32, %arg2: i32, %arg3: i32, %arg4: !llvm.ptr,
+    %bias: f32, %dyn: i32) -> (none, !llvm.ptr) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i32
+  %src_cur = dataflow.carry %rwc, %arg4, %src_next : !llvm.ptr
+  %src_next = llvm.getelementptr %src_cur[4] : (!llvm.ptr) -> !llvm.ptr, i8
+  %offset = arith.addi %index, %dyn : i32
+  %src_dyn = llvm.getelementptr %src_cur[%offset] : (!llvm.ptr, i32) -> !llvm.ptr, i8
+  %data = llvm.load %src_dyn : !llvm.ptr -> f32
+  %sum = arith.addf %data, %bias : f32
+  dataflow.graph.return %arg0, %src_cur : none, !llvm.ptr
+}
