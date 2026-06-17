@@ -408,9 +408,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 1,
+            "pass": 2,
             "fail": 0,
-            "blocked": 9,
+            "blocked": 8,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -428,6 +428,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
+    assert_cmsis_relu_q7_pass_row(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -583,7 +584,154 @@ def assert_cmsis_dfg_ready_for_mapping_row(
     assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
 
 
-def assert_cmsis_component_blocker_row(
+def assert_cmsis_relu_q7_shared_adg_evidence(sim_evidence: Path) -> None:
+    expected_graphs = [
+        "g_t_arm_relu_q7_red_0_0",
+        "g_t_arm_relu_q7_red_1_0",
+    ]
+    red1_memory = {"arg5": ["i8:0", "i8:2", "i8:0"]}
+    aggregate_memory = {
+        "g_t_arm_relu_q7_red_0_0:arg8": ["i32:0", "i32:2130706433"],
+        "g_t_arm_relu_q7_red_1_0:arg5": ["i8:0", "i8:2", "i8:0"],
+    }
+    red1_dfg = json.loads((sim_evidence / "arm_relu_q7.red1.dfg.report.json").read_text())
+    if (
+        red1_dfg.get("kind") != "dfg_sim_report"
+        or red1_dfg.get("workload") != "ActivationFunctions/arm_relu_q7.c"
+        or red1_dfg.get("graph") != "g_t_arm_relu_q7_red_1_0"
+        or red1_dfg.get("status") != "pass"
+        or red1_dfg.get("optimistic_cycles") != 84
+        or red1_dfg.get("dynamic_work_items") != 3
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 3
+        or red1_dfg.get("operation_fire_counts", {}).get("arith.cmpi") != 3
+        or red1_dfg.get("operation_fire_counts", {}).get("arith.select") != 3
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 3
+        or red1_dfg.get("final_outputs") != ["none"]
+        or red1_dfg.get("final_memory_state") != red1_memory
+    ):
+        raise AssertionError(f"unexpected arm_relu_q7 residual DFG report: {red1_dfg}")
+
+    red1_mapping = json.loads((sim_evidence / "arm_relu_q7.red1.mapping.json").read_text())
+    expected_red1_mapping = {
+        "hardware": "shared_reduction_adg",
+        "graph": "g_t_arm_relu_q7_red_1_0",
+        "placed_records": 13,
+        "routed_edges": 18,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 401,
+        "status": "pass",
+    }
+    for key, value in expected_red1_mapping.items():
+        if red1_mapping.get(key) != value:
+            raise AssertionError(f"arm_relu_q7 red1 mapping {key}={red1_mapping.get(key)!r}, expected {value!r}")
+    routes = red1_mapping.get("routes", [])
+    if len(routes) != 18:
+        raise AssertionError(f"arm_relu_q7 red1 mapping should expose every routed edge: {red1_mapping}")
+    routes_by_edge = {route.get("edge_ref"): route for route in routes if isinstance(route, dict)}
+    required_routes = {
+        "dataflow.invariant#0.result0->arith.select#0.operand1": (
+            "shared_reduction_adg::fabric.op#3.result0",
+            "shared_reduction_adg::fabric.op#40.operand1",
+        ),
+        "dataflow.constant#2.result0->dataflow.store#0.operand1": (
+            "shared_reduction_adg::fabric.op#21.result0",
+            "shared_reduction_adg::mem.store#0.operand0",
+        ),
+        "arith.select#0.result0->dataflow.store#0.operand2": (
+            "shared_reduction_adg::fabric.op#40.result0",
+            "shared_reduction_adg::mem.store#0.operand1",
+        ),
+    }
+    for edge_ref, (source_endpoint, sink_endpoint) in required_routes.items():
+        route = routes_by_edge.get(edge_ref)
+        if route is None:
+            raise AssertionError(f"arm_relu_q7 red1 mapping missed route {edge_ref}: {red1_mapping}")
+        segments = route.get("segments", [])
+        if (
+            not segments
+            or not isinstance(segments[0], dict)
+            or not isinstance(segments[-1], dict)
+            or segments[0].get("source_endpoint") != source_endpoint
+            or segments[-1].get("sink_endpoint") != sink_endpoint
+        ):
+            raise AssertionError(f"arm_relu_q7 red1 route endpoints changed for {edge_ref}: {route}")
+        if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
+            raise AssertionError(f"arm_relu_q7 red1 route should traverse Fabric paths: {route}")
+    sync_route = routes_by_edge.get("dataflow.store#0.result0->dataflow.sync#0.operand1")
+    if sync_route is None:
+        raise AssertionError(f"arm_relu_q7 red1 mapping missed store-to-sync route: {red1_mapping}")
+    sync_segments = sync_route.get("segments", [])
+    if (
+        not sync_segments
+        or not isinstance(sync_segments[0], dict)
+        or sync_segments[0].get("source_endpoint") != "shared_reduction_adg::mem.store#0.result0"
+        or not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in sync_segments)
+    ):
+        raise AssertionError(f"arm_relu_q7 red1 store-to-sync route should leave the store through Fabric paths: {sync_route}")
+
+    aggregate_dfg = json.loads((sim_evidence / "arm_relu_q7.dfg.report.json").read_text())
+    if (
+        aggregate_dfg.get("kind") != "dfg_sim_report"
+        or aggregate_dfg.get("workload") != "ActivationFunctions/arm_relu_q7.c"
+        or aggregate_dfg.get("graph") != "workload_graph_set"
+        or aggregate_dfg.get("aggregation_kind") != "workload_graph_set"
+        or aggregate_dfg.get("component_graphs") != expected_graphs
+        or aggregate_dfg.get("status") != "pass"
+        or aggregate_dfg.get("optimistic_cycles") != 153
+        or aggregate_dfg.get("dynamic_work_items") != 5
+        or aggregate_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 5
+        or aggregate_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 5
+        or aggregate_dfg.get("final_outputs") != ["none", "none"]
+        or aggregate_dfg.get("final_memory_state") != aggregate_memory
+    ):
+        raise AssertionError(f"unexpected arm_relu_q7 aggregate DFG report: {aggregate_dfg}")
+
+    aggregate_mapping = json.loads((sim_evidence / "arm_relu_q7.mapping.json").read_text())
+    expected_aggregate_mapping = {
+        "hardware": "shared_reduction_adg",
+        "graph": "workload_graph_set",
+        "aggregation_kind": "workload_graph_set",
+        "placed_records": 31,
+        "routed_edges": 44,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 981,
+        "route_segments": 178,
+        "status": "pass",
+    }
+    for key, value in expected_aggregate_mapping.items():
+        if aggregate_mapping.get(key) != value:
+            raise AssertionError(f"arm_relu_q7 aggregate mapping {key}={aggregate_mapping.get(key)!r}, expected {value!r}")
+    if aggregate_mapping.get("component_graphs") != expected_graphs or len(aggregate_mapping.get("routes", [])) != 44:
+        raise AssertionError(f"arm_relu_q7 aggregate mapping should preserve component graph routes: {aggregate_mapping}")
+
+    aggregate_cgra = json.loads((sim_evidence / "arm_relu_q7.cgra.report.json").read_text())
+    expected_cgra = {
+        "hardware": "shared_reduction_adg",
+        "graph": "workload_graph_set",
+        "aggregation_kind": "workload_graph_set",
+        "status": "pass",
+        "fidelity_level": "mapping_constraint_estimate",
+        "dfg_cycles": 153,
+        "hardware_aware_cycles": 347,
+        "performance_delta_cycles": 194,
+        "route_segments": 178,
+        "config_records": 981,
+        "functional_state_source": "component_cgra_sim_reports_carried_from_dfg_sim_reports",
+    }
+    for key, value in expected_cgra.items():
+        if aggregate_cgra.get(key) != value:
+            raise AssertionError(f"arm_relu_q7 CGRA report {key}={aggregate_cgra.get(key)!r}, expected {value!r}")
+    if (
+        aggregate_cgra.get("component_graphs") != expected_graphs
+        or aggregate_cgra.get("final_outputs") != ["none", "none"]
+        or aggregate_cgra.get("final_memory_state") != aggregate_memory
+    ):
+        raise AssertionError(f"arm_relu_q7 CGRA report should carry aggregate final state: {aggregate_cgra}")
+
+
+def assert_cmsis_relu_q7_pass_row(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
@@ -596,54 +744,45 @@ def assert_cmsis_component_blocker_row(
     if set(row["graph_ids"].split(",")) != expected_graphs:
         raise AssertionError(f"arm_relu_q7 row should keep both component graph ids: {row}")
     if (
-        row["status"] != "blocked"
-        or row["diagnostic_class"] != "component_cgra_status_blocked"
-        or row["blocking_prerequisite"] != "component_graph_evidence"
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
         or row["owner"] != "sim_report"
-        or row["dfg_status"] != "unsupported"
+        or row["dfg_status"] != "pass"
         or row["mapping_status"] != "pass"
         or row["cgra_status"] != "pass"
-        or Path(row["dfg_report"]).name != "arm_relu_q7.red1.dfg.report.json"
-        or Path(row["mapping_artifact"]).name != "arm_relu_q7.red0.mapping.json"
-        or Path(row["cgra_report"]).name != "arm_relu_q7.red0.cgra.report.json"
+        or row["comparison_status"] != "pass"
+        or Path(row["dfg_report"]).name != "arm_relu_q7.dfg.report.json"
+        or Path(row["mapping_artifact"]).name != "arm_relu_q7.mapping.json"
+        or Path(row["cgra_report"]).name != "arm_relu_q7.cgra.report.json"
+        or Path(row["comparison_report"]).name != "arm_relu_q7.c.sim-comparison-report.json"
     ):
-        raise AssertionError(f"arm_relu_q7 should expose exact component blockers: {row}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        raise AssertionError(f"arm_relu_q7 should expose aggregate CGRA pass evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
-    for required in (
-        "arm_relu_q7.red1.dfg.report.json",
-        "unsupported op: scf.for",
-    ):
-        if required not in row["diagnostic"]:
-            raise AssertionError(f"arm_relu_q7 component diagnostic should cite {required}: {row}")
     for artifact_name in (
         "arm_relu_q7.red0.dfg.report.json",
         "arm_relu_q7.red0.mapping.json",
         "arm_relu_q7.red0.cgra.report.json",
         "arm_relu_q7.red1.dfg.report.json",
+        "arm_relu_q7.red1.mapping.json",
+        "arm_relu_q7.red1.cgra.report.json",
+        "arm_relu_q7.dfg.report.json",
+        "arm_relu_q7.mapping.json",
+        "arm_relu_q7.cgra.report.json",
     ):
         artifact = sim_evidence / artifact_name
         if not artifact.is_file():
             raise AssertionError(f"arm_relu_q7 component evidence should emit {artifact}")
-    red0_mapping = json.loads((sim_evidence / "arm_relu_q7.red0.mapping.json").read_text())
-    red0_cgra = json.loads((sim_evidence / "arm_relu_q7.red0.cgra.report.json").read_text())
-    red1_dfg = json.loads((sim_evidence / "arm_relu_q7.red1.dfg.report.json").read_text())
-    if (
-        red0_mapping.get("status") != "pass"
-        or red0_cgra.get("status") != "pass"
-        or red1_dfg.get("status") != "unsupported"
-    ):
-        raise AssertionError(
-            f"arm_relu_q7 component statuses should remain honest: {red0_mapping}, {red0_cgra}, {red1_dfg}"
-        )
+    assert_cmsis_relu_q7_shared_adg_evidence(sim_evidence)
 
 
-def assert_cgra_status_audit_rejects_bad_component_blockers(
+def assert_cgra_status_audit_rejects_bad_relu_q7_mapping(
     repo: Path,
     out_dir: Path,
     legacy_root: Path,
 ) -> None:
-    mapping = out_dir / "cmsis-sim-evidence" / "arm_relu_q7.red0.mapping.json"
+    mapping = out_dir / "cmsis-sim-evidence" / "arm_relu_q7.mapping.json"
     original = mapping.read_text()
     data = json.loads(original)
     data["status"] = "fail"
@@ -666,8 +805,8 @@ def assert_cgra_status_audit_rejects_bad_component_blockers(
     finally:
         mapping.write_text(original)
     combined = result.stdout + result.stderr
-    if "referenced mapping_artifact JSON status does not match mapping_status" not in combined:
-        raise AssertionError(f"CGRA status audit should reject stale component blocker evidence: {combined}")
+    if "referenced mapping_artifact JSON status is not pass" not in combined:
+        raise AssertionError(f"CGRA status audit should reject stale arm_relu_q7 mapping evidence: {combined}")
 
     try:
         mapping.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -687,8 +826,8 @@ def assert_cgra_status_audit_rejects_bad_component_blockers(
     combined = result.stdout + result.stderr
     audit_data = json.loads((out_dir / "generic-audit-bad-component.json").read_text())
     audit_diagnostics = "\n".join(str(item) for item in audit_data.get("diagnostics", []))
-    if "referenced mapping_artifact JSON status does not match mapping_status" not in combined + audit_diagnostics:
-        raise AssertionError(f"generic audit should reject stale component blocker evidence: {combined} {audit_data}")
+    if "referenced mapping_artifact JSON status is not pass" not in combined + audit_diagnostics:
+        raise AssertionError(f"generic audit should reject stale arm_relu_q7 mapping evidence: {combined} {audit_data}")
 
 
 def assert_cgra_status_audit_rejects_bad_aggregate_graphs(
@@ -1321,9 +1460,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 1,
+            "pass": 2,
             "fail": 0,
-            "blocked": 9,
+            "blocked": 8,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -1365,10 +1504,11 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
     assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)
-    assert_cgra_status_audit_rejects_bad_component_blockers(repo, out_dir, legacy_root)
+    assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
+    assert_cmsis_relu_q7_pass_row(repo, rows, sim_evidence)
     assert_cmsis_dfg_blocker_row(
         repo,
         rows,
@@ -1378,8 +1518,6 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         diagnostic_class="dfg_report_unsupported",
         diagnostic_substring="unsupported op: scf.for",
     )
-    assert_cmsis_component_blocker_row(repo, rows, sim_evidence)
-
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"

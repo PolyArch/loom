@@ -37,8 +37,8 @@
 //   * `lb` / `ub` / `step` / iter-arg `init` are loop-invariant
 //     (defined outside the loop region).
 //   * The body has no nested structured-control-flow op
-//     (`scf.for`, `scf.forall`, `scf.while`, `scf.if`,
-//     `scf.parallel`, `scf.execute_region`).
+//     (`scf.for`, `scf.forall`, `scf.while`, `scf.parallel`,
+//     `scf.execute_region`, or an unrecognized `scf.if`).
 //   * The body has no `mlir::CallOpInterface` ops.
 // If any of these fails, the loop is left in place and a remark is
 // emitted on the graph.func.
@@ -63,6 +63,9 @@
 
 namespace {
 
+constexpr ::llvm::StringLiteral kConditionalStoreSameAddressAttr =
+    "loom.conditional_store_same_address";
+
 // Return true if `op` is a structured-control-flow nesting we cannot
 // yet handle inside the graph.func reduction body.
 bool isNestedStructuredControl(::mlir::Operation *op) {
@@ -70,6 +73,135 @@ bool isNestedStructuredControl(::mlir::Operation *op) {
                      ::mlir::scf::WhileOp, ::mlir::scf::IfOp,
                      ::mlir::scf::ParallelOp,
                      ::mlir::scf::ExecuteRegionOp>(op);
+}
+
+::mlir::Value stripSingleInputCasts(::mlir::Value value) {
+  for (;;) {
+    auto cast = value.getDefiningOp<::mlir::UnrealizedConversionCastOp>();
+    if (!cast || cast.getInputs().size() != 1)
+      return value;
+    value = cast.getInputs().front();
+  }
+}
+
+bool areSameMemoryHandle(::mlir::Value lhs, ::mlir::Value rhs) {
+  return lhs == rhs || stripSingleInputCasts(lhs) == stripSingleInputCasts(rhs);
+}
+
+::mlir::Attribute getConstantAddressAttr(::mlir::Value value) {
+  if (auto constant = value.getDefiningOp<::dataflow::ConstantOp>())
+    return constant.getConstValue();
+  if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>())
+    return constant.getValue();
+  return {};
+}
+
+bool areSameStoreAddress(::mlir::Value lhs, ::mlir::Value rhs) {
+  if (lhs == rhs)
+    return true;
+  ::mlir::Attribute lhsAttr = getConstantAddressAttr(lhs);
+  ::mlir::Attribute rhsAttr = getConstantAddressAttr(rhs);
+  if (!lhsAttr || !rhsAttr)
+    return false;
+  return lhs.getType() == rhs.getType() && lhsAttr == rhsAttr;
+}
+
+bool isLiftableConditionalStoreHelper(::mlir::Operation *op) {
+  if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::ForallOp,
+                  ::mlir::scf::WhileOp, ::mlir::scf::IfOp,
+                  ::mlir::scf::ParallelOp, ::mlir::scf::ExecuteRegionOp>(op))
+    return false;
+  if (::llvm::isa<::mlir::CallOpInterface>(op))
+    return false;
+  if (::llvm::isa<::mlir::UnrealizedConversionCastOp,
+                  ::dataflow::ConstantOp>(op))
+    return true;
+  return ::mlir::isPure(op);
+}
+
+bool elseRegionIsEmpty(::mlir::scf::IfOp ifOp) {
+  if (ifOp.getElseRegion().empty())
+    return true;
+  for (::mlir::Operation &op : ifOp.getElseRegion().front()) {
+    if (!::llvm::isa<::mlir::scf::YieldOp>(op))
+      return false;
+  }
+  auto yield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      ifOp.getElseRegion().front().getTerminator());
+  return !yield || yield.getNumOperands() == 0;
+}
+
+bool isConditionalStoreIf(::mlir::scf::IfOp ifOp) {
+  if (ifOp.getNumResults() != 0 || ifOp.getThenRegion().empty() ||
+      !elseRegionIsEmpty(ifOp))
+    return false;
+  auto cmp = ifOp.getCondition().getDefiningOp<::mlir::arith::CmpIOp>();
+  if (!cmp)
+    return false;
+
+  auto *thenBlock = ifOp.thenBlock();
+  if (!thenBlock)
+    return false;
+  auto yield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      thenBlock->getTerminator());
+  if (yield && yield.getNumOperands() != 0)
+    return false;
+
+  ::dataflow::StoreOp dataflowStore;
+  ::mlir::LLVM::StoreOp llvmStore;
+  for (::mlir::Operation &op : *thenBlock) {
+    if (::llvm::isa<::mlir::scf::YieldOp>(op))
+      continue;
+    if (auto candidate = ::llvm::dyn_cast<::dataflow::StoreOp>(op)) {
+      if (dataflowStore || llvmStore)
+        return false;
+      dataflowStore = candidate;
+      continue;
+    }
+    if (auto candidate = ::llvm::dyn_cast<::mlir::LLVM::StoreOp>(op)) {
+      if (dataflowStore || llvmStore)
+        return false;
+      llvmStore = candidate;
+      continue;
+    }
+    if (!isLiftableConditionalStoreHelper(&op))
+      return false;
+  }
+  if (!dataflowStore && !llvmStore)
+    return false;
+
+  ::mlir::Value replacement =
+      dataflowStore ? dataflowStore.getData() : llvmStore.getValue();
+  ::mlir::Value preserved;
+  if (replacement == cmp.getRhs())
+    preserved = cmp.getLhs();
+  else if (replacement == cmp.getLhs())
+    preserved = cmp.getRhs();
+  else
+    return false;
+  if (replacement.getType() != preserved.getType())
+    return false;
+
+  if (dataflowStore) {
+    auto load = preserved.getDefiningOp<::dataflow::LoadOp>();
+    if (!load)
+      return false;
+    if (!areSameMemoryHandle(load.getMem(), dataflowStore.getMem()) ||
+        !areSameStoreAddress(load.getAddr(), dataflowStore.getAddr()))
+      return false;
+    ifOp->setAttr(kConditionalStoreSameAddressAttr,
+                  ::mlir::UnitAttr::get(ifOp.getContext()));
+    return true;
+  }
+
+  auto load = preserved.getDefiningOp<::mlir::LLVM::LoadOp>();
+  if (!load)
+    return false;
+  if (!areSameMemoryHandle(load.getAddr(), llvmStore.getAddr()))
+    return false;
+  ifOp->setAttr(kConditionalStoreSameAddressAttr,
+                ::mlir::UnitAttr::get(ifOp.getContext()));
+  return true;
 }
 
 // Eligibility check: walk the body of the loop and report whether
@@ -122,6 +254,10 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
     if (op == loop.getOperation())
       return ::mlir::WalkResult::advance();
     if (isNestedStructuredControl(op)) {
+      if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
+        if (isConditionalStoreIf(ifOp))
+          return ::mlir::WalkResult::advance();
+      }
       eligible = false;
       return ::mlir::WalkResult::interrupt();
     }

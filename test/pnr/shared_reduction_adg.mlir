@@ -443,9 +443,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %select_pred = fabric.switch [spatial] %i32a, %cmpi_pred, %cmpf_pred
     [{connectivity_table = ["111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %select_true = fabric.switch [spatial] %i32b, %data1, %rotated, %data0, %int_sum, %addr_sum
-    [{connectivity_table = ["111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %select_true = fabric.switch [spatial] %i32b, %data1, %rotated, %data0, %int_sum, %addr_sum, %reduction_scale
+    [{connectivity_table = ["1111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %select_false = fabric.switch [spatial] %i32c, %rotated, %data0, %data1, %carried_scan, %bit_carry
     [{connectivity_table = ["111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -521,9 +521,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %load5_addr = fabric.switch [spatial] %idx, %squared_data, %running, %addr_sum, %int_product, %int_sum, %addr_unscaled, %addr_shifted
     [{connectivity_table = ["11111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %store0_addr = fabric.switch [spatial] %idx, %addr_unscaled, %carried_scan, %addr_shift_const, %state_carry
-    [{connectivity_table = ["11111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %store0_addr = fabric.switch [spatial] %idx, %addr_unscaled, %carried_scan, %addr_shift_const, %state_carry, %addr_bias_const
+    [{connectivity_table = ["111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %data4, %done4, %data5, %done5, %store_done0, %store_done1 =
       fabric.mem [spatial] mgr(%mgr) load(%load0_addr, %ctrl, %load1_addr, %ctrl, %load2_addr, %ctrl, %load3_addr, %ctrl, %load4_addr, %ctrl, %load5_addr, %ctrl)
                                 store(%store0_addr, %store0_value, %ctrl, %i32c, %store1_value, %ctrl)

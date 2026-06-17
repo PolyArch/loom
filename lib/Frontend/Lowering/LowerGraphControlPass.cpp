@@ -81,6 +81,9 @@
 
 namespace {
 
+constexpr ::llvm::StringLiteral kConditionalStoreSameAddressAttr =
+    "loom.conditional_store_same_address";
+
 // Return true if `t` is one of the scalar types the pass is willing to
 // gate. The gate op's IR signature admits AnyType, but the rest of the
 // frontend lowering only treats this restricted set as graph-friendly,
@@ -110,6 +113,9 @@ bool isLiftablePure(::mlir::Operation *op) {
     return false;
   if (::llvm::isa<::mlir::CallOpInterface>(op))
     return false;
+  if (::llvm::isa<::mlir::UnrealizedConversionCastOp,
+                  ::dataflow::ConstantOp>(op))
+    return true;
   // The terminator (scf.yield) is always pure but is special-cased by
   // the caller (it is not lifted; its operands are routed to muxes).
   if (op->hasTrait<::mlir::OpTrait::IsTerminator>())
@@ -133,6 +139,119 @@ bool regionBodyIsPure(::mlir::Region &region) {
     if (!isLiftablePure(&op))
       return false;
   }
+  return true;
+}
+
+::mlir::Value stripSingleInputCasts(::mlir::Value value) {
+  for (;;) {
+    auto cast = value.getDefiningOp<::mlir::UnrealizedConversionCastOp>();
+    if (!cast || cast.getInputs().size() != 1)
+      return value;
+    value = cast.getInputs().front();
+  }
+}
+
+bool areSameMemoryHandle(::mlir::Value lhs, ::mlir::Value rhs) {
+  return lhs == rhs || stripSingleInputCasts(lhs) == stripSingleInputCasts(rhs);
+}
+
+::mlir::Attribute getConstantAddressAttr(::mlir::Value value) {
+  if (auto constant = value.getDefiningOp<::dataflow::ConstantOp>())
+    return constant.getConstValue();
+  if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>())
+    return constant.getValue();
+  return {};
+}
+
+bool areSameStoreAddress(::mlir::Value lhs, ::mlir::Value rhs) {
+  if (lhs == rhs)
+    return true;
+  ::mlir::Attribute lhsAttr = getConstantAddressAttr(lhs);
+  ::mlir::Attribute rhsAttr = getConstantAddressAttr(rhs);
+  if (!lhsAttr || !rhsAttr)
+    return false;
+  return lhs.getType() == rhs.getType() && lhsAttr == rhsAttr;
+}
+
+bool elseRegionIsEmpty(::mlir::scf::IfOp ifOp) {
+  if (ifOp.getElseRegion().empty())
+    return true;
+  for (::mlir::Operation &op : ifOp.getElseRegion().front()) {
+    if (!::llvm::isa<::mlir::scf::YieldOp>(op))
+      return false;
+  }
+  auto yield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      ifOp.getElseRegion().front().getTerminator());
+  return !yield || yield.getNumOperands() == 0;
+}
+
+struct ConditionalStoreIfMatch {
+  ::dataflow::StoreOp store;
+  ::dataflow::LoadOp load;
+  ::mlir::Value replacement;
+  ::mlir::Value preserved;
+};
+
+bool matchConditionalStoreIf(::mlir::scf::IfOp ifOp,
+                             ConditionalStoreIfMatch &match) {
+  if (ifOp.getNumResults() != 0 || ifOp.getThenRegion().empty() ||
+      !elseRegionIsEmpty(ifOp))
+    return false;
+
+  auto cmp = ifOp.getCondition().getDefiningOp<::mlir::arith::CmpIOp>();
+  if (!cmp)
+    return false;
+
+  auto *thenBlock = ifOp.thenBlock();
+  if (!thenBlock)
+    return false;
+  auto yield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      thenBlock->getTerminator());
+  if (yield && yield.getNumOperands() != 0)
+    return false;
+
+  ::dataflow::StoreOp store;
+  for (::mlir::Operation &op : *thenBlock) {
+    if (::llvm::isa<::mlir::scf::YieldOp>(op))
+      continue;
+    if (auto candidate = ::llvm::dyn_cast<::dataflow::StoreOp>(op)) {
+      if (store)
+        return false;
+      store = candidate;
+      continue;
+    }
+    if (!isLiftablePure(&op))
+      return false;
+  }
+  if (!store)
+    return false;
+
+  ::mlir::Value replacement = store.getData();
+  ::mlir::Value preserved;
+  if (replacement == cmp.getRhs())
+    preserved = cmp.getLhs();
+  else if (replacement == cmp.getLhs())
+    preserved = cmp.getRhs();
+  else
+    return false;
+  if (replacement.getType() != preserved.getType())
+    return false;
+
+  auto load = preserved.getDefiningOp<::dataflow::LoadOp>();
+  if (!load)
+    return false;
+  bool addressPrechecked =
+      ifOp->hasAttr(kConditionalStoreSameAddressAttr);
+  bool addressMatches =
+      areSameMemoryHandle(load.getMem(), store.getMem()) &&
+      areSameStoreAddress(load.getAddr(), store.getAddr());
+  if (!addressPrechecked && !addressMatches)
+    return false;
+
+  match.store = store;
+  match.load = load;
+  match.replacement = replacement;
+  match.preserved = preserved;
   return true;
 }
 
@@ -257,6 +376,38 @@ bool rewriteGateIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   return emittedGate;
 }
 
+bool rewriteConditionalStoreIf(::mlir::scf::IfOp ifOp,
+                               ::mlir::OpBuilder &builder) {
+  ConditionalStoreIfMatch match;
+  if (!matchConditionalStoreIf(ifOp, match))
+    return false;
+
+  ::mlir::Block *parentBlock = ifOp->getBlock();
+  ::mlir::Block::iterator insertPt(ifOp.getOperation());
+  ::mlir::Block &thenBlock = ifOp.getThenRegion().front();
+  for (auto it = thenBlock.begin(); it != thenBlock.end();) {
+    ::mlir::Operation &op = *it;
+    ++it;
+    if (::llvm::isa<::mlir::scf::YieldOp>(op) ||
+        &op == match.store.getOperation())
+      continue;
+    op.moveBefore(parentBlock, insertPt);
+  }
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(ifOp);
+  auto selected = ::mlir::arith::SelectOp::create(
+      builder, ifOp.getLoc(), ifOp.getCondition(), match.replacement,
+      match.preserved);
+  auto newStore = ::dataflow::StoreOp::create(
+      builder, match.store.getLoc(), builder.getNoneType(),
+      match.store.getMem(), match.store.getAddr(), selected.getResult(),
+      match.store.getCtrl());
+  match.store.getDone().replaceAllUsesWith(newStore.getDone());
+  ifOp.erase();
+  return true;
+}
+
 // Wrap each result of a side-effecting `scf.if %cond -> (Ti...)` with a
 // `dataflow.gate %cond, %ifResult` so the scf.if envelope is preserved
 // (mandatory for safety: lifting the body would unconditionally execute
@@ -357,6 +508,8 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
     // Empty body or else-only with no results. Nothing to do.
     return 0;
   }
+  if (rewriteConditionalStoreIf(ifOp, builder))
+    return 5;
   // Then-only, no results: gate case (only fire when cond is true).
   if (!regionBodyIsPure(ifOp.getThenRegion()))
     return 0;

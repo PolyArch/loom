@@ -1818,11 +1818,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<32>");
   module.addExactBodyLine(
       "%select_true = fabric.switch [spatial] %i32b, %data1, %rotated, "
-      "%data0, %int_sum, %addr_sum");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111\"]}]");
+      "%data0, %int_sum, %addr_sum, %reduction_scale");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> "
       "!fabric.bits<32>");
   module.addExactBodyLine(
       "%select_false = fabric.switch [spatial] %i32c, %rotated, %data0, "
@@ -1968,7 +1969,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                "addr_shifted"});
   addSingleResultBits32Switch("store0_addr",
                               {"idx", "addr_unscaled", "carried_scan",
-                               "addr_shift_const", "state_carry"});
+                               "addr_shift_const", "state_carry",
+                               "addr_bias_const"});
   module.addExactBodyLine(
       "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
       "%data4, %done4, %data5, %done5, %store_done0, %store_done1 =");

@@ -895,8 +895,16 @@ bool isSupportedNonEvent(mlir::Operation *op) {
 dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
   if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
     value = cast.getIn();
-  auto stream = value.getDefiningOp<dataflow::StreamOp>();
-  if (!stream || stream.getIndex() != value)
+  if (auto stream = value.getDefiningOp<dataflow::StreamOp>()) {
+    if (stream.getIndex() == value)
+      return stream;
+  }
+  auto carry = value.getDefiningOp<dataflow::CarryOp>();
+  if (!carry || carry.getOutput() != value)
+    return {};
+  mlir::Value condition = carry->getOperand(0);
+  auto stream = condition.getDefiningOp<dataflow::StreamOp>();
+  if (!stream || stream.getRwc() != condition)
     return {};
   return stream;
 }

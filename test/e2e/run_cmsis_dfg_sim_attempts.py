@@ -286,6 +286,7 @@ ATTEMPTS = (
         dfg_dir_arg="cmsis_nn_dfg_dir",
         args=(
             "0=none",
+            "0=none",
             "1=2",
             "2=0",
             "3=-1",
@@ -305,6 +306,7 @@ ATTEMPTS = (
         graph="g_t_arm_relu_q7_red_0_0",
         dfg_dir_arg="cmsis_nn_dfg_dir",
         args=(
+            "0=none",
             "0=none",
             "1=2",
             "2=0",
@@ -326,8 +328,10 @@ ATTEMPTS = (
         stem="arm_relu_q7",
         graph="g_t_arm_relu_q7_red_1_0",
         dfg_dir_arg="cmsis_nn_dfg_dir",
-        args=("0=none", "1=3", "2=0", "3=-1", "4=0"),
+        args=("0=none", "0=none", "0=none", "1=3", "2=0", "3=-1", "4=0"),
         memrefs=("5=-1,2,-3",),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
         artifact_stem="arm_relu_q7.red1",
         aggregate_stem="arm_relu_q7",
     ),
