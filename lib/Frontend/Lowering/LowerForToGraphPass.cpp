@@ -10,6 +10,7 @@
 // leading `none` values are the per-launch ctrl_in / done_out ports.
 
 #include "Frontend/Lowering/Passes.h"
+#include "Frontend/Lowering/StreamLoopAttrs.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -399,7 +400,10 @@ struct LowerForToGraphPass
     ::mlir::IRMapping mapping;
     for (auto [i, captured] : ::llvm::enumerate(captures))
       mapping.map(captured, entry->getArgument(i));
-    builder.clone(*loop.getOperation(), mapping);
+    ::mlir::Operation *cloned = builder.clone(*loop.getOperation(), mapping);
+    if (auto clonedLoop = ::llvm::dyn_cast<::mlir::scf::ForOp>(cloned))
+      clonedLoop->setAttr(::loom::lowering::streamContCondAttrName(),
+                          ::loom::lowering::inferStreamContCond(builder, loop));
     for (::mlir::Operation *op : epilogueOps)
       builder.clone(*op, mapping);
     ::dataflow::ThreadYieldOp::create(builder, loc);
@@ -511,6 +515,8 @@ struct LowerForToGraphPass
     auto newLoop = ::mlir::scf::ForOp::create(builder, loc, lbArg, ubArg,
                                               stepArg, initArgVals,
                                               /*bodyBuilder=*/nullptr);
+    newLoop->setAttr(::loom::lowering::streamContCondAttrName(),
+                     ::loom::lowering::inferStreamContCond(builder, loop));
 
     // Move the original loop body into the new loop, remapping ivs +
     // captures.

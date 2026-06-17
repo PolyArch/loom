@@ -592,18 +592,16 @@ def assert_cmsis_component_blocker_row(
         or row["blocking_prerequisite"] != "component_graph_evidence"
         or row["owner"] != "sim_report"
         or row["dfg_status"] != "unsupported"
-        or row["mapping_status"] != "fail"
-        or row["cgra_status"] != "not_run"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
         or Path(row["dfg_report"]).name != "arm_relu_q7.red1.dfg.report.json"
         or Path(row["mapping_artifact"]).name != "arm_relu_q7.red0.mapping.json"
-        or row["cgra_report"]
+        or Path(row["cgra_report"]).name != "arm_relu_q7.red0.cgra.report.json"
     ):
         raise AssertionError(f"arm_relu_q7 should expose exact component blockers: {row}")
-    for key in ("dfg_report", "mapping_artifact"):
+    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
     for required in (
-        "arm_relu_q7.red0.mapping.json",
-        "missing hardware resource for software op llvm.arm.qsub8",
         "arm_relu_q7.red1.dfg.report.json",
         "unsupported op: scf.for",
     ):
@@ -612,15 +610,23 @@ def assert_cmsis_component_blocker_row(
     for artifact_name in (
         "arm_relu_q7.red0.dfg.report.json",
         "arm_relu_q7.red0.mapping.json",
+        "arm_relu_q7.red0.cgra.report.json",
         "arm_relu_q7.red1.dfg.report.json",
     ):
         artifact = sim_evidence / artifact_name
         if not artifact.is_file():
             raise AssertionError(f"arm_relu_q7 component evidence should emit {artifact}")
     red0_mapping = json.loads((sim_evidence / "arm_relu_q7.red0.mapping.json").read_text())
+    red0_cgra = json.loads((sim_evidence / "arm_relu_q7.red0.cgra.report.json").read_text())
     red1_dfg = json.loads((sim_evidence / "arm_relu_q7.red1.dfg.report.json").read_text())
-    if red0_mapping.get("status") != "fail" or red1_dfg.get("status") != "unsupported":
-        raise AssertionError(f"arm_relu_q7 component statuses should remain honest: {red0_mapping}, {red1_dfg}")
+    if (
+        red0_mapping.get("status") != "pass"
+        or red0_cgra.get("status") != "pass"
+        or red1_dfg.get("status") != "unsupported"
+    ):
+        raise AssertionError(
+            f"arm_relu_q7 component statuses should remain honest: {red0_mapping}, {red0_cgra}, {red1_dfg}"
+        )
 
 
 def assert_cgra_status_audit_rejects_bad_component_blockers(
@@ -631,7 +637,7 @@ def assert_cgra_status_audit_rejects_bad_component_blockers(
     mapping = out_dir / "cmsis-sim-evidence" / "arm_relu_q7.red0.mapping.json"
     original = mapping.read_text()
     data = json.loads(original)
-    data["status"] = "pass"
+    data["status"] = "fail"
     try:
         mapping.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
         result = run(
@@ -1183,12 +1189,14 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         repo,
         rows,
         "cmsis-dsp",
-        "FilteringFunctions/arm_biquad_cascade_df1_f32.c",
+        "StatisticsFunctions/arm_max_f32.c",
         dfg_status="blocked",
         diagnostic_class="dfg_report_blocked",
-        diagnostic_substring="DFG-sim stopped before all returned values produced complete outputs",
+        diagnostic_substring="llvm.load address is out of range",
     )
-    assert_cmsis_dfg_ready_for_mapping_row(repo, rows, "cmsis-dsp", "StatisticsFunctions/arm_max_f32.c")
+    assert_cmsis_dfg_ready_for_mapping_row(
+        repo, rows, "cmsis-dsp", "FilteringFunctions/arm_biquad_cascade_df1_f32.c"
+    )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
     assert_cmsis_add_q15_shared_adg_evidence(sim_evidence)

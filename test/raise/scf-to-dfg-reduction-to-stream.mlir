@@ -26,6 +26,32 @@ dataflow.graph.func private @g_simple_red(%ctrl: none, %lb: i64, %ub: i64,
   dataflow.graph.return %ctrl, %r : none, f32
 }
 
+// A negative-step reduction keeps the signed step operand and flips only the
+// stream continuation predicate so descending loops execute the original trip
+// count instead of terminating after the init token.
+
+// CHECK-LABEL: dataflow.graph.func private @g_desc_red
+// CHECK: %[[STEP:.*]] = arith.constant -1 : i64
+// CHECK: %[[IDX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %[[STEP]]
+// CHECK-SAME: cont_cond = ">"
+// CHECK-SAME: step_op = "+="
+// CHECK: %[[CARRY:.*]] = dataflow.carry %[[RWC]], %arg4,
+// CHECK-NOT: scf.for
+// CHECK-NOT: scf.yield
+// CHECK: dataflow.graph.return %arg0, %[[CARRY]] : none, f32
+dataflow.graph.func private @g_desc_red(%ctrl: none, %lb: i64, %ub: i64,
+                                        %buf: !llvm.ptr,
+                                        %init: f32) -> (none, f32) {
+  %c-1_i64 = arith.constant -1 : i64
+  %r = scf.for %i = %lb to %ub step %c-1_i64 iter_args(%acc = %init) -> (f32) : i64 {
+    %p = llvm.getelementptr %buf[%i] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+    %v = llvm.load %p : !llvm.ptr -> f32
+    %s = arith.addf %acc, %v : f32
+    scf.yield %s : f32
+  }
+  dataflow.graph.return %ctrl, %r : none, f32
+}
+
 // Negative-bail #1: a graph.func with a nested scf.for in its body is
 // left unchanged. The pass emits a remark; the loop survives as-is.
 

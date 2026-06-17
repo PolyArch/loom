@@ -68,7 +68,7 @@ share group is active in the current configuration.
 | 17 | `math.floor`, `math.ceil`, `math.round`, `math.trunc`, `math.roundeven` | One rounding network with mode-select control. |
 | 18 | `math.sqrt`, `math.rsqrt` | Same Newton iteration; reciprocal is one extra division step shared with the iteration result. |
 | 19 | `math.tanh`, `math.erf` | Same Pade or LUT-based approximation core within shared input ranges. |
-| 20 | `llvm.arm.qadd16`, `llvm.arm.qsub16` | One packed signed-saturating 16-bit lane ALU; add vs sub is selected by operand inversion and carry-in control. |
+| 20 | `llvm.arm.qadd16`, `llvm.arm.qsub16`, `llvm.arm.qsub8` | One packed signed-saturating lane ALU family; lane width and add/sub behavior are selected by operation configuration. |
 | 21 | `llvm.trunc`, `llvm.sext`, `llvm.zext` | One integer cast datapath; output width, sign fill, and zero fill are selected by control bits around the same bit extraction network. |
 
 The table above is the normative target. If you update it,

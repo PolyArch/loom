@@ -44,6 +44,7 @@
 // emitted on the graph.func.
 
 #include "Frontend/Lowering/Passes.h"
+#include "Frontend/Lowering/StreamLoopAttrs.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -164,12 +165,12 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
   // 1. Materialize dataflow.stream right before the scf.for. The
   //    stream consumes the loop's lb / ub / step and emits an iv
   //    stream of the same signless integer type plus an i1 rwc
-  //    stream. The pipeline lowering only ever produces affine
-  //    "+= step, < ub" loops at this layer, so we hard-code the
-  //    `step_op` / `cont_cond` pair.
+  //    stream. Keep the signed step operand and use "+=" for the update;
+  //    negative static steps therefore need a descending continuation
+  //    predicate.
   builder.setInsertionPoint(loop);
   auto stepOpAttr = builder.getStringAttr("+=");
-  auto contCondAttr = builder.getStringAttr("<");
+  auto contCondAttr = ::loom::lowering::inferStreamContCond(builder, loop);
   auto streamOp = ::dataflow::StreamOp::create(
       builder, loc, loop.getLowerBound().getType(),
       builder.getI1Type(), loop.getLowerBound(), loop.getUpperBound(),
