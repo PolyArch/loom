@@ -52,10 +52,46 @@ def assert_counts(data: dict[str, object], suite: str, expected: dict[str, int])
         raise AssertionError(f"unexpected {suite} counts: {counts.get(suite) if isinstance(counts, dict) else counts}")
 
 
+def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
+    assert_counts(
+        data,
+        "cmsis-dsp",
+        {
+            "total": 16,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 14,
+            "unsupported": 2,
+            "missing_status": 0,
+        },
+    )
+    assert_counts(
+        data,
+        "cmsis-nn",
+        {
+            "total": 18,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 10,
+            "unsupported": 8,
+            "missing_status": 0,
+        },
+    )
+
+
 def assert_no_cmsis_pass(rows: list[dict[str, str]]) -> None:
     passed = [row for row in rows if row["suite"] in {"cmsis-dsp", "cmsis-nn"} and row["status"] == "pass"]
     if passed:
         raise AssertionError(f"CMSIS DFG-only rollup must not claim CGRA pass rows: {passed[:3]}")
+
+
+def assert_no_sim_stage_evidence(row: dict[str, str]) -> None:
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        if row[key]:
+            raise AssertionError(f"DFG-only row should not consume stale {key}: {row}")
+    for key in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row[key] != "not_run":
+            raise AssertionError(f"DFG-only row should leave {key}=not_run: {row}")
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -189,30 +225,7 @@ def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -
     )
     rows = read_rows(csv_output)
     data = json.loads(json_output.read_text())
-    assert_counts(
-        data,
-        "cmsis-dsp",
-        {
-            "total": 16,
-            "pass": 0,
-            "fail": 0,
-            "blocked": 14,
-            "unsupported": 2,
-            "missing_status": 0,
-        },
-    )
-    assert_counts(
-        data,
-        "cmsis-nn",
-        {
-            "total": 18,
-            "pass": 0,
-            "fail": 0,
-            "blocked": 10,
-            "unsupported": 8,
-            "missing_status": 0,
-        },
-    )
+    assert_cmsis_dfg_only_counts(data)
     assert_no_cmsis_pass(rows)
     for artifact in (
         out_dir / "cmsis-dsp-dfg" / "arm_add_q15.dfg.mlir",
@@ -299,6 +312,69 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     dotproduct = one_row(stale_rows, "app", "dotproduct")
     if dotproduct["status"] == "pass" or dotproduct["dfg_report"]:
         raise AssertionError(f"app sweep mode should not reuse stale dotproduct evidence: {dotproduct}")
+
+
+def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--cmsis-sim-default",
+        ],
+    )
+    sim_evidence = out_dir / "current-sim-cycle"
+    rows = read_rows(out_dir / "cgra-status-summary.csv")
+    data = json.loads((out_dir / "cgra-status-summary.json").read_text())
+    assert_counts(
+        data,
+        "cmsis-dsp",
+        {
+            "total": 16,
+            "pass": 9,
+            "fail": 0,
+            "blocked": 5,
+            "unsupported": 2,
+            "missing_status": 0,
+        },
+    )
+    assert_counts(
+        data,
+        "cmsis-nn",
+        {
+            "total": 18,
+            "pass": 1,
+            "fail": 0,
+            "blocked": 9,
+            "unsupported": 8,
+            "missing_status": 0,
+        },
+    )
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c", "arm_add_q15")
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
+    )
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+        ],
+    )
+    dfg_only_rows = read_rows(out_dir / "cgra-status-summary.csv")
+    dfg_only_data = json.loads((out_dir / "cgra-status-summary.json").read_text())
+    assert_cmsis_dfg_only_counts(dfg_only_data)
+    assert_no_cmsis_pass(dfg_only_rows)
+    assert_no_sim_stage_evidence(one_row(dfg_only_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c"))
+    assert_no_sim_stage_evidence(one_row(dfg_only_rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c"))
 
 
 def assert_cmsis_dfg_report(
@@ -1130,6 +1206,7 @@ def main() -> int:
         assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)
+        assert_cmsis_sim_default_mode(repo, out_dir / "cmsis-sim-default", legacy_root)
         assert_cmsis_dfg_sim_evidence_mode(repo, out_dir / "cmsis-dfg-sim-evidence", legacy_root)
         run(
             repo,
@@ -1155,30 +1232,7 @@ def main() -> int:
 
         rows = read_rows(csv_output)
         data = json.loads(json_output.read_text())
-        assert_counts(
-            data,
-            "cmsis-dsp",
-            {
-                "total": 16,
-                "pass": 0,
-                "fail": 0,
-                "blocked": 14,
-                "unsupported": 2,
-                "missing_status": 0,
-            },
-        )
-        assert_counts(
-            data,
-            "cmsis-nn",
-            {
-                "total": 18,
-                "pass": 0,
-                "fail": 0,
-                "blocked": 10,
-                "unsupported": 8,
-                "missing_status": 0,
-            },
-        )
+        assert_cmsis_dfg_only_counts(data)
         assert_counts(
             data,
             "loombench",

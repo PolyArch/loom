@@ -5,17 +5,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--app-sim-default-batch] [--app-sim-case NAME]...
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--app-sim-default-batch] [--app-sim-case NAME]...
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
-attempts into that directory before consuming the reports. --app-sim-default-batch
-runs the shared-ADG app CGRA evidence batch used by the default simulator cycle
-summary. Each --app-sim-case runs the app CGRA evidence sweep for that app row
-into the status evidence directory. When a legacy LoomBench root is supplied,
-the rollup also generates and consumes the dedicated LoomBench manifest so
-legacy rows are structured status records rather than manifest omissions.
+attempts into that directory before consuming the reports. --cmsis-sim-default
+runs those bounded CMSIS attempts into the default status evidence directory.
+--app-sim-default-batch runs the shared-ADG app CGRA evidence batch used by the
+default simulator cycle summary. Each --app-sim-case runs the app CGRA evidence
+sweep for that app row into the status evidence directory. When a legacy
+LoomBench root is supplied, the rollup also generates and consumes the
+dedicated LoomBench manifest so legacy rows are structured status records
+rather than manifest omissions.
 EOF
 }
 
@@ -24,6 +26,7 @@ LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
+CMSIS_SIM_DEFAULT=0
 declare -a APP_SIM_CASES=()
 
 while [[ $# -gt 0 ]]; do
@@ -63,6 +66,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --app-sim-default-batch)
             APP_SIM_DEFAULT_BATCH=1
+            shift
+            ;;
+        --cmsis-sim-default)
+            CMSIS_SIM_DEFAULT=1
             shift
             ;;
         -h|--help)
@@ -127,8 +134,12 @@ LOOMBENCH_IMPORT_STATUS="${OUT_DIR}/loombench-app-import-status.csv"
 LOOMBENCH_MANIFEST_JSON="${OUT_DIR}/loombench-manifest.json"
 LOOMBENCH_MANIFEST_CSV="${OUT_DIR}/loombench-manifest.csv"
 STATUS_SIM_EVIDENCE_DIR="${SIM_EVIDENCE_DIR}"
-if [[ ${#APP_SIM_CASES[@]} -gt 0 && -z "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
+if [[ (${#APP_SIM_CASES[@]} -gt 0 || "${CMSIS_SIM_DEFAULT}" -eq 1) && -z "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
     STATUS_SIM_EVIDENCE_DIR="${OUT_DIR}/current-sim-cycle"
+fi
+if [[ -z "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
+    STATUS_SIM_EVIDENCE_DIR="${OUT_DIR}/empty-sim-evidence"
+    rm -rf "${STATUS_SIM_EVIDENCE_DIR}"
 fi
 
 clean_app_sim_evidence() {
@@ -178,13 +189,6 @@ PY
 OUT_OVERRIDE="${CMSIS_DSP_DFG_DIR}" bash "${ROOT}/test/cmsis-dsp/run_cmsis_dsp_dfg.sh"
 OUT_OVERRIDE="${CMSIS_NN_DFG_DIR}" bash "${ROOT}/test/cmsis-nn/run_cmsis_nn_dfg.sh"
 
-if [[ -n "${SIM_EVIDENCE_DIR}" ]]; then
-    python3 "${ROOT}/test/e2e/run_cmsis_dfg_sim_attempts.py" \
-        --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}" \
-        --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}" \
-        --output-dir "${SIM_EVIDENCE_DIR}"
-fi
-
 if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
     clean_app_sim_evidence "${STATUS_SIM_EVIDENCE_DIR}"
     app_sweep_args=(--output-dir "${STATUS_SIM_EVIDENCE_DIR}")
@@ -196,6 +200,16 @@ if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
         python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
             --validate-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}"
     fi
+elif [[ "${CMSIS_SIM_DEFAULT}" -eq 1 && -z "${SIM_EVIDENCE_DIR}" ]]; then
+    rm -rf "${STATUS_SIM_EVIDENCE_DIR}"
+    mkdir -p "${STATUS_SIM_EVIDENCE_DIR}"
+fi
+
+if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then
+    python3 "${ROOT}/test/e2e/run_cmsis_dfg_sim_attempts.py" \
+        --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}" \
+        --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}" \
+        --output-dir "${STATUS_SIM_EVIDENCE_DIR}"
 fi
 
 if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then
@@ -234,9 +248,7 @@ else
     summary_args+=(--no-legacy-loombench)
     audit_args+=(--no-legacy-loombench)
 fi
-if [[ -n "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
-    summary_args+=(--sim-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}")
-fi
+summary_args+=(--sim-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}")
 
 bash "${ROOT}/test/e2e/run_cgra_status_summary.sh" "${summary_args[@]}"
 bash "${ROOT}/test/e2e/run_cgra_status_audit.sh" "${audit_args[@]}"
