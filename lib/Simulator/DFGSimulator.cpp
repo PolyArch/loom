@@ -1009,8 +1009,8 @@ void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
 bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
   for (mlir::OpOperand &use : arg.getUses()) {
     mlir::Operation *owner = use.getOwner();
-    llvm::StringRef name = owner->getName().getStringRef();
-    if (name == "llvm.load" || name == "llvm.getelementptr")
+    if (mlir::isa<mlir::LLVM::LoadOp>(owner) ||
+        mlir::isa<mlir::LLVM::GEPOp>(owner))
       return true;
   }
   return false;
@@ -1018,8 +1018,8 @@ bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
 
 void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state) {
   std::uint64_t targetCount = 0;
-  for (const auto &entry : state.seededTokenCounts)
-    targetCount = std::max(targetCount, entry.second);
+  for (const auto &seeded : state.seededTokenCounts)
+    targetCount = std::max(targetCount, seeded.second);
   if (targetCount <= 1)
     return;
 

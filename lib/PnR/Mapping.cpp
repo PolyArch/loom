@@ -236,8 +236,8 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
       return false;
     for (mlir::OpOperand &use : op->getResult(0).getUses()) {
       mlir::Operation *owner = use.getOwner();
-      llvm::StringRef ownerName = owner->getName().getStringRef();
-      if (ownerName == "llvm.getelementptr" || ownerName == "llvm.load" ||
+      if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
+          mlir::isa<mlir::LLVM::LoadOp>(owner) ||
           isPointerCarryOp(owner) || isGraphReturnOp(owner))
         continue;
       return false;
@@ -249,8 +249,7 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
     return false;
   for (mlir::OpOperand &use : op->getResult(0).getUses()) {
     mlir::Operation *owner = use.getOwner();
-    llvm::StringRef ownerName = owner->getName().getStringRef();
-    if (ownerName == "llvm.getelementptr" || isGraphReturnOp(owner))
+    if (mlir::isa<mlir::LLVM::GEPOp>(owner) || isGraphReturnOp(owner))
       continue;
     if (isPointerMemrefBaseAdapterOp(owner))
       continue;
