@@ -1296,13 +1296,14 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   carryPe.fus.push_back(makeCarryFu());
   module.addPe(std::move(carryPe));
 
-  auto makeBinary32Fu = [](std::string resultName, std::string opName) {
+  auto makeBinary32Fu = [](std::string resultName,
+                           std::vector<std::string> opList) {
     std::string yieldName = resultName;
     return FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
                    {"rhs", "pb", "!fabric.bits<32>", ""}},
                   {"!fabric.bits<32>"},
                   {FabricOpSpec{{std::move(resultName)},
-                                {std::move(opName)},
+                                std::move(opList),
                                 {"lhs", "rhs"},
                                 {"!fabric.bits<32>", "!fabric.bits<32>"},
                                 {"!fabric.bits<32>"},
@@ -1312,20 +1313,20 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   };
   auto addBinary32Pe = [&](std::string peResultName, std::string lhsInput,
                            std::string rhsInput, std::string opResultName,
-                           std::string opName) {
+                           std::vector<std::string> opList) {
     PeSpec pe;
     pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<32>", ""},
                  {"pb", std::move(rhsInput), "!fabric.bits<32>", ""}};
     pe.resultNames = {std::move(peResultName)};
     pe.resultTypes = {"!fabric.bits<32>"};
     pe.fus.push_back(
-        makeBinary32Fu(std::move(opResultName), std::move(opName)));
+        makeBinary32Fu(std::move(opResultName), std::move(opList)));
     module.addPe(std::move(pe));
   };
   addBinary32Pe("int_sum", "int_add_lhs", "int_add_rhs", "sum",
-                "arith.addi");
+                {"arith.addi", "arith.subi"});
   addBinary32Pe("int_product", "int_mul_lhs", "int_mul_rhs", "product",
-                "arith.muli");
+                {"arith.muli"});
   auto addConfigurableConstPe = [&](std::string resultName) {
     PeSpec constPe;
     constPe.inputs = {
@@ -1405,9 +1406,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
              {"masked"}});
   module.addPe(std::move(logicMaskPe));
   addBinary32Pe("int_or", "int_or_lhs", "int_or_rhs", "combined",
-                "arith.ori");
+                {"arith.ori"});
   addBinary32Pe("int_xor", "int_xor_lhs", "int_xor_rhs", "combined",
-                "arith.xori");
+                {"arith.xori"});
   PeSpec packedSatPe;
   packedSatPe.inputs = {{"pa", "packed_sat_lhs", "!fabric.bits<32>", ""},
                         {"pb", "packed_sat_rhs", "!fabric.bits<32>", ""}};
@@ -1833,16 +1834,17 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "%fp_running, %running, %mac_result, %mac_result1, %data0, %data1, "
       "%selected, %rotated, %addr_masked, %logic_masked, %int_xor, "
       "%packed_sat16, %cast2_result, %abs_data, %scaled_reduction, "
-      "%int_product, %reduction_scale");
+      "%int_product, %reduction_scale, %int_sum");
   module.addExactBodyLine(
-      "  [{connectivity_table = [\"111111111111111111\"]}]");
+      "  [{connectivity_table = [\"1111111111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");

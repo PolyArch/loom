@@ -16,6 +16,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "convolve_1d",
     "correlation",
     "cumsum",
+    "delta_encode",
     "dot_product_3d",
     "dotproduct",
     "downsample",

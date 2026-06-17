@@ -266,11 +266,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 35,
+            "pass": 36,
             "fail": 0,
             "blocked": 50,
             "unsupported": 0,
-            "missing_status": 24,
+            "missing_status": 23,
         },
     )
     expected_hardware = default_batch_hardware(repo)
@@ -337,9 +337,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 0,
             "fail": 0,
-            "blocked": 58,
+            "blocked": 57,
             "unsupported": 0,
-            "missing_status": 51,
+            "missing_status": 52,
         },
     )
     expected_diagnostics = {
@@ -349,7 +349,6 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "convolve_1d_same": "unsupported op: scf.for",
         "autocorrelation": "unsupported op: scf.for",
         "binary_search": "primary workload graph absent: expected token binary_search_candidate",
-        "delta_encode": "unsupported op: llvm.load",
         "partition": "unsupported op: scf.for",
     }
     for case, diagnostic in expected_diagnostics.items():
@@ -547,6 +546,31 @@ def assert_cmsis_dfg_blocker_row(
         or diagnostic_substring not in row["diagnostic"]
     ):
         raise AssertionError(f"CMSIS row should expose exact DFG-sim blocker evidence: {row}")
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+
+
+def assert_cmsis_dfg_ready_for_mapping_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    suite: str,
+    case: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "missing_mapping_artifact"
+        or row["blocking_prerequisite"] != "mapping_artifact"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "not_run"
+        or row["cgra_status"] != "not_run"
+        or row["comparison_status"] != "not_run"
+        or row["mapping_artifact"]
+        or row["cgra_report"]
+        or row["comparison_report"]
+        or "PnR mapping artifact is absent" not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose DFG pass evidence and a missing mapping artifact: {row}")
     assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
 
 
@@ -889,7 +913,7 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         "routed_edges": 13,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 304,
+        "config_records": 305,
         "status": "pass",
     }
     for key, value in expected_mapping.items():
@@ -950,7 +974,7 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         "hardware_aware_cycles": 131,
         "performance_delta_cycles": 59,
         "route_segments": 55,
-        "config_records": 304,
+        "config_records": 305,
         "functional_state_source": "carried_from_dfg_sim_report",
     }
     for key, value in expected_cgra.items():
@@ -992,7 +1016,7 @@ def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
         "routed_edges": 30,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 692,
+        "config_records": 693,
         "route_segments": 126,
         "status": "pass",
     }
@@ -1015,7 +1039,7 @@ def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
         "hardware_aware_cycles": 312,
         "performance_delta_cycles": 134,
         "route_segments": 126,
-        "config_records": 692,
+        "config_records": 693,
         "functional_state_source": "component_cgra_sim_reports_carried_from_dfg_sim_reports",
     }
     for key, value in expected_cgra.items():
@@ -1164,15 +1188,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         diagnostic_class="dfg_report_blocked",
         diagnostic_substring="DFG-sim stopped before all returned values produced complete outputs",
     )
-    assert_cmsis_dfg_blocker_row(
-        repo,
-        rows,
-        "cmsis-dsp",
-        "StatisticsFunctions/arm_max_f32.c",
-        dfg_status="unsupported",
-        diagnostic_class="dfg_report_unsupported",
-        diagnostic_substring="unsupported op: llvm.load",
-    )
+    assert_cmsis_dfg_ready_for_mapping_row(repo, rows, "cmsis-dsp", "StatisticsFunctions/arm_max_f32.c")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
     assert_cmsis_add_q15_shared_adg_evidence(sim_evidence)

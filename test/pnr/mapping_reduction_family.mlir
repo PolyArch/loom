@@ -134,7 +134,7 @@
 // RUN: FileCheck %s --check-prefix=TRAPZ-JSON < %t.dir/integrate_trapz.mapping.json
 
 // CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,6,1,0,fail,unrouted software edges lack Fabric ADG connectivity
+// AXPY-NEXT: axpy,shared_reduction_adg,axpy__g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0__shared_reduction_adg,6,7,0,0,pass,mapped software graph to fabric resources
 
 // RELU-NEXT: relu,shared_reduction_adg,relu__g_t_relu_0_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 // RELU-JSON-DAG: "workload": "relu"

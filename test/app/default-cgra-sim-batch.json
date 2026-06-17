@@ -42,6 +42,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "delta_encode",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "xor_block",
       "hardware": "shared_vector_alu_adg"
     },

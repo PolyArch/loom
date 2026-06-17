@@ -799,6 +799,26 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state) {
+  mlir::OpOperand &addrOperand = op->getOpOperand(0);
+  if (!hasToken(state.channels, addrOperand))
+    return false;
+  Token ptr = popToken(state.channels, addrOperand);
+  auto viewOrErr = ensurePointerMemory(state, ptr, op->getResult(0).getType());
+  if (!viewOrErr) {
+    state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
+    return false;
+  }
+  std::optional<std::size_t> index =
+      resolveElementIndex(viewOrErr->pointer, integerValueToken(0), state,
+                          "llvm.load");
+  if (!index)
+    return false;
+  emitToken(state, op->getResult(0),
+            viewOrErr->pointer.memory->elements[*index]);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getAddrMutable()) ||
       !hasToken(state.channels, op.getDataMutable()) ||
@@ -903,6 +923,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireCast(typedOp, state); })
       .Case<mlir::LLVM::GEPOp>(
           [&](auto typedOp) { return fireGEP(typedOp, state); })
+      .Case<mlir::LLVM::LoadOp>(
+          [&](auto typedOp) { return fireLLVMLoad(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
@@ -920,7 +942,7 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::LoadOp, dataflow::StoreOp,
                 mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
-                mlir::arith::ConstantOp>(op))
+                mlir::LLVM::LoadOp, mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }
@@ -982,6 +1004,36 @@ void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
     state.channels[&use].push_back(token);
   state.observedOutputs[arg].push_back(token);
   ++state.seededTokenCounts[arg];
+}
+
+bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
+  for (mlir::OpOperand &use : arg.getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    llvm::StringRef name = owner->getName().getStringRef();
+    if (name == "llvm.load" || name == "llvm.getelementptr")
+      return true;
+  }
+  return false;
+}
+
+void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state) {
+  std::uint64_t targetCount = 0;
+  for (const auto &entry : state.seededTokenCounts)
+    targetCount = std::max(targetCount, entry.second);
+  if (targetCount <= 1)
+    return;
+
+  for (mlir::BlockArgument arg : entry.getArguments()) {
+    if (!mlir::isa<mlir::LLVM::LLVMPointerType>(arg.getType()))
+      continue;
+    if (!state.rawMemoryFixtures.contains(arg) || !hasDirectLLVMAddressUse(arg))
+      continue;
+    std::uint64_t current = state.seededTokenCounts[arg];
+    while (current < targetCount) {
+      seedBlockArgument(state, arg, pointerToken(arg));
+      ++current;
+    }
+  }
 }
 
 llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
@@ -1151,6 +1203,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       seedBlockArgument(state, arg, *tokenOrErr);
     }
   }
+
+  broadcastRawPointerArguments(entry, state);
 
   if (llvm::Error err = propagateMemoryAliases(entry, state))
     return std::move(err);

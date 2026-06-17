@@ -75,6 +75,9 @@ DEFAULT_SWEEP_CASES = (
     "variance",
 )
 BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
+DFG_BLOCKED_SWEEP_CASES = (
+    "prefix_sum_exclusive",
+)
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
     "binary_search",
@@ -83,7 +86,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "convolve_1d_same",
     "crc32",
     "ctz",
-    "delta_encode",
     "find_first_set",
     "fir_filter",
     "gather",
@@ -95,7 +97,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "parity",
     "partition",
     "popcount",
-    "prefix_sum_exclusive",
     "scatter_add",
     "transpose",
     "unpack_bits",
@@ -539,6 +540,42 @@ def assert_structured_blocker_row(
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
 
 
+def assert_dfg_blocked_row(repo: Path, rows: list[dict[str, str]], case: str) -> None:
+    row = one_row(rows, case)
+    if row["status"] != "blocked":
+        raise AssertionError(f"{case} should stay blocked while DFG-sim reports a runtime blocker: {row}")
+    if row["dfg_status"] != "blocked":
+        raise AssertionError(f"{case} should have dfg_status=blocked: {row}")
+    if row["mapping_status"] != "pass":
+        raise AssertionError(f"{case} should preserve mapping evidence after a DFG runtime blocker: {row}")
+    if row["cgra_status"] != "blocked":
+        raise AssertionError(f"{case} should have cgra_status=blocked: {row}")
+    if row["comparison_status"] != "blocked":
+        raise AssertionError(f"{case} should have comparison_status=blocked: {row}")
+    if row["hardware_system"] != "shared_reduction_adg":
+        raise AssertionError(f"{case} should use shared reduction hardware: {row}")
+    if row["diagnostic_class"] != "dfg_report_blocked":
+        raise AssertionError(f"{case} should block first on runtime DFG-sim evidence: {row}")
+    if row["blocking_prerequisite"] != "dfg_report":
+        raise AssertionError(f"{case} should name dfg_report as the prerequisite: {row}")
+    if row["final_outputs_present"] != "false" or row["final_memory_state_present"] != "false":
+        raise AssertionError(f"{case} should not claim complete final-state evidence while DFG is blocked: {row}")
+    if "llvm.load address is out of range" not in row["diagnostic"]:
+        raise AssertionError(f"{case} should expose the llvm.load runtime blocker: {row}")
+    for artifact_column, fingerprint_column in (
+        ("dfg_report", "dfg_report_fingerprint"),
+        ("mapping_artifact", "mapping_artifact_fingerprint"),
+        ("cgra_report", "cgra_report_fingerprint"),
+        ("comparison_report", "comparison_report_fingerprint"),
+    ):
+        path = repo / row[artifact_column]
+        if not path.is_file():
+            raise AssertionError(f"{case} row references missing artifact {artifact_column}: {row}")
+        actual = artifact_test_common.fingerprint(path)
+        if actual != row[fingerprint_column]:
+            raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
+
+
 def assert_dfg_dynamic_work_items(evidence_dir: Path, case: str, expected_count: int) -> None:
     path = evidence_dir / f"{case}.dfg.report.json"
     data = json.loads(path.read_text())
@@ -849,10 +886,8 @@ def main(argv: list[str]) -> int:
             ],
         )
         sweep_statuses = parse_sweep_statuses(sweep_result.stdout)
-        if sweep_statuses.get("delta_encode") == "pass":
-            raise AssertionError("unsupported delta_encode sweep row must not be reported as pass")
-        if sweep_statuses.get("delta_encode") != "unsupported":
-            raise AssertionError(f"unsupported delta_encode status missing from sweep stdout: {sweep_result.stdout}")
+        if sweep_statuses.get("delta_encode") != "pass":
+            raise AssertionError(f"delta_encode pass status missing from sweep stdout: {sweep_result.stdout}")
         for case in (
             "vecsum",
             "vecsum-while",
@@ -881,6 +916,7 @@ def main(argv: list[str]) -> int:
             "conv1d",
             "variance",
             "integrate_trapz",
+            "delta_encode",
             "correlation",
             "convolve_1d",
             "compare_swap",
@@ -898,6 +934,11 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
             expected_mapping_status = "blocked" if case == "dot_product_3d" else "fail"
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
+            assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
+            assert_comparison_artifact(evidence_dir, case, "blocked")
+        for case in DFG_BLOCKED_SWEEP_CASES:
+            assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "blocked")
+            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "pass")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
@@ -920,8 +961,6 @@ def main(argv: list[str]) -> int:
             assert_unsupported_operation(evidence_dir, case, "scf.for")
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
-        assert_mapping_unsupported_operation(evidence_dir, "delta_encode", "llvm.getelementptr")
-        assert_dfg_unsupported_operation(evidence_dir, "delta_encode", "llvm.load")
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
         assert_component_references_resolve(evidence_dir, "dot_product_3d")
@@ -953,6 +992,15 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "ctz", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "delta_encode",
+            {
+                "arith.subi#0.result0->dataflow.store#0.operand2",
+                "dataflow.load#0.result0->arith.subi#0.operand0",
+                "llvm.load#0.result0->arith.subi#0.operand1",
+            },
+        )
         assert_mapping_hardware(evidence_dir, "find_first_set", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
@@ -1155,6 +1203,7 @@ def main(argv: list[str]) -> int:
             "conv1d",
             "variance",
             "integrate_trapz",
+            "delta_encode",
             "correlation",
             "convolve_1d",
             "compare_swap",
@@ -1169,6 +1218,8 @@ def main(argv: list[str]) -> int:
             expected_status = "blocked" if case == "dot_product_3d" else "fail"
             expected_mapping_status = "blocked" if case == "dot_product_3d" else "fail"
             assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
+        for case in DFG_BLOCKED_SWEEP_CASES:
+            assert_dfg_blocked_row(repo, rows, case)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_dfg_unsupported_row(repo, rows, case)
         for case in app_manifest_no_dfg_cases(repo):
@@ -1232,9 +1283,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 35,
+            "pass": 36,
             "fail": 0,
-            "blocked": 74,
+            "blocked": 73,
             "unsupported": 0,
             "missing_status": 0,
         }

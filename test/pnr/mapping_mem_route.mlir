@@ -99,6 +99,20 @@
 // GEPBOOKRET-JSON-NOT: ".out"
 // GEPBOOKRET-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_load_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_load_pointer --output %t.llvmload.mapping.csv --artifact %t.llvmload.mapping.json
+// RUN: FileCheck %s --check-prefix=LLVMLOAD-CSV < %t.llvmload.mapping.csv
+// RUN: FileCheck %s --check-prefix=LLVMLOAD-JSON < %t.llvmload.mapping.json
+
+// LLVMLOAD-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// LLVMLOAD-CSV-NEXT: llvm_load_pointer,shared_reduction_adg,llvm_load_pointer__llvm_load_pointer__shared_reduction_adg,2,1,0,0,pass
+
+// LLVMLOAD-JSON-DAG: "operation": "llvm.load"
+// LLVMLOAD-JSON-DAG: "resource_kind": "fabric.mem.load"
+// LLVMLOAD-JSON-DAG: "edge_ref": "llvm.load#0.result0->arith.addi#0.operand0"
+// LLVMLOAD-JSON-NOT: "operation": "llvm.getelementptr"
+// LLVMLOAD-JSON-NOT: ".out"
+// LLVMLOAD-JSON-NOT: ".in"
+
 // RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json
 // RUN: FileCheck %s --check-prefix=PTRSEM-CSV < %t.ptrsemantic.mapping.csv
 // RUN: FileCheck %s --check-prefix=PTRSEM-JSON < %t.ptrsemantic.mapping.json
@@ -229,6 +243,14 @@ module {
     %stored = dataflow.store %dst_mem[%addr] %sum %ctrl : memref<?xf32>
     %synced:2 = dataflow.sync %done, %stored : (none, none) -> (none, none)
     dataflow.graph.return %synced#0, %dst_next : none, !llvm.ptr
+  }
+
+  dataflow.graph.func private @llvm_load_pointer(%ctrl: none, %ptr: !llvm.ptr,
+                                                 %rhs: i32) -> (none, i32) {
+    %next = llvm.getelementptr inbounds|nuw %ptr[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %data = llvm.load %next {alignment = 4 : i64} : !llvm.ptr -> i32
+    %sum = arith.addi %data, %rhs : i32
+    dataflow.graph.return %ctrl, %sum : none, i32
   }
 
   dataflow.graph.func private @mem_pointer_semantic_return(

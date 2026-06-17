@@ -60,6 +60,15 @@ append_index_tokens() {
     done
 }
 
+append_index_range_tokens() {
+    local index="$1"
+    local start="$2"
+    local end="$3"
+    for i in $(seq "${start}" "${end}"); do
+        sim_args+=(--arg "${index}=${i}")
+    done
+}
+
 append_repeated_arg() {
     local index="$1"
     local count="$2"
@@ -818,10 +827,10 @@ case "${CASE}" in
         )
         ;;
     delta_encode)
-        append_ctrl_tokens 10
+        append_ctrl_tokens 9
         append_raw_memref 1 "100,102,105,110,115,122,130,135,142,150"
-        append_constant_memref 2 10 "0"
-        append_index_tokens 3 10
+        append_raw_memref 2 "100,0,0,0,0,0,0,0,0,0"
+        append_index_range_tokens 3 1 9
         sim_args+=(
             --graph g_t_delta_encode_0_0
             --workload delta_encode

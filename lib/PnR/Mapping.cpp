@@ -236,7 +236,9 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
       return false;
     for (mlir::OpOperand &use : op->getResult(0).getUses()) {
       mlir::Operation *owner = use.getOwner();
-      if (isPointerCarryOp(owner) || isGraphReturnOp(owner))
+      llvm::StringRef ownerName = owner->getName().getStringRef();
+      if (ownerName == "llvm.getelementptr" || ownerName == "llvm.load" ||
+          isPointerCarryOp(owner) || isGraphReturnOp(owner))
         continue;
       return false;
     }
@@ -271,7 +273,7 @@ std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
     nameStorage = intrinsic.getIntrin().str();
     name = nameStorage;
   }
-  if (name == "dataflow.load")
+  if (name == "dataflow.load" || name == "llvm.load")
     return ResourceKind::MemLoad;
   if (name == "dataflow.store")
     return ResourceKind::MemStore;
