@@ -255,6 +255,18 @@ def assert_default_batch_rejects_non_pass_evidence(repo: Path, out_dir: Path) ->
         raise AssertionError(f"default batch non-pass diagnostic missing status detail: {result.stderr}")
 
 
+def parse_sweep_statuses(stdout: str) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("[") or "] " not in stripped:
+            continue
+        case, status = stripped[1:].split("] ", 1)
+        if case:
+            statuses[case] = status.strip()
+    return statuses
+
+
 def one_row(rows: list[dict[str, str]], case: str) -> dict[str, str]:
     matches = [row for row in rows if row["suite"] == "app" and row["case"] == case]
     if len(matches) != 1:
@@ -836,9 +848,10 @@ def main(argv: list[str]) -> int:
                 "upsample",
             ],
         )
-        if "[delta_encode] PASS" in sweep_result.stdout:
-            raise AssertionError("unsupported delta_encode sweep row must not be reported as PASS")
-        if "[delta_encode] unsupported" not in sweep_result.stdout:
+        sweep_statuses = parse_sweep_statuses(sweep_result.stdout)
+        if sweep_statuses.get("delta_encode") == "pass":
+            raise AssertionError("unsupported delta_encode sweep row must not be reported as pass")
+        if sweep_statuses.get("delta_encode") != "unsupported":
             raise AssertionError(f"unsupported delta_encode status missing from sweep stdout: {sweep_result.stdout}")
         for case in (
             "vecsum",

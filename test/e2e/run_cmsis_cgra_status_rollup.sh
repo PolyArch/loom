@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-load_default_app_sim_cases() {
+load_app_sim_manifest_cases() {
     local manifest_args=()
     if [[ $# -gt 0 ]]; then
         manifest_args=(--manifest "$1")
@@ -104,7 +104,7 @@ load_default_app_sim_cases() {
 }
 
 if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
-    if ! default_case_output="$(load_default_app_sim_cases)"; then
+    if ! default_case_output="$(load_app_sim_manifest_cases)"; then
         exit 1
     fi
     while IFS= read -r default_case; do
@@ -116,7 +116,7 @@ if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
 fi
 
 for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do
-    if ! attempt_case_output="$(load_default_app_sim_cases "${attempt_manifest}")"; then
+    if ! attempt_case_output="$(load_app_sim_manifest_cases "${attempt_manifest}")"; then
         exit 1
     fi
     while IFS= read -r attempt_case; do
