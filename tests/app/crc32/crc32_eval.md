@@ -175,4 +175,50 @@ graph TD
     linkStyle 0,1,2,4,5,6 stroke:#ff0000,stroke-width:3px;
 ```
 
-The bit-iter II varies with the taken arm: 6 cycles on true-arm iters, 5 on false-arm iters. The false-arm short-circuit does reduce `total_cycles` — under strict no-pred only the actually-taken arm's ops sit on the chain, so for `N = 256, K = 4065` the depth is 50152 cycles, 4127 cycles below the worst-case bound. The byte and outer loops add no additional recurrence — they multiply the recurrence count (4 × N byte iters × 8 bit iters = 32·N bit iters total). 
+The bit-iter II varies with the taken arm: 6 cycles on true-arm iters, 5 on false-arm iters. The false-arm short-circuit does reduce `total_cycles` — under strict no-pred only the actually-taken arm's ops sit on the chain, so for `N = 256, K = 4065` the depth is 50152 cycles, 4127 cycles below the worst-case bound. The byte and outer loops add no additional recurrence — they multiply the recurrence count (4 × N byte iters × 8 bit iters = 32·N bit iters total).
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth.
+This section adds the aggregate lower bound for a CGRA with separate arithmetic
+and memory-issue resources, following `docs/spec-kernel-performance.md`.
+
+With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+
+- `CP = 50152`
+- `A = adds (9472) + muls (1024) + shifts (9216) + bitops (14306) + compares (17664) = 51682`
+- `LD = 18945`
+- `ST = 19971`
+
+```
+compute = ceil(51682 / 36) = 1436
+load    = ceil(18945 / 12) = 1579
+store   = ceil(19971 / 12) = 1665
+cycles  = max(50152, 1436, 1579, 1665) = 50152
+```
+
+**Bottleneck: dependency-bound.** The non-associative `crc` recurrence is far
+longer than the aggregate P/L/S resource terms for this input trace.
+
+<!-- BEGIN CGRA-SCHED:crc32 -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| crc32 | 50152 | 51682 | 18945 | 19971 | 50152 | 50152 |
+
+- **scheduled_cycles** = 50152  (sum of ordered-region makespans)
+- **aggregate_cycles** = 50152  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 823 / 823 / 9715
+- `S`: 910 / 910 / 1270
+
+<!-- END CGRA-SCHED:crc32 -->

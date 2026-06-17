@@ -232,12 +232,13 @@ scan-latch projection = 3*C = 3*25773 = 77319
 top-pop projection    = 7*W = 7*1024  = 7168
 child-push projection = 6*Q = 6*1023  = 6138
 
-deepest final output store     = 96327
-final failing top >= 0 compare = 96363
+deepest final output store     = 95850
+final failing top >= 0 compare = 95886
 
 total_cycles =
-  max(96327, 96363)
-= 96363
+  2 (copy RAW barrier)
++ max(95850, 95886)
+= 95888
 ```
 
 The projection lines are sanity checks on the replay, not a phase-summed
@@ -407,3 +408,53 @@ The copy loop's store to `output[k]` precedes any later partition load from
 form the dependency spine. Sibling subranges may be logically independent after
 a partition, but this source serializes them through stack pushes and pops, so
 the ASAP model follows stack order rather than a parallel recursion tree.
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth.
+This section adds the aggregate lower bound for a CGRA with separate arithmetic
+and memory-issue resources, following `docs/spec-kernel-performance.md`.
+
+The copy loop is ordered before the in-place quicksort stack machine because the
+sort phase reads `output[]` values written by the copy phase. The aggregate
+bound is therefore the sum of the copy-region bound and the sort-region bound.
+
+With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+
+| region | CP | A | LD | ST | compute=⌈A/36⌉ | load=⌈LD/12⌉ | store=⌈ST/12⌉ | region cycles |
+|--------|---:|---:|---:|---:|---:|---:|---:|---:|
+| copy | 2 | 2048 | 2049 | 2049 | 57 | 171 | 171 | **171** |
+| sort | 95886 | 106949 | 101934 | 97942 | 2971 | 8495 | 8162 | **95886** |
+
+```
+cycles = 171 (copy) + 95886 (sort) = 96057
+```
+
+**Bottleneck: dependency-bound.** The explicit stack trace dominates the sort
+region. The copy region is memory-resource-bound, but it is small compared with
+the stack-machine dependency chain.
+
+<!-- BEGIN CGRA-SCHED:sort_quick -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| copy | 2 | 2048 | 2049 | 2049 | 171 | 173 |
+| sort | 95886 | 106949 | 101934 | 97942 | 95886 | 95886 |
+| **total** |  |  |  |  | **96057** | **96059** |
+
+- **scheduled_cycles** = 96059  (sum of ordered-region makespans)
+- **aggregate_cycles** = 96057  (the lower bound above, unchanged)
+- **gap_cycles** = 2  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 42 / 42 / 988
+- `L`: 170 / 170 / 2037
+- `S`: 170 / 170 / 12
+
+<!-- END CGRA-SCHED:sort_quick -->

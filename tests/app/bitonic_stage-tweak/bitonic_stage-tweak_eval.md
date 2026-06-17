@@ -6,7 +6,7 @@
     - longest path is computation of block_size (load, add, shift)
 - Outer predicate is finished at after cycle 6 (mod block_size -> idx_in_block, idx_in_block & distance, == 0 -> finished)
 - partner computed at cycle 7, partner < N done at cycle 8, load at cycle 9, cmp at cycle 10
-- if should_swap is true, stores happen in parallel at cycle 12
+- if should_swap is true, stores happen in parallel at cycle 11
 - 3 cycles each for inplace[i]++ and inplace[i]-=1
 - For operation counts: there are an extra load, add, store for everytime the outer predicate evaluates to true (4 times)
 - There are an extra load, sub, store for every i iteration (8 times)
@@ -203,5 +203,50 @@ graph TD
     %% Critical path: cmp_pred gate → swap → ++ → -=1 (within-iter, 11 cyc to swap + 3 + 3 = 17)
 ```
 
-Each square block can only execute after the previous block that holds the RAW edge completes. The critical-path chain is: `outer_pred gate → cmp-swap commit (C11) → ++ (C12–C14) → -=1 (C15–C17)`. 
+Each square block can only execute after the previous block that holds the RAW edge completes. The critical-path chain is: `outer_pred gate → cmp-swap commit (C11) → ++ (C12–C14) → -=1 (C15–C17)`.
 
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth.
+This section adds the aggregate lower bound for a CGRA with separate arithmetic
+and memory-issue resources, following `docs/spec-kernel-performance.md`.
+
+With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+
+- `CP = 17`
+- `A = adds (17) + subs (8) + divs (8) + mods (8) + compares (32) + bitops (26) = 99`
+- `LD = 31`
+- `ST = 24`
+
+```
+compute = ceil(99 / 36) = 3
+load    = ceil(31 / 12) = 3
+store   = ceil(24 / 12) = 2
+cycles  = max(17, 3, 3, 2) = 17
+```
+
+**Bottleneck: dependency-bound.** The same-slot compare-swap → `++` → `-=1`
+memory chain dominates the small amount of dynamic work in this `N = 8` stage.
+
+<!-- BEGIN CGRA-SCHED:bitonic_stage-tweak -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| bitonic_stage-tweak | 17 | 99 | 31 | 24 | 17 | 17 |
+
+- **scheduled_cycles** = 17  (sum of ordered-region makespans)
+- **aggregate_cycles** = 17  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 1 / 1 / 1
+- `S`: 0 / 0 / 0
+
+<!-- END CGRA-SCHED:bitonic_stage-tweak -->

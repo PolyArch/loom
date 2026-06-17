@@ -278,7 +278,25 @@ serial chain. More PEs or memory lanes do not reduce this input's latency unless
 the algorithmic recurrence itself changes or the pattern has fewer fallback
 jumps.
 
-The finite-resource list-schedule estimate is not included here because
-`kmp_table` does not currently have a builder in `tests/scripts/cgra_schedule.py`.
-If one is added later, the marker-bounded `CGRA-SCHED` block should report the
-deterministic schedule estimate separately from the aggregate lower bound above.
+<!-- BEGIN CGRA-SCHED:kmp_table -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| kmp_table | 157 | 96 | 88 | 50 | 157 | 157 |
+
+- **scheduled_cycles** = 157  (sum of ordered-region makespans)
+- **aggregate_cycles** = 157  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 2 / 2 / 19
+- `S`: 0 / 0 / 0
+
+<!-- END CGRA-SCHED:kmp_table -->

@@ -149,3 +149,50 @@ graph TD
     %% Critical path for valid lanes: load indices[i] -> compare -> load src[idx] -> store dst[i]
     linkStyle 1,3,5 stroke:#ff0000,stroke-width:3px;
 ```
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth.
+This section adds the aggregate lower bound for a CGRA with separate arithmetic
+and memory-issue resources, following `docs/spec-kernel-performance.md`.
+
+With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+
+- `CP = 4`
+- `A = adds (1024) + compares (2048) = 3072`
+- `LD = 3074`
+- `ST = 2048`
+
+```
+compute = ceil(3072 / 36) = 86
+load    = ceil(3074 / 12) = 257
+store   = ceil(2048 / 12) = 171
+cycles  = max(4, 86, 257, 171) = 257
+```
+
+**Bottleneck: load-bound.** The fully-unrolled valid lanes expose enough
+independent `indices[]` and `src[]` traffic that the 12 load lanes dominate the
+4-cycle per-lane dependency path.
+
+<!-- BEGIN CGRA-SCHED:gather -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| gather | 4 | 3072 | 3074 | 2048 | 257 | 258 |
+
+- **scheduled_cycles** = 258  (sum of ordered-region makespans)
+- **aggregate_cycles** = 257  (the lower bound above, unchanged)
+- **gap_cycles** = 1  (scheduled − aggregate)
+- **gap_ratio** = 1.0039  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 42 / 42 / 988
+- `L`: 256 / 256 / 2038
+- `S`: 170 / 170 / 12
+
+<!-- END CGRA-SCHED:gather -->

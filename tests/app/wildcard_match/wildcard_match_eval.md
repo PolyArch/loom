@@ -175,12 +175,6 @@ lanes do not help — the floor scales with how far the scan runs before the fir
 match (or the end of text), not with fabric width. This is the
 data-dependent-termination regime, identical in shape to `binary_search`.
 
-> The finite-resource list-schedule **estimate** (the marker-bounded
-> `CGRA-SCHED` block) is not included: `wildcard_match` is not yet a builder in
-> `tests/scripts/cgra_schedule.py`. Adding a builder there (and running
-> `report wildcard_match --config 6x6`) is the follow-up that would append that
-> block; it is an estimate for the spec's scheduling policy, not a lower bound.
-
 ## Data Dependency Graph (one inner character)
 
 Per executed character of the inner scan. The `j` induction
@@ -222,3 +216,34 @@ graph TD
 
     %% Critical path (matching char, 9): ld_j → bound_j → [gate] → ld_pat → cmp_wc → [gate] → addr → ld_txt → cmp_ch → inc_j → st_j
 ```
+
+<!-- BEGIN CGRA-SCHED:wildcard_match -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+`wildcard_match` is reported per input case; these rows are separate kernel invocations and are **not** summed as ordered regions.
+
+| case | CP | A | LD | ST | aggregate | scheduled | gap | ratio |
+|------|---:|--:|---:|---:|----------:|----------:|----:|------:|
+| TC1 | 203 | 111 | 77 | 52 | 203 | 203 | 0 | 1 |
+| TC2 | 745 | 402 | 288 | 230 | 745 | 745 | 0 | 1 |
+| TC3 | 55 | 29 | 21 | 12 | 55 | 55 | 0 | 1 |
+
+**Local `P`/`L`/`S` pressure by case** (saturated cycles / longest saturated run / peak ready backlog):
+- `TC1`:
+  - `P`: 0 / 0 / 0
+  - `L`: 1 / 1 / 2
+  - `S`: 1 / 1 / 11
+- `TC2`:
+  - `P`: 0 / 0 / 0
+  - `L`: 5 / 5 / 48
+  - `S`: 9 / 9 / 103
+- `TC3`:
+  - `P`: 0 / 0 / 0
+  - `L`: 0 / 0 / 0
+  - `S`: 0 / 0 / 0
+
+<!-- END CGRA-SCHED:wildcard_match -->

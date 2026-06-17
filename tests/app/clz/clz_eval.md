@@ -26,10 +26,12 @@ Epilogue:
 - +1: load count
 - +1: store output_count[i]
 # CLZ Performance
-Parameters: `N = 6`.
+Worked per-lane example: `N = 6`.
 - `uint32_t input_data[N] = {0x1, 0x100, 0x10000, 0x1000000, 0x80000000, 0};`
 - Expected `output_count[N] = {31, 23, 15, 7, 0, 32};`
-- Counts below assume the input parameters above.
+- The detailed ASAP and op-count walkthrough below assumes this six-lane worked
+  example. The CGRA-constrained section at the end uses the current
+  `main.cpp` fixture (`N = 256`).
 
 ## Loop classification
 
@@ -208,3 +210,51 @@ graph TD
 ```
 
 The 5-cycle II is governed by the `mask` recurrence (load mask → AND → cmp → shift → store mask); the `count` body chain fits within this window.
+
+## CGRA-Constrained Model
+
+The current `main.cpp` fixture uses `N = 256`: one zero lane, 255 nonzero
+lanes, and `ΣK = 3211` leading-zero loop bodies across the nonzero lanes. The
+ASAP depth is still `CP = 163`, set by the lane whose value has 31 leading
+zeros, but the aggregate resource terms use the full 256-lane dynamic work.
+
+With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+
+- `CP = 163`
+- `A = adds (3467) + shifts (3211) + bitops (3466) + compares (3978) = 14122`
+- `LD = 7445`
+- `ST = 7445`
+
+```
+compute = ceil(14122 / 36) = 393
+load    = ceil(7445 / 12)  = 621
+store   = ceil(7445 / 12)  = 621
+cycles  = max(163, 393, 621, 621) = 621
+```
+
+**Bottleneck: load/store-bound.** With the full `N = 256` fixture, scalar
+`mask`/`count` round trips and output stores overtake the 163-cycle worst-lane
+dependency path on a 6x6 fabric.
+
+<!-- BEGIN CGRA-SCHED:clz -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| clz | 163 | 14122 | 7445 | 7445 | 621 | 623 |
+
+- **scheduled_cycles** = 623  (sum of ordered-region makespans)
+- **aggregate_cycles** = 621  (the lower bound above, unchanged)
+- **gap_cycles** = 2  (scheduled − aggregate)
+- **gap_ratio** = 1.0032  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 204 / 20 / 220
+- `L`: 620 / 620 / 501
+- `S`: 620 / 620 / 255
+
+<!-- END CGRA-SCHED:clz -->

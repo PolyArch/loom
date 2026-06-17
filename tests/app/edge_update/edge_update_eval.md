@@ -206,3 +206,54 @@ The constant 6-cycle depth is set by the upstream bounds → row-pointer chain
 (`bounds cmp → load row_start → load row_end`) plus one search iteration's
 `load col_indices[i] → match cmp → store`. The copy loop and the additional
 non-matching scan iterations add op-count work but never extend the path.
+
+## CGRA-Constrained Model
+
+The ASAP bound above assumes unlimited functional units and memory bandwidth.
+This section adds the aggregate lower bound for a CGRA with separate arithmetic
+and memory-issue resources, following `docs/spec-kernel-performance.md`.
+
+The copy loop and matched update are one schedulable region. The matched update
+overwrites one copied `output_weights[]` slot, but the copied value is not read
+before being overwritten, so this write-after-write relation is not a RAW
+barrier and is not split into ordered phases.
+
+With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
+
+- `CP = 6`
+- `A = adds (18) + address_adds (1) + compares (21) = 40`
+- `LD = 38`
+- `ST = 37`
+
+```
+compute = ceil(40 / 36) = 2
+load    = ceil(38 / 12) = 4
+store   = ceil(37 / 12) = 4
+cycles  = max(6, 2, 4, 4) = 6
+```
+
+**Bottleneck: dependency-bound.** The row-pointer and matched-update chain is
+longer than every aggregate resource term for this small CSR update.
+
+<!-- BEGIN CGRA-SCHED:edge_update -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| edge_update | 6 | 40 | 38 | 37 | 6 | 6 |
+
+- **scheduled_cycles** = 6  (sum of ordered-region makespans)
+- **aggregate_cycles** = 6  (the lower bound above, unchanged)
+- **gap_cycles** = 0  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 0 / 0 / 0
+- `L`: 3 / 3 / 22
+- `S`: 2 / 2 / 10
+
+<!-- END CGRA-SCHED:edge_update -->

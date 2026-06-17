@@ -1,7 +1,7 @@
 # ASAP Model Notes
-- `output[i]` intially set as a copy of `input[i]`, this takes one cycle if the loop is fully unrolled
-- Outer for loop and inner while loop must be serialized because the state of `output` in each i iteration depends on the number of times the inner loop while runs in the previous iteration (i - 1)
-- Further, the while loop checks two conditions during each iteration and these conditions are not known ahead of time. 
+- `output[i]` intially set as a copy of `input[i]`, this takes a fixed number of cycles if the loop is fully unrolled (load -> store)
+- Outer for loop and inner while loop must be serialized because the state of `output` in each i iteration depends on the content of `output` after the inner loop while runs in the previous iteration (i - 1)
+- Further, the while loop checks two conditions during each iteration and these conditions are not known ahead of time. Under the taken branch, both compares need to be evaluated
 
 # Insertion Sort Performance
 Parameters from `main.cpp`:
@@ -163,7 +163,7 @@ and each final key store.
 
 | op | formula | total | source |
 |----|---------|------:|--------|
-| loads | `N + O + (F + O) + 1` | **132351** | copy iterator reads; outer iterator reads; `j` reads for every while test; hoisted `N` load |
+| loads | `N + O + (F + O) + 2` | **132352** | copy iterator reads; outer iterator reads; `j` reads for every while test; hoisted `N` loads in the ordered copy and sort regions |
 | stores | `(N + 1) + (O + 1) + (O + F)` | **132352** | copy iterator init/writebacks; outer iterator init/writebacks; `j` init and `j--` stores |
 | adds | `N + O` | **1023** | copy `i++`; outer `i++` |
 | subs | `O + F` | **131327** | `j = i - 1`; `j--` |
@@ -174,7 +174,7 @@ and each final key store.
 
 | op | total |
 |----|------:|
-| loads | **264190** |
+| loads | **264191** |
 | stores | **264191** |
 | adds | **1023** |
 | subs | **131327** |
@@ -264,20 +264,21 @@ store   = ceil(ST / S)
 cycles  = max(CP, compute, load, store)
 ```
 
+The copy loop is ordered before the in-place insertion-sort loop because the
+sort phase reads `output[]` values written by the copy phase. The aggregate
+bound is therefore the sum of the copy-region bound and the sort-region bound.
+
 Counts for the `main.cpp` reverse input:
 
-- `CP = 787964`
-- `A = adds (1023) + subs (131327) + address_adds (131327) + compares (263166) = 526843`
-- `LD = 264190`
-- `ST = 264191`
+| region | CP | A | LD | ST | compute=⌈A/36⌉ | load=⌈LD/12⌉ | store=⌈ST/12⌉ | region cycles |
+|--------|---:|---:|---:|---:|---:|---:|---:|---:|
+| copy | 2 | 1024 | 1025 | 1025 | 29 | 86 | 86 | **86** |
+| sort | 787964 | 525819 | 263166 | 263166 | 14607 | 21931 | 21931 | **787964** |
 
 6x6 example (`P = 36`, `L = 12`, `S = 12`):
 
 ```
-compute = ceil(526843 / 36) = 14635
-load    = ceil(264190 / 12) = 22016
-store   = ceil(264191 / 12) = 22016
-cycles  = max(787964, 14635, 22016, 22016) = 787964
+cycles = 86 (copy) + 787964 (sort) = 788050
 ```
 
 **Bottleneck: dependency-bound.** Even though the reverse input performs more
@@ -286,8 +287,27 @@ ops, the serialized insertion chain is much longer than the aggregate resource
 terms on a 6x6 fabric. Wider resources do not reduce the worst-case latency
 unless the algorithm or source structure exposes a different dependency graph.
 
-The finite-resource list-schedule estimate is not included here because
-`sort_insertion` does not currently have a builder in
-`tests/scripts/cgra_schedule.py`. If one is added later, the marker-bounded
-`CGRA-SCHED` block should report the deterministic schedule estimate separately
-from the aggregate lower bound above.
+<!-- BEGIN CGRA-SCHED:sort_insertion -->
+### Finite-Resource Schedule Estimate (time-local)
+
+*Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
+
+**Resource configuration:** `P = 36`, `L = 12`, `S = 12` (`6x6`).
+
+| region | CP | A | LD | ST | aggregate | scheduled (makespan) |
+|--------|---:|--:|---:|---:|----------:|---------------------:|
+| copy | 2 | 1024 | 1025 | 1025 | 86 | 88 |
+| sort | 787964 | 525819 | 263166 | 263166 | 787964 | 787964 |
+| **total** |  |  |  |  | **788050** | **788052** |
+
+- **scheduled_cycles** = 788052  (sum of ordered-region makespans)
+- **aggregate_cycles** = 788050  (the lower bound above, unchanged)
+- **gap_cycles** = 2  (scheduled − aggregate)
+- **gap_ratio** = 1  (scheduled / aggregate)
+
+**Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
+- `P`: 20 / 20 / 476
+- `L`: 128 / 85 / 1013
+- `S`: 127 / 85 / 12
+
+<!-- END CGRA-SCHED:sort_insertion -->

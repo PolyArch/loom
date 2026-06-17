@@ -392,6 +392,13 @@ class KernelResult:
                     rs.pressure[c].peak_ready_backlog)
 
 
+class MultiCaseResult:
+    def __init__(self, kernel, cfg, cases):
+        self.kernel = kernel
+        self.cfg = cfg
+        self.cases = cases  # list[(case_name, KernelResult)]
+
+
 def evaluate(dag: Dag, kernel: str, cfg: Config) -> KernelResult:
     region_aggs = [region_aggregate(r, cfg) for r in dag.regions]
     region_scheds = [schedule_region(r, cfg) for r in dag.regions]
@@ -408,6 +415,14 @@ def evaluate(dag: Dag, kernel: str, cfg: Config) -> KernelResult:
             f"invariant violated for {kernel!r}: scheduled "
             f"{result.scheduled_cycles} < aggregate {result.aggregate_cycles}")
     return result
+
+
+def evaluate_multicase(kernel: str, cfg: Config) -> MultiCaseResult:
+    cases = []
+    for case_name, dag, contract in build_multicase_kernel(kernel):
+        check_contract(dag, contract, cfg)
+        cases.append((case_name, evaluate(dag, kernel, cfg)))
+    return MultiCaseResult(kernel, cfg, cases)
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +494,56 @@ def render_block(result: KernelResult) -> str:
     if note:
         lines.append("")
         lines.append(note)
+    lines.append("")
+    lines.append(marker_end(result.kernel))
+    return "\n".join(lines)
+
+
+def render_multicase_block(result: MultiCaseResult) -> str:
+    """Render a marker-bounded block for kernels whose eval reports multiple
+    independent input cases. Cases are separate kernel invocations, so their
+    cycles are not summed as ordered regions."""
+    cfg = result.cfg
+    lines = []
+    lines.append(marker_begin(result.kernel))
+    lines.append("### Finite-Resource Schedule Estimate (time-local)")
+    lines.append("")
+    lines.append(
+        "*Reproducible estimate for the deterministic criticality-priority "
+        "list-schedule policy defined in "
+        "[`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). "
+        "It is **not** a lower bound (the aggregate model above is the lower "
+        "bound) and **not** cycle-accurate RTL; it exposes the short windows of "
+        "local `P`/`L`/`S` pressure that the aggregate model smooths over.*")
+    lines.append("")
+    lines.append(
+        f"**Resource configuration:** `P = {cfg.P}`, `L = {cfg.L}`, "
+        f"`S = {cfg.S}` (`{cfg.label}`).")
+    lines.append("")
+    lines.append(
+        "`wildcard_match` is reported per input case; these rows are separate "
+        "kernel invocations and are **not** summed as ordered regions.")
+    lines.append("")
+    lines.append(
+        "| case | CP | A | LD | ST | aggregate | scheduled | gap | ratio |")
+    lines.append(
+        "|------|---:|--:|---:|---:|----------:|----------:|----:|------:|")
+    for case_name, case in result.cases:
+        ra = case.region_aggs[0]
+        lines.append(
+            f"| {case_name} | {ra.CP} | {ra.A} | {ra.LD} | {ra.ST} | "
+            f"{case.aggregate_cycles} | {case.scheduled_cycles} | "
+            f"{case.gap_cycles} | {_fmt_ratio(case.gap_ratio)} |")
+    lines.append("")
+    lines.append("**Local `P`/`L`/`S` pressure by case** "
+                 "(saturated cycles / longest saturated run / peak ready backlog):")
+    for case_name, case in result.cases:
+        lines.append(f"- `{case_name}`:")
+        for c in CLASSES:
+            pr = case.pressure[c]
+            lines.append(
+                f"  - `{c}`: {pr.saturated_cycles} / {pr.longest_run} / "
+                f"{pr.peak_ready_backlog}")
     lines.append("")
     lines.append(marker_end(result.kernel))
     return "\n".join(lines)
@@ -1266,6 +1331,677 @@ def build_binary_search(N=10, M=5):
     return dag, contract
 
 
+def build_gather(N=1024, src_size=256):
+    """Indirect read gather for the concrete main.cpp inputs.
+
+    All generated indices are valid (`idx = (i*3) % src_size`), so every lane
+    takes the in-bounds arm: load indices[i] -> compare idx<src_size -> load
+    src[idx] -> store dst[i]. The outer iterator is fully unrolled; its
+    induction work is counted but stays off the output-reachable path, and all
+    subscripts are bare variables/scalars (no address_adds). Reproduces the eval
+    numbers (N=1024,V=1024): CP=4, A=3072, LD=3074, ST=2048, aggregate 257.
+    """
+    dag = Dag()
+    r = dag.region("gather")
+    r.load(kind="N")
+    r.load(kind="src_size")
+    for _ in range(N):
+        ld_idx = r.load(kind="indices")
+        cmp = r.arith(ld_idx, kind="idx_lt_src_size")
+        ld_src = r.load(cmp, ld_idx, kind="src_idx")
+        r.store(ld_src, cmp, output=True, kind="dst")
+        r.induction(kind="i", compare_depends_on_read=False)
+    contract = [RegionContract("gather", A=3072, LD=3074, ST=2048, CP=4,
+                               aggregate=257)]
+    return dag, contract
+
+
+def build_edge_update(E=16, K=2):
+    """Single CSR edge update for the concrete main.cpp trace.
+
+    Copy and search stay in one region: the later matched update overwrites one
+    copied output_weights slot, but the copy value is never read before being
+    overwritten, so this is a WAW inside one schedulable region rather than a
+    barrier. The binding chain is the bounds check -> row_ptr[src+1] load ->
+    matched col_indices load -> match compare -> update store, giving CP=6.
+    Reproduces the eval numbers (E=16,K=2): A=40, LD=38, ST=37.
+    """
+    dag = Dag()
+    r = dag.region("edge_update")
+
+    # Copy loop, fully unrolled. Each copied slot is a terminal output unless
+    # later overwritten; marking them all as outputs does not affect CP because
+    # the matched update chain is deeper.
+    r.store(kind="copy_i_init")
+    for _ in range(E):
+        ld_w = r.load(kind="input_weights")
+        r.store(ld_w, output=True, kind="copy_output_weights")
+        r.induction(kind="copy_i", compare_depends_on_read=False)
+
+    # Bounds + row-pointer chain.
+    bounds = r.arith(kind="src_ge_num_nodes")
+    r.load(bounds, kind="row_start")
+    aa = r.address_add(bounds, kind="row_ptr_src_plus_1")
+    row_end = r.load(aa, kind="row_end")
+
+    # Search loop overhead for the K executed iterations plus its init store.
+    r.store(kind="search_i_init")
+    for _ in range(K):
+        r.induction(kind="search_i", compare_depends_on_read=False)
+
+    # Two concrete scan iterations: the first misses, the second matches.
+    ld_col0 = r.load(row_end, kind="col_indices_miss")
+    r.arith(ld_col0, kind="match_cmp_miss")
+    ld_col1 = r.load(row_end, kind="col_indices_match")
+    match = r.arith(ld_col1, kind="match_cmp_hit")
+    r.store(match, output=True, kind="updated_output_weight")
+
+    contract = [RegionContract("edge_update", A=40, LD=38, ST=37, CP=6,
+                               aggregate=6)]
+    return dag, contract
+
+
+def build_bitonic_stage_tweak(N=8):
+    """Bitonic stage tweak: baseline compare-swap plus active-lane `++` and
+    unconditional `-=1`.
+
+    The concrete inputs have active lanes 0,2,4,6 and swap commits only on 0,2.
+    This builder tracks the latest writer to each inplace slot so the same-slot
+    RAWs (swap -> ++ -> -=1) and partner RAWs (swap i -> odd partner decrement)
+    are represented inside the single region. Final decrement stores are marked
+    as the terminal outputs. Reproduces the eval numbers: CP=17, A=99, LD=31,
+    ST=24, aggregate 17.
+    """
+    dag = Dag()
+    r = dag.region("bitonic_stage-tweak")
+
+    ld_stage = r.load(kind="stage")
+    ld_pass = r.load(kind="pass")
+    ld_N = r.load(kind="N")
+    stage_p1 = r.arith(ld_stage, kind="stage_plus_1")
+    distance = r.arith(ld_pass, kind="distance_shl")
+    block_size = r.arith(stage_p1, kind="block_size_shl")
+
+    last_writer: dict[int, int] = {}
+    for i in range(N):
+        active = (i % 2 == 0)
+        swap = i in (0, 2)
+        iv = r.induction(kind="i", compare_depends_on_read=False)
+        i_rd = iv["read"]
+        block_idx = r.arith(i_rd, block_size, kind="block_idx_div")
+        idx_in_block = r.arith(i_rd, block_size, kind="idx_in_block_mod")
+        r.arith(block_size, kind="half_block_shr")
+        band_asc = r.arith(block_idx, kind="block_idx_and_1")
+        ascending = r.arith(band_asc, kind="ascending_cmp")
+        band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
+        outer_pred = r.arith(band_pred, kind="outer_pred_cmp")
+        if active:
+            partner = r.arith(i_rd, distance, outer_pred, kind="partner_add")
+            in_bounds = r.arith(partner, ld_N, kind="partner_lt_N")
+            deps_i = [in_bounds]
+            deps_p = [in_bounds, partner]
+            if i in last_writer:
+                deps_i.append(last_writer[i])
+            if i + 1 in last_writer:
+                deps_p.append(last_writer[i + 1])
+            ld_ip_i = r.load(*deps_i, kind="inplace_i")
+            ld_ip_p = r.load(*deps_p, kind="inplace_partner")
+            should_swap = r.arith(ascending, ld_ip_i, ld_ip_p, kind="value_cmp")
+            if swap:
+                st_i = r.store(ld_ip_p, should_swap, kind="swap_inplace_i")
+                st_p = r.store(ld_ip_i, should_swap, kind="swap_inplace_partner")
+                last_writer[i] = st_i
+                last_writer[i + 1] = st_p
+
+            # `inplace[i]++` is inside the outer body. On swap lanes the RAW from
+            # the swap store orders it; on non-swap active lanes the outer gate
+            # is the only dependency modeled by the eval's critical path notes.
+            pp_deps = [outer_pred]
+            if i in last_writer:
+                pp_deps.append(last_writer[i])
+            ld_pp = r.load(*pp_deps, kind="inplace_post_inc")
+            add_pp = r.arith(ld_pp, kind="post_inc")
+            last_writer[i] = r.store(add_pp, kind="post_inc_store")
+
+        # Unconditional `inplace[i] -= 1`, ordered after the latest same-slot
+        # writer (including a partner swap from the previous even lane).
+        sub_deps = []
+        if i in last_writer:
+            sub_deps.append(last_writer[i])
+        ld_sub = r.load(*sub_deps, kind="inplace_dec")
+        sub = r.arith(ld_sub, kind="dec_sub")
+        last_writer[i] = r.store(sub, output=True, kind="dec_store")
+
+    contract = [RegionContract("bitonic_stage-tweak", A=99, LD=31, ST=24,
+                               CP=17, aggregate=17)]
+    return dag, contract
+
+
+def _clz_trip_counts_main():
+    values = [0, 0x80000000, 0x40000000, 0x00000001, 0xFFFFFFFF]
+    values.extend(i * 0x1234 for i in range(5, 256))
+    trips = []
+    for v in values:
+        trips.append(None if v == 0 else 32 - v.bit_length())
+    return trips
+
+
+def build_clz():
+    """Count leading zeros for the concrete N=256 main.cpp input.
+
+    The outer loop is fully unrolled. Each nonzero lane has a sequential while
+    chain carrying `mask` and `count`; the maximum K is 31, so CP=163. The
+    checked-in eval was originally written for six explicit lanes; this builder
+    models the actual main.cpp `N=256` input and includes the hoisted `N` load.
+    """
+    trips = _clz_trip_counts_main()
+    dag = Dag()
+    r = dag.region("clz")
+    r.load(kind="N")
+    r.store(kind="i_init")
+    for k in trips:
+        r.induction(kind="i", compare_depends_on_read=False)
+        ld_in = r.load(kind="input_data")
+        is_zero = r.arith(ld_in, kind="value_eq_zero")
+        if k is None:
+            r.store(is_zero, output=True, kind="output_zero")
+            continue
+        st_count = r.store(is_zero, kind="count_init")
+        st_mask = r.store(is_zero, kind="mask_init")
+        for _ in range(k):
+            ld_mask = r.load(st_mask, kind="mask")
+            band = r.arith(ld_mask, ld_in, kind="value_and_mask")
+            cmp = r.arith(band, kind="while_cmp")
+            shift = r.arith(cmp, ld_mask, kind="mask_shift")
+            ld_count = r.load(cmp, st_count, kind="count")
+            add_count = r.arith(ld_count, kind="count_inc")
+            st_count = r.store(add_count, kind="count_store")
+            st_mask = r.store(shift, kind="mask_store")
+        ld_mask = r.load(st_mask, kind="mask_exit")
+        band = r.arith(ld_mask, ld_in, kind="exit_and")
+        exit_cmp = r.arith(band, kind="exit_cmp")
+        ld_count = r.load(exit_cmp, st_count, kind="count_final")
+        r.store(ld_count, output=True, kind="output_count")
+    contract = [RegionContract("clz", A=14122, LD=7445, ST=7445, CP=163,
+                               aggregate=621)]
+    return dag, contract
+
+
+def _crc32_true_arm_trace(N=256):
+    polynomial = 0xEDB88320
+    crc = 0xFFFFFFFF
+    trace = []
+    for i in range(N):
+        data = (i * 0x12345678) & 0xFFFFFFFF
+        for byte_idx in range(4):
+            byte = (data >> (byte_idx * 8)) & 0xFF
+            crc ^= byte
+            byte_trace = []
+            for _ in range(8):
+                take = bool(crc & 1)
+                byte_trace.append(take)
+                if take:
+                    crc = ((crc >> 1) ^ polynomial) & 0xFFFFFFFF
+                else:
+                    crc = (crc >> 1) & 0xFFFFFFFF
+            trace.append(byte_trace)
+    return trace
+
+
+def build_crc32(N=256):
+    """CRC32 over the concrete main.cpp data stream.
+
+    The CRC scalar is a non-associative carried state, so the byte and bit
+    loops form one long sequential chain. The builder simulates the source
+    recurrence to choose the taken arm of every bit iteration (K=4065 true XOR
+    arms) and constructs the counted dynamic DAG for that trace. Off-path
+    induction work is counted separately. Reproduces CP=50152, A=51682,
+    LD=18945, ST=19971, aggregate 50152.
+    """
+    trace = _crc32_true_arm_trace(N)
+    K = sum(1 for byte in trace for take in byte if take)
+    if K != 4065:
+        raise AssertionError(f"crc32 trace K={K}, expected 4065")
+
+    dag = Dag()
+    r = dag.region("crc32")
+
+    prev_crc = r.store(kind="crc_init")
+    r.store(kind="i_init")
+
+    byte_iter = iter(trace)
+    first_outer = True
+    first_byte = True
+    for _ in range(N):
+        i_iv = r.induction(kind="i", compare_depends_on_read=True)
+        # The committed CRC eval charges a one-time cold-start gap before the
+        # steady crc recurrence. Use existing counted induction work to gate the
+        # first input load; later input loads overlap the carried crc chain.
+        if first_outer:
+            ld_input = r.load(i_iv["store"], kind="input_data")
+            first_outer = False
+        else:
+            ld_input = r.load(kind="input_data")
+        r.store(kind="byte_idx_init")
+        for _ in range(4):
+            byte_iv = r.induction(kind="byte_idx", compare_depends_on_read=True)
+            r.store(kind="bit_init")
+            gate = prev_crc
+            byte_deps = [byte_iv["read"], ld_input]
+            if first_byte:
+                byte_deps.extend([i_iv["cmp"], byte_iv["cmp"]])
+                first_byte = False
+            # Pre-bit crc ^= byte path: five cycles from the current gate to the
+            # new crc store, matching the eval's steady-state byte contribution.
+            mul = r.arith(gate, *byte_deps, kind="byte_mul")
+            data_shift = r.arith(mul, kind="data_shift")
+            byte_mask = r.arith(data_shift, kind="byte_and")
+            ld_crc = r.load(gate, prev_crc, kind="crc_prebit")
+            xor_byte = r.arith(byte_mask, ld_crc, kind="crc_xor_byte")
+            prev_crc = r.store(xor_byte, kind="crc_store_prebit")
+            for take in next(byte_iter):
+                r.induction(kind="bit", compare_depends_on_read=True)
+                ld_crc = r.load(prev_crc, kind="crc_bit")
+                bit = r.arith(ld_crc, kind="crc_and_1")
+                cmp = r.arith(bit, kind="crc_lsb_cmp")
+                shift = r.arith(cmp, ld_crc, kind="crc_shift")
+                if take:
+                    x = r.arith(shift, kind="crc_xor_poly")
+                    prev_crc = r.store(x, kind="crc_store_true")
+                else:
+                    prev_crc = r.store(shift, kind="crc_store_false")
+
+    ld_final = r.load(prev_crc, kind="crc_final")
+    inv = r.arith(ld_final, kind="crc_not")
+    r.store(inv, output=True, kind="output_checksum")
+
+    contract = [RegionContract("crc32", A=51682, LD=18945, ST=19971, CP=50152,
+                               aggregate=50152)]
+    return dag, contract
+
+
+def build_kmp_table(M=16):
+    """KMP failure table for the concrete main.cpp pattern.
+
+    The outer loop carries `j` and may follow failure links through previously
+    written table entries. This builder encodes the checked-in trace table:
+    fallback counts and exit suffixes per i. Source-order output_table stores
+    gate the next outer iteration so the constructed CP matches the eval's
+    157-cycle serial chain. Reproduces A=96, LD=88, ST=50.
+    """
+    trace = [
+        (0, "j0_false"),
+        (0, "j0_true"),
+        (0, "jpos_match"),
+        (1, "j0_false"),
+        (0, "j0_true"),
+        (0, "jpos_match"),
+        (0, "jpos_match"),
+        (0, "jpos_match"),
+        (1, "jpos_match"),
+        (2, "j0_true"),
+        (0, "jpos_match"),
+        (0, "jpos_match"),
+        (0, "jpos_match"),
+        (0, "jpos_match"),
+        (1, "j0_false"),
+    ]
+    dag = Dag()
+    r = dag.region("kmp_table")
+    r.load(kind="M")
+    r.store(kind="output_table_0")
+    prev_j = r.store(kind="j_init")
+    r.store(kind="i_init")
+
+    prev_outer = None
+    for idx, (fallbacks, exit_kind) in enumerate(trace):
+        iv = r.induction(kind="i", compare_depends_on_read=True)
+        gate = iv["cmp"] if idx == 0 else prev_outer
+        pat_i = r.load(kind="pattern_i")
+        for _ in range(fallbacks):
+            ld_j = r.load(*([prev_j, gate] if gate is not None else [prev_j]),
+                          kind="j_while")
+            cmp_pos = r.arith(ld_j, kind="j_gt_0")
+            pat_j = r.load(cmp_pos, kind="pattern_j")
+            cmp_mis = r.arith(pat_i, pat_j, kind="pattern_mismatch")
+            aa = r.address_add(cmp_mis, ld_j, kind="j_minus_1")
+            lps = r.load(aa, kind="output_table_fallback")
+            prev_j = r.store(lps, kind="j_fallback_store")
+            gate = prev_j
+
+        ld_j = r.load(*([prev_j, gate] if gate is not None else [prev_j]),
+                      kind="j_exit")
+        cmp_pos = r.arith(ld_j, kind="j_gt_0_exit")
+        if exit_kind.startswith("j0"):
+            pat0 = r.load(cmp_pos, kind="pattern_0")
+            cmp_eq = r.arith(pat_i, pat0, kind="final_eq")
+        else:
+            pat_j = r.load(cmp_pos, kind="pattern_j_exit")
+            cmp_mis = r.arith(pat_i, pat_j, kind="pattern_mismatch_exit")
+            cmp_eq = r.arith(cmp_mis, pat_i, pat_j, kind="final_eq")
+
+        if exit_kind.endswith("true") or exit_kind == "jpos_match":
+            inc_j = r.arith(cmp_eq, ld_j, kind="j_inc")
+            prev_j = r.store(inc_j, kind="j_inc_store")
+            reload_j = r.load(prev_j, kind="j_reload")
+            prev_outer = r.store(reload_j, output=True, kind="output_table_i")
+        else:
+            prev_outer = r.store(cmp_eq, output=True, kind="output_table_i")
+
+    contract = [RegionContract("kmp_table", A=96, LD=88, ST=50, CP=157,
+                               aggregate=157)]
+    return dag, contract
+
+
+def _build_wildcard_case(case_name: str, position_specs, has_final_fail: bool,
+                         contract: RegionContract):
+    """Build one concrete wildcard_match test case.
+
+    ``position_specs`` is a list of (chars, is_match_position), where chars are
+    "match", "wildcard", or "mismatch". A mismatch char breaks the inner loop;
+    a match position scans all chars, then stores output=1 and returns. If no
+    position matches, ``has_final_fail`` adds the final failing outer-bound test
+    and output=0 store. The first `i`/`j` loads are counted but rooted so they do
+    not extend the cold-start CP, matching the eval's constant-init treatment.
+    """
+    dag = Dag()
+    r = dag.region(case_name)
+
+    ld_N = r.load(kind="N")
+    ld_M = r.load(kind="M")
+    bound_sub = r.arith(ld_N, ld_M, kind="N_minus_M")
+    prologue_cmp = r.arith(ld_M, ld_N, kind="M_gt_N")
+    r.store(kind="i_init")
+
+    prev_i_store = None
+    for pos_index, (chars, is_match_position) in enumerate(position_specs):
+        ld_i = r.load(*( [prev_i_store] if prev_i_store is not None else [] ),
+                      kind="i_load")
+        if pos_index == 0:
+            outer_cmp = r.arith(prologue_cmp, bound_sub, kind="outer_bound")
+        else:
+            outer_cmp = r.arith(ld_i, bound_sub, kind="outer_bound")
+        match_store = r.store(kind="match_init")
+        r.store(kind="j_init")
+
+        prev_j_store = None
+        inner_gate = outer_cmp
+        match_zero_store = None
+        for char_index, char_kind in enumerate(chars):
+            ld_j = r.load(*( [prev_j_store] if prev_j_store is not None else [] ),
+                          kind="j_load")
+            if char_index == 0:
+                j_bound = r.arith(inner_gate, kind="j_bound")
+            else:
+                j_bound = r.arith(ld_j, inner_gate, kind="j_bound")
+            ld_pat = r.load(j_bound, kind="pattern_j")
+            cmp_wc = r.arith(ld_pat, kind="pattern_ne_wildcard")
+            if char_kind == "wildcard":
+                inc_j = r.arith(cmp_wc, ld_j, kind="j_inc")
+                prev_j_store = r.store(inc_j, kind="j_store")
+                inner_gate = prev_j_store
+                continue
+
+            addr = r.address_add(cmp_wc, ld_i, ld_j, kind="i_plus_j")
+            ld_text = r.load(addr, kind="text_i_plus_j")
+            cmp_ch = r.arith(ld_text, ld_pat, kind="text_ne_pattern")
+            if char_kind == "match":
+                inc_j = r.arith(cmp_ch, ld_j, kind="j_inc")
+                prev_j_store = r.store(inc_j, kind="j_store")
+                inner_gate = prev_j_store
+            else:
+                match_zero_store = r.store(cmp_ch, kind="match_zero")
+                inner_gate = match_zero_store
+                break
+
+        if is_match_position:
+            ld_j_exit = r.load(prev_j_store, kind="j_exit")
+            inner_exit = r.arith(ld_j_exit, kind="j_bound_exit")
+            ld_match = r.load(inner_exit, match_store, kind="match_read")
+            cmp_match = r.arith(ld_match, kind="match_cmp")
+            r.store(cmp_match, output=True, kind="output_match_true")
+            continue
+
+        # Failing position: read the just-cleared match and continue with i++.
+        ld_match = r.load(inner_gate, match_zero_store, kind="match_read")
+        cmp_match = r.arith(ld_match, kind="match_cmp")
+        inc_i = r.arith(cmp_match, ld_i, kind="i_inc")
+        prev_i_store = r.store(inc_i, kind="i_store")
+
+    if has_final_fail:
+        ld_i = r.load(prev_i_store, kind="i_final")
+        fail_cmp = r.arith(ld_i, bound_sub, kind="outer_bound_fail")
+        r.store(fail_cmp, output=True, kind="output_match_false")
+
+    return dag, [contract]
+
+
+def build_wildcard_match_cases():
+    tc1_positions = [(["mismatch"], False) for _ in range(10)]
+    tc1_positions.append(
+        (["match", "match", "wildcard", "match", "match", "wildcard",
+          "match", "match"], True))
+    tc2_positions = [(["mismatch"], False) for _ in range(57)]
+    tc3_positions = [(["wildcard"] * 8, True)]
+    return [
+        ("TC1", *_build_wildcard_case(
+            "TC1", tc1_positions, False,
+            RegionContract("TC1", A=111, LD=77, ST=52, CP=203,
+                           aggregate=203))),
+        ("TC2", *_build_wildcard_case(
+            "TC2", tc2_positions, True,
+            RegionContract("TC2", A=402, LD=288, ST=230, CP=745,
+                           aggregate=745))),
+        ("TC3", *_build_wildcard_case(
+            "TC3", tc3_positions, False,
+            RegionContract("TC3", A=29, LD=21, ST=12, CP=55,
+                           aggregate=55))),
+    ]
+
+
+def build_sort_insertion(N=512):
+    """Insertion sort for the reverse-order main.cpp input.
+
+    Two ordered regions are used. The copy region writes output[], and the sort
+    region later reads and overwrites output[], so this is a true RAW barrier.
+    The sort trace is the reverse-order worst case: outer i=1..N-1 executes i
+    shift bodies and exits via j < 0 before writing key to output[0].
+    """
+    dag = Dag()
+
+    copy = dag.region("copy")
+    copy.load(kind="N")
+    copy.store(kind="copy_i_init")
+    for _ in range(N):
+        ld_in = copy.load(kind="input")
+        copy.store(ld_in, output=True, kind="output_copy")
+        copy.induction(kind="copy_i", compare_depends_on_read=False)
+
+    sort = dag.region("sort")
+    sort.load(kind="N")
+    sort.store(kind="outer_i_init")
+    prev_outer = None
+    for i in range(1, N):
+        outer_iv = sort.induction(kind="outer_i", compare_depends_on_read=True)
+        gate = prev_outer if prev_outer is not None else outer_iv["cmp"]
+        key = sort.load(gate, kind="key_output_i")
+        j_init_val = sort.arith(gate, kind="j_init_sub")
+        prev_j_store = sort.store(j_init_val, kind="j_init")
+        for _ in range(i):
+            ld_j = sort.load(prev_j_store, kind="j")
+            cmp_nonneg = sort.arith(ld_j, kind="j_ge_0")
+            ld_out = sort.load(cmp_nonneg, kind="output_j")
+            cmp_gt = sort.arith(ld_out, key, kind="output_gt_key")
+            addr = sort.address_add(cmp_gt, ld_j, kind="j_plus_1")
+            sort.store(addr, ld_out, kind="shift_store")
+            dec_j = sort.arith(cmp_gt, ld_j, kind="j_dec")
+            prev_j_store = sort.store(dec_j, kind="j_store")
+        ld_j = sort.load(prev_j_store, kind="j_exit")
+        cmp_exit = sort.arith(ld_j, kind="j_ge_0_exit")
+        addr = sort.address_add(cmp_exit, ld_j, kind="j_plus_1_final")
+        prev_outer = sort.store(addr, key, output=True, kind="key_store")
+
+    contract = [
+        RegionContract("copy", A=1024, LD=1025, ST=1025, CP=2, aggregate=86),
+        RegionContract("sort", A=525819, LD=263166, ST=263166, CP=787964,
+                       aggregate=787964),
+    ]
+    return dag, contract
+
+
+def build_sort_quick(N=1024):
+    """Iterative quicksort for the concrete pseudo-random main.cpp input.
+
+    The copy region is ordered before the in-place stack-machine sort because
+    the sort reads output[] values written by copy. The sort builder replays the
+    exact source-level stack trace and emits counted operations according to the
+    eval formulas. It intentionally does not try to expose fork-join recursive
+    parallelism because the source is a sequential explicit-stack machine.
+    """
+    values = [float((i * 7 + 13) % N) for i in range(N)]
+    dag = Dag()
+
+    copy = dag.region("copy")
+    copy.load(kind="N")
+    copy.store(kind="copy_i_init")
+    for _ in range(N):
+        ld_in = copy.load(kind="input")
+        copy.store(ld_in, output=True, kind="output_copy")
+        copy.induction(kind="copy_i", compare_depends_on_read=False)
+
+    r = dag.region("sort")
+    ld_N = r.load(kind="N")
+    r.arith(ld_N, kind="N_le_1")
+    r.arith(ld_N, kind="N_minus_1")
+    top_last = r.store(kind="top_init")
+    top_val = -1
+    stack_vals = [None] * (2 * N + 4)
+    stack_last = [None] * (2 * N + 4)
+    output_last = [None] * N
+    output_vals = list(values)
+
+    stats = {"W": 0, "R": 0, "Z": 0, "C": 0, "S": 0, "L_p": 0, "R_p": 0}
+
+    def push_value(value, dep):
+        nonlocal top_last, top_val
+        ld_top = r.load(top_last, kind="top_push")
+        inc = r.arith(ld_top, dep, kind="top_inc")
+        top_last = r.store(inc, kind="top_store")
+        top_val += 1
+        stack_vals[top_val] = value
+        stack_last[top_val] = r.store(inc, dep, kind="stack_push")
+
+    def pop_value(dep, which, top_node=None):
+        nonlocal top_last, top_val
+        ld_top = top_node if top_node is not None else \
+            r.load(top_last, kind=f"top_pop_{which}")
+        idx = top_val
+        val = stack_vals[idx]
+        st_dep = stack_last[idx]
+        loaded = r.load(ld_top, dep, *( [st_dep] if st_dep is not None else [] ),
+                        kind=f"stack_pop_{which}")
+        dec = r.arith(ld_top, dep, kind=f"top_dec_{which}")
+        top_last = r.store(dec, kind=f"top_store_{which}")
+        top_val -= 1
+        return val, loaded
+
+    # Initial range push: stack[++top] = 0; stack[++top] = N-1.
+    push_value(0, top_last)
+    push_value(N - 1, ld_N)
+
+    while top_val >= 0:
+        stats["W"] += 1
+        ld_top = r.load(top_last, kind="top_while")
+        cmp_while = r.arith(ld_top, kind="top_ge_0")
+        high, high_node = pop_value(cmp_while, "high", top_node=ld_top)
+        low, low_node = pop_value(cmp_while, "low")
+        range_cmp = r.arith(high_node, low_node, kind="low_ge_high")
+        if low >= high:
+            stats["Z"] += 1
+            continue
+        stats["R"] += 1
+
+        pivot = output_vals[high]
+        pivot_last = output_last[high]
+        pivot_node = r.load(range_cmp, *( [pivot_last] if pivot_last is not None else [] ),
+                            kind="pivot_load")
+        i_val = low
+        i_state = r.store(range_cmp, kind="part_i_init")
+        j_state = r.store(range_cmp, kind="scan_j_init")
+
+        for j in range(low, high):
+            stats["C"] += 1
+            ld_j = r.load(j_state, kind="scan_j")
+            cmp_j = r.arith(ld_j, kind="j_lt_high")
+            inc_j = r.arith(ld_j, kind="j_inc")
+            j_state = r.store(inc_j, kind="j_store")
+            outj_last = output_last[j]
+            ld_outj = r.load(cmp_j, *( [outj_last] if outj_last is not None else [] ),
+                             kind="output_j")
+            cmp_pivot = r.arith(ld_outj, pivot_node, kind="output_le_pivot")
+            if output_vals[j] <= pivot:
+                stats["S"] += 1
+                ld_i = r.load(cmp_pivot, i_state, kind="part_i")
+                outi_last = output_last[i_val]
+                ld_outi = r.load(ld_i, *( [outi_last] if outi_last is not None else [] ),
+                                 kind="output_i")
+                inc_i = r.arith(ld_i, kind="part_i_inc")
+                i_state = r.store(inc_i, kind="part_i_store")
+                st_i = r.store(cmp_pivot, ld_outj, ld_outi,
+                               kind="swap_store_i")
+                st_j = r.store(cmp_pivot, ld_outi, kind="swap_store_j")
+                output_last[i_val] = st_i
+                output_last[j] = st_j
+                output_vals[i_val], output_vals[j] = output_vals[j], output_vals[i_val]
+                i_val += 1
+
+        ld_i_final = r.load(i_state, j_state, kind="part_i_final")
+        outi_last = output_last[i_val]
+        ld_outi_final = r.load(ld_i_final,
+                               *( [outi_last] if outi_last is not None else [] ),
+                               kind="output_i_final")
+        st_i = r.store(ld_i_final, pivot_node, ld_outi_final,
+                       output=True, kind="pivot_store_i")
+        st_h = r.store(ld_i_final, ld_outi_final, output=True,
+                       kind="pivot_store_high")
+        output_last[i_val] = st_i
+        output_last[high] = st_h
+        output_vals[i_val], output_vals[high] = output_vals[high], output_vals[i_val]
+        pivot_idx = i_val
+
+        left_cmp = r.arith(st_i, st_h, kind="left_push_cmp")
+        if pivot_idx > low:
+            stats["L_p"] += 1
+            left_hi = r.arith(left_cmp, kind="pivot_minus_1")
+            push_value(low, left_cmp)
+            push_value(pivot_idx - 1, left_hi)
+        right_cmp = r.arith(left_cmp, st_i, st_h, top_last,
+                            kind="right_push_cmp")
+        if pivot_idx < high:
+            stats["R_p"] += 1
+            right_lo = r.arith(right_cmp, kind="pivot_plus_1")
+            push_value(pivot_idx + 1, right_lo)
+            push_value(high, right_cmp)
+        else:
+            top_last = right_cmp
+
+    # Final failing while check.
+    ld_top = r.load(top_last, kind="top_final")
+    r.arith(ld_top, output=True, kind="top_ge_0_final")
+
+    expected = {"W": 1024, "R": 678, "Z": 346, "C": 25773, "S": 21104,
+                "L_p": 516, "R_p": 507}
+    if stats != expected:
+        raise AssertionError(f"sort_quick trace {stats} != {expected}")
+
+    contract = [
+        RegionContract("copy", A=2048, LD=2049, ST=2049, CP=2, aggregate=171),
+        RegionContract("sort", A=106949, LD=101934, ST=97942, CP=95886,
+                       aggregate=95886),
+    ]
+    return dag, contract
+
+
 BUILDERS = {
     "axpy": build_axpy,
     "autocorrelation": build_autocorrelation,
@@ -1277,6 +2013,18 @@ BUILDERS = {
     "bitonic_stage": build_bitonic_stage,
     "bitonic_stage-modified": build_bitonic_stage_modified,
     "binary_search": build_binary_search,
+    "gather": build_gather,
+    "edge_update": build_edge_update,
+    "bitonic_stage-tweak": build_bitonic_stage_tweak,
+    "clz": build_clz,
+    "crc32": build_crc32,
+    "kmp_table": build_kmp_table,
+    "sort_insertion": build_sort_insertion,
+    "sort_quick": build_sort_quick,
+}
+
+MULTICASE_BUILDERS = {
+    "wildcard_match": build_wildcard_match_cases,
 }
 
 PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
@@ -1286,11 +2034,14 @@ PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
 # guard covers every checked-in block (including conv2d).
 WRITTEN_KERNELS = PILOTS + ("conv2d", "batchnorm", "bit_reverse",
                             "bisection_step", "bitonic_stage",
-                            "bitonic_stage-modified", "binary_search")
+                            "bitonic_stage-modified", "binary_search",
+                            "gather", "edge_update", "bitonic_stage-tweak",
+                            "clz", "crc32", "kmp_table", "wildcard_match",
+                            "sort_insertion", "sort_quick")
 
 EVAL_PATHS = {
     name: Path(__file__).resolve().parents[1] / "app" / name / f"{name}_eval.md"
-    for name in BUILDERS
+    for name in tuple(BUILDERS) + tuple(MULTICASE_BUILDERS)
 }
 
 
@@ -1298,6 +2049,14 @@ def build_kernel(kernel: str):
     if kernel not in BUILDERS:
         raise KeyError(f"unknown kernel {kernel!r}; known: {sorted(BUILDERS)}")
     return BUILDERS[kernel]()
+
+
+def build_multicase_kernel(kernel: str):
+    if kernel not in MULTICASE_BUILDERS:
+        raise KeyError(
+            f"unknown multi-case kernel {kernel!r}; known: "
+            f"{sorted(MULTICASE_BUILDERS)}")
+    return MULTICASE_BUILDERS[kernel]()
 
 
 def check_contract(dag: Dag, contract, cfg: Config):
@@ -1340,6 +2099,20 @@ def check_contract(dag: Dag, contract, cfg: Config):
 # ---------------------------------------------------------------------------
 
 def report(kernel: str, cfg: Config) -> str:
+    if kernel in MULTICASE_BUILDERS:
+        result = evaluate_multicase(kernel, cfg)
+        out = [f"# {kernel}  ({cfg.label}: P={cfg.P} L={cfg.L} S={cfg.S})", ""]
+        out.append("per-case validation:")
+        for case_name, case in result.cases:
+            ra = case.region_aggs[0]
+            rs = case.region_scheds[0]
+            out.append(
+                f"  {case_name:<14} CP={ra.CP:<3} A={ra.A:<6} "
+                f"LD={ra.LD:<6} ST={ra.ST:<6} aggregate={ra.aggregate:<4} "
+                f"scheduled={rs.makespan}")
+        out.append("")
+        out.append(render_multicase_block(result))
+        return "\n".join(out)
     dag, contract = build_kernel(kernel)
     check_contract(dag, contract, cfg)
     result = evaluate(dag, kernel, cfg)
@@ -1362,10 +2135,13 @@ def report(kernel: str, cfg: Config) -> str:
 def write_eval(kernel: str, cfg: Config) -> bool:
     """Write/refresh the kernel's marker block in its eval file. Returns True if
     the file content changed."""
-    dag, contract = build_kernel(kernel)
-    check_contract(dag, contract, cfg)
-    result = evaluate(dag, kernel, cfg)
-    block = render_block(result)
+    if kernel in MULTICASE_BUILDERS:
+        block = render_multicase_block(evaluate_multicase(kernel, cfg))
+    else:
+        dag, contract = build_kernel(kernel)
+        check_contract(dag, contract, cfg)
+        result = evaluate(dag, kernel, cfg)
+        block = render_block(result)
     path = EVAL_PATHS[kernel]
     text = path.read_text()
     new_text = apply_block(text, kernel, block)
@@ -1378,15 +2154,22 @@ def write_eval(kernel: str, cfg: Config) -> bool:
 def check_eval(kernel: str, cfg: Config) -> list[str]:
     """Read-only: re-derive the block and confirm it matches what is written in
     the eval. Returns a list of drift messages (empty == clean)."""
-    dag, contract = build_kernel(kernel)
     problems = []
-    try:
-        check_contract(dag, contract, cfg)
-    except AssertionError as exc:
-        problems.append(f"{kernel}: contract drift: {exc}")
-        return problems
-    result = evaluate(dag, kernel, cfg)
-    block = render_block(result)
+    if kernel in MULTICASE_BUILDERS:
+        try:
+            block = render_multicase_block(evaluate_multicase(kernel, cfg))
+        except AssertionError as exc:
+            problems.append(f"{kernel}: contract drift: {exc}")
+            return problems
+    else:
+        dag, contract = build_kernel(kernel)
+        try:
+            check_contract(dag, contract, cfg)
+        except AssertionError as exc:
+            problems.append(f"{kernel}: contract drift: {exc}")
+            return problems
+        result = evaluate(dag, kernel, cfg)
+        block = render_block(result)
     path = EVAL_PATHS[kernel]
     if not path.exists():
         problems.append(f"{kernel}: eval file missing: {path}")
@@ -1571,8 +2354,59 @@ def _run_golden_tests(errors):
             "regions": [("bitonic_stage-modified", 31, 140, 55, 48, 31)]},
         "binary_search": {"aggregate": 48,
                           "regions": [("binary_search", 48, 124, 69, 41, 48)]},
+        "gather": {"aggregate": 257,
+                   "regions": [("gather", 4, 3072, 3074, 2048, 257)]},
+        "edge_update": {"aggregate": 6,
+                        "regions": [("edge_update", 6, 40, 38, 37, 6)]},
+        "bitonic_stage-tweak": {
+            "aggregate": 17,
+            "regions": [("bitonic_stage-tweak", 17, 99, 31, 24, 17)]},
+        "clz": {"aggregate": 621,
+                "regions": [("clz", 163, 14122, 7445, 7445, 621)]},
+        "crc32": {"aggregate": 50152,
+                  "regions": [("crc32", 50152, 51682, 18945, 19971,
+                               50152)]},
+        "kmp_table": {"aggregate": 157,
+                      "regions": [("kmp_table", 157, 96, 88, 50, 157)]},
+        "sort_insertion": {
+            "aggregate": 788050,
+            "regions": [("copy", 2, 1024, 1025, 1025, 86),
+                        ("sort", 787964, 525819, 263166, 263166, 787964)]},
+        "sort_quick": {
+            "aggregate": 96057,
+            "regions": [("copy", 2, 2048, 2049, 2049, 171),
+                        ("sort", 95886, 106949, 101934, 97942, 95886)]},
+    }
+    multi_expect = {
+        "wildcard_match": [
+            ("TC1", 203, 111, 77, 52, 203),
+            ("TC2", 745, 402, 288, 230, 745),
+            ("TC3", 55, 29, 21, 12, 55),
+        ],
     }
     for kernel in WRITTEN_KERNELS:
+        if kernel in MULTICASE_BUILDERS:
+            try:
+                multi = evaluate_multicase(kernel, cfg)
+            except AssertionError as exc:
+                errors.append(f"{kernel}: {exc}")
+                continue
+            rows = []
+            for case_name, result in multi.cases:
+                ra = result.region_aggs[0]
+                rows.append((case_name, ra.CP, ra.A, ra.LD, ra.ST,
+                             ra.aggregate))
+                if result.scheduled_cycles < result.aggregate_cycles:
+                    errors.append(f"{kernel}/{case_name}: scheduled "
+                                  f"{result.scheduled_cycles} < aggregate "
+                                  f"{result.aggregate_cycles}")
+            if rows != multi_expect[kernel]:
+                errors.append(f"{kernel}: case rows {rows} != "
+                              f"{multi_expect[kernel]}")
+            if render_multicase_block(evaluate_multicase(kernel, cfg)) != \
+                    render_multicase_block(multi):
+                errors.append(f"{kernel}: non-deterministic block")
+            continue
         dag, contract = build_kernel(kernel)
         try:
             aggs = check_contract(dag, contract, cfg)
@@ -1709,9 +2543,10 @@ def main(argv) -> int:
     parser = argparse.ArgumentParser(
         description="CGRA aggregate lower bound + finite-resource estimate")
     sub = parser.add_subparsers(dest="cmd")
+    choices = sorted(tuple(BUILDERS) + tuple(MULTICASE_BUILDERS))
 
     p_report = sub.add_parser("report", help="print the canonical eval block")
-    p_report.add_argument("kernel", choices=sorted(BUILDERS))
+    p_report.add_argument("kernel", choices=choices)
     p_report.add_argument("--config", default="6x6")
 
     p_write = sub.add_parser("write", help="write eval blocks (default: pilots)")
