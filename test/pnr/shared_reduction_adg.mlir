@@ -92,7 +92,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     }
   }
   %bit_invariant_aux1 = fabric.pe [spatial] (%pa = %fp_gate : !fabric.bits<32>,
-                    %pb = %i32b : !fabric.bits<32>) -> !fabric.bits<32> {
+                    %pb = %bit_invariant_aux1_value : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%cond = %pa : !fabric.bits<32> to !fabric.bits<1>,
               %value = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
       %stable = fabric.op [@dataflow.invariant] (%cond, %value) : (!fabric.bits<1>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -353,6 +353,42 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %masked : !fabric.bits<32>
     }
   }
+  %mac_result2 = fabric.pe [spatial] (%pa = %mac2_lhs : !fabric.bits<32>,
+                    %pb = %mac2_rhs : !fabric.bits<32>,
+                    %pc = %mac2_acc : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>,
+              %acc = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %mac = fabric.op [@llvm.intr.fmuladd] (%lhs, %rhs, %acc) : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %mac : !fabric.bits<32>
+    }
+  }
+  %mac_result3 = fabric.pe [spatial] (%pa = %mac3_lhs : !fabric.bits<32>,
+                    %pb = %mac3_rhs : !fabric.bits<32>,
+                    %pc = %mac3_acc : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%lhs = %pa : !fabric.bits<32>,
+              %rhs = %pb : !fabric.bits<32>,
+              %acc = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %mac = fabric.op [@llvm.intr.fmuladd] (%lhs, %rhs, %acc) : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %mac : !fabric.bits<32>
+    }
+  }
+  %state_carry = fabric.pe [spatial] (%pa = %state_carry_cond : !fabric.bits<32>,
+                    %pb = %state_carry_init : !fabric.bits<32>,
+                    %pc = %state_carry_next : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%cond = %pa : !fabric.bits<32> to !fabric.bits<1>,
+              %init = %pb : !fabric.bits<32>,
+              %next = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %carried = fabric.op [@dataflow.carry] (%cond, %init, %next) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %carried : !fabric.bits<32>
+    }
+    fabric.fu(%cond = %pa : !fabric.bits<32> to !fabric.bits<1>,
+              %init = %pb : !fabric.bits<32>,
+              %next = %pc : !fabric.bits<32>) -> !fabric.bits<32> {
+      %carried = fabric.op [@dataflow.carry] (%cond, %init, %next) : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %carried : !fabric.bits<32>
+    }
+  }
   %logic_mask_lhs = fabric.switch [spatial] %i32a, %data0, %data1, %bit_carry, %addr_unscaled
     [{connectivity_table = ["11111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -428,9 +464,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %load2_addr = fabric.switch [spatial] %i32c, %cast0_result, %idx, %addr_sum, %running, %squared_data, %int_sum
     [{connectivity_table = ["1111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %store0_value = fabric.switch [spatial] %scan_store_value, %fp_running, %running, %mac_result, %mac_result1, %data0, %data1, %selected, %rotated, %addr_masked, %logic_masked, %int_xor, %packed_sat, %cast2_result, %abs_data, %scaled_reduction, %int_product, %reduction_scale, %int_sum
-    [{connectivity_table = ["1111111111111111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+  %store0_value = fabric.switch [spatial] %scan_store_value, %fp_running, %running, %mac_result, %mac_result1, %mac_result2, %mac_result3, %data0, %data1, %selected, %rotated, %addr_masked, %logic_masked, %int_xor, %packed_sat, %cast2_result, %abs_data, %scaled_reduction, %int_product, %reduction_scale, %int_sum
+    [{connectivity_table = ["111111111111111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
     -> !fabric.bits<32>
   %store1_value = fabric.switch [spatial] %i32d, %selected
     [{connectivity_table = ["11"]}]
@@ -473,9 +509,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %addr_shift_rhs = fabric.switch [spatial] %i32b, %reduction_scale
     [{connectivity_table = ["11"]}]
     : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %load0_addr = fabric.switch [spatial] %idx, %addr_masked, %addr_shifted, %addr_unscaled, %carried_scan, %bit_carry, %squared_data, %running, %addr_sum, %int_product, %int_sum
-    [{connectivity_table = ["11111111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %load0_addr = fabric.switch [spatial] %idx, %addr_masked, %addr_shifted, %addr_unscaled, %carried_scan, %bit_carry, %state_carry, %squared_data, %running, %addr_sum, %int_product, %int_sum
+    [{connectivity_table = ["111111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %load3_addr = fabric.switch [spatial] %i32d, %carried_scan, %idx, %squared_data, %running, %addr_sum, %int_sum
     [{connectivity_table = ["1111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -485,9 +521,9 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %load5_addr = fabric.switch [spatial] %idx, %squared_data, %running, %addr_sum, %int_product, %int_sum, %addr_unscaled, %addr_shifted
     [{connectivity_table = ["11111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %store0_addr = fabric.switch [spatial] %idx, %addr_unscaled, %carried_scan, %addr_shift_const
-    [{connectivity_table = ["1111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %store0_addr = fabric.switch [spatial] %idx, %addr_unscaled, %carried_scan, %addr_shift_const, %state_carry
+    [{connectivity_table = ["11111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, %data4, %done4, %data5, %done5, %store_done0, %store_done1 =
       fabric.mem [spatial] mgr(%mgr) load(%load0_addr, %ctrl, %load1_addr, %ctrl, %load2_addr, %ctrl, %load3_addr, %ctrl, %load4_addr, %ctrl, %load5_addr, %ctrl)
                                 store(%store0_addr, %store0_value, %ctrl, %i32c, %store1_value, %ctrl)
@@ -502,12 +538,12 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     [{connectivity_table = ["111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
     -> !fabric.bits<32>
-  %stream_sum_lhs = fabric.switch [spatial] %reduction_input, %carried_scan, %bit_carry
-    [{connectivity_table = ["111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %stream_sum_rhs = fabric.switch [spatial] %carried_scan, %fp_invariant, %reduction_scale
-    [{connectivity_table = ["111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %stream_sum_lhs = fabric.switch [spatial] %reduction_input, %carried_scan, %bit_carry, %state_carry
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %stream_sum_rhs = fabric.switch [spatial] %carried_scan, %fp_invariant, %reduction_scale, %bit_invariant_aux1
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %scan_init = fabric.switch [spatial] %i32a, %addr_shift_const, %addr_aux_const, %addr_bias_const
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
@@ -529,42 +565,72 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %fp_invariant_value = fabric.switch [spatial] %i32b, %addr_shift_const, %addr_aux_const, %addr_bias_const
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %scaled_reduction_lhs = fabric.switch [spatial] %carried_scan, %fp_running, %data1, %data3, %data5, %data0
-    [{connectivity_table = ["111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %scaled_reduction_rhs = fabric.switch [spatial] %reduction_scale, %data4, %data5, %data1, %data3
-    [{connectivity_table = ["11111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %mac_lhs = fabric.switch [spatial] %i32a, %data0, %data2, %data4, %fp_diff, %scaled_reduction
-    [{connectivity_table = ["111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %mac_rhs = fabric.switch [spatial] %i32b, %data1, %data3, %data5, %fp_diff
-    [{connectivity_table = ["11111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %mac_acc = fabric.switch [spatial] %i32c, %carried_scan, %bit_carry, %scaled_reduction
+  %bit_invariant_aux1_value = fabric.switch [spatial] %i32b, %addr_shift_const, %addr_aux_const, %addr_bias_const
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %mac1_lhs = fabric.switch [spatial] %i32a, %data2, %data4, %data0, %fp_diff
+  %scaled_reduction_lhs = fabric.switch [spatial] %carried_scan, %fp_running, %data1, %data3, %data5, %data0, %bit_invariant, %bit_invariant_aux0, %bit_invariant_aux1
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %scaled_reduction_rhs = fabric.switch [spatial] %reduction_scale, %data4, %data5, %data1, %data3, %state_carry, %bit_carry
+    [{connectivity_table = ["1111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac_lhs = fabric.switch [spatial] %i32a, %data0, %data2, %data4, %fp_diff, %scaled_reduction, %fp_invariant, %bit_invariant, %bit_invariant_aux0, %bit_invariant_aux1, %reduction_scale
+    [{connectivity_table = ["11111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac_rhs = fabric.switch [spatial] %i32b, %data1, %data3, %data5, %fp_diff, %data0, %bit_carry, %state_carry
+    [{connectivity_table = ["11111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac_acc = fabric.switch [spatial] %i32c, %carried_scan, %bit_carry, %scaled_reduction, %state_carry
     [{connectivity_table = ["11111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %mac1_rhs = fabric.switch [spatial] %i32b, %data3, %data5, %data1, %fp_diff
+  %mac1_lhs = fabric.switch [spatial] %i32a, %data2, %data4, %data0, %fp_diff, %fp_invariant, %bit_invariant, %bit_invariant_aux0, %bit_invariant_aux1, %reduction_scale
+    [{connectivity_table = ["1111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac1_rhs = fabric.switch [spatial] %i32b, %data3, %data5, %data1, %fp_diff, %bit_carry, %state_carry, %carried_scan
+    [{connectivity_table = ["11111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac1_acc = fabric.switch [spatial] %i32c, %mac_result, %scaled_reduction, %carried_scan, %bit_carry, %state_carry
+    [{connectivity_table = ["111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac2_lhs = fabric.switch [spatial] %i32a, %data0, %data2, %data4, %fp_invariant, %bit_invariant, %bit_invariant_aux0, %bit_invariant_aux1, %reduction_scale
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac2_rhs = fabric.switch [spatial] %i32b, %data0, %data1, %data3, %data5, %bit_carry, %state_carry, %carried_scan
+    [{connectivity_table = ["11111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac2_acc = fabric.switch [spatial] %mac_result1, %mac_result, %scaled_reduction, %bit_carry, %state_carry
     [{connectivity_table = ["11111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %mac1_acc = fabric.switch [spatial] %i32c, %mac_result, %scaled_reduction, %carried_scan
-    [{connectivity_table = ["1111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac3_lhs = fabric.switch [spatial] %i32a, %data0, %data2, %data4, %fp_invariant, %bit_invariant, %bit_invariant_aux0, %bit_invariant_aux1, %reduction_scale
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac3_rhs = fabric.switch [spatial] %i32b, %data0, %data1, %data3, %data5, %bit_carry, %state_carry, %carried_scan
+    [{connectivity_table = ["11111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %mac3_acc = fabric.switch [spatial] %mac_result2, %mac_result1, %mac_result, %scaled_reduction, %bit_carry, %state_carry
+    [{connectivity_table = ["111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %bit_carry_cond = fabric.switch [spatial] %i32a, %fp_gate
     [{connectivity_table = ["11"]}]
     : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
   %bit_carry_init = fabric.switch [spatial] %i32b, %i32c, %addr_shift_const, %addr_bias_const
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %bit_carry_next = fabric.switch [spatial] %i32c, %addr_unscaled, %mac_result, %mac_result1, %int_sum, %selected, %running
-    [{connectivity_table = ["1111111"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
-  %scan_feedback, %scan_store_value = fabric.switch [spatial] %running, %fp_running, %mac_result, %mac_result1, %int_or, %selected
-    [{connectivity_table = ["111111", "111000"]}]
-    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
+  %bit_carry_next = fabric.switch [spatial] %i32c, %addr_unscaled, %mac_result, %mac_result1, %int_sum, %selected, %running, %mac_result2, %mac_result3, %data0, %state_carry
+    [{connectivity_table = ["11111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %state_carry_cond = fabric.switch [spatial] %fp_gate, %i32a
+    [{connectivity_table = ["11"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %state_carry_init = fabric.switch [spatial] %i32a, %i32b, %i32c, %i32d, %addr_shift_const, %addr_aux_const, %addr_bias_const, %data0, %data1
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %state_carry_next = fabric.switch [spatial] %mac_result, %mac_result1, %mac_result2, %mac_result3, %bit_carry, %carried_scan, %int_sum, %data0, %running
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+  %scan_feedback, %scan_store_value = fabric.switch [spatial] %running, %fp_running, %mac_result, %mac_result1, %mac_result2, %mac_result3, %bit_carry, %state_carry, %int_or, %selected
+    [{connectivity_table = ["1111111111", "0011110000"]}]
+    : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)
     -> (!fabric.bits<32>, !fabric.bits<32>)
   %sync_aux_done = fabric.switch [spatial] %store_done0, %done1, %done2, %done3, %done4, %done5
     [{connectivity_table = ["111111"]}]

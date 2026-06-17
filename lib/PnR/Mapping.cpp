@@ -97,6 +97,8 @@ struct RouteCollection {
   std::uint64_t unroutedEdges = 0;
 };
 
+constexpr unsigned kExhaustivePlacementNodeLimit = 20;
+
 std::string csvEscape(llvm::StringRef value) {
   if (value.find_first_of(",\"\n\r") == llvm::StringRef::npos)
     return value.str();
@@ -1258,6 +1260,28 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
   for (HardwareResource &resource : resources)
     resource.used = false;
   placements.clear();
+  bool greedyComplete = true;
+  for (SoftwareNode &node : nodes) {
+    HardwareResource *resource = claimResource(node, resources);
+    if (!resource) {
+      greedyComplete = false;
+      break;
+    }
+    placements.push_back(PlacementRecord{
+        node.id, node.operation, resourceKindName(node.resourceKind).str(),
+        resource->id, resource->schedule});
+  }
+  if (greedyComplete &&
+      partialPlacementRoutes(nodes, graph, placements, topology))
+    return true;
+
+  for (HardwareResource &resource : resources)
+    resource.used = false;
+  placements.clear();
+
+  if (nodes.size() > kExhaustivePlacementNodeLimit)
+    return false;
+
   if (chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
                                     placements, 0))
     return true;

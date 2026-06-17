@@ -396,9 +396,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 10,
+            "pass": 11,
             "fail": 0,
-            "blocked": 4,
+            "blocked": 3,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -416,6 +416,15 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         },
     )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c", "arm_add_q15")
+    assert_cmsis_cgra_pass_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-dsp",
+        "FilteringFunctions/arm_biquad_cascade_df1_f32.c",
+        "arm_biquad_cascade_df1_f32",
+    )
+    assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
@@ -1063,6 +1072,82 @@ def assert_cmsis_max_shared_adg_evidence(sim_evidence: Path) -> None:
         raise AssertionError(f"arm_max_f32 CGRA report should carry final max state: {cgra_report}")
 
 
+def assert_cmsis_biquad_shared_adg_evidence(sim_evidence: Path) -> None:
+    dfg_report = json.loads((sim_evidence / "arm_biquad_cascade_df1_f32.dfg.report.json").read_text())
+    expected_outputs = ["none", "f32:0.321289", "f32:-0.385681", "f32:-3.500000", "f32:4.250000"]
+    expected_memory = {
+        "arg9": ["f32:1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+        "arg14": ["f32:0.250000", "f32:1.015625", "f32:0.321289", "f32:-0.385681"],
+    }
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "FilteringFunctions/arm_biquad_cascade_df1_f32.c"
+        or dfg_report.get("graph") != "g_t_arm_biquad_cascade_df1_f32_red_0_0"
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("optimistic_cycles") != 254
+        or dfg_report.get("dynamic_work_items") != 4
+        or dfg_report.get("final_outputs") != expected_outputs
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_biquad_cascade_df1_f32 DFG report: {dfg_report}")
+
+    mapping_artifact = json.loads((sim_evidence / "arm_biquad_cascade_df1_f32.mapping.json").read_text())
+    expected_mapping = {
+        "hardware": "shared_reduction_adg",
+        "graph": "g_t_arm_biquad_cascade_df1_f32_red_0_0",
+        "placed_records": 23,
+        "routed_edges": 39,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 890,
+        "status": "pass",
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_biquad_cascade_df1_f32 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    routes = mapping_artifact.get("routes", [])
+    if len(routes) != 39:
+        raise AssertionError(f"arm_biquad_cascade_df1_f32 mapping should expose every routed edge: {mapping_artifact}")
+    actual_edges = {route.get("edge_ref") for route in routes if isinstance(route, dict)}
+    required_edges = {
+        "dataflow.carry#4.result0->dataflow.load#0.operand1",
+        "dataflow.carry#4.result0->dataflow.store#0.operand1",
+        "dataflow.invariant#4.result0->arith.mulf#0.operand0",
+        "dataflow.carry#3.result0->arith.mulf#0.operand1",
+        "arith.mulf#0.result0->llvm.intr.fmuladd#0.operand2",
+        "llvm.intr.fmuladd#0.result0->llvm.intr.fmuladd#1.operand2",
+        "llvm.intr.fmuladd#1.result0->llvm.intr.fmuladd#2.operand2",
+        "llvm.intr.fmuladd#2.result0->llvm.intr.fmuladd#3.operand2",
+        "llvm.intr.fmuladd#3.result0->dataflow.store#0.operand2",
+    }
+    if not required_edges.issubset(actual_edges):
+        raise AssertionError(f"arm_biquad_cascade_df1_f32 mapping missed biquad datapath routes: {mapping_artifact}")
+    for route in routes:
+        if route.get("edge_ref") not in required_edges:
+            continue
+        segments = route.get("segments", [])
+        if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
+            raise AssertionError(f"arm_biquad_cascade_df1_f32 route should traverse Fabric paths: {route}")
+
+    cgra_report = json.loads((sim_evidence / "arm_biquad_cascade_df1_f32.cgra.report.json").read_text())
+    expected_cgra = {
+        "hardware": "shared_reduction_adg",
+        "status": "pass",
+        "fidelity_level": "mapping_constraint_estimate",
+        "dfg_cycles": 254,
+        "hardware_aware_cycles": 431,
+        "performance_delta_cycles": 177,
+        "route_segments": 169,
+        "config_records": 890,
+        "functional_state_source": "carried_from_dfg_sim_report",
+    }
+    for key, value in expected_cgra.items():
+        if cgra_report.get(key) != value:
+            raise AssertionError(f"arm_biquad_cascade_df1_f32 CGRA report {key}={cgra_report.get(key)!r}, expected {value!r}")
+    if cgra_report.get("final_outputs") != expected_outputs or cgra_report.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"arm_biquad_cascade_df1_f32 CGRA report should carry final state: {cgra_report}")
+
+
 def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
     dfg_report = json.loads((sim_evidence / "arm_var_f32.dfg.report.json").read_text())
     expected_graphs = ["g_t_arm_var_f32_red_0_0", "g_t_arm_var_f32_red_1_0"]
@@ -1224,9 +1309,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 10,
+            "pass": 11,
             "fail": 0,
-            "blocked": 4,
+            "blocked": 3,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -1261,8 +1346,13 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_max_f32.c", "arm_max_f32"
     )
-    assert_cmsis_dfg_ready_for_mapping_row(
-        repo, rows, "cmsis-dsp", "FilteringFunctions/arm_biquad_cascade_df1_f32.c"
+    assert_cmsis_cgra_pass_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-dsp",
+        "FilteringFunctions/arm_biquad_cascade_df1_f32.c",
+        "arm_biquad_cascade_df1_f32",
     )
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32")
     assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_fill_f32.c", "arm_fill_f32")
@@ -1271,6 +1361,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_fill_shared_adg_evidence(sim_evidence)
     assert_cmsis_mean_shared_adg_evidence(sim_evidence)
     assert_cmsis_max_shared_adg_evidence(sim_evidence)
+    assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
     assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)
