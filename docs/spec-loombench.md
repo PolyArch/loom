@@ -111,8 +111,8 @@ orientation only and is not part of target acceptance.
 The current repository has app and CMSIS runner infrastructure plus a
 dedicated `loombench` manifest generator seeded from the legacy app
 corpus inventory and app import-status evidence. The manifest records
-legacy source fingerprints. The current tree does not yet have a
-dedicated `loombench` runner or an explicit app-to-LoomBench
-source/oracle/input equivalence bridge, so accepted `loombench` rows are
-reported as structured blocked rather than reusing app CGRA pass
-evidence by name alone.
+legacy source fingerprints and the accepted `manifest_case` bridge to
+the canonical app workload. The current tree does not yet have a
+dedicated `loombench` runner, but accepted rows can consume complete app
+CGRA status evidence only through that explicit manifest bridge; deferred
+or excluded rows remain structured blocked or unsupported.

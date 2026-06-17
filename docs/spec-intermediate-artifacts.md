@@ -385,6 +385,7 @@ Required first columns:
 * `suite`;
 * `case`;
 * `source_row`;
+* `manifest_case`;
 * `software_root`;
 * `graph_ids`;
 * `dfg_mlir`;
@@ -417,6 +418,9 @@ Rules:
 
 * `suite`, `case`, and `source_row` are the row identity. They must be
   stable across CSV and JSON projections.
+* `manifest_case` records an explicit canonical workload bridge for
+  suites whose row identity differs from the workload identity used by
+  simulator evidence. It is optional for ordinary app and CMSIS rows.
 * `dfg_mlir` identifies compiler-lowering evidence, such as CMSIS
   lowered MLIR containing `dataflow.graph.func` or
   `dataflow.graph.launch`. It is not a DFG-sim report and must never be

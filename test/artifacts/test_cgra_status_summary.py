@@ -18,6 +18,7 @@ HEADER = [
     "suite",
     "case",
     "source_row",
+    "manifest_case",
     "software_root",
     "graph_ids",
     "dfg_mlir",

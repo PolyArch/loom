@@ -93,6 +93,7 @@ def row(
     case: str,
     source_row: str,
     software_root: str,
+    manifest_case: str = "",
     graph_ids: str = "",
     required_slice_count: str = "0",
     blocking_prerequisite: str,
@@ -102,6 +103,7 @@ def row(
         "suite": suite,
         "case": case,
         "source_row": source_row,
+        "manifest_case": manifest_case,
         "software_root": software_root,
         "graph_ids": graph_ids,
         "required_slice_count": required_slice_count,
@@ -361,6 +363,7 @@ def loombench_row_from_manifest_case(
         suite="loombench",
         case=case,
         source_row=source_row,
+        manifest_case=app_case,
         software_root=str(manifest_case.get("software_root", "")),
         blocking_prerequisite="loombench_manifest",
         diagnostic=reason or "LoomBench manifest row has no CGRA status evidence yet",
@@ -394,15 +397,6 @@ def loombench_row_from_manifest_case(
         row_data["blocking_prerequisite"] = "app_import"
         row_data["diagnostic"] = "accepted LoomBench row lacks manifest_case"
         return row_data
-    if app_case != case:
-        row_data["status"] = "blocked"
-        row_data["diagnostic_class"] = "loombench_workload_identity_bridge_missing"
-        row_data["blocking_prerequisite"] = "loombench_workload_identity_bridge"
-        row_data["diagnostic"] = (
-            f"accepted LoomBench row maps to app case {app_case!r}; row-level CGRA evidence "
-            "cannot be reused until workload identity bridging is explicit"
-        )
-        return row_data
     app_row = app_row_by_case.get(app_case)
     if app_row is None:
         row_data["status"] = "blocked"
@@ -410,13 +404,22 @@ def loombench_row_from_manifest_case(
         row_data["blocking_prerequisite"] = "app_manifest"
         row_data["diagnostic"] = f"accepted LoomBench row maps to missing app case {app_case!r}"
         return row_data
+    if app_row.get("diagnostic_class", "") == "app_dataflow_tier_missing":
+        row_data["status"] = "blocked"
+        row_data["diagnostic_class"] = "loombench_app_dataflow_tier_missing"
+        row_data["blocking_prerequisite"] = "dataflow"
+        row_data["diagnostic"] = (
+            f"accepted LoomBench row maps to app case {app_case!r}, but that app row has no DFG tier; "
+            "DFG-sim, mapping, and CGRA-sim evidence cannot be consumed through the bridge"
+        )
+        return row_data
 
     row_data["status"] = "blocked"
-    row_data["diagnostic_class"] = "loombench_workload_identity_fingerprint_missing"
-    row_data["blocking_prerequisite"] = "loombench_workload_identity_fingerprint"
+    row_data["diagnostic_class"] = "loombench_workload_identity_bridge_ready"
+    row_data["blocking_prerequisite"] = "sim_evidence"
     row_data["diagnostic"] = (
-        f"accepted LoomBench row maps to app case {app_case!r}, but source/oracle/input "
-        "equivalence is not proven by an explicit fingerprint bridge"
+        f"accepted LoomBench row maps to app case {app_case!r}; row-level CGRA evidence "
+        "is ready to be consumed through the explicit manifest_case bridge"
     )
     return row_data
 
@@ -723,7 +726,7 @@ def artifact_diagnostic(label: str, data: dict[str, object], path: Path, status:
 
 
 def workload_identity_diagnostics(
-    case: str,
+    expected_workload: str,
     artifacts: tuple[tuple[str, dict[str, object], Path], ...],
 ) -> list[str]:
     diagnostics: list[str] = []
@@ -734,15 +737,21 @@ def workload_identity_diagnostics(
             continue
         workload = string_field(data, "workload")
         if not workload:
-            diagnostics.append(f"{label} lacks workload identity for row case {case!r}")
-        elif workload != case:
-            diagnostics.append(f"{label} workload identity {workload!r} does not match row case {case!r}")
+            diagnostics.append(f"{label} lacks workload identity for expected workload {expected_workload!r}")
+        elif workload != expected_workload:
+            diagnostics.append(
+                f"{label} workload identity {workload!r} does not match expected workload {expected_workload!r}"
+            )
     return diagnostics
 
 
 def sim_evidence_stems(row_data: dict[str, str]) -> list[str]:
     candidates: list[str] = []
-    for value in (row_data.get("case", ""), row_data.get("source_row", "")):
+    if row_data.get("suite", "") == "loombench" and row_data.get("manifest_case", ""):
+        values = (row_data.get("manifest_case", ""),)
+    else:
+        values = (row_data.get("case", ""), row_data.get("source_row", ""))
+    for value in values:
         if not value:
             continue
         candidates.append(value)
@@ -812,9 +821,15 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
     elif suite in {"cmsis-dsp", "cmsis-nn"}:
         if row_data.get("diagnostic_class") != "cmsis_dfg_mlir_ready_for_dfg_sim":
             return
+    elif suite == "loombench":
+        if row_data.get("diagnostic_class") != "loombench_workload_identity_bridge_ready":
+            return
+        if not row_data.get("manifest_case", ""):
+            return
     else:
         return
     case = row_data["case"]
+    expected_workload = row_data.get("manifest_case", "") if suite == "loombench" else case
     stems = sim_evidence_stems(row_data)
     original_graph_ids = [item for item in row_data.get("graph_ids", "").split(",") if item]
     dfg_path = first_sim_evidence_path(evidence_dir, stems, ".dfg.report.json")
@@ -906,7 +921,7 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
     row_data["final_memory_state_present"] = "true" if final_memory_present else "false"
 
     identity_diagnostics = workload_identity_diagnostics(
-        case,
+        expected_workload,
         (
             ("dfg_report", dfg, dfg_path),
             ("mapping_artifact", mapping, mapping_path),

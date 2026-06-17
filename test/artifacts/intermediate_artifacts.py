@@ -322,6 +322,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
             "suite",
             "case",
             "source_row",
+            "manifest_case",
             "software_root",
             "graph_ids",
             "dfg_mlir",
@@ -362,6 +363,7 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         scaffold_row=(
             "scaffold",
             "scaffold",
+            "",
             "",
             "",
             "",
@@ -1355,12 +1357,17 @@ def validate_workload_identity(
     data: dict[str, object],
 ) -> None:
     workload = data.get("workload")
-    case = row.get("case", "")
+    expected = (
+        row.get("manifest_case", "")
+        if row.get("suite", "") == "loombench" and row.get("manifest_case", "")
+        else row.get("case", "")
+    )
     if not isinstance(workload, str) or not workload:
         diagnostics.append(f"row {row_index}: referenced {label} JSON lacks workload identity")
-    elif workload != case:
+    elif workload != expected:
         diagnostics.append(
-            f"row {row_index}: referenced {label} JSON workload identity {workload!r} does not match row case {case!r}"
+            f"row {row_index}: referenced {label} JSON workload identity {workload!r} "
+            f"does not match expected workload {expected!r}"
         )
 
 
@@ -1686,6 +1693,22 @@ def validate_cgra_status_loombench_no_manifest_row(
         diagnostics.append(f"row {row_index}: LoomBench row without manifest requires final_memory_state_present=false")
 
 
+def cgra_status_row_has_sim_artifacts(row: dict[str, str]) -> bool:
+    return any(
+        row.get(column, "")
+        for column in (
+            "dfg_report",
+            "dfg_report_fingerprint",
+            "mapping_artifact",
+            "mapping_artifact_fingerprint",
+            "cgra_report",
+            "cgra_report_fingerprint",
+            "comparison_report",
+            "comparison_report_fingerprint",
+        )
+    )
+
+
 def validate_cgra_status_loombench_no_missing_status(
     row: dict[str, str],
     diagnostics: list[str],
@@ -1695,6 +1718,55 @@ def validate_cgra_status_loombench_no_missing_status(
         return
     if row.get("diagnostic_class", "") == "missing_status":
         diagnostics.append(f"row {row_index}: LoomBench row must not use missing_status")
+
+
+def validate_cgra_status_loombench_import_terminal_row(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") != "loombench":
+        return
+    diagnostic_class = row.get("diagnostic_class", "")
+    if diagnostic_class not in {"loombench_import_deferred", "loombench_import_excluded"}:
+        return
+    state = "deferred" if diagnostic_class == "loombench_import_deferred" else "excluded"
+    if cgra_status_row_has_sim_artifacts(row):
+        diagnostics.append(f"row {row_index}: LoomBench {state} row must not carry simulator artifacts")
+    for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
+        if row.get(column, "") != "not_run":
+            diagnostics.append(f"row {row_index}: LoomBench {state} row requires {column}=not_run")
+
+
+def validate_cgra_status_loombench_bridge_row(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") != "loombench":
+        return
+    if row.get("status", "") == "pass" and not row.get("manifest_case", ""):
+        diagnostics.append(f"row {row_index}: LoomBench pass row requires manifest_case bridge")
+
+
+def validate_cgra_status_loombench_app_pass_bridge(
+    rows: list[dict[str, str]],
+    diagnostics: list[str],
+) -> None:
+    app_rows_by_case = {
+        row.get("case", ""): row
+        for row in rows
+        if row.get("suite", "") == "app"
+    }
+    for index, row in enumerate(rows, start=1):
+        if row.get("suite", "") != "loombench" or row.get("status", "") != "pass":
+            continue
+        manifest_case = row.get("manifest_case", "")
+        app_row = app_rows_by_case.get(manifest_case)
+        if app_row is None:
+            diagnostics.append(f"row {index}: LoomBench pass row has no matching app manifest_case row")
+        elif app_row.get("status", "") != "pass":
+            diagnostics.append(f"row {index}: LoomBench pass row requires matching app row to pass")
 
 
 def validate_kind_invariants(
@@ -1730,6 +1802,8 @@ def validate_kind_invariants(
         validate_cgra_status_cmsis_dfg_mlir_requirement(row, diagnostics, row_index)
         validate_cgra_status_loombench_no_manifest_row(row, diagnostics, row_index)
         validate_cgra_status_loombench_no_missing_status(row, diagnostics, row_index)
+        validate_cgra_status_loombench_import_terminal_row(row, diagnostics, row_index)
+        validate_cgra_status_loombench_bridge_row(row, diagnostics, row_index)
     if schema.kind == "sim_cycle" and statuses.get("status") == "pass":
         for column in ("dfg_sim_cycles", "cgra_sim_cycles"):
             if row.get(column, "") and nonnegative_int_cell(row, column) is None:
@@ -2192,6 +2266,8 @@ def audit_csv(path: Path, schema: CsvSchema) -> dict[str, object]:
                 diagnostics.append(f"row {index}: pass row has no diagnostic or evidence note")
     if schema.kind == "sim_cycle":
         validate_sim_cycle_uniqueness(rows, diagnostics)
+    if schema.kind == "cgra_status":
+        validate_cgra_status_loombench_app_pass_bridge(rows, diagnostics)
     if schema.kind == "dse_candidate":
         validate_dse_candidate_uniqueness(rows, diagnostics)
         validate_dse_artifact_references(path, rows, diagnostics)

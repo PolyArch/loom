@@ -76,6 +76,7 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-loombench-manifest-") as tmp:
         temp_root = Path(tmp)
         legacy_root = temp_root / "legacy"
+        write_case(legacy_root, "batchnorm")
         write_case(legacy_root, "legacy_missing")
         write_case(legacy_root, "vecadd")
         write_case(legacy_root, "blocked_case", with_header=False)
@@ -133,9 +134,11 @@ def main() -> int:
         if manifest.get("csv_projection") != str(manifest_csv):
             raise AssertionError(f"manifest must name its CSV projection: {manifest}")
         manifest_rows = read_manifest_csv(manifest_csv)
-        if [row["case"] for row in manifest_rows] != ["blocked_case", "legacy_missing", "vecadd"]:
+        if [row["case"] for row in manifest_rows] != ["batchnorm", "blocked_case", "legacy_missing", "vecadd"]:
             raise AssertionError(f"manifest rows should preserve inventory order: {manifest_rows}")
         by_case = {row["case"]: row for row in manifest_rows}
+        if by_case["batchnorm"]["import_state"] != "accepted" or by_case["batchnorm"]["manifest_case"] != "batchnorm":
+            raise AssertionError(f"batchnorm should be accepted into LoomBench manifest: {by_case['batchnorm']}")
         if by_case["vecadd"]["import_state"] != "accepted" or by_case["vecadd"]["manifest_case"] != "vecadd":
             raise AssertionError(f"vecadd should be accepted into LoomBench manifest: {by_case['vecadd']}")
         if len(by_case["vecadd"]["source_fingerprint"]) != 64:
@@ -149,6 +152,11 @@ def main() -> int:
         test_cgra_status_summary.write_sim_evidence_case(
             evidence_dir,
             "vecadd",
+            cgra_final_state=True,
+        )
+        test_cgra_status_summary.write_sim_evidence_case(
+            evidence_dir,
+            "batchnorm",
             cgra_final_state=True,
         )
         csv_output = temp_root / "cgra-status-summary.csv"
@@ -175,13 +183,36 @@ def main() -> int:
         rows = test_cgra_status_summary.read_rows(csv_output)
         loombench_vecadd = one_row(rows, "loombench", "vecadd")
         if (
-            loombench_vecadd["status"] != "blocked"
-            or loombench_vecadd["diagnostic_class"] != "loombench_workload_identity_fingerprint_missing"
+            loombench_vecadd["status"] != "pass"
+            or loombench_vecadd["diagnostic_class"] != "cgra_sim_pass"
+            or loombench_vecadd["manifest_case"] != "vecadd"
         ):
-            raise AssertionError(f"accepted LoomBench vecadd should require fingerprint bridge: {loombench_vecadd}")
+            raise AssertionError(f"accepted LoomBench vecadd should consume explicit app evidence: {loombench_vecadd}")
+        for artifact_column, fingerprint_column in (
+            ("dfg_report", "dfg_report_fingerprint"),
+            ("mapping_artifact", "mapping_artifact_fingerprint"),
+            ("cgra_report", "cgra_report_fingerprint"),
+            ("comparison_report", "comparison_report_fingerprint"),
+        ):
+            test_cgra_status_summary.assert_sha256_file(
+                loombench_vecadd[artifact_column],
+                loombench_vecadd[fingerprint_column],
+                repo,
+            )
         legacy_missing = one_row(rows, "loombench", "legacy_missing")
         if legacy_missing["status"] != "blocked" or legacy_missing["diagnostic_class"] != "loombench_import_deferred":
             raise AssertionError(f"deferred LoomBench row should be structured blocked: {legacy_missing}")
+        loombench_batchnorm = one_row(rows, "loombench", "batchnorm")
+        if (
+            loombench_batchnorm["status"] != "blocked"
+            or loombench_batchnorm["diagnostic_class"] != "loombench_app_dataflow_tier_missing"
+            or loombench_batchnorm["blocking_prerequisite"] != "dataflow"
+            or loombench_batchnorm["dfg_report"]
+        ):
+            raise AssertionError(
+                f"LoomBench row mapped to an app row without a DFG tier must not consume evidence: "
+                f"{loombench_batchnorm}"
+            )
         blocked_case = one_row(rows, "loombench", "blocked_case")
         if blocked_case["status"] != "unsupported" or blocked_case["diagnostic_class"] != "loombench_import_excluded":
             raise AssertionError(f"excluded LoomBench row should be structured unsupported: {blocked_case}")
@@ -204,10 +235,7 @@ def main() -> int:
 
         forged_rows = [dict(row) for row in rows]
         forged_vecadd = one_row(forged_rows, "loombench", "vecadd")
-        app_vecadd = one_row(forged_rows, "app", "vecadd")
-        for key, value in app_vecadd.items():
-            if key not in {"suite", "case", "source_row", "software_root"}:
-                forged_vecadd[key] = value
+        forged_vecadd["manifest_case"] = ""
         forged_csv = temp_root / "forged-loombench-pass.csv"
         forged_json = temp_root / "forged-loombench-pass.json"
         test_cgra_status_summary.write_rows(forged_csv, forged_rows)
@@ -232,9 +260,50 @@ def main() -> int:
             check=False,
         )
         if forged_result.returncode == 0:
-            raise AssertionError("forged LoomBench name-only pass unexpectedly passed audit")
-        if "cannot pass without explicit workload identity bridge" not in forged_result.stderr:
+            raise AssertionError("forged LoomBench pass without manifest_case unexpectedly passed audit")
+        if "manifest_case does not match manifest" not in forged_result.stderr:
             raise AssertionError(f"forged pass diagnostic missing: {forged_result.stderr}")
+
+        forged_deferred_artifacts = [dict(row) for row in rows]
+        forged_deferred_with_artifacts = one_row(forged_deferred_artifacts, "loombench", "legacy_missing")
+        for key, value in loombench_vecadd.items():
+            if key not in {"suite", "case", "source_row", "software_root", "status", "diagnostic_class", "owner", "blocking_prerequisite", "diagnostic"}:
+                forged_deferred_with_artifacts[key] = value
+        forged_deferred_with_artifacts["manifest_case"] = "vecadd"
+        forged_deferred_with_artifacts["status"] = "blocked"
+        forged_deferred_with_artifacts["diagnostic_class"] = "loombench_import_deferred"
+        forged_deferred_with_artifacts["blocking_prerequisite"] = "app_import"
+        forged_deferred_with_artifacts["diagnostic"] = "forged deferred row with simulator artifacts"
+        forged_deferred_artifacts_csv = temp_root / "forged-loombench-deferred-artifacts-cgra-status-summary.csv"
+        test_cgra_status_summary.write_rows(forged_deferred_artifacts_csv, forged_deferred_artifacts)
+        forged_deferred_artifacts_audit = temp_root / "forged-loombench-deferred-artifacts-audit.json"
+        forged_deferred_artifacts_result = subprocess.run(
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_deferred_artifacts_audit),
+                str(forged_deferred_artifacts_csv),
+            ],
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if forged_deferred_artifacts_result.returncode == 0:
+            raise AssertionError("generic artifact audit accepted deferred LoomBench simulator artifacts")
+        forged_deferred_artifacts_data = json.loads(forged_deferred_artifacts_audit.read_text())
+        forged_deferred_artifacts_diagnostics = "\n".join(
+            str(item) for item in forged_deferred_artifacts_data.get("diagnostics", [])
+        )
+        if "LoomBench deferred row must not carry simulator artifacts" not in forged_deferred_artifacts_diagnostics:
+            raise AssertionError(
+                "generic artifact audit diagnostic missing for deferred simulator artifacts: "
+                f"stdout={forged_deferred_artifacts_result.stdout} "
+                f"stderr={forged_deferred_artifacts_result.stderr} "
+                f"audit={forged_deferred_artifacts_data}"
+            )
 
         forged_deferred = [dict(row) for row in rows]
         deferred_row = one_row(forged_deferred, "loombench", "legacy_missing")

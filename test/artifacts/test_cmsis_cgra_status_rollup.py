@@ -1291,10 +1291,11 @@ def main() -> int:
         loombench_vecadd = one_row(rows, "loombench", "vecadd")
         if (
             loombench_vecadd["status"] != "blocked"
-            or loombench_vecadd["diagnostic_class"] != "loombench_workload_identity_fingerprint_missing"
-            or loombench_vecadd["blocking_prerequisite"] != "loombench_workload_identity_fingerprint"
+            or loombench_vecadd["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+            or loombench_vecadd["blocking_prerequisite"] != "sim_evidence"
+            or loombench_vecadd["manifest_case"] != "vecadd"
         ):
-            raise AssertionError(f"LoomBench accepted row should block on fingerprint bridge: {loombench_vecadd}")
+            raise AssertionError(f"LoomBench accepted row should expose explicit evidence bridge: {loombench_vecadd}")
         loombench_deferred = one_row(rows, "loombench", "legacy_missing")
         if (
             loombench_deferred["status"] != "blocked"

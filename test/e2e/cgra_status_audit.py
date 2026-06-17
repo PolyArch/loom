@@ -203,12 +203,17 @@ def validate_workload_identity(
     diagnostics: list[str],
 ) -> None:
     workload = data.get("workload")
-    case = row.get("case", "")
+    expected = (
+        row.get("manifest_case", "")
+        if row.get("suite", "") == "loombench" and row.get("manifest_case", "")
+        else row.get("case", "")
+    )
     if not isinstance(workload, str) or not workload:
         diagnostics.append(f"row {row_index}: referenced {label} JSON lacks workload identity")
-    elif workload != case:
+    elif workload != expected:
         diagnostics.append(
-            f"row {row_index}: referenced {label} JSON workload identity {workload!r} does not match row case {case!r}"
+            f"row {row_index}: referenced {label} JSON workload identity {workload!r} "
+            f"does not match expected workload {expected!r}"
         )
 
 
@@ -682,6 +687,8 @@ def validate_loombench_manifest_semantics(
     if not manifest_by_case:
         return
     rows_by_case = {row.get("case", ""): row for row in rows if row.get("suite", "") == "loombench"}
+    app_rows_by_case = {row.get("case", ""): row for row in rows if row.get("suite", "") == "app"}
+    no_dfg_app_cases = app_manifest_no_dfg_cases(diagnostics)
     for case, manifest_case in manifest_by_case.items():
         row = rows_by_case.get(case)
         if row is None:
@@ -703,17 +710,58 @@ def validate_loombench_manifest_semantics(
             if row_has_sim_artifacts(row):
                 diagnostics.append(f"LoomBench deferred row {case} must not carry simulator artifacts")
         elif import_state == "accepted":
+            if not manifest_app_case:
+                diagnostics.append(f"LoomBench accepted row {case} manifest lacks manifest_case")
+            if row.get("manifest_case", "") != manifest_app_case:
+                diagnostics.append(f"LoomBench accepted row {case} manifest_case does not match manifest")
+            if manifest_app_case in no_dfg_app_cases:
+                if row.get("status", "") != "blocked":
+                    diagnostics.append(f"LoomBench accepted no-DFG app row {case} must stay blocked")
+                if row.get("diagnostic_class", "") != "loombench_app_dataflow_tier_missing":
+                    diagnostics.append(f"LoomBench accepted no-DFG app row {case} has wrong diagnostic_class")
+                if row.get("blocking_prerequisite", "") != "dataflow":
+                    diagnostics.append(f"LoomBench accepted no-DFG app row {case} must block on dataflow")
+                if row_has_sim_artifacts(row):
+                    diagnostics.append(f"LoomBench accepted no-DFG app row {case} must not carry simulator artifacts")
+                continue
             if row.get("status", "") == "pass":
-                diagnostics.append(
-                    f"LoomBench accepted row {case} cannot pass without explicit workload identity bridge"
-                )
-            if manifest_app_case != case:
-                if row.get("diagnostic_class", "") != "loombench_workload_identity_bridge_missing":
-                    diagnostics.append(f"LoomBench accepted alias row {case} must block on identity bridge")
-            elif row.get("diagnostic_class", "") != "loombench_workload_identity_fingerprint_missing":
-                diagnostics.append(f"LoomBench accepted row {case} must block on fingerprint bridge")
-            if row_has_sim_artifacts(row):
-                diagnostics.append(f"LoomBench accepted row {case} must not reuse simulator artifacts by name alone")
+                if row.get("diagnostic_class", "") != "cgra_sim_pass":
+                    diagnostics.append(f"LoomBench accepted pass row {case} must use cgra_sim_pass")
+                if not row_has_sim_artifacts(row):
+                    diagnostics.append(f"LoomBench accepted pass row {case} requires simulator artifacts")
+                app_row = app_rows_by_case.get(manifest_app_case)
+                if app_row is None:
+                    diagnostics.append(f"LoomBench accepted pass row {case} lacks corresponding app row")
+                elif app_row.get("status", "") != "pass":
+                    diagnostics.append(f"LoomBench accepted pass row {case} requires corresponding app row to pass")
+            elif row.get("diagnostic_class", "") not in {
+                "loombench_workload_identity_bridge_ready",
+                "loombench_app_row_missing",
+                "loombench_app_dataflow_tier_missing",
+                "missing_dfg_report",
+                "dfg_report_failed",
+                "dfg_report_blocked",
+                "dfg_report_unsupported",
+                "dfg_report_skipped",
+                "dfg_report_not_run",
+                "missing_mapping_artifact",
+                "mapping_artifact_failed",
+                "mapping_artifact_blocked",
+                "mapping_artifact_unsupported",
+                "mapping_artifact_skipped",
+                "mapping_artifact_not_run",
+                "missing_cgra_report",
+                "cgra_report_failed",
+                "cgra_report_blocked",
+                "cgra_report_unsupported",
+                "cgra_report_skipped",
+                "cgra_report_not_run",
+                "missing_sim_comparison_report",
+                "sim_comparison_failed",
+                "sim_comparison_blocked",
+                "evidence_identity_mismatch",
+            }:
+                diagnostics.append(f"LoomBench accepted row {case} has wrong diagnostic_class")
 
 
 def validate_json(path: Path, csv_input: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
