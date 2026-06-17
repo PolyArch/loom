@@ -16,6 +16,22 @@
     {
       "case": "convolve_1d_same",
       "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "autocorrelation",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "binary_search",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "delta_encode",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "partition",
+      "hardware": "shared_reduction_adg"
     }
   ]
 }

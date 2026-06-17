@@ -73,17 +73,23 @@ def validate_case_wiring(
     manifest: Path,
     app_cases: set[str],
     graph_by_case: dict[str, str],
+    *,
+    allow_missing_primary_graph: bool,
 ) -> None:
     if case not in app_cases:
         raise ValueError(f"{manifest} contains unknown default batch case {case}")
     graph = graph_by_case.get(case)
     if graph is None:
         raise ValueError(f"{manifest} case {case} is not wired for the full-stack artifact chain")
-    if graph == "missing_primary_graph":
+    if graph == "missing_primary_graph" and not allow_missing_primary_graph:
         raise ValueError(f"{manifest} case {case} has missing primary graph wiring")
 
 
-def load_default_batch(path: Path | None = None) -> list[dict[str, str]]:
+def load_default_batch(
+    path: Path | None = None,
+    *,
+    allow_missing_primary_graph: bool = False,
+) -> list[dict[str, str]]:
     manifest = path if path is not None else default_manifest_path()
     data = json.loads(manifest.read_text())
     if data.get("schema_version") != 1:
@@ -109,18 +115,30 @@ def load_default_batch(path: Path | None = None) -> list[dict[str, str]]:
             raise ValueError(f"{manifest} case {case} has unsupported hardware {hardware}")
         if case in seen:
             raise ValueError(f"{manifest} contains duplicate case {case}")
-        validate_case_wiring(case, manifest, app_cases, graph_by_case)
+        validate_case_wiring(
+            case,
+            manifest,
+            app_cases,
+            graph_by_case,
+            allow_missing_primary_graph=allow_missing_primary_graph,
+        )
         seen.add(case)
         result.append({"case": case, "hardware": hardware})
     return result
 
 
-def load_default_cases(path: Path | None = None) -> tuple[str, ...]:
-    return tuple(entry["case"] for entry in load_default_batch(path))
+def load_default_cases(path: Path | None = None, *, allow_missing_primary_graph: bool = False) -> tuple[str, ...]:
+    return tuple(
+        entry["case"]
+        for entry in load_default_batch(path, allow_missing_primary_graph=allow_missing_primary_graph)
+    )
 
 
-def load_default_hardware(path: Path | None = None) -> dict[str, str]:
-    return {entry["case"]: entry["hardware"] for entry in load_default_batch(path)}
+def load_default_hardware(path: Path | None = None, *, allow_missing_primary_graph: bool = False) -> dict[str, str]:
+    return {
+        entry["case"]: entry["hardware"]
+        for entry in load_default_batch(path, allow_missing_primary_graph=allow_missing_primary_graph)
+    }
 
 
 def _read_json(path: Path) -> dict[str, object]:
@@ -166,6 +184,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--emit-cases", action="store_true")
     parser.add_argument("--validate-evidence-dir", type=Path)
+    parser.add_argument("--allow-missing-primary-graph", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -174,7 +193,10 @@ def main(argv: list[str]) -> int:
     manifest = args.manifest
     try:
         if args.emit_cases:
-            for case in load_default_cases(manifest):
+            for case in load_default_cases(
+                manifest,
+                allow_missing_primary_graph=args.allow_missing_primary_graph,
+            ):
                 print(case)
         if args.validate_evidence_dir is not None:
             validate_evidence_dir(args.validate_evidence_dir, manifest)

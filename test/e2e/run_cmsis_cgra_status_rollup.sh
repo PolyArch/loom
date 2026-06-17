@@ -103,6 +103,13 @@ load_app_sim_manifest_cases() {
     python3 "${ROOT}/test/app/default_cgra_sim_batch.py" "${manifest_args[@]}" --emit-cases
 }
 
+load_app_sim_attempt_manifest_cases() {
+    python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
+        --manifest "$1" \
+        --allow-missing-primary-graph \
+        --emit-cases
+}
+
 if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
     if ! default_case_output="$(load_app_sim_manifest_cases)"; then
         exit 1
@@ -116,7 +123,7 @@ if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
 fi
 
 for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do
-    if ! attempt_case_output="$(load_app_sim_manifest_cases "${attempt_manifest}")"; then
+    if ! attempt_case_output="$(load_app_sim_attempt_manifest_cases "${attempt_manifest}")"; then
         exit 1
     fi
     while IFS= read -r attempt_case; do

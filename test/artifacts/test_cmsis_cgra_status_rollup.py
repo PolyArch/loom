@@ -337,12 +337,22 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 0,
             "fail": 0,
-            "blocked": 54,
+            "blocked": 58,
             "unsupported": 0,
-            "missing_status": 55,
+            "missing_status": 51,
         },
     )
-    for case in ("crc32", "fir_filter", "merge", "convolve_1d_same"):
+    expected_diagnostics = {
+        "crc32": "unsupported op: scf.for",
+        "fir_filter": "unsupported op: scf.for",
+        "merge": "unsupported op: scf.for",
+        "convolve_1d_same": "unsupported op: scf.for",
+        "autocorrelation": "unsupported op: scf.for",
+        "binary_search": "primary workload graph absent: expected token binary_search_candidate",
+        "delta_encode": "unsupported op: llvm.load",
+        "partition": "unsupported op: scf.for",
+    }
+    for case, diagnostic in expected_diagnostics.items():
         row = one_row(rows, "app", case)
         if (
             row["status"] != "blocked"
@@ -356,7 +366,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             or row["hardware_system"] != "shared_reduction_adg"
             or row["final_outputs_present"] != "false"
             or row["final_memory_state_present"] != "false"
-            or "unsupported op: scf.for" not in row["diagnostic"]
+            or diagnostic not in row["diagnostic"]
         ):
             raise AssertionError(f"attempted app row should expose structured shared-ADG blocker: {row}")
         for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
