@@ -266,11 +266,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 36,
+            "pass": 37,
             "fail": 0,
             "blocked": 50,
             "unsupported": 0,
-            "missing_status": 23,
+            "missing_status": 22,
         },
     )
     expected_hardware = default_batch_hardware(repo)

@@ -1038,14 +1038,14 @@ case "${CASE}" in
         )
         ;;
     prefix_sum_exclusive)
+        append_ctrl_tokens 7
         sim_args+=(
             --graph g_t_prefix_sum_exclusive_kernel_red_0_0
             --workload prefix_sum_exclusive
-            --arg 0=none
-            --arg 1=0
+            --arg 1=1
             --arg 2=8
             --arg 3=1
-            --memref 4=1,2,3,4,5,6,7,8
+            --memref 4=3,1,4,1,5,9,2,6
             --memref 5=0,0,0,0,0,0,0,0
             --arg 6=0
         )

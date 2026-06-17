@@ -28,6 +28,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "matvec",
     "mean",
     "prefix_sum",
+    "prefix_sum_exclusive",
     "prefix_sum_inclusive",
     "reduction",
     "relu",

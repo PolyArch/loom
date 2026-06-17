@@ -75,9 +75,7 @@ DEFAULT_SWEEP_CASES = (
     "variance",
 )
 BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
-DFG_BLOCKED_SWEEP_CASES = (
-    "prefix_sum_exclusive",
-)
+DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
     "binary_search",
@@ -583,6 +581,45 @@ def assert_dfg_dynamic_work_items(evidence_dir: Path, case: str, expected_count:
         raise AssertionError(f"{case} should have {expected_count} dynamic work items: {path}: {data}")
 
 
+def assert_prefix_sum_exclusive_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": ["i32:3", "i32:1", "i32:4", "i32:1", "i32:5", "i32:9", "i32:2", "i32:6"],
+        "arg5": ["i32:0", "i32:3", "i32:4", "i32:8", "i32:9", "i32:14", "i32:23", "i32:25"],
+    }
+    dfg_path = evidence_dir / "prefix_sum_exclusive.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    expected_counts = {
+        "llvm.load": 7,
+        "dataflow.store": 7,
+        "dataflow.sync": 7,
+        "dataflow.carry": 8,
+        "dataflow.stream": 8,
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 7
+        or dfg.get("final_outputs") != ["none", "i32:25"]
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"prefix_sum_exclusive DFG evidence should be complete: {dfg_path}: {dfg}")
+    for op_name, expected in expected_counts.items():
+        actual = dfg.get("operation_fire_counts", {}).get(op_name)
+        if actual != expected:
+            raise AssertionError(
+                f"prefix_sum_exclusive {op_name} fire count should be {expected}, got {actual}: {dfg}"
+            )
+
+    cgra_path = evidence_dir / "prefix_sum_exclusive.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("final_outputs") != ["none", "i32:25"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"prefix_sum_exclusive CGRA evidence should carry final state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -905,6 +942,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum",
             "cumsum",
             "prefix_sum_inclusive",
+            "prefix_sum_exclusive",
             "mean",
             "vecnorm_l1",
             "vecnorm_l2",
@@ -944,6 +982,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
+        assert_prefix_sum_exclusive_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1191,6 +1230,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum",
             "cumsum",
             "prefix_sum_inclusive",
+            "prefix_sum_exclusive",
             "mean",
             "vecnorm_l1",
             "vecnorm_l2",
@@ -1283,9 +1323,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 36,
+            "pass": 37,
             "fail": 0,
-            "blocked": 73,
+            "blocked": 72,
             "unsupported": 0,
             "missing_status": 0,
         }

@@ -66,6 +66,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "prefix_sum_exclusive",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "mean",
       "hardware": "shared_reduction_adg"
     },
