@@ -46,8 +46,37 @@ across iterations or have repeated writes.
 
 ## Critical path (`total_cycles`)
 
-The quicksort phase is not a closed-form function of `N` alone. It is the
-critical path of the concrete stack trace:
+Quicksort has no closed-form cycle count in `N`: which elements swap, how the
+partitions split, and the stack order all depend on the specific input. So
+instead of a formula we replay the sort as a dependency graph and measure its
+longest chain. One rule drives everything:
+
+> Each operation finishes at `depth = 1 + max(depth of its inputs)`: it takes
+> one cycle and cannot start until its slowest input is ready.
+
+For every memory-backed value (`output[]`, the stack, `top`, `i`, `j`) we track
+the cycle it was last written; a load reads `1 +` that cycle and a store updates
+it. `total_cycles` is just the depth of the deepest operation. The copy loop
+writes every `output[k]` by cycle 2, so all depths start there.
+
+Two chunks set the pace; everything else overlaps them:
+- Popping a range — ~7 cycles. `high = stack[top--]; low = stack[top--]`: the
+  second `top--` waits on the first, and both wait on the `top >= 0` gate because
+  they are `while`-body statements. Reading the stack values and the
+  `low >= high` test ride alongside and add no length.
+- Scanning one element — 3 cycles. The pacing carry is `j++`
+  (`load j -> +1 -> store j`). The `output[j] <= pivot` compare and any swap
+  overlap it, because `j++` does not depend on them. A taken swap does extra work
+  (`i++`, two stores) but finishes early enough to overlap the next element's
+  counter step — which is why the swap count `S` never appears as a `+S` term.
+
+Because each range pops the stack this run just pushed and reads `output[]` cells
+it just rewrote, depths accumulate down the trace; the deepest write (or the
+final failing `top >= 0` check after the stack empties) is the answer. Infinite
+hardware cannot shorten this — the source serializes every partition through
+`top` and the in-place array, so there is no parallel recursion to exploit.
+
+The schematic shape of that chain:
 
 ```
 total_cycles =
@@ -67,18 +96,8 @@ total_cycles =
 + final failing top >= 0 check
 ```
 
-The binding dependence is the explicit-stack/in-place partition trace, not
-functional-unit throughput. Infinite hardware cannot run the source-level
-partitions in parallel because this implementation serializes them through
-`top` and the stack array. Within a partition, the scan is also sequential:
-`j` advances one element at a time, and taken swap arms update the carried
-partition boundary `i`. The `j` iterator still charges the standard
-load/add/store/compare work and feeds the next scan iteration, but its latch
-update is a separate carry that can overlap independent swap work; the next
-scan iteration waits on whichever carried dependency is later.
-
-Per scan iteration, with `pivot`, `high`, and the carried scalar states
-available at the loop head, the local timing is:
+Zooming into one scan iteration, with `pivot`, `high`, and the carried scalars
+ready at the loop head:
 
 ```
 Untaken arm (`output[j] > pivot`): 3-cycle carried latch, 4-cycle compare side path
@@ -97,36 +116,140 @@ Taken arm (`output[j] <= pivot`): j latch still 3 cycles; gated i/update tail re
   C7 store output[i], store output[j]       || store updated i
 ```
 
-The taken arm reuses the C3 `output[j]` load for `output[i] = output[j]`; it
-does not issue a second `output[j]` load. The loop-latch update of `j` does not
-depend on `output[j] <= pivot`, so it overlaps the compare and swap work. Taken
-arms still matter because the gated `i++` carry and the in-place array stores can
-become the later dependency for final pivot placement and for later taken swaps.
+The taken arm reuses the C3 `output[j]` load for `output[i] = output[j]` (no
+second load). Its `i++` carry and array stores can still become the *later*
+dependency for the final pivot placement and for subsequent taken swaps, so they
+are part of the replay even though they overlap the `j` latch.
 
-For the full kernel, replay the stack trace as an operation DAG. The dominant
-scan-loop carry is the 3-cycle `j` latch (`load j -> j+1 -> store j`), while the
-`output[j]` compare side path and the taken swap body overlap that latch unless
-their `i`/array dependencies become later. A useful decomposition for the
-checked-in trace is:
+The replay below applies the `depth` rule operation by operation — a unit-depth
+DAG walk, not a residual fit. Let `emit(preds...) = 1 + max(preds...)`, and let
+`d(top)`, `d(stack[k])`, `d(output[k])`, `d(i)`, and `d(j)` be the current
+last-writer depths of the memory-backed state.
+
+Initialization starts from the parallel copy barrier: every `d(output[k])` is
+2 after `load input[k] -> store output[k]`. The hoisted `N` load and `N <= 1`
+guard also finish by depth 2, so the first stack push can start at depth 3.
+The `top = -1` store is counted in the op totals, but the first `++top` read
+uses the compile-time constant (constant-initialized carry rule); the two
+initial pushes (setup depth 2) leave the initial range on the stack with
+`d(top) = 8`.
+
+For each processed stack range, the pop side of the replay is:
 
 ```
-dominant scan latch = 3*C = 3*25773 = 77319
+top0       = emit(d(top))                  // load top (the carry is d(top)); fans to while check + first pop index
+while_cmp  = emit(top0)                    // top >= 0
+high       = emit(while_cmp, d(stack[top]))
+top_dec0   = emit(while_cmp, top0)
+d(top)     = emit(top_dec0)                // first top-- store
+top1       = emit(d(top))                  // second pop reads the decremented top
+low        = emit(top1, d(stack[top]))
+top_dec1   = emit(top1)
+d(top)     = emit(top_dec1)                // second top-- store
+range_cmp  = emit(high, low)               // low >= high
+```
+
+This makes a processed range a 7-cycle `top` pop carry:
+
+```
+C1 load top
+C2 compare top >= 0
+C3 load stack[old top] for high || compute top - 1
+C4 store first decremented top
+C5 load top for low pop
+C6 load stack[new top] for low  || compute top - 1
+C7 store second decremented top || compare low >= high
+```
+
+The stack loads and `low >= high` comparison overlap the `top` carry; they are
+not added as serial work after the two decrements. The carry still does not
+collapse to 2-3 cycles, because the `top--` operations are source statements
+inside the `while` body and wait for the `top >= 0` gate. They are not a
+for-loop latch like `j++`, which is why this treatment differs from the scan
+iterator.
+
+For each selected child range push, the replay applies the same two-update
+stack-pointer pattern:
+
+```
+top_push0 = emit(push_cmp, d(top))
+top_inc0  = emit(top_push0)
+d(top)    = emit(top_inc0)
+d(stack[++top]) = emit(top_inc0, child_bound0)
+
+top_push1 = emit(d(top))
+top_inc1  = emit(top_push1)
+d(top)    = emit(top_inc1)
+d(stack[++top]) = emit(top_inc1, child_bound1)
+```
+
+For a nontrivial range, partition setup is gated by `range_cmp` resolving
+false:
+
+```
+pivot = emit(range_cmp, d(output[high]))
+d(i)  = emit(range_cmp, low)
+d(j)  = emit(range_cmp, low)
+```
+
+Within a partition, the replay uses the local scan timing shown above:
+
+```
+load_j    = emit(d(j))
+cmp_j     = emit(load_j)
+inc_j     = emit(load_j)                   // independent of output[j] <= pivot
+d(j)      = emit(inc_j)
+load_outj = emit(cmp_j, d(output[j]))
+cmp_pivot = emit(load_outj, pivot)
+
+if cmp_pivot is taken:
+  load_i       = emit(cmp_pivot, d(i))
+  load_outi    = emit(load_i, d(output[i]))
+  inc_i        = emit(load_i)
+  d(i)         = emit(inc_i)
+  d(output[i]) = emit(cmp_pivot, load_outj, load_outi)
+  d(output[j]) = emit(cmp_pivot, load_outi)
+```
+
+After the scan exit check, the final pivot placement and child-push predicates
+are replayed in source order:
+
+```
+load_j_exit      = emit(d(j))
+scan_exit_cmp    = emit(load_j_exit)
+load_i_final     = emit(scan_exit_cmp, d(i))
+load_outi_final  = emit(load_i_final, d(output[i]))
+d(output[i])     = emit(scan_exit_cmp, pivot, load_outi_final)
+d(output[high])  = emit(scan_exit_cmp, load_outi_final)
+left_push_cmp    = emit(d(output[i]), d(output[high]), load_i_final, low)
+right_push_cmp   = emit(left_push_cmp, d(output[i]), d(output[high]), load_i_final, high)
+```
+
+Applying these equations to the checked-in trace gives:
+
+```
+scan-latch projection = 3*C = 3*25773 = 77319
+top-pop projection    = 7*W = 7*1024  = 7168
+child-push projection = 6*Q = 6*1023  = 6138
+
+deepest final output store     = 96327
+final failing top >= 0 compare = 96363
 
 total_cycles =
-  77319                     (scan-loop j latch over all partition comparisons)
-+ 17689                     (stack pops/pushes, range tests, pivot setup/final
-                              placement, final top check, and later i/array tails
-                              from taken arms)
-
-For the checked-in N = 1024 trace:
-total_cycles = 95008
+  max(96327, 96363)
+= 96363
 ```
+
+The projection lines are sanity checks on the replay, not a phase-summed
+closed form. The exact depth depends on the trace order because stack values,
+selected child bounds, scan-exit checks, pivot-placement stores, and taken-arm
+`i`/array tails interleave with the `j` and `top` carries.
 
 The taken-swap count `S` is not zero-latency: it affects the replay through the
 gated `i` carry, array stores, and the downstream partition shapes. It is also
 not a simple `+S` term in the exact CP, because consecutive taken iterations and
-the `j` latch overlap in the DAG. The trace replay above is the deterministic
-way to account for those interactions for this input.
+the `j` latch overlap in the DAG. The trace replay is the deterministic way to
+account for those interactions for this input.
 
 Asymptotically:
 - Balanced/average traces have `C = Theta(N log N)` and `S = Theta(N log N)`,
