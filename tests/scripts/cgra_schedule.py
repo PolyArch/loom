@@ -1075,11 +1075,12 @@ def build_bitonic_stage(N=8):
       - swap (i in {0,2}): as active, plus the two inplace swap stores (depth 11).
     Each gating compare takes an edge into every op of the body it guards, and
     only the taken arm is counted. The dead `half_block = block_size >> 1` is
-    counted on every lane but stays off the output path. Loop-invariant
-    distance/block_size are prologue dataflow broadcast to all lanes; inplace
-    subscripts are bare scalars (no address_add); inplace[i]/inplace[partner]
-    are each loaded once and fanned to the value compare and the swap store.
-    Reproduces the eval golden numbers (N=8, distance=1): CP=11, A=87, LD=19,
+    loop-invariant, so it is counted once and stays off the output path.
+    Loop-invariant distance/block_size are prologue dataflow broadcast to all
+    lanes; inplace subscripts are bare scalars (no address_add);
+    inplace[i]/inplace[partner] are each loaded once and fanned to the value
+    compare and the swap store. Reproduces the eval golden numbers
+    (N=8, distance=1): CP=11, A=80, LD=19,
     ST=12, aggregate 6x6 = 11.
     """
     dag = Dag()
@@ -1092,6 +1093,7 @@ def build_bitonic_stage(N=8):
     stage_p1 = r.arith(ld_stage, kind="stage_plus_1")      # add
     distance = r.arith(ld_pass, kind="distance_shl")        # 1 << pass (bitop)
     block_size = r.arith(stage_p1, kind="block_size_shl")   # 1 << (stage+1) (bitop)
+    r.arith(block_size, kind="half_block_shr")              # bs>>1 (dead bitop)
 
     # Lane composition for the documented inputs: 4 skipped, 2 active non-swap,
     # 2 swap. (active, swap) flags select the taken-arm-only op set per lane.
@@ -1104,7 +1106,6 @@ def build_bitonic_stage(N=8):
         # Unconditional per-lane compute (before the gates, every lane).
         block_idx = r.arith(i_rd, block_size, kind="block_idx_div")        # i / bs
         idx_in_block = r.arith(i_rd, block_size, kind="idx_in_block_mod")  # i % bs
-        r.arith(block_size, kind="half_block_shr")           # bs>>1 (dead bitop)
         band_asc = r.arith(block_idx, kind="block_idx_and_1")  # block_idx & 1
         ascending = r.arith(band_asc, kind="ascending_cmp")    # == 0 (compare)
         band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
@@ -1123,7 +1124,7 @@ def build_bitonic_stage(N=8):
                 r.store(ld_ip_p, should_swap, output=True, kind="store_inplace_i")
                 r.store(ld_ip_i, should_swap, output=True,
                         kind="store_inplace_partner")
-    contract = [RegionContract("bitonic_stage", A=87, LD=19, ST=12, CP=11,
+    contract = [RegionContract("bitonic_stage", A=80, LD=19, ST=12, CP=11,
                                aggregate=11)]
     return dag, contract
 
@@ -1159,7 +1160,7 @@ def build_bitonic_stage_modified(N=8):
     sets CP=31. The first iter's `load i` takes block_size as its depth floor;
     later iters chain from the prior committing `store i`.
 
-    Reproduces the eval golden numbers (N=8, distance=1): CP=31, A=140, LD=55,
+    Reproduces the eval golden numbers (N=8, distance=1): CP=31, A=133, LD=55,
     ST=48, aggregate 6x6 = 31.
     """
     dag = Dag()
@@ -1173,6 +1174,7 @@ def build_bitonic_stage_modified(N=8):
     stage_p1 = r.arith(ld_stage, kind="stage_plus_1")       # add
     r.arith(ld_N, kind="n_half_shr")                        # N >> 1 (bitop)
     block_size = r.arith(stage_p1, kind="block_size_shl")   # 1<<(stage+1) (bitop)
+    r.arith(block_size, kind="half_block_shr")              # bs>>1 (dead bitop)
 
     half = N // 2
     last_writer = {}  # inplace slot -> last committing store node (None = init)
@@ -1195,7 +1197,6 @@ def build_bitonic_stage_modified(N=8):
         # Unconditional predicate (every lane).
         block_idx = r.arith(ld_i, block_size, kind="block_idx_div")       # i / bs
         idx_in_block = r.arith(ld_i, block_size, kind="idx_in_block_mod")  # i % bs
-        r.arith(block_size, kind="half_block_shr")           # bs>>1 (dead bitop)
         band_asc = r.arith(block_idx, kind="block_idx_and_1")
         ascending = r.arith(band_asc, kind="ascending_cmp")  # == 0 (compare)
         band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
@@ -1237,7 +1238,7 @@ def build_bitonic_stage_modified(N=8):
                           kind="else_inplace")
             sub = r.arith(ld_e, kind="else_sub")            # -= 1
             last_writer[i] = r.store(sub, output=True, kind="else_store")
-    contract = [RegionContract("bitonic_stage-modified", A=140, LD=55, ST=48,
+    contract = [RegionContract("bitonic_stage-modified", A=133, LD=55, ST=48,
                                CP=31, aggregate=31)]
     return dag, contract
 
@@ -1401,6 +1402,83 @@ def build_edge_update(E=16, K=2):
     return dag, contract
 
 
+def build_interpolate_linear(N_data=32, N_query=64):
+    """Linear interpolation for the concrete main.cpp trace.
+
+    The outer query loop is parallel; each lane runs a private linear search and
+    writes one output. The documented inputs have 1024 total interval probes,
+    63 hit queries, and one no-hit query (xq=31.5) that pays the final failing
+    k-bound check before falling through with i=0. Reproduces the eval numbers:
+    CP=289, A=5699, LD=3523, ST=1216, aggregate 6x6 = 294.
+    """
+    dag = Dag()
+    r = dag.region("interpolate_linear")
+
+    # Hoisted parameter work. N_data - 1 is counted as a loop-invariant sub;
+    # the bound value is broadcast to the search checks.
+    r.load(kind="N_query")
+    ld_n_data = r.load(kind="N_data")
+    r.arith(ld_n_data, kind="N_data_minus_1")
+
+    for q in range(N_query):
+        r.induction(kind="q", compare_depends_on_read=False)
+        ld_xq = r.load(kind="input_xq")
+        i_init = r.store(kind="i_init")
+
+        xq_value = 0.5 * q
+        hit = False
+        last_k_store = None
+        exit_node = None
+
+        for k in range(N_data - 1):
+            k_preds = [last_k_store] if last_k_store is not None else []
+            ld_k = r.load(*k_preds, kind="k")
+            k_bound = r.arith(ld_k, kind="k_lt_bound")
+            ld_xk = r.load(k_bound, kind="input_x_k")
+            cmp_lo = r.arith(ld_xk, ld_xq, kind="xq_ge_xk")
+            k_plus_1 = r.address_add(ld_k, cmp_lo, kind="k_plus_1")
+            ld_xkp1 = r.load(k_plus_1, kind="input_x_k_plus_1")
+            cmp_hi = r.arith(ld_xkp1, ld_xq, kind="xq_le_xkp1")
+
+            if xq_value >= float(k) and xq_value <= float(k + 1):
+                exit_node = r.store(cmp_hi, ld_k, kind="i_hit_store")
+                hit = True
+                break
+
+            k_inc = r.arith(cmp_hi, ld_k, kind="k_inc")
+            last_k_store = r.store(k_inc, kind="k_store")
+
+        if not hit:
+            # One final failing for-loop check. It gates the interpolation tail
+            # but does not execute a body or k++.
+            ld_k = r.load(last_k_store, kind="k_final")
+            exit_node = r.arith(ld_k, kind="k_bound_fail")
+
+        ld_i_preds = [exit_node]
+        if not hit:
+            ld_i_preds.append(i_init)
+        ld_i = r.load(*ld_i_preds, kind="i_final")
+
+        ld_x0 = r.load(ld_i, kind="input_x_i")
+        ld_y0 = r.load(ld_i, kind="input_y_i")
+        x_i_p1 = r.address_add(ld_i, kind="x_i_plus_1")
+        y_i_p1 = r.address_add(ld_i, kind="y_i_plus_1")
+        ld_x1 = r.load(x_i_p1, kind="input_x_i_plus_1")
+        ld_y1 = r.load(y_i_p1, kind="input_y_i_plus_1")
+
+        num = r.arith(ld_xq, ld_x0, kind="xq_minus_x0")
+        den = r.arith(ld_x1, ld_x0, kind="x1_minus_x0")
+        t = r.arith(num, den, kind="div_t")
+        dy = r.arith(ld_y1, ld_y0, kind="y1_minus_y0")
+        prod = r.arith(t, dy, kind="mul_t_dy")
+        out = r.arith(ld_y0, prod, kind="add_y0")
+        r.store(out, output=True, kind="output_yq")
+
+    contract = [RegionContract("interpolate_linear", A=5699, LD=3523,
+                               ST=1216, CP=289, aggregate=294)]
+    return dag, contract
+
+
 def build_bitonic_stage_tweak(N=8):
     """Bitonic stage tweak: baseline compare-swap plus active-lane `++` and
     unconditional `-=1`.
@@ -1409,7 +1487,7 @@ def build_bitonic_stage_tweak(N=8):
     This builder tracks the latest writer to each inplace slot so the same-slot
     RAWs (swap -> ++ -> -=1) and partner RAWs (swap i -> odd partner decrement)
     are represented inside the single region. Final decrement stores are marked
-    as the terminal outputs. Reproduces the eval numbers: CP=17, A=99, LD=31,
+    as the terminal outputs. Reproduces the eval numbers: CP=17, A=92, LD=31,
     ST=24, aggregate 17.
     """
     dag = Dag()
@@ -1421,6 +1499,7 @@ def build_bitonic_stage_tweak(N=8):
     stage_p1 = r.arith(ld_stage, kind="stage_plus_1")
     distance = r.arith(ld_pass, kind="distance_shl")
     block_size = r.arith(stage_p1, kind="block_size_shl")
+    r.arith(block_size, kind="half_block_shr")
 
     last_writer: dict[int, int] = {}
     for i in range(N):
@@ -1430,7 +1509,6 @@ def build_bitonic_stage_tweak(N=8):
         i_rd = iv["read"]
         block_idx = r.arith(i_rd, block_size, kind="block_idx_div")
         idx_in_block = r.arith(i_rd, block_size, kind="idx_in_block_mod")
-        r.arith(block_size, kind="half_block_shr")
         band_asc = r.arith(block_idx, kind="block_idx_and_1")
         ascending = r.arith(band_asc, kind="ascending_cmp")
         band_pred = r.arith(idx_in_block, distance, kind="idx_and_distance")
@@ -1472,7 +1550,7 @@ def build_bitonic_stage_tweak(N=8):
         sub = r.arith(ld_sub, kind="dec_sub")
         last_writer[i] = r.store(sub, output=True, kind="dec_store")
 
-    contract = [RegionContract("bitonic_stage-tweak", A=99, LD=31, ST=24,
+    contract = [RegionContract("bitonic_stage-tweak", A=92, LD=31, ST=24,
                                CP=17, aggregate=17)]
     return dag, contract
 
@@ -1807,6 +1885,12 @@ def build_sort_insertion(N=512):
     output[] dependencies are modeled at element granularity. Key i+1 body r
     reads the value written by key i body r, so the DAG is a pipelined wavefront
     rather than a whole-key serial chain.
+
+    The copy and insertion-sort work intentionally stay in one region: copy
+    stores feed later sort loads through explicit per-element RAW edges, allowing
+    the scheduler to preserve the wavefront overlap instead of imposing a coarse
+    copy->sort barrier. This differs from build_sort_quick's coarser two-region
+    stack-machine model by design.
     """
     dag = Dag()
     r = dag.region("sort_insertion")
@@ -1853,10 +1937,15 @@ def build_sort_quick(N=1024):
     """Iterative quicksort for the concrete pseudo-random main.cpp input.
 
     The copy region is ordered before the in-place stack-machine sort because
-    the sort reads output[] values written by copy. The sort builder replays the
-    exact source-level stack trace and emits counted operations according to the
-    eval formulas. It intentionally does not try to expose fork-join recursive
-    parallelism because the source is a sequential explicit-stack machine.
+    the sort reads output[] values written by copy. This is an intentional
+    coarse phase model: a single-region DAG could connect each first quicksort
+    read of output[k] to that element's copy store, but this builder preserves
+    the copy->sort RAW as a phase-granularity barrier. This differs from
+    build_sort_insertion's finer element-wavefront model by design. The sort
+    builder replays the exact source-level stack trace and emits counted
+    operations according to the eval formulas. It intentionally does not try to
+    expose fork-join recursive parallelism because the source is a sequential
+    explicit-stack machine.
     """
     values = [float((i * 7 + 13) % N) for i in range(N)]
     dag = Dag()
@@ -2015,6 +2104,7 @@ BUILDERS = {
     "binary_search": build_binary_search,
     "gather": build_gather,
     "edge_update": build_edge_update,
+    "interpolate_linear": build_interpolate_linear,
     "bitonic_stage-tweak": build_bitonic_stage_tweak,
     "clz": build_clz,
     "crc32": build_crc32,
@@ -2035,9 +2125,10 @@ PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
 WRITTEN_KERNELS = PILOTS + ("conv2d", "batchnorm", "bit_reverse",
                             "bisection_step", "bitonic_stage",
                             "bitonic_stage-modified", "binary_search",
-                            "gather", "edge_update", "bitonic_stage-tweak",
-                            "clz", "crc32", "kmp_table", "wildcard_match",
-                            "sort_insertion", "sort_quick")
+                            "gather", "edge_update", "interpolate_linear",
+                            "bitonic_stage-tweak", "clz", "crc32",
+                            "kmp_table", "wildcard_match", "sort_insertion",
+                            "sort_quick")
 
 EVAL_PATHS = {
     name: Path(__file__).resolve().parents[1] / "app" / name / f"{name}_eval.md"
@@ -2348,19 +2439,22 @@ def _run_golden_tests(errors):
                            "regions": [("bisection_step", 4, 384, 321, 192,
                                         27)]},
         "bitonic_stage": {"aggregate": 11,
-                          "regions": [("bitonic_stage", 11, 87, 19, 12, 11)]},
+                          "regions": [("bitonic_stage", 11, 80, 19, 12, 11)]},
         "bitonic_stage-modified": {
             "aggregate": 31,
-            "regions": [("bitonic_stage-modified", 31, 140, 55, 48, 31)]},
+            "regions": [("bitonic_stage-modified", 31, 133, 55, 48, 31)]},
         "binary_search": {"aggregate": 48,
                           "regions": [("binary_search", 48, 124, 69, 41, 48)]},
         "gather": {"aggregate": 257,
                    "regions": [("gather", 4, 3072, 3074, 2048, 257)]},
         "edge_update": {"aggregate": 6,
                         "regions": [("edge_update", 6, 40, 38, 37, 6)]},
+        "interpolate_linear": {
+            "aggregate": 294,
+            "regions": [("interpolate_linear", 289, 5699, 3523, 1216, 294)]},
         "bitonic_stage-tweak": {
             "aggregate": 17,
-            "regions": [("bitonic_stage-tweak", 17, 99, 31, 24, 17)]},
+            "regions": [("bitonic_stage-tweak", 17, 92, 31, 24, 17)]},
         "clz": {"aggregate": 621,
                 "regions": [("clz", 163, 14122, 7445, 7445, 621)]},
         "crc32": {"aggregate": 50152,

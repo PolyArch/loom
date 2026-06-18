@@ -78,7 +78,7 @@ For comparison, baseline `bitonic_stage` (`i` **parallel** — iterator rooted a
 
 Counts use the **source-level dynamic** interpretation under strict no-pred. The outer `if/else` fires only the taken arm per outer iter; `if (ascending)` fires only one of `cmp_gt` / `cmp_lt`; `if (should_swap)` fires the swap stores only when `should_swap = 1`. No mux or AND-enable bitops are charged anywhere.
 
-Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascending`, `partner`, `should_swap`, `temp`) are treated as anonymous-equivalent intermediates and contribute no named L/S, same convention as baseline. The loop-invariants `block_size`, `distance`, and `N/2` are computed once in the prologue and broadcast via dataflow.
+Per-iter transient scalars (`block_idx`, `idx_in_block`, `ascending`, `partner`, `should_swap`, `temp`) are treated as anonymous-equivalent intermediates and contribute no named L/S, same convention as baseline. The loop-invariants `block_size`, `distance`, `N/2`, and dead `half_block` are computed once in the prologue and broadcast via dataflow.
 
 ### Algorithmic
 | op       | count | source |
@@ -101,7 +101,7 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | adds         | 25    | outer `i++` (8) + inner `j++` (16) + prologue `stage + 1` (1) |
 | address_adds | 0     | All `inplace[...]` subscripts are bare scalars / induction vars: `inplace[i]` (`i` induction var), `inplace[partner]` (`partner` is a named scalar; the `i + distance` that produces it is a regular add, not address arithmetic), and `inplace[j]` (`j` induction var). A bare-variable subscript charges zero address_adds and adds no cycle of its own. |
 | compares     | 24    | outer bound `i < N` (8) + inner bound `j < N` per j-iter on active lanes (16) |
-| bitops       | 11    | dead `half_block = block_size >> 1` (8, unconditional per the dead-code convention) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) + `N >> 1` for hoisted j-init (1) |
+| bitops       | 4     | dead `half_block = block_size >> 1` (loop-invariant, counted once per the dead-code convention) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) + `N >> 1` for hoisted j-init (1) |
 
 ### Totals
 | op           | total |
@@ -114,11 +114,11 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | muls         | **16** |
 | divs         | **8**  |
 | mods         | **8**  |
-| bitops       | **27** |
+| bitops       | **20** |
 | compares     | **48** |
 | shifts / transcendentals | 0 |
 
-Compared to the prior soft-predication accounting (`stores = 52, bitops = 35, compares = 52`), strict no-pred drops:
+Compared to the prior soft-predication accounting with loop-invariant hoisting (`stores = 52, bitops = 28, compares = 52`), strict no-pred drops:
 - 4 compare-swap stores that no longer fire (iters 4 and 6, where `should_swap = 0`),
 - 8 bitops (4 ascending-arm muxes and 4 AND-enable swap gates that exist only in the soft lowering),
 - 4 untaken-arm value compares (the alternate of `cmp_gt` / `cmp_lt` on each active lane).
@@ -233,13 +233,13 @@ cycles  = max(CP, compute, load, store)
 
 **Counts (from the op-count totals above, N = 8, distance = 1).**
 - `CP = 31`
-- `A  = adds (29) + address_adds (0) + subs (4) + muls (16) + divs (8) + mods (8) + bitops (27) + compares (48) = 140`
+- `A  = adds (29) + address_adds (0) + subs (4) + muls (16) + divs (8) + mods (8) + bitops (20) + compares (48) = 133`
 - `LD = 55`
 - `ST = 48`
 
 **6×6 example (`P = 36`, `L = 12`, `S = 12`).**
 ```
-compute = ceil(140 / 36) = 4
+compute = ceil(133 / 36) = 4
 load    = ceil(55 / 12)  = 5
 store   = ceil(48 / 12)  = 4
 cycles  = max(31, 4, 5, 4) = 31
@@ -262,7 +262,7 @@ so finite resources do not widen the initiation interval, and the 8-link iterato
 
 | region | CP | A | LD | ST | aggregate | scheduled (makespan) |
 |--------|---:|--:|---:|---:|----------:|---------------------:|
-| bitonic_stage-modified | 31 | 140 | 55 | 48 | 31 | 31 |
+| bitonic_stage-modified | 31 | 133 | 55 | 48 | 31 | 31 |
 
 - **scheduled_cycles** = 31  (sum of ordered-region makespans)
 - **aggregate_cycles** = 31  (the lower bound above, unchanged)

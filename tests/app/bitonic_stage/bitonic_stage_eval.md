@@ -25,13 +25,13 @@ For these inputs:
 
 ## Critical path (`total_cycles`)
 
-Under parallel-unroll of `i`, the body runs once and `total_cycles` is the per-iter critical-path depth, taken as the max over the lane types (skipped lanes terminate at C6; non-swap active lanes at C10; swap lanes at C11). Per-iter named scalars (`block_idx`, `idx_in_block`, `half_block`, `ascending`, `partner`, `should_swap`, `temp`) are defined and consumed within a single iter with no carry, so they are treated as **transient (anonymous-equivalent) intermediates** — same convention as `c` in bisection_step and `mid` in binary_search. They flow directly via dataflow with no named store/load round-trip. The loop-invariants `block_size` and `distance` are computed in the prologue and broadcast via dataflow to all unrolled lanes (same convention as `alpha` in axpy and `H·W` in batchnorm). Under no-predication, the binding chain runs through the four nested gates; on swap lanes (`i ∈ {0,2}`):
+Under parallel-unroll of `i`, the body runs once and `total_cycles` is the per-iter critical-path depth, taken as the max over the lane types (skipped lanes terminate at C6; non-swap active lanes at C10; swap lanes at C11). Per-iter named scalars (`block_idx`, `idx_in_block`, `ascending`, `partner`, `should_swap`, `temp`) are defined and consumed within a single iter with no carry, so they are treated as **transient (anonymous-equivalent) intermediates** — same convention as `c` in bisection_step and `mid` in binary_search. They flow directly via dataflow with no named store/load round-trip. The loop-invariants `block_size`, `distance`, and dead `half_block` are computed in the prologue and broadcast via dataflow to all unrolled lanes (same convention as `alpha` in axpy and `H·W` in batchnorm). Under no-predication, the binding chain runs through the four nested gates; on swap lanes (`i ∈ {0,2}`):
 
 ```
 C1: load stage   ‖ load pass   ‖ load i   ‖ load N       (all kernel inputs and per-lane iter constant)
 C2: stage + 1    ‖ 1 << pass = distance
 C3: 1 << (stage+1) = block_size
-C4: i / block_size = block_idx            ‖ i % block_size = idx_in_block   ‖ block_size >> 1 = half_block (dead)
+C4: i / block_size = block_idx            ‖ i % block_size = idx_in_block   ‖ block_size >> 1 = half_block (dead, hoisted once)
 C5: block_idx & 1                         ‖ idx_in_block & distance
 C6: == 0 → ascending                      ‖ == 0 → outer_pred              [outer_pred retires]
 C7: partner = i + distance                                                  [inside outer body — waits for outer_pred]
@@ -51,10 +51,10 @@ For lanes where the outer predicate fails (`i ∈ {1,3,5,7}`), the chain termina
 
 ## Op counts
 
-No-predication accounting at every nested `if`: an op contributes to the count only if its enclosing arm is taken on a given lane. `ascending` and `half_block` are computed unconditionally before the outer `if` (source lines 24–25), so they fire on every lane. `half_block = block_size / 2` is declared but never read — counted as a dead computation but does not extend the critical path.
+No-predication accounting at every nested `if`: an op contributes to the count only if its enclosing arm is taken on a given lane. `ascending` is computed unconditionally before the outer `if`, so it fires on every lane. `half_block = block_size / 2` is declared but never read and depends only on loop-invariant `block_size`, so it is hoisted and counted once as dead work; it does not extend the critical path.
 
 For the test inputs (`N=8, distance=1, block_size=4`, initial `[3,1,4,2,8,6,7,5]`):
-- All 8 lanes pay for the unconditional prologue + `block_idx`, `idx_in_block`, `half_block`, `(block_idx & 1) == 0`, `(idx_in_block & distance) == 0`, and the loop bound check.
+- All 8 lanes pay for the unconditional prologue + `block_idx`, `idx_in_block`, `(block_idx & 1) == 0`, `(idx_in_block & distance) == 0`, and the loop bound check.
 - The 4 active lanes (`i ∈ {0,2,4,6}`) additionally pay for `partner = i + distance`, `partner < N`, the two inplace loads (bare-scalar subscripts, no addr-gen), and one of `cmp_gt`/`cmp_lt` (the taken arm of `if (ascending)`).
 - The 2 swap lanes (`i ∈ {0,2}`) additionally pay for the two swap stores.
 
@@ -77,7 +77,7 @@ For the test inputs (`N=8, distance=1, block_size=4`, initial `[3,1,4,2,8,6,7,5]
 | adds         | 9     | `i++` (8) + prologue `stage+1` (1) |
 | address_adds | 0     | `inplace[i]` and `inplace[partner]` are bare-scalar subscripts (no arithmetic baked inline into the brackets), so neither charges an address_add. The arithmetic that produces `partner` is a regular `add` (already counted under Algorithmic), not an address_add. |
 | compares     | 8     | loop bound `i < N` |
-| bitops       | 10    | dead `half_block = block_size / 2` (strength-reduced to `>> 1`, computed unconditionally before outer if, counted at every iter as a dead op: 8) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) |
+| bitops       | 3     | dead `half_block = block_size / 2` (strength-reduced to `>> 1`, loop-invariant, counted once) + prologue `1 << pass` (1) + `1 << (stage+1)` (1) |
 
 ### Totals
 | op           | total |
@@ -88,11 +88,11 @@ For the test inputs (`N=8, distance=1, block_size=4`, initial `[3,1,4,2,8,6,7,5]
 | address_adds | **0**  |
 | divs         | **8**  |
 | mods         | **8**  |
-| bitops       | **26** |
+| bitops       | **19** |
 | compares     | **32** |
 | muls / subs / shifts / transcendentals | 0 |
 
-Load column is dominated by array I/O on the 4 active lanes (8) plus the induction var (8) and three param hoists (3). Stores: 4 from the 2 swap lanes' inplace writes plus 8 from the induction `i` writes. The array accesses `inplace[i]` and `inplace[partner]` are bare-scalar subscripts, so they contribute 0 `address_adds` (no arithmetic baked inline into the brackets). The dead `half_block` is counted as work but never on the critical path.
+Load column is dominated by array I/O on the 4 active lanes (8) plus the induction var (8) and three param hoists (3). Stores: 4 from the 2 swap lanes' inplace writes plus 8 from the induction `i` writes. The array accesses `inplace[i]` and `inplace[partner]` are bare-scalar subscripts, so they contribute 0 `address_adds` (no arithmetic baked inline into the brackets). The dead loop-invariant `half_block` is counted once as work but never on the critical path.
 
 ## Data Dependency Graph
 Active-lane graph (one lane of `i ∈ {0,2,4,6}`). Under `i` parallel-unroll, 8 such graphs run concurrently — 4 active lanes proceed past `outer_pred`, of which 4 pass `partner < N`, of which 2 fire the swap stores. Dotted "gate" edges mark the strict no-pred compare→body serializations.
@@ -193,19 +193,19 @@ cycles  = max(CP, compute, load, store)
 
 **Counts (from the op-count totals above, N = 8, distance = 1).**
 - `CP = 11`
-- `A  = adds (13) + address_adds (0) + divs (8) + mods (8) + bitops (26) + compares (32) = 87`
+- `A  = adds (13) + address_adds (0) + divs (8) + mods (8) + bitops (19) + compares (32) = 80`
 - `LD = 19`
 - `ST = 12`
 
 **6×6 example (`P = 36`, `L = 12`, `S = 12`).**
 ```
-compute = ceil(87 / 36) = 3
+compute = ceil(80 / 36) = 3
 load    = ceil(19 / 12) = 2
 store   = ceil(12 / 12) = 1
 cycles  = max(11, 3, 2, 1) = 11
 ```
 
-**Bottleneck: dependency-bound.** The four serialized compare→body gates give a deep 11-cycle chain on very little total work (87 ops, 19 loads, 12 stores for `N = 8`), so every resource term stays at or below 3 and `CP = 11` binds. This kernel's depth comes from control-flow serialization, not resource pressure; widening the fabric does not help until `N` grows enough that the unrolled per-lane work saturates a memory or PE lane.
+**Bottleneck: dependency-bound.** The four serialized compare→body gates give a deep 11-cycle chain on very little total work (80 PE ops, 19 loads, 12 stores for `N = 8`), so every resource term stays at or below 3 and `CP = 11` binds. This kernel's depth comes from control-flow serialization, not resource pressure; widening the fabric does not help until `N` grows enough that the unrolled per-lane work saturates a memory or PE lane.
 
 <!-- BEGIN CGRA-SCHED:bitonic_stage -->
 ### Finite-Resource Schedule Estimate (time-local)
@@ -216,7 +216,7 @@ cycles  = max(11, 3, 2, 1) = 11
 
 | region | CP | A | LD | ST | aggregate | scheduled (makespan) |
 |--------|---:|--:|---:|---:|----------:|---------------------:|
-| bitonic_stage | 11 | 87 | 19 | 12 | 11 | 11 |
+| bitonic_stage | 11 | 80 | 19 | 12 | 11 | 11 |
 
 - **scheduled_cycles** = 11  (sum of ordered-region makespans)
 - **aggregate_cycles** = 11  (the lower bound above, unchanged)

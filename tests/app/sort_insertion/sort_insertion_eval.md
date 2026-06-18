@@ -33,7 +33,7 @@ but a general input needs the per-key shift count.
 
 | dim | trip_count | kind | II | notes |
 |-----|------------|------|----|-------|
-| copy `i` | `N` = 512 | parallel | n/a | The copy reads `input[i]` and writes distinct `output[i]` elements. Under the ASAP model this independent copy is fully unrolled; the copy stores form a RAW barrier for the later in-place insertion sort because the sort reads and rewrites `output[]`. |
+| copy `i` | `N` = 512 | parallel | n/a | The copy reads `input[i]` and writes distinct `output[i]` elements. Under the ASAP model this independent copy is fully unrolled; its stores feed the later in-place insertion sort through per-element RAW edges because the sort reads and rewrites `output[]`. |
 | outer key `i` | `N - 1` = 511 | wavefront through element RAWs | 10 on the deepest diagonal | Each key iteration mutates the in-place sorted prefix, but the dependencies are element-level, not whole-prefix barriers. Key `i+1` body `r` reads the `output[]` element written by key `i` body `r`, so adjacent keys overlap as a diagonal wavefront. The DSA source also marks the copy loop `LOOM_NO_PARALLEL`/`LOOM_NO_UNROLL`, but this eval follows the ideal ASAP data-dependence model. |
 | inner `while` | `T_i` taken bodies plus one exit test | sequential | 6 per taken shift body | Carries `j` and mutates overlapping `output[]` locations. The while termination is data-dependent. The `&&` short-circuits: a full-prefix shift exits after `j >= 0` is false, while a normal stop also loads `output[j]` and compares it with `key`. |
 
@@ -279,6 +279,12 @@ Every counted load consumes an `L` slot and every counted store consumes an `S`
 slot, including scalar and induction-variable accesses. Every counted
 non-load/store op consumes a `P` slot. With `CP` the ASAP dependency bound,
 `A` the counted non-load/store ops, `LD` the loads, and `ST` the stores:
+
+This eval intentionally keeps the copy and insertion-sort work in one schedulable
+region. The copy-to-sort RAWs are represented as explicit per-element edges in
+the DAG, which preserves the element-local wavefront overlap described above.
+Splitting copy and sort into ordered regions would be a coarser, more
+conservative model for this kernel.
 
 ```
 compute = ceil(A / P)

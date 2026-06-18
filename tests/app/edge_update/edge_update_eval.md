@@ -10,7 +10,7 @@
     c5: match compare  col == dst_node
     c6: store output_weights[i]              (needs match @c5)
 
-    Total ≈ 6, with the copy loop running in parallel (c1–c3, hidden)
+    Total ≈ 6, with the copy loop running in parallel
 
 # Edge Update Performance
 Parameters (from `main.cpp`): `num_nodes = 8`, `num_edges = 16`, `src = 2`,

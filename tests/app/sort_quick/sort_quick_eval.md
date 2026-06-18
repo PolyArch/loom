@@ -299,7 +299,7 @@ still charge the `output[i]` load separately from the `output[j]` load.
 
 | op | formula | test-input total | source |
 |----|---------|-----------------:|--------|
-| loads | `1 + N + (2W + 2Q + 3) + 2W + (S + R) + C` | **54725** | hoisted `N` load; copy iterator reads; `top` reads for while checks, pops, and pushes; stack array pops; carried partition `i` reads; scan iterator `j` reads |
+| loads | `2 + N + (2W + 2Q + 3) + 2W + (S + R) + C` | **54726** | hoisted `N` loads in the copy and sort regions; copy iterator reads; `top` reads for while checks, pops, and pushes; stack array pops; carried partition `i` reads; scan iterator `j` reads |
 | stores | `(N + 1) + (2W + 2Q + 3) + (2 + 2Q) + (R + S) + (R + C)` | **55403** | copy iterator init/writebacks; `top` init/writebacks; stack array pushes; carried partition `i` init/writebacks; scan iterator `j` init/writebacks |
 | adds | `N + (2 + 2Q) + C` | **28845** | copy `i++`; `top` pre-increments on initial and child pushes; scan `j++` |
 | subs | `1 + 2W` | **2049** | initial `N - 1`; two `top--` pop updates per processed range |
@@ -310,7 +310,7 @@ still charge the `output[i]` load separately from the `output[j]` load.
 
 | op | total |
 |----|------:|
-| loads | **103982** |
+| loads | **103983** |
 | stores | **99991** |
 | adds | **50456** |
 | subs | **2565** |
@@ -418,6 +418,15 @@ and memory-issue resources, following `docs/spec-kernel-performance.md`.
 The copy loop is ordered before the in-place quicksort stack machine because the
 sort phase reads `output[]` values written by the copy phase. The aggregate
 bound is therefore the sum of the copy-region bound and the sort-region bound.
+This is an intentional coarse phase model: a more granular single-region DAG
+could attach each first quicksort read of `output[k]` to the copy store for that
+same element, letting much of the copy resource work overlap the later stack
+machine. This eval keeps the two-region split because the source exposes an
+explicit sequential stack machine after the copy, and the copy-to-sort RAW is a
+true in-place memory barrier at phase granularity. `sort_insertion` uses a finer
+single-region model because its copy stores feed a regular element-local
+wavefront through `output[]`; the quicksort trace is modeled more conservatively
+as `copy -> sort`.
 
 With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
 

@@ -47,7 +47,7 @@ Prologue (loop-invariant compute, broadcast via dataflow):
   C3: 1 << (stage + 1) = block_size
 
 Per-iter predicate (parallel across all 8 outer lanes):
-  C4: i / block_size = block_idx  ‖  i % block_size = idx_in_block  ‖  block_size >> 1 = half_block (dead)
+  C4: i / block_size = block_idx  ‖  i % block_size = idx_in_block  ‖  block_size >> 1 = half_block (dead, hoisted once)
   C5: block_idx & 1               ‖  idx_in_block & distance
   C6: == 0 → ascending            ‖  == 0 → outer_pred              [outer_pred / ¬outer_pred retire]
 ```
@@ -106,7 +106,7 @@ For comparison: baseline `bitonic_stage` (`i` parallel-unrolled, no extra writes
 
 Counts use the **source-level dynamic** interpretation under strict no-pred. The outer `if` fires only the taken arm per lane; `if (ascending)` fires only one of `cmp_gt` / `cmp_lt`; `if (should_swap)` fires the swap stores only on swap-commit lanes. The `++` fires on all outer-pred-true lanes (it's outside the `partner < N` and `if (should_swap)` inner guards); the `-=1` fires unconditionally on every iter (it's outside the outer if). No mux or AND-enable bitops are charged anywhere.
 
-Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascending`, `partner`, `should_swap`, `temp`) are treated as anonymous-equivalent intermediates and contribute no named L/S — same convention as baseline. The loop-invariants `block_size` and `distance` are computed once in the prologue and broadcast via dataflow.
+Per-iter transient scalars (`block_idx`, `idx_in_block`, `ascending`, `partner`, `should_swap`, `temp`) are treated as anonymous-equivalent intermediates and contribute no named L/S — same convention as baseline. The loop-invariants `block_size`, `distance`, and dead `half_block` are computed once in the prologue and broadcast via dataflow.
 
 ### Algorithmic
 | op       | count | source |
@@ -128,7 +128,7 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | adds         | 9     | `i++` (8) + prologue `stage + 1` (1) |
 | address_adds | 0     | `inplace[i]` and `inplace[partner]` are bare-scalar subscripts (no arithmetic baked into the brackets), so neither charges an address_add. (`partner = i + distance` is a named scalar computed once and counted as a regular add, not address arithmetic.) |
 | compares     | 8     | outer loop bound `i < N` (8) |
-| bitops       | 10    | dead `half_block = block_size >> 1` (8, unconditional per the dead-code rule) + prologue `1 << pass` (1) + `1 << (stage + 1)` (1) |
+| bitops       | 3     | dead `half_block = block_size >> 1` (loop-invariant, counted once per the dead-code rule) + prologue `1 << pass` (1) + `1 << (stage + 1)` (1) |
 
 ### Totals
 | op           | total |
@@ -141,10 +141,10 @@ Per-iter transient scalars (`block_idx`, `idx_in_block`, `half_block`, `ascendin
 | divs         | **8**  |
 | mods         | **8**  |
 | compares     | **32** |
-| bitops       | **26** |
+| bitops       | **19** |
 | muls / shifts / transcendentals | 0 |
 
-Delta from baseline `bitonic_stage` (loads 19, stores 12, adds 13, address_adds 0, subs 0, compares 32, bitops 26):
+Delta from baseline `bitonic_stage` (loads 19, stores 12, adds 13, address_adds 0, subs 0, compares 32, bitops 19):
 - `++` adds 4 loads + 4 adds + 4 stores (active lanes).
 - `-=1` adds 8 loads + 8 subs + 8 stores (every iter).
 - `address_adds` stays 0: all `inplace[…]` subscripts are bare scalars (`i`, `partner`), so no access charges address arithmetic in either baseline or tweak.
@@ -214,12 +214,12 @@ and memory-issue resources, following `docs/spec-kernel-performance.md`.
 With `6x6` resources (`P = 36`, `L = 12`, `S = 12`):
 
 - `CP = 17`
-- `A = adds (17) + subs (8) + divs (8) + mods (8) + compares (32) + bitops (26) = 99`
+- `A = adds (17) + subs (8) + divs (8) + mods (8) + compares (32) + bitops (19) = 92`
 - `LD = 31`
 - `ST = 24`
 
 ```
-compute = ceil(99 / 36) = 3
+compute = ceil(92 / 36) = 3
 load    = ceil(31 / 12) = 3
 store   = ceil(24 / 12) = 2
 cycles  = max(17, 3, 3, 2) = 17
@@ -237,7 +237,7 @@ memory chain dominates the small amount of dynamic work in this `N = 8` stage.
 
 | region | CP | A | LD | ST | aggregate | scheduled (makespan) |
 |--------|---:|--:|---:|---:|----------:|---------------------:|
-| bitonic_stage-tweak | 17 | 99 | 31 | 24 | 17 | 17 |
+| bitonic_stage-tweak | 17 | 92 | 31 | 24 | 17 | 17 |
 
 - **scheduled_cycles** = 17  (sum of ordered-region makespans)
 - **aggregate_cycles** = 17  (the lower bound above, unchanged)
