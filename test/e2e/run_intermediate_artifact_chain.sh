@@ -176,6 +176,9 @@ case "${CASE}" in
   gemm)
     case_graph="g_t__ZN12_GLOBAL__N_14gemmEPKfS1_Pfiii_0_0"
     ;;
+  matmul)
+    case_graph="g_t_matmul_kernel_red_0_0"
+    ;;
   lower_bound)
     case_graph="missing_primary_graph"
     ;;

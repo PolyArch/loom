@@ -1188,6 +1188,22 @@ case "${CASE}" in
             --arg 7=0.000000e+00
         )
         ;;
+    matmul)
+        append_ctrl_tokens 3
+        sim_args+=(
+            --graph g_t_matmul_kernel_red_0_0
+            --workload matmul
+            --arg 1=0
+            --arg 2=3
+            --arg 3=1
+            --arg 4=0
+            --memref 5=1,2,3,4,5,6
+            --arg 6=2
+            --arg 7=0
+            --memref 8=7,8,9,10,11,12
+            --arg 9=0
+        )
+        ;;
     relu)
         configure_relu_core_args
         ;;

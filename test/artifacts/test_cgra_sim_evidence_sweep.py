@@ -56,6 +56,7 @@ DEFAULT_SWEEP_CASES = (
     "gather",
     "gemv",
     "gemm",
+    "matmul",
     "lower_bound",
     "matvec",
     "moving_avg",
@@ -287,8 +288,8 @@ def app_manifest_no_dfg_cases(repo: Path) -> tuple[str, ...]:
         tiers = entry.get("tiers", [])
         if isinstance(case, str) and case and (not isinstance(tiers, list) or "dfg" not in tiers):
             no_dfg_cases.append(case)
-    if len(no_dfg_cases) != 50:
-        raise AssertionError(f"expected 50 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
+    if len(no_dfg_cases) != 49:
+        raise AssertionError(f"expected 49 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
     return tuple(no_dfg_cases)
 
 
@@ -905,6 +906,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "gemm",
                 "--case",
+                "matmul",
+                "--case",
                 "correlation",
                 "--case",
                 "convolve_1d",
@@ -948,6 +951,7 @@ def main(argv: list[str]) -> int:
             "vecnorm_l2",
             "gemv",
             "gemm",
+            "matmul",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -980,6 +984,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
+        assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
@@ -1065,6 +1070,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "convolve_1d_same", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "crc32", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "matmul", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
@@ -1159,6 +1165,7 @@ def main(argv: list[str]) -> int:
                 "dataflow.stream#0.result0->arith.shli#0.operand0",
             },
         )
+        assert_mapping_uses_switch_multihop(evidence_dir, "matmul")
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
@@ -1236,6 +1243,7 @@ def main(argv: list[str]) -> int:
             "vecnorm_l2",
             "gemv",
             "gemm",
+            "matmul",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1314,6 +1322,9 @@ def main(argv: list[str]) -> int:
         gemm_row = one_row(rows, "gemm")
         if gemm_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"gemm should use shared reduction hardware: {gemm_row}")
+        matmul_row = one_row(rows, "matmul")
+        if matmul_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"matmul should use shared reduction hardware: {matmul_row}")
         matvec_row = one_row(rows, "matvec")
         if matvec_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"matvec should use shared reduction hardware: {matvec_row}")
@@ -1323,9 +1334,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 37,
+            "pass": 38,
             "fail": 0,
-            "blocked": 72,
+            "blocked": 71,
             "unsupported": 0,
             "missing_status": 0,
         }

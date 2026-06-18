@@ -251,7 +251,7 @@
 // DOWNSAMPLE-AVG-JSON-NOT: ".out"
 // DOWNSAMPLE-AVG-JSON-NOT: ".in"
 
-// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,6,2,3,0,fail,unrouted software edges lack Fabric ADG connectivity
+// DOWNSAMPLE-AVG-INIT-NEXT: downsample_avg,shared_reduction_adg,downsample_avg__g_t_main_0_0__shared_reduction_adg,6,3,2,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // CONV1D-NEXT: conv1d,shared_reduction_adg,conv1d__g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 

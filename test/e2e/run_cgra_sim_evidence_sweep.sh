@@ -94,6 +94,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     gather
     gemv
     gemm
+    matmul
     lower_bound
     matvec
     moving_avg

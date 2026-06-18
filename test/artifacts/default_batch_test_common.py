@@ -25,6 +25,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "gemv",
     "hash_mix",
     "integrate_trapz",
+    "matmul",
     "matvec",
     "mean",
     "prefix_sum",

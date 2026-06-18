@@ -90,6 +90,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "matmul",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "matvec",
       "hardware": "shared_reduction_adg"
     },
