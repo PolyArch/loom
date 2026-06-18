@@ -901,6 +901,20 @@ ModuleBuilder buildMesh2DAdg() {
   return module;
 }
 
+ModuleBuilder buildTorusEdgeAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_torus_edge_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "n00", "data", "a");
+  addSpatialAddPe(module, "n01", "data", "b");
+  addSpatialSwitch(module, {"east", "south"}, {"n00", "n01", "c"},
+                   {"110", "101"});
+  addSpatialAddPe(module, "n10", "east", "south");
+  addSpatialSwitch(module, {"wrap_north", "wrap_west"}, {"n10", "n00", "d"},
+                   {"110", "101"});
+  addSpatialAddPe(module, "n11", "wrap_north", "wrap_west");
+  return module;
+}
+
 ModuleBuilder buildSystolicArrayAdg() {
   ModuleBuilder module = makeTopologyMatrixModule("matrix_systolic_array_adg");
   addSpatialMemLoad(module);
@@ -2639,6 +2653,8 @@ llvm::Error loom::adg::writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,
     return buildChain1DAdg().print(os);
   if (family == "mesh-2d")
     return buildMesh2DAdg().print(os);
+  if (family == "torus-edge")
+    return buildTorusEdgeAdg().print(os);
   if (family == "systolic-array")
     return buildSystolicArrayAdg().print(os);
   if (family == "clustered-array")

@@ -32,6 +32,7 @@ LINK_RE = re.compile(r"\bfabric\.link\b")
 TOPOLOGY_MATRIX_CASES = (
     ("chain-1d", "regular", "chain_1d"),
     ("mesh-2d", "regular", "mesh_2d"),
+    ("torus-edge", "regular", "torus_edge"),
     ("systolic-array", "regular", "systolic_array"),
     ("clustered-array", "regular", "clustered_array"),
     ("reduction-tree", "irregular", "reduction_tree"),

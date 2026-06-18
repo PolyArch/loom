@@ -30,6 +30,7 @@ REQUIRED_TOPOLOGY_FAMILIES = {
     "regular": {
         "chain_1d",
         "mesh_2d",
+        "torus_edge",
         "systolic_array",
         "clustered_array",
     },
@@ -58,6 +59,12 @@ EXPECTED_TOPOLOGY_SIGNATURES = {
         "layout_class": "regular",
         "fabric_root": "matrix_mesh2d_adg",
         "tile_counts": {"mem": 1, "pe": 4, "switch": 1},
+        "schedule_kinds": {"spatial"},
+    },
+    "torus_edge": {
+        "layout_class": "regular",
+        "fabric_root": "matrix_torus_edge_adg",
+        "tile_counts": {"mem": 1, "pe": 4, "switch": 2},
         "schedule_kinds": {"spatial"},
     },
     "systolic_array": {
