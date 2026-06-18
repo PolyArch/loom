@@ -49,6 +49,12 @@ EXPECTED_TOPOLOGY_SIGNATURES = {
         "tile_counts": {"mem": 1, "pe": 7, "switch": 3},
         "schedule_kinds": {"spatial"},
     },
+    "vector_mesh": {
+        "layout_class": "regular",
+        "fabric_root": "shared_vector_mesh_adg",
+        "tile_counts": {"mem": 1, "pe": 3, "switch": 5},
+        "schedule_kinds": {"spatial"},
+    },
     "chain_1d": {
         "layout_class": "regular",
         "fabric_root": "matrix_chain1d_adg",
@@ -217,6 +223,9 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
     shared_vector_id = "adg-builder::shared-vector-alu::shared_vector_alu_adg"
     if shared_vector_id not in ids:
         raise AssertionError(f"inventory missed reusable shared-vector ALU ADG: {ids}")
+    shared_vector_mesh_id = "adg-builder::shared-vector-mesh::shared_vector_mesh_adg"
+    if shared_vector_mesh_id not in ids:
+        raise AssertionError(f"inventory missed reusable shared-vector mesh ADG: {ids}")
     duplicate_fingerprints = len(set(topology_fingerprints.values())) != len(
         topology_fingerprints
     )

@@ -2508,6 +2508,128 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
   return module;
 }
 
+ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
+  ModuleBuilder module("shared_vector_mesh_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("idx0", "!fabric.bits<32>")
+      .addInput("idx1", "!fabric.bits<32>")
+      .addInput("store_idx", "!fabric.bits<32>")
+      .addInput("ctrl", "!fabric.bits<0>")
+      .addInput("i32a", "!fabric.bits<32>");
+
+  PeSpec xorPe;
+  xorPe.inputs = {{"lhs", "mesh_lhs", "!fabric.bits<32>", ""},
+                  {"rhs", "mesh_rhs", "!fabric.bits<32>", ""}};
+  xorPe.resultNames = {"xored"};
+  xorPe.resultTypes = {"!fabric.bits<32>"};
+  xorPe.fus.push_back(FuSpec{{{"a", "lhs", "!fabric.bits<32>", ""},
+                              {"b", "rhs", "!fabric.bits<32>", ""}},
+                             {"!fabric.bits<32>"},
+                             {FabricOpSpec{{"value"},
+                                           {"arith.xori"},
+                                           {"a", "b"},
+                                           {"!fabric.bits<32>",
+                                            "!fabric.bits<32>"},
+                                           {"!fabric.bits<32>"},
+                                           {},
+                                           {}}},
+                             {"value"}});
+  module.addPe(std::move(xorPe));
+
+  PeSpec bswapPe;
+  bswapPe.inputs = {{"value", "mesh_unary", "!fabric.bits<32>", ""}};
+  bswapPe.resultNames = {"swapped"};
+  bswapPe.resultTypes = {"!fabric.bits<32>"};
+  bswapPe.fus.push_back(FuSpec{{{"input", "value", "!fabric.bits<32>", ""}},
+                               {"!fabric.bits<32>"},
+                               {FabricOpSpec{{"result"},
+                                             {"llvm.intr.bswap"},
+                                             {"input"},
+                                             {"!fabric.bits<32>"},
+                                             {"!fabric.bits<32>"},
+                                             {},
+                                             {}}},
+                               {"result"}});
+  module.addPe(std::move(bswapPe));
+
+  PeSpec syncPe;
+  syncPe.inputs = {{"pa", "sync0", "!fabric.bits<0>", ""},
+                   {"pb", "sync1", "!fabric.bits<0>", ""},
+                   {"pc", "sync2", "!fabric.bits<0>", ""}};
+  syncPe.resultTypes = {"!fabric.bits<0>"};
+  syncPe.fus.push_back(FuSpec{{{"fa", "pa", "!fabric.bits<0>", ""},
+                               {"fb", "pb", "!fabric.bits<0>", ""},
+                               {"fc", "pc", "!fabric.bits<0>", ""}},
+                              {"!fabric.bits<0>"},
+                              {FabricOpSpec{{"sa", "sb", "sc"},
+                                            {"dataflow.sync"},
+                                            {"fa", "fb", "fc"},
+                                            {"!fabric.bits<0>",
+                                             "!fabric.bits<0>",
+                                             "!fabric.bits<0>"},
+                                            {"!fabric.bits<0>",
+                                             "!fabric.bits<0>",
+                                             "!fabric.bits<0>"},
+                                            {},
+                                            {{"bitmask", "111"}}}},
+                              {"sa"}});
+  module.addPe(std::move(syncPe));
+
+  module.addExactBodyLine(
+      "%data0, %done0, %data1, %done1, %store_done =");
+  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr)");
+  module.addExactBodyLine("      load(%idx0, %ctrl, %idx1, %ctrl)");
+  module.addExactBodyLine(
+      "      store(%store_idx, %store_value, %ctrl)");
+  module.addExactBodyLine(
+      "      [{load_group_size = 2 : i32, store_group_size = 1 : i32}]");
+  module.addExactBodyLine(
+      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)");
+  module.addExactBodyLine(
+      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<0>)");
+  module.addExactBodyLine(
+      "%west0, %west1, %west_unary = fabric.switch [spatial] %data0, "
+      "%data1, %i32a");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\", \"111\", \"101\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine(
+      "  -> (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine(
+      "%mesh_lhs, %mesh_rhs_pre = fabric.switch [spatial] %west0, %west1");
+  module.addExactBodyLine("  [{connectivity_table = [\"11\", \"11\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine(
+      "  -> (!fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine(
+      "%mesh_rhs, %mesh_unary = fabric.switch [spatial] %mesh_rhs_pre, "
+      "%west0, %west_unary");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\", \"011\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine(
+      "  -> (!fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine(
+      "%store_value = fabric.switch [spatial] %xored, %swapped, %i32a");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+  module.addExactBodyLine("  -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%sync0, %sync1, %sync2 = fabric.switch [spatial] %done0, %done1, "
+      "%store_done");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\", \"111\", \"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
+  module.addExactBodyLine(
+      "  -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
+  return module;
+}
+
 ModuleBuilder loom::adg::buildFullSpatialCoreAdg() {
   ModuleBuilder module("full_spatialcore_adg");
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
@@ -2634,6 +2756,10 @@ llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
 
 llvm::Error loom::adg::writeSharedVectorAluAdg(llvm::raw_ostream &os) {
   return buildSharedVectorAluAdg().print(os);
+}
+
+llvm::Error loom::adg::writeSharedVectorMeshAdg(llvm::raw_ostream &os) {
+  return buildSharedVectorMeshAdg().print(os);
 }
 
 llvm::Error loom::adg::writeFullSpatialCoreAdg(llvm::raw_ostream &os) {
