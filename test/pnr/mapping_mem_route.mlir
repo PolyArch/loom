@@ -15,6 +15,21 @@
 // JSON-NOT: ".out"
 // JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_two_loads_one_port --hardware-mlir %s --hardware mem_route_adg --workload mem_two_loads_one_port --output %t.twoload.mapping.csv --artifact %t.twoload.mapping.json
+// RUN: FileCheck %s --check-prefix=TWOLOAD-CSV < %t.twoload.mapping.csv
+// RUN: FileCheck %s --check-prefix=TWOLOAD-JSON < %t.twoload.mapping.json
+
+// TWOLOAD-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// TWOLOAD-CSV-NEXT: mem_two_loads_one_port,mem_route_adg,mem_two_loads_one_port__mem_two_loads_one_port__mem_route_adg,2,1,0,1,fail,missing hardware resource for software op dataflow.load
+
+// TWOLOAD-JSON-DAG: "status": "fail"
+// TWOLOAD-JSON-DAG: "missing hardware resource for software op dataflow.load"
+// TWOLOAD-JSON-DAG: "operation": "dataflow.load"
+// TWOLOAD-JSON-DAG: "resource_kind": "fabric.mem.load"
+// TWOLOAD-JSON-DAG: "unplaced_records": 1
+// TWOLOAD-JSON-NOT: "fabric.mem.copy"
+// TWOLOAD-JSON-NOT: "memory_copy_binding"
+
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_store_route --hardware-mlir %s --hardware mem_store_route_adg --workload mem_store_route --output %t.store.mapping.csv --artifact %t.store.mapping.json
 // RUN: FileCheck %s --check-prefix=STORE-CSV < %t.store.mapping.csv
 // RUN: FileCheck %s --check-prefix=STORE-JSON < %t.store.mapping.json
@@ -139,6 +154,15 @@ module {
     %sum = arith.addi %data, %rhs : i32
     %synced = dataflow.sync %done : (none) -> none
     dataflow.graph.return %synced, %sum : none, i32
+  }
+
+  dataflow.graph.func private @mem_two_loads_one_port(
+      %ctrl: none, %mem: memref<?xi32>, %lhs_idx: index, %rhs_idx: index)
+      -> (none, i32) {
+    %lhs, %lhs_done = dataflow.load %mem[%lhs_idx] %ctrl : memref<?xi32>
+    %rhs, %rhs_done = dataflow.load %mem[%rhs_idx] %ctrl : memref<?xi32>
+    %sum = arith.addi %lhs, %rhs : i32
+    dataflow.graph.return %ctrl, %sum : none, i32
   }
 
   fabric.module @mem_route_adg(%mgr : memref<?x!fabric.bits<32>>,
