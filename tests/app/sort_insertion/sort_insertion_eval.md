@@ -1,7 +1,11 @@
 # ASAP Model Notes
 - `output[i]` intially set as a copy of `input[i]`, this takes a fixed number of cycles if the loop is fully unrolled (load -> store)
-- Outer for loop and inner while loop must be serialized because the state of `output` in each i iteration depends on the content of `output` after the inner loop while runs in the previous iteration (i - 1)
-- Further, the while loop checks two conditions during each iteration and these conditions are not known ahead of time. Under the taken branch, both compares need to be evaluated
+- When iteration i reads from the output array, it only depends on the last writer to the element in that output array
+  - The last writer is iteration i - 1, which modifies output[i] as early as the first iteration of the inner while loop
+  - From previous for loop iteration: It takes 6 cycles for iteration i - 1 to finish writing to output[i]: (load j → check j≥0 → load output[j] → compare to key → compute j±1 → store)
+  - Inner while loop: It takes 4 cycles to pick up the element written at output[i] and 
+  - Each i iteration is spaced **10 cycles** apart, therefore O(N^2) work can be completed in O(N) time
+- The execution pattern can be thought of as **pipelining**. 
 
 # Insertion Sort Performance
 Parameters from `main.cpp`:
@@ -30,7 +34,7 @@ but a general input needs the per-key shift count.
 | dim | trip_count | kind | II | notes |
 |-----|------------|------|----|-------|
 | copy `i` | `N` = 512 | parallel | n/a | The copy reads `input[i]` and writes distinct `output[i]` elements. Under the ASAP model this independent copy is fully unrolled; the copy stores form a RAW barrier for the later in-place insertion sort because the sort reads and rewrites `output[]`. |
-| outer key `i` | `N - 1` = 511 | sequential | input-dependent | Each key iteration mutates the in-place sorted prefix. Iteration `i+1` consumes the prefix produced by iteration `i`, so outer key iterations cannot overlap even with unlimited hardware. The DSA source also marks the copy loop `LOOM_NO_PARALLEL`/`LOOM_NO_UNROLL`, but this eval follows the ideal ASAP model for independent dimensions. |
+| outer key `i` | `N - 1` = 511 | wavefront through element RAWs | 10 on the deepest diagonal | Each key iteration mutates the in-place sorted prefix, but the dependencies are element-level, not whole-prefix barriers. Key `i+1` body `r` reads the `output[]` element written by key `i` body `r`, so adjacent keys overlap as a diagonal wavefront. The DSA source also marks the copy loop `LOOM_NO_PARALLEL`/`LOOM_NO_UNROLL`, but this eval follows the ideal ASAP data-dependence model. |
 | inner `while` | `T_i` taken bodies plus one exit test | sequential | 6 per taken shift body | Carries `j` and mutates overlapping `output[]` locations. The while termination is data-dependent. The `&&` short-circuits: a full-prefix shift exits after `j >= 0` is false, while a normal stop also loads `output[j]` and compares it with `key`. |
 
 `key` is assigned once per outer iteration and not loop-carried, so it is an
@@ -49,8 +53,9 @@ The copy pass has a 2-cycle barrier:
 ```
 
 All 512 copy lanes overlap under the ASAP model, so the later sort can begin
-from `output[]` depths of 2. The insertion-sort loop is then serialized by the
-in-place prefix state.
+from element-level `output[]` depths of 2. The insertion-sort loop is not a
+whole-key serial chain: it is a wavefront of element RAW dependencies through
+the in-place array.
 
 For one outer key with `T` taken inner while bodies, counted from the point where
 the key iteration is admitted and `i` is available:
@@ -115,34 +120,52 @@ So an in-prefix stop reaches the final key store at:
 6T + 8
 ```
 
-The reverse input always takes the full-prefix path, with `T_i = i`.
-Therefore:
+The reverse input always takes the full-prefix path, with `T_i = i`. If each
+outer key were forced to wait for the previous key's final store, the depth
+would be the serial sum `2 + sum_i (6i + 6)`. That is too conservative for the
+ASAP DAG because `output[]` dependencies are per element.
+
+For key `i`, let `S(i,j)` be the shift store
+`output[j + 1] = output[j]`, where `j = i - 1 ... 0`, and let `K(i)` be the
+final key store to `output[0]`. The relevant RAW edges are:
+
+- `S(i,j)` for `j > 0` reads `output[j]`, last written by `S(i-1,j-1)`.
+- `S(i,0)` reads `output[0]`, last written by `K(i-1)`.
+- `K(i)` follows key `i`'s exit test after `S(i,0)` updates the `j` carry.
+
+For the descending trace, the depths solve to:
 
 ```
-total_cycles =
-  2                                  (parallel copy barrier)
-+ sum_{i=1}^{N-1} (6i + 6)           (serialized key insertions)
-= 2 + 6 * N(N-1)/2 + 6 * (N-1)
-= 2 + 3N(N-1) + 6(N-1)
-= 2 + 3(N-1)(N+2)
+S(i,j) = 10i - 6j - 2
+K(i)   = 10i + 2
+```
+
+So the deepest output is the final key store `K(N - 1)`:
+
+```
+total_cycles = 10(N - 1) + 2
 ```
 
 For `N = 512`:
 
 ```
-total_cycles = 2 + 3 * 511 * 514 = 787964
+total_cycles = 10 * 511 + 2 = 5112
 ```
 
-For comparison, an already sorted input would take `T_i = 0` and the in-prefix
-stop path for every key:
+For small `N`, this wavefront model gives:
 
-```
-best_case_cycles = 2 + 8(N-1)
-```
+| `N` | `total_cycles` |
+|----:|---------------:|
+| 8 | 72 |
+| 64 | 632 |
+| 512 | 5112 |
 
-The asymptotic depth is therefore `Theta(N)` in the best case and
-`Theta(N^2)` in the descending worst case. The exact middle cases depend on the
-input ordering through `T_i` and the exit type for each key.
+For comparison, an already sorted input takes `T_i = 0` and the in-prefix stop
+path for every key. Those key iterations have no shift-store wavefront; their
+dominant per-key work is the condition check and final store. Both the sorted
+and descending endpoints have `Theta(N)` ASAP depth under unlimited hardware,
+though the descending case still has `Theta(N^2)` dynamic work. Middle cases
+depend on the input ordering through `T_i` and the exit type for each key.
 
 ## Op counts
 
@@ -163,7 +186,7 @@ and each final key store.
 
 | op | formula | total | source |
 |----|---------|------:|--------|
-| loads | `N + O + (F + O) + 2` | **132352** | copy iterator reads; outer iterator reads; `j` reads for every while test; hoisted `N` loads in the ordered copy and sort regions |
+| loads | `N + O + (F + O) + 1` | **132351** | copy iterator reads; outer iterator reads; `j` reads for every while test; hoisted `N` load |
 | stores | `(N + 1) + (O + 1) + (O + F)` | **132352** | copy iterator init/writebacks; outer iterator init/writebacks; `j` init and `j--` stores |
 | adds | `N + O` | **1023** | copy `i++`; outer `i++` |
 | subs | `O + F` | **131327** | `j = i - 1`; `j--` |
@@ -174,7 +197,7 @@ and each final key store.
 
 | op | total |
 |----|------:|
-| loads | **264191** |
+| loads | **264190** |
 | stores | **264191** |
 | adds | **1023** |
 | subs | **131327** |
@@ -182,9 +205,9 @@ and each final key store.
 | compares | **263166** |
 | multiplies / divides / shifts / bitops / transcendentals | 0 |
 
-The work and critical path are both dominated by the `F = 130816` taken shift
-bodies. The copy phase is only linear work and contributes only a 2-cycle
-barrier to the ASAP depth.
+The work is dominated by the `F = 130816` taken shift bodies. The critical path
+is dominated by the diagonal wavefront through the final sorted-array outputs,
+not by the total number of shifts.
 
 ## Data Dependency Graph
 
@@ -237,10 +260,10 @@ graph TD
     addr_final --> st_key
 ```
 
-The outer key loop serializes these graphs through the in-place `output[]`
-prefix: the next key insertion consumes the sorted prefix written by the
-previous insertion. Unlike a reduction, the shift sequence is order-dependent
-and cannot be tree-scheduled.
+Adjacent key insertions are connected by element-level `output[]` RAW edges:
+the shift of `output[j]` in one key feeds the matching-position shift in the
+next key. This prevents tree reduction, but it still permits the diagonal
+wavefront overlap captured in the `total_cycles` formula above.
 
 ## CGRA-Constrained Model
 
@@ -264,28 +287,26 @@ store   = ceil(ST / S)
 cycles  = max(CP, compute, load, store)
 ```
 
-The copy loop is ordered before the in-place insertion-sort loop because the
-sort phase reads `output[]` values written by the copy phase. The aggregate
-bound is therefore the sum of the copy-region bound and the sort-region bound.
-
 Counts for the `main.cpp` reverse input:
 
-| region | CP | A | LD | ST | compute=⌈A/36⌉ | load=⌈LD/12⌉ | store=⌈ST/12⌉ | region cycles |
-|--------|---:|---:|---:|---:|---:|---:|---:|---:|
-| copy | 2 | 1024 | 1025 | 1025 | 29 | 86 | 86 | **86** |
-| sort | 787964 | 525819 | 263166 | 263166 | 14607 | 21931 | 21931 | **787964** |
+- `CP = 5112`
+- `A = adds (1023) + subs (131327) + address_adds (131327) + compares (263166) = 526843`
+- `LD = 264190`
+- `ST = 264191`
 
 6x6 example (`P = 36`, `L = 12`, `S = 12`):
 
 ```
-cycles = 86 (copy) + 787964 (sort) = 788050
+compute = ceil(526843 / 36) = 14635
+load    = ceil(264190 / 12) = 22016
+store   = ceil(264191 / 12) = 22016
+cycles  = max(5112, 14635, 22016, 22016) = 22016
 ```
 
-**Bottleneck: dependency-bound.** Even though the reverse input performs more
-than half a million arithmetic/control ops and more than half a million memory
-ops, the serialized insertion chain is much longer than the aggregate resource
-terms on a 6x6 fabric. Wider resources do not reduce the worst-case latency
-unless the algorithm or source structure exposes a different dependency graph.
+**Bottleneck: memory-bound.** The corrected wavefront critical path is much
+shorter than the aggregate load/store terms on a 6x6 fabric. The reverse input
+still exposes quadratic work, so finite load/store issue bandwidth dominates the
+aggregate lower bound even though unlimited-hardware latency is only linear.
 
 <!-- BEGIN CGRA-SCHED:sort_insertion -->
 ### Finite-Resource Schedule Estimate (time-local)
@@ -296,18 +317,16 @@ unless the algorithm or source structure exposes a different dependency graph.
 
 | region | CP | A | LD | ST | aggregate | scheduled (makespan) |
 |--------|---:|--:|---:|---:|----------:|---------------------:|
-| copy | 2 | 1024 | 1025 | 1025 | 86 | 88 |
-| sort | 787964 | 525819 | 263166 | 263166 | 787964 | 787964 |
-| **total** |  |  |  |  | **788050** | **788052** |
+| sort_insertion | 5112 | 526843 | 264190 | 264191 | 22016 | 22109 |
 
-- **scheduled_cycles** = 788052  (sum of ordered-region makespans)
-- **aggregate_cycles** = 788050  (the lower bound above, unchanged)
-- **gap_cycles** = 2  (scheduled − aggregate)
-- **gap_ratio** = 1  (scheduled / aggregate)
+- **scheduled_cycles** = 22109  (sum of ordered-region makespans)
+- **aggregate_cycles** = 22016  (the lower bound above, unchanged)
+- **gap_cycles** = 93  (scheduled − aggregate)
+- **gap_ratio** = 1.0042  (scheduled / aggregate)
 
 **Local `P`/`L`/`S` pressure** (saturated cycles / longest saturated run / peak ready backlog):
-- `P`: 20 / 20 / 476
-- `L`: 128 / 85 / 1013
-- `S`: 127 / 85 / 12
+- `P`: 51 / 51 / 1498
+- `L`: 21998 / 21998 / 1524
+- `S`: 21939 / 21809 / 416
 
 <!-- END CGRA-SCHED:sort_insertion -->

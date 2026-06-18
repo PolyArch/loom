@@ -1802,49 +1802,49 @@ def build_wildcard_match_cases():
 def build_sort_insertion(N=512):
     """Insertion sort for the reverse-order main.cpp input.
 
-    Two ordered regions are used. The copy region writes output[], and the sort
-    region later reads and overwrites output[], so this is a true RAW barrier.
-    The sort trace is the reverse-order worst case: outer i=1..N-1 executes i
-    shift bodies and exits via j < 0 before writing key to output[0].
+    The trace is the reverse-order worst case: outer i=1..N-1 executes i shift
+    bodies and exits via j < 0 before writing key to output[0]. The in-place
+    output[] dependencies are modeled at element granularity. Key i+1 body r
+    reads the value written by key i body r, so the DAG is a pipelined wavefront
+    rather than a whole-key serial chain.
     """
     dag = Dag()
+    r = dag.region("sort_insertion")
 
-    copy = dag.region("copy")
-    copy.load(kind="N")
-    copy.store(kind="copy_i_init")
+    r.load(kind="N")
+    r.store(kind="copy_i_init")
+    output_last = []
     for _ in range(N):
-        ld_in = copy.load(kind="input")
-        copy.store(ld_in, output=True, kind="output_copy")
-        copy.induction(kind="copy_i", compare_depends_on_read=False)
+        ld_in = r.load(kind="input")
+        output_last.append(r.store(ld_in, kind="output_copy"))
+        r.induction(kind="copy_i", compare_depends_on_read=False)
 
-    sort = dag.region("sort")
-    sort.load(kind="N")
-    sort.store(kind="outer_i_init")
-    prev_outer = None
+    r.store(kind="outer_i_init")
     for i in range(1, N):
-        outer_iv = sort.induction(kind="outer_i", compare_depends_on_read=True)
-        gate = prev_outer if prev_outer is not None else outer_iv["cmp"]
-        key = sort.load(gate, kind="key_output_i")
-        j_init_val = sort.arith(gate, kind="j_init_sub")
-        prev_j_store = sort.store(j_init_val, kind="j_init")
-        for _ in range(i):
-            ld_j = sort.load(prev_j_store, kind="j")
-            cmp_nonneg = sort.arith(ld_j, kind="j_ge_0")
-            ld_out = sort.load(cmp_nonneg, kind="output_j")
-            cmp_gt = sort.arith(ld_out, key, kind="output_gt_key")
-            addr = sort.address_add(cmp_gt, ld_j, kind="j_plus_1")
-            sort.store(addr, ld_out, kind="shift_store")
-            dec_j = sort.arith(cmp_gt, ld_j, kind="j_dec")
-            prev_j_store = sort.store(dec_j, kind="j_store")
-        ld_j = sort.load(prev_j_store, kind="j_exit")
-        cmp_exit = sort.arith(ld_j, kind="j_ge_0_exit")
-        addr = sort.address_add(cmp_exit, ld_j, kind="j_plus_1_final")
-        prev_outer = sort.store(addr, key, output=True, kind="key_store")
+        r.induction(kind="outer_i", compare_depends_on_read=False)
+        key = r.load(output_last[i], kind="key_output_i")
+        j_init_val = r.arith(kind="j_init_sub")
+        prev_j_store = r.store(j_init_val, kind="j_init")
+        for j in range(i - 1, -1, -1):
+            ld_j = r.load(prev_j_store, kind="j")
+            cmp_nonneg = r.arith(ld_j, kind="j_ge_0")
+            ld_out = r.load(cmp_nonneg, output_last[j], kind="output_j")
+            cmp_gt = r.arith(ld_out, key, kind="output_gt_key")
+            addr = r.address_add(cmp_gt, ld_j, kind="j_plus_1")
+            is_final_output = i == N - 1
+            output_last[j + 1] = r.store(
+                addr, ld_out, output=is_final_output, kind="shift_store")
+            dec_j = r.arith(cmp_gt, ld_j, kind="j_dec")
+            prev_j_store = r.store(dec_j, kind="j_store")
+        ld_j = r.load(prev_j_store, kind="j_exit")
+        cmp_exit = r.arith(ld_j, kind="j_ge_0_exit")
+        addr = r.address_add(cmp_exit, ld_j, kind="j_plus_1_final")
+        output_last[0] = r.store(
+            addr, key, output=(i == N - 1), kind="key_store")
 
     contract = [
-        RegionContract("copy", A=1024, LD=1025, ST=1025, CP=2, aggregate=86),
-        RegionContract("sort", A=525819, LD=263166, ST=263166, CP=787964,
-                       aggregate=787964),
+        RegionContract("sort_insertion", A=526843, LD=264190, ST=264191,
+                       CP=5112, aggregate=22016),
     ]
     return dag, contract
 
@@ -2369,9 +2369,9 @@ def _run_golden_tests(errors):
         "kmp_table": {"aggregate": 157,
                       "regions": [("kmp_table", 157, 96, 88, 50, 157)]},
         "sort_insertion": {
-            "aggregate": 788050,
-            "regions": [("copy", 2, 1024, 1025, 1025, 86),
-                        ("sort", 787964, 525819, 263166, 263166, 787964)]},
+            "aggregate": 22016,
+            "regions": [("sort_insertion", 5112, 526843, 264190, 264191,
+                         22016)]},
         "sort_quick": {
             "aggregate": 96057,
             "regions": [("copy", 2, 2048, 2049, 2049, 171),
