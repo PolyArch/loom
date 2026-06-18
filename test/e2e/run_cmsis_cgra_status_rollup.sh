@@ -13,10 +13,12 @@ outputs through the CGRA status summary and both status audits. When
 attempts into that directory before consuming the reports. --cmsis-sim-default
 runs those bounded CMSIS attempts into the default status evidence directory.
 --app-sim-default-batch runs the shared-ADG app CGRA evidence batch used by the
-default simulator cycle summary. Each --app-sim-attempt-manifest declares app
-rows that should be attempted on shared ADGs and recorded honestly even when
-the resulting evidence is blocked or unsupported. Each --app-sim-case runs the
-app CGRA evidence sweep for that app row into the status evidence directory.
+default simulator cycle summary, plus the default shared-ADG blocker-attempt
+batch so app rows do not remain silent missing_status entries. Each
+--app-sim-attempt-manifest declares app rows that should be attempted on shared
+ADGs and recorded honestly even when the resulting evidence is blocked or
+unsupported. Each --app-sim-case runs the app CGRA evidence sweep for that app
+row into the status evidence directory.
 When a legacy LoomBench root is supplied, the rollup also generates and
 consumes the dedicated LoomBench manifest so legacy rows are structured status
 records rather than manifest omissions.
@@ -26,6 +28,7 @@ EOF
 OUT_DIR=""
 LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
+DEFAULT_APP_BLOCKER_MANIFEST="${ROOT}/test/app/shared-cgra-blocker-batch.json"
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
 CMSIS_SIM_DEFAULT=0
@@ -120,6 +123,15 @@ if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
         fi
         APP_SIM_CASES+=("${default_case}")
     done <<< "${default_case_output}"
+    if ! default_blocker_case_output="$(load_app_sim_attempt_manifest_cases "${DEFAULT_APP_BLOCKER_MANIFEST}")"; then
+        exit 1
+    fi
+    while IFS= read -r default_blocker_case; do
+        if [[ -z "${default_blocker_case}" ]]; then
+            continue
+        fi
+        APP_SIM_CASES+=("${default_blocker_case}")
+    done <<< "${default_blocker_case_output}"
 fi
 
 for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do

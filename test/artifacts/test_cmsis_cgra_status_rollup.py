@@ -341,9 +341,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 37,
             "fail": 0,
-            "blocked": 50,
+            "blocked": 72,
             "unsupported": 0,
-            "missing_status": 22,
+            "missing_status": 0,
         },
     )
     expected_hardware = default_batch_hardware(repo)
@@ -353,6 +353,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
             if not artifact.is_file():
                 raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
+    assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
     run(
         repo,
@@ -387,6 +388,57 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         raise AssertionError(f"app sweep mode should not reuse stale dotproduct evidence: {dotproduct}")
 
 
+SHARED_APP_BLOCKER_DIAGNOSTICS = {
+    "autocorrelation": "unsupported op: scf.for",
+    "binary_search": "primary workload graph absent: expected token binary_search_candidate",
+    "clz": "primary workload graph absent: expected token clz_candidate",
+    "compact": "unsupported op: scf.for",
+    "convolve_1d_same": "unsupported op: scf.for",
+    "crc32": "unsupported op: scf.for",
+    "ctz": "primary workload graph absent: expected token ctz_candidate",
+    "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
+    "fir_filter": "unsupported op: scf.for",
+    "gather": "primary workload graph absent: expected token gather",
+    "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
+    "merge": "unsupported op: scf.for",
+    "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
+    "outer": "primary workload graph absent: expected token outer_kernel",
+    "pack_bits": "unsupported op: scf.for",
+    "parity": "primary workload graph absent: expected token parity",
+    "partition": "unsupported op: scf.for",
+    "popcount": "primary workload graph absent: expected token popcount_candidate",
+    "scatter_add": "primary workload graph absent: expected token scatter_add",
+    "transpose": "primary workload graph absent: expected token transpose",
+    "unpack_bits": "unsupported op: scf.for",
+    "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
+}
+
+
+def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
+    for case, diagnostic in SHARED_APP_BLOCKER_DIAGNOSTICS.items():
+        row = one_row(rows, "app", case)
+        if (
+            row["status"] != "blocked"
+            or row["diagnostic_class"] != "dfg_report_unsupported"
+            or row["owner"] != "sim_report"
+            or row["blocking_prerequisite"] != "dfg_report"
+            or row["dfg_status"] != "unsupported"
+            or row["mapping_status"] != "unsupported"
+            or row["cgra_status"] != "blocked"
+            or row["comparison_status"] != "blocked"
+            or row["hardware_system"] != "shared_reduction_adg"
+            or row["final_outputs_present"] != "false"
+            or row["final_memory_state_present"] != "false"
+            or diagnostic not in row["diagnostic"]
+        ):
+            raise AssertionError(f"attempted app row should expose structured shared-ADG blocker: {row}")
+        for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+            assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+            artifact = sim_evidence / Path(row[key]).name
+            if not artifact.is_file():
+                raise AssertionError(f"attempt manifest should emit {artifact}")
+
+
 def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
     run(
         repo,
@@ -415,52 +467,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "missing_status": 37,
         },
     )
-    expected_diagnostics = {
-        "autocorrelation": "unsupported op: scf.for",
-        "binary_search": "primary workload graph absent: expected token binary_search_candidate",
-        "clz": "primary workload graph absent: expected token clz_candidate",
-        "compact": "unsupported op: scf.for",
-        "convolve_1d_same": "unsupported op: scf.for",
-        "crc32": "unsupported op: scf.for",
-        "ctz": "primary workload graph absent: expected token ctz_candidate",
-        "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
-        "fir_filter": "unsupported op: scf.for",
-        "gather": "primary workload graph absent: expected token gather",
-        "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
-        "merge": "unsupported op: scf.for",
-        "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
-        "outer": "primary workload graph absent: expected token outer_kernel",
-        "pack_bits": "unsupported op: scf.for",
-        "parity": "primary workload graph absent: expected token parity",
-        "partition": "unsupported op: scf.for",
-        "popcount": "primary workload graph absent: expected token popcount_candidate",
-        "scatter_add": "primary workload graph absent: expected token scatter_add",
-        "transpose": "primary workload graph absent: expected token transpose",
-        "unpack_bits": "unsupported op: scf.for",
-        "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
-    }
-    for case, diagnostic in expected_diagnostics.items():
-        row = one_row(rows, "app", case)
-        if (
-            row["status"] != "blocked"
-            or row["diagnostic_class"] != "dfg_report_unsupported"
-            or row["owner"] != "sim_report"
-            or row["blocking_prerequisite"] != "dfg_report"
-            or row["dfg_status"] != "unsupported"
-            or row["mapping_status"] != "unsupported"
-            or row["cgra_status"] != "blocked"
-            or row["comparison_status"] != "blocked"
-            or row["hardware_system"] != "shared_reduction_adg"
-            or row["final_outputs_present"] != "false"
-            or row["final_memory_state_present"] != "false"
-            or diagnostic not in row["diagnostic"]
-        ):
-            raise AssertionError(f"attempted app row should expose structured shared-ADG blocker: {row}")
-        for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-            assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
-            artifact = out_dir / "current-sim-cycle" / Path(row[key]).name
-            if not artifact.is_file():
-                raise AssertionError(f"attempt manifest should emit {artifact}")
+    assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 
 def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
