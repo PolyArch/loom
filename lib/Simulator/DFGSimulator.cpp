@@ -442,7 +442,11 @@ void flushPendingTokens(SimulatorState &state) {
   state.pendingObservedOutputs.clear();
 }
 
-std::int64_t integerToken(const Token &token) { return token.intValue; }
+std::int64_t integerToken(const Token &token) {
+  if (token.kind == TokenKind::Bool)
+    return token.boolValue ? 1 : 0;
+  return token.intValue;
+}
 
 bool boolToken(const Token &token) {
   if (token.kind == TokenKind::Bool)
@@ -819,6 +823,99 @@ bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+std::optional<std::size_t> resolveByteRangeStart(const MemoryView &view,
+                                                 std::int64_t byteLength,
+                                                 SimulatorState &state,
+                                                 llvm::StringRef opName,
+                                                 llvm::StringRef role) {
+  if (byteLength < 0) {
+    state.diagnostics.push_back((opName + " length is negative").str());
+    return std::nullopt;
+  }
+  if (view.byteOffset < 0) {
+    state.diagnostics.push_back(
+        (opName + " " + role + " byte offset is negative").str());
+    return std::nullopt;
+  }
+  auto elementSizeOrErr = byteSizeOfType(view.memory->elementType);
+  if (!elementSizeOrErr) {
+    state.diagnostics.push_back(llvm::toString(elementSizeOrErr.takeError()));
+    return std::nullopt;
+  }
+  if (*elementSizeOrErr != 1) {
+    state.diagnostics.push_back(
+        (opName + " requires byte-addressable i8 memory fixtures").str());
+    return std::nullopt;
+  }
+  const std::uint64_t start = static_cast<std::uint64_t>(view.byteOffset);
+  const std::uint64_t length = static_cast<std::uint64_t>(byteLength);
+  const std::uint64_t size = view.memory->elements.size();
+  if (start > size || length > size - start) {
+    state.diagnostics.push_back(
+        (opName + " " + role + " range is out of range").str());
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(start);
+}
+
+bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op.getDstMutable()) ||
+      !hasToken(state.channels, op.getSrcMutable()) ||
+      !hasToken(state.channels, op.getLenMutable()))
+    return false;
+  if (op.getIsVolatile()) {
+    state.diagnostics.push_back("volatile llvm.intr.memcpy is unsupported");
+    return false;
+  }
+
+  Token dst = popToken(state.channels, op.getDstMutable());
+  Token src = popToken(state.channels, op.getSrcMutable());
+  Token len = popToken(state.channels, op.getLenMutable());
+  if (len.kind != TokenKind::Integer && len.kind != TokenKind::Bool) {
+    state.diagnostics.push_back("llvm.intr.memcpy length is not integer-like");
+    return false;
+  }
+
+  mlir::Type byteType = mlir::IntegerType::get(op.getContext(), 8);
+  auto dstOrErr = ensurePointerMemory(state, dst, byteType);
+  if (!dstOrErr) {
+    state.diagnostics.push_back(llvm::toString(dstOrErr.takeError()));
+    return false;
+  }
+  auto srcOrErr = ensurePointerMemory(state, src, byteType);
+  if (!srcOrErr) {
+    state.diagnostics.push_back(llvm::toString(srcOrErr.takeError()));
+    return false;
+  }
+
+  const std::int64_t byteLength = integerToken(len);
+  std::optional<std::size_t> dstStart = resolveByteRangeStart(
+      dstOrErr->pointer, byteLength, state, "llvm.intr.memcpy", "destination");
+  std::optional<std::size_t> srcStart = resolveByteRangeStart(
+      srcOrErr->pointer, byteLength, state, "llvm.intr.memcpy", "source");
+  if (!dstStart || !srcStart)
+    return false;
+
+  if (dstOrErr->pointer.memory == srcOrErr->pointer.memory) {
+    std::size_t length = static_cast<std::size_t>(byteLength);
+    bool overlaps =
+        *dstStart < *srcStart + length && *srcStart < *dstStart + length;
+    if (overlaps && dstStart != srcStart) {
+      state.diagnostics.push_back(
+          "llvm.intr.memcpy overlapping ranges are unsupported");
+      return false;
+    }
+  }
+
+  llvm::SmallVector<Token> copied;
+  copied.reserve(static_cast<std::size_t>(byteLength));
+  for (std::int64_t i = 0; i < byteLength; ++i)
+    copied.push_back(srcOrErr->pointer.memory->elements[*srcStart + i]);
+  for (auto [offset, token] : llvm::enumerate(copied))
+    dstOrErr->pointer.memory->elements[*dstStart + offset] = token;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
   if (!hasToken(state.channels, op.getAddrMutable()) ||
       !hasToken(state.channels, op.getDataMutable()) ||
@@ -933,6 +1030,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireGEP(typedOp, state); })
       .Case<mlir::LLVM::LoadOp>(
           [&](auto typedOp) { return fireLLVMLoad(typedOp, state); })
+      .Case<mlir::LLVM::MemcpyOp>(
+          [&](auto typedOp) { return fireLLVMMemcpy(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
@@ -950,7 +1049,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::LoadOp, dataflow::StoreOp,
                 mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
-                mlir::LLVM::LoadOp, mlir::arith::ConstantOp>(op))
+                mlir::LLVM::LoadOp, mlir::LLVM::MemcpyOp,
+                mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }
@@ -1018,7 +1118,8 @@ bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
   for (mlir::OpOperand &use : arg.getUses()) {
     mlir::Operation *owner = use.getOwner();
     if (mlir::isa<mlir::LLVM::LoadOp>(owner) ||
-        mlir::isa<mlir::LLVM::GEPOp>(owner))
+        mlir::isa<mlir::LLVM::GEPOp>(owner) ||
+        mlir::isa<mlir::LLVM::MemcpyOp>(owner))
       return true;
   }
   return false;

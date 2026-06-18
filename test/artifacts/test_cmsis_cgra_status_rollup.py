@@ -429,6 +429,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_pass_row(repo, rows, sim_evidence)
+    assert_cmsis_concat_memcpy_blocker_evidence(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -507,6 +508,66 @@ def assert_cmsis_cgra_pass_row(
     ):
         if not artifact.is_file():
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
+
+
+def assert_cmsis_concat_memcpy_blocker_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    row = one_row(rows, "cmsis-nn", "ConcatenationFunctions/arm_concatenation_s8_x.c")
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "mapping_artifact_unsupported"
+        or row["blocking_prerequisite"] != "mapping_artifact"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "not_run"
+        or row["comparison_status"] != "not_run"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["final_outputs_present"] != "false"
+        or row["final_memory_state_present"] != "false"
+        or "unsupported PnR graph operation: llvm.intr.memcpy" not in row["diagnostic"]
+        or row["cgra_report"]
+        or row["comparison_report"]
+    ):
+        raise AssertionError(f"CMSIS concat row should expose a precise memcpy PnR blocker: {row}")
+    for key in ("dfg_report", "mapping_artifact"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+    if not (sim_evidence / "arm_concatenation_s8_x.dfg.report.json").is_file():
+        raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x DFG report")
+    if not (sim_evidence / "arm_concatenation_s8_x.mapping.json").is_file():
+        raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x mapping artifact")
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    expected_memory = {
+        "arg6": ["i8:1", "i8:2", "i8:3", "i8:4"],
+        "arg7": ["i8:1", "i8:2", "i8:3", "i8:4", "i8:0", "i8:0"],
+    }
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "ConcatenationFunctions/arm_concatenation_s8_x.c"
+        or dfg_report.get("graph") != "g_t_arm_concatenation_s8_x_red_0_0"
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 2
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.memcpy") != 2
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected CMSIS concat DFG memcpy evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != "ConcatenationFunctions/arm_concatenation_s8_x.c"
+        or mapping_artifact.get("graph") != "g_t_arm_concatenation_s8_x_red_0_0"
+        or mapping_artifact.get("status") != "unsupported"
+        or mapping_artifact.get("diagnostics") != ["unsupported PnR graph operation: llvm.intr.memcpy"]
+        or mapping_artifact.get("placements") != []
+        or mapping_artifact.get("routes") != []
+    ):
+        raise AssertionError(f"unexpected CMSIS concat PnR blocker evidence: {mapping_artifact}")
 
 
 def assert_app_cgra_pass_row(
@@ -1509,6 +1570,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_pass_row(repo, rows, sim_evidence)
+    assert_cmsis_concat_memcpy_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_blocker_row(
         repo,
         rows,

@@ -337,6 +337,20 @@ ATTEMPTS = (
     ),
     Attempt(
         suite="cmsis-nn",
+        case="ConcatenationFunctions/arm_concatenation_s8_x.c",
+        stem="arm_concatenation_s8_x",
+        graph="g_t_arm_concatenation_s8_x_red_0_0",
+        dfg_dir_arg="cmsis_nn_dfg_dir",
+        args=("0=none", "1=0", "2=2", "3=1", "4=2", "5=2"),
+        memrefs=(
+            "6=1,2,3,4",
+            "7=0,0,0,0,0,0",
+        ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+    ),
+    Attempt(
+        suite="cmsis-nn",
         case="FullyConnectedFunctions/arm_vector_sum_s8.c",
         stem="arm_vector_sum_s8",
         graph="g_t_arm_vector_sum_s8_red_0_0",
