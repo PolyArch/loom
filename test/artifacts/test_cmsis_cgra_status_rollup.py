@@ -94,6 +94,49 @@ def assert_no_sim_stage_evidence(row: dict[str, str]) -> None:
             raise AssertionError(f"DFG-only row should leave {key}=not_run: {row}")
 
 
+def assert_cmsis_attempt_guard_rejects_bad_relu_q7_report(repo: Path) -> None:
+    sys.path.insert(0, str(repo / "test" / "e2e"))
+    import run_cmsis_dfg_sim_attempts as attempts  # noqa: E402
+
+    red1 = next(
+        attempt
+        for attempt in attempts.ATTEMPTS
+        if attempt.artifact_stem == "arm_relu_q7.red1"
+    )
+    bad_report = {
+        "kind": "dfg_sim_report",
+        "workload": "ActivationFunctions/arm_relu_q7.c",
+        "graph": "g_t_arm_relu_q7_red_1_0",
+        "status": "pass",
+        "dynamic_work_items": 3,
+        "operation_fire_counts": {
+            "dataflow.load": 1,
+            "arith.cmpi": 1,
+            "arith.select": 1,
+            "dataflow.store": 1,
+        },
+        "final_outputs": ["none"],
+        "final_memory_state": {
+            "arg5": ["i8:0", "i8:2", "i8:-3"],
+        },
+    }
+    try:
+        attempts.validate_attempt_report(
+            red1,
+            bad_report,
+            repo / "temp" / "bad-arm_relu_q7.red1.dfg.report.json",
+        )
+    except SystemExit as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("CMSIS attempt guard accepted a false arm_relu_q7.red1 pass report")
+    if "arm_relu_q7.red1" not in message or (
+        "operation_fire_counts" not in message
+        and "final_memory_state" not in message
+    ):
+        raise AssertionError(f"CMSIS attempt guard produced an imprecise diagnostic: {message}")
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
         return list(csv.DictReader(handle))
@@ -1667,6 +1710,7 @@ def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "cmsis-cgra-status-rollup-") as raw_out_dir:
         out_dir = Path(raw_out_dir)
+        assert_cmsis_attempt_guard_rejects_bad_relu_q7_report(repo)
         assert_no_legacy_mode(repo, out_dir / "no-legacy")
         legacy_root = out_dir / "legacy-loombench"
         write_legacy_case(legacy_root, "legacy_missing")

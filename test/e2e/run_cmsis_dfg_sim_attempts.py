@@ -33,6 +33,10 @@ class Attempt:
     hardware: str = ""
     artifact_stem: str = ""
     aggregate_stem: str = ""
+    expected_dynamic_work_items: int | None = None
+    expected_operation_fire_counts: tuple[tuple[str, int], ...] = ()
+    expected_final_outputs: tuple[str, ...] = ()
+    expected_final_memory_state: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -334,6 +338,17 @@ ATTEMPTS = (
         hardware="shared_reduction_adg",
         artifact_stem="arm_relu_q7.red1",
         aggregate_stem="arm_relu_q7",
+        expected_dynamic_work_items=3,
+        expected_operation_fire_counts=(
+            ("dataflow.load", 3),
+            ("arith.cmpi", 3),
+            ("arith.select", 3),
+            ("dataflow.store", 3),
+        ),
+        expected_final_outputs=("none",),
+        expected_final_memory_state=(
+            ("arg5", ("i8:0", "i8:2", "i8:0")),
+        ),
     ),
     Attempt(
         suite="cmsis-nn",
@@ -428,6 +443,60 @@ def run_command(
         )
 
 
+def validate_attempt_report(attempt: Attempt, data: dict[str, object], output: Path) -> None:
+    if data.get("status") != "pass":
+        return
+
+    label = attempt.artifact_stem or attempt.stem
+    diagnostics: list[str] = []
+    if (
+        attempt.expected_dynamic_work_items is not None
+        and data.get("dynamic_work_items") != attempt.expected_dynamic_work_items
+    ):
+        diagnostics.append(
+            f"dynamic_work_items={data.get('dynamic_work_items')!r}, "
+            f"expected {attempt.expected_dynamic_work_items!r}"
+        )
+
+    if attempt.expected_operation_fire_counts:
+        counts = data.get("operation_fire_counts")
+        if not isinstance(counts, dict):
+            diagnostics.append("operation_fire_counts is not an object")
+        else:
+            for op_name, expected_count in attempt.expected_operation_fire_counts:
+                actual = counts.get(op_name)
+                if actual != expected_count:
+                    diagnostics.append(
+                        f"operation_fire_counts[{op_name!r}]={actual!r}, "
+                        f"expected {expected_count!r}"
+                    )
+
+    if attempt.expected_final_outputs and data.get("final_outputs") != list(attempt.expected_final_outputs):
+        diagnostics.append(
+            f"final_outputs={data.get('final_outputs')!r}, "
+            f"expected {list(attempt.expected_final_outputs)!r}"
+        )
+
+    if attempt.expected_final_memory_state:
+        memory_state = data.get("final_memory_state")
+        if not isinstance(memory_state, dict):
+            diagnostics.append("final_memory_state is not an object")
+        else:
+            for argument, expected_values in attempt.expected_final_memory_state:
+                actual = memory_state.get(argument)
+                expected = list(expected_values)
+                if actual != expected:
+                    diagnostics.append(
+                        f"final_memory_state[{argument!r}]={actual!r}, expected {expected!r}"
+                    )
+
+    if diagnostics:
+        raise SystemExit(
+            f"[cmsis-dfg-sim] {attempt.case} {label} failed expected simulator evidence "
+            f"guard at {output}: {'; '.join(diagnostics)}"
+        )
+
+
 def run_attempt(
     dfg_tool: Path,
     pnr_tool: Path,
@@ -467,6 +536,7 @@ def run_attempt(
         raise SystemExit(f"[cmsis-dfg-sim] {attempt.case} report is not a JSON object: {output}")
     data["input_artifact_fingerprints"] = intermediate_artifacts.input_artifact_fingerprints([dfg_mlir])
     output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    validate_attempt_report(attempt, data, output)
 
     if not attempt.hardware_mlir:
         return AttemptResult(attempt=attempt, dfg_report=output)
