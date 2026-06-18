@@ -2,22 +2,6 @@
   "schema_version": 1,
   "cases": [
     {
-      "case": "crc32",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "fir_filter",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "merge",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "convolve_1d_same",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "autocorrelation",
       "hardware": "shared_reduction_adg"
     },
@@ -26,7 +10,83 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "clz",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "compact",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "convolve_1d_same",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "crc32",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "ctz",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "find_first_set",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "fir_filter",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "gather",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "lower_bound",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "merge",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "moving_avg",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "outer",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "pack_bits",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "parity",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "partition",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "popcount",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "scatter_add",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "transpose",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "unpack_bits",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "upper_bound",
       "hardware": "shared_reduction_adg"
     }
   ]
