@@ -71,7 +71,7 @@ BasicMathFunctions/arm_elementwise_add_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv
 BasicMathFunctions/arm_minimum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_minimum_s8||1|1|0|18|9|27|0|28|0|0|172
 BasicMathFunctions/arm_maximum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_maximum_s8||1|1|0|18|9|27|0|28|0|0|172
 ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_w||0|0|0|0|0|0|0|0|0|0|0
-ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|1|0|0|0|0|2|0|0|3
+ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|2|1|1|2|1|1|0|0|3
 ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8||2|2|0|22|5|20|0|26|4|0|152
 ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast||0|0|0|0|0|0|0|0|0|0|10
 FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|11|0|11|0|0|0|0|5

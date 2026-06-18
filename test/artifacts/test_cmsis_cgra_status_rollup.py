@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import csv
@@ -92,6 +93,35 @@ def assert_no_sim_stage_evidence(row: dict[str, str]) -> None:
     for key in ("dfg_status", "mapping_status", "cgra_status", "comparison_status"):
         if row[key] != "not_run":
             raise AssertionError(f"DFG-only row should leave {key}=not_run: {row}")
+
+
+def route_endpoint_matches(actual: object, expected: str) -> bool:
+    if not isinstance(actual, str):
+        return False
+    if expected.startswith("re:"):
+        return re.fullmatch(expected[3:], actual) is not None
+    return actual == expected
+
+
+def assert_routed_endpoint_shape(
+    route: dict[str, object],
+    edge_ref: str,
+    *,
+    source_endpoint: str,
+    sink_endpoint: str,
+    label: str,
+) -> None:
+    segments = route.get("segments", [])
+    if (
+        not segments
+        or not isinstance(segments[0], dict)
+        or not isinstance(segments[-1], dict)
+        or not route_endpoint_matches(segments[0].get("source_endpoint"), source_endpoint)
+        or not route_endpoint_matches(segments[-1].get("sink_endpoint"), sink_endpoint)
+    ):
+        raise AssertionError(f"{label} route endpoints changed for {edge_ref}: {route}")
+    if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
+        raise AssertionError(f"{label} route should traverse Fabric paths: {route}")
 
 
 def assert_cmsis_attempt_guard_rejects_bad_relu_q7_report(repo: Path) -> None:
@@ -466,9 +496,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 2,
+            "pass": 3,
             "fail": 0,
-            "blocked": 8,
+            "blocked": 7,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -487,7 +517,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_pass_row(repo, rows, sim_evidence)
-    assert_cmsis_concat_memcpy_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -568,35 +598,35 @@ def assert_cmsis_cgra_pass_row(
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
 
 
-def assert_cmsis_concat_memcpy_blocker_evidence(
+def assert_cmsis_concat_memcpy_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
 ) -> None:
     row = one_row(rows, "cmsis-nn", "ConcatenationFunctions/arm_concatenation_s8_x.c")
     if (
-        row["status"] != "blocked"
-        or row["diagnostic_class"] != "mapping_artifact_unsupported"
-        or row["blocking_prerequisite"] != "mapping_artifact"
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
         or row["owner"] != "sim_report"
         or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "unsupported"
-        or row["cgra_status"] != "not_run"
-        or row["comparison_status"] != "not_run"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
         or row["hardware_system"] != "shared_reduction_adg"
-        or row["final_outputs_present"] != "false"
-        or row["final_memory_state_present"] != "false"
-        or "unsupported PnR graph operation: llvm.intr.memcpy" not in row["diagnostic"]
-        or row["cgra_report"]
-        or row["comparison_report"]
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+        or row["diagnostic"] != "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
     ):
-        raise AssertionError(f"CMSIS concat row should expose a precise memcpy PnR blocker: {row}")
-    for key in ("dfg_report", "mapping_artifact"):
+        raise AssertionError(f"CMSIS concat row should expose real CGRA-sim evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
     if not (sim_evidence / "arm_concatenation_s8_x.dfg.report.json").is_file():
         raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x DFG report")
     if not (sim_evidence / "arm_concatenation_s8_x.mapping.json").is_file():
         raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x mapping artifact")
+    if not (sim_evidence / "arm_concatenation_s8_x.cgra.report.json").is_file():
+        raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x CGRA report")
 
     dfg_report = json.loads((repo / row["dfg_report"]).read_text())
     expected_memory = {
@@ -608,24 +638,56 @@ def assert_cmsis_concat_memcpy_blocker_evidence(
         or dfg_report.get("workload") != "ConcatenationFunctions/arm_concatenation_s8_x.c"
         or dfg_report.get("graph") != "g_t_arm_concatenation_s8_x_red_0_0"
         or dfg_report.get("status") != "pass"
-        or dfg_report.get("dynamic_work_items") != 2
-        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.memcpy") != 2
+        or dfg_report.get("dynamic_work_items") != 4
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 4
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 4
+        or "llvm.intr.memcpy" in dfg_report.get("operation_fire_counts", {})
         or dfg_report.get("final_outputs") != ["none"]
         or dfg_report.get("final_memory_state") != expected_memory
     ):
-        raise AssertionError(f"unexpected CMSIS concat DFG memcpy evidence: {dfg_report}")
+        raise AssertionError(f"unexpected CMSIS concat DFG stream evidence: {dfg_report}")
 
     mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
     if (
         mapping_artifact.get("kind") != "pnr_mapping"
         or mapping_artifact.get("workload") != "ConcatenationFunctions/arm_concatenation_s8_x.c"
         or mapping_artifact.get("graph") != "g_t_arm_concatenation_s8_x_red_0_0"
-        or mapping_artifact.get("status") != "unsupported"
-        or mapping_artifact.get("diagnostics") != ["unsupported PnR graph operation: llvm.intr.memcpy"]
-        or mapping_artifact.get("placements") != []
-        or mapping_artifact.get("routes") != []
+        or mapping_artifact.get("status") != "pass"
+        or mapping_artifact.get("unrouted_edges") != 0
     ):
-        raise AssertionError(f"unexpected CMSIS concat PnR blocker evidence: {mapping_artifact}")
+        raise AssertionError(f"unexpected CMSIS concat PnR evidence: {mapping_artifact}")
+    placements = mapping_artifact.get("placements", [])
+    if not any(
+        placement.get("operation") == "dataflow.load"
+        and placement.get("resource_kind") == "fabric.mem.load"
+        for placement in placements
+    ):
+        raise AssertionError(f"CMSIS concat mapping should place a real dataflow.load: {mapping_artifact}")
+    if not any(
+        placement.get("operation") == "dataflow.store"
+        and placement.get("resource_kind") == "fabric.mem.store"
+        for placement in placements
+    ):
+        raise AssertionError(f"CMSIS concat mapping should place a real dataflow.store: {mapping_artifact}")
+    if (
+        any(placement.get("resource_kind") == "fabric.mem.copy" for placement in placements)
+        or "fabric.mem.copy" in json.dumps(mapping_artifact, sort_keys=True)
+        or "memory_copy_binding" in json.dumps(mapping_artifact, sort_keys=True)
+    ):
+        raise AssertionError(f"CMSIS concat mapping must not use copy resources: {mapping_artifact}")
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        cgra_report.get("status") != "pass"
+        or cgra_report.get("final_memory_state") != expected_memory
+        or comparison_report.get("status") != "pass"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(
+            f"unexpected CMSIS concat CGRA comparison evidence: {cgra_report} {comparison_report}"
+        )
 
 
 def assert_app_cgra_pass_row(
@@ -750,15 +812,15 @@ def assert_cmsis_relu_q7_shared_adg_evidence(sim_evidence: Path) -> None:
     routes_by_edge = {route.get("edge_ref"): route for route in routes if isinstance(route, dict)}
     required_routes = {
         "dataflow.invariant#0.result0->arith.select#0.operand1": (
-            "shared_reduction_adg::fabric.op#3.result0",
-            "shared_reduction_adg::fabric.op#40.operand1",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand1",
         ),
         "dataflow.constant#2.result0->dataflow.store#0.operand1": (
-            "shared_reduction_adg::fabric.op#21.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
             "shared_reduction_adg::mem.store#0.operand0",
         ),
         "arith.select#0.result0->dataflow.store#0.operand2": (
-            "shared_reduction_adg::fabric.op#40.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
             "shared_reduction_adg::mem.store#0.operand1",
         ),
     }
@@ -766,17 +828,13 @@ def assert_cmsis_relu_q7_shared_adg_evidence(sim_evidence: Path) -> None:
         route = routes_by_edge.get(edge_ref)
         if route is None:
             raise AssertionError(f"arm_relu_q7 red1 mapping missed route {edge_ref}: {red1_mapping}")
-        segments = route.get("segments", [])
-        if (
-            not segments
-            or not isinstance(segments[0], dict)
-            or not isinstance(segments[-1], dict)
-            or segments[0].get("source_endpoint") != source_endpoint
-            or segments[-1].get("sink_endpoint") != sink_endpoint
-        ):
-            raise AssertionError(f"arm_relu_q7 red1 route endpoints changed for {edge_ref}: {route}")
-        if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
-            raise AssertionError(f"arm_relu_q7 red1 route should traverse Fabric paths: {route}")
+        assert_routed_endpoint_shape(
+            route,
+            edge_ref,
+            source_endpoint=source_endpoint,
+            sink_endpoint=sink_endpoint,
+            label="arm_relu_q7 red1",
+        )
     sync_route = routes_by_edge.get("dataflow.store#0.result0->dataflow.sync#0.operand1")
     if sync_route is None:
         raise AssertionError(f"arm_relu_q7 red1 mapping missed store-to-sync route: {red1_mapping}")
@@ -1206,20 +1264,20 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         raise AssertionError(f"arm_mean_f32 mapping missed index-carry route evidence: {mapping_artifact}")
     expected_endpoints = {
         "arith.addi#0.result0->dataflow.carry#1.operand2": (
-            "shared_reduction_adg::fabric.op#2.result0",
-            "shared_reduction_adg::fabric.op#15.operand2",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand2",
         ),
         "dataflow.carry#1.result0->arith.addi#0.operand0": (
-            "shared_reduction_adg::fabric.op#15.result0",
-            "shared_reduction_adg::fabric.op#2.operand0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand0",
         ),
         "dataflow.carry#1.result0->dataflow.load#0.operand1": (
-            "shared_reduction_adg::fabric.op#15.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
             "shared_reduction_adg::mem.load#0.operand0",
         ),
         "dataflow.constant#0.result0->dataflow.carry#1.operand1": (
-            "shared_reduction_adg::fabric.op#19.result0",
-            "shared_reduction_adg::fabric.op#15.operand1",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand1",
         ),
     }
     routes_by_edge = {route.get("edge_ref"): route for route in routes if isinstance(route, dict)}
@@ -1227,17 +1285,13 @@ def assert_cmsis_mean_shared_adg_evidence(sim_evidence: Path) -> None:
         route = routes_by_edge.get(edge_ref)
         if route is None:
             raise AssertionError(f"arm_mean_f32 mapping missed route {edge_ref}: {mapping_artifact}")
-        segments = route.get("segments", [])
-        if (
-            not segments
-            or not isinstance(segments[0], dict)
-            or not isinstance(segments[-1], dict)
-            or segments[0].get("source_endpoint") != source_endpoint
-            or segments[-1].get("sink_endpoint") != sink_endpoint
-        ):
-            raise AssertionError(f"arm_mean_f32 route endpoints changed for {edge_ref}: {route}")
-        if not any(isinstance(segment, dict) and segment.get("segment_kind") == "module_path" for segment in segments):
-            raise AssertionError(f"arm_mean_f32 index-carry route should traverse Fabric paths: {route}")
+        assert_routed_endpoint_shape(
+            route,
+            edge_ref,
+            source_endpoint=source_endpoint,
+            sink_endpoint=sink_endpoint,
+            label="arm_mean_f32 index-carry",
+        )
 
     cgra_report = json.loads((sim_evidence / "arm_mean_f32.cgra.report.json").read_text())
     expected_cgra = {
@@ -1357,7 +1411,7 @@ def assert_cmsis_biquad_shared_adg_evidence(sim_evidence: Path) -> None:
         "routed_edges": 39,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 890,
+        "config_records": 898,
         "status": "pass",
     }
     for key, value in expected_mapping.items():
@@ -1393,10 +1447,10 @@ def assert_cmsis_biquad_shared_adg_evidence(sim_evidence: Path) -> None:
         "status": "pass",
         "fidelity_level": "mapping_constraint_estimate",
         "dfg_cycles": 254,
-        "hardware_aware_cycles": 431,
-        "performance_delta_cycles": 177,
-        "route_segments": 169,
-        "config_records": 890,
+        "hardware_aware_cycles": 433,
+        "performance_delta_cycles": 179,
+        "route_segments": 171,
+        "config_records": 898,
         "functional_state_source": "carried_from_dfg_sim_report",
     }
     for key, value in expected_cgra.items():
@@ -1579,9 +1633,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 2,
+            "pass": 3,
             "fail": 0,
-            "blocked": 8,
+            "blocked": 7,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -1628,7 +1682,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_pass_row(repo, rows, sim_evidence)
-    assert_cmsis_concat_memcpy_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_blocker_row(
         repo,
         rows,

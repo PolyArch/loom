@@ -99,6 +99,12 @@ struct AddrResolution {
   ::mlir::Operation *gepToErase = nullptr;
 };
 
+struct MemcpyPtrResolution {
+  ::mlir::Value basePtr;
+  ::mlir::Value chunkStride;
+  ::dataflow::StreamOp outerStream;
+};
+
 unsigned getElementByteWidth(::mlir::Type elemTy) {
   unsigned bitWidth = 0;
   if (auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(elemTy))
@@ -202,6 +208,52 @@ std::optional<::dataflow::CarryOp> getPointerCarry(::mlir::Value value) {
       return carry;
   }
   return getGatedPointerCarry(value);
+}
+
+std::optional<::mlir::Value> getSingleDynamicIndex(::mlir::LLVM::GEPOp gep) {
+  auto rawIndices = gep.getRawConstantIndices();
+  auto dynIndices = gep.getDynamicIndices();
+  if (rawIndices.size() != 1 || dynIndices.size() != 1 ||
+      rawIndices.front() != ::mlir::LLVM::GEPOp::kDynamicIndex)
+    return std::nullopt;
+  if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
+          dynIndices.front().getType()))
+    return std::nullopt;
+  auto gepElemTy = ::llvm::dyn_cast<::mlir::IntegerType>(gep.getElemType());
+  if (!gepElemTy || gepElemTy.getWidth() != 8)
+    return std::nullopt;
+  return dynIndices.front();
+}
+
+std::optional<MemcpyPtrResolution>
+resolveMemcpyPointer(::mlir::Value ptr, ::dataflow::GraphFuncOp graph) {
+  auto carry = getPointerCarry(ptr);
+  if (!carry || !isGraphPtrBlockArg(carry->getInit(), graph))
+    return std::nullopt;
+
+  auto gep = carry->getCarry().getDefiningOp<::mlir::LLVM::GEPOp>();
+  if (!gep)
+    return std::nullopt;
+
+  ::mlir::Value gepBase = gep.getBase();
+  if (gepBase != ptr) {
+    auto gate = gepBase.getDefiningOp<::dataflow::GateOp>();
+    if (!gate || gate.getAfterValue() != gepBase ||
+        gate.getBeforeValue() != carry->getOutput() ||
+        gate.getBeforeCond() != carry->getCond())
+      return std::nullopt;
+  }
+
+  std::optional<::mlir::Value> stride = getSingleDynamicIndex(gep);
+  if (!stride)
+    return std::nullopt;
+
+  auto stream = carry->getCond().getDefiningOp<::dataflow::StreamOp>();
+  if (!stream || stream.getRwc() != carry->getCond() ||
+      stream.getStepOp() != "+=" || stream.getContCond() != "<")
+    return std::nullopt;
+
+  return MemcpyPtrResolution{carry->getInit(), *stride, stream};
 }
 
 std::optional<AddrResolution>
@@ -331,6 +383,17 @@ getIndexCast(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   return {};
 }
 
+::mlir::Value getDataflowConstant(::mlir::OpBuilder &builder,
+                                  ::mlir::Type type, ::mlir::Value ctrl,
+                                  std::int64_t value,
+                                  ::mlir::Location loc) {
+  ::mlir::TypedAttr attr = getIntegerLikeAttr(builder, type, value);
+  if (!attr)
+    return {};
+  return ::dataflow::ConstantOp::create(builder, loc, type, ctrl, attr)
+      .getValue();
+}
+
 ::mlir::Value getStreamOrdinal(::mlir::OpBuilder &builder,
                                ::llvm::DenseMap<::mlir::Operation *,
                                                 ::mlir::Value> &cache,
@@ -447,6 +510,35 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
   return c0;
 }
 
+::mlir::Value getIndexFromInt(::mlir::OpBuilder &builder,
+                              ::llvm::DenseMap<::mlir::Value, ::mlir::Value>
+                                  &cache,
+                              ::mlir::Value value, ::mlir::Location loc,
+                              ::mlir::Operation *insertBefore) {
+  if (::llvm::isa<::mlir::IndexType>(value.getType()))
+    return value;
+  if (auto it = cache.find(value); it != cache.end())
+    return it->second;
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(insertBefore);
+  ::mlir::Value idx =
+      ::mlir::arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                         value)
+          .getResult();
+  cache.try_emplace(value, idx);
+  return idx;
+}
+
+::mlir::Value makeChunkedAddress(::mlir::OpBuilder &builder,
+                                 ::mlir::Value chunk,
+                                 ::mlir::Value stride,
+                                 ::mlir::Value offset,
+                                 ::mlir::Location loc) {
+  ::mlir::Value base =
+      ::mlir::arith::MulIOp::create(builder, loc, chunk, stride).getResult();
+  return ::mlir::arith::AddIOp::create(builder, loc, base, offset).getResult();
+}
+
 // Per-graph rewrite state bundle, threaded through tryRewriteOne to
 // keep the call sites concise.
 struct RewriteCtx {
@@ -527,6 +619,105 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
   return true;
 }
 
+bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
+                      ::mlir::OpBuilder &builder, RewriteCtx &ctx) {
+  if (!topLevel)
+    return false;
+  auto memcpy = ::llvm::dyn_cast<::mlir::LLVM::MemcpyOp>(op);
+  if (!memcpy || memcpy.getIsVolatile())
+    return false;
+
+  ::mlir::Type lenType = memcpy.getLen().getType();
+  if (!::llvm::isa<::mlir::IntegerType>(lenType))
+    return false;
+
+  std::optional<MemcpyPtrResolution> src =
+      resolveMemcpyPointer(memcpy.getSrc(), ctx.graph);
+  std::optional<MemcpyPtrResolution> dst =
+      resolveMemcpyPointer(memcpy.getDst(), ctx.graph);
+  if (!src || !dst || src->outerStream != dst->outerStream)
+    return false;
+
+  ::mlir::Location loc = op->getLoc();
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(op);
+
+  ::mlir::Value zero = getDataflowConstant(builder, lenType, ctx.ctrl, 0, loc);
+  ::mlir::Value one = getDataflowConstant(builder, lenType, ctx.ctrl, 1, loc);
+  if (!zero || !one)
+    return false;
+
+  ::dataflow::StreamOp outer = src->outerStream;
+  ::mlir::Value tripDelta =
+      ::mlir::arith::SubIOp::create(builder, loc, outer.getUb(), outer.getLb())
+          .getResult();
+  ::mlir::Value outerTrips =
+      ::mlir::arith::DivSIOp::create(builder, loc, tripDelta, outer.getStep())
+          .getResult();
+  ::mlir::Value totalBytes =
+      ::mlir::arith::MulIOp::create(builder, loc, outerTrips, memcpy.getLen())
+          .getResult();
+
+  auto copyStream = ::dataflow::StreamOp::create(
+      builder, loc, lenType, builder.getI1Type(), /*lb=*/zero,
+      /*ub=*/totalBytes, /*step=*/one, builder.getStringAttr("+="),
+      builder.getStringAttr("<"));
+  auto activeByte = ::dataflow::GateOp::create(
+      builder, loc, /*afterCond=*/builder.getI1Type(),
+      /*afterValue=*/lenType, copyStream.getRwc(), copyStream.getIndex());
+  ::mlir::Value copyLen = ::dataflow::InvariantOp::create(
+                              builder, loc, lenType, copyStream.getRwc(),
+                              memcpy.getLen())
+                              .getOutput();
+
+  ::mlir::Value chunk =
+      ::mlir::arith::DivSIOp::create(builder, loc, activeByte.getAfterValue(),
+                                     copyLen)
+          .getResult();
+  ::mlir::Value offset =
+      ::mlir::arith::RemSIOp::create(builder, loc, activeByte.getAfterValue(),
+                                     copyLen)
+          .getResult();
+  ::mlir::Value srcAddr = activeByte.getAfterValue();
+  if (src->chunkStride != memcpy.getLen()) {
+    ::mlir::Value srcStride =
+        ::dataflow::InvariantOp::create(builder, loc, lenType,
+                                        copyStream.getRwc(), src->chunkStride)
+            .getOutput();
+    srcAddr = makeChunkedAddress(builder, chunk, srcStride, offset, loc);
+  }
+  ::mlir::Value dstAddr = activeByte.getAfterValue();
+  if (dst->chunkStride != memcpy.getLen()) {
+    ::mlir::Value dstStride =
+        ::dataflow::InvariantOp::create(builder, loc, lenType,
+                                        copyStream.getRwc(), dst->chunkStride)
+            .getOutput();
+    dstAddr = makeChunkedAddress(builder, chunk, dstStride, offset, loc);
+  }
+
+  ::mlir::Type byteTy = builder.getI8Type();
+  ::mlir::Value srcMem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, src->basePtr,
+                      byteTy, loc, topLevel, op);
+  ::mlir::Value dstMem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, dst->basePtr,
+                      byteTy, loc, topLevel, op);
+  ::mlir::Value srcIndex =
+      getIndexFromInt(builder, ctx.indexCastCache, srcAddr, loc, op);
+  ::mlir::Value dstIndex =
+      getIndexFromInt(builder, ctx.indexCastCache, dstAddr, loc, op);
+
+  auto load = ::dataflow::LoadOp::create(
+      builder, loc, /*data=*/byteTy, /*done=*/builder.getNoneType(),
+      /*mem=*/srcMem, /*addr=*/srcIndex, /*ctrl=*/ctx.ctrl);
+  ::dataflow::StoreOp::create(builder, loc, /*done=*/builder.getNoneType(),
+                              /*mem=*/dstMem, /*addr=*/dstIndex,
+                              /*data=*/load.getData(),
+                              /*ctrl=*/load.getDone());
+  op->erase();
+  return true;
+}
+
 unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
                          ::mlir::OpBuilder &builder) {
   ::mlir::Value ctrl = getThreadCtrl(graph);
@@ -546,13 +737,19 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
   ::llvm::SmallVector<Target, 16> targets;
   ::mlir::Block &entry = graph.getBody().front();
   graph.getBody().walk([&](::mlir::Operation *op) {
-    if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp>(op))
+    if (::llvm::isa<::mlir::LLVM::LoadOp, ::mlir::LLVM::StoreOp,
+                    ::mlir::LLVM::MemcpyOp>(op))
       targets.push_back({op, op->getBlock() == &entry});
     return ::mlir::WalkResult::advance();
   });
 
   unsigned rewrites = 0;
   for (auto &t : targets) {
+    if (::llvm::isa<::mlir::LLVM::MemcpyOp>(t.op)) {
+      if (tryRewriteMemcpy(t.op, t.topLevel, builder, ctx))
+        ++rewrites;
+      continue;
+    }
     if (tryRewriteOne(t.op, t.topLevel, builder, ctx))
       ++rewrites;
   }

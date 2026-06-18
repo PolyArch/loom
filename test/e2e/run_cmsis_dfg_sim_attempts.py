@@ -356,13 +356,33 @@ ATTEMPTS = (
         stem="arm_concatenation_s8_x",
         graph="g_t_arm_concatenation_s8_x_red_0_0",
         dfg_dir_arg="cmsis_nn_dfg_dir",
-        args=("0=none", "1=0", "2=2", "3=1", "4=2", "5=2"),
+        args=(
+            "0=none",
+            "0=none",
+            "0=none",
+            "0=none",
+            "1=0",
+            "2=2",
+            "3=1",
+            "4=2",
+            "5=2",
+        ),
         memrefs=(
             "6=1,2,3,4",
             "7=0,0,0,0,0,0",
         ),
         hardware_mlir="test/pnr/shared_reduction_adg.mlir",
         hardware="shared_reduction_adg",
+        expected_dynamic_work_items=4,
+        expected_operation_fire_counts=(
+            ("dataflow.load", 4),
+            ("dataflow.store", 4),
+        ),
+        expected_final_outputs=("none",),
+        expected_final_memory_state=(
+            ("arg6", ("i8:1", "i8:2", "i8:3", "i8:4")),
+            ("arg7", ("i8:1", "i8:2", "i8:3", "i8:4", "i8:0", "i8:0")),
+        ),
     ),
     Attempt(
         suite="cmsis-nn",
@@ -394,6 +414,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cmsis-nn-dfg-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--loom-dfg-sim")
+    parser.add_argument("--loom-raise-opt")
     parser.add_argument("--loom-pnr-map")
     parser.add_argument("--loom-cgra-sim")
     parser.add_argument("--timeout-seconds", type=int, default=120)
@@ -499,6 +520,7 @@ def validate_attempt_report(attempt: Attempt, data: dict[str, object], output: P
 
 def run_attempt(
     dfg_tool: Path,
+    lower_tool: Path,
     pnr_tool: Path,
     cgra_tool: Path,
     output_dir: Path,
@@ -511,11 +533,23 @@ def run_attempt(
         raise SystemExit(f"[cmsis-dfg-sim] missing DFG MLIR for {attempt.case}: {dfg_mlir}")
 
     output_stem = attempt.artifact_stem or attempt.stem
+    lowered_mlir = output_dir / f"{output_stem}.lowered.dfg.mlir"
     output = output_dir / f"{output_stem}.dfg.report.json"
     output.parent.mkdir(parents=True, exist_ok=True)
+    run_command(
+        [
+            str(lower_tool),
+            "--loom-lower-graph-memory",
+            str(dfg_mlir),
+            "-o",
+            str(lowered_mlir),
+        ],
+        args.timeout_seconds,
+        f"{attempt.case} graph-memory lowering",
+    )
     command = [
         str(dfg_tool),
-        str(dfg_mlir),
+        str(lowered_mlir),
         "--graph",
         attempt.graph,
         "--workload",
@@ -534,7 +568,9 @@ def run_attempt(
     data = json.loads(output.read_text())
     if not isinstance(data, dict):
         raise SystemExit(f"[cmsis-dfg-sim] {attempt.case} report is not a JSON object: {output}")
-    data["input_artifact_fingerprints"] = intermediate_artifacts.input_artifact_fingerprints([dfg_mlir])
+    data["input_artifact_fingerprints"] = intermediate_artifacts.input_artifact_fingerprints(
+        [dfg_mlir, lowered_mlir]
+    )
     output.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     validate_attempt_report(attempt, data, output)
 
@@ -551,7 +587,7 @@ def run_attempt(
             sys.executable,
             str(ROOT / "test" / "pnr" / "mapping_summary.py"),
             "--dfg-mlir",
-            str(dfg_mlir),
+            str(lowered_mlir),
             "--graph",
             attempt.graph,
             "--hardware-mlir",
@@ -672,6 +708,11 @@ def main(argv: list[str]) -> int:
         "LOOM_DFG_SIM",
         ROOT / "build" / "tools" / "loom-dfg-sim" / "loom-dfg-sim",
     )
+    lower_tool = resolve_tool(
+        args.loom_raise_opt,
+        "LOOM_RAISE_OPT",
+        ROOT / "build" / "bin" / "loom-raise-opt",
+    )
     pnr_tool = resolve_tool(
         args.loom_pnr_map,
         "LOOM_PNR_MAP",
@@ -683,11 +724,14 @@ def main(argv: list[str]) -> int:
         ROOT / "build" / "tools" / "loom-cgra-sim" / "loom-cgra-sim",
     )
     require_tool(dfg_tool, "loom-dfg-sim")
+    require_tool(lower_tool, "loom-raise-opt")
     require_tool(pnr_tool, "loom-pnr-map")
     output_dir = Path(args.output_dir)
     results: list[AttemptResult] = []
     for attempt in ATTEMPTS:
-        results.append(run_attempt(dfg_tool, pnr_tool, cgra_tool, output_dir, args, attempt))
+        results.append(
+            run_attempt(dfg_tool, lower_tool, pnr_tool, cgra_tool, output_dir, args, attempt)
+        )
     artifacts: list[Path] = []
     for result in results:
         artifacts.append(result.dfg_report)

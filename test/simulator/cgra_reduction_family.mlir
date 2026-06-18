@@ -175,9 +175,9 @@
 // MATVEC-CGRA-DAG: "status": "pass"
 // MATVEC-CGRA-DAG: "mapping_id": "matvec__g_t_matvec_kernel_0_0__shared_reduction_adg"
 // MATVEC-CGRA-DAG: "dfg_cycles": 83
-// MATVEC-CGRA-DAG: "hardware_aware_cycles": 129
+// MATVEC-CGRA-DAG: "hardware_aware_cycles": 131
 // MATVEC-CGRA-DAG: "routed_edges": 10
-// MATVEC-CGRA-DAG: "route_segments": 38
+// MATVEC-CGRA-DAG: "route_segments": 40
 // MATVEC-CGRA-DAG: "fidelity_level": "mapping_constraint_estimate"
 
 // VECNORM-L1-CGRA-DAG: "workload": "vecnorm_l1"
@@ -205,10 +205,10 @@
 // SUMMARY-DAG: correlation,394,459,pass
 // SUMMARY-DAG: downsample_avg,480,,blocked
 // SUMMARY-DAG: compare_swap,336,{{[0-9]+}},pass
-// SUMMARY-DAG: gemv,423,679,pass
+// SUMMARY-DAG: gemv,423,687,pass
 // SUMMARY-DAG: hash_mix,1280,{{[0-9]+}},pass
 // SUMMARY-DAG: xor_block,448,,blocked
-// SUMMARY-DAG: matvec,371,583,pass
+// SUMMARY-DAG: matvec,371,591,pass
 // SUMMARY-DAG: vecadd,1603,1661,pass
 // SUMMARY-DAG: vecmul,256,288,pass
 // SUMMARY-DAG: vecscale,384,{{[0-9]+}},pass
@@ -221,7 +221,7 @@
 // SUMMARY-DAG: variance,594,686,pass
 // SUMMARY-DAG: vecsum,579,607,pass
 // SUMMARY-DAG: dotproduct,1219,1260,pass
-// SUMMARY-DAG: spmv,47,108,pass
+// SUMMARY-DAG: spmv,47,110,pass
 // SUMMARY-DAG: prefix_sum,835,880,pass
 // SUMMARY-DAG: prefix_sum_inclusive,13302,13347,pass
 // SUMMARY-DAG: cumsum,14339,14382,pass

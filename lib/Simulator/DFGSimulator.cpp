@@ -989,21 +989,53 @@ bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp>(op);
 }
 
-dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
+void collectStreamIndexSources(mlir::Value value,
+                               llvm::DenseSet<mlir::Operation *> &sources,
+                               llvm::DenseSet<mlir::Value> &seen,
+                               unsigned depth = 0) {
+  if (!value || depth > 8 || !seen.insert(value).second)
+    return;
   if (auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>())
-    value = cast.getIn();
+    return collectStreamIndexSources(cast.getIn(), sources, seen, depth + 1);
   if (auto stream = value.getDefiningOp<dataflow::StreamOp>()) {
-    if (stream.getIndex() == value)
-      return stream;
+    if (stream.getIndex() == value || stream.getRwc() == value)
+      sources.insert(stream.getOperation());
+    return;
   }
   auto carry = value.getDefiningOp<dataflow::CarryOp>();
-  if (!carry || carry.getOutput() != value)
+  if (carry && carry.getOutput() == value) {
+    collectStreamIndexSources(carry->getOperand(0), sources, seen, depth + 1);
+    return;
+  }
+  auto invariant = value.getDefiningOp<dataflow::InvariantOp>();
+  if (invariant && invariant.getOutput() == value) {
+    collectStreamIndexSources(invariant.getCond(), sources, seen, depth + 1);
+    return;
+  }
+  auto gate = value.getDefiningOp<dataflow::GateOp>();
+  if (gate &&
+      (gate.getAfterValue() == value || gate.getAfterCond() == value)) {
+    collectStreamIndexSources(gate.getBeforeCond(), sources, seen, depth + 1);
+    return;
+  }
+  mlir::Operation *owner = value.getDefiningOp();
+  if (!owner)
+    return;
+  if (!mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp,
+                 mlir::arith::MulIOp, mlir::arith::DivSIOp,
+                 mlir::arith::RemSIOp>(owner))
+    return;
+  for (mlir::Value operand : owner->getOperands())
+    collectStreamIndexSources(operand, sources, seen, depth + 1);
+}
+
+dataflow::StreamOp findStreamIndexSource(mlir::Value value) {
+  llvm::DenseSet<mlir::Operation *> sources;
+  llvm::DenseSet<mlir::Value> seen;
+  collectStreamIndexSources(value, sources, seen);
+  if (sources.size() != 1)
     return {};
-  mlir::Value condition = carry->getOperand(0);
-  auto stream = condition.getDefiningOp<dataflow::StreamOp>();
-  if (!stream || stream.getRwc() != condition)
-    return {};
-  return stream;
+  return mlir::cast<dataflow::StreamOp>(*sources.begin());
 }
 
 bool fireOperation(mlir::Operation *op, SimulatorState &state) {

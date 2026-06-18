@@ -142,10 +142,10 @@ def main() -> int:
             "mapping_id": "vecsum__g_t_vecsum_red_0_0__shared_reduction_adg",
             "cgra_sim_cycles": "607",
             "frequency_mhz": "50.000",
-            "area_um2": "30500.000",
-            "dynamic_power_mw": "24.600",
-            "leakage_power_mw": "3.150",
-            "energy_nj": "336.885",
+            "area_um2": "36750.000",
+            "dynamic_power_mw": "29.600",
+            "leakage_power_mw": "3.775",
+            "energy_nj": "405.173",
             "selection_status": "selected",
             "hardware_evidence_kind": "analytic_model_only",
         }
@@ -175,10 +175,10 @@ def main() -> int:
         required_dse_metrics = {
             "cgra_sim_cycles=607",
             "frequency_mhz=50.000",
-            "area_um2=30500.000",
-            "dynamic_power_mw=24.600",
-            "leakage_power_mw=3.150",
-            "energy_nj=336.885",
+            "area_um2=36750.000",
+            "dynamic_power_mw=29.600",
+            "leakage_power_mw=3.775",
+            "energy_nj=405.173",
         }
         if not required_dse_metrics.issubset(metric_records):
             raise AssertionError(f"selected vecsum DSE row missed objective metrics: {vecsum_dse}")

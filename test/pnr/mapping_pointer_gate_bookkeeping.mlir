@@ -14,10 +14,14 @@
 // VALUE-JSON-NOT: "operation": "dataflow.gate"
 
 // COND-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// COND-CSV-NEXT: pointer_gate_cond_used,shared_reduction_adg,pointer_gate_cond_used__pointer_gate_cond_used__shared_reduction_adg,2,2,0,1,fail,missing hardware resource for software op dataflow.gate
+// COND-CSV-NEXT: pointer_gate_cond_used,shared_reduction_adg,pointer_gate_cond_used__pointer_gate_cond_used__shared_reduction_adg,3,2,1,0,fail,unrouted software edges lack Fabric ADG connectivity
 
 // COND-JSON-DAG: "status": "fail"
-// COND-JSON-DAG: "unplaced_records": 1
+// COND-JSON-DAG: "placed_records": 3
+// COND-JSON-DAG: "unplaced_records": 0
+// COND-JSON-DAG: "unrouted_edges": 1
+// COND-JSON-DAG: "operation": "dataflow.gate"
+// COND-JSON-DAG: "edge_ref": "dataflow.gate#0.result0->dataflow.carry#0.operand0"
 
 module {
   dataflow.graph.func private @pointer_gate_value_only(

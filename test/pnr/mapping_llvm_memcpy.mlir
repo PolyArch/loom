@@ -1,14 +1,29 @@
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph pointer_memcpy_stream --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_memcpy_stream --output %t.mapping.csv --artifact %t.mapping.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: FileCheck %s --check-prefix=LOWERED < %t.lowered.mlir
+// RUN: %python %S/mapping_summary.py --dfg-mlir %t.lowered.mlir --graph pointer_memcpy_stream --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload pointer_memcpy_stream --output %t.mapping.csv --artifact %t.mapping.json
 // RUN: FileCheck %s --check-prefix=CSV < %t.mapping.csv
 // RUN: FileCheck %s --check-prefix=JSON < %t.mapping.json
 
-// CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// CSV-NEXT: pointer_memcpy_stream,shared_reduction_adg,pointer_memcpy_stream__pointer_memcpy_stream__shared_reduction_adg,,,,,unsupported,unsupported PnR graph operation: llvm.intr.memcpy
+// LOWERED-LABEL: dataflow.graph.func private @pointer_memcpy_stream
+// LOWERED-NOT: llvm.intr.memcpy
+// LOWERED: dataflow.stream
+// LOWERED: dataflow.gate
+// LOWERED: arith.divsi
+// LOWERED: arith.remsi
+// LOWERED: dataflow.load
+// LOWERED: dataflow.store
 
-// JSON-DAG: "status": "unsupported"
-// JSON-DAG: "unsupported PnR graph operation: llvm.intr.memcpy"
-// JSON-DAG: "placements": []
-// JSON-DAG: "routes": []
+// CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CSV-NEXT: pointer_memcpy_stream,shared_reduction_adg,pointer_memcpy_stream__pointer_memcpy_stream__shared_reduction_adg,{{[0-9]+}},{{[0-9]+}},0,0,pass
+
+// JSON-DAG: "status": "pass"
+// JSON-DAG: "operation": "dataflow.load"
+// JSON-DAG: "resource_kind": "fabric.mem.load"
+// JSON-DAG: "operation": "dataflow.store"
+// JSON-DAG: "resource_kind": "fabric.mem.store"
+// JSON-NOT: "fabric.mem.copy"
+// JSON-NOT: "memory_copy_binding"
+// JSON-NOT: "llvm.intr.memcpy"
 
 module {
   dataflow.graph.func private @pointer_memcpy_stream(
