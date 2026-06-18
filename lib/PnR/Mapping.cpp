@@ -427,6 +427,15 @@ std::optional<std::string> constantConfig(mlir::Operation *op) {
   return encodeConstHex(op->getAttr("const_value"));
 }
 
+std::optional<std::string> gateValueKindConfig(mlir::Operation *op) {
+  if (op->getName().getStringRef() != "dataflow.gate" ||
+      op->getNumOperands() < 2)
+    return std::nullopt;
+  if (mlir::isa<mlir::NoneType>(op->getOperand(1).getType()))
+    return "control";
+  return "data";
+}
+
 std::map<std::string, std::string>
 softwareConfigsFor(const SoftwareNode &node) {
   std::map<std::string, std::string> configs;
@@ -434,6 +443,8 @@ softwareConfigsFor(const SoftwareNode &node) {
     configs.try_emplace("predicate", *predicate);
   if (std::optional<std::string> constant = constantConfig(node.op))
     configs.try_emplace("const_hex_value", *constant);
+  if (std::optional<std::string> gateKind = gateValueKindConfig(node.op))
+    configs.try_emplace("value_kind", *gateKind);
   return configs;
 }
 

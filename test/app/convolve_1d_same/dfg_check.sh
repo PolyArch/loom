@@ -25,10 +25,26 @@ require_kernel_graph "main_func" "convolve_1d_same_kernel"
 dfg_one "main_inline" "cpp"
 
 for dfg in "${BUILD_DIR}/main_func.dfg.mlir" "${BUILD_DIR}/main_inline.dfg.mlir"; do
-    if ! grep -E -q 'dataflow\.gate ' "${dfg}"; then
-        echo "[${KERNEL}] no dataflow.gate in ${dfg}" >&2
+    grep -E -q 'dataflow\.demux ' "${dfg}" || {
+        echo "[${KERNEL}] no dataflow.demux in ${dfg}" >&2
         exit 1
-    fi
+    }
+    grep -E -q 'dataflow\.mux ' "${dfg}" || {
+        echo "[${KERNEL}] no dataflow.mux in ${dfg}" >&2
+        exit 1
+    }
+    grep -E -q 'arith\.select ' "${dfg}" || {
+        echo "[${KERNEL}] no safe-address arith.select in ${dfg}" >&2
+        exit 1
+    }
+    grep -E -q 'dataflow\.constant .*const_value = 0 : index' "${dfg}" || {
+        echo "[${KERNEL}] no index zero dataflow.constant in ${dfg}" >&2
+        exit 1
+    }
+    grep -E -q 'dataflow\.load ' "${dfg}" || {
+        echo "[${KERNEL}] no dataflow.load in ${dfg}" >&2
+        exit 1
+    }
 done
 
 echo "[${KERNEL}] PASS"

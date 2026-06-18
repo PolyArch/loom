@@ -8,7 +8,7 @@
 namespace {
 
 constexpr uint32_t kInputSize = 8;
-constexpr uint32_t kTapCount = 3;
+constexpr uint32_t kTapCount = 4;
 
 void fir_filter_ref(const float *input, const float *coeffs, float *output,
                     uint32_t input_size, uint32_t tap_count) {
@@ -64,7 +64,7 @@ int main() {
     const std::array<float, kInputSize> input = {
         1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f,
     };
-    const std::array<float, kTapCount> coeffs = {0.25f, 0.5f, 0.25f};
+    const std::array<float, kTapCount> coeffs = {0.125f, 0.25f, 0.375f, 0.25f};
     std::array<float, kInputSize> reference = {};
     std::array<float, kInputSize> candidate = {};
 

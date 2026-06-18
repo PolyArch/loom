@@ -47,6 +47,8 @@
 // HARDWARE-DAG: fabric.op [@dataflow.carry]
 // HARDWARE-DAG: fabric.op [@dataflow.invariant]
 // HARDWARE-DAG: fabric.op [@dataflow.gate]
+// HARDWARE-DAG: fabric.op [@dataflow.demux]
+// HARDWARE-DAG: fabric.op [@dataflow.mux]
 // HARDWARE-DAG: fabric.op [@arith.addi]
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
 // HARDWARE-DAG: fabric.op [@arith.divsi]

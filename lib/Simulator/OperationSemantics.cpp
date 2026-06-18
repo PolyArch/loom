@@ -133,6 +133,12 @@ std::int64_t asInteger(const PrimitiveValue &value) {
   return value.intValue;
 }
 
+bool asBoolean(const PrimitiveValue &value) {
+  if (value.kind == PrimitiveValueKind::Bool)
+    return value.boolValue;
+  return asInteger(value) != 0;
+}
+
 llvm::Expected<unsigned> asShiftAmount(llvm::StringRef opName,
                                        const PrimitiveValue &value) {
   std::int64_t raw = asInteger(value);
@@ -658,7 +664,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "arith.select" || opName == "llvm.select") {
     if (llvm::Error arity = requireArity(opName, operands, 3))
       return std::move(arity);
-    return operands[0].boolValue ? operands[1] : operands[2];
+    return asBoolean(operands[0]) ? operands[1] : operands[2];
   }
   if (opName == "arith.index_cast") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

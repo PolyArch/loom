@@ -837,16 +837,16 @@ case "${CASE}" in
         )
         ;;
     fir_filter)
-        append_ctrl_tokens 3
+        append_ctrl_tokens 4
         sim_args+=(
             --graph g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0
             --workload fir_filter
             --arg 1=0
-            --arg 2=3
+            --arg 2=4
             --arg 3=1
             --arg 4=0
             --arg 5=-1
-            --memref 6=2.500000e-01,5.000000e-01,2.500000e-01
+            --memref 6=1.250000e-01,2.500000e-01,3.750000e-01,2.500000e-01
             --memref 7=1,2,3,4,5,6,7,8
             --arg 8=0.000000e+00
         )

@@ -59,6 +59,7 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace {
@@ -129,6 +130,91 @@ bool elseRegionIsEmpty(::mlir::scf::IfOp ifOp) {
   auto yield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
       ifOp.getElseRegion().front().getTerminator());
   return !yield || yield.getNumOperands() == 0;
+}
+
+bool isLiftableConditionalLoadHelper(::mlir::Operation *op) {
+  if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::ForallOp,
+                  ::mlir::scf::WhileOp, ::mlir::scf::IfOp,
+                  ::mlir::scf::ParallelOp, ::mlir::scf::ExecuteRegionOp>(op))
+    return false;
+  if (::llvm::isa<::mlir::CallOpInterface, ::dataflow::StoreOp,
+                  ::mlir::LLVM::StoreOp>(op))
+    return false;
+  if (::llvm::isa<::dataflow::LoadOp, ::mlir::LLVM::LoadOp,
+                  ::mlir::UnrealizedConversionCastOp,
+                  ::dataflow::ConstantOp>(op))
+    return true;
+  return ::mlir::isPure(op);
+}
+
+bool valueDependsOnConditionalLoad(
+    ::mlir::Value value, ::mlir::Region &thenRegion,
+    const ::llvm::SmallPtrSetImpl<::mlir::Operation *> &loads,
+    ::llvm::SmallPtrSetImpl<::mlir::Value> &seen) {
+  if (!value || !seen.insert(value).second)
+    return false;
+  ::mlir::Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+  if (loads.contains(def))
+    return true;
+  if (!thenRegion.isAncestor(def->getParentRegion()))
+    return false;
+  for (::mlir::Value operand : def->getOperands()) {
+    if (valueDependsOnConditionalLoad(operand, thenRegion, loads, seen))
+      return true;
+  }
+  return false;
+}
+
+bool isConditionalLoadResultIf(::mlir::scf::IfOp ifOp) {
+  if (ifOp.getNumResults() == 0 || ifOp.getThenRegion().empty() ||
+      ifOp.getElseRegion().empty())
+    return false;
+  auto parentLoop = ifOp->getParentOfType<::mlir::scf::ForOp>();
+  if (!parentLoop)
+    return false;
+
+  auto *thenBlock = ifOp.thenBlock();
+  auto *elseBlock = ifOp.elseBlock();
+  if (!thenBlock || !elseBlock)
+    return false;
+  auto thenYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      thenBlock->getTerminator());
+  auto elseYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      elseBlock->getTerminator());
+  if (!thenYield || !elseYield)
+    return false;
+  if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+      elseYield.getNumOperands() != ifOp.getNumResults())
+    return false;
+
+  for (::mlir::Value value : elseYield.getOperands()) {
+    auto arg = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
+    if (!arg || arg.getOwner() != parentLoop.getBody() ||
+        arg.getArgNumber() == 0)
+      return false;
+  }
+
+  ::llvm::SmallPtrSet<::mlir::Operation *, 4> loads;
+  for (::mlir::Operation &op : thenBlock->without_terminator()) {
+    if (::llvm::isa<::dataflow::LoadOp, ::mlir::LLVM::LoadOp>(op)) {
+      loads.insert(&op);
+      continue;
+    }
+    if (!isLiftableConditionalLoadHelper(&op))
+      return false;
+  }
+  if (loads.empty())
+    return false;
+
+  for (::mlir::Value value : thenYield.getOperands()) {
+    ::llvm::SmallPtrSet<::mlir::Value, 16> seen;
+    if (!valueDependsOnConditionalLoad(value, ifOp.getThenRegion(), loads,
+                                       seen))
+      return false;
+  }
+  return true;
 }
 
 bool isConditionalStoreIf(::mlir::scf::IfOp ifOp) {
@@ -255,7 +341,7 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
       return ::mlir::WalkResult::advance();
     if (isNestedStructuredControl(op)) {
       if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
-        if (isConditionalStoreIf(ifOp))
+        if (isConditionalStoreIf(ifOp) || isConditionalLoadResultIf(ifOp))
           return ::mlir::WalkResult::advance();
       }
       eligible = false;

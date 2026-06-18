@@ -33,7 +33,15 @@
 //        of the body remains an `scf.if`, so memory effects fire on
 //        the same lane they did before; only the consumer view changes.
 //
-//     d. Anything else (no results and effectful body, both no-result
+//     d. scf.if WITH results whose then-region is a restricted
+//        conditional-load reduction body and whose else-region yields the
+//        loop-carried values: lift the then body, select a safe in-bounds
+//        address for false lanes, then demux both the lifted then result and
+//        the else value before muxing the selected lanes. The demuxes consume
+//        one token from both sides every iteration, so false-lane safe loads
+//        are drained instead of being buffered into a later true lane.
+//
+//     e. Anything else (no results and effectful body, both no-result
 //        regions, scf.if without any gate-friendly result): leave the
 //        scf.if alone and emit a remark.
 //
@@ -77,7 +85,10 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <cstdint>
 
 namespace {
 
@@ -99,6 +110,16 @@ bool isGateFriendly(::mlir::Type t) {
   if (::llvm::isa<::mlir::LLVM::LLVMPointerType>(t))
     return true;
   return false;
+}
+
+::mlir::TypedAttr getIntegerLikeAttr(::mlir::OpBuilder &builder,
+                                     ::mlir::Type type,
+                                     std::int64_t value) {
+  if (auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(type))
+    return builder.getIntegerAttr(intTy, value);
+  if (::llvm::isa<::mlir::IndexType>(type))
+    return builder.getIndexAttr(value);
+  return {};
 }
 
 // A "pure" op for the purpose of scf.if lifting: no
@@ -142,6 +163,40 @@ bool regionBodyIsPure(::mlir::Region &region) {
   return true;
 }
 
+bool isConditionalLoadHelper(::mlir::Operation *op) {
+  if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::ForallOp,
+                  ::mlir::scf::WhileOp, ::mlir::scf::IfOp,
+                  ::mlir::scf::ParallelOp, ::mlir::scf::ExecuteRegionOp>(op))
+    return false;
+  if (::llvm::isa<::mlir::CallOpInterface, ::dataflow::StoreOp,
+                  ::mlir::LLVM::StoreOp, ::mlir::LLVM::LoadOp>(op))
+    return false;
+  if (::llvm::isa<::dataflow::LoadOp, ::mlir::UnrealizedConversionCastOp,
+                  ::dataflow::ConstantOp>(op))
+    return true;
+  return ::mlir::isPure(op);
+}
+
+bool valueDependsOnLoad(
+    ::mlir::Value value, ::mlir::Region &thenRegion,
+    const ::llvm::SmallPtrSetImpl<::mlir::Operation *> &loads,
+    ::llvm::SmallPtrSetImpl<::mlir::Value> &seen) {
+  if (!value || !seen.insert(value).second)
+    return false;
+  ::mlir::Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+  if (loads.contains(def))
+    return true;
+  if (!thenRegion.isAncestor(def->getParentRegion()))
+    return false;
+  for (::mlir::Value operand : def->getOperands()) {
+    if (valueDependsOnLoad(operand, thenRegion, loads, seen))
+      return true;
+  }
+  return false;
+}
+
 ::mlir::Value stripSingleInputCasts(::mlir::Value value) {
   for (;;) {
     auto cast = value.getDefiningOp<::mlir::UnrealizedConversionCastOp>();
@@ -149,6 +204,77 @@ bool regionBodyIsPure(::mlir::Region &region) {
       return value;
     value = cast.getInputs().front();
   }
+}
+
+bool isLoopCarriedElseValue(::mlir::Value value, ::mlir::scf::IfOp ifOp) {
+  value = stripSingleInputCasts(value);
+  if (value.getDefiningOp<::dataflow::CarryOp>())
+    return true;
+
+  auto arg = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
+  if (!arg)
+    return false;
+  auto parentLoop = ifOp->getParentOfType<::mlir::scf::ForOp>();
+  return parentLoop && arg.getOwner() == parentLoop.getBody() &&
+         arg.getArgNumber() != 0;
+}
+
+struct ConditionalLoadIfMatch {
+  ::llvm::SmallVector<::dataflow::LoadOp, 4> loads;
+  ::llvm::SmallVector<::mlir::Value, 4> thenValues;
+  ::llvm::SmallVector<::mlir::Value, 4> elseValues;
+};
+
+bool matchConditionalLoadIf(::mlir::scf::IfOp ifOp,
+                            ConditionalLoadIfMatch &match) {
+  if (ifOp.getNumResults() == 0 || ifOp.getThenRegion().empty() ||
+      ifOp.getElseRegion().empty())
+    return false;
+  auto *thenBlock = ifOp.thenBlock();
+  auto *elseBlock = ifOp.elseBlock();
+  if (!thenBlock || !elseBlock)
+    return false;
+  auto thenYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      thenBlock->getTerminator());
+  auto elseYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      elseBlock->getTerminator());
+  if (!thenYield || !elseYield)
+    return false;
+  if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+      elseYield.getNumOperands() != ifOp.getNumResults())
+    return false;
+  if (!elseBlock->without_terminator().empty())
+    return false;
+
+  ::llvm::SmallPtrSet<::mlir::Operation *, 4> loadOps;
+  for (::mlir::Operation &op : thenBlock->without_terminator()) {
+    if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op)) {
+      match.loads.push_back(load);
+      loadOps.insert(&op);
+      continue;
+    }
+    if (!isConditionalLoadHelper(&op))
+      return false;
+  }
+  if (match.loads.empty())
+    return false;
+
+  for (::mlir::Value value : thenYield.getOperands()) {
+    if (!isGateFriendly(value.getType()))
+      return false;
+    ::llvm::SmallPtrSet<::mlir::Value, 16> seen;
+    if (!valueDependsOnLoad(value, ifOp.getThenRegion(), loadOps, seen))
+      return false;
+    match.thenValues.push_back(value);
+  }
+  for (::mlir::Value value : elseYield.getOperands()) {
+    if (!isGateFriendly(value.getType()))
+      return false;
+    if (!isLoopCarriedElseValue(value, ifOp))
+      return false;
+    match.elseValues.push_back(value);
+  }
+  return true;
 }
 
 bool areSameMemoryHandle(::mlir::Value lhs, ::mlir::Value rhs) {
@@ -316,6 +442,68 @@ void rewriteMuxIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   ifOp.erase();
 }
 
+bool rewriteConditionalLoadIf(::mlir::scf::IfOp ifOp,
+                              ::mlir::OpBuilder &builder) {
+  ConditionalLoadIfMatch match;
+  if (!matchConditionalLoadIf(ifOp, match))
+    return false;
+
+  ::mlir::Block *parentBlock = ifOp->getBlock();
+  ::mlir::Block::iterator insertPt(ifOp.getOperation());
+  ::mlir::Value cond = ifOp.getCondition();
+
+  ::llvm::SmallVector<::mlir::Operation *, 8> lifted;
+  ::mlir::Block &thenBlock = ifOp.getThenRegion().front();
+  for (auto it = thenBlock.begin(); it != thenBlock.end();) {
+    ::mlir::Operation &op = *it;
+    ++it;
+    if (::llvm::isa<::mlir::scf::YieldOp>(op))
+      continue;
+    op.moveBefore(parentBlock, insertPt);
+    lifted.push_back(&op);
+  }
+
+  for (::mlir::Operation *op : lifted) {
+    auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op);
+    if (!load)
+      continue;
+    ::mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPoint(load);
+    ::mlir::TypedAttr zeroAttr =
+        getIntegerLikeAttr(builder, load.getAddr().getType(), 0);
+    if (!zeroAttr)
+      return false;
+    ::mlir::Value fallbackAddr = ::dataflow::ConstantOp::create(
+                                     builder, load.getLoc(),
+                                     load.getAddr().getType(), load.getCtrl(),
+                                     zeroAttr)
+                                     .getValue();
+    auto safeAddr = ::mlir::arith::SelectOp::create(
+        builder, load.getLoc(), cond, load.getAddr(), fallbackAddr);
+    load->setOperand(1, safeAddr.getResult());
+  }
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(parentBlock, insertPt);
+  for (size_t i = 0, e = ifOp.getNumResults(); i < e; ++i) {
+    ::mlir::Type ty = ifOp.getResult(i).getType();
+    auto elseDemux = ::dataflow::DemuxOp::create(
+        builder, ifOp.getLoc(), ::mlir::TypeRange{ty, ty}, cond,
+        match.elseValues[i]);
+    auto thenDemux = ::dataflow::DemuxOp::create(
+        builder, ifOp.getLoc(), ::mlir::TypeRange{ty, ty}, cond,
+        match.thenValues[i]);
+    ::llvm::SmallVector<::mlir::Value, 2> inputs{elseDemux.getOutputs()[0],
+                                                 thenDemux.getOutputs()[1]};
+    auto mux =
+        ::dataflow::MuxOp::create(builder, ifOp.getLoc(), ty, cond, inputs);
+    ifOp.getResult(i).replaceAllUsesWith(mux.getOutput());
+  }
+
+  ifOp.erase();
+  return true;
+}
+
 // Rewrite one gate-shaped scf.if (no results, then-only, then-region
 // is pure). Caller guarantees these preconditions.
 //
@@ -463,6 +651,8 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
                  !ifOp.getElseRegion().front().empty();
 
   if (hasResults) {
+    if (rewriteConditionalLoadIf(ifOp, builder))
+      return 6;
     // Mux case requires both regions and pure bodies. Try the lift
     // first; only if the body has memory effects (or the scf.if is
     // missing one of its regions) do we fall back to the

@@ -82,11 +82,9 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "binary_search",
     "clz",
     "compact",
-    "convolve_1d_same",
     "crc32",
     "ctz",
     "find_first_set",
-    "fir_filter",
     "gather",
     "lower_bound",
     "merge",
@@ -961,6 +959,8 @@ def main(argv: list[str]) -> int:
             "delta_encode",
             "correlation",
             "convolve_1d",
+            "convolve_1d_same",
+            "fir_filter",
             "compare_swap",
             "hash_mix",
             "relu",
@@ -996,9 +996,7 @@ def main(argv: list[str]) -> int:
         for case in (
             "autocorrelation",
             "compact",
-            "convolve_1d_same",
             "crc32",
-            "fir_filter",
             "merge",
             "partition",
         ):
@@ -1254,6 +1252,7 @@ def main(argv: list[str]) -> int:
             "delta_encode",
             "correlation",
             "convolve_1d",
+            "convolve_1d_same",
             "compare_swap",
             "hash_mix",
             "relu",
@@ -1334,9 +1333,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 38,
+            "pass": 40,
             "fail": 0,
-            "blocked": 71,
+            "blocked": 69,
             "unsupported": 0,
             "missing_status": 0,
         }

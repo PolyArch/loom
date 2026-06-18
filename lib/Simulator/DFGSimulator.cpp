@@ -697,6 +697,58 @@ bool fireSync(dataflow::SyncOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
+  mlir::OpOperand &selOperand = op->getOpOperand(0);
+  if (!hasToken(state.channels, selOperand))
+    return false;
+
+  const Token &sel = state.channels[&selOperand].front();
+  const std::int64_t lane =
+      mlir::isa<mlir::IntegerType>(op.getSel().getType()) ? boolToken(sel)
+                                                           : integerToken(sel);
+  if (lane < 0 ||
+      static_cast<std::size_t>(lane) >= op.getInputs().size()) {
+    (void)popToken(state.channels, selOperand);
+    state.diagnostics.push_back("dataflow.mux selector is out of range");
+    return false;
+  }
+
+  mlir::OpOperand &selectedOperand =
+      op->getOpOperand(static_cast<unsigned>(lane) + 1);
+  if (!hasToken(state.channels, selectedOperand))
+    return false;
+
+  (void)popToken(state.channels, selOperand);
+  Token value = popToken(state.channels, selectedOperand);
+  emitToken(state, op.getOutput(), value);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
+  mlir::OpOperand &selOperand = op->getOpOperand(0);
+  mlir::OpOperand &inputOperand = op->getOpOperand(1);
+  if (!hasToken(state.channels, selOperand) ||
+      !hasToken(state.channels, inputOperand))
+    return false;
+
+  const Token &sel = state.channels[&selOperand].front();
+  const std::int64_t lane =
+      mlir::isa<mlir::IntegerType>(op.getSel().getType()) ? boolToken(sel)
+                                                           : integerToken(sel);
+  if (lane < 0 ||
+      static_cast<std::size_t>(lane) >= op.getOutputs().size()) {
+    (void)popToken(state.channels, selOperand);
+    (void)popToken(state.channels, inputOperand);
+    state.diagnostics.push_back("dataflow.demux selector is out of range");
+    return false;
+  }
+
+  (void)popToken(state.channels, selOperand);
+  Token value = popToken(state.channels, inputOperand);
+  emitToken(state, op.getOutputs()[static_cast<unsigned>(lane)], value);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireCast(mlir::UnrealizedConversionCastOp op, SimulatorState &state) {
   if (op->getNumOperands() != 1 || op->getNumResults() != 1)
     return false;
@@ -1052,6 +1104,10 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireGate(typedOp, state); })
       .Case<dataflow::SyncOp>(
           [&](auto typedOp) { return fireSync(typedOp, state); })
+      .Case<dataflow::MuxOp>(
+          [&](auto typedOp) { return fireMux(typedOp, state); })
+      .Case<dataflow::DemuxOp>(
+          [&](auto typedOp) { return fireDemux(typedOp, state); })
       .Case<dataflow::LoadOp>(
           [&](auto typedOp) { return fireLoad(typedOp, state); })
       .Case<dataflow::StoreOp>(
@@ -1079,9 +1135,9 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return std::nullopt;
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
-                dataflow::LoadOp, dataflow::StoreOp,
-                mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
-                mlir::LLVM::LoadOp, mlir::LLVM::MemcpyOp,
+                dataflow::MuxOp, dataflow::DemuxOp, dataflow::LoadOp,
+                dataflow::StoreOp, mlir::UnrealizedConversionCastOp,
+                mlir::LLVM::GEPOp, mlir::LLVM::LoadOp, mlir::LLVM::MemcpyOp,
                 mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
