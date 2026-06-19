@@ -592,6 +592,14 @@ def assert_dfg_dynamic_work_items(evidence_dir: Path, case: str, expected_count:
         raise AssertionError(f"{case} should have {expected_count} dynamic work items: {path}: {data}")
 
 
+def assert_operation_fire_counts(case: str, dfg: dict, expected_counts: dict[str, int]) -> None:
+    actual_counts = dfg.get("operation_fire_counts", {})
+    for op_name, expected in expected_counts.items():
+        actual = actual_counts.get(op_name)
+        if actual != expected:
+            raise AssertionError(f"{case} {op_name} fire count should be {expected}, got {actual}: {dfg}")
+
+
 def assert_prefix_sum_exclusive_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg4": ["i32:3", "i32:1", "i32:4", "i32:1", "i32:5", "i32:9", "i32:2", "i32:6"],
@@ -613,12 +621,7 @@ def assert_prefix_sum_exclusive_evidence(evidence_dir: Path) -> None:
         or dfg.get("final_memory_state") != expected_memory
     ):
         raise AssertionError(f"prefix_sum_exclusive DFG evidence should be complete: {dfg_path}: {dfg}")
-    for op_name, expected in expected_counts.items():
-        actual = dfg.get("operation_fire_counts", {}).get(op_name)
-        if actual != expected:
-            raise AssertionError(
-                f"prefix_sum_exclusive {op_name} fire count should be {expected}, got {actual}: {dfg}"
-            )
+    assert_operation_fire_counts("prefix_sum_exclusive", dfg, expected_counts)
 
     cgra_path = evidence_dir / "prefix_sum_exclusive.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
@@ -678,10 +681,7 @@ def assert_delta_decode_evidence(evidence_dir: Path) -> None:
         or dfg.get("diagnostics") != []
     ):
         raise AssertionError(f"delta_decode DFG evidence should be complete: {dfg_path}: {dfg}")
-    for op_name, expected in expected_counts.items():
-        actual = dfg.get("operation_fire_counts", {}).get(op_name)
-        if actual != expected:
-            raise AssertionError(f"delta_decode {op_name} fire count should be {expected}, got {actual}: {dfg}")
+    assert_operation_fire_counts("delta_decode", dfg, expected_counts)
 
     cgra_path = evidence_dir / "delta_decode.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
@@ -722,10 +722,7 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
         or dfg.get("diagnostics") != []
     ):
         raise AssertionError(f"spmspv DFG evidence should match the row-3 CSR dot slice: {dfg_path}: {dfg}")
-    for op_name, expected in expected_counts.items():
-        actual = dfg.get("operation_fire_counts", {}).get(op_name)
-        if actual != expected:
-            raise AssertionError(f"spmspv {op_name} fire count should be {expected}, got {actual}: {dfg}")
+    assert_operation_fire_counts("spmspv", dfg, expected_counts)
 
     cgra_path = evidence_dir / "spmspv.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
@@ -773,10 +770,7 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         or dfg.get("diagnostics") != []
     ):
         raise AssertionError(f"mat3x3_mult DFG evidence should match the first real matrix dot: {dfg_path}: {dfg}")
-    for op_name, expected in expected_counts.items():
-        actual = dfg.get("operation_fire_counts", {}).get(op_name)
-        if actual != expected:
-            raise AssertionError(f"mat3x3_mult {op_name} fire count should be {expected}, got {actual}: {dfg}")
+    assert_operation_fire_counts("mat3x3_mult", dfg, expected_counts)
 
     cgra_path = evidence_dir / "mat3x3_mult.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())

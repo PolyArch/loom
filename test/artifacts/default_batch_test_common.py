@@ -69,6 +69,8 @@ def default_batch_hardware(repo: Path) -> dict[str, str]:
         if not isinstance(case, str) or not isinstance(target, str):
             raise AssertionError(f"default CGRA-sim batch entry has invalid fields: {entry}")
         hardware[case] = target
+    if len(hardware) != len(cases):
+        raise AssertionError(f"default CGRA-sim batch manifest contains duplicate cases: {manifest}")
     if set(hardware) != EXPECTED_DEFAULT_BATCH_CASES:
         raise AssertionError(
             "default CGRA-sim batch should expose the shared-ADG promoted app set: "
