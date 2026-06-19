@@ -86,6 +86,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "newton_iter",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "vecnorm_l1",
       "hardware": "shared_reduction_adg"
     },

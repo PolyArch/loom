@@ -1415,6 +1415,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                 {"arith.divsi"});
   addBinary32Pe("int_rem", "int_rem_lhs", "int_rem_rhs", "remainder",
                 {"arith.remsi"});
+  addBinary32Pe("fp_div", "fp_div_lhs", "fp_div_rhs", "quotient",
+                {"arith.divf", "arith.remf"});
   auto addConfigurableConstPe = [&](std::string resultName) {
     PeSpec constPe;
     constPe.inputs = {
@@ -2096,9 +2098,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "%mac_result3, %data0, %data1, %selected, %rotated, %addr_masked, "
       "%logic_masked, %int_xor, %packed_sat, %cast2_result, %cast3_result, "
       "%abs_data, %scaled_reduction, %int_product, %reduction_scale, "
-      "%int_sum");
+      "%int_sum, %fp_diff");
   module.addExactBodyLine(
-      "  [{connectivity_table = [\"1111111111111111111111\"]}]");
+      "  [{connectivity_table = [\"11111111111111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
@@ -2107,7 +2109,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
@@ -2130,10 +2132,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
   module.addExactBodyLine(
-      "%sync_extra = fabric.switch [spatial] %store_done1, %done3");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+      "%sync_extra = fabric.switch [spatial] %store_done1, %done3, "
+      "%store_done0");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
   module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
   addSingleResultBits32Switch("addr_add_lhs",
                               {"idx", "i32a", "i32b", "i32c",
                                "squared_data", "int_product", "running",
@@ -2338,12 +2342,11 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine(
-      "%fp_diff_rhs = fabric.switch [spatial] %i32b, %fp_invariant, %data1");
-  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
-  module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> "
-      "!fabric.bits<32>");
+  addSingleResultBits32Switch("fp_diff_rhs",
+                              {"i32b", "fp_invariant", "data1", "fp_div"});
+  addSingleResultBits32Switch("fp_div_lhs", {"data1", "data0"});
+  addSingleResultBits32Switch("fp_div_rhs",
+                              {"data2", "fp_invariant", "reduction_scale"});
   addSingleResultBits32Switch(
       "fp_invariant_value",
       {"i32b", "addr_shift_const", "addr_aux_const", "addr_bias_const"});

@@ -339,8 +339,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 44,
-            "fail": 4,
+            "pass": 45,
+            "fail": 3,
             "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,
@@ -417,7 +417,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
     "gf_mul": "missing hardware resource for software op arith.andi",
     "modmul": "missing hardware resource for software op arith.remui",
-    "newton_iter": "missing hardware resource for software op arith.divf",
     "runge_kutta_step": "unrouted software edges lack Fabric ADG connectivity",
 }
 
@@ -446,24 +445,6 @@ SHARED_APP_MAPPING_FAILURE_EVIDENCE = {
                 "i32:0",
                 "i32:0",
                 "i32:0",
-            ],
-        },
-    },
-    "newton_iter": {
-        "graph": "g_t_newton_iter_kernel_0_0",
-        "dynamic_work_items": 1,
-        "operation_fire_counts": {
-            "arith.divf": 1,
-            "arith.subf": 1,
-            "dataflow.load": 3,
-            "dataflow.store": 1,
-        },
-        "final_memory_state": {
-            "arg4": [
-                "f32:0",
-                "f32:1.500000",
-                "f32:0",
-                "f32:0",
             ],
         },
     },
@@ -586,10 +567,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 4,
+            "fail": 3,
             "blocked": 61,
             "unsupported": 0,
-            "missing_status": 44,
+            "missing_status": 45,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")

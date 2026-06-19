@@ -84,7 +84,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "modmul", "newton_iter", "runge_kutta_step")
+MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "modmul", "runge_kutta_step")
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -787,6 +787,67 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
 
 
+def assert_newton_iter_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": ["f32:1", "f32:2", "f32:3", "f32:4"],
+        "arg2": ["f32:0", "f32:2", "f32:6", "f32:12"],
+        "arg3": ["f32:2", "f32:4", "f32:6", "f32:8"],
+        "arg4": ["f32:0", "f32:1.500000", "f32:0", "f32:0"],
+    }
+    expected_counts = {
+        "arith.divf": 1,
+        "arith.subf": 1,
+        "dataflow.load": 3,
+        "dataflow.store": 1,
+        "dataflow.sync": 1,
+    }
+
+    dfg_path = evidence_dir / "newton_iter.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("optimistic_cycles") != 31
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"newton_iter DFG evidence should match x - f/df real fixture: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("newton_iter", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "newton_iter.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("routed_edges") != 9
+    ):
+        raise AssertionError(f"newton_iter should route on shared reduction hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.divf#0.result0->arith.subf#0.operand1",
+        "arith.subf#0.result0->dataflow.store#0.operand2",
+        "dataflow.store#0.result0->dataflow.sync#0.operand3",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"newton_iter mapping should expose div/sub/store/sync route edges: {mapping}")
+
+    cgra_path = evidence_dir / "newton_iter.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 31
+        or cgra.get("hardware_aware_cycles") != 78
+        or cgra.get("routed_edges") != 9
+        or cgra.get("route_segments") != 31
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"newton_iter CGRA evidence should carry x - f/df final state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -1131,6 +1192,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
             "mean",
+            "newton_iter",
             "vecnorm_l1",
             "vecnorm_l2",
             "gemv",
@@ -1173,12 +1235,14 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
+        assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
+        assert_newton_iter_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1254,6 +1318,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "unpack_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "popcount", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "newton_iter", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l1", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l2", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemv", "shared_reduction_adg")
@@ -1534,6 +1599,9 @@ def main(argv: list[str]) -> int:
         matmul_row = one_row(rows, "matmul")
         if matmul_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"matmul should use shared reduction hardware: {matmul_row}")
+        newton_iter_row = one_row(rows, "newton_iter")
+        if newton_iter_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"newton_iter should use shared reduction hardware: {newton_iter_row}")
         matvec_row = one_row(rows, "matvec")
         if matvec_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"matvec should use shared reduction hardware: {matvec_row}")
@@ -1543,8 +1611,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 44,
-            "fail": 4,
+            "pass": 45,
+            "fail": 3,
             "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,
