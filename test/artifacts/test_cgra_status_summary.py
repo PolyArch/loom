@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 109
-APP_NO_DFG_TIER_COUNT = 49
+APP_NO_DFG_TIER_COUNT = 48
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -61,6 +61,7 @@ CURRENT_SIM_CYCLE_CASES = [
     "conv1d",
     "cumsum",
     "dotproduct",
+    "dotprod",
     "downsample_avg",
     "gemv",
     "hash_mix",

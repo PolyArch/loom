@@ -35,9 +35,29 @@ func.func @two_foralls(%a: memref<?xf32>, %b: memref<?xf32>, %n: index) {
     return
 }
 
+// A guard around an effect-form forall should preserve the guard while still
+// exposing the forall body as a dataflow.thread. This is the shape emitted for
+// simple store loops that are protected by an `n > 0` check.
+// CHECK-LABEL: func.func @guarded_parallel_store
+// CHECK: scf.if
+// CHECK-NEXT: dataflow.thread.launch @t_guarded_parallel_store_0
+// CHECK-NEXT: }
+// CHECK-NOT: scf.forall
+func.func @guarded_parallel_store(%src: memref<?xf32>, %dst: memref<?xf32>,
+                                  %n: index, %cond: i1) {
+    scf.if %cond {
+      scf.forall (%i) in (%n) {
+        %v = memref.load %src[%i] : memref<?xf32>
+        memref.store %v, %dst[%i] : memref<?xf32>
+      }
+    }
+    return
+}
+
 // All thread defs land at module scope after the func.func bodies.
 // Each thread carries the spec-mandated thread_ctrl + iv slots
 // (per spec section 5.4.1) on its entry block.
 // CHECK-DAG: dataflow.thread private @t_parallel_init_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK-DAG: dataflow.thread private @t_two_foralls_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
 // CHECK-DAG: dataflow.thread private @t_two_foralls_1(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)
+// CHECK-DAG: dataflow.thread private @t_guarded_parallel_store_0(%{{.*}}) ctrl (%{{.*}}: none) iv (%{{.*}}: index)

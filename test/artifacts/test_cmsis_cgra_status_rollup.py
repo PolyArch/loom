@@ -339,9 +339,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 40,
+            "pass": 41,
             "fail": 0,
-            "blocked": 69,
+            "blocked": 68,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -377,15 +377,18 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 49,
+            "blocked": 48,
             "unsupported": 0,
-            "missing_status": 59,
+            "missing_status": 60,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
     dotproduct = one_row(stale_rows, "app", "dotproduct")
     if dotproduct["status"] == "pass" or dotproduct["dfg_report"]:
         raise AssertionError(f"app sweep mode should not reuse stale dotproduct evidence: {dotproduct}")
+    dotprod = one_row(stale_rows, "app", "dotprod")
+    if dotprod["status"] == "pass" or dotprod["dfg_report"]:
+        raise AssertionError(f"app sweep mode should not reuse stale dotprod evidence: {dotprod}")
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
@@ -460,9 +463,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 0,
             "fail": 0,
-            "blocked": 69,
+            "blocked": 68,
             "unsupported": 0,
-            "missing_status": 40,
+            "missing_status": 41,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")

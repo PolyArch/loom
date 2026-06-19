@@ -18,6 +18,7 @@ DEFAULT_SWEEP_CASES = (
     "vecsum",
     "vecsum-while",
     "dotproduct",
+    "dotprod",
     "dot_product_3d",
     "axpy",
     "binary_search",
@@ -286,8 +287,8 @@ def app_manifest_no_dfg_cases(repo: Path) -> tuple[str, ...]:
         tiers = entry.get("tiers", [])
         if isinstance(case, str) and case and (not isinstance(tiers, list) or "dfg" not in tiers):
             no_dfg_cases.append(case)
-    if len(no_dfg_cases) != 49:
-        raise AssertionError(f"expected 49 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
+    if len(no_dfg_cases) != 48:
+        raise AssertionError(f"expected 48 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
     return tuple(no_dfg_cases)
 
 
@@ -812,6 +813,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "dotproduct",
                 "--case",
+                "dotprod",
+                "--case",
                 "dot_product_3d",
                 "--case",
                 "axpy",
@@ -931,6 +934,7 @@ def main(argv: list[str]) -> int:
             "vecsum-while",
             "reduction",
             "dotproduct",
+            "dotprod",
             "dot_product_3d",
             "spmv",
             "axpy",
@@ -1004,7 +1008,9 @@ def main(argv: list[str]) -> int:
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "dotprod", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
+        assert_component_references_resolve(evidence_dir, "dotprod")
         assert_component_references_resolve(evidence_dir, "dot_product_3d")
         assert_component_mapping_status(
             evidence_dir,
@@ -1151,6 +1157,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "vecscale")
         assert_mapping_uses_switch_multihop(evidence_dir, "axpy")
         assert_mapping_uses_switch_multihop(evidence_dir, "dotproduct")
+        assert_mapping_uses_switch_multihop(evidence_dir, "dotprod")
         assert_mapping_uses_switch_multihop(evidence_dir, "vecsum-while")
         assert_mapping_uses_switch_multihop(evidence_dir, "spmv")
         assert_mapping_uses_switch_multihop(evidence_dir, "gemv")
@@ -1224,6 +1231,7 @@ def main(argv: list[str]) -> int:
             "vecsum-while",
             "reduction",
             "dotproduct",
+            "dotprod",
             "dot_product_3d",
             "spmv",
             "axpy",
@@ -1274,6 +1282,9 @@ def main(argv: list[str]) -> int:
         dotproduct_row = one_row(rows, "dotproduct")
         if dotproduct_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"dotproduct should use shared reduction hardware: {dotproduct_row}")
+        dotprod_row = one_row(rows, "dotprod")
+        if dotprod_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"dotprod should use shared reduction hardware: {dotprod_row}")
         spmv_row = one_row(rows, "spmv")
         if spmv_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"spmv should use shared reduction hardware: {spmv_row}")
@@ -1333,9 +1344,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 40,
+            "pass": 41,
             "fail": 0,
-            "blocked": 69,
+            "blocked": 68,
             "unsupported": 0,
             "missing_status": 0,
         }

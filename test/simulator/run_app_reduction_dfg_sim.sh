@@ -703,7 +703,7 @@ case "${CASE}" in
     bit_reverse)
         append_ctrl_tokens 32
         sim_args+=(
-            --graph g_t_bit_reverse_kernel_red_0_0
+            --graph g_t_bit_reverse_kernel_0_0
             --workload bit_reverse
             --arg 1=0
             --arg 2=32
@@ -739,7 +739,7 @@ case "${CASE}" in
         append_linear_memref 7 128 1 "%.6e"
         append_constant_memref 8 7 "1.42857149e-01"
         sim_args+=(
-            --graph g_t_convolve_1d_same_kernel_red_0_0
+            --graph g_t_convolve_1d_same_kernel_0_0
             --workload convolve_1d_same
             --arg 1=0
             --arg 2=7
@@ -755,7 +755,7 @@ case "${CASE}" in
         append_constant_memref 6 7 "1.000000e+00"
         append_constant_memref 7 7 "1.42857149e-01"
         sim_args+=(
-            --graph g_t_convolve_1d_kernel_red_0_0
+            --graph g_t_convolve_1d_kernel_0_0
             --workload convolve_1d
             --arg 1=0
             --arg 2=7
@@ -789,7 +789,7 @@ case "${CASE}" in
         append_constant_memref 6 16 "1.000000e+00"
         append_constant_memref 7 16 "1.000000e+00"
         sim_args+=(
-            --graph g_t_correlation_kernel_red_0_0
+            --graph g_t_correlation_kernel_0_0
             --workload correlation
             --arg 1=0
             --arg 2=16
@@ -982,6 +982,17 @@ case "${CASE}" in
             --arg 2=64
             --arg 3=1
             --arg 6=0.000000e+00
+        )
+        ;;
+    dotprod)
+        append_ctrl_tokens 8
+        append_raw_memref 1 "1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00,5.000000e+00,6.000000e+00,7.000000e+00,8.000000e+00"
+        append_raw_memref 2 "5.000000e-01,1.000000e+00,1.500000e+00,2.000000e+00,2.500000e+00,3.000000e+00,3.500000e+00,4.000000e+00"
+        append_constant_memref 3 8 "0.000000e+00"
+        append_index_tokens 4 8
+        sim_args+=(
+            --graph g_t_dotprod_mul_kernel_0_0
+            --workload dotprod
         )
         ;;
     dot_product_3d)
@@ -1191,7 +1202,7 @@ case "${CASE}" in
     matmul)
         append_ctrl_tokens 3
         sim_args+=(
-            --graph g_t_matmul_kernel_red_0_0
+            --graph g_t_matmul_kernel_0_0
             --workload matmul
             --arg 1=0
             --arg 2=3
@@ -1242,6 +1253,41 @@ if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "dot_product_3d" ]]; then
     extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
     sim_args=()
     configure_dot_product_3d_reduction_args
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
+    extra_reports+=("${extra_report}")
+fi
+
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "dotprod" ]]; then
+    extra_report="${REPORT_JSON%.report.json}.sum.report.json"
+    products="$(
+        python3 - "${REPORT_JSON}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+memory = report.get("final_memory_state", {})
+values = memory.get("arg3")
+if not isinstance(values, list) or len(values) != 8:
+    raise SystemExit("dotprod product graph did not emit eight product values")
+clean = []
+for value in values:
+    if not isinstance(value, str) or not value.startswith("f32:"):
+        raise SystemExit(f"unexpected dotprod product value {value!r}")
+    clean.append(value.split(":", 1)[1])
+print(",".join(clean))
+PY
+    )"
+    sim_args=()
+    append_ctrl_tokens 8
+    sim_args+=(
+        --graph g_t_dotprod_sum_kernel_red_0_0
+        --workload dotprod
+        --arg 1=0
+        --arg 2=8
+        --arg 3=1
+        --memref "4=${products}"
+        --arg 5=0.000000e+00
+    )
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
     extra_reports+=("${extra_report}")
 fi

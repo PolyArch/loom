@@ -18,6 +18,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "dotprod",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "dot_product_3d",
       "hardware": "shared_reduction_adg"
     },

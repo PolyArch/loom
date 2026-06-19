@@ -62,6 +62,9 @@ case "${CASE}" in
   dotproduct)
     case_graph="g_t_dotproduct_red_0_0"
     ;;
+  dotprod)
+    case_graph="g_t_dotprod_mul_kernel_0_0"
+    ;;
   dot_product_3d)
     case_graph="g_t_dot_product_3d_0_0"
     ;;
@@ -72,7 +75,7 @@ case "${CASE}" in
     case_graph="missing_primary_graph"
     ;;
   bit_reverse)
-    case_graph="g_t_bit_reverse_kernel_red_0_0"
+    case_graph="g_t_bit_reverse_kernel_0_0"
     ;;
   clz)
     case_graph="missing_primary_graph"
@@ -135,7 +138,7 @@ case "${CASE}" in
     case_graph="g_t_vecnorm_l2_red_0_0"
     ;;
   correlation)
-    case_graph="g_t_correlation_kernel_red_0_0"
+    case_graph="g_t_correlation_kernel_0_0"
     ;;
   compare_swap)
     case_graph="g_t_main_0_0"
@@ -153,13 +156,13 @@ case "${CASE}" in
     case_graph="g_t_spmv_kernel_red_0_0"
     ;;
   convolve_1d)
-    case_graph="g_t_convolve_1d_kernel_red_0_0"
+    case_graph="g_t_convolve_1d_kernel_0_0"
     ;;
   conv1d)
     case_graph="g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
     ;;
   convolve_1d_same)
-    case_graph="g_t_convolve_1d_same_kernel_red_0_0"
+    case_graph="g_t_convolve_1d_same_kernel_0_0"
     ;;
   crc32)
     case_graph="g_t_crc32_kernel_red_0_0"
@@ -177,7 +180,7 @@ case "${CASE}" in
     case_graph="g_t__ZN12_GLOBAL__N_14gemmEPKfS1_Pfiii_0_0"
     ;;
   matmul)
-    case_graph="g_t_matmul_kernel_red_0_0"
+    case_graph="g_t_matmul_kernel_0_0"
     ;;
   lower_bound)
     case_graph="missing_primary_graph"
@@ -476,6 +479,71 @@ elif [[ "${CASE}" == "dot_product_3d" ]]; then
     "${mapping_reduction_artifact}"
     "${cgra_core_report}"
     "${cgra_reduction_report}"
+  )
+elif [[ "${CASE}" == "dotprod" ]]; then
+  dfg_mul_report="${OUT_DIR}/dotprod-dfg-sim-mul.report.json"
+  dfg_sum_report="${OUT_DIR}/dotprod-dfg-sim-sum.report.json"
+  dfg_sum_generated_report="${OUT_DIR}/dotprod-dfg-sim-mul.sum.report.json"
+  mapping_mul_artifact="${OUT_DIR}/pnr-mapping-mul.json"
+  mapping_sum_artifact="${OUT_DIR}/pnr-mapping-sum.json"
+  mapping_mul_summary="${OUT_DIR}/pnr-mapping-mul-summary.csv"
+  mapping_sum_summary="${OUT_DIR}/pnr-mapping-sum-summary.csv"
+  cgra_mul_report="${OUT_DIR}/dotprod-cgra-sim-mul-report.json"
+  cgra_sum_report="${OUT_DIR}/dotprod-cgra-sim-sum-report.json"
+  env LOOM_DFG_SIM="${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim" \
+    bash "${ROOT}/test/simulator/run_app_reduction_dfg_sim.sh" \
+    "${CASE}" \
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_mul_report}" \
+    "${dfg_cycle}"
+  mv "${dfg_sum_generated_report}" "${dfg_sum_report}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_dotprod_mul_kernel_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_mul_artifact}" \
+    --output "${mapping_mul_summary}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "g_t_dotprod_sum_kernel_red_0_0" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_sum_artifact}" \
+    --output "${mapping_sum_summary}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_mul_report}" \
+    --mapping-artifact "${mapping_mul_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_mul_report}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_sum_report}" \
+    --mapping-artifact "${mapping_sum_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_sum_report}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "dotprod__workload_graph_set__shared_reduction_adg" \
+    --dfg-report "${dfg_mul_report}" \
+    --dfg-report "${dfg_sum_report}" \
+    --mapping-artifact "${mapping_mul_artifact}" \
+    --mapping-artifact "${mapping_sum_artifact}" \
+    --cgra-report "${cgra_mul_report}" \
+    --cgra-report "${cgra_sum_report}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+  component_artifacts=(
+    "${dfg_mul_report}"
+    "${dfg_sum_report}"
+    "${mapping_mul_artifact}"
+    "${mapping_sum_artifact}"
+    "${cgra_mul_report}"
+    "${cgra_sum_report}"
   )
 elif [[ "${CASE}" == "relu" ]]; then
   dfg_main_report="${OUT_DIR}/relu-dfg-sim-main.report.json"

@@ -1,16 +1,17 @@
-// Lower top-level scf.forall ops inside func.func bodies into
+// Lower effect-form scf.forall ops inside func.func bodies into
 // `dataflow.thread` symbol definitions plus matching
 // `dataflow.thread.launch` ops. The forall's body is moved (not
 // cloned) into the thread definition; captured outside-defined SSA
 // values become explicit body operands of the launch and thread
 // entry-block arguments.
 //
-// Smoke deliverable: only scf.forall ops that are direct children of
-// a func.func body are promoted. Nested foralls remain in their
-// enclosing control/data region so later graph extraction cannot
-// clone dataflow launchers into a graph body. Aggregation-form
-// foralls (with shared_outs / op results) are left in place; the
-// raise pipeline already lowers those through Part 2 normalization.
+// Promoted foralls may be direct children of a func.func body or
+// guarded by one or more scf.if ops directly under that func.func.
+// Foralls nested under loops, dataflow threads, or graph bodies remain
+// in place so later graph extraction cannot clone launchers into a
+// graph body. Aggregation-form foralls (with shared_outs / op
+// results) are left in place; the raise pipeline already lowers those
+// through Part 2 normalization.
 // Dynamic upper bounds are forwarded via the launch's gridUpperBounds
 // operand list; static bounds are still expressed dynamically as a
 // constant index for simplicity (the spec accepts kDynamic
@@ -95,6 +96,18 @@ void collectCapturedValues(::mlir::scf::ForallOp forall,
   ::mlir::getUsedValuesDefinedAbove(forall.getRegion(), captures);
 }
 
+bool isPromotableForall(::mlir::func::FuncOp func,
+                        ::mlir::scf::ForallOp forall) {
+  for (::mlir::Operation *parent = forall->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (parent == func.getOperation())
+      return true;
+    if (!::llvm::isa<::mlir::scf::IfOp>(parent))
+      return false;
+  }
+  return false;
+}
+
 struct LowerForallToThreadPass
     : public ::mlir::PassWrapper<LowerForallToThreadPass,
                                  ::mlir::OperationPass<::mlir::ModuleOp>> {
@@ -104,7 +117,7 @@ struct LowerForallToThreadPass
     return "loom-lower-forall-to-thread";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Lower top-level scf.forall ops inside func.func bodies into "
+    return "Lower effect-form scf.forall ops inside func.func bodies into "
            "dataflow.thread definitions plus dataflow.thread.launch ops.";
   }
 
@@ -128,10 +141,11 @@ struct LowerForallToThreadPass
     module.walk([&](::mlir::func::FuncOp func) {
       Pending p;
       p.func = func;
-      // Source-order top-level foralls: walk the func body and only
-      // record foralls whose immediate parent op is the func itself.
+      // Source-order foralls in the function body or under direct
+      // scf.if guards. Loop-nested foralls stay in place because their
+      // launch cardinality depends on the enclosing loop execution.
       func.walk([&](::mlir::scf::ForallOp forall) {
-        if (forall->getParentOp() != func.getOperation())
+        if (!isPromotableForall(func, forall))
           return;
         p.foralls.push_back(forall);
       });

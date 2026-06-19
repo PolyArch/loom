@@ -108,8 +108,8 @@ CASES = {
         "mapping_status": "pass",
     },
     "correlation": {
-        "graph": "g_t_correlation_kernel_red_0_0",
-        "mapping_id": "correlation__g_t_correlation_kernel_red_0_0__shared_reduction_adg",
+        "graph": "g_t_correlation_kernel_0_0",
+        "mapping_id": "correlation__g_t_correlation_kernel_0_0__shared_reduction_adg",
         "placed_records": "10",
         "route_edge_count": "15",
         "routed_edges": "15",
@@ -190,8 +190,8 @@ CASES = {
         "mapping_status": "pass",
     },
     "convolve_1d": {
-        "graph": "g_t_convolve_1d_kernel_red_0_0",
-        "mapping_id": "convolve_1d__g_t_convolve_1d_kernel_red_0_0__shared_reduction_adg",
+        "graph": "g_t_convolve_1d_kernel_0_0",
+        "mapping_id": "convolve_1d__g_t_convolve_1d_kernel_0_0__shared_reduction_adg",
         "placed_records": "10",
         "route_edge_count": "15",
         "routed_edges": "15",
