@@ -29,6 +29,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "fir_filter",
     "hash_mix",
     "integrate_trapz",
+    "mat3x3_mult",
     "matmul",
     "matvec",
     "mean",

@@ -106,6 +106,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "mat3x3_mult",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "matvec",
       "hardware": "shared_reduction_adg"
     },

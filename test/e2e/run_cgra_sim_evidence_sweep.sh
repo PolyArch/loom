@@ -99,6 +99,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     gemv
     gemm
     matmul
+    mat3x3_mult
     spmspv
     lower_bound
     matvec

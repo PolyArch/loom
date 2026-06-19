@@ -7,6 +7,7 @@
 // RUN: env BUILD_DIR=%t.dir/downsample LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/downsample/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matmul LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matmul/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/mat3x3_mult LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/mat3x3_mult/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/gemv LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gemv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dot_product_3d LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dot_product_3d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
@@ -20,6 +21,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/downsample/main_func.dfg.mlir --graph g_t_downsample_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload downsample --output %t.dir/downsample.mapping.csv --artifact %t.dir/downsample.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matvec/main_func.dfg.mlir --graph g_t_matvec_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matvec --output %t.dir/matvec.mapping.csv --artifact %t.dir/matvec.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matmul/main_func.dfg.mlir --graph g_t_matmul_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matmul --output %t.dir/matmul.mapping.csv --artifact %t.dir/matmul.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/mat3x3_mult/main_func.dfg.mlir --graph g_t_mat3x3_mult_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload mat3x3_mult --output %t.dir/mat3x3_mult.mapping.csv --artifact %t.dir/mat3x3_mult.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/gemv/main_func.dfg.mlir --graph g_t_gemv_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload gemv --output %t.dir/gemv.mapping.csv --artifact %t.dir/gemv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/dot_product_3d/main_func.dfg.mlir --graph g_t_dot_product_3d_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload dot_product_3d --output %t.dir/dot_product_3d.mapping.csv --artifact %t.dir/dot_product_3d.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
@@ -33,6 +35,7 @@
 // RUN: FileCheck %s --check-prefix=DOWNSAMPLE < %t.dir/downsample.mapping.json
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/matvec.mapping.json
 // RUN: FileCheck %s --check-prefix=MATMUL < %t.dir/matmul.mapping.json
+// RUN: FileCheck %s --check-prefix=MAT3X3 < %t.dir/mat3x3_mult.mapping.json
 // RUN: FileCheck %s --check-prefix=GEMV < %t.dir/gemv.mapping.json
 // RUN: FileCheck %s --check-prefix=DOT3D < %t.dir/dot_product_3d.mapping.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
@@ -131,6 +134,18 @@
 // MATMUL-DAG: "segment_kind": "module_path"
 // MATMUL-NOT: ".out"
 // MATMUL-NOT: ".in"
+
+// MAT3X3-DAG: "workload": "mat3x3_mult"
+// MAT3X3-DAG: "hardware": "shared_reduction_adg"
+// MAT3X3-DAG: "placed_records": 10
+// MAT3X3-DAG: "routed_edges": 14
+// MAT3X3-DAG: "unrouted_edges": 0
+// MAT3X3-DAG: "status": "pass"
+// MAT3X3-DAG: "edge_ref": "arith.muli#0.result0->arith.shrui#0.operand0"
+// MAT3X3-DAG: "edge_ref": "arith.shrui#0.result0->dataflow.load#1.operand1"
+// MAT3X3-DAG: "segment_kind": "module_path"
+// MAT3X3-NOT: ".out"
+// MAT3X3-NOT: ".in"
 
 // GEMV-DAG: "workload": "gemv"
 // GEMV-DAG: "hardware": "shared_reduction_adg"

@@ -985,6 +985,20 @@ case "${CASE}" in
             --arg 7=0
         )
         ;;
+    mat3x3_mult)
+        append_ctrl_tokens 3
+        sim_args+=(
+            --graph g_t_mat3x3_mult_kernel_red_0_0
+            --workload mat3x3_mult
+            --arg 1=0
+            --arg 2=3
+            --arg 3=1
+            --memref 4=1.000000e+00,1.875000e+00,2.750000e+00
+            --arg 5=12
+            --memref 6=-5.000000e-01,0.000000e+00,0.000000e+00,4.375000e-01,0.000000e+00,0.000000e+00,1.875000e-01
+            --arg 7=0.000000e+00
+        )
+        ;;
     mean)
         append_ctrl_tokens 64
         append_mod_shift_memref 4 64 10 0

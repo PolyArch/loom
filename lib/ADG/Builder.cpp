@@ -2169,10 +2169,11 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%addr_unscale_lhs = fabric.switch [spatial] %i32a, %addr_shifted, "
-      "%bit_carry, %data0");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
+      "%bit_carry, %data0, %squared_data, %int_product, %int_product_aux");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%addr_unscale_rhs = fabric.switch [spatial] %i32b, %addr_shift_const, "

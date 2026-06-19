@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 42
+APP_NO_DFG_TIER_COUNT = 41
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -62,6 +62,7 @@ DEFAULT_SWEEP_CASES = (
     "gemv",
     "gemm",
     "matmul",
+    "mat3x3_mult",
     "spmspv",
     "lower_bound",
     "matvec",
@@ -739,6 +740,59 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"spmspv CGRA evidence should carry row-3 CSR dot final state: {cgra_path}: {cgra}")
 
 
+def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": ["f32:1", "f32:1.875000", "f32:2.750000"],
+        "arg6": [
+            "f32:-0.500000",
+            "f32:0",
+            "f32:0",
+            "f32:0.437500",
+            "f32:0",
+            "f32:0",
+            "f32:0.187500",
+        ],
+    }
+    expected_counts = {
+        "arith.muli": 4,
+        "arith.shrui": 3,
+        "dataflow.load": 6,
+        "dataflow.stream": 4,
+        "dataflow.sync": 3,
+        "llvm.intr.fmuladd": 3,
+    }
+
+    dfg_path = evidence_dir / "mat3x3_mult.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 3
+        or dfg.get("optimistic_cycles") != 86
+        or dfg.get("final_outputs") != ["none", "f32:0.835938"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"mat3x3_mult DFG evidence should match the first real matrix dot: {dfg_path}: {dfg}")
+    for op_name, expected in expected_counts.items():
+        actual = dfg.get("operation_fire_counts", {}).get(op_name)
+        if actual != expected:
+            raise AssertionError(f"mat3x3_mult {op_name} fire count should be {expected}, got {actual}: {dfg}")
+
+    cgra_path = evidence_dir / "mat3x3_mult.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 86
+        or cgra.get("hardware_aware_cycles") != 148
+        or cgra.get("routed_edges") != 14
+        or cgra.get("route_segments") != 54
+        or cgra.get("final_outputs") != ["none", "f32:0.835938"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -1038,6 +1092,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "matmul",
                 "--case",
+                "mat3x3_mult",
+                "--case",
                 "correlation",
                 "--case",
                 "convolve_1d",
@@ -1086,6 +1142,7 @@ def main(argv: list[str]) -> int:
             "gemv",
             "gemm",
             "matmul",
+            "mat3x3_mult",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1121,11 +1178,13 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
+        assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
+        assert_mat3x3_mult_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1212,6 +1271,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "crc32", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "matmul", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "mat3x3_mult", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
@@ -1308,6 +1368,14 @@ def main(argv: list[str]) -> int:
             },
         )
         assert_mapping_uses_switch_multihop(evidence_dir, "matmul")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "mat3x3_mult",
+            {
+                "arith.muli#0.result0->arith.shrui#0.operand0",
+                "arith.shrui#0.result0->dataflow.load#1.operand1",
+            },
+        )
         assert_mapping_uses_switch_multihop(evidence_dir, "matvec")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
@@ -1387,6 +1455,7 @@ def main(argv: list[str]) -> int:
             "gemv",
             "gemm",
             "matmul",
+            "mat3x3_mult",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1480,9 +1549,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 43,
+            "pass": 44,
             "fail": 4,
-            "blocked": 62,
+            "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,
         }
