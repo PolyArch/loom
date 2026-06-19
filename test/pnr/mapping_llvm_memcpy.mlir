@@ -25,6 +25,23 @@
 // JSON-NOT: "memory_copy_binding"
 // JSON-NOT: "llvm.intr.memcpy"
 
+// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph lowered_two_copies_port_no_reuse --hardware-mlir %S/mapping_mem_route.mlir --hardware mem_store_route_adg --workload lowered_two_copies_port_no_reuse --output %t.noreuse.mapping.csv --artifact %t.noreuse.mapping.json
+// RUN: FileCheck %s --check-prefix=NOREUSE-CSV < %t.noreuse.mapping.csv
+// RUN: FileCheck %s --check-prefix=NOREUSE-JSON < %t.noreuse.mapping.json
+
+// NOREUSE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// NOREUSE-CSV-NEXT: lowered_two_copies_port_no_reuse,mem_store_route_adg,lowered_two_copies_port_no_reuse__lowered_two_copies_port_no_reuse__mem_store_route_adg,2,2,0,2,fail,missing hardware resource for software op dataflow.store
+
+// NOREUSE-JSON-DAG: "status": "fail"
+// NOREUSE-JSON-DAG: "unplaced_records": 2
+// NOREUSE-JSON-DAG: "operation": "dataflow.load"
+// NOREUSE-JSON-DAG: "resource_kind": "fabric.mem.load"
+// NOREUSE-JSON-DAG: "operation": "dataflow.store"
+// NOREUSE-JSON-DAG: "resource_kind": "fabric.mem.store"
+// NOREUSE-JSON-NOT: "fabric.mem.copy"
+// NOREUSE-JSON-NOT: "memory_copy_binding"
+// NOREUSE-JSON-NOT: "llvm.intr.memcpy"
+
 module {
   dataflow.graph.func private @pointer_memcpy_stream(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %copy_bytes: i32,
@@ -43,6 +60,18 @@ module {
       : (!llvm.ptr, i32) -> !llvm.ptr, i8
     %dst_next = llvm.getelementptr inbounds|nuw %dst_live[%stride]
       : (!llvm.ptr, i32) -> !llvm.ptr, i8
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @lowered_two_copies_port_no_reuse(
+      %ctrl: none, %mem: memref<?xi32>, %src0: index, %dst0: index,
+      %src1: index, %dst1: index) -> none {
+    %data0, %load0_done = dataflow.load %mem[%src0] %ctrl : memref<?xi32>
+    %data1, %load1_done = dataflow.load %mem[%src1] %ctrl : memref<?xi32>
+    %store0_done =
+        dataflow.store %mem[%dst0] %data0 %load0_done : memref<?xi32>
+    %store1_done =
+        dataflow.store %mem[%dst1] %data1 %load1_done : memref<?xi32>
     dataflow.graph.return %ctrl : none
   }
 }
