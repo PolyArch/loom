@@ -971,6 +971,20 @@ case "${CASE}" in
             --arg 7=0
         )
         ;;
+    spmspv)
+        append_ctrl_tokens 3
+        sim_args+=(
+            --graph g_t_spmspv_kernel_red_0_0
+            --workload spmspv
+            --arg 1=6
+            --arg 2=9
+            --arg 3=1
+            --memref 4=2,3,4,1,5,6,7,2,3
+            --memref 5=0,2,1,3,0,4,1,2,4
+            --memref 6=3,0,2,5,0
+            --arg 7=0
+        )
+        ;;
     mean)
         append_ctrl_tokens 64
         append_mod_shift_memref 4 64 10 0

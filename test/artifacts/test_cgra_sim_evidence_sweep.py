@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 43
+APP_NO_DFG_TIER_COUNT = 42
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -62,6 +62,7 @@ DEFAULT_SWEEP_CASES = (
     "gemv",
     "gemm",
     "matmul",
+    "spmspv",
     "lower_bound",
     "matvec",
     "moving_avg",
@@ -692,6 +693,52 @@ def assert_delta_decode_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"delta_decode CGRA evidence should carry final state: {cgra_path}: {cgra}")
 
 
+def assert_spmspv_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": ["i32:2", "i32:3", "i32:4", "i32:1", "i32:5", "i32:6", "i32:7", "i32:2", "i32:3"],
+        "arg5": ["i32:0", "i32:2", "i32:1", "i32:3", "i32:0", "i32:4", "i32:1", "i32:2", "i32:4"],
+        "arg6": ["i32:3", "i32:0", "i32:2", "i32:5", "i32:0"],
+    }
+    expected_counts = {
+        "arith.addi": 3,
+        "arith.index_cast": 7,
+        "arith.muli": 3,
+        "dataflow.carry": 4,
+        "dataflow.load": 9,
+        "dataflow.stream": 4,
+        "dataflow.sync": 3,
+        "llvm.zext": 3,
+    }
+
+    dfg_path = evidence_dir / "spmspv.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 3
+        or dfg.get("optimistic_cycles") != 69
+        or dfg.get("final_outputs") != ["none", "i32:4"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"spmspv DFG evidence should match the row-3 CSR dot slice: {dfg_path}: {dfg}")
+    for op_name, expected in expected_counts.items():
+        actual = dfg.get("operation_fire_counts", {}).get(op_name)
+        if actual != expected:
+            raise AssertionError(f"spmspv {op_name} fire count should be {expected}, got {actual}: {dfg}")
+
+    cgra_path = evidence_dir / "spmspv.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 69
+        or cgra.get("hardware_aware_cycles") != 132
+        or cgra.get("final_outputs") != ["none", "i32:4"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"spmspv CGRA evidence should carry row-3 CSR dot final state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -909,6 +956,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "spmv",
                 "--case",
+                "spmspv",
+                "--case",
                 "gather",
                 "--case",
                 "gf_mul",
@@ -1019,6 +1068,7 @@ def main(argv: list[str]) -> int:
             "dotprod",
             "dot_product_3d",
             "spmv",
+            "spmspv",
             "axpy",
             "bit_reverse",
             "byte_swap",
@@ -1075,6 +1125,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
+        assert_spmspv_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1136,6 +1187,7 @@ def main(argv: list[str]) -> int:
         )
         assert_mapping_hardware(evidence_dir, "find_first_set", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "spmspv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
@@ -1428,9 +1480,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 42,
+            "pass": 43,
             "fail": 4,
-            "blocked": 63,
+            "blocked": 62,
             "unsupported": 0,
             "missing_status": 0,
         }

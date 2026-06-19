@@ -30,6 +30,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "spmspv",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "axpy",
       "hardware": "shared_vector_alu_adg"
     },

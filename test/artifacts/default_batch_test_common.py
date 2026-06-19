@@ -40,6 +40,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "rotate_bits",
     "sbox_lookup",
     "spmv",
+    "spmspv",
     "upsample",
     "variance",
     "vecadd",

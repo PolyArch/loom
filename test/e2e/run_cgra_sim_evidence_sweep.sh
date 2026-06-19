@@ -99,6 +99,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     gemv
     gemm
     matmul
+    spmspv
     lower_bound
     matvec
     moving_avg

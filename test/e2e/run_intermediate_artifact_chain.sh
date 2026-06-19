@@ -158,6 +158,9 @@ case "${CASE}" in
   spmv)
     case_graph="g_t_spmv_kernel_red_0_0"
     ;;
+  spmspv)
+    case_graph="g_t_spmspv_kernel_red_0_0"
+    ;;
   convolve_1d)
     case_graph="g_t_convolve_1d_kernel_0_0"
     ;;
