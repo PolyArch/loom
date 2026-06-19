@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 44
+APP_NO_DFG_TIER_COUNT = 43
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -29,6 +29,7 @@ DEFAULT_SWEEP_CASES = (
     "downsample",
     "downsample_avg",
     "delta_encode",
+    "delta_decode",
     "find_first_set",
     "prefix_sum",
     "cumsum",
@@ -628,6 +629,69 @@ def assert_prefix_sum_exclusive_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"prefix_sum_exclusive CGRA evidence should carry final state: {cgra_path}: {cgra}")
 
 
+def assert_delta_decode_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": [
+            "i32:100",
+            "i32:2",
+            "i32:3",
+            "i32:5",
+            "i32:5",
+            "i32:7",
+            "i32:8",
+            "i32:5",
+            "i32:7",
+            "i32:8",
+        ],
+        "arg5": [
+            "i32:100",
+            "i32:102",
+            "i32:105",
+            "i32:110",
+            "i32:115",
+            "i32:122",
+            "i32:130",
+            "i32:135",
+            "i32:142",
+            "i32:150",
+        ],
+    }
+    expected_counts = {
+        "arith.addi": 9,
+        "arith.index_cast": 10,
+        "dataflow.carry": 10,
+        "dataflow.load": 9,
+        "dataflow.store": 9,
+        "dataflow.stream": 10,
+        "dataflow.sync": 9,
+    }
+
+    dfg_path = evidence_dir / "delta_decode.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 9
+        or dfg.get("final_outputs") != ["none", "i32:150"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"delta_decode DFG evidence should be complete: {dfg_path}: {dfg}")
+    for op_name, expected in expected_counts.items():
+        actual = dfg.get("operation_fire_counts", {}).get(op_name)
+        if actual != expected:
+            raise AssertionError(f"delta_decode {op_name} fire count should be {expected}, got {actual}: {dfg}")
+
+    cgra_path = evidence_dir / "delta_decode.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("final_outputs") != ["none", "i32:150"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"delta_decode CGRA evidence should carry final state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -839,6 +903,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "delta_encode",
                 "--case",
+                "delta_decode",
+                "--case",
                 "find_first_set",
                 "--case",
                 "spmv",
@@ -977,6 +1043,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "integrate_trapz",
             "delta_encode",
+            "delta_decode",
             "correlation",
             "convolve_1d",
             "convolve_1d_same",
@@ -1007,6 +1074,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
+        assert_delta_decode_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1055,6 +1123,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "ctz", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "delta_decode", "shared_reduction_adg")
+        assert_mapping_uses_switch_multihop(evidence_dir, "delta_decode")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
             "delta_encode",
@@ -1273,6 +1343,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "integrate_trapz",
             "delta_encode",
+            "delta_decode",
             "correlation",
             "convolve_1d",
             "convolve_1d_same",
@@ -1357,9 +1428,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 41,
+            "pass": 42,
             "fail": 4,
-            "blocked": 64,
+            "blocked": 63,
             "unsupported": 0,
             "missing_status": 0,
         }

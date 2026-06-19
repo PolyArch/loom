@@ -836,6 +836,19 @@ case "${CASE}" in
             --workload delta_encode
         )
         ;;
+    delta_decode)
+        append_ctrl_tokens 9
+        sim_args+=(
+            --graph g_t_delta_decode_kernel_red_0_0
+            --workload delta_decode
+            --arg 1=1
+            --arg 2=10
+            --arg 3=1
+            --memref 4=100,2,3,5,5,7,8,5,7,8
+            --memref 5=100,0,0,0,0,0,0,0,0,0
+            --arg 6=100
+        )
+        ;;
     fir_filter)
         append_ctrl_tokens 4
         sim_args+=(

@@ -66,6 +66,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     downsample
     downsample_avg
     delta_encode
+    delta_decode
     find_first_set
     prefix_sum
     cumsum

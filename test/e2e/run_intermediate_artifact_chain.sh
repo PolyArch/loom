@@ -92,6 +92,9 @@ case "${CASE}" in
   delta_encode)
     case_graph="g_t_delta_encode_0_0"
     ;;
+  delta_decode)
+    case_graph="g_t_delta_decode_kernel_red_0_0"
+    ;;
   find_first_set)
     case_graph="missing_primary_graph"
     ;;
