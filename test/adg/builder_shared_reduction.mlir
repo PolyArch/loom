@@ -8,6 +8,7 @@
 // RUN: env BUILD_DIR=%t.dir/matvec LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matvec/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/matmul LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/matmul/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/mat3x3_mult LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/mat3x3_mult/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/modmul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/modmul/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/gemv LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gemv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/dot_product_3d LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/dot_product_3d/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
@@ -23,6 +24,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matvec/main_func.dfg.mlir --graph g_t_matvec_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matvec --output %t.dir/matvec.mapping.csv --artifact %t.dir/matvec.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/matmul/main_func.dfg.mlir --graph g_t_matmul_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload matmul --output %t.dir/matmul.mapping.csv --artifact %t.dir/matmul.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/mat3x3_mult/main_func.dfg.mlir --graph g_t_mat3x3_mult_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload mat3x3_mult --output %t.dir/mat3x3_mult.mapping.csv --artifact %t.dir/mat3x3_mult.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/modmul/main_func.dfg.mlir --graph g_t_modmul_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload modmul --output %t.dir/modmul.mapping.csv --artifact %t.dir/modmul.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/gemv/main_func.dfg.mlir --graph g_t_gemv_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload gemv --output %t.dir/gemv.mapping.csv --artifact %t.dir/gemv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/dot_product_3d/main_func.dfg.mlir --graph g_t_dot_product_3d_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload dot_product_3d --output %t.dir/dot_product_3d.mapping.csv --artifact %t.dir/dot_product_3d.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
@@ -38,6 +40,7 @@
 // RUN: FileCheck %s --check-prefix=MATVEC < %t.dir/matvec.mapping.json
 // RUN: FileCheck %s --check-prefix=MATMUL < %t.dir/matmul.mapping.json
 // RUN: FileCheck %s --check-prefix=MAT3X3 < %t.dir/mat3x3_mult.mapping.json
+// RUN: FileCheck %s --check-prefix=MODMUL < %t.dir/modmul.mapping.json
 // RUN: FileCheck %s --check-prefix=GEMV < %t.dir/gemv.mapping.json
 // RUN: FileCheck %s --check-prefix=DOT3D < %t.dir/dot_product_3d.mapping.json
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
@@ -59,6 +62,7 @@
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
 // HARDWARE-DAG: fabric.op [@arith.divsi]
 // HARDWARE-DAG: fabric.op [@arith.remsi]
+// HARDWARE-DAG: fabric.op [@arith.divui, @arith.remui]
 // HARDWARE-DAG: fabric.op [@llvm.intr.abs]
 // HARDWARE-DAG: fabric.op [@llvm.intr.fabs]
 // HARDWARE-DAG: fabric.op [@arith.muli]
@@ -150,6 +154,19 @@
 // MAT3X3-DAG: "segment_kind": "module_path"
 // MAT3X3-NOT: ".out"
 // MAT3X3-NOT: ".in"
+
+// MODMUL-DAG: "workload": "modmul"
+// MODMUL-DAG: "hardware": "shared_reduction_adg"
+// MODMUL-DAG: "placed_records": {{[1-9][0-9]*}}
+// MODMUL-DAG: "routed_edges": {{[1-9][0-9]*}}
+// MODMUL-DAG: "unrouted_edges": 0
+// MODMUL-DAG: "status": "pass"
+// MODMUL-DAG: "edge_ref": "arith.muli#0.result0->arith.remui#0.operand0"
+// MODMUL-DAG: "edge_ref": "arith.remui#0.result0->llvm.trunc#0.operand0"
+// MODMUL-DAG: "edge_ref": "llvm.trunc#0.result0->dataflow.store#0.operand2"
+// MODMUL-DAG: "segment_kind": "module_path"
+// MODMUL-NOT: ".out"
+// MODMUL-NOT: ".in"
 
 // GEMV-DAG: "workload": "gemv"
 // GEMV-DAG: "hardware": "shared_reduction_adg"

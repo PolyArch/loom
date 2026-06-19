@@ -84,7 +84,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "modmul", "runge_kutta_step")
+MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "runge_kutta_step")
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -787,6 +787,86 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
 
 
+def assert_modmul_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": [
+            "i32:12345",
+            "i32:24690",
+            "i32:987654321",
+            "i32:42",
+            "i32:65535",
+            "i32:1000000006",
+            "i32:314159",
+            "i32:271828",
+        ],
+        "arg2": [
+            "i32:67890",
+            "i32:13579",
+            "i32:123456789",
+            "i32:99",
+            "i32:65537",
+            "i32:1000000006",
+            "i32:271828",
+            "i32:314159",
+        ],
+        "arg4": ["i32:838102050", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0"],
+    }
+    expected_counts = {
+        "arith.muli": 1,
+        "arith.remui": 1,
+        "dataflow.load": 2,
+        "dataflow.store": 1,
+        "dataflow.sync": 1,
+        "llvm.trunc": 1,
+        "llvm.zext": 2,
+    }
+
+    dfg_path = evidence_dir / "modmul.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("optimistic_cycles") != 27
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"modmul DFG evidence should match the first real modular product: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("modmul", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "modmul.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("routed_edges") != 10
+    ):
+        raise AssertionError(f"modmul should route on shared reduction hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.muli#0.result0->arith.remui#0.operand0",
+        "arith.remui#0.result0->llvm.trunc#0.operand0",
+        "llvm.trunc#0.result0->dataflow.store#0.operand2",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"modmul mapping should expose multiply/remainder/trunc/store route edges: {mapping}")
+
+    cgra_path = evidence_dir / "modmul.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 27
+        or cgra.get("hardware_aware_cycles") != 79
+        or cgra.get("routed_edges") != 10
+        or cgra.get("route_segments") != 40
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"modmul CGRA evidence should carry the first real modular product state: {cgra_path}: {cgra}")
+
+
 def assert_newton_iter_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:1", "f32:2", "f32:3", "f32:4"],
@@ -1199,6 +1279,7 @@ def main(argv: list[str]) -> int:
             "gemm",
             "matmul",
             "mat3x3_mult",
+            "modmul",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1235,6 +1316,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
+        assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
@@ -1242,6 +1324,7 @@ def main(argv: list[str]) -> int:
         assert_delta_decode_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
+        assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
@@ -1331,6 +1414,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "matmul", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mat3x3_mult", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "modmul", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
@@ -1515,6 +1599,7 @@ def main(argv: list[str]) -> int:
             "gemm",
             "matmul",
             "mat3x3_mult",
+            "modmul",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1611,8 +1696,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 45,
-            "fail": 3,
+            "pass": 46,
+            "fail": 2,
             "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,

@@ -1415,6 +1415,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                 {"arith.divsi"});
   addBinary32Pe("int_rem", "int_rem_lhs", "int_rem_rhs", "remainder",
                 {"arith.remsi"});
+  addBinary32Pe("uint_rem", "uint_rem_lhs", "uint_rem_rhs", "remainder",
+                {"arith.divui", "arith.remui"});
   addBinary32Pe("fp_div", "fp_div_lhs", "fp_div_rhs", "quotient",
                 {"arith.divf", "arith.remf"});
   auto addConfigurableConstPe = [&](std::string resultName) {
@@ -1938,6 +1940,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"reduction_scale", "bit_invariant", "bit_invariant_aux0",
        "bit_invariant_aux1", "aux_invariant0", "aux_invariant1", "i32d"});
   addSingleResultBits32Switch(
+      "uint_rem_lhs", {"int_product", "aux_idx", "aux_active_idx", "i32b"});
+  addSingleResultBits32Switch(
+      "uint_rem_rhs",
+      {"i32c", "reduction_scale", "bit_invariant", "bit_invariant_aux0",
+       "bit_invariant_aux1", "aux_invariant0", "aux_invariant1"});
+  addSingleResultBits32Switch(
       "int_or_lhs", {"i32a", "logic_masked", "data0", "data1",
                      "addr_shifted"});
   addSingleResultBits32Switch("int_or_rhs",
@@ -2074,19 +2082,19 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch("cast0_input",
                               {"i32a", "data0", "data1", "logic_masked",
                                "packed_sat", "idx", "running", "int_sum",
-                               "addr_sum"});
+                               "addr_sum", "uint_rem"});
   addSingleResultBits32Switch("cast1_input",
                               {"i32a", "data0", "data1", "logic_masked",
                                "packed_sat", "idx", "running", "int_sum",
-                               "addr_sum"});
+                               "addr_sum", "uint_rem"});
   addSingleResultBits32Switch("cast2_input",
                               {"i32a", "data0", "data1", "logic_masked",
                                "packed_sat", "idx", "running", "int_sum",
-                               "addr_sum"});
+                               "addr_sum", "uint_rem"});
   addSingleResultBits32Switch("cast3_input",
                               {"i32a", "data0", "data1", "logic_masked",
                                "packed_sat", "idx", "running", "int_sum",
-                               "addr_sum"});
+                               "addr_sum", "uint_rem"});
   addSingleResultBits32Switch("load2_addr",
                               {"i32c", "cast0_result", "cast1_result",
                                "cast2_result", "cast3_result", "idx",
