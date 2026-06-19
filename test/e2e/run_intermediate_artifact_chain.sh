@@ -197,6 +197,9 @@ case "${CASE}" in
   moving_avg)
     case_graph="missing_primary_graph"
     ;;
+  newton_iter)
+    case_graph="g_t_newton_iter_kernel_0_0"
+    ;;
   outer)
     case_graph="missing_primary_graph"
     ;;

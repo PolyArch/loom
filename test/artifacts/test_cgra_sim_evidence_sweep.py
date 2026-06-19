@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 45
+APP_NO_DFG_TIER_COUNT = 44
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -64,6 +64,7 @@ DEFAULT_SWEEP_CASES = (
     "lower_bound",
     "matvec",
     "moving_avg",
+    "newton_iter",
     "outer",
     "byte_swap",
     "scatter_add",
@@ -80,7 +81,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "modmul", "runge_kutta_step")
+MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "modmul", "newton_iter", "runge_kutta_step")
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -876,6 +877,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "moving_avg",
                 "--case",
+                "newton_iter",
+                "--case",
                 "outer",
                 "--case",
                 "pack_bits",
@@ -1355,8 +1358,8 @@ def main(argv: list[str]) -> int:
         expected_counts = {
             "total": 109,
             "pass": 41,
-            "fail": 3,
-            "blocked": 65,
+            "fail": 4,
+            "blocked": 64,
             "unsupported": 0,
             "missing_status": 0,
         }

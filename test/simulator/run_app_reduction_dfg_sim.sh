@@ -1243,6 +1243,18 @@ case "${CASE}" in
             --arg 5=0
         )
         ;;
+    newton_iter)
+        append_ctrl_tokens 1
+        sim_args+=(
+            --graph g_t_newton_iter_kernel_0_0
+            --workload newton_iter
+            --memref 1=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00
+            --memref 2=0.000000e+00,2.000000e+00,6.000000e+00,1.200000e+01
+            --memref 3=2.000000e+00,4.000000e+00,6.000000e+00,8.000000e+00
+            --memref 4=0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00
+            --arg 5=1
+        )
+        ;;
     relu)
         configure_relu_core_args
         ;;

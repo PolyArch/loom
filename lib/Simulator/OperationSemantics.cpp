@@ -26,6 +26,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.addf", 2, 2, true, true},
     {"arith.subf", 2, 2, true, true},
     {"arith.mulf", 3, 3, true, true},
+    {"arith.divf", 12, 12, true, true},
     {"arith.addi", 1, 1, true, true},
     {"arith.subi", 1, 1, true, true},
     {"arith.muli", 3, 3, true, true},
@@ -522,6 +523,12 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
     return PrimitiveValue::floating(asFloat(operands[0]) *
+                                    asFloat(operands[1]));
+  }
+  if (opName == "arith.divf") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    return PrimitiveValue::floating(asFloat(operands[0]) /
                                     asFloat(operands[1]));
   }
   if (opName == "arith.addi") {

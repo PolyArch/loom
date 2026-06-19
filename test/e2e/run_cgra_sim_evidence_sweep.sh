@@ -101,6 +101,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     lower_bound
     matvec
     moving_avg
+    newton_iter
     outer
     byte_swap
     scatter_add

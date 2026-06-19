@@ -54,6 +54,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "newton_iter",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "outer",
       "hardware": "shared_reduction_adg"
     },
