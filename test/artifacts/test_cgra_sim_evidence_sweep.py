@@ -13,6 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
+APP_NO_DFG_TIER_COUNT = 46
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -48,6 +49,7 @@ DEFAULT_SWEEP_CASES = (
     "compact",
     "hash_mix",
     "merge",
+    "modmul",
     "spmv",
     "convolve_1d",
     "conv1d",
@@ -77,7 +79,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("gf_mul",)
+MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "modmul")
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -288,8 +290,11 @@ def app_manifest_no_dfg_cases(repo: Path) -> tuple[str, ...]:
         tiers = entry.get("tiers", [])
         if isinstance(case, str) and case and (not isinstance(tiers, list) or "dfg" not in tiers):
             no_dfg_cases.append(case)
-    if len(no_dfg_cases) != 47:
-        raise AssertionError(f"expected 47 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
+    if len(no_dfg_cases) != APP_NO_DFG_TIER_COUNT:
+        raise AssertionError(
+            f"expected {APP_NO_DFG_TIER_COUNT} app rows without dfg tier, "
+            f"got {len(no_dfg_cases)}: {no_dfg_cases}"
+        )
     return tuple(no_dfg_cases)
 
 
@@ -840,6 +845,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "gf_mul",
                 "--case",
+                "modmul",
+                "--case",
                 "byte_swap",
                 "--case",
                 "xor_block",
@@ -1345,8 +1352,8 @@ def main(argv: list[str]) -> int:
         expected_counts = {
             "total": 109,
             "pass": 41,
-            "fail": 1,
-            "blocked": 67,
+            "fail": 2,
+            "blocked": 66,
             "unsupported": 0,
             "missing_status": 0,
         }

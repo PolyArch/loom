@@ -86,6 +86,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     compact
     hash_mix
     merge
+    modmul
     spmv
     convolve_1d
     conv1d

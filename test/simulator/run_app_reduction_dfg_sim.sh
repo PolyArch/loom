@@ -1231,6 +1231,18 @@ case "${CASE}" in
             --arg 9=0
         )
         ;;
+    modmul)
+        append_ctrl_tokens 1
+        sim_args+=(
+            --graph g_t_modmul_kernel_0_0
+            --workload modmul
+            --memref 1=12345,24690,987654321,42,65535,1000000006,314159,271828
+            --memref 2=67890,13579,123456789,99,65537,1000000006,271828,314159
+            --arg 3=1000000007
+            --memref 4=0,0,0,0,0,0,0,0
+            --arg 5=0
+        )
+        ;;
     relu)
         configure_relu_core_args
         ;;

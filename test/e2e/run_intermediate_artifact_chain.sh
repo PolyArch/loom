@@ -191,6 +191,9 @@ case "${CASE}" in
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
     ;;
+  modmul)
+    case_graph="g_t_modmul_kernel_0_0"
+    ;;
   moving_avg)
     case_graph="missing_primary_graph"
     ;;

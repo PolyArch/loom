@@ -340,8 +340,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         {
             "total": 109,
             "pass": 41,
-            "fail": 1,
-            "blocked": 67,
+            "fail": 2,
+            "blocked": 66,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -377,9 +377,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 47,
+            "blocked": 46,
             "unsupported": 0,
-            "missing_status": 61,
+            "missing_status": 62,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -416,6 +416,37 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
 
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
     "gf_mul": "missing hardware resource for software op arith.andi",
+    "modmul": "missing hardware resource for software op arith.remui",
+}
+
+SHARED_APP_MAPPING_FAILURE_EVIDENCE = {
+    "gf_mul": {
+        "graph": "g_t_gf_mul_kernel_0_0",
+        "dynamic_work_items": 8,
+        "final_output_suffix": ["i32:193"],
+    },
+    "modmul": {
+        "graph": "g_t_modmul_kernel_0_0",
+        "dynamic_work_items": 1,
+        "operation_fire_counts": {
+            "arith.muli": 1,
+            "arith.remui": 1,
+            "dataflow.load": 2,
+            "dataflow.store": 1,
+        },
+        "final_memory_state": {
+            "arg4": [
+                "i32:838102050",
+                "i32:0",
+                "i32:0",
+                "i32:0",
+                "i32:0",
+                "i32:0",
+                "i32:0",
+                "i32:0",
+            ],
+        },
+    },
 }
 
 
@@ -454,7 +485,7 @@ def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_e
             or row["cgra_status"] != "blocked"
             or row["comparison_status"] != "blocked"
             or row["hardware_system"] != "shared_reduction_adg"
-            or row["graph_ids"] != "g_t_gf_mul_kernel_0_0"
+            or row["graph_ids"] != SHARED_APP_MAPPING_FAILURE_EVIDENCE[case]["graph"]
             or row["final_outputs_present"] != "true"
             or row["final_memory_state_present"] != "true"
             or diagnostic not in row["diagnostic"]
@@ -466,13 +497,33 @@ def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_e
             if not artifact.is_file():
                 raise AssertionError(f"attempt manifest should emit {artifact}")
         dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+        expected = SHARED_APP_MAPPING_FAILURE_EVIDENCE[case]
         if (
             dfg_report.get("status") != "pass"
-            or dfg_report.get("graph") != "g_t_gf_mul_kernel_0_0"
-            or dfg_report.get("dynamic_work_items") != 8
-            or dfg_report.get("final_outputs", [])[-1:] != ["i32:193"]
+            or dfg_report.get("graph") != expected["graph"]
+            or dfg_report.get("dynamic_work_items") != expected["dynamic_work_items"]
         ):
-            raise AssertionError(f"gf_mul should preserve real DFG evidence before mapping failure: {dfg_report}")
+            raise AssertionError(f"{case} should preserve real DFG evidence before mapping failure: {dfg_report}")
+        if "final_output_suffix" in expected:
+            expected_suffix = expected["final_output_suffix"]
+            if dfg_report.get("final_outputs", [])[-len(expected_suffix) :] != expected_suffix:
+                raise AssertionError(
+                    f"{case} should preserve expected DFG final outputs before mapping failure: {dfg_report}"
+                )
+        if "operation_fire_counts" in expected:
+            for op_name, expected_count in expected["operation_fire_counts"].items():
+                actual_count = dfg_report.get("operation_fire_counts", {}).get(op_name)
+                if actual_count != expected_count:
+                    raise AssertionError(
+                        f"{case} {op_name} fire count should be {expected_count}, got {actual_count}: {dfg_report}"
+                    )
+        if "final_memory_state" in expected:
+            for argument, expected_values in expected["final_memory_state"].items():
+                actual_values = dfg_report.get("final_memory_state", {}).get(argument)
+                if actual_values != expected_values:
+                    raise AssertionError(
+                        f"{case} should preserve expected DFG final memory before mapping failure: {dfg_report}"
+                    )
 
 
 def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
@@ -497,8 +548,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 1,
-            "blocked": 67,
+            "fail": 2,
+            "blocked": 66,
             "unsupported": 0,
             "missing_status": 41,
         },
