@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 declare -a ARGS=("$@")
 OUTPUT=""
-LEGACY_LOOMBENCH_ROOT=""
+LEGACY_LOOMBENCH_ROOT="${LOOM_LEGACY_LOOMBENCH_ROOT:-${ROOT}/temp/old_implementation_loom/loom/tests/app}"
+LEGACY_LOOMBENCH_ROOT_SUPPLIED=0
 LOOMBENCH_MANIFEST=""
 NO_LEGACY_LOOMBENCH=0
 CMSIS_DFG_AUTO=0
@@ -37,11 +38,13 @@ while [[ "${index}" -lt "${#ARGS[@]}" ]]; do
             ;;
         --legacy-loombench-root)
             LEGACY_LOOMBENCH_ROOT="${ARGS[$((index + 1))]:-}"
+            LEGACY_LOOMBENCH_ROOT_SUPPLIED=1
             FORWARD_ARGS+=("${ARGS[${index}]}" "${ARGS[$((index + 1))]:-}")
             index=$((index + 2))
             ;;
         --legacy-loombench-root=*)
             LEGACY_LOOMBENCH_ROOT="${ARGS[${index}]#--legacy-loombench-root=}"
+            LEGACY_LOOMBENCH_ROOT_SUPPLIED=1
             FORWARD_ARGS+=("${ARGS[${index}]}")
             index=$((index + 1))
             ;;
@@ -82,6 +85,10 @@ while [[ "${index}" -lt "${#ARGS[@]}" ]]; do
     esac
 done
 ARGS=("${FORWARD_ARGS[@]}")
+
+if [[ -n "${LOOM_LEGACY_LOOMBENCH_ROOT:-}" && "${LEGACY_LOOMBENCH_ROOT_SUPPLIED}" -eq 0 ]]; then
+    ARGS+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
+fi
 
 if [[ "${NO_LEGACY_LOOMBENCH}" -eq 0 && -n "${OUTPUT}" && -n "${LEGACY_LOOMBENCH_ROOT}" && -z "${LOOMBENCH_MANIFEST}" && -d "${LEGACY_LOOMBENCH_ROOT}" ]]; then
     output_dir="$(dirname "${OUTPUT}")"

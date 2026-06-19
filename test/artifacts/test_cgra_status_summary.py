@@ -169,6 +169,14 @@ def write_legacy_fixture(root: Path) -> None:
         (root / name).mkdir(parents=True)
 
 
+def write_ready_legacy_case(root: Path, case: str) -> None:
+    case_root = root / case
+    case_root.mkdir(parents=True, exist_ok=True)
+    (case_root / "main.cpp").write_text("int main() { return 0; }\n")
+    (case_root / f"{case}.cpp").write_text(f"#include \"{case}.h\"\n")
+    (case_root / f"{case}.h").write_text("#pragma once\n")
+
+
 def write_json(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -632,6 +640,113 @@ def main() -> int:
             or loombench["blocking_prerequisite"] != "legacy_source"
         ):
             raise AssertionError(f"LoomBench legacy rows should consume generated manifest: {loombench}")
+
+        default_legacy_root = out_dir / "default-legacy-source"
+        write_ready_legacy_case(default_legacy_root, "vecadd")
+        write_ready_legacy_case(default_legacy_root, "batchnorm")
+        write_ready_legacy_case(default_legacy_root, "breadth_first_search")
+        (default_legacy_root / "blocked_case").mkdir(parents=True)
+        default_legacy_out_dir = out_dir / "default-legacy-root"
+        default_legacy_csv = default_legacy_out_dir / "cgra-status-summary.csv"
+        default_legacy_json = default_legacy_out_dir / "cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "env",
+                f"LOOM_LEGACY_LOOMBENCH_ROOT={default_legacy_root}",
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(default_legacy_csv),
+                "--json-output",
+                str(default_legacy_json),
+            ],
+        )
+        default_legacy_rows = read_rows(default_legacy_csv)
+        default_legacy_loombench = [row for row in default_legacy_rows if row["suite"] == "loombench"]
+        if not default_legacy_loombench:
+            raise AssertionError("default legacy root should emit LoomBench rows when the root exists")
+        default_legacy_counts = suite_counts(default_legacy_loombench).get("loombench")
+        if default_legacy_counts != {
+            "total": 4,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 3,
+            "unsupported": 1,
+            "missing_status": 0,
+        }:
+            raise AssertionError(f"default legacy root should produce row-specific LoomBench counts: {default_legacy_counts}")
+        expected_default_classes = {
+            "loombench_workload_identity_bridge_ready": 1,
+            "loombench_app_dataflow_tier_missing": 1,
+            "loombench_import_deferred": 1,
+            "loombench_import_excluded": 1,
+        }
+        observed_default_classes: dict[str, int] = {}
+        for row_data in default_legacy_loombench:
+            observed_default_classes[row_data["diagnostic_class"]] = (
+                observed_default_classes.get(row_data["diagnostic_class"], 0) + 1
+            )
+        if observed_default_classes != expected_default_classes:
+            raise AssertionError(
+                "default legacy root should expose accepted, deferred, and excluded row-specific states: "
+                f"{observed_default_classes}"
+            )
+        default_vecadd = one_row(default_legacy_rows, "loombench", "vecadd")
+        if (
+            default_vecadd["status"] != "blocked"
+            or default_vecadd["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+            or default_vecadd["blocking_prerequisite"] != "sim_evidence"
+            or default_vecadd["manifest_case"] != "vecadd"
+        ):
+            raise AssertionError(f"default legacy vecadd should expose bridge-ready status: {default_vecadd}")
+        default_batchnorm = one_row(default_legacy_rows, "loombench", "batchnorm")
+        if (
+            default_batchnorm["status"] != "blocked"
+            or default_batchnorm["diagnostic_class"] != "loombench_app_dataflow_tier_missing"
+            or default_batchnorm["blocking_prerequisite"] != "dataflow"
+            or default_batchnorm["manifest_case"] != "batchnorm"
+        ):
+            raise AssertionError(f"default legacy batchnorm should expose app dataflow blocker: {default_batchnorm}")
+        default_deferred = one_row(default_legacy_rows, "loombench", "breadth_first_search")
+        if (
+            default_deferred["status"] != "blocked"
+            or default_deferred["diagnostic_class"] != "loombench_import_deferred"
+            or default_deferred["blocking_prerequisite"] != "app_import"
+        ):
+            raise AssertionError(f"default legacy-only row should be deferred: {default_deferred}")
+        default_excluded = one_row(default_legacy_rows, "loombench", "blocked_case")
+        if (
+            default_excluded["status"] != "unsupported"
+            or default_excluded["diagnostic_class"] != "loombench_import_excluded"
+            or default_excluded["blocking_prerequisite"] != "legacy_source"
+        ):
+            raise AssertionError(f"default blocked legacy source should be excluded: {default_excluded}")
+        missing_manifest_rows = [
+            row for row in default_legacy_loombench if row["diagnostic_class"] == "loombench_manifest_missing"
+        ]
+        if missing_manifest_rows:
+            raise AssertionError(
+                "default legacy root should generate a LoomBench manifest sidecar instead of manifest-missing rows: "
+                f"{missing_manifest_rows[:3]}"
+            )
+        if not (default_legacy_csv.parent / "loombench-manifest.json").is_file():
+            raise AssertionError("default legacy root wrapper should emit a LoomBench manifest JSON sidecar")
+        if not (default_legacy_csv.parent / "loombench-manifest.csv").is_file():
+            raise AssertionError("default legacy root wrapper should emit a LoomBench manifest CSV sidecar")
+        run(
+            repo,
+            [
+                "env",
+                f"LOOM_LEGACY_LOOMBENCH_ROOT={out_dir / 'missing-default-root'}",
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(default_legacy_csv),
+                "--json-input",
+                str(default_legacy_json),
+            ],
+        )
 
         explicit_manifest = out_dir / "explicit-loombench-manifest.json"
         write_loombench_manifest(

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 declare -a ARGS=("$@")
 INPUT=""
-LEGACY_LOOMBENCH_ROOT=""
+LEGACY_LOOMBENCH_ROOT="${LOOM_LEGACY_LOOMBENCH_ROOT:-${ROOT}/temp/old_implementation_loom/loom/tests/app}"
 LEGACY_LOOMBENCH_ROOT_SUPPLIED=0
 LOOMBENCH_MANIFEST=""
 NO_LEGACY_LOOMBENCH=0
@@ -49,11 +49,13 @@ while [[ "${index}" -lt "${#ARGS[@]}" ]]; do
     esac
 done
 
+if [[ -n "${LOOM_LEGACY_LOOMBENCH_ROOT:-}" && "${LEGACY_LOOMBENCH_ROOT_SUPPLIED}" -eq 0 ]]; then
+    ARGS+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
+fi
+
 if [[ -n "${INPUT}" \
     && -z "${LOOMBENCH_MANIFEST}" \
-    && "${NO_LEGACY_LOOMBENCH}" -eq 0 \
-    && "${LEGACY_LOOMBENCH_ROOT_SUPPLIED}" -eq 1 \
-    && -d "${LEGACY_LOOMBENCH_ROOT}" ]]; then
+    && "${NO_LEGACY_LOOMBENCH}" -eq 0 ]]; then
     manifest_json="$(dirname "${INPUT}")/loombench-manifest.json"
     if [[ -f "${manifest_json}" ]]; then
         ARGS+=(--loombench-manifest "${manifest_json}")
