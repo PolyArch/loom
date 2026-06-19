@@ -41,6 +41,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "reduction",
     "relu",
     "rotate_bits",
+    "runge_kutta_step",
     "sbox_lookup",
     "spmv",
     "spmspv",

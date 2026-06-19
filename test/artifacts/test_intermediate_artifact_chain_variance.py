@@ -187,10 +187,10 @@ def main() -> int:
         expected_dse = {
             "cgra_sim_cycles": "686",
             "frequency_mhz": "50.000",
-            "area_um2": "41500.000",
-            "dynamic_power_mw": "33.400",
-            "leakage_power_mw": "4.250",
-            "energy_nj": "516.558",
+            "area_um2": "41750.000",
+            "dynamic_power_mw": "33.600",
+            "leakage_power_mw": "4.275",
+            "energy_nj": "519.645",
             "hardware_evidence_kind": "analytic_model_only",
         }
         for key, value in expected_dse.items():
@@ -200,10 +200,10 @@ def main() -> int:
         required_dse_metrics = {
             "cgra_sim_cycles=686",
             "frequency_mhz=50.000",
-            "area_um2=41500.000",
-            "dynamic_power_mw=33.400",
-            "leakage_power_mw=4.250",
-            "energy_nj=516.558",
+            "area_um2=41750.000",
+            "dynamic_power_mw=33.600",
+            "leakage_power_mw=4.275",
+            "energy_nj=519.645",
         }
         if not required_dse_metrics.issubset(metric_records):
             raise AssertionError(f"selected variance DSE row missed objective metrics: {dse_row}")

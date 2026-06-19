@@ -84,7 +84,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("gf_mul", "runge_kutta_step")
+MAPPING_FAILED_SWEEP_CASES = ("gf_mul",)
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -928,6 +928,73 @@ def assert_newton_iter_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"newton_iter CGRA evidence should carry x - f/df final state: {cgra_path}: {cgra}")
 
 
+def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": ["f32:1", "f32:1.100000", "f32:1.200000", "f32:1.300000"],
+        "arg2": ["f32:1.100000", "f32:1.200000", "f32:1.300000", "f32:1.400000"],
+        "arg4": ["f32:1.200000", "f32:1.300000", "f32:1.400000", "f32:1.500000"],
+        "arg5": ["f32:1.300000", "f32:1.400000", "f32:1.500000", "f32:1.600000"],
+        "arg6": ["f32:0", "f32:1", "f32:2", "f32:3"],
+        "arg8": ["f32:0.115000", "f32:0", "f32:0", "f32:0"],
+    }
+    expected_counts = {
+        "arith.addf": 1,
+        "dataflow.load": 5,
+        "dataflow.store": 1,
+        "dataflow.sync": 1,
+        "llvm.intr.fmuladd": 3,
+    }
+
+    dfg_path = evidence_dir / "runge_kutta_step.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("optimistic_cycles") != 48
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"runge_kutta_step DFG evidence should match the first real RK4 update: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("runge_kutta_step", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "runge_kutta_step.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("routed_edges") != 15
+    ):
+        raise AssertionError(f"runge_kutta_step should route on shared reduction hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand2",
+        "dataflow.load#1.result0->llvm.intr.fmuladd#0.operand0",
+        "llvm.intr.fmuladd#1.result0->arith.addf#0.operand0",
+        "arith.addf#0.result0->llvm.intr.fmuladd#2.operand1",
+        "dataflow.load#4.result0->llvm.intr.fmuladd#2.operand2",
+        "dataflow.store#0.result0->dataflow.sync#0.operand5",
+        "llvm.intr.fmuladd#2.result0->dataflow.store#0.operand2",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"runge_kutta_step mapping should expose RK4 FMA/add/store/sync route edges: {mapping}")
+
+    cgra_path = evidence_dir / "runge_kutta_step.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 48
+        or cgra.get("hardware_aware_cycles") != 123
+        or cgra.get("routed_edges") != 15
+        or cgra.get("route_segments") != 51
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"runge_kutta_step CGRA evidence should carry the first real RK4 update state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -1298,6 +1365,7 @@ def main(argv: list[str]) -> int:
             "upsample",
             "sbox_lookup",
             "rotate_bits",
+            "runge_kutta_step",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -1318,6 +1386,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
+        assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
@@ -1326,6 +1395,7 @@ def main(argv: list[str]) -> int:
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
+        assert_runge_kutta_step_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1402,6 +1472,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "popcount", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "newton_iter", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "runge_kutta_step", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l1", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecnorm_l2", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemv", "shared_reduction_adg")
@@ -1540,6 +1611,19 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "rotate_bits")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
+            "runge_kutta_step",
+            {
+                "arith.addf#0.result0->llvm.intr.fmuladd#2.operand1",
+                "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand2",
+                "dataflow.load#1.result0->llvm.intr.fmuladd#0.operand0",
+                "dataflow.load#4.result0->llvm.intr.fmuladd#2.operand2",
+                "dataflow.store#0.result0->dataflow.sync#0.operand5",
+                "llvm.intr.fmuladd#1.result0->arith.addf#0.operand0",
+                "llvm.intr.fmuladd#2.result0->dataflow.store#0.operand2",
+            },
+        )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
             "rotate_bits",
             {
                 "arith.andi#0.result0->arith.cmpi#0.operand0",
@@ -1618,6 +1702,7 @@ def main(argv: list[str]) -> int:
             "upsample",
             "sbox_lookup",
             "rotate_bits",
+            "runge_kutta_step",
         ):
             assert_promoted_row(repo, rows, case)
         for case in MAPPING_FAILED_SWEEP_CASES:
@@ -1696,8 +1781,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 46,
-            "fail": 2,
+            "pass": 47,
+            "fail": 1,
             "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,

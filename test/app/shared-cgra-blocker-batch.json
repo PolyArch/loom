@@ -54,10 +54,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "runge_kutta_step",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "pack_bits",
       "hardware": "shared_reduction_adg"
     },
