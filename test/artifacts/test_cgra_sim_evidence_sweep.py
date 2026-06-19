@@ -55,6 +55,7 @@ DEFAULT_SWEEP_CASES = (
     "crc32",
     "fir_filter",
     "gather",
+    "gf_mul",
     "gemv",
     "gemm",
     "matmul",
@@ -76,7 +77,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_FAILED_SWEEP_CASES = ("gf_mul",)
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -287,8 +288,8 @@ def app_manifest_no_dfg_cases(repo: Path) -> tuple[str, ...]:
         tiers = entry.get("tiers", [])
         if isinstance(case, str) and case and (not isinstance(tiers, list) or "dfg" not in tiers):
             no_dfg_cases.append(case)
-    if len(no_dfg_cases) != 48:
-        raise AssertionError(f"expected 48 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
+    if len(no_dfg_cases) != 47:
+        raise AssertionError(f"expected 47 app rows without dfg tier, got {len(no_dfg_cases)}: {no_dfg_cases}")
     return tuple(no_dfg_cases)
 
 
@@ -837,6 +838,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "gather",
                 "--case",
+                "gf_mul",
+                "--case",
                 "byte_swap",
                 "--case",
                 "xor_block",
@@ -976,10 +979,9 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
             assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
             assert_comparison_artifact(evidence_dir, case, "pass")
-        for case in BLOCKED_SWEEP_CASES:
+        for case in MAPPING_FAILED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
-            expected_mapping_status = "blocked" if case == "dot_product_3d" else "fail"
-            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", expected_mapping_status)
+            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "fail")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         for case in DFG_BLOCKED_SWEEP_CASES:
@@ -1111,7 +1113,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
-        for case in BLOCKED_SWEEP_CASES:
+        for case in MAPPING_FAILED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -1269,10 +1271,8 @@ def main(argv: list[str]) -> int:
             "rotate_bits",
         ):
             assert_promoted_row(repo, rows, case)
-        for case in BLOCKED_SWEEP_CASES:
-            expected_status = "blocked" if case == "dot_product_3d" else "fail"
-            expected_mapping_status = "blocked" if case == "dot_product_3d" else "fail"
-            assert_structured_blocker_row(repo, rows, case, expected_status, expected_mapping_status)
+        for case in MAPPING_FAILED_SWEEP_CASES:
+            assert_structured_blocker_row(repo, rows, case, "fail", "fail")
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_dfg_blocked_row(repo, rows, case)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
@@ -1345,8 +1345,8 @@ def main(argv: list[str]) -> int:
         expected_counts = {
             "total": 109,
             "pass": 41,
-            "fail": 0,
-            "blocked": 68,
+            "fail": 1,
+            "blocked": 67,
             "unsupported": 0,
             "missing_status": 0,
         }

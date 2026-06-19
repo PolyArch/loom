@@ -340,8 +340,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         {
             "total": 109,
             "pass": 41,
-            "fail": 0,
-            "blocked": 68,
+            "fail": 1,
+            "blocked": 67,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -377,9 +377,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 48,
+            "blocked": 47,
             "unsupported": 0,
-            "missing_status": 60,
+            "missing_status": 61,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -414,6 +414,10 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
+    "gf_mul": "missing hardware resource for software op arith.andi",
+}
+
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
     for case, diagnostic in SHARED_APP_BLOCKER_DIAGNOSTICS.items():
@@ -438,6 +442,37 @@ def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_e
             artifact = sim_evidence / Path(row[key]).name
             if not artifact.is_file():
                 raise AssertionError(f"attempt manifest should emit {artifact}")
+    for case, diagnostic in SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS.items():
+        row = one_row(rows, "app", case)
+        if (
+            row["status"] != "fail"
+            or row["diagnostic_class"] != "mapping_artifact_failed"
+            or row["owner"] != "sim_report"
+            or row["blocking_prerequisite"] != "mapping_artifact"
+            or row["dfg_status"] != "pass"
+            or row["mapping_status"] != "fail"
+            or row["cgra_status"] != "blocked"
+            or row["comparison_status"] != "blocked"
+            or row["hardware_system"] != "shared_reduction_adg"
+            or row["graph_ids"] != "g_t_gf_mul_kernel_0_0"
+            or row["final_outputs_present"] != "true"
+            or row["final_memory_state_present"] != "true"
+            or diagnostic not in row["diagnostic"]
+        ):
+            raise AssertionError(f"attempted app row should expose structured mapping failure: {row}")
+        for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+            assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+            artifact = sim_evidence / Path(row[key]).name
+            if not artifact.is_file():
+                raise AssertionError(f"attempt manifest should emit {artifact}")
+        dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+        if (
+            dfg_report.get("status") != "pass"
+            or dfg_report.get("graph") != "g_t_gf_mul_kernel_0_0"
+            or dfg_report.get("dynamic_work_items") != 8
+            or dfg_report.get("final_outputs", [])[-1:] != ["i32:193"]
+        ):
+            raise AssertionError(f"gf_mul should preserve real DFG evidence before mapping failure: {dfg_report}")
 
 
 def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
@@ -462,8 +497,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 0,
-            "blocked": 68,
+            "fail": 1,
+            "blocked": 67,
             "unsupported": 0,
             "missing_status": 41,
         },

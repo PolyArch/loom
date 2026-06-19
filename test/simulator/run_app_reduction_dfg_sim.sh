@@ -1185,6 +1185,22 @@ case "${CASE}" in
     gemv)
         configure_gemv_row_args 0
         ;;
+    gf_mul)
+        append_ctrl_tokens 1
+        sim_args+=(
+            --graph g_t_gf_mul_kernel_0_0
+            --workload gf_mul
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 4=128
+            --arg 5=27
+            --arg 6=255
+            --arg 7=0
+            --arg 8=131
+            --arg 9=87
+        )
+        ;;
     gemm)
         append_ctrl_tokens 8
         append_linear_memref 4 8 1 "%.6e"

@@ -93,6 +93,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     crc32
     fir_filter
     gather
+    gf_mul
     gemv
     gemm
     matmul
