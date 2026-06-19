@@ -107,6 +107,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     xor_block
     relu
     rotate_bits
+    runge_kutta_step
     sbox_lookup
     transpose
     upper_bound

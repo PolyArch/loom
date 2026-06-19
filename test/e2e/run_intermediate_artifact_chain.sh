@@ -215,6 +215,9 @@ case "${CASE}" in
   rotate_bits)
     case_graph="g_t_rotate_bits_0_0"
     ;;
+  runge_kutta_step)
+    case_graph="g_t_runge_kutta_step_kernel_0_0"
+    ;;
   sbox_lookup)
     case_graph="g_t_main_2_0"
     ;;

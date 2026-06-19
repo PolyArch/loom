@@ -340,8 +340,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         {
             "total": 109,
             "pass": 41,
-            "fail": 2,
-            "blocked": 66,
+            "fail": 3,
+            "blocked": 65,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -377,9 +377,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 46,
+            "blocked": 45,
             "unsupported": 0,
-            "missing_status": 62,
+            "missing_status": 63,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -417,6 +417,7 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
     "gf_mul": "missing hardware resource for software op arith.andi",
     "modmul": "missing hardware resource for software op arith.remui",
+    "runge_kutta_step": "unrouted software edges lack Fabric ADG connectivity",
 }
 
 SHARED_APP_MAPPING_FAILURE_EVIDENCE = {
@@ -444,6 +445,24 @@ SHARED_APP_MAPPING_FAILURE_EVIDENCE = {
                 "i32:0",
                 "i32:0",
                 "i32:0",
+            ],
+        },
+    },
+    "runge_kutta_step": {
+        "graph": "g_t_runge_kutta_step_kernel_0_0",
+        "dynamic_work_items": 1,
+        "operation_fire_counts": {
+            "arith.addf": 1,
+            "dataflow.load": 5,
+            "dataflow.store": 1,
+            "llvm.intr.fmuladd": 3,
+        },
+        "final_memory_state": {
+            "arg8": [
+                "f32:0.115000",
+                "f32:0",
+                "f32:0",
+                "f32:0",
             ],
         },
     },
@@ -548,8 +567,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 2,
-            "blocked": 66,
+            "fail": 3,
+            "blocked": 65,
             "unsupported": 0,
             "missing_status": 41,
         },

@@ -1246,6 +1246,22 @@ case "${CASE}" in
     relu)
         configure_relu_core_args
         ;;
+    runge_kutta_step)
+        append_ctrl_tokens 1
+        sim_args+=(
+            --graph g_t_runge_kutta_step_kernel_0_0
+            --workload runge_kutta_step
+            --memref 1=1.000000e+00,1.100000e+00,1.200000e+00,1.300000e+00
+            --memref 2=1.100000e+00,1.200000e+00,1.300000e+00,1.400000e+00
+            --arg 3=2.000000e+00
+            --memref 4=1.200000e+00,1.300000e+00,1.400000e+00,1.500000e+00
+            --memref 5=1.300000e+00,1.400000e+00,1.500000e+00,1.600000e+00
+            --memref 6=0.000000e+00,1.000000e+00,2.000000e+00,3.000000e+00
+            --arg 7=1.66666675e-02
+            --memref 8=0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00
+            --arg 9=0
+        )
+        ;;
     partition)
         configure_partition_lower_args
         ;;
