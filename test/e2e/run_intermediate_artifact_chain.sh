@@ -176,6 +176,9 @@ case "${CASE}" in
   fir_filter)
     case_graph="g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0"
     ;;
+  fir_filter_stateful)
+    case_graph="g_t_fir_filter_stateful_kernel_red_0_0"
+    ;;
   gather)
     case_graph="missing_primary_graph"
     ;;

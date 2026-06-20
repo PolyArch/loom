@@ -166,6 +166,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "fir_filter_stateful",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "compare_swap",
       "hardware": "shared_reduction_adg"
     },

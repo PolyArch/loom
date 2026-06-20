@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 41
+APP_NO_DFG_TIER_COUNT = 40
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -57,6 +57,7 @@ DEFAULT_SWEEP_CASES = (
     "convolve_1d_same",
     "crc32",
     "fir_filter",
+    "fir_filter_stateful",
     "gather",
     "gf_mul",
     "gemv",
@@ -787,6 +788,58 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
 
 
+def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": [
+            "f32:0.250000",
+            "f32:-0.125000",
+            "f32:0.500000",
+            "f32:0.375000",
+            "f32:-0.250000",
+        ],
+        "arg6": ["f32:4", "f32:3", "f32:2", "f32:1"],
+    }
+    expected_counts = {
+        "arith.index_cast": 10,
+        "arith.subi": 5,
+        "dataflow.carry": 5,
+        "dataflow.invariant": 6,
+        "dataflow.load": 8,
+        "dataflow.stream": 5,
+        "dataflow.sync": 4,
+        "llvm.intr.fmuladd": 4,
+        "llvm.trunc": 5,
+        "llvm.zext": 5,
+    }
+
+    dfg_path = evidence_dir / "fir_filter_stateful.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 4
+        or dfg.get("optimistic_cycles") != 105
+        or dfg.get("final_outputs") != ["none", "f32:1.250000"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"fir_filter_stateful DFG evidence should match the first real stateful FIR MAC: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("fir_filter_stateful", dfg, expected_counts)
+
+    cgra_path = evidence_dir / "fir_filter_stateful.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 105
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+        or cgra.get("routed_edges") != 14
+        or cgra.get("route_segments") != 54
+        or cgra.get("final_outputs") != ["none", "f32:1.250000"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"fir_filter_stateful CGRA evidence should carry the first real stateful FIR MAC: {cgra_path}: {cgra}")
+
+
 def assert_modmul_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": [
@@ -1332,6 +1385,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "fir_filter",
                 "--case",
+                "fir_filter_stateful",
+                "--case",
                 "gemm",
                 "--case",
                 "matmul",
@@ -1401,6 +1456,7 @@ def main(argv: list[str]) -> int:
             "convolve_1d",
             "convolve_1d_same",
             "fir_filter",
+            "fir_filter_stateful",
             "gf_mul",
             "compare_swap",
             "hash_mix",
@@ -1432,10 +1488,12 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
+        assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
+        assert_fir_filter_stateful_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
@@ -1534,6 +1592,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "fir_filter", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "fir_filter_stateful", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gather", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_reduction_adg")
@@ -1740,6 +1799,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "convolve_1d_same",
+            "fir_filter_stateful",
             "compare_swap",
             "hash_mix",
             "relu",
@@ -1825,9 +1885,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 48,
+            "pass": 49,
             "fail": 0,
-            "blocked": 61,
+            "blocked": 60,
             "unsupported": 0,
             "missing_status": 0,
         }

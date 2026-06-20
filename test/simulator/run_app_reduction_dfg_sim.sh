@@ -864,6 +864,20 @@ case "${CASE}" in
             --arg 8=0.000000e+00
         )
         ;;
+    fir_filter_stateful)
+        append_ctrl_tokens 4
+        sim_args+=(
+            --graph g_t_fir_filter_stateful_kernel_red_0_0
+            --workload fir_filter_stateful
+            --arg 1=1
+            --arg 2=5
+            --arg 3=1
+            --memref 4=2.500000e-01,-1.250000e-01,5.000000e-01,3.750000e-01,-2.500000e-01
+            --arg 5=4
+            --memref 6=4.000000e+00,3.000000e+00,2.000000e+00,1.000000e+00
+            --arg 7=2.500000e-01
+        )
+        ;;
     vecadd)
         append_ctrl_tokens 64
         append_linear_memref 1 64 1 "%.6e"

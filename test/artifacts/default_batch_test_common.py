@@ -28,6 +28,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "gemv",
     "gf_mul",
     "fir_filter",
+    "fir_filter_stateful",
     "hash_mix",
     "integrate_trapz",
     "mat3x3_mult",
