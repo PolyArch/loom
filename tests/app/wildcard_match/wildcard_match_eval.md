@@ -218,7 +218,7 @@ graph TD
 ```
 
 <!-- BEGIN CGRA-SCHED:wildcard_match -->
-### Finite-Resource Schedule Estimate (time-local)
+### CGRA Constrained Model: Finite-Resource Schedule Estimate (time-local)
 
 *Reproducible estimate for the deterministic criticality-priority list-schedule policy defined in [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It is **not** a lower bound (the aggregate model above is the lower bound) and **not** cycle-accurate RTL; it exposes the short windows of local `P`/`L`/`S` pressure that the aggregate model smooths over.*
 
