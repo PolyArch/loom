@@ -83,6 +83,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     vecnorm_l1
     vecnorm_l2
     correlation
+    covariance
     compare_swap
     compact
     hash_mix

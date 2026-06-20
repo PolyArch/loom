@@ -154,6 +154,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "covariance",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "convolve_1d",
       "hardware": "shared_reduction_adg"
     },

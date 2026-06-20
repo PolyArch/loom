@@ -545,6 +545,32 @@ variance_input_values() {
     printf "%s" "${values}"
 }
 
+covariance_x_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 1023); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", i % 100 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+covariance_y_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 1023); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", (i * 2) % 100 + 0.5 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
 partition_input_values() {
     printf "3.000000e+00,7.000000e+00,1.000000e+00,9.000000e+00,5.000000e+00,2.000000e+00,8.000000e+00,4.000000e+00,6.000000e+00,1.000000e+01"
 }
@@ -636,6 +662,37 @@ configure_variance_var_args() {
         --arg 5=-6.250000e-02
         --arg 6=6.250000e-02
         --arg 7=0.000000e+00
+    )
+}
+
+configure_covariance_sums_args() {
+    append_ctrl_tokens 1024
+    append_raw_memref 4 "$(covariance_x_values)"
+    append_raw_memref 5 "$(covariance_y_values)"
+    sim_args+=(
+        --graph g_t_covariance_kernel_red_0_0
+        --workload covariance
+        --arg 1=0
+        --arg 2=1024
+        --arg 3=1
+        --arg 6=0.000000e+00
+        --arg 7=0.000000e+00
+    )
+}
+
+configure_covariance_cov_args() {
+    append_ctrl_tokens 1024
+    append_raw_memref 4 "$(covariance_x_values)"
+    append_raw_memref 6 "$(covariance_y_values)"
+    sim_args+=(
+        --graph g_t_covariance_kernel_red_1_0
+        --workload covariance
+        --arg 1=0
+        --arg 2=1024
+        --arg 3=1
+        --arg 5=4.8609375e+01
+        --arg 7=4.8890625e+01
+        --arg 8=0.000000e+00
     )
 }
 
@@ -798,6 +855,9 @@ case "${CASE}" in
             --arg 5=0
             --arg 8=0.000000e+00
         )
+        ;;
+    covariance)
+        configure_covariance_sums_args
         ;;
     cumsum)
         append_ctrl_tokens 1024
@@ -1364,6 +1424,14 @@ if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "dot_product_3d" ]]; then
     extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
     sim_args=()
     configure_dot_product_3d_reduction_args
+    "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
+    extra_reports+=("${extra_report}")
+fi
+
+if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "covariance" ]]; then
+    extra_report="${REPORT_JSON%.report.json}.cov.report.json"
+    sim_args=()
+    configure_covariance_cov_args
     "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${extra_report}"
     extra_reports+=("${extra_report}")
 fi

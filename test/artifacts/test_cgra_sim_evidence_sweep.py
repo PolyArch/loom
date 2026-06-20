@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 40
+APP_NO_DFG_TIER_COUNT = 39
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -46,6 +46,7 @@ DEFAULT_SWEEP_CASES = (
     "vecnorm_l1",
     "vecnorm_l2",
     "correlation",
+    "covariance",
     "compare_swap",
     "compact",
     "hash_mix",
@@ -840,6 +841,82 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"fir_filter_stateful CGRA evidence should carry the first real stateful FIR MAC: {cgra_path}: {cgra}")
 
 
+def assert_covariance_evidence(evidence_dir: Path) -> None:
+    expected_head_x = ["f32:0", "f32:1", "f32:2", "f32:3"]
+    expected_tail_x = ["f32:20", "f32:21", "f32:22", "f32:23"]
+    expected_head_y = ["f32:0.500000", "f32:2.500000", "f32:4.500000", "f32:6.500000"]
+    expected_tail_y = ["f32:40.500000", "f32:42.500000", "f32:44.500000", "f32:46.500000"]
+
+    def check_real_inputs(memory: dict, x_key: str, y_key: str, label: str) -> None:
+        x_values = memory.get(x_key)
+        y_values = memory.get(y_key)
+        if (
+            not isinstance(x_values, list)
+            or not isinstance(y_values, list)
+            or len(x_values) != 1024
+            or len(y_values) != 1024
+            or x_values[:4] != expected_head_x
+            or x_values[-4:] != expected_tail_x
+            or y_values[:4] != expected_head_y
+            or y_values[-4:] != expected_tail_y
+        ):
+            raise AssertionError(f"covariance {label} should use source-derived x/y input arrays")
+
+    expected_outputs = ["none", "f32:49776", "f32:50064", "none", "f32:441956.250000"]
+
+    dfg_path = evidence_dir / "covariance.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 2048
+        or dfg.get("optimistic_cycles") != 43019
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("component_graphs") != ["g_t_covariance_kernel_red_0_0", "g_t_covariance_kernel_red_1_0"]
+    ):
+        raise AssertionError(f"covariance DFG aggregate should carry real two-pass covariance state: {dfg_path}: {dfg}")
+    memory = dfg.get("final_memory_state", {})
+    check_real_inputs(memory, "g_t_covariance_kernel_red_0_0:arg4", "g_t_covariance_kernel_red_0_0:arg5", "sums")
+    check_real_inputs(memory, "g_t_covariance_kernel_red_1_0:arg4", "g_t_covariance_kernel_red_1_0:arg6", "covariance")
+
+    component_identities = dfg.get("component_dfg_sim_report_identities", [])
+    components = [json.loads((evidence_dir / f"{identity}.json").read_text()) for identity in component_identities]
+    by_graph = {component.get("graph"): component for component in components}
+    sums = by_graph.get("g_t_covariance_kernel_red_0_0")
+    cov = by_graph.get("g_t_covariance_kernel_red_1_0")
+    if not isinstance(sums, dict) or not isinstance(cov, dict):
+        raise AssertionError(f"covariance DFG aggregate should reference both component reports: {dfg}")
+    if sums.get("final_outputs") != ["none", "f32:49776", "f32:50064"] or sums.get("diagnostics") != []:
+        raise AssertionError(f"covariance sums component should report source-derived sums: {sums}")
+    if cov.get("final_outputs") != ["none", "f32:441956.250000"] or cov.get("diagnostics") != []:
+        raise AssertionError(f"covariance component should report source-derived covariance accumulator: {cov}")
+    assert_operation_fire_counts(
+        "covariance sums",
+        sums,
+        {"arith.addf": 2048, "dataflow.load": 2048, "dataflow.sync": 1024},
+    )
+    assert_operation_fire_counts(
+        "covariance covariance",
+        cov,
+        {"arith.subf": 2048, "dataflow.load": 2048, "dataflow.sync": 1024, "llvm.intr.fmuladd": 1024},
+    )
+
+    cgra_path = evidence_dir / "covariance.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 43019
+        or cgra.get("hardware_aware_cycles") != 43142
+        or cgra.get("routed_edges") != 27
+        or cgra.get("route_segments") != 107
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"covariance CGRA aggregate should carry real two-pass covariance state: {cgra_path}: {cgra}")
+    cgra_memory = cgra.get("final_memory_state", {})
+    check_real_inputs(cgra_memory, "g_t_covariance_kernel_red_0_0:arg4", "g_t_covariance_kernel_red_0_0:arg5", "CGRA sums")
+    check_real_inputs(cgra_memory, "g_t_covariance_kernel_red_1_0:arg4", "g_t_covariance_kernel_red_1_0:arg6", "CGRA covariance")
+
+
 def assert_modmul_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": [
@@ -1395,6 +1472,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "correlation",
                 "--case",
+                "covariance",
+                "--case",
                 "convolve_1d",
                 "--case",
                 "relu",
@@ -1449,6 +1528,7 @@ def main(argv: list[str]) -> int:
             "vecadd",
             "conv1d",
             "variance",
+            "covariance",
             "integrate_trapz",
             "delta_encode",
             "delta_decode",
@@ -1489,11 +1569,13 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
+        assert_dfg_dynamic_work_items(evidence_dir, "covariance", 2048)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
+        assert_covariance_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
@@ -1589,6 +1671,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "mat3x3_mult", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "modmul", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "covariance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "autocorrelation", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "fir_filter", "shared_reduction_adg")
@@ -1697,6 +1780,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "downsample_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "correlation")
+        assert_mapping_uses_switch_multihop(evidence_dir, "covariance")
         assert_mapping_uses_switch_multihop(evidence_dir, "upsample")
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
@@ -1741,6 +1825,7 @@ def main(argv: list[str]) -> int:
         )
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "variance")
+        assert_component_references_resolve(evidence_dir, "covariance")
 
         status_csv = out_dir / "cgra-status-summary.csv"
         status_json = out_dir / "cgra-status-summary.json"
@@ -1793,6 +1878,7 @@ def main(argv: list[str]) -> int:
             "vecscale",
             "conv1d",
             "variance",
+            "covariance",
             "integrate_trapz",
             "delta_encode",
             "delta_decode",
@@ -1879,15 +1965,18 @@ def main(argv: list[str]) -> int:
         matvec_row = one_row(rows, "matvec")
         if matvec_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"matvec should use shared reduction hardware: {matvec_row}")
+        covariance_row = one_row(rows, "covariance")
+        if covariance_row["hardware_system"] != "shared_reduction_adg":
+            raise AssertionError(f"covariance should use shared reduction hardware: {covariance_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 49,
+            "pass": 50,
             "fail": 0,
-            "blocked": 60,
+            "blocked": 59,
             "unsupported": 0,
             "missing_status": 0,
         }

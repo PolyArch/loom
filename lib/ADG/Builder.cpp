@@ -1226,24 +1226,32 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                 {"product"}});
   module.addPe(std::move(squaredPe));
 
-  PeSpec vectorAddPe;
-  vectorAddPe.inputs = {{"pa", "fp_lhs", "!fabric.bits<32>", ""},
-                        {"pb", "fp_rhs", "!fabric.bits<32>", ""}};
-  vectorAddPe.resultNames = {"fp_running"};
-  vectorAddPe.resultTypes = {"!fabric.bits<32>"};
-  vectorAddPe.fus.push_back(FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-                                    {"rhs", "pb", "!fabric.bits<32>", ""}},
-                                   {"!fabric.bits<32>"},
-                                   {FabricOpSpec{{"sum"},
-                                                 {"arith.addf"},
-                                                 {"lhs", "rhs"},
-                                                 {"!fabric.bits<32>",
-                                                  "!fabric.bits<32>"},
-                                                 {"!fabric.bits<32>"},
-                                                 {},
-                                                 {}}},
-                                   {"sum"}});
-  module.addPe(std::move(vectorAddPe));
+  auto addFpBinaryPe = [&](std::string resultName, std::string lhsInput,
+                           std::string rhsInput, llvm::StringRef valueName,
+                           llvm::StringRef opName) {
+    PeSpec pe;
+    pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<32>", ""},
+                 {"pb", std::move(rhsInput), "!fabric.bits<32>", ""}};
+    pe.resultNames = {std::move(resultName)};
+    pe.resultTypes = {"!fabric.bits<32>"};
+    pe.fus.push_back(FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+                             {"rhs", "pb", "!fabric.bits<32>", ""}},
+                            {"!fabric.bits<32>"},
+                            {FabricOpSpec{{valueName.str()},
+                                          {opName.str()},
+                                          {"lhs", "rhs"},
+                                          {"!fabric.bits<32>",
+                                           "!fabric.bits<32>"},
+                                          {"!fabric.bits<32>"},
+                                          {},
+                                          {}}},
+                            {valueName.str()}});
+    module.addPe(std::move(pe));
+  };
+
+  addFpBinaryPe("fp_running", "fp_lhs", "fp_rhs", "sum", "arith.addf");
+  addFpBinaryPe("fp_running_aux", "fp_lhs_aux", "fp_rhs_aux", "sum",
+                "arith.addf");
 
   PeSpec fpInvariantPe;
   fpInvariantPe.inputs = {{"pa", "fp_gate", "!fabric.bits<32>", ""},
@@ -1312,24 +1320,10 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addAuxInvariantPe("aux_invariant0", "aux_invariant0_value");
   addAuxInvariantPe("aux_invariant1", "aux_invariant1_value");
 
-  PeSpec fpDiffPe;
-  fpDiffPe.inputs = {{"pa", "fp_diff_lhs", "!fabric.bits<32>", ""},
-                     {"pb", "fp_diff_rhs", "!fabric.bits<32>", ""}};
-  fpDiffPe.resultNames = {"fp_diff"};
-  fpDiffPe.resultTypes = {"!fabric.bits<32>"};
-  fpDiffPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
-              {"rhs", "pb", "!fabric.bits<32>", ""}},
-             {"!fabric.bits<32>"},
-             {FabricOpSpec{{"diff"},
-                           {"arith.subf"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<32>", "!fabric.bits<32>"},
-                           {"!fabric.bits<32>"},
-                           {},
-                           {}}},
-             {"diff"}});
-  module.addPe(std::move(fpDiffPe));
+  addFpBinaryPe("fp_diff", "fp_diff_lhs", "fp_diff_rhs", "diff",
+                "arith.subf");
+  addFpBinaryPe("fp_diff_aux", "fp_diff_aux_lhs", "fp_diff_aux_rhs", "diff",
+                "arith.subf");
 
   PeSpec scaledReductionPe;
   scaledReductionPe.inputs = {{"pa", "scaled_reduction_lhs",
@@ -2061,8 +2055,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch(
       "demux_then_value",
       {"mac_result", "mac_result1", "mac_result2", "mac_result3",
-       "fp_running", "scaled_reduction", "data0", "data1", "int_sum",
-       "addr_sum", "int_product", "int_product_aux", "selected"});
+       "fp_running", "fp_running_aux", "scaled_reduction", "data0", "data1",
+       "int_sum", "addr_sum", "int_product", "int_product_aux", "selected"});
   addSingleResultBits32Switch(
       "mux_sel",
       {"logic_masked", "addr_masked", "cmpi_pred", "cmpi_pred_aux",
@@ -2074,7 +2068,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch(
       "mux_true",
       {"compute_demux_true", "mac_result", "mac_result1", "mac_result2",
-       "mac_result3", "fp_running", "scaled_reduction", "data0", "data1"});
+       "mac_result3", "fp_running", "fp_running_aux", "scaled_reduction",
+       "data0", "data1"});
   addSingleResultBits32Switch("load1_addr",
                               {"idx", "i32b", "addr_unscaled", "cast0_result",
                                "cast1_result", "cast2_result",
@@ -2104,12 +2099,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                "int_sum", "aux_idx", "aux_active_idx"});
   addSingleResultBits32Switch(
       "store0_value",
-      {"scan_store_value", "fp_running", "running", "mac_result",
-       "mac_result1", "mac_result2", "mac_result3", "data0", "data1",
-       "selected", "rotated", "addr_masked", "logic_masked", "int_xor",
-       "packed_sat", "cast2_result", "cast3_result", "abs_data",
+      {"scan_store_value", "fp_running", "fp_running_aux", "running",
+       "mac_result", "mac_result1", "mac_result2", "mac_result3", "data0",
+       "data1", "selected", "rotated", "addr_masked", "logic_masked",
+       "int_xor", "packed_sat", "cast2_result", "cast3_result", "abs_data",
        "scaled_reduction", "int_product", "reduction_scale", "int_sum",
-       "fp_diff"});
+       "fp_diff", "fp_diff_aux"});
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
@@ -2332,6 +2327,14 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch("fp_rhs",
                               {"data0", "data1", "data3", "data5",
                                "reduction_scale"});
+  addSingleResultBits32Switch(
+      "fp_lhs_aux",
+      {"bit_carry", "state_carry", "carried_scan", "data0", "data1", "data2",
+       "data4", "reduction_scale", "mac_result1"});
+  addSingleResultBits32Switch("fp_rhs_aux",
+                              {"data1", "data0", "data3", "data5",
+                               "reduction_scale", "fp_invariant",
+                               "bit_invariant"});
   module.addExactBodyLine(
       "%fp_diff_lhs = fabric.switch [spatial] %i32a, %data0");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
@@ -2339,6 +2342,13 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   addSingleResultBits32Switch("fp_diff_rhs",
                               {"i32b", "fp_invariant", "data1", "fp_div"});
+  addSingleResultBits32Switch("fp_diff_aux_lhs",
+                              {"data1", "data0", "i32a"});
+  addSingleResultBits32Switch(
+      "fp_diff_aux_rhs",
+      {"bit_invariant", "fp_invariant", "bit_invariant_aux0",
+       "bit_invariant_aux1", "aux_invariant0", "aux_invariant1", "i32b",
+       "data1", "fp_div"});
   addSingleResultBits32Switch("fp_div_lhs", {"data1", "data0"});
   addSingleResultBits32Switch("fp_div_rhs",
                               {"data2", "fp_invariant", "reduction_scale"});
@@ -2350,33 +2360,35 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"i32b", "addr_shift_const", "addr_aux_const", "addr_bias_const"});
   addSingleResultBits32Switch(
       "scaled_reduction_lhs",
-      {"carried_scan", "fp_running", "data1", "data3", "data5", "data0",
-       "bit_invariant", "bit_invariant_aux0", "bit_invariant_aux1"});
+      {"carried_scan", "fp_running", "fp_running_aux", "data1", "data3",
+       "data5", "data0", "bit_invariant", "bit_invariant_aux0",
+       "bit_invariant_aux1"});
   addSingleResultBits32Switch(
       "scaled_reduction_rhs",
       {"reduction_scale", "data4", "data5", "data1", "data3",
        "state_carry", "bit_carry"});
   addSingleResultBits32Switch(
       "mac_lhs",
-      {"i32a", "data0", "data2", "data4", "fp_diff", "scaled_reduction",
-       "fp_invariant", "bit_invariant", "bit_invariant_aux0", "data1",
-       "bit_invariant_aux1", "reduction_scale"});
+      {"i32a", "data0", "data2", "data4", "fp_diff", "fp_diff_aux",
+       "scaled_reduction", "fp_invariant", "bit_invariant",
+       "bit_invariant_aux0", "data1", "bit_invariant_aux1",
+       "reduction_scale"});
   addSingleResultBits32Switch("mac_rhs",
                               {"i32b", "data1", "data3", "data5",
-                               "fp_diff", "data0", "bit_carry",
-                               "state_carry"});
+                               "fp_diff", "fp_diff_aux", "data0",
+                               "bit_carry", "state_carry"});
   addSingleResultBits32Switch("mac_acc",
                               {"i32c", "carried_scan", "bit_carry",
                                "scaled_reduction", "state_carry", "data0"});
   addSingleResultBits32Switch("mac1_lhs",
                               {"i32a", "data2", "data4", "data0",
-                               "fp_diff", "fp_invariant", "bit_invariant",
-                               "bit_invariant_aux0", "bit_invariant_aux1",
-                               "reduction_scale"});
+                               "fp_diff", "fp_diff_aux", "fp_invariant",
+                               "bit_invariant", "bit_invariant_aux0",
+                               "bit_invariant_aux1", "reduction_scale"});
   addSingleResultBits32Switch("mac1_rhs",
                               {"i32b", "data3", "data5", "data1",
-                               "fp_diff", "bit_carry", "state_carry",
-                               "carried_scan"});
+                               "fp_diff", "fp_diff_aux", "bit_carry",
+                               "state_carry", "carried_scan"});
   addSingleResultBits32Switch("mac1_acc",
                               {"i32c", "mac_result", "scaled_reduction",
                                "carried_scan", "bit_carry",
@@ -2401,7 +2413,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch("mac3_rhs",
                               {"i32b", "data0", "data1", "data3", "data5",
                                "bit_carry", "state_carry", "carried_scan",
-                               "fp_running"});
+                               "fp_running", "fp_running_aux"});
   addSingleResultBits32Switch("mac3_acc",
                               {"mac_result2", "mac_result1", "mac_result",
                                "scaled_reduction", "bit_carry",
@@ -2418,7 +2430,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "bit_carry_next",
       {"i32c", "addr_unscaled", "mac_result", "mac_result1", "int_sum",
        "selected", "running", "mac_result2", "mac_result3", "data0",
-       "state_carry", "aux_masked", "aux_xor"});
+       "state_carry", "aux_masked", "aux_xor", "fp_running_aux"});
   addSingleResultBits32Switch("state_carry_cond", {"fp_gate", "i32a"});
   addSingleResultBits32Switch(
       "state_carry_init",
@@ -2428,23 +2440,24 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "state_carry_next",
       {"mac_result", "mac_result1", "mac_result2", "mac_result3",
        "bit_carry", "carried_scan", "int_sum", "data0", "running",
-       "aux_masked", "aux_xor"});
+       "aux_masked", "aux_xor", "fp_running_aux"});
   module.addExactBodyLine(
       "%scan_feedback, %scan_store_value = fabric.switch [spatial] "
       "%running, %fp_running, %mac_result, %mac_result1, %mac_result2, "
       "%mac_result3, %bit_carry, %state_carry, %int_or, %selected, "
       "%int_sum, %addr_sum, %int_product, %int_product_aux, "
-      "%control_muxed, %int_xor, %aux_masked, %aux_xor");
+      "%control_muxed, %int_xor, %aux_masked, %aux_xor, %fp_running_aux");
   module.addExactBodyLine(
-      "  [{connectivity_table = [\"111111111111111111\", "
-      "\"001111000000000000\"]}]");
+      "  [{connectivity_table = [\"1111111111111111111\", "
+      "\"0011110000000000000\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
   module.addExactBodyLine("  -> (!fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine(
       "%sync_aux_done = fabric.switch [spatial] %store_done0, %done1, "
