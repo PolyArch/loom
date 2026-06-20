@@ -14,6 +14,7 @@
 // RUN: env BUILD_DIR=%t.dir/vecadd LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/vecadd/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/spmv LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/spmv/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/sbox_lookup LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/sbox_lookup/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/gf_mul LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/gf_mul/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/rotate_bits LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/rotate_bits/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/variance LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/variance/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/newton_iter LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/newton_iter/dfg_check.sh
@@ -31,6 +32,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecadd/main_func.dfg.mlir --graph g_t_vecadd_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecadd --output %t.dir/vecadd.mapping.csv --artifact %t.dir/vecadd.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/spmv/main_func.dfg.mlir --graph g_t_spmv_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload spmv --output %t.dir/spmv.mapping.csv --artifact %t.dir/spmv.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/sbox_lookup/main_func.dfg.mlir --graph g_t_main_2_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload sbox_lookup --output %t.dir/sbox_lookup.mapping.csv --artifact %t.dir/sbox_lookup.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/gf_mul/main_func.dfg.mlir --graph g_t_gf_mul_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload gf_mul --output %t.dir/gf_mul.mapping.csv --artifact %t.dir/gf_mul.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/rotate_bits/main_func.dfg.mlir --graph g_t_rotate_bits_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload rotate_bits --output %t.dir/rotate_bits.mapping.csv --artifact %t.dir/rotate_bits.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/variance/main_func.dfg.mlir --graph g_t_variance_red_1_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload variance --output %t.dir/variance.mapping.csv --artifact %t.dir/variance.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/newton_iter/main_func.dfg.mlir --graph g_t_newton_iter_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload newton_iter --output %t.dir/newton_iter.mapping.csv --artifact %t.dir/newton_iter.mapping.json
@@ -48,6 +50,7 @@
 // RUN: FileCheck %s --check-prefix=VECADD < %t.dir/vecadd.mapping.json
 // RUN: FileCheck %s --check-prefix=SPMV < %t.dir/spmv.mapping.json
 // RUN: FileCheck %s --check-prefix=SBOX < %t.dir/sbox_lookup.mapping.json
+// RUN: FileCheck %s --check-prefix=GF-MUL < %t.dir/gf_mul.mapping.json
 // RUN: FileCheck %s --check-prefix=ROTATE-BITS < %t.dir/rotate_bits.mapping.json
 // RUN: FileCheck %s --check-prefix=VARIANCE < %t.dir/variance.mapping.json
 // RUN: FileCheck %s --check-prefix=NEWTON < %t.dir/newton_iter.mapping.json
@@ -218,6 +221,18 @@
 // SPMV-NOT: ".in"
 
 // SBOX-DAG: "workload": "sbox_lookup"
+
+// GF-MUL-DAG: "workload": "gf_mul"
+// GF-MUL-DAG: "hardware": "shared_reduction_adg"
+// GF-MUL-DAG: "placed_records": {{[1-9][0-9]*}}
+// GF-MUL-DAG: "routed_edges": {{[1-9][0-9]*}}
+// GF-MUL-DAG: "unrouted_edges": 0
+// GF-MUL-DAG: "status": "pass"
+// GF-MUL-DAG: "edge_ref": "arith.andi#0.result0->arith.cmpi#0.operand0"
+// GF-MUL-DAG: "edge_ref": "arith.xori#0.result0->dataflow.carry#0.operand2"
+// GF-MUL-DAG: "segment_kind": "module_path"
+// GF-MUL-NOT: ".out"
+// GF-MUL-NOT: ".in"
 // SBOX-DAG: "hardware": "shared_reduction_adg"
 // SBOX-DAG: "placed_records": 6
 // SBOX-DAG: "routed_edges": 7

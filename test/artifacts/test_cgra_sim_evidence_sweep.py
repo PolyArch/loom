@@ -84,7 +84,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("gf_mul",)
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -995,6 +995,48 @@ def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"runge_kutta_step CGRA evidence should carry the first real RK4 update state: {cgra_path}: {cgra}")
 
 
+def assert_gf_mul_evidence(evidence_dir: Path) -> None:
+    expected_outputs = ["none", "i32:10433", "i32:0", "i32:20592", "i32:193"]
+    expected_counts = {
+        "arith.andi": 27,
+        "arith.cmpi": 18,
+        "arith.select": 18,
+        "arith.shli": 9,
+        "arith.shrui": 9,
+        "arith.xori": 18,
+        "dataflow.carry": 30,
+        "dataflow.invariant": 50,
+        "dataflow.stream": 9,
+    }
+
+    dfg_path = evidence_dir / "gf_mul.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("optimistic_cycles") != 188
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("final_memory_state") != {}
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"gf_mul DFG evidence should carry the real GF(2^8) product state: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("gf_mul", dfg, expected_counts)
+
+    cgra_path = evidence_dir / "gf_mul.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 188
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+        or cgra.get("routed_edges", 0) <= 19
+        or cgra.get("route_segments", 0) <= 0
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != {}
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"gf_mul CGRA evidence should carry the real GF(2^8) product state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -1359,6 +1401,7 @@ def main(argv: list[str]) -> int:
             "convolve_1d",
             "convolve_1d_same",
             "fir_filter",
+            "gf_mul",
             "compare_swap",
             "hash_mix",
             "relu",
@@ -1396,6 +1439,7 @@ def main(argv: list[str]) -> int:
         assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
+        assert_gf_mul_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1781,8 +1825,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 47,
-            "fail": 1,
+            "pass": 48,
+            "fail": 0,
             "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,

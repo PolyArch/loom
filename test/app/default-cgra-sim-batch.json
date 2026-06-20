@@ -102,6 +102,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "gf_mul",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "gemm",
       "hardware": "shared_reduction_adg"
     },

@@ -339,8 +339,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 47,
-            "fail": 1,
+            "pass": 48,
+            "fail": 0,
             "blocked": 61,
             "unsupported": 0,
             "missing_status": 0,
@@ -414,17 +414,9 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
-    "gf_mul": "missing hardware resource for software op arith.andi",
-}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE = {
-    "gf_mul": {
-        "graph": "g_t_gf_mul_kernel_0_0",
-        "dynamic_work_items": 8,
-        "final_output_suffix": ["i32:193"],
-    },
-}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
 
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
@@ -525,10 +517,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 1,
+            "fail": 0,
             "blocked": 61,
             "unsupported": 0,
-            "missing_status": 47,
+            "missing_status": 48,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")

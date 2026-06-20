@@ -34,10 +34,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "gf_mul",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "lower_bound",
       "hardware": "shared_reduction_adg"
     },

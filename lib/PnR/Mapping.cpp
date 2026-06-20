@@ -994,6 +994,31 @@ bool resourceIsCompatible(const SoftwareNode &node,
   return resourceSupportsSoftwareConfigs(node, resource);
 }
 
+unsigned compatibleResourceCount(
+    const SoftwareNode &node,
+    llvm::ArrayRef<HardwareResource> resources) {
+  unsigned count = 0;
+  for (const HardwareResource &resource : resources)
+    if (resourceIsCompatible(node, resource))
+      ++count;
+  return count;
+}
+
+void sortNodesByPlacementPriority(
+    llvm::MutableArrayRef<SoftwareNode> nodes,
+    llvm::ArrayRef<HardwareResource> resources) {
+  std::stable_sort(nodes.begin(), nodes.end(), [&](const SoftwareNode &lhs,
+                                                   const SoftwareNode &rhs) {
+    unsigned lhsCount = compatibleResourceCount(lhs, resources);
+    unsigned rhsCount = compatibleResourceCount(rhs, resources);
+    if (lhsCount != rhsCount)
+      return lhsCount < rhsCount;
+    if (lhs.operation != rhs.operation)
+      return lhs.operation < rhs.operation;
+    return lhs.id < rhs.id;
+  });
+}
+
 std::optional<std::string> configFor(const HardwareResource &resource,
                                      llvm::StringRef key) {
   auto it = resource.swConfigs.find(key.str());
@@ -1268,6 +1293,7 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
                         mlir::Operation *graph,
                         const HardwareTopology &topology,
                         llvm::SmallVectorImpl<PlacementRecord> &placements) {
+  sortNodesByPlacementPriority(nodes, resources);
   for (HardwareResource &resource : resources)
     resource.used = false;
   placements.clear();

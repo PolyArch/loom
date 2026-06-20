@@ -26,6 +26,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "downsample_avg",
     "gemm",
     "gemv",
+    "gf_mul",
     "fir_filter",
     "hash_mix",
     "integrate_trapz",
