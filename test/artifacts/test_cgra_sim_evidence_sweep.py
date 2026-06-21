@@ -86,13 +86,13 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ("compact", "modmul")
+MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ("partition",)
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
     "binary_search",
     "clz",
-    "compact",
     "crc32",
     "ctz",
     "find_first_set",
@@ -103,7 +103,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "outer",
     "pack_bits",
     "parity",
-    "partition",
     "popcount",
     "scatter_add",
     "transpose",
@@ -710,7 +709,6 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
         "dataflow.load": 9,
         "dataflow.stream": 4,
         "dataflow.sync": 3,
-        "llvm.zext": 3,
     }
 
     dfg_path = evidence_dir / "spmspv.dfg.report.json"
@@ -718,7 +716,7 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 3
-        or dfg.get("optimistic_cycles") != 69
+        or dfg.get("optimistic_cycles") != 66
         or dfg.get("final_outputs") != ["none", "i32:4"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -730,8 +728,8 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 69
-        or cgra.get("hardware_aware_cycles") != 132
+        or cgra.get("dfg_cycles") != 66
+        or cgra.get("hardware_aware_cycles") != 124
         or cgra.get("final_outputs") != ["none", "i32:4"]
         or cgra.get("final_memory_state") != expected_memory
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -766,7 +764,7 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 3
-        or dfg.get("optimistic_cycles") != 86
+        or dfg.get("optimistic_cycles") != 91
         or dfg.get("final_outputs") != ["none", "f32:0.835938"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -778,8 +776,8 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 86
-        or cgra.get("hardware_aware_cycles") != 148
+        or cgra.get("dfg_cycles") != 91
+        or cgra.get("hardware_aware_cycles") != 153
         or cgra.get("routed_edges") != 14
         or cgra.get("route_segments") != 54
         or cgra.get("final_outputs") != ["none", "f32:0.835938"]
@@ -801,7 +799,7 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
         "arg6": ["f32:4", "f32:3", "f32:2", "f32:1"],
     }
     expected_counts = {
-        "arith.index_cast": 10,
+        "arith.index_cast": 11,
         "arith.subi": 5,
         "dataflow.carry": 5,
         "dataflow.invariant": 6,
@@ -810,7 +808,6 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
         "dataflow.sync": 4,
         "llvm.intr.fmuladd": 4,
         "llvm.trunc": 5,
-        "llvm.zext": 5,
     }
 
     dfg_path = evidence_dir / "fir_filter_stateful.dfg.report.json"
@@ -832,8 +829,8 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
         cgra.get("status") != "pass"
         or cgra.get("dfg_cycles") != 105
         or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
-        or cgra.get("routed_edges") != 14
-        or cgra.get("route_segments") != 54
+        or cgra.get("routed_edges") != 13
+        or cgra.get("route_segments") != 49
         or cgra.get("final_outputs") != ["none", "f32:1.250000"]
         or cgra.get("final_memory_state") != expected_memory
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -869,7 +866,7 @@ def assert_covariance_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 2048
-        or dfg.get("optimistic_cycles") != 43019
+        or dfg.get("optimistic_cycles") != 44043
         or dfg.get("final_outputs") != expected_outputs
         or dfg.get("component_graphs") != ["g_t_covariance_kernel_red_0_0", "g_t_covariance_kernel_red_1_0"]
     ):
@@ -904,8 +901,8 @@ def assert_covariance_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 43019
-        or cgra.get("hardware_aware_cycles") != 43142
+        or cgra.get("dfg_cycles") != 44043
+        or cgra.get("hardware_aware_cycles") != 44166
         or cgra.get("routed_edges") != 27
         or cgra.get("route_segments") != 107
         or cgra.get("final_outputs") != expected_outputs
@@ -967,34 +964,23 @@ def assert_modmul_evidence(evidence_dir: Path) -> None:
     mapping_path = evidence_dir / "modmul.mapping.json"
     mapping = json.loads(mapping_path.read_text())
     if (
-        mapping.get("status") != "pass"
+        mapping.get("status") != "fail"
         or mapping.get("hardware") != "shared_reduction_adg"
-        or mapping.get("unrouted_edges") != 0
-        or mapping.get("routed_edges") != 10
+        or "missing hardware resource for software op llvm.zext" not in mapping.get("diagnostics", [])
+        or mapping.get("unplaced_records", 0) < 1
     ):
-        raise AssertionError(f"modmul should route on shared reduction hardware: {mapping_path}: {mapping}")
-    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
-    expected_edges = {
-        "arith.muli#0.result0->arith.remui#0.operand0",
-        "arith.remui#0.result0->llvm.trunc#0.operand0",
-        "llvm.trunc#0.result0->dataflow.store#0.operand2",
-    }
-    if not expected_edges.issubset(route_edges):
-        raise AssertionError(f"modmul mapping should expose multiply/remainder/trunc/store route edges: {mapping}")
+        raise AssertionError(f"modmul should stop at an honest 64-bit arithmetic mapping blocker: {mapping_path}: {mapping}")
 
     cgra_path = evidence_dir / "modmul.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
+    expected_diagnostic = "mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op llvm.zext"
     if (
-        cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 27
-        or cgra.get("hardware_aware_cycles") != 79
-        or cgra.get("routed_edges") != 10
-        or cgra.get("route_segments") != 40
+        cgra.get("status") != "blocked"
         or cgra.get("final_outputs") != ["none"]
         or cgra.get("final_memory_state") != expected_memory
-        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or expected_diagnostic not in cgra.get("diagnostics", [])
     ):
-        raise AssertionError(f"modmul CGRA evidence should carry the first real modular product state: {cgra_path}: {cgra}")
+        raise AssertionError(f"modmul CGRA-sim should remain blocked until shared hardware has real 64-bit modular arithmetic: {cgra_path}: {cgra}")
 
 
 def assert_newton_iter_evidence(evidence_dir: Path) -> None:
@@ -1080,7 +1066,7 @@ def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 1
-        or dfg.get("optimistic_cycles") != 48
+        or dfg.get("optimistic_cycles") != 51
         or dfg.get("final_outputs") != ["none"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1114,8 +1100,8 @@ def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 48
-        or cgra.get("hardware_aware_cycles") != 123
+        or cgra.get("dfg_cycles") != 51
+        or cgra.get("hardware_aware_cycles") != 126
         or cgra.get("routed_edges") != 15
         or cgra.get("route_segments") != 51
         or cgra.get("final_outputs") != ["none"]
@@ -1165,6 +1151,181 @@ def assert_gf_mul_evidence(evidence_dir: Path) -> None:
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"gf_mul CGRA evidence should carry the real GF(2^8) product state: {cgra_path}: {cgra}")
+
+
+def assert_compact_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": [
+            "i32:10",
+            "i32:0",
+            "i32:20",
+            "i32:0",
+            "i32:30",
+            "i32:40",
+            "i32:0",
+            "i32:50",
+            "i32:0",
+            "i32:60",
+            "i32:70",
+            "i32:0",
+        ],
+        "arg6": [
+            "i32:10",
+            "i32:20",
+            "i32:30",
+            "i32:40",
+            "i32:50",
+            "i32:60",
+            "i32:70",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+        ],
+    }
+    expected_counts = {
+        "arith.addi": 13,
+        "arith.cmpi": 12,
+        "arith.index_cast": 26,
+        "arith.select": 12,
+        "dataflow.carry": 13,
+        "dataflow.demux": 36,
+        "dataflow.invariant": 28,
+        "dataflow.load": 12,
+        "dataflow.mux": 12,
+        "dataflow.store": 7,
+        "dataflow.stream": 13,
+        "dataflow.sync": 12,
+    }
+
+    dfg_path = evidence_dir / "compact.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 12
+        or dfg.get("final_outputs") != ["none", "i32:7"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"compact DFG evidence should match the real filtered copy state: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("compact", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "compact.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "fail"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or "missing hardware resource for software op dataflow.mux" not in mapping.get("diagnostics", [])
+        or mapping.get("unplaced_records", 0) < 1
+    ):
+        raise AssertionError(f"compact should stop at an honest shared-ADG control-mux mapping blocker: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "compact.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    expected_diagnostic = "mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op dataflow.mux"
+    if cgra.get("status") != "blocked" or expected_diagnostic not in cgra.get("diagnostics", []):
+        raise AssertionError(f"compact CGRA-sim should remain blocked until the shared ADG can map control mux: {cgra_path}: {cgra}")
+
+
+def assert_partition_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "g_t_partition_red_0_0:arg4": [
+            "f32:3",
+            "f32:7",
+            "f32:1",
+            "f32:9",
+            "f32:5",
+            "f32:2",
+            "f32:8",
+            "f32:4",
+            "f32:6",
+            "f32:10",
+        ],
+        "g_t_partition_red_0_0:arg6": [
+            "f32:3",
+            "f32:1",
+            "f32:5",
+            "f32:2",
+            "f32:4",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+        ],
+        "g_t_partition_red_1_0:arg4": [
+            "f32:3",
+            "f32:7",
+            "f32:1",
+            "f32:9",
+            "f32:5",
+            "f32:2",
+            "f32:8",
+            "f32:4",
+            "f32:6",
+            "f32:10",
+        ],
+        "g_t_partition_red_1_0:arg6": [
+            "f32:3",
+            "f32:1",
+            "f32:5",
+            "f32:2",
+            "f32:4",
+            "f32:7",
+            "f32:9",
+            "f32:8",
+            "f32:6",
+            "f32:10",
+        ],
+    }
+    expected_counts = {
+        "arith.addi": 22,
+        "arith.cmpf": 20,
+        "arith.index_cast": 44,
+        "arith.select": 20,
+        "dataflow.carry": 22,
+        "dataflow.demux": 60,
+        "dataflow.invariant": 48,
+        "dataflow.load": 20,
+        "dataflow.mux": 20,
+        "dataflow.store": 10,
+        "dataflow.stream": 22,
+        "dataflow.sync": 20,
+    }
+
+    dfg_path = evidence_dir / "partition.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 20
+        or dfg.get("optimistic_cycles") != 438
+        or dfg.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
+        or dfg.get("final_memory_state") != expected_memory
+        or "derived workload graph-set DFG report from component DFG simulator reports" not in dfg.get("diagnostics", [])
+    ):
+        raise AssertionError(f"partition DFG evidence should preserve the two-sided real partition state: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("partition", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "partition.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "blocked"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or "one or more component mapping artifacts are not passing: fail,fail" not in mapping.get("diagnostics", [])
+        or "missing hardware resource for software op dataflow.mux" not in mapping.get("diagnostics", [])
+    ):
+        raise AssertionError(f"partition should remain a structured aggregate mapping blocker: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "partition.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "blocked"
+        or cgra.get("dfg_cycles") != 438
+        or cgra.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
+        or cgra.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"partition CGRA-sim should carry final state while blocked on mapping: {cgra_path}: {cgra}")
 
 
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
@@ -1522,7 +1683,6 @@ def main(argv: list[str]) -> int:
             "gemm",
             "matmul",
             "mat3x3_mult",
-            "modmul",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1555,6 +1715,11 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "fail")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
+        for case in MAPPING_BLOCKED_SWEEP_CASES:
+            assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
+            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "blocked")
+            assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
+            assert_comparison_artifact(evidence_dir, case, "blocked")
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "blocked")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "pass")
@@ -1580,6 +1745,8 @@ def main(argv: list[str]) -> int:
         assert_newton_iter_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
         assert_gf_mul_evidence(evidence_dir)
+        assert_compact_evidence(evidence_dir)
+        assert_partition_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1587,10 +1754,8 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "blocked")
         for case in (
             "autocorrelation",
-            "compact",
             "crc32",
             "merge",
-            "partition",
         ):
             assert_unsupported_operation(evidence_dir, case, "scf.for")
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
@@ -1691,15 +1856,15 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "partition",
             "g_t_partition_red_0_0",
-            "unsupported",
-            "unsupported PnR graph operation: scf.for",
+            "fail",
+            "missing hardware resource for software op dataflow.mux",
         )
         assert_component_mapping_status(
             evidence_dir,
             "partition",
             "g_t_partition_red_1_0",
-            "unsupported",
-            "unsupported PnR graph operation: scf.for",
+            "fail",
+            "missing hardware resource for software op dataflow.mux",
         )
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "relu", "shared_reduction_adg")
@@ -1709,6 +1874,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in MAPPING_FAILED_SWEEP_CASES:
+            assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
+        for case in MAPPING_BLOCKED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -1789,10 +1956,9 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "sbox_lookup",
             {
-                "arith.andi#0.result0->llvm.zext#0.operand0",
+                "arith.andi#0.result0->dataflow.load#1.operand1",
                 "dataflow.load#0.result0->arith.andi#0.operand0",
                 "dataflow.load#1.result0->dataflow.store#0.operand2",
-                "llvm.zext#0.result0->dataflow.load#1.operand1",
             },
         )
         assert_mapping_uses_switch_multihop(evidence_dir, "rotate_bits")
@@ -1871,7 +2037,6 @@ def main(argv: list[str]) -> int:
             "gemm",
             "matmul",
             "mat3x3_mult",
-            "modmul",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -1897,6 +2062,8 @@ def main(argv: list[str]) -> int:
             assert_promoted_row(repo, rows, case)
         for case in MAPPING_FAILED_SWEEP_CASES:
             assert_structured_blocker_row(repo, rows, case, "fail", "fail")
+        for case in MAPPING_BLOCKED_SWEEP_CASES:
+            assert_structured_blocker_row(repo, rows, case, "blocked", "blocked")
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_dfg_blocked_row(repo, rows, case)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
@@ -1974,9 +2141,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 50,
-            "fail": 0,
-            "blocked": 59,
+            "pass": 49,
+            "fail": 2,
+            "blocked": 58,
             "unsupported": 0,
             "missing_status": 0,
         }

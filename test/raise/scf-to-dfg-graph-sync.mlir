@@ -38,3 +38,23 @@ dataflow.graph.func private @g_no_memory_ops(%arg0: none, %arg1: i64,
   %0 = dataflow.invariant %rwc, %arg4 : f32
   dataflow.graph.return %arg0, %0 : none, f32
 }
+
+// A predicated store whose ctrl is routed through dataflow.demux needs one
+// completion token per selected or skipped lane. Graph sync must collect the
+// merged conditional completion token instead of raw store_done.
+
+// CHECK-LABEL: dataflow.graph.func private @g_predicated_store_done
+// CHECK: %[[CTRL_LANES:.*]]:2 = dataflow.demux %arg1, %arg0 : (i1, none) -> (none, none)
+// CHECK: %[[STORE_DONE:.*]] = dataflow.store {{.*}} %[[CTRL_LANES]]#1
+// CHECK: %[[MERGED_DONE:.*]] = dataflow.mux %arg1, %[[CTRL_LANES]]#0, %[[STORE_DONE]] {loom.conditional_store_done} : (i1, none, none) -> none
+// CHECK: dataflow.sync %[[MERGED_DONE]] : (none) -> none
+// CHECK: dataflow.graph.return
+dataflow.graph.func private @g_predicated_store_done(%arg0: none, %arg1: i1,
+                                                     %arg2: memref<?xi32>,
+                                                     %arg3: index,
+                                                     %arg4: i32) -> none {
+  %ctrl_lanes:2 = dataflow.demux %arg1, %arg0 : (i1, none) -> (none, none)
+  %store_done = dataflow.store %arg2[%arg3] %arg4 %ctrl_lanes#1
+      : memref<?xi32>
+  dataflow.graph.return %arg0 : none
+}

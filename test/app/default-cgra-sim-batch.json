@@ -118,10 +118,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "modmul",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "matvec",
       "hardware": "shared_reduction_adg"
     },

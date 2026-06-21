@@ -122,3 +122,116 @@ dataflow.graph.func private @g_bail_two_sided_no_result(%arg0: none,
   }
   dataflow.graph.return %arg0 : none
 }
+
+// Positive (index-domain induction): loop-carried i64 induction values that
+// only feed memory addresses may be narrowed to Loom's index domain before PnR.
+// The graph result keeps the original i64 shape by casting the narrowed cursor
+// back at the return boundary.
+
+// CHECK-LABEL: dataflow.graph.func private @g_index_domain_i64_carry
+// CHECK: %[[INDEX:.*]], %[[RWC:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK-NOT: dataflow.invariant {{.*}} : i64
+// CHECK: %[[INIT:.*]] = arith.index_cast %arg5 : i64 to index
+// CHECK: %[[STEP:.*]] = arith.index_cast %arg3 : i64 to index
+// CHECK: %[[STEP_INV:.*]] = dataflow.invariant %[[RWC]], %[[STEP]] : index
+// CHECK: %[[CURSOR:.*]] = dataflow.carry %[[RWC]], %[[INIT]], %[[NEXT:.*]] : index
+// CHECK: %[[NEXT]] = arith.addi %[[CURSOR]], %[[STEP_INV]] : index
+// CHECK: dataflow.load %arg4[%[[CURSOR]]]
+// CHECK: %[[RETURN_CURSOR:.*]] = arith.index_cast %[[CURSOR]] : index to i64
+// CHECK: dataflow.graph.return %{{.*}}, %[[RETURN_CURSOR]], %{{.*}} : none, i64, f32
+dataflow.graph.func private @g_index_domain_i64_carry(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: memref<?xf32>, %arg5: i64, %arg6: f32) -> (none, i64, f32) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %step = dataflow.invariant %rwc, %arg3 : i64
+  %cursor = dataflow.carry %rwc, %arg5, %next : i64
+  %addr = arith.index_cast %cursor : i64 to index
+  %data, %done = dataflow.load %arg4[%addr] %arg0 : memref<?xf32>
+  %next = arith.addi %cursor, %step : i64
+  dataflow.graph.return %done, %cursor, %data : none, i64, f32
+}
+
+// Positive (index-domain address mask): correlation-style address arithmetic
+// computes a wrapped address using i64 loop-invariant offset/mask values. The
+// address-only add/and chain must lower to index-width ops before PnR.
+
+// CHECK-LABEL: dataflow.graph.func private @g_index_domain_address_mask
+// CHECK: %[[INDEX2:.*]], %[[RWC2:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK-NOT: dataflow.invariant {{.*}} : i64
+// CHECK: %[[INDEX_AS_INDEX:.*]] = arith.index_cast %[[INDEX2]] : i64 to index
+// CHECK: %[[OFFSET_ARG:.*]] = arith.index_cast %arg5 : i64 to index
+// CHECK: %[[OFFSET:.*]] = dataflow.invariant %[[RWC2]], %[[OFFSET_ARG]] : index
+// CHECK: %[[ADD:.*]] = arith.addi %[[INDEX_AS_INDEX]], %[[OFFSET]] : index
+// CHECK: %[[MASK_ARG:.*]] = arith.index_cast %arg6 : i64 to index
+// CHECK: %[[MASK:.*]] = dataflow.invariant %[[RWC2]], %[[MASK_ARG]] : index
+// CHECK: %[[ADDR:.*]] = arith.andi %[[ADD]], %[[MASK]] : index
+// CHECK: dataflow.load %arg4[%[[ADDR]]]
+dataflow.graph.func private @g_index_domain_address_mask(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: memref<?xf32>, %arg5: i64, %arg6: i64) -> (none, f32) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %offset = dataflow.invariant %rwc, %arg5 : i64
+  %mask = dataflow.invariant %rwc, %arg6 : i64
+  %biased = arith.addi %index, %offset : i64
+  %wrapped = arith.andi %biased, %mask : i64
+  %addr = arith.index_cast %wrapped : i64 to index
+  %data, %done = dataflow.load %arg4[%addr] %arg0 : memref<?xf32>
+  dataflow.graph.return %done, %data : none, f32
+}
+
+// Positive (index-domain guarded address): FIR-style guarded loads compute an
+// i64 offset, compare it against an invariant bound, and select between the
+// computed address and zero. The whole address/control chain is index-domain
+// and must not require 64-bit fabric invariant resources.
+
+// CHECK-LABEL: dataflow.graph.func private @g_index_domain_guarded_address
+// CHECK: %[[INDEX3:.*]], %[[RWC3:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK-NOT: dataflow.invariant {{.*}} : i64
+// CHECK: %[[UB_ARG:.*]] = arith.index_cast %arg6 : i64 to index
+// CHECK: %[[UB:.*]] = dataflow.invariant %[[RWC3]], %[[UB_ARG]] : index
+// CHECK: %[[INDEX_AS_INDEX3:.*]] = arith.index_cast %[[INDEX3]] : i64 to index
+// CHECK: %[[DELTA:.*]] = arith.subi %[[UB]], %[[INDEX_AS_INDEX3]] : index
+// CHECK: %[[LB_ARG:.*]] = arith.index_cast %arg5 : i64 to index
+// CHECK: %[[LB:.*]] = dataflow.invariant %[[RWC3]], %[[LB_ARG]] : index
+// CHECK: %[[PRED:.*]] = arith.cmpi sgt, %[[DELTA]], %[[LB]] : index
+// CHECK: %[[SAFE_ADDR:.*]] = arith.select %[[PRED]], %[[DELTA]], %{{.*}} : index
+// CHECK: dataflow.load %arg4[%[[SAFE_ADDR]]]
+dataflow.graph.func private @g_index_domain_guarded_address(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: memref<?xf32>, %arg5: i64, %arg6: i64) -> (none, f32) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %lb = dataflow.invariant %rwc, %arg5 : i64
+  %ub = dataflow.invariant %rwc, %arg6 : i64
+  %delta = arith.subi %ub, %index : i64
+  %pred = arith.cmpi sgt, %delta, %lb : i64
+  %addr = arith.index_cast %delta : i64 to index
+  %zero = dataflow.constant %arg0 {const_value = 0 : index} : index
+  %safe = arith.select %pred, %addr, %zero : index
+  %data, %done = dataflow.load %arg4[%safe] %arg0 : memref<?xf32>
+  dataflow.graph.return %done, %data : none, f32
+}
+
+// Positive (index-domain zext address): an i32 address expression widened with
+// llvm.zext before index_cast is still an address-domain value and must not
+// require a 64-bit fabric op.
+
+// CHECK-LABEL: dataflow.graph.func private @g_index_domain_zext_address
+// CHECK: %[[LHS:.*]] = arith.index_cast %arg5 : i32 to index
+// CHECK: %[[RHS:.*]] = arith.index_cast %arg6 : i32 to index
+// CHECK: %[[ADDR:.*]] = arith.addi %[[LHS]], %[[RHS]] : index
+// CHECK-NOT: llvm.zext
+// CHECK: dataflow.load %arg4[%[[ADDR]]]
+dataflow.graph.func private @g_index_domain_zext_address(
+    %arg0: none, %arg1: i64, %arg2: i64, %arg3: i64,
+    %arg4: memref<?xf32>, %arg5: i32, %arg6: i32) -> (none, f32) {
+  %index, %rwc = dataflow.stream %arg1, %arg2, %arg3
+      {cont_cond = "<", step_op = "+="} : i64
+  %sum = arith.addi %arg5, %arg6 : i32
+  %wide = llvm.zext nneg %sum : i32 to i64
+  %addr = arith.index_cast %wide : i64 to index
+  %data, %done = dataflow.load %arg4[%addr] %arg0 : memref<?xf32>
+  dataflow.graph.return %done, %data : none, f32
+}

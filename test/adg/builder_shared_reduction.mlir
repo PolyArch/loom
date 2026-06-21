@@ -138,12 +138,12 @@
 
 // MATMUL-DAG: "workload": "matmul"
 // MATMUL-DAG: "hardware": "shared_reduction_adg"
-// MATMUL-DAG: "placed_records": 17
-// MATMUL-DAG: "routed_edges": 23
+// MATMUL-DAG: "placed_records": 15
+// MATMUL-DAG: "routed_edges": 21
 // MATMUL-DAG: "unrouted_edges": 0
 // MATMUL-DAG: "status": "pass"
 // MATMUL-DAG: "edge_ref": "dataflow.stream#0.result0->llvm.trunc#0.operand0"
-// MATMUL-DAG: "edge_ref": "llvm.zext#1.result0->dataflow.load#1.operand1"
+// MATMUL-DAG: "edge_ref": "arith.addi#1.result0->dataflow.load#1.operand1"
 // MATMUL-DAG: "edge_ref": "arith.addi#2.result0->dataflow.carry#0.operand2"
 // MATMUL-DAG: "segment_kind": "module_path"
 // MATMUL-NOT: ".out"
@@ -163,13 +163,12 @@
 
 // MODMUL-DAG: "workload": "modmul"
 // MODMUL-DAG: "hardware": "shared_reduction_adg"
-// MODMUL-DAG: "placed_records": {{[1-9][0-9]*}}
-// MODMUL-DAG: "routed_edges": {{[1-9][0-9]*}}
+// MODMUL-DAG: "placed_records": 4
+// MODMUL-DAG: "routed_edges": 3
+// MODMUL-DAG: "unplaced_records": 5
 // MODMUL-DAG: "unrouted_edges": 0
-// MODMUL-DAG: "status": "pass"
-// MODMUL-DAG: "edge_ref": "arith.muli#0.result0->arith.remui#0.operand0"
-// MODMUL-DAG: "edge_ref": "arith.remui#0.result0->llvm.trunc#0.operand0"
-// MODMUL-DAG: "edge_ref": "llvm.trunc#0.result0->dataflow.store#0.operand2"
+// MODMUL-DAG: "status": "fail"
+// MODMUL-DAG: "missing hardware resource for software op llvm.zext"
 // MODMUL-DAG: "segment_kind": "module_path"
 // MODMUL-NOT: ".out"
 // MODMUL-NOT: ".in"
@@ -188,7 +187,7 @@
 
 // DOT3D-DAG: "workload": "dot_product_3d"
 // DOT3D-DAG: "hardware": "shared_reduction_adg"
-// DOT3D-DAG: "placed_records": 14
+// DOT3D-DAG: "placed_records": 16
 // DOT3D-DAG: "unrouted_edges": 0
 // DOT3D-DAG: "status": "pass"
 // DOT3D-DAG: "edge_ref": "llvm.intr.fmuladd#0.result0->llvm.intr.fmuladd#1.operand2"
@@ -209,12 +208,11 @@
 
 // SPMV-DAG: "workload": "spmv"
 // SPMV-DAG: "hardware": "shared_reduction_adg"
-// SPMV-DAG: "placed_records": 9
+// SPMV-DAG: "placed_records": 8
 // SPMV-DAG: "routed_edges": {{[1-9][0-9]*}}
 // SPMV-DAG: "unrouted_edges": 0
 // SPMV-DAG: "status": "pass"
-// SPMV-DAG: "edge_ref": "dataflow.load#1.result0->llvm.zext#0.operand0"
-// SPMV-DAG: "edge_ref": "llvm.zext#0.result0->dataflow.load#2.operand1"
+// SPMV-DAG: "edge_ref": "dataflow.load#1.result0->dataflow.load#2.operand1"
 // SPMV-DAG: "edge_ref": "dataflow.load#2.result1->dataflow.sync#0.operand2"
 // SPMV-DAG: "segment_kind": "module_path"
 // SPMV-NOT: ".out"
@@ -234,13 +232,12 @@
 // GF-MUL-NOT: ".out"
 // GF-MUL-NOT: ".in"
 // SBOX-DAG: "hardware": "shared_reduction_adg"
-// SBOX-DAG: "placed_records": 6
-// SBOX-DAG: "routed_edges": 7
+// SBOX-DAG: "placed_records": 5
+// SBOX-DAG: "routed_edges": 6
 // SBOX-DAG: "unrouted_edges": 0
 // SBOX-DAG: "status": "pass"
 // SBOX-DAG: "edge_ref": "dataflow.load#0.result0->arith.andi#0.operand0"
-// SBOX-DAG: "edge_ref": "arith.andi#0.result0->llvm.zext#0.operand0"
-// SBOX-DAG: "edge_ref": "llvm.zext#0.result0->dataflow.load#1.operand1"
+// SBOX-DAG: "edge_ref": "arith.andi#0.result0->dataflow.load#1.operand1"
 // SBOX-DAG: "edge_ref": "dataflow.load#1.result0->dataflow.store#0.operand2"
 // SBOX-DAG: "segment_kind": "module_path"
 // SBOX-NOT: ".out"

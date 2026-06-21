@@ -57,7 +57,69 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <optional>
+
 namespace {
+
+constexpr ::llvm::StringLiteral kConditionalStoreDoneAttr =
+    "loom.conditional_store_done";
+
+std::optional<::mlir::Value> findConditionalStoreDone(::mlir::Value storeDone) {
+  ::mlir::Value replacement;
+  for (::mlir::OpOperand &use : storeDone.getUses()) {
+    auto mux = ::llvm::dyn_cast<::dataflow::MuxOp>(use.getOwner());
+    if (!mux || !mux->hasAttr(kConditionalStoreDoneAttr))
+      continue;
+    if (mux.getOutput().getType() != storeDone.getType())
+      continue;
+    if (replacement)
+      return std::nullopt;
+    replacement = mux.getOutput();
+  }
+  if (!replacement)
+    return std::nullopt;
+  return replacement;
+}
+
+std::optional<unsigned> findDemuxOutputIndex(::dataflow::DemuxOp demux,
+                                             ::mlir::Value output) {
+  for (unsigned i = 0, e = demux.getOutputs().size(); i < e; ++i) {
+    if (demux.getOutputs()[i] == output)
+      return i;
+  }
+  return std::nullopt;
+}
+
+std::optional<::mlir::Value>
+materializeConditionalStoreDone(::dataflow::StoreOp store,
+                                ::mlir::OpBuilder &builder,
+                                ::dataflow::GraphReturnOp ret) {
+  auto ctrlDemux = store.getCtrl().getDefiningOp<::dataflow::DemuxOp>();
+  if (!ctrlDemux)
+    return std::nullopt;
+  std::optional<unsigned> storeLane =
+      findDemuxOutputIndex(ctrlDemux, store.getCtrl());
+  if (!storeLane)
+    return std::nullopt;
+
+  ::llvm::SmallVector<::mlir::Value, 4> inputs;
+  inputs.reserve(ctrlDemux.getOutputs().size());
+  for (unsigned i = 0, e = ctrlDemux.getOutputs().size(); i < e; ++i) {
+    if (i == *storeLane) {
+      inputs.push_back(store.getDone());
+      continue;
+    }
+    inputs.push_back(ctrlDemux.getOutputs()[i]);
+  }
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(ret);
+  auto mergedDone = ::dataflow::MuxOp::create(
+      builder, store.getLoc(), builder.getNoneType(), ctrlDemux.getSel(),
+      inputs);
+  mergedDone->setAttr(kConditionalStoreDoneAttr, builder.getUnitAttr());
+  return mergedDone.getOutput();
+}
 
 // Collect every `%done : none` token produced by a `dataflow.load` or
 // `dataflow.store` op that sits directly in the graph entry block.
@@ -69,13 +131,26 @@ namespace {
 // unchanged. A future iteration can extend this to emit one sync per
 // nested region if downstream consumers need a finer rendezvous.
 void collectDoneTokens(::dataflow::GraphFuncOp graph,
+                       ::mlir::OpBuilder &builder,
+                       ::dataflow::GraphReturnOp ret,
                        ::llvm::SmallVectorImpl<::mlir::Value> &out) {
   ::mlir::Block &entry = graph.getBody().front();
   for (::mlir::Operation &op : entry.without_terminator()) {
     if (auto load = ::llvm::dyn_cast<::dataflow::LoadOp>(op))
       out.push_back(load.getDone());
-    else if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op))
+    else if (auto store = ::llvm::dyn_cast<::dataflow::StoreOp>(op)) {
+      if (std::optional<::mlir::Value> done =
+              findConditionalStoreDone(store.getDone())) {
+        out.push_back(*done);
+        continue;
+      }
+      if (std::optional<::mlir::Value> done =
+              materializeConditionalStoreDone(store, builder, ret)) {
+        out.push_back(*done);
+        continue;
+      }
       out.push_back(store.getDone());
+    }
   }
 }
 
@@ -86,16 +161,15 @@ void collectDoneTokens(::dataflow::GraphFuncOp graph,
 bool rewriteOneGraph(::dataflow::GraphFuncOp graph,
                      ::mlir::OpBuilder &builder) {
   ::llvm::SmallVector<::mlir::Value, 8> dones;
-  collectDoneTokens(graph, dones);
-  if (dones.empty())
-    return false;
-
   ::mlir::Block &entry = graph.getBody().front();
   auto ret = ::llvm::dyn_cast_or_null<::dataflow::GraphReturnOp>(
       entry.getTerminator());
   if (!ret)
     return false;
   if (ret.getValues().empty())
+    return false;
+  collectDoneTokens(graph, builder, ret, dones);
+  if (dones.empty())
     return false;
 
   ::llvm::SmallVector<::mlir::Type, 8> resultTypes(dones.size(),

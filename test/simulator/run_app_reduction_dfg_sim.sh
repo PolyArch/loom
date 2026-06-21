@@ -1242,7 +1242,7 @@ case "${CASE}" in
         )
         ;;
     compact)
-        append_ctrl_tokens 1
+        append_ctrl_tokens 12
         append_compact_memrefs 4 6
         sim_args+=(
             --graph g_t_compact_red_0_0

@@ -1,7 +1,9 @@
 #include "PnR/Mapping.h"
 
+#include "Common/IndexWidth.h"
 #include "Common/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 
@@ -967,6 +969,437 @@ bool resourceSupportsSoftwareConfigs(const SoftwareNode &node,
   return true;
 }
 
+std::optional<unsigned> softwareBitWidth(mlir::Type type) {
+  if (mlir::isa<mlir::NoneType>(type))
+    return 0;
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intType.getWidth();
+  if (auto floatType = mlir::dyn_cast<mlir::FloatType>(type))
+    return floatType.getWidth();
+  if (mlir::isa<mlir::IndexType>(type))
+    return loom::getIndexWidth();
+  return std::nullopt;
+}
+
+std::optional<unsigned> fabricBitWidth(mlir::Type type) {
+  if (auto bits = mlir::dyn_cast<fabric::BitsType>(type))
+    return bits.getWidth();
+  return std::nullopt;
+}
+
+bool isDataflowMemoryAddressUse(mlir::OpOperand &use) {
+  mlir::Operation *owner = use.getOwner();
+  llvm::StringRef name = owner->getName().getStringRef();
+  return (name == "dataflow.load" || name == "dataflow.store") &&
+         use.getOperandNumber() == 1;
+}
+
+bool valueFeedsOnlyMemoryAddressThroughIndexCast(mlir::Value value) {
+  bool sawAddressUse = false;
+  for (mlir::OpOperand &use : value.getUses()) {
+    auto cast = mlir::dyn_cast<mlir::arith::IndexCastOp>(use.getOwner());
+    if (!cast || use.getOperandNumber() != 0 ||
+        !mlir::isa<mlir::IndexType>(cast.getType()))
+      return false;
+    for (mlir::OpOperand &castUse : cast.getResult().getUses()) {
+      if (!isDataflowMemoryAddressUse(castUse))
+        return false;
+      sawAddressUse = true;
+    }
+  }
+  return sawAddressUse;
+}
+
+bool isDataflowStoreDataUse(mlir::OpOperand &use) {
+  return use.getOwner()->getName().getStringRef() == "dataflow.store" &&
+         use.getOperandNumber() == 2;
+}
+
+bool valueFeedsOnlyStoreData(mlir::Value value) {
+  if (value.use_empty())
+    return false;
+  for (mlir::OpOperand &use : value.getUses())
+    if (!isDataflowStoreDataUse(use))
+      return false;
+  return true;
+}
+
+bool isFabricBitsWidth(mlir::Type type, unsigned width) {
+  std::optional<unsigned> actual = fabricBitWidth(type);
+  return actual && *actual == width;
+}
+
+bool softwareTypeFitsFabricType(mlir::Type softwareType,
+                                mlir::Type hardwareType) {
+  std::optional<unsigned> softwareWidth = softwareBitWidth(softwareType);
+  std::optional<unsigned> hardwareWidth = fabricBitWidth(hardwareType);
+  if (!softwareWidth || !hardwareWidth)
+    return false;
+  if (mlir::isa<mlir::NoneType>(softwareType))
+    return *softwareWidth == *hardwareWidth;
+  if (mlir::isa<mlir::FloatType>(softwareType))
+    return *softwareWidth == *hardwareWidth;
+  if (mlir::isa<mlir::IntegerType, mlir::IndexType>(softwareType))
+    return *softwareWidth <= *hardwareWidth;
+  return false;
+}
+
+bool resourceSupportsDataflowInvariantTransport(
+    const SoftwareNode &node, const HardwareResource &resource) {
+  if (node.operation != "dataflow.invariant" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 2 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 2 ||
+      resource.op->getNumResults() != 1)
+    return false;
+
+  std::optional<unsigned> softwareCondWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  std::optional<unsigned> softwareValueWidth =
+      softwareBitWidth(node.op->getOperand(1).getType());
+  std::optional<unsigned> softwareResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  unsigned transportWidth = loom::getIndexWidth();
+  if (!softwareCondWidth || *softwareCondWidth != 1 || !softwareValueWidth ||
+      !softwareResultWidth || *softwareValueWidth != *softwareResultWidth ||
+      *softwareValueWidth == 0 || *softwareValueWidth > transportWidth)
+    return false;
+
+  return isFabricBitsWidth(resource.op->getOperand(0).getType(), 1) &&
+         isFabricBitsWidth(resource.op->getOperand(1).getType(),
+                           transportWidth) &&
+         isFabricBitsWidth(resource.op->getResult(0).getType(),
+                           transportWidth);
+}
+
+bool resourceSupportsDataflowConstantTransport(const SoftwareNode &node,
+                                               const HardwareResource &resource) {
+  if (node.operation != "dataflow.constant" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 1 ||
+      resource.op->getNumResults() != 1)
+    return false;
+
+  std::optional<unsigned> softwareControlWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  std::optional<unsigned> softwareResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  unsigned transportWidth = loom::getIndexWidth();
+  if (!softwareControlWidth || *softwareControlWidth != 0 ||
+      !softwareResultWidth || *softwareResultWidth == 0 ||
+      *softwareResultWidth > transportWidth)
+    return false;
+
+  return isFabricBitsWidth(resource.op->getOperand(0).getType(), 0) &&
+         isFabricBitsWidth(resource.op->getResult(0).getType(),
+                           transportWidth);
+}
+
+bool isTransportablePayloadType(mlir::Type type) {
+  if (isLlvmPointerType(type))
+    return true;
+  std::optional<unsigned> width = softwareBitWidth(type);
+  return width && *width > 0 && *width <= loom::getIndexWidth();
+}
+
+bool resourceSupportsDataflowGateTransport(const SoftwareNode &node,
+                                           const HardwareResource &resource) {
+  if (node.operation != "dataflow.gate" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 2 || node.op->getNumResults() != 2 ||
+      resource.op->getNumOperands() != 2 ||
+      resource.op->getNumResults() != 2)
+    return false;
+
+  std::optional<unsigned> softwareCondWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  std::optional<unsigned> softwareCondResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  unsigned transportWidth = loom::getIndexWidth();
+  if (!softwareCondWidth || *softwareCondWidth != 1 ||
+      !softwareCondResultWidth || *softwareCondResultWidth != 1 ||
+      !isTransportablePayloadType(node.op->getOperand(1).getType()) ||
+      !isTransportablePayloadType(node.op->getResult(1).getType()))
+    return false;
+
+  return isFabricBitsWidth(resource.op->getOperand(0).getType(), 1) &&
+         isFabricBitsWidth(resource.op->getOperand(1).getType(),
+                           transportWidth) &&
+         isFabricBitsWidth(resource.op->getResult(0).getType(), 1) &&
+         isFabricBitsWidth(resource.op->getResult(1).getType(),
+                           transportWidth);
+}
+
+bool isIndexAdapterResult(mlir::Value value) {
+  auto cast = value.getDefiningOp<mlir::arith::IndexCastOp>();
+  return cast && mlir::isa<mlir::IndexType>(cast.getIn().getType());
+}
+
+bool resourceSupportsIndexDomainZExt(const SoftwareNode &node,
+                                     const HardwareResource &resource) {
+  if (node.operation != "llvm.zext" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 1 ||
+      resource.op->getNumResults() != 1)
+    return false;
+
+  std::optional<unsigned> softwareInputWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  auto softwareResultType =
+      mlir::dyn_cast<mlir::IntegerType>(node.op->getResult(0).getType());
+  std::optional<unsigned> hardwareInputWidth =
+      fabricBitWidth(resource.op->getOperand(0).getType());
+  std::optional<unsigned> hardwareResultWidth =
+      fabricBitWidth(resource.op->getResult(0).getType());
+  unsigned indexWidth = loom::getIndexWidth();
+  if (!softwareInputWidth || *softwareInputWidth != indexWidth ||
+      !softwareResultType || softwareResultType.getWidth() < indexWidth ||
+      !hardwareInputWidth || *hardwareInputWidth != indexWidth ||
+      !hardwareResultWidth || *hardwareResultWidth != indexWidth)
+    return false;
+
+  return valueFeedsOnlyMemoryAddressThroughIndexCast(node.op->getResult(0));
+}
+
+bool resourceSupportsIndexAdapterTrunc(const SoftwareNode &node,
+                                       const HardwareResource &resource) {
+  if (node.operation != "llvm.trunc" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 1 ||
+      resource.op->getNumResults() != 1)
+    return false;
+  if (!isIndexAdapterResult(node.op->getOperand(0)))
+    return false;
+
+  std::optional<unsigned> softwareResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  unsigned indexWidth = loom::getIndexWidth();
+  return softwareResultWidth && *softwareResultWidth == indexWidth &&
+         isFabricBitsWidth(resource.op->getOperand(0).getType(), indexWidth) &&
+         isFabricBitsWidth(resource.op->getResult(0).getType(), indexWidth);
+}
+
+bool resourceSupportsStreamIndexTrunc(const SoftwareNode &node,
+                                      const HardwareResource &resource) {
+  if (node.operation != "llvm.trunc" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 1 ||
+      resource.op->getNumResults() != 1)
+    return false;
+  auto stream = node.op->getOperand(0).getDefiningOp<::dataflow::StreamOp>();
+  if (!stream || stream.getIndex() != node.op->getOperand(0))
+    return false;
+
+  std::optional<unsigned> softwareInputWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  std::optional<unsigned> softwareResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  std::optional<unsigned> hardwareInputWidth =
+      fabricBitWidth(resource.op->getOperand(0).getType());
+  std::optional<unsigned> hardwareResultWidth =
+      fabricBitWidth(resource.op->getResult(0).getType());
+  unsigned indexWidth = loom::getIndexWidth();
+  return softwareInputWidth && *softwareInputWidth >= indexWidth &&
+         softwareResultWidth && *softwareResultWidth == indexWidth &&
+         hardwareInputWidth && *hardwareInputWidth == indexWidth &&
+         hardwareResultWidth && *hardwareResultWidth == indexWidth;
+}
+
+bool resourceSupportsIntegerNarrowingTrunc(const SoftwareNode &node,
+                                           const HardwareResource &resource) {
+  if (node.operation != "llvm.trunc" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 1 ||
+      resource.op->getNumResults() != 1)
+    return false;
+
+  std::optional<unsigned> softwareInputWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  std::optional<unsigned> softwareResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  std::optional<unsigned> hardwareInputWidth =
+      fabricBitWidth(resource.op->getOperand(0).getType());
+  std::optional<unsigned> hardwareResultWidth =
+      fabricBitWidth(resource.op->getResult(0).getType());
+  unsigned indexWidth = loom::getIndexWidth();
+  if (!softwareInputWidth || !softwareResultWidth || !hardwareInputWidth ||
+      !hardwareResultWidth)
+    return false;
+  if (*softwareInputWidth > indexWidth || *softwareResultWidth >= *softwareInputWidth)
+    return false;
+  if (*hardwareInputWidth != indexWidth || *hardwareResultWidth != indexWidth)
+    return false;
+  return valueFeedsOnlyStoreData(node.op->getResult(0));
+}
+
+bool resourceSupportsIntegerWideningExtension(const SoftwareNode &node,
+                                              const HardwareResource &resource) {
+  if ((node.operation != "llvm.sext" && node.operation != "llvm.zext") ||
+      !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 1 ||
+      resource.op->getNumResults() != 1)
+    return false;
+
+  std::optional<unsigned> softwareInputWidth =
+      softwareBitWidth(node.op->getOperand(0).getType());
+  std::optional<unsigned> softwareResultWidth =
+      softwareBitWidth(node.op->getResult(0).getType());
+  std::optional<unsigned> hardwareInputWidth =
+      fabricBitWidth(resource.op->getOperand(0).getType());
+  std::optional<unsigned> hardwareResultWidth =
+      fabricBitWidth(resource.op->getResult(0).getType());
+  unsigned indexWidth = loom::getIndexWidth();
+  return softwareInputWidth && softwareResultWidth && hardwareInputWidth &&
+         hardwareResultWidth && *softwareInputWidth < *softwareResultWidth &&
+         *softwareResultWidth == indexWidth &&
+         *hardwareInputWidth == indexWidth && *hardwareResultWidth == indexWidth;
+}
+
+bool isPredicateConsumerUse(mlir::OpOperand &use) {
+  mlir::Operation *owner = use.getOwner();
+  llvm::StringRef name = owner->getName().getStringRef();
+  unsigned operand = use.getOperandNumber();
+  if (name == "arith.select" || name == "dataflow.mux" ||
+      name == "dataflow.demux" || name == "dataflow.gate")
+    return operand == 0;
+  if (name == "dataflow.carry" || name == "dataflow.invariant")
+    return operand == 0;
+  return false;
+}
+
+bool valueFeedsOnlyPredicateConsumers(mlir::Value value) {
+  if (value.use_empty())
+    return false;
+  for (mlir::OpOperand &use : value.getUses()) {
+    if (!isPredicateConsumerUse(use))
+      return false;
+  }
+  return true;
+}
+
+bool resourceSupportsPredicateTransportAndI(const SoftwareNode &node,
+                                            const HardwareResource &resource) {
+  if (node.operation != "arith.andi" || !node.op || !resource.op)
+    return false;
+  if (node.op->getNumOperands() != 2 || node.op->getNumResults() != 1 ||
+      resource.op->getNumOperands() != 2 ||
+      resource.op->getNumResults() != 1)
+    return false;
+  auto isI1 = [](mlir::Type type) {
+    auto intType = mlir::dyn_cast<mlir::IntegerType>(type);
+    return intType && intType.getWidth() == 1;
+  };
+  if (!llvm::all_of(node.op->getOperandTypes(), isI1) ||
+      !llvm::all_of(node.op->getResultTypes(), isI1))
+    return false;
+  auto isTransport32 = [](mlir::Type type) {
+    std::optional<unsigned> width = fabricBitWidth(type);
+    return width && *width == loom::getIndexWidth();
+  };
+  if (!llvm::all_of(resource.op->getOperandTypes(), isTransport32) ||
+      !llvm::all_of(resource.op->getResultTypes(), isTransport32))
+    return false;
+  return valueFeedsOnlyPredicateConsumers(node.op->getResult(0));
+}
+
+bool resourceSupportsSoftwarePortShape(const SoftwareNode &node,
+                                       const HardwareResource &resource) {
+  if (resource.kind != ResourceKind::FabricOp)
+    return true;
+  if (!resource.op)
+    return false;
+
+  if (node.operation == "dataflow.stream") {
+    if (resource.op->getNumOperands() != 3 || resource.op->getNumResults() != 2)
+      return false;
+    for (mlir::Type type : node.op->getOperandTypes()) {
+      if (!mlir::isa<mlir::IntegerType, mlir::IndexType>(type))
+        return false;
+    }
+    if (!mlir::isa<mlir::IntegerType, mlir::IndexType>(
+            node.op->getResult(0).getType()) ||
+        !mlir::isa<mlir::IntegerType>(node.op->getResult(1).getType()))
+      return false;
+    if (node.op->getResult(1).getType().getIntOrFloatBitWidth() != 1)
+      return false;
+    for (mlir::Type type : resource.op->getOperandTypes()) {
+      std::optional<unsigned> width = fabricBitWidth(type);
+      if (!width || *width != loom::getIndexWidth())
+        return false;
+    }
+    std::optional<unsigned> indexWidth =
+        fabricBitWidth(resource.op->getResult(0).getType());
+    std::optional<unsigned> rwcWidth =
+        fabricBitWidth(resource.op->getResult(1).getType());
+    return indexWidth && *indexWidth == loom::getIndexWidth() && rwcWidth &&
+           *rwcWidth == 1;
+  }
+
+  if (node.operation == "dataflow.sync") {
+    if (node.op->getNumOperands() != node.op->getNumResults())
+      return false;
+    if (node.op->getNumOperands() > resource.op->getNumOperands() ||
+        node.op->getNumResults() > resource.op->getNumResults())
+      return false;
+    auto isControlToken = [](mlir::Type type) {
+      return mlir::isa<mlir::NoneType>(type);
+    };
+    auto isFabricControlToken = [](mlir::Type type) {
+      std::optional<unsigned> width = fabricBitWidth(type);
+      return width && *width == 0;
+    };
+    if (!llvm::all_of(node.op->getOperandTypes(), isControlToken) ||
+        !llvm::all_of(node.op->getResultTypes(), isControlToken))
+      return false;
+    if (!llvm::all_of(resource.op->getOperandTypes(), isFabricControlToken) ||
+        !llvm::all_of(resource.op->getResultTypes(), isFabricControlToken))
+      return false;
+    return true;
+  }
+
+  if (node.op->getNumOperands() != resource.op->getNumOperands() ||
+      node.op->getNumResults() != resource.op->getNumResults())
+    return false;
+
+  if (resourceSupportsIndexDomainZExt(node, resource))
+    return true;
+  if (resourceSupportsIndexAdapterTrunc(node, resource))
+    return true;
+  if (resourceSupportsStreamIndexTrunc(node, resource))
+    return true;
+  if (resourceSupportsIntegerNarrowingTrunc(node, resource))
+    return true;
+  if (resourceSupportsIntegerWideningExtension(node, resource))
+    return true;
+  if (resourceSupportsPredicateTransportAndI(node, resource))
+    return true;
+  if (resourceSupportsDataflowConstantTransport(node, resource))
+    return true;
+  if (resourceSupportsDataflowInvariantTransport(node, resource))
+    return true;
+  if (resourceSupportsDataflowGateTransport(node, resource))
+    return true;
+
+  for (auto [softwareType, hardwareType] :
+       llvm::zip(node.op->getOperandTypes(), resource.op->getOperandTypes())) {
+    if (!softwareTypeFitsFabricType(softwareType, hardwareType))
+      return false;
+  }
+  for (auto [softwareType, hardwareType] :
+       llvm::zip(node.op->getResultTypes(), resource.op->getResultTypes())) {
+    if (!softwareTypeFitsFabricType(softwareType, hardwareType))
+      return false;
+  }
+  return true;
+}
+
 HardwareResource *
 claimResource(SoftwareNode &node,
               llvm::MutableArrayRef<HardwareResource> resources) {
@@ -975,6 +1408,8 @@ claimResource(SoftwareNode &node,
       continue;
     if (resource.kind == ResourceKind::FabricOp &&
         !resource.supportedOps.contains(node.operation))
+      continue;
+    if (!resourceSupportsSoftwarePortShape(node, resource))
       continue;
     if (!resourceSupportsSoftwareConfigs(node, resource))
       continue;
@@ -990,6 +1425,8 @@ bool resourceIsCompatible(const SoftwareNode &node,
     return false;
   if (resource.kind == ResourceKind::FabricOp &&
       !resource.supportedOps.contains(node.operation))
+    return false;
+  if (!resourceSupportsSoftwarePortShape(node, resource))
     return false;
   return resourceSupportsSoftwareConfigs(node, resource);
 }

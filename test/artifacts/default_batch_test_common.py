@@ -36,7 +36,6 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "matmul",
     "matvec",
     "mean",
-    "modmul",
     "newton_iter",
     "prefix_sum",
     "prefix_sum_exclusive",

@@ -8,7 +8,7 @@
 // CHECK-DAG: "graph": "fmuladd"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// CHECK-DAG: "optimistic_cycles": 10
+// CHECK-DAG: "optimistic_cycles": 11
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "f32:10"

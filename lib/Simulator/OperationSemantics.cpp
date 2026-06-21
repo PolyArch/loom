@@ -62,7 +62,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.memcpy", 8, 8, false, false},
     {"llvm.intr.fshl", 1, 1, true, true},
     {"llvm.intr.bswap", 1, 1, true, true},
-    {"llvm.intr.fmuladd", 7, 7, true, true},
+    {"llvm.intr.fmuladd", 8, 8, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"llvm.intr.fabs", 1, 1, true, true},
     {"llvm.arm.qadd16", 1, 1, true, true},

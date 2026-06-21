@@ -172,16 +172,15 @@
 // ROTATE-BITS-JSON-NOT: ".out"
 // ROTATE-BITS-JSON-NOT: ".in"
 
-// SBOX-NEXT: sbox_lookup,shared_reduction_adg,sbox_lookup__g_t_main_2_0__shared_reduction_adg,6,7,0,0,pass,mapped software graph to fabric resources
+// SBOX-NEXT: sbox_lookup,shared_reduction_adg,sbox_lookup__g_t_main_2_0__shared_reduction_adg,5,6,0,0,pass,mapped software graph to fabric resources
 // SBOX-JSON-DAG: "workload": "sbox_lookup"
 // SBOX-JSON-DAG: "hardware": "shared_reduction_adg"
 // SBOX-JSON-DAG: "status": "pass"
-// SBOX-JSON-DAG: "placed_records": 6
-// SBOX-JSON-DAG: "routed_edges": 7
+// SBOX-JSON-DAG: "placed_records": 5
+// SBOX-JSON-DAG: "routed_edges": 6
 // SBOX-JSON-DAG: "unrouted_edges": 0
 // SBOX-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.andi#0.operand0"
-// SBOX-JSON-DAG: "edge_ref": "arith.andi#0.result0->llvm.zext#0.operand0"
-// SBOX-JSON-DAG: "edge_ref": "llvm.zext#0.result0->dataflow.load#1.operand1"
+// SBOX-JSON-DAG: "edge_ref": "arith.andi#0.result0->dataflow.load#1.operand1"
 // SBOX-JSON-DAG: "edge_ref": "dataflow.load#1.result0->dataflow.store#0.operand2"
 // SBOX-JSON-DAG: "segment_kind": "resource_edge"
 // SBOX-JSON-DAG: "segment_kind": "module_path"
@@ -260,9 +259,9 @@
 // CONVOLVE-1D-JSON-DAG: "hardware": "shared_reduction_adg"
 // CONVOLVE-1D-JSON-DAG: "status": "pass"
 // CONVOLVE-1D-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->arith.addi#0.operand0"
-// CONVOLVE-1D-JSON-DAG: "edge_ref": "dataflow.invariant#1.result0->arith.addi#0.operand1"
+// CONVOLVE-1D-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.addi#0.operand1"
 // CONVOLVE-1D-JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.andi#0.operand0"
-// CONVOLVE-1D-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.andi#0.operand1"
+// CONVOLVE-1D-JSON-DAG: "edge_ref": "dataflow.invariant#1.result0->arith.andi#0.operand1"
 // CONVOLVE-1D-JSON-DAG: "edge_ref": "arith.andi#0.result0->dataflow.load#0.operand1"
 // CONVOLVE-1D-JSON-NOT: ".out"
 // CONVOLVE-1D-JSON-NOT: ".in"
@@ -272,9 +271,9 @@
 // CORRELATION-JSON-DAG: "hardware": "shared_reduction_adg"
 // CORRELATION-JSON-DAG: "status": "pass"
 // CORRELATION-JSON-DAG: "edge_ref": "dataflow.stream#0.result0->arith.addi#0.operand0"
-// CORRELATION-JSON-DAG: "edge_ref": "dataflow.invariant#1.result0->arith.addi#0.operand1"
+// CORRELATION-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.addi#0.operand1"
 // CORRELATION-JSON-DAG: "edge_ref": "arith.addi#0.result0->arith.andi#0.operand0"
-// CORRELATION-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.andi#0.operand1"
+// CORRELATION-JSON-DAG: "edge_ref": "dataflow.invariant#1.result0->arith.andi#0.operand1"
 // CORRELATION-JSON-DAG: "edge_ref": "arith.andi#0.result0->dataflow.load#0.operand1"
 // CORRELATION-JSON-NOT: ".out"
 // CORRELATION-JSON-NOT: ".in"
@@ -441,11 +440,11 @@
 
 // DOTPRODUCT-NEXT: dotproduct,shared_reduction_adg,dotproduct__g_t_dotproduct_red_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 
-// DOT3D-NEXT: dot_product_3d,shared_reduction_adg,dot_product_3d__g_t_dot_product_3d_0_0__shared_reduction_adg,14,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+// DOT3D-NEXT: dot_product_3d,shared_reduction_adg,dot_product_3d__g_t_dot_product_3d_0_0__shared_reduction_adg,16,24,0,0,pass,mapped software graph to fabric resources
 // DOT3D-JSON-DAG: "workload": "dot_product_3d"
 // DOT3D-JSON-DAG: "hardware": "shared_reduction_adg"
 // DOT3D-JSON-DAG: "status": "pass"
-// DOT3D-JSON-DAG: "placed_records": 14
+// DOT3D-JSON-DAG: "placed_records": 16
 // DOT3D-JSON-DAG: "unrouted_edges": 0
 // DOT3D-JSON-DAG: "edge_ref": "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand0"
 // DOT3D-JSON-DAG: "edge_ref": "dataflow.load#3.result0->llvm.intr.fmuladd#0.operand1"
@@ -459,7 +458,7 @@
 // DOT3D-JSON-NOT: ".out"
 // DOT3D-JSON-NOT: ".in"
 
-// SPMV-NEXT: spmv,shared_reduction_adg,spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg,9,13,0,0,pass,mapped software graph to fabric resources
+// SPMV-NEXT: spmv,shared_reduction_adg,spmv__g_t_spmv_kernel_red_0_0__shared_reduction_adg,8,12,0,0,pass,mapped software graph to fabric resources
 
 // PREFIX-SUM-NEXT: prefix_sum,shared_reduction_adg,prefix_sum__g_t_prefix_sum_red_0_0__shared_reduction_adg,6,9,0,0,pass,mapped software graph to fabric resources
 

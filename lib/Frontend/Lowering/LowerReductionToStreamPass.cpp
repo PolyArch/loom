@@ -290,6 +290,55 @@ bool isConditionalStoreIf(::mlir::scf::IfOp ifOp) {
   return true;
 }
 
+bool isStoreOp(::mlir::Operation *op) {
+  return ::llvm::isa<::dataflow::StoreOp, ::mlir::LLVM::StoreOp>(op);
+}
+
+bool branchHasAtMostOneConditionalStore(::mlir::Block *block,
+                                        bool &hasStore) {
+  if (!block)
+    return false;
+  hasStore = false;
+  for (::mlir::Operation &op : block->without_terminator()) {
+    if (isStoreOp(&op)) {
+      if (hasStore)
+        return false;
+      hasStore = true;
+      continue;
+    }
+    if (!isLiftableConditionalStoreHelper(&op))
+      return false;
+  }
+  return true;
+}
+
+bool isConditionalStoreResultIf(::mlir::scf::IfOp ifOp) {
+  if (ifOp.getNumResults() == 0 || ifOp.getThenRegion().empty() ||
+      ifOp.getElseRegion().empty())
+    return false;
+
+  auto *thenBlock = ifOp.thenBlock();
+  auto *elseBlock = ifOp.elseBlock();
+  if (!thenBlock || !elseBlock)
+    return false;
+  auto thenYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      thenBlock->getTerminator());
+  auto elseYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      elseBlock->getTerminator());
+  if (!thenYield || !elseYield)
+    return false;
+  if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+      elseYield.getNumOperands() != ifOp.getNumResults())
+    return false;
+
+  bool thenHasStore = false;
+  bool elseHasStore = false;
+  if (!branchHasAtMostOneConditionalStore(thenBlock, thenHasStore) ||
+      !branchHasAtMostOneConditionalStore(elseBlock, elseHasStore))
+    return false;
+  return thenHasStore != elseHasStore;
+}
+
 // Eligibility check: walk the body of the loop and report whether
 // this loop matches the simple-reduction shape we lower. The first
 // disqualifier short-circuits the walk.
@@ -341,7 +390,9 @@ bool isEligibleReduction(::mlir::scf::ForOp loop) {
       return ::mlir::WalkResult::advance();
     if (isNestedStructuredControl(op)) {
       if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
-        if (isConditionalStoreIf(ifOp) || isConditionalLoadResultIf(ifOp))
+        if (isConditionalStoreIf(ifOp) ||
+            isConditionalStoreResultIf(ifOp) ||
+            isConditionalLoadResultIf(ifOp))
           return ::mlir::WalkResult::advance();
       }
       eligible = false;

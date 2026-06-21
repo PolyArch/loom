@@ -15,6 +15,19 @@
 // JSON-NOT: ".out"
 // JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_route --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_route_shared_sync_prefix --output %t.shared-sync.mapping.csv --artifact %t.shared-sync.mapping.json
+// RUN: FileCheck %s --check-prefix=SHARED-SYNC-CSV < %t.shared-sync.mapping.csv
+// RUN: FileCheck %s --check-prefix=SHARED-SYNC-JSON < %t.shared-sync.mapping.json
+
+// SHARED-SYNC-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SHARED-SYNC-CSV-NEXT: mem_route_shared_sync_prefix,shared_reduction_adg,mem_route_shared_sync_prefix__mem_route__shared_reduction_adg,3,2,0,0,pass
+
+// SHARED-SYNC-JSON-DAG: "status": "pass"
+// SHARED-SYNC-JSON-DAG: "operation": "dataflow.sync"
+// SHARED-SYNC-JSON-DAG: "edge_ref": "dataflow.load#0.result1->dataflow.sync#0.operand0"
+// SHARED-SYNC-JSON-NOT: ".out"
+// SHARED-SYNC-JSON-NOT: ".in"
+
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_two_loads_one_port --hardware-mlir %s --hardware mem_route_adg --workload mem_two_loads_one_port --output %t.twoload.mapping.csv --artifact %t.twoload.mapping.json
 // RUN: FileCheck %s --check-prefix=TWOLOAD-CSV < %t.twoload.mapping.csv
 // RUN: FileCheck %s --check-prefix=TWOLOAD-JSON < %t.twoload.mapping.json
@@ -113,6 +126,29 @@
 // GEPBOOKRET-JSON-NOT: "operation": "dataflow.carry"
 // GEPBOOKRET-JSON-NOT: ".out"
 // GEPBOOKRET-JSON-NOT: ".in"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph control_mux_needs_control_resource --hardware-mlir %s --hardware data_mux_only_adg --workload control_mux_type_guard --output %t.ctrlmux.mapping.csv --artifact %t.ctrlmux.mapping.json
+// RUN: FileCheck %s --check-prefix=CTRLMUX-CSV < %t.ctrlmux.mapping.csv
+// RUN: FileCheck %s --check-prefix=CTRLMUX-JSON < %t.ctrlmux.mapping.json
+
+// CTRLMUX-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CTRLMUX-CSV-NEXT: control_mux_type_guard,data_mux_only_adg,control_mux_type_guard__control_mux_needs_control_resource__data_mux_only_adg,0,0,0,1,fail,missing hardware resource for software op dataflow.mux
+
+// CTRLMUX-JSON-DAG: "status": "fail"
+// CTRLMUX-JSON-DAG: "missing hardware resource for software op dataflow.mux"
+// CTRLMUX-JSON-DAG: "unplaced_records": 1
+// CTRLMUX-JSON-DAG: "placements": []
+// CTRLMUX-JSON-NOT: "hardware": "data_mux_only_adg::fabric.op#0"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph predicate_and_maps_to_transport_andi --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload predicate_and --output %t.predand.mapping.csv --artifact %t.predand.mapping.json
+// RUN: FileCheck %s --check-prefix=PREDAND-JSON < %t.predand.mapping.json
+
+// PREDAND-JSON-DAG: "status": "pass"
+// PREDAND-JSON-DAG: "operation": "arith.andi"
+// PREDAND-JSON-DAG: "edge_ref": "arith.cmpi#0.result0->arith.andi#0.operand0"
+// PREDAND-JSON-DAG: "edge_ref": "arith.cmpi#1.result0->arith.andi#0.operand1"
+// PREDAND-JSON-DAG: "edge_ref": "arith.andi#0.result0->arith.select#0.operand0"
+// PREDAND-JSON-NOT: "missing hardware resource for software op arith.andi"
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph llvm_load_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_load_pointer --output %t.llvmload.mapping.csv --artifact %t.llvmload.mapping.json
 // RUN: FileCheck %s --check-prefix=LLVMLOAD-CSV < %t.llvmload.mapping.csv
@@ -269,6 +305,26 @@ module {
     dataflow.graph.return %synced#0, %dst_next : none, !llvm.ptr
   }
 
+  dataflow.graph.func private @control_mux_needs_control_resource(
+      %ctrl: none, %sel: i1) -> none {
+    %done = dataflow.mux %sel, %ctrl, %ctrl : (i1, none, none) -> none
+    dataflow.graph.return %done : none
+  }
+
+  dataflow.graph.func private @predicate_and_maps_to_transport_andi(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %lhs0: i32, %rhs0: i32,
+      %lhs1: i32, %rhs1: i32, %mem: memref<?xf32>) -> (none, f32) {
+    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %idx_as_index = arith.index_cast %idx : i32 to index
+    %p0 = arith.cmpi sgt, %lhs0, %rhs0 : i32
+    %p1 = arith.cmpi slt, %lhs1, %rhs1 : i32
+    %both = arith.andi %p0, %p1 : i1
+    %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
+    %addr = arith.select %both, %idx_as_index, %zero : index
+    %data, %done = dataflow.load %mem[%addr] %ctrl : memref<?xf32>
+    dataflow.graph.return %done, %data : none, f32
+  }
+
   dataflow.graph.func private @llvm_load_pointer(%ctrl: none, %ptr: !llvm.ptr,
                                                  %rhs: i32) -> (none, i32) {
     %next = llvm.getelementptr inbounds|nuw %ptr[4] : (!llvm.ptr) -> !llvm.ptr, i8
@@ -306,6 +362,26 @@ module {
           [{load_group_size = 0 : i32, store_group_size = 1 : i32}]
           : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, !fabric.bits<32>,
              !fabric.bits<0>) -> !fabric.bits<0>
+    fabric.yield
+  }
+
+  fabric.module @data_mux_only_adg(%sel_src : !fabric.bits<32>,
+                                   %lhs : !fabric.bits<32>,
+                                   %rhs : !fabric.bits<32>) {
+    %selected = fabric.pe [spatial] (%pa = %sel_src : !fabric.bits<32>,
+                                     %pb = %lhs : !fabric.bits<32>,
+                                     %pc = %rhs : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%sel = %pa : !fabric.bits<32> to !fabric.bits<1>,
+                %false_lane = %pb : !fabric.bits<32>,
+                %true_lane = %pc : !fabric.bits<32>)
+          -> !fabric.bits<32> {
+        %out = fabric.op [@dataflow.mux] (%sel, %false_lane, %true_lane)
+            : (!fabric.bits<1>, !fabric.bits<32>, !fabric.bits<32>)
+              -> !fabric.bits<32>
+        fabric.yield %out : !fabric.bits<32>
+      }
+    }
     fabric.yield
   }
 }

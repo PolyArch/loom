@@ -71,6 +71,7 @@
 
 #include "Frontend/Lowering/Passes.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -85,6 +86,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -94,6 +96,8 @@ namespace {
 
 constexpr ::llvm::StringLiteral kConditionalStoreSameAddressAttr =
     "loom.conditional_store_same_address";
+constexpr ::llvm::StringLiteral kConditionalStoreDoneAttr =
+    "loom.conditional_store_done";
 
 // Return true if `t` is one of the scalar types the pass is willing to
 // gate. The gate op's IR signature admits AnyType, but the rest of the
@@ -318,6 +322,13 @@ struct ConditionalStoreIfMatch {
   ::mlir::Value preserved;
 };
 
+struct ConditionalStoreResultIfMatch {
+  ::dataflow::StoreOp store;
+  bool storeInThen = false;
+  ::llvm::SmallVector<::mlir::Value, 4> thenValues;
+  ::llvm::SmallVector<::mlir::Value, 4> elseValues;
+};
+
 bool matchConditionalStoreIf(::mlir::scf::IfOp ifOp,
                              ConditionalStoreIfMatch &match) {
   if (ifOp.getNumResults() != 0 || ifOp.getThenRegion().empty() ||
@@ -378,6 +389,68 @@ bool matchConditionalStoreIf(::mlir::scf::IfOp ifOp,
   match.load = load;
   match.replacement = replacement;
   match.preserved = preserved;
+  return true;
+}
+
+bool collectConditionalStoreResultBranch(::mlir::Block *block,
+                                         ::dataflow::StoreOp &store) {
+  if (!block)
+    return false;
+  store = {};
+  for (::mlir::Operation &op : block->without_terminator()) {
+    if (auto candidate = ::llvm::dyn_cast<::dataflow::StoreOp>(op)) {
+      if (store)
+        return false;
+      store = candidate;
+      continue;
+    }
+    if (!isLiftablePure(&op))
+      return false;
+  }
+  return true;
+}
+
+bool matchConditionalStoreResultIf(::mlir::scf::IfOp ifOp,
+                                   ConditionalStoreResultIfMatch &match) {
+  if (ifOp.getNumResults() == 0 || ifOp.getThenRegion().empty() ||
+      ifOp.getElseRegion().empty())
+    return false;
+
+  auto *thenBlock = ifOp.thenBlock();
+  auto *elseBlock = ifOp.elseBlock();
+  if (!thenBlock || !elseBlock)
+    return false;
+  auto thenYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      thenBlock->getTerminator());
+  auto elseYield = ::llvm::dyn_cast_or_null<::mlir::scf::YieldOp>(
+      elseBlock->getTerminator());
+  if (!thenYield || !elseYield)
+    return false;
+  if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+      elseYield.getNumOperands() != ifOp.getNumResults())
+    return false;
+
+  ::dataflow::StoreOp thenStore;
+  ::dataflow::StoreOp elseStore;
+  if (!collectConditionalStoreResultBranch(thenBlock, thenStore) ||
+      !collectConditionalStoreResultBranch(elseBlock, elseStore))
+    return false;
+  if (static_cast<bool>(thenStore) == static_cast<bool>(elseStore))
+    return false;
+
+  for (::mlir::Value value : thenYield.getOperands()) {
+    if (!isGateFriendly(value.getType()))
+      return false;
+    match.thenValues.push_back(value);
+  }
+  for (::mlir::Value value : elseYield.getOperands()) {
+    if (!isGateFriendly(value.getType()))
+      return false;
+    match.elseValues.push_back(value);
+  }
+
+  match.store = thenStore ? thenStore : elseStore;
+  match.storeInThen = static_cast<bool>(thenStore);
   return true;
 }
 
@@ -596,6 +669,116 @@ bool rewriteConditionalStoreIf(::mlir::scf::IfOp ifOp,
   return true;
 }
 
+::mlir::Value routeConditionalLane(::mlir::OpBuilder &builder,
+                                   ::mlir::Location loc, ::mlir::Value cond,
+                                   ::mlir::Value value, unsigned lane) {
+  auto demux = ::dataflow::DemuxOp::create(
+      builder, loc, ::mlir::TypeRange{value.getType(), value.getType()}, cond,
+      value);
+  return demux.getOutputs()[lane];
+}
+
+::dataflow::DemuxOp createConditionalLaneDemux(::mlir::OpBuilder &builder,
+                                               ::mlir::Location loc,
+                                               ::mlir::Value cond,
+                                               ::mlir::Value value) {
+  return ::dataflow::DemuxOp::create(
+      builder, loc, ::mlir::TypeRange{value.getType(), value.getType()}, cond,
+      value);
+}
+
+::mlir::Value simplifyStoreAddress(::mlir::OpBuilder &builder,
+                                   ::mlir::Location loc,
+                                   ::mlir::Value addr) {
+  auto cast = addr.getDefiningOp<::mlir::arith::IndexCastOp>();
+  if (!cast)
+    return addr;
+  auto zext = cast.getIn().getDefiningOp<::mlir::LLVM::ZExtOp>();
+  if (!zext)
+    return addr;
+  auto sourceType =
+      ::llvm::dyn_cast<::mlir::IntegerType>(zext.getArg().getType());
+  if (!sourceType || sourceType.getWidth() != ::loom::getIndexWidth())
+    return addr;
+  return ::mlir::arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                            zext.getArg());
+}
+
+bool rewriteConditionalStoreResultIf(::mlir::scf::IfOp ifOp,
+                                     ::mlir::OpBuilder &builder) {
+  ConditionalStoreResultIfMatch match;
+  if (!matchConditionalStoreResultIf(ifOp, match))
+    return false;
+
+  ::mlir::Block *parentBlock = ifOp->getBlock();
+  ::mlir::Block::iterator insertPt(ifOp.getOperation());
+  ::mlir::Value cond = ifOp.getCondition();
+
+  auto liftRegion = [&](::mlir::Region &region) {
+    if (region.empty())
+      return;
+    ::mlir::Block &block = region.front();
+    for (auto it = block.begin(); it != block.end();) {
+      ::mlir::Operation &op = *it;
+      ++it;
+      if (::llvm::isa<::mlir::scf::YieldOp>(op))
+        continue;
+      op.moveBefore(parentBlock, insertPt);
+    }
+  };
+  liftRegion(ifOp.getThenRegion());
+  liftRegion(ifOp.getElseRegion());
+
+  unsigned storeLane = match.storeInThen ? 1 : 0;
+  ::dataflow::DemuxOp ctrlDemux;
+  {
+    ::mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPoint(match.store);
+    ::mlir::Value storeAddr =
+        simplifyStoreAddress(builder, match.store.getLoc(),
+                             match.store.getAddr());
+    match.store->setOperand(
+        1, routeConditionalLane(builder, match.store.getLoc(), cond, storeAddr,
+                                storeLane));
+    match.store->setOperand(
+        2, routeConditionalLane(builder, match.store.getLoc(), cond,
+                                match.store.getData(), storeLane));
+    ctrlDemux = createConditionalLaneDemux(builder, match.store.getLoc(), cond,
+                                           match.store.getCtrl());
+    match.store->setOperand(3, ctrlDemux.getOutputs()[storeLane]);
+  }
+
+  {
+    ::mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPointAfter(match.store);
+    ::mlir::Value falseDone;
+    ::mlir::Value trueDone;
+    if (match.storeInThen) {
+      falseDone = ctrlDemux.getOutputs()[0];
+      trueDone = match.store.getDone();
+    } else {
+      falseDone = match.store.getDone();
+      trueDone = ctrlDemux.getOutputs()[1];
+    }
+    auto mergedDone = ::dataflow::MuxOp::create(
+        builder, match.store.getLoc(), builder.getNoneType(), cond,
+        ::llvm::SmallVector<::mlir::Value, 2>{falseDone, trueDone});
+    mergedDone->setAttr(kConditionalStoreDoneAttr, builder.getUnitAttr());
+  }
+
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(parentBlock, insertPt);
+  for (size_t i = 0, e = ifOp.getNumResults(); i < e; ++i) {
+    auto selected = ::mlir::arith::SelectOp::create(
+        builder, ifOp.getLoc(), cond, match.thenValues[i],
+        match.elseValues[i]);
+    ifOp.getResult(i).replaceAllUsesWith(selected.getResult());
+  }
+
+  ifOp.erase();
+  return true;
+}
+
 // Wrap each result of a side-effecting `scf.if %cond -> (Ti...)` with a
 // `dataflow.gate %cond, %ifResult` so the scf.if envelope is preserved
 // (mandatory for safety: lifting the body would unconditionally execute
@@ -653,6 +836,8 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   if (hasResults) {
     if (rewriteConditionalLoadIf(ifOp, builder))
       return 6;
+    if (rewriteConditionalStoreResultIf(ifOp, builder))
+      return 7;
     // Mux case requires both regions and pure bodies. Try the lift
     // first; only if the body has memory effects (or the scf.if is
     // missing one of its regions) do we fall back to the
@@ -706,6 +891,506 @@ unsigned rewriteOneIf(::mlir::scf::IfOp ifOp, ::mlir::OpBuilder &builder) {
   return rewriteGateIf(ifOp, builder) ? 2 : 3;
 }
 
+::mlir::Value materializeIndexDomainValue(
+    ::mlir::Value value, ::mlir::OpBuilder &builder,
+    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> &cache) {
+  if (::llvm::isa<::mlir::IndexType>(value.getType()))
+    return value;
+  if (!::llvm::isa<::mlir::IntegerType>(value.getType()))
+    return {};
+  if (auto it = cache.find(value); it != cache.end())
+    return it->second;
+
+  if (auto cast = value.getDefiningOp<::mlir::arith::IndexCastOp>()) {
+    ::mlir::Value input = cast.getIn();
+    if (::llvm::isa<::mlir::IndexType>(input.getType())) {
+      cache[value] = input;
+      return input;
+    }
+  }
+
+  if (auto add = value.getDefiningOp<::mlir::arith::AddIOp>()) {
+    ::mlir::Value lhs =
+        materializeIndexDomainValue(add.getLhs(), builder, cache);
+    ::mlir::Value rhs =
+        materializeIndexDomainValue(add.getRhs(), builder, cache);
+    if (lhs && rhs) {
+      auto indexAdd =
+          ::mlir::arith::AddIOp::create(builder, add.getLoc(), lhs, rhs);
+      cache[value] = indexAdd.getResult();
+      return indexAdd.getResult();
+    }
+  }
+
+  if (auto sub = value.getDefiningOp<::mlir::arith::SubIOp>()) {
+    ::mlir::Value lhs =
+        materializeIndexDomainValue(sub.getLhs(), builder, cache);
+    ::mlir::Value rhs =
+        materializeIndexDomainValue(sub.getRhs(), builder, cache);
+    if (lhs && rhs) {
+      auto indexSub =
+          ::mlir::arith::SubIOp::create(builder, sub.getLoc(), lhs, rhs);
+      cache[value] = indexSub.getResult();
+      return indexSub.getResult();
+    }
+  }
+
+  if (auto mul = value.getDefiningOp<::mlir::arith::MulIOp>()) {
+    ::mlir::Value lhs =
+        materializeIndexDomainValue(mul.getLhs(), builder, cache);
+    ::mlir::Value rhs =
+        materializeIndexDomainValue(mul.getRhs(), builder, cache);
+    if (lhs && rhs) {
+      auto indexMul =
+          ::mlir::arith::MulIOp::create(builder, mul.getLoc(), lhs, rhs);
+      cache[value] = indexMul.getResult();
+      return indexMul.getResult();
+    }
+  }
+
+  if (auto shl = value.getDefiningOp<::mlir::arith::ShLIOp>()) {
+    ::mlir::Value lhs =
+        materializeIndexDomainValue(shl.getLhs(), builder, cache);
+    ::mlir::Value rhs =
+        materializeIndexDomainValue(shl.getRhs(), builder, cache);
+    if (lhs && rhs) {
+      auto indexShl =
+          ::mlir::arith::ShLIOp::create(builder, shl.getLoc(), lhs, rhs);
+      cache[value] = indexShl.getResult();
+      return indexShl.getResult();
+    }
+  }
+
+  if (auto shr = value.getDefiningOp<::mlir::arith::ShRUIOp>()) {
+    ::mlir::Value lhs =
+        materializeIndexDomainValue(shr.getLhs(), builder, cache);
+    ::mlir::Value rhs =
+        materializeIndexDomainValue(shr.getRhs(), builder, cache);
+    if (lhs && rhs) {
+      auto indexShr =
+          ::mlir::arith::ShRUIOp::create(builder, shr.getLoc(), lhs, rhs);
+      cache[value] = indexShr.getResult();
+      return indexShr.getResult();
+    }
+  }
+
+  if (auto andi = value.getDefiningOp<::mlir::arith::AndIOp>()) {
+    ::mlir::Value lhs =
+        materializeIndexDomainValue(andi.getLhs(), builder, cache);
+    ::mlir::Value rhs =
+        materializeIndexDomainValue(andi.getRhs(), builder, cache);
+    if (lhs && rhs) {
+      auto indexAnd =
+          ::mlir::arith::AndIOp::create(builder, andi.getLoc(), lhs, rhs);
+      cache[value] = indexAnd.getResult();
+      return indexAnd.getResult();
+    }
+  }
+
+  if (auto zext = value.getDefiningOp<::mlir::LLVM::ZExtOp>()) {
+    auto sourceType =
+        ::llvm::dyn_cast<::mlir::IntegerType>(zext.getArg().getType());
+    auto resultType =
+        ::llvm::dyn_cast<::mlir::IntegerType>(zext.getResult().getType());
+    if (sourceType && resultType &&
+        sourceType.getWidth() == ::loom::getIndexWidth() &&
+        resultType.getWidth() >= sourceType.getWidth()) {
+      ::mlir::Value input =
+          materializeIndexDomainValue(zext.getArg(), builder, cache);
+      if (input) {
+        cache[value] = input;
+        return input;
+      }
+    }
+  }
+
+  if (auto constant = value.getDefiningOp<::dataflow::ConstantOp>()) {
+    auto typed = ::llvm::dyn_cast<::mlir::TypedAttr>(constant.getConstValue());
+    auto integerAttr = typed ? ::llvm::dyn_cast<::mlir::IntegerAttr>(typed)
+                             : ::mlir::IntegerAttr{};
+    if (integerAttr) {
+      ::mlir::TypedAttr indexAttr = getIntegerLikeAttr(
+          builder, builder.getIndexType(), integerAttr.getInt());
+      auto indexConstant = ::dataflow::ConstantOp::create(
+          builder, constant.getLoc(), builder.getIndexType(),
+          constant.getCtrl(), ::mlir::cast<::mlir::Attribute>(indexAttr));
+      cache[value] = indexConstant.getValue();
+      return indexConstant.getValue();
+    }
+  }
+
+  if (auto invariant = value.getDefiningOp<::dataflow::InvariantOp>()) {
+    ::mlir::Value init =
+        materializeIndexDomainValue(invariant.getInit(), builder, cache);
+    if (init) {
+      auto indexInvariant = ::dataflow::InvariantOp::create(
+          builder, invariant.getLoc(), builder.getIndexType(),
+          invariant.getCond(), init);
+      cache[value] = indexInvariant.getOutput();
+      return indexInvariant.getOutput();
+    }
+  }
+
+  auto indexCast = ::mlir::arith::IndexCastOp::create(
+      builder, value.getLoc(), builder.getIndexType(), value);
+  cache[value] = indexCast.getResult();
+  return indexCast.getResult();
+}
+
+bool isDataflowMemoryAddressUse(::mlir::OpOperand &use) {
+  ::mlir::Operation *owner = use.getOwner();
+  return (::llvm::isa<::dataflow::LoadOp, ::dataflow::StoreOp>(owner)) &&
+         use.getOperandNumber() == 1;
+}
+
+bool valueFeedsOnlyMemoryAddress(::mlir::Value value,
+                                 ::llvm::SmallPtrSetImpl<::mlir::Value> &seen) {
+  if (value.use_empty())
+    return false;
+  if (!seen.insert(value).second)
+    return false;
+
+  bool sawAddress = false;
+  for (::mlir::OpOperand &use : value.getUses()) {
+    if (isDataflowMemoryAddressUse(use)) {
+      sawAddress = true;
+      continue;
+    }
+    auto select = ::llvm::dyn_cast<::mlir::arith::SelectOp>(use.getOwner());
+    if (select && use.getOperandNumber() != 0 &&
+        valueFeedsOnlyMemoryAddress(select.getResult(), seen)) {
+      sawAddress = true;
+      continue;
+    }
+    return false;
+  }
+  return sawAddress;
+}
+
+bool valueFeedsOnlyMemoryAddress(::mlir::Value value) {
+  ::llvm::SmallPtrSet<::mlir::Value, 8> seen;
+  return valueFeedsOnlyMemoryAddress(value, seen);
+}
+
+bool isMemoryAddressIndexCast(::mlir::arith::IndexCastOp cast) {
+  if (!::llvm::isa<::mlir::IndexType>(cast.getType()) ||
+      !::llvm::isa<::mlir::IntegerType>(cast.getIn().getType()))
+    return false;
+  return valueFeedsOnlyMemoryAddress(cast.getResult());
+}
+
+bool allUsesAreOperation(::mlir::Value value, ::mlir::Operation *op) {
+  for (::mlir::OpOperand &use : value.getUses()) {
+    if (use.getOwner() != op)
+      return false;
+  }
+  return true;
+}
+
+bool collectIndexDomainUses(
+    ::mlir::Value value, ::mlir::Operation *cycleUser,
+    ::llvm::SmallVectorImpl<::mlir::arith::IndexCastOp> &addressCasts,
+    ::llvm::SmallVectorImpl<std::pair<::dataflow::GraphReturnOp, unsigned>>
+        &returnUses) {
+  for (::mlir::OpOperand &use : value.getUses()) {
+    ::mlir::Operation *owner = use.getOwner();
+    if (owner == cycleUser)
+      continue;
+    if (auto cast = ::llvm::dyn_cast<::mlir::arith::IndexCastOp>(owner)) {
+      if (!isMemoryAddressIndexCast(cast))
+        return false;
+      addressCasts.push_back(cast);
+      continue;
+    }
+    if (auto ret = ::llvm::dyn_cast<::dataflow::GraphReturnOp>(owner)) {
+      returnUses.push_back({ret, use.getOperandNumber()});
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+void collectDirectMemoryAddressCasts(
+    ::mlir::Value value,
+    ::llvm::SmallVectorImpl<::mlir::arith::IndexCastOp> &addressCasts) {
+  for (::mlir::OpOperand &use : value.getUses()) {
+    auto cast = ::llvm::dyn_cast<::mlir::arith::IndexCastOp>(use.getOwner());
+    if (cast && isMemoryAddressIndexCast(cast))
+      addressCasts.push_back(cast);
+  }
+}
+
+bool isPredicateControlUse(::mlir::OpOperand &use) {
+  ::mlir::Operation *owner = use.getOwner();
+  ::llvm::StringRef name = owner->getName().getStringRef();
+  unsigned operandNumber = use.getOperandNumber();
+  if (name == "arith.select" || name == "dataflow.mux" ||
+      name == "dataflow.demux" || name == "dataflow.gate")
+    return operandNumber == 0;
+  if (name == "dataflow.carry" || name == "dataflow.invariant")
+    return operandNumber == 0;
+  return false;
+}
+
+bool valueFeedsOnlyPredicateControls(::mlir::Value value) {
+  if (value.use_empty())
+    return false;
+  for (::mlir::OpOperand &use : value.getUses())
+    if (!isPredicateControlUse(use))
+      return false;
+  return true;
+}
+
+bool rewriteOneIndexDomainCmp(::mlir::arith::CmpIOp cmp,
+                              ::mlir::OpBuilder &builder) {
+  if (!::llvm::isa<::mlir::IntegerType>(cmp.getLhs().getType()) ||
+      !::llvm::isa<::mlir::IntegerType>(cmp.getRhs().getType()) ||
+      !valueFeedsOnlyPredicateControls(cmp.getResult()))
+    return false;
+
+  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 4> lhsAddressCasts;
+  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 4> rhsAddressCasts;
+  collectDirectMemoryAddressCasts(cmp.getLhs(), lhsAddressCasts);
+  collectDirectMemoryAddressCasts(cmp.getRhs(), rhsAddressCasts);
+  if (lhsAddressCasts.empty() && rhsAddressCasts.empty())
+    return false;
+
+  ::mlir::OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(cmp);
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
+  ::mlir::Value indexLhs =
+      materializeIndexDomainValue(cmp.getLhs(), builder, cache);
+  ::mlir::Value indexRhs =
+      materializeIndexDomainValue(cmp.getRhs(), builder, cache);
+  if (!indexLhs || !indexRhs)
+    return false;
+
+  auto indexCmp = ::mlir::arith::CmpIOp::create(
+      builder, cmp.getLoc(), cmp.getPredicate(), indexLhs, indexRhs);
+  cmp.getResult().replaceAllUsesWith(indexCmp.getResult());
+  auto replaceAddressCasts =
+      [](::mlir::Value replacement,
+         ::llvm::ArrayRef<::mlir::arith::IndexCastOp> casts) {
+        for (::mlir::arith::IndexCastOp cast : casts) {
+          if (!cast.getOperation()->getBlock())
+            continue;
+          if (::mlir::Operation *def = replacement.getDefiningOp()) {
+            if (def->getBlock() != cast->getBlock())
+              continue;
+            if (cast->isBeforeInBlock(def))
+              continue;
+          }
+          cast.replaceAllUsesWith(replacement);
+          cast.erase();
+        }
+      };
+  replaceAddressCasts(indexLhs, lhsAddressCasts);
+  replaceAddressCasts(indexRhs, rhsAddressCasts);
+  cmp.erase();
+  return true;
+}
+
+bool rewriteIndexDomainCmps(::dataflow::GraphFuncOp graph,
+                            ::mlir::OpBuilder &builder) {
+  ::llvm::SmallVector<::mlir::arith::CmpIOp, 8> cmps;
+  graph.getBody().walk([&](::mlir::arith::CmpIOp cmp) {
+    if (::llvm::isa<::mlir::IntegerType>(cmp.getLhs().getType()) &&
+        ::llvm::isa<::mlir::IntegerType>(cmp.getRhs().getType()))
+      cmps.push_back(cmp);
+  });
+
+  bool changed = false;
+  for (::mlir::arith::CmpIOp cmp : cmps) {
+    if (!cmp.getOperation()->getBlock())
+      continue;
+    changed |= rewriteOneIndexDomainCmp(cmp, builder);
+  }
+  return changed;
+}
+
+bool eraseInternalIndexDomainCycle(
+    ::dataflow::CarryOp carry, ::mlir::arith::AddIOp next,
+    ::mlir::Operation *stepOp) {
+  ::llvm::SmallPtrSet<::mlir::Operation *, 4> internalOps;
+  internalOps.insert(carry.getOperation());
+  internalOps.insert(next.getOperation());
+  if (stepOp)
+    internalOps.insert(stepOp);
+
+  for (::mlir::Operation *op : internalOps) {
+    for (::mlir::Value result : op->getResults()) {
+      for (::mlir::OpOperand &use : result.getUses()) {
+        if (!internalOps.contains(use.getOwner()))
+          return false;
+      }
+    }
+  }
+
+  ::llvm::SmallVector<::mlir::Operation *, 4> eraseOps;
+  eraseOps.push_back(next.getOperation());
+  eraseOps.push_back(carry.getOperation());
+  if (stepOp)
+    eraseOps.push_back(stepOp);
+  for (::mlir::Operation *op : eraseOps)
+    op->dropAllDefinedValueUses();
+  for (::mlir::Operation *op : eraseOps)
+    op->dropAllReferences();
+  for (::mlir::Operation *op : eraseOps)
+    op->erase();
+  return true;
+}
+
+bool rewriteOneIndexDomainCarry(::dataflow::CarryOp carry,
+                                ::mlir::OpBuilder &builder) {
+  if (!::llvm::isa<::mlir::IntegerType>(carry.getOutput().getType()))
+    return false;
+
+  auto next = carry.getCarry().getDefiningOp<::mlir::arith::AddIOp>();
+  if (!next)
+    return false;
+  ::mlir::Value carryValue = carry.getOutput();
+  ::mlir::Value stepValue;
+  if (next.getLhs() == carryValue)
+    stepValue = next.getRhs();
+  else if (next.getRhs() == carryValue)
+    stepValue = next.getLhs();
+  else
+    return false;
+
+  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 4> addressCasts;
+  ::llvm::SmallVector<std::pair<::dataflow::GraphReturnOp, unsigned>, 2>
+      carryReturnUses;
+  if (!collectIndexDomainUses(carryValue, next.getOperation(), addressCasts,
+                              carryReturnUses))
+    return false;
+
+  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 2> nextAddressCasts;
+  ::llvm::SmallVector<std::pair<::dataflow::GraphReturnOp, unsigned>, 2>
+      nextReturnUses;
+  if (!collectIndexDomainUses(next.getResult(), carry.getOperation(),
+                              nextAddressCasts, nextReturnUses))
+    return false;
+
+  if (addressCasts.empty() && nextAddressCasts.empty())
+    return false;
+
+  ::mlir::Operation *stepOp = stepValue.getDefiningOp();
+  if (stepOp && ::llvm::isa<::dataflow::InvariantOp>(stepOp) &&
+      !allUsesAreOperation(stepValue, next.getOperation()))
+    return false;
+
+  ::mlir::OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(carry);
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
+  ::mlir::Value indexInit =
+      materializeIndexDomainValue(carry.getInit(), builder, cache);
+  ::mlir::Value indexStep =
+      materializeIndexDomainValue(stepValue, builder, cache);
+  if (!indexInit || !indexStep)
+    return false;
+
+  auto indexCarry = ::dataflow::CarryOp::create(
+      builder, carry.getLoc(), builder.getIndexType(), carry.getCond(),
+      indexInit, indexInit);
+  auto indexNext = ::mlir::arith::AddIOp::create(
+      builder, next.getLoc(), indexCarry.getOutput(), indexStep);
+  indexCarry->setOperand(2, indexNext.getResult());
+
+  for (::mlir::arith::IndexCastOp cast : addressCasts) {
+    cast.replaceAllUsesWith(indexCarry.getOutput());
+    cast.erase();
+  }
+  for (::mlir::arith::IndexCastOp cast : nextAddressCasts) {
+    cast.replaceAllUsesWith(indexNext.getResult());
+    cast.erase();
+  }
+
+  auto replaceReturn = [&](::dataflow::GraphReturnOp ret, unsigned index,
+                           ::mlir::Value replacement,
+                           ::mlir::Type originalType) {
+    ::mlir::OpBuilder::InsertionGuard g(builder);
+    builder.setInsertionPoint(ret);
+    auto castBack = ::mlir::arith::IndexCastOp::create(
+        builder, ret.getLoc(), originalType, replacement);
+    ret->setOperand(index, castBack.getResult());
+  };
+  for (auto [ret, index] : carryReturnUses)
+    replaceReturn(ret, index, indexCarry.getOutput(), carry.getType());
+  for (auto [ret, index] : nextReturnUses)
+    replaceReturn(ret, index, indexNext.getResult(), next.getType());
+
+  if (!eraseInternalIndexDomainCycle(carry, next, stepOp))
+    return false;
+  return true;
+}
+
+bool rewriteIndexDomainCarryCycles(::dataflow::GraphFuncOp graph,
+                                   ::mlir::OpBuilder &builder) {
+  ::llvm::SmallVector<::dataflow::CarryOp, 8> carries;
+  graph.getBody().walk([&](::dataflow::CarryOp carry) {
+    if (::llvm::isa<::mlir::IntegerType>(carry.getOutput().getType()))
+      carries.push_back(carry);
+  });
+
+  bool changed = false;
+  for (::dataflow::CarryOp carry : carries) {
+    if (!carry.getOperation()->getBlock())
+      continue;
+    changed |= rewriteOneIndexDomainCarry(carry, builder);
+  }
+  return changed;
+}
+
+bool rewriteAddressIndexCasts(::dataflow::GraphFuncOp graph,
+                              ::mlir::OpBuilder &builder) {
+  ::llvm::SmallVector<::mlir::arith::IndexCastOp, 8> casts;
+  graph.getBody().walk([&](::mlir::arith::IndexCastOp cast) {
+    if (::llvm::isa<::mlir::IndexType>(cast.getType()) &&
+        ::llvm::isa<::mlir::IntegerType>(cast.getIn().getType()))
+      casts.push_back(cast);
+  });
+
+  bool changed = false;
+  for (::mlir::arith::IndexCastOp cast : casts) {
+    if (!cast.getOperation()->getBlock())
+      continue;
+    ::llvm::DenseMap<::mlir::Value, ::mlir::Value> cache;
+    builder.setInsertionPoint(cast);
+    ::mlir::Value indexValue =
+        materializeIndexDomainValue(cast.getIn(), builder, cache);
+    if (!indexValue || indexValue == cast.getResult())
+      continue;
+    cast.replaceAllUsesWith(indexValue);
+    cast.erase();
+    changed = true;
+  }
+  return changed;
+}
+
+void eraseDeadIndexArithmetic(::dataflow::GraphFuncOp graph) {
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    ::llvm::SmallVector<::mlir::Operation *, 8> deadOps;
+    graph.getBody().walk([&](::mlir::Operation *op) {
+      if (!op->use_empty())
+        return;
+      if (::llvm::isa<::mlir::arith::IndexCastOp, ::mlir::arith::AddIOp,
+                      ::mlir::arith::SubIOp, ::mlir::arith::MulIOp,
+                      ::mlir::arith::ShLIOp,
+                      ::mlir::arith::ShRUIOp, ::mlir::arith::AndIOp,
+                      ::mlir::LLVM::ZExtOp, ::dataflow::ConstantOp,
+                      ::dataflow::InvariantOp>(op))
+        deadOps.push_back(op);
+    });
+    for (::mlir::Operation *op : deadOps) {
+      op->erase();
+      changed = true;
+    }
+  }
+}
+
 // Walk every scf.if directly or transitively inside `graph` in post
 // order. We collect first because the rewrite mutates the IR.
 void rewriteOneGraph(::dataflow::GraphFuncOp graph,
@@ -729,6 +1414,11 @@ void rewriteOneGraph(::dataflow::GraphFuncOp graph,
              "shape)";
     }
   }
+  bool changed = rewriteIndexDomainCarryCycles(graph, builder);
+  changed |= rewriteIndexDomainCmps(graph, builder);
+  changed |= rewriteAddressIndexCasts(graph, builder);
+  if (changed)
+    eraseDeadIndexArithmetic(graph);
 }
 
 struct LowerGraphControlPass
