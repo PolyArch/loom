@@ -50,6 +50,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "sbox_lookup",
     "spmv",
     "spmspv",
+    "string_hash",
     "upsample",
     "variance",
     "vecadd",

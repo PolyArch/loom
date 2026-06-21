@@ -339,9 +339,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 52,
+            "pass": 53,
             "fail": 0,
-            "blocked": 57,
+            "blocked": 56,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -377,9 +377,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 39,
+            "blocked": 38,
             "unsupported": 0,
-            "missing_status": 69,
+            "missing_status": 70,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -562,9 +562,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 0,
             "fail": 0,
-            "blocked": 57,
+            "blocked": 56,
             "unsupported": 0,
-            "missing_status": 52,
+            "missing_status": 53,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")

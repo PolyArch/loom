@@ -13,7 +13,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 39
+APP_NO_DFG_TIER_COUNT = 38
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -50,6 +50,7 @@ DEFAULT_SWEEP_CASES = (
     "compare_swap",
     "compact",
     "hash_mix",
+    "string_hash",
     "merge",
     "modmul",
     "spmv",
@@ -785,6 +786,61 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
+
+
+def assert_string_hash_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg5": [
+            "i32:97",
+            "i32:98",
+            "i32:99",
+            "i32:100",
+            "i32:101",
+            "i32:102",
+            "i32:103",
+            "i32:104",
+        ],
+    }
+    expected_counts = {
+        "arith.addi": 8,
+        "arith.index_cast": 9,
+        "arith.remui": 8,
+        "arith.shli": 9,
+        "dataflow.carry": 9,
+        "dataflow.invariant": 20,
+        "dataflow.load": 8,
+        "dataflow.stream": 9,
+        "dataflow.sync": 8,
+    }
+
+    dfg_path = evidence_dir / "string_hash.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("optimistic_cycles") != 168
+        or dfg.get("final_outputs") != ["none", "i32:38"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"string_hash DFG evidence should match the first real rolling-hash window: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("string_hash", dfg, expected_counts)
+
+    cgra_path = evidence_dir / "string_hash.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 168
+        or cgra.get("hardware_aware_cycles") != 220
+        or cgra.get("routed_edges") != 12
+        or cgra.get("route_segments") != 48
+        or cgra.get("final_outputs") != ["none", "i32:38"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(
+            f"string_hash CGRA evidence should carry the first real rolling-hash window state: {cgra_path}: {cgra}"
+        )
 
 
 def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
@@ -1605,6 +1661,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "hash_mix",
                 "--case",
+                "string_hash",
+                "--case",
                 "merge",
                 "--case",
                 "prefix_sum",
@@ -1740,6 +1798,7 @@ def main(argv: list[str]) -> int:
             "compare_swap",
             "compact",
             "hash_mix",
+            "string_hash",
             "modmul",
             "relu",
             "upsample",
@@ -1774,6 +1833,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
+        assert_dfg_dynamic_work_items(evidence_dir, "string_hash", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "covariance", 2048)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
@@ -1788,6 +1848,7 @@ def main(argv: list[str]) -> int:
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
         assert_partition_evidence(evidence_dir)
+        assert_string_hash_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -1889,6 +1950,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "string_hash", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "scatter_add", "shared_reduction_adg")
@@ -1963,6 +2025,16 @@ def main(argv: list[str]) -> int:
                 "arith.muli#0.result0->llvm.intr.fshl#1.operand0",
                 "arith.muli#0.result0->llvm.intr.fshl#1.operand1",
                 "llvm.intr.fshl#1.result0->dataflow.store#0.operand2",
+            },
+        )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "string_hash",
+            {
+                "arith.addi#0.result0->arith.remui#0.operand0",
+                "arith.remui#0.result0->dataflow.carry#0.operand2",
+                "arith.shli#0.result0->arith.addi#0.operand1",
+                "dataflow.load#0.result0->arith.addi#0.operand0",
             },
         )
         assert_mapping_edges_use_switch_multihop(
@@ -2118,6 +2190,7 @@ def main(argv: list[str]) -> int:
             "compare_swap",
             "compact",
             "hash_mix",
+            "string_hash",
             "modmul",
             "relu",
             "upsample",
@@ -2207,9 +2280,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 52,
+            "pass": 53,
             "fail": 0,
-            "blocked": 57,
+            "blocked": 56,
             "unsupported": 0,
             "missing_status": 0,
         }

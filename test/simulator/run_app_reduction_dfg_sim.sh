@@ -1267,6 +1267,20 @@ case "${CASE}" in
             --workload hash_mix
         )
         ;;
+    string_hash)
+        append_ctrl_tokens 8
+        append_raw_memref 5 "97,98,99,100,101,102,103,104"
+        sim_args+=(
+            --graph g_t_string_hash_kernel_red_1_0
+            --workload string_hash
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 4=8
+            --arg 6=101
+            --arg 7=0
+        )
+        ;;
     merge)
         append_ctrl_tokens 1
         append_merge_memrefs 7 8 10

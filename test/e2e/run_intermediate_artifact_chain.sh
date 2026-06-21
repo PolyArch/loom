@@ -155,6 +155,9 @@ case "${CASE}" in
   hash_mix)
     case_graph="g_t_main_1_0"
     ;;
+  string_hash)
+    case_graph="g_t_string_hash_kernel_red_1_0"
+    ;;
   merge)
     case_graph="g_t_merge_red_0_0"
     ;;

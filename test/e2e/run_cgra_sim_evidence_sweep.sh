@@ -87,6 +87,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     compare_swap
     compact
     hash_mix
+    string_hash
     merge
     modmul
     spmv
