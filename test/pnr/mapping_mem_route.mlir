@@ -199,6 +199,23 @@
 // CONSTLOAD-JSON-NOT: ".out"
 // CONSTLOAD-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph cfft_red3_fmul_pair --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload cfft_red3_fmul_pair --output %t.cfftred3.mapping.csv --artifact %t.cfftred3.mapping.json
+// RUN: FileCheck %s --check-prefix=CFFT-RED3-CSV < %t.cfftred3.mapping.csv
+// RUN: FileCheck %s --check-prefix=CFFT-RED3-JSON < %t.cfftred3.mapping.json
+
+// CFFT-RED3-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CFFT-RED3-CSV-NEXT: cfft_red3_fmul_pair,shared_reduction_adg,cfft_red3_fmul_pair__cfft_red3_fmul_pair__shared_reduction_adg,11,{{[1-9][0-9]*}},0,0,pass,mapped software graph to fabric resources
+
+// CFFT-RED3-JSON-DAG: "status": "pass"
+// CFFT-RED3-JSON-DAG: "operation": "arith.mulf"
+// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.mulf#0.operand0"
+// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.mulf#0.operand1"
+// CFFT-RED3-JSON-DAG: "edge_ref": "dataflow.invariant#0.result0->arith.mulf#1.operand0"
+// CFFT-RED3-JSON-DAG: "edge_ref": "llvm.fneg#0.result0->arith.mulf#1.operand1"
+// CFFT-RED3-JSON-NOT: "unrouted"
+// CFFT-RED3-JSON-NOT: ".out"
+// CFFT-RED3-JSON-NOT: ".in"
+
 // RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json
 // RUN: FileCheck %s --check-prefix=PTRSEM-CSV < %t.ptrsemantic.mapping.csv
 // RUN: FileCheck %s --check-prefix=PTRSEM-JSON < %t.ptrsemantic.mapping.json
@@ -383,6 +400,28 @@ module {
     %negated = llvm.fneg %data : f32
     %stored = dataflow.store %dst[%idx] %negated %ctrl : memref<?xf32>
     %done:2 = dataflow.sync %loaded, %stored : (none, none) -> (none, none)
+    dataflow.graph.return %done#0 : none
+  }
+
+  dataflow.graph.func private @cfft_red3_fmul_pair(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %twiddle: f32,
+      %buf: !llvm.ptr) -> none {
+    %zero = dataflow.constant %ctrl {const_value = 0 : index} : index
+    %idx, %rwc = dataflow.stream %lb, %ub, %step {cont_cond = "<", step_op = "+="} : i32
+    %scale = dataflow.invariant %rwc, %twiddle : f32
+    %cur = dataflow.carry %rwc, %buf, %next : !llvm.ptr
+    %active_cond, %active = dataflow.gate %rwc, %cur : !llvm.ptr
+    %mem = builtin.unrealized_conversion_cast %active : !llvm.ptr to memref<?xf32>
+    %slot1 = llvm.getelementptr inbounds|nuw %active[4] : (!llvm.ptr) -> !llvm.ptr, i8
+    %data, %loaded = dataflow.load %mem[%zero] %ctrl : memref<?xf32>
+    %scaled0 = arith.mulf %scale, %data : f32
+    %stored0 = dataflow.store %mem[%zero] %scaled0 %ctrl : memref<?xf32>
+    %data1 = llvm.load %slot1 {alignment = 4 : i64} : !llvm.ptr -> f32
+    %neg = llvm.fneg %data1 : f32
+    %scaled1 = arith.mulf %scale, %neg : f32
+    llvm.store %scaled1, %slot1 {alignment = 4 : i64} : f32, !llvm.ptr
+    %next = llvm.getelementptr inbounds|nuw %active[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    %done:2 = dataflow.sync %loaded, %stored0 : (none, none) -> (none, none)
     dataflow.graph.return %done#0 : none
   }
 

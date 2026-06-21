@@ -817,14 +817,14 @@ def assert_cmsis_cfft_component_evidence(
         or row["blocking_prerequisite"] != "component_graph_evidence"
         or row["owner"] != "sim_report"
         or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "fail"
+        or row["mapping_status"] != "pass"
         or row["cgra_status"] != "pass"
         or row["comparison_status"] != "not_run"
         or row["required_slice_count"] != "4"
         or row["hardware_system"] != "shared_reduction_adg"
-        or "arm_cfft_f32.red3.mapping.json (fail)" not in row["diagnostic"]
+        or "row-level aggregate DFG, mapping, CGRA, and comparison artifacts are absent" not in row["diagnostic"]
     ):
-        raise AssertionError(f"arm_cfft_f32 should expose component mapping blocker evidence: {row}")
+        raise AssertionError(f"arm_cfft_f32 should expose component evidence before row aggregate evidence: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
@@ -834,13 +834,12 @@ def assert_cmsis_cfft_component_evidence(
         "arm_cfft_f32.red0.cgra.report.json",
         "arm_cfft_f32.red3.dfg.report.json",
         "arm_cfft_f32.red3.mapping.json",
+        "arm_cfft_f32.red3.cgra.report.json",
     )
     for artifact_name in required_artifacts:
         artifact = sim_evidence / artifact_name
         if not artifact.is_file():
             raise AssertionError(f"arm_cfft_f32 component evidence should emit {artifact}")
-    if (sim_evidence / "arm_cfft_f32.red3.cgra.report.json").exists():
-        raise AssertionError("arm_cfft_f32 red3 must not emit CGRA evidence from failed mapping")
     if (sim_evidence / "arm_cfft_f32.dfg.report.json").exists():
         raise AssertionError("arm_cfft_f32 must not emit row aggregate evidence before all component graphs pass")
 
@@ -889,13 +888,27 @@ def assert_cmsis_cfft_component_evidence(
         raise AssertionError(f"unexpected arm_cfft_f32 red3 DFG evidence: {red3_dfg}")
     red3_mapping = json.loads((sim_evidence / "arm_cfft_f32.red3.mapping.json").read_text())
     if (
-        red3_mapping.get("status") != "fail"
+        red3_mapping.get("status") != "pass"
         or red3_mapping.get("hardware") != "shared_reduction_adg"
-        or red3_mapping.get("unplaced_records") != 1
-        or red3_mapping.get("unrouted_edges") != 2
-        or "missing hardware resource for software op arith.mulf" not in red3_mapping.get("diagnostics", [])
+        or red3_mapping.get("unplaced_records") != 0
+        or red3_mapping.get("unrouted_edges") != 0
     ):
-        raise AssertionError(f"unexpected arm_cfft_f32 red3 mapping blocker: {red3_mapping}")
+        raise AssertionError(f"unexpected arm_cfft_f32 red3 mapping evidence: {red3_mapping}")
+    red3_placements = red3_mapping.get("placements", [])
+    if sum(1 for placement in red3_placements if placement.get("operation") == "arith.mulf") != 2:
+        raise AssertionError(f"arm_cfft_f32 red3 should place both FP multiplies: {red3_mapping}")
+    red3_cgra = json.loads((sim_evidence / "arm_cfft_f32.red3.cgra.report.json").read_text())
+    red3_dfg_cycles = red3_cgra.get("dfg_cycles")
+    red3_cgra_cycles = red3_cgra.get("hardware_aware_cycles")
+    if (
+        red3_cgra.get("status") != "pass"
+        or red3_cgra.get("final_outputs") != ["none"]
+        or red3_cgra.get("final_memory_state") != red3_memory
+        or not isinstance(red3_dfg_cycles, int)
+        or not isinstance(red3_cgra_cycles, int)
+        or red3_cgra_cycles < red3_dfg_cycles
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red3 CGRA evidence: {red3_cgra}")
 
 
 def assert_app_cgra_pass_row(

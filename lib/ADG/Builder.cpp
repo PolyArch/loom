@@ -1951,6 +1951,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   stateCarryPe.fus.push_back(makeCarryFu());
   module.addPe(std::move(stateCarryPe));
 
+  addFpBinaryPe("scaled_reduction_aux", "scaled_reduction_aux_lhs",
+                "scaled_reduction_aux_rhs", "product", "arith.mulf");
+
   auto addSingleResultBits32Switch =
       [&](llvm::StringRef result,
           std::initializer_list<llvm::StringRef> inputs) {
@@ -2300,6 +2303,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                                "cast3_result",
                                                "abs_data",
                                                "scaled_reduction",
+                                               "scaled_reduction_aux",
                                                "int_product",
                                                "reduction_scale",
                                                "int_sum",
@@ -2310,10 +2314,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                                "wide_truncated",
                                                "fp_negated"});
   module.addExactBodyLine(
-      "%store1_value = fabric.switch [spatial] %i32d, %selected");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+      "%store1_value = fabric.switch [spatial] %i32d, %selected, "
+      "%scaled_reduction, %scaled_reduction_aux");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111\"]}]");
   module.addExactBodyLine(
-      "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
+      "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "%vector_sync_mid = fabric.switch [spatial] %done1, %store_done0, "
       "%control_token_muxed_token");
@@ -2568,17 +2574,24 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch("bit_invariant_aux1_value",
                               {"i32b", "reduction_scale", "addr_shift_const",
                                "addr_aux_const", "addr_bias_const"});
-  addSingleResultBits32Switch(
-      "scaled_reduction_lhs",
-      {"carried_scan", "fp_running", "fp_running_aux", "data1", "data3",
-       "data5", "data0", "bit_invariant", "bit_invariant_aux0",
-       "bit_invariant_aux1", "aux_invariant0", "aux_invariant1",
-       "aux_invariant2", "fp_negated"});
+  const std::initializer_list<llvm::StringRef> scaledReductionLhsInputs = {
+      "carried_scan",      "fp_running",     "fp_running_aux",
+      "data1",            "data3",          "data5",
+      "data0",            "bit_invariant",  "bit_invariant_aux0",
+      "bit_invariant_aux1", "aux_invariant0", "aux_invariant1",
+      "aux_invariant2",   "fp_negated",     "reduction_scale"};
+  const std::initializer_list<llvm::StringRef> scaledReductionRhsInputs = {
+      "reduction_scale", "data4",          "data5",          "data1",
+      "data3",           "state_carry",    "bit_carry",      "aux_invariant0",
+      "aux_invariant1",  "aux_invariant2", "fp_negated",     "data0"};
+  addSingleResultBits32Switch("scaled_reduction_lhs",
+                              scaledReductionLhsInputs);
   addSingleResultBits32Switch("scaled_reduction_rhs",
-                              {"reduction_scale", "data4", "data5", "data1",
-                               "data3", "state_carry", "bit_carry",
-                               "aux_invariant0", "aux_invariant1",
-                               "aux_invariant2", "fp_negated"});
+                              scaledReductionRhsInputs);
+  addSingleResultBits32Switch("scaled_reduction_aux_lhs",
+                              scaledReductionLhsInputs);
+  addSingleResultBits32Switch("scaled_reduction_aux_rhs",
+                              scaledReductionRhsInputs);
   addSingleResultBits32Switch(
       "mac_lhs",
       {"i32a", "data0", "data2", "data4", "fp_diff", "fp_diff_aux",

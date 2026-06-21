@@ -77,6 +77,7 @@ struct EndpointKey {
 struct PlacementInfo {
   std::string hardware;
   std::string resourceKind;
+  std::string operation;
 };
 
 llvm::Error createParentDirectories(llvm::StringRef outputPath) {
@@ -288,6 +289,7 @@ unsigned memResultPortBase(mlir::Operation *op) {
 
 std::optional<unsigned>
 hardwareOperandIndexForResourceKind(llvm::StringRef resourceKind,
+                                    llvm::StringRef operation,
                                     unsigned softwareOperandIndex) {
   if (resourceKind == "fabric.op")
     return softwareOperandIndex;
@@ -299,6 +301,13 @@ hardwareOperandIndexForResourceKind(llvm::StringRef resourceKind,
     return std::nullopt;
   }
   if (resourceKind == "fabric.mem.store") {
+    if (operation == "llvm.store") {
+      if (softwareOperandIndex == 0)
+        return 1;
+      if (softwareOperandIndex == 1)
+        return 0;
+      return std::nullopt;
+    }
     if (softwareOperandIndex >= 1 && softwareOperandIndex <= 3)
       return softwareOperandIndex - 1;
     return std::nullopt;
@@ -414,8 +423,9 @@ llvm::Expected<std::pair<std::string, std::string>> expectedRouteEndpoints(
         std::errc::invalid_argument,
         "mapping route producer endpoint is not representable on hardware");
   std::optional<unsigned> consumerOperandIndex =
-      hardwareOperandIndexForResourceKind(
-          consumerPlacement->second.resourceKind, indicesOrErr->second);
+      hardwareOperandIndexForResourceKind(consumerPlacement->second.resourceKind,
+                                          consumerPlacement->second.operation,
+                                          indicesOrErr->second);
   if (!consumerOperandIndex)
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -787,7 +797,8 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
           hardwareOrErr->c_str(), operationOrErr->c_str());
     if (!placementBySoftware
              .try_emplace(*softwareOrErr,
-                          PlacementInfo{*hardwareOrErr, *resourceKindOrErr})
+                          PlacementInfo{*hardwareOrErr, *resourceKindOrErr,
+                                        *operationOrErr})
              .second)
       return llvm::createStringError(
           std::errc::invalid_argument,
