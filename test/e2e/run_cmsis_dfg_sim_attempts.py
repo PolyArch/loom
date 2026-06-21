@@ -133,6 +133,31 @@ ATTEMPTS = (
     ),
     Attempt(
         suite="cmsis-dsp",
+        case="MatrixFunctions/arm_mat_mult_f32.c",
+        stem="arm_mat_mult_f32",
+        graph="g_t_arm_mat_mult_f32_red_0_0",
+        dfg_dir_arg="cmsis_dsp_dfg_dir",
+        args=(
+            "0=none",
+            "1=1",
+            "2=0",
+            "3=-1",
+            "5=0.000000e+00",
+            "6=3",
+            "7=3",
+            "8=false",
+            "11=0",
+        ),
+        memrefs=(
+            "4=0.000000e+00,0.000000e+00,0.000000e+00",
+            "9=7.000000e+00,8.000000e+00,9.000000e+00,"
+            "1.000000e+01,1.100000e+01,1.200000e+01,"
+            "1.300000e+01,1.400000e+01,1.500000e+01",
+            "10=1.000000e+00,2.000000e+00,3.000000e+00",
+        ),
+    ),
+    Attempt(
+        suite="cmsis-dsp",
         case="StatisticsFunctions/arm_mean_f32.c",
         stem="arm_mean_f32",
         graph="g_t_arm_mean_f32_red_0_0",

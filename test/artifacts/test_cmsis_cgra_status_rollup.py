@@ -620,6 +620,16 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "arm_biquad_cascade_df1_f32",
     )
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
+    assert_cmsis_dfg_unsupported_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-dsp",
+        "MatrixFunctions/arm_mat_mult_f32.c",
+        "arm_mat_mult_f32",
+        "g_t_arm_mat_mult_f32_red_0_0",
+        "unsupported op: scf.for",
+    )
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
@@ -703,6 +713,53 @@ def assert_cmsis_cgra_pass_row(
     ):
         if not artifact.is_file():
             raise AssertionError(f"CMSIS evidence mode should emit {artifact}")
+
+
+def assert_cmsis_dfg_unsupported_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+    suite: str,
+    case: str,
+    stem: str,
+    graph: str,
+    diagnostic: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "dfg_report_unsupported"
+        or row["blocking_prerequisite"] != "dfg_report"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "unsupported"
+        or row["mapping_status"] != "not_run"
+        or row["cgra_status"] != "not_run"
+        or row["comparison_status"] != "not_run"
+        or row["final_outputs_present"] != "false"
+        or row["final_memory_state_present"] != "false"
+        or diagnostic not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose a real DFG unsupported blocker: {row}")
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+    report_path = sim_evidence / f"{stem}.dfg.report.json"
+    if not report_path.is_file():
+        raise AssertionError(f"CMSIS evidence mode should emit {report_path}")
+    for suffix in ("mapping.csv", "mapping.json", "cgra.report.json"):
+        artifact = sim_evidence / f"{stem}.{suffix}"
+        if artifact.exists():
+            raise AssertionError(f"CMSIS unsupported DFG row must not emit {artifact}")
+    report_data = json.loads(report_path.read_text())
+    if (
+        report_data.get("kind") != "dfg_sim_report"
+        or report_data.get("workload") != case
+        or report_data.get("graph") != graph
+        or report_data.get("status") != "unsupported"
+        or report_data.get("dynamic_work_items") != 0
+        or report_data.get("final_outputs") != []
+        or report_data.get("final_memory_state") != {}
+        or diagnostic not in report_data.get("diagnostics", [])
+    ):
+        raise AssertionError(f"unexpected CMSIS unsupported DFG report: {report_data}")
 
 
 def assert_cmsis_concat_memcpy_cgra_evidence(
