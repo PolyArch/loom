@@ -86,7 +86,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ("modmul",)
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
@@ -964,23 +964,29 @@ def assert_modmul_evidence(evidence_dir: Path) -> None:
     mapping_path = evidence_dir / "modmul.mapping.json"
     mapping = json.loads(mapping_path.read_text())
     if (
-        mapping.get("status") != "fail"
+        mapping.get("status") != "pass"
         or mapping.get("hardware") != "shared_reduction_adg"
-        or "missing hardware resource for software op llvm.zext" not in mapping.get("diagnostics", [])
-        or mapping.get("unplaced_records", 0) < 1
+        or mapping.get("placed_records") != 9
+        or mapping.get("routed_edges") != 10
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("diagnostics") != ["mapped software graph to fabric resources"]
     ):
-        raise AssertionError(f"modmul should stop at an honest 64-bit arithmetic mapping blocker: {mapping_path}: {mapping}")
+        raise AssertionError(f"modmul mapping should route real 64-bit modular arithmetic on the shared ADG: {mapping_path}: {mapping}")
 
     cgra_path = evidence_dir / "modmul.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
-    expected_diagnostic = "mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op llvm.zext"
     if (
-        cgra.get("status") != "blocked"
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 27
+        or cgra.get("hardware_aware_cycles") != 81
+        or cgra.get("routed_edges") != 10
+        or cgra.get("route_segments") != 42
         or cgra.get("final_outputs") != ["none"]
         or cgra.get("final_memory_state") != expected_memory
-        or expected_diagnostic not in cgra.get("diagnostics", [])
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
-        raise AssertionError(f"modmul CGRA-sim should remain blocked until shared hardware has real 64-bit modular arithmetic: {cgra_path}: {cgra}")
+        raise AssertionError(f"modmul CGRA-sim should carry the first real modular product state: {cgra_path}: {cgra}")
 
 
 def assert_newton_iter_evidence(evidence_dir: Path) -> None:
@@ -1734,6 +1740,7 @@ def main(argv: list[str]) -> int:
             "compare_swap",
             "compact",
             "hash_mix",
+            "modmul",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -2111,6 +2118,7 @@ def main(argv: list[str]) -> int:
             "compare_swap",
             "compact",
             "hash_mix",
+            "modmul",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -2199,8 +2207,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 51,
-            "fail": 1,
+            "pass": 52,
+            "fail": 0,
             "blocked": 57,
             "unsupported": 0,
             "missing_status": 0,

@@ -83,6 +83,8 @@
 // HARDWARE-DAG: fabric.op [@arith.ori]
 // HARDWARE-DAG: fabric.op [@llvm.arm.qadd16, @llvm.arm.qsub16, @llvm.arm.qsub8]
 // HARDWARE-DAG: fabric.op [@llvm.trunc, @llvm.sext, @llvm.zext]
+// HARDWARE-DAG: fabric.op [@llvm.sext, @llvm.zext]
+// HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
 
@@ -163,13 +165,18 @@
 
 // MODMUL-DAG: "workload": "modmul"
 // MODMUL-DAG: "hardware": "shared_reduction_adg"
-// MODMUL-DAG: "placed_records": 4
-// MODMUL-DAG: "routed_edges": 3
-// MODMUL-DAG: "unplaced_records": 5
+// MODMUL-DAG: "placed_records": 9
+// MODMUL-DAG: "routed_edges": 10
+// MODMUL-DAG: "unplaced_records": 0
 // MODMUL-DAG: "unrouted_edges": 0
-// MODMUL-DAG: "status": "fail"
-// MODMUL-DAG: "missing hardware resource for software op llvm.zext"
+// MODMUL-DAG: "status": "pass"
+// MODMUL-DAG: "edge_ref": "llvm.zext#0.result0->arith.muli#0.operand1"
+// MODMUL-DAG: "edge_ref": "llvm.zext#1.result0->arith.muli#0.operand0"
+// MODMUL-DAG: "edge_ref": "arith.muli#0.result0->arith.remui#0.operand0"
+// MODMUL-DAG: "edge_ref": "arith.remui#0.result0->llvm.trunc#0.operand0"
+// MODMUL-DAG: "edge_ref": "llvm.trunc#0.result0->dataflow.store#0.operand2"
 // MODMUL-DAG: "segment_kind": "module_path"
+// MODMUL-DAG: "segment_kind": "buffer"
 // MODMUL-NOT: ".out"
 // MODMUL-NOT: ".in"
 

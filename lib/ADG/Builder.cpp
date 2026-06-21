@@ -820,6 +820,17 @@ std::string bits32TypeList(std::size_t count) {
   return text;
 }
 
+std::string uniformTypeList(std::size_t count, llvm::StringRef type) {
+  std::string text = "(";
+  for (std::size_t index = 0; index < count; ++index) {
+    if (index)
+      text += ", ";
+    text += type;
+  }
+  text += ")";
+  return text;
+}
+
 std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
   std::string text = "[{connectivity_table = [";
   for (std::size_t index = 0; index < rows.size(); ++index) {
@@ -1626,6 +1637,74 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   };
   addCastBankPe();
 
+  auto addWideExtensionPe = [&](std::string resultName,
+                                std::string inputName) {
+    PeSpec pe;
+    pe.inputs = {{"pa", std::move(inputName), "!fabric.bits<32>",
+                  "!fabric.bits<64>"}};
+    pe.resultNames = {std::move(resultName)};
+    pe.resultTypes = {"!fabric.bits<64>"};
+    pe.fus.push_back(
+        FuSpec{{{"value", "pa", "!fabric.bits<64>", "!fabric.bits<32>"}},
+               {"!fabric.bits<64>"},
+               {FabricOpSpec{{"wide"},
+                             {"llvm.sext", "llvm.zext"},
+                             {"value"},
+                             {"!fabric.bits<32>"},
+                             {"!fabric.bits<64>"},
+                             {},
+                             {}}},
+               {"wide"}});
+    module.addPe(std::move(pe));
+  };
+  addWideExtensionPe("wide_zext0", "wide_zext0_input");
+  addWideExtensionPe("wide_zext1", "wide_zext1_input");
+
+  auto addWideBinaryPe = [&](std::string peResultName, std::string lhsInput,
+                             std::string rhsInput,
+                             std::vector<std::string> opList) {
+    PeSpec pe;
+    pe.inputs = {{"pa", std::move(lhsInput), "!fabric.bits<64>", ""},
+                 {"pb", std::move(rhsInput), "!fabric.bits<64>", ""}};
+    pe.resultNames = {std::move(peResultName)};
+    pe.resultTypes = {"!fabric.bits<64>"};
+    pe.fus.push_back(FuSpec{{{"lhs", "pa", "!fabric.bits<64>", ""},
+                             {"rhs", "pb", "!fabric.bits<64>", ""}},
+                            {"!fabric.bits<64>"},
+                            {FabricOpSpec{{"value"},
+                                          std::move(opList),
+                                          {"lhs", "rhs"},
+                                          {"!fabric.bits<64>",
+                                           "!fabric.bits<64>"},
+                                          {"!fabric.bits<64>"},
+                                          {},
+                                          {}}},
+                            {"value"}});
+    module.addPe(std::move(pe));
+  };
+  addWideBinaryPe("wide_product", "wide_mul_lhs", "wide_mul_rhs",
+                  {"arith.muli"});
+  addWideBinaryPe("wide_remainder", "wide_rem_lhs", "wide_rem_rhs",
+                  {"arith.divui", "arith.remui"});
+
+  PeSpec wideTruncPe;
+  wideTruncPe.inputs = {{"pa", "wide_trunc_input", "!fabric.bits<64>", ""}};
+  wideTruncPe.resultNames = {"wide_truncated_wide"};
+  wideTruncPe.resultTypes = {"!fabric.bits<64>"};
+  wideTruncPe.fus.push_back(
+      FuSpec{{{"value", "pa", "!fabric.bits<64>", ""}},
+             {"!fabric.bits<64>"},
+             {FabricOpSpec{{"narrow"},
+                           {"llvm.trunc"},
+                           {"value"},
+                           {"!fabric.bits<64>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"narrow"},
+             {"!fabric.bits<32>"}});
+  module.addPe(std::move(wideTruncPe));
+
   addUnary32YieldPe("fp", "llvm.uitofp");
 
   auto addCmpPe = [&](std::string resultName, std::string opName,
@@ -1912,6 +1991,22 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
         module.addExactBodyLine("  : " + bits32TypeList(inputRefs.size()) +
                                 " -> !fabric.bits<32>");
       };
+  auto addSingleResultBits64Switch =
+      [&](llvm::StringRef result,
+          std::initializer_list<llvm::StringRef> inputs) {
+        llvm::ArrayRef<llvm::StringRef> inputRefs(inputs.begin(),
+                                                  inputs.size());
+        module.addExactBodyLine(valueName(result) +
+                                " = fabric.switch [spatial] " +
+                                valueList(inputRefs));
+        module.addExactBodyLine("  [{connectivity_table = [\"" +
+                                std::string(inputRefs.size(), '1') +
+                                "\"]}]");
+        module.addExactBodyLine("  : " +
+                                uniformTypeList(inputRefs.size(),
+                                                "!fabric.bits<64>") +
+                                " -> !fabric.bits<64>");
+      };
   addSingleResultBits32Switch("logic_mask_lhs",
                               {"i32a", "data0", "data1", "bit_carry",
                                "addr_unscaled", "cmpi_pred",
@@ -2188,12 +2283,33 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                "packed_sat", "idx", "running", "int_sum",
                                "addr_sum", "uint_rem", "cast0_result",
                                "cast1_result", "cast2_result"});
+  addSingleResultBits32Switch("wide_zext0_input",
+                              {"data0", "data1", "i32a", "cast0_result",
+                               "cast1_result"});
+  addSingleResultBits32Switch("wide_zext1_input",
+                              {"data1", "data0", "i32b", "cast0_result",
+                               "cast1_result"});
+  addSingleResultBits64Switch("wide_mul_lhs",
+                              {"wide_zext1", "wide_zext0", "i64a", "i64b"});
+  addSingleResultBits64Switch("wide_mul_rhs",
+                              {"wide_zext0", "wide_zext1", "i64a", "i64c"});
+  addSingleResultBits64Switch(
+      "wide_rem_lhs", {"wide_product", "wide_zext0", "wide_zext1", "i64a"});
+  addSingleResultBits64Switch(
+      "wide_rem_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
+  addSingleResultBits64Switch("wide_trunc_input",
+                              {"wide_remainder", "wide_product",
+                               "wide_zext0", "wide_zext1"});
   addSingleResultBits32Switch("load2_addr",
                               {"i32c", "cast0_result", "cast1_result",
                                "cast2_result", "cast3_result", "idx",
                                "addr_sum", "running", "squared_data",
                                "int_sum", "aux_idx", "aux_active_idx",
                                "data0", "data1"});
+  module.addExactBodyLine(
+      "%wide_truncated = fabric.fifo %wide_truncated_wide "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
   addSingleResultBits32Switch(
       "store0_value",
       {"scan_store_value", "fp_running", "fp_running_aux", "running",
@@ -2202,7 +2318,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        "int_xor", "packed_sat", "cast0_result", "cast1_result",
        "cast2_result", "cast3_result", "abs_data", "scaled_reduction",
        "int_product", "reduction_scale", "int_sum", "fp_diff",
-       "fp_diff_aux", "compute_demux_false", "compute_demux_true"});
+       "fp_diff_aux", "compute_demux_false", "compute_demux_true",
+       "wide_truncated"});
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");

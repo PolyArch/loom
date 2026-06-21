@@ -339,8 +339,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 51,
-            "fail": 1,
+            "pass": 52,
+            "fail": 0,
             "blocked": 57,
             "unsupported": 0,
             "missing_status": 0,
@@ -348,14 +348,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     )
     expected_hardware = default_batch_hardware(repo)
     for case, hardware in expected_hardware.items():
-        if case == "modmul":
-            continue
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
             if not artifact.is_file():
                 raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
-    assert_modmul_app_mapping_failure_row(repo, rows, out_dir / "current-sim-cycle")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
     run(
@@ -415,49 +412,9 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {
-    "modmul": "missing hardware resource for software op llvm.zext",
-}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
-    "modmul": {
-        "graph": "g_t_modmul_kernel_0_0",
-        "dynamic_work_items": 1,
-        "final_output_suffix": ["none"],
-        "operation_fire_counts": {
-            "arith.muli": 1,
-            "arith.remui": 1,
-            "dataflow.load": 2,
-            "dataflow.store": 1,
-            "dataflow.sync": 1,
-            "llvm.trunc": 1,
-            "llvm.zext": 2,
-        },
-        "final_memory_state": {
-            "arg1": [
-                "i32:12345",
-                "i32:24690",
-                "i32:987654321",
-                "i32:42",
-                "i32:65535",
-                "i32:1000000006",
-                "i32:314159",
-                "i32:271828",
-            ],
-            "arg2": [
-                "i32:67890",
-                "i32:13579",
-                "i32:123456789",
-                "i32:99",
-                "i32:65537",
-                "i32:1000000006",
-                "i32:271828",
-                "i32:314159",
-            ],
-            "arg4": ["i32:838102050", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0"],
-        },
-    },
-}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
 
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
@@ -604,10 +561,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 1,
+            "fail": 0,
             "blocked": 57,
             "unsupported": 0,
-            "missing_status": 51,
+            "missing_status": 52,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
@@ -863,78 +820,6 @@ def assert_app_cgra_pass_row(
         raise AssertionError(f"app row should expose real CGRA-sim evidence: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
-
-
-def assert_modmul_app_mapping_failure_row(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
-    row = one_row(rows, "app", "modmul")
-    if (
-        row["status"] != "fail"
-        or row["diagnostic_class"] != "mapping_artifact_failed"
-        or row["owner"] != "sim_report"
-        or row["blocking_prerequisite"] != "mapping_artifact"
-        or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "fail"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "blocked"
-        or row["hardware_system"] != "shared_reduction_adg"
-        or row["graph_ids"] != "g_t_modmul_kernel_0_0"
-        or row["final_outputs_present"] != "true"
-        or row["final_memory_state_present"] != "true"
-        or "missing hardware resource for software op llvm.zext" not in row["diagnostic"]
-    ):
-        raise AssertionError(f"modmul should expose a structured shared-ADG mapping failure: {row}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
-        artifact = sim_evidence / Path(row[key]).name
-        if not artifact.is_file():
-            raise AssertionError(f"default batch should emit {artifact}")
-    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
-    expected_memory = {
-        "arg1": [
-            "i32:12345",
-            "i32:24690",
-            "i32:987654321",
-            "i32:42",
-            "i32:65535",
-            "i32:1000000006",
-            "i32:314159",
-            "i32:271828",
-        ],
-        "arg2": [
-            "i32:67890",
-            "i32:13579",
-            "i32:123456789",
-            "i32:99",
-            "i32:65537",
-            "i32:1000000006",
-            "i32:271828",
-            "i32:314159",
-        ],
-        "arg4": ["i32:838102050", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0", "i32:0"],
-    }
-    expected_counts = {
-        "arith.muli": 1,
-        "arith.remui": 1,
-        "dataflow.load": 2,
-        "dataflow.store": 1,
-        "dataflow.sync": 1,
-        "llvm.trunc": 1,
-        "llvm.zext": 2,
-    }
-    if (
-        dfg_report.get("status") != "pass"
-        or dfg_report.get("graph") != "g_t_modmul_kernel_0_0"
-        or dfg_report.get("dynamic_work_items") != 1
-        or dfg_report.get("final_outputs") != ["none"]
-        or dfg_report.get("final_memory_state") != expected_memory
-    ):
-        raise AssertionError(f"modmul should preserve real DFG evidence before mapping failure: {dfg_report}")
-    for op_name, expected_count in expected_counts.items():
-        actual_count = dfg_report.get("operation_fire_counts", {}).get(op_name)
-        if actual_count != expected_count:
-            raise AssertionError(
-                f"modmul {op_name} fire count should be {expected_count}, got {actual_count}: {dfg_report}"
-            )
 
 
 def assert_cmsis_dfg_blocker_row(
