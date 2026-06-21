@@ -82,6 +82,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "partition",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "mean",
       "hardware": "shared_reduction_adg"
     },
@@ -171,6 +175,10 @@
     },
     {
       "case": "compare_swap",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "compact",
       "hardware": "shared_reduction_adg"
     },
     {

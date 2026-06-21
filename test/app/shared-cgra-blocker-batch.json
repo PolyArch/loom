@@ -14,10 +14,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "compact",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "crc32",
       "hardware": "shared_reduction_adg"
     },
@@ -59,10 +55,6 @@
     },
     {
       "case": "parity",
-      "hardware": "shared_reduction_adg"
-    },
-    {
-      "case": "partition",
       "hardware": "shared_reduction_adg"
     },
     {

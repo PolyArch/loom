@@ -86,8 +86,8 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ("compact", "modmul")
-MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ("partition",)
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ("modmul",)
+MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -1214,18 +1214,41 @@ def assert_compact_evidence(evidence_dir: Path) -> None:
     mapping_path = evidence_dir / "compact.mapping.json"
     mapping = json.loads(mapping_path.read_text())
     if (
-        mapping.get("status") != "fail"
+        mapping.get("status") != "pass"
         or mapping.get("hardware") != "shared_reduction_adg"
-        or "missing hardware resource for software op dataflow.mux" not in mapping.get("diagnostics", [])
-        or mapping.get("unplaced_records", 0) < 1
+        or mapping.get("placed_records") != 14
+        or mapping.get("routed_edges") != 25
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("diagnostics") != ["mapped software graph to fabric resources"]
     ):
-        raise AssertionError(f"compact should stop at an honest shared-ADG control-mux mapping blocker: {mapping_path}: {mapping}")
+        raise AssertionError(f"compact should map control tokens on the shared ADG: {mapping_path}: {mapping}")
+    route_refs = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_route_refs = {
+        "arith.cmpi#0.result0->dataflow.demux#0.operand0",
+        "arith.cmpi#0.result0->dataflow.demux#1.operand0",
+        "arith.cmpi#0.result0->dataflow.demux#2.operand0",
+        "arith.cmpi#0.result0->dataflow.mux#0.operand0",
+        "dataflow.demux#2.result1->dataflow.mux#0.operand2",
+        "dataflow.store#0.result0->dataflow.mux#0.operand1",
+    }
+    if not expected_route_refs.issubset(route_refs):
+        missing = sorted(expected_route_refs - route_refs)
+        raise AssertionError(f"compact should route selector and token mux/demux edges, missing {missing}: {mapping_path}")
 
     cgra_path = evidence_dir / "compact.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
-    expected_diagnostic = "mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op dataflow.mux"
-    if cgra.get("status") != "blocked" or expected_diagnostic not in cgra.get("diagnostics", []):
-        raise AssertionError(f"compact CGRA-sim should remain blocked until the shared ADG can map control mux: {cgra_path}: {cgra}")
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 253
+        or cgra.get("hardware_aware_cycles") != 374
+        or cgra.get("routed_edges") != 25
+        or cgra.get("route_segments") != 113
+        or cgra.get("final_outputs") != ["none", "i32:7"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"compact CGRA-sim evidence should carry the real filtered copy state: {cgra_path}: {cgra}")
 
 
 def assert_partition_evidence(evidence_dir: Path) -> None:
@@ -1310,22 +1333,31 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
     mapping_path = evidence_dir / "partition.mapping.json"
     mapping = json.loads(mapping_path.read_text())
     if (
-        mapping.get("status") != "blocked"
+        mapping.get("status") != "pass"
         or mapping.get("hardware") != "shared_reduction_adg"
-        or "one or more component mapping artifacts are not passing: fail,fail" not in mapping.get("diagnostics", [])
-        or "missing hardware resource for software op dataflow.mux" not in mapping.get("diagnostics", [])
+        or mapping.get("placed_records") != 28
+        or mapping.get("routed_edges") != 50
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("route_segments") != 226
+        or mapping.get("diagnostics") != ["derived workload graph-set mapping artifact from component PnR mapping artifacts"]
     ):
-        raise AssertionError(f"partition should remain a structured aggregate mapping blocker: {mapping_path}: {mapping}")
+        raise AssertionError(f"partition should aggregate passing component mappings: {mapping_path}: {mapping}")
 
     cgra_path = evidence_dir / "partition.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
     if (
-        cgra.get("status") != "blocked"
+        cgra.get("status") != "pass"
         or cgra.get("dfg_cycles") != 438
+        or cgra.get("hardware_aware_cycles") != 680
+        or cgra.get("routed_edges") != 50
+        or cgra.get("route_segments") != 226
         or cgra.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
         or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+        or cgra.get("diagnostics") != ["derived workload graph-set CGRA report from component CGRA simulator reports"]
     ):
-        raise AssertionError(f"partition CGRA-sim should carry final state while blocked on mapping: {cgra_path}: {cgra}")
+        raise AssertionError(f"partition CGRA-sim should carry the two-sided real partition state: {cgra_path}: {cgra}")
 
 
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
@@ -1675,6 +1707,7 @@ def main(argv: list[str]) -> int:
             "cumsum",
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
+            "partition",
             "mean",
             "newton_iter",
             "vecnorm_l1",
@@ -1699,6 +1732,7 @@ def main(argv: list[str]) -> int:
             "fir_filter_stateful",
             "gf_mul",
             "compare_swap",
+            "compact",
             "hash_mix",
             "relu",
             "upsample",
@@ -1856,15 +1890,13 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "partition",
             "g_t_partition_red_0_0",
-            "fail",
-            "missing hardware resource for software op dataflow.mux",
+            "pass",
         )
         assert_component_mapping_status(
             evidence_dir,
             "partition",
             "g_t_partition_red_1_0",
-            "fail",
-            "missing hardware resource for software op dataflow.mux",
+            "pass",
         )
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "relu", "shared_reduction_adg")
@@ -1884,6 +1916,30 @@ def main(argv: list[str]) -> int:
                 "arith.select#1.result0->dataflow.store#1.operand2",
                 "dataflow.load#1.result0->arith.cmpf#0.operand1",
                 "dataflow.store#1.result0->dataflow.sync#0.operand3",
+            },
+        )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "compact",
+            {
+                "arith.cmpi#0.result0->dataflow.demux#0.operand0",
+                "arith.cmpi#0.result0->dataflow.demux#1.operand0",
+                "arith.cmpi#0.result0->dataflow.demux#2.operand0",
+                "arith.cmpi#0.result0->dataflow.mux#0.operand0",
+                "dataflow.demux#2.result1->dataflow.mux#0.operand2",
+                "dataflow.store#0.result0->dataflow.mux#0.operand1",
+            },
+        )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "partition",
+            {
+                "arith.cmpf#0.result0->dataflow.demux#0.operand0",
+                "arith.cmpf#0.result0->dataflow.mux#0.operand0",
+                "dataflow.demux#2.result1->dataflow.mux#0.operand2",
+                "dataflow.demux#2.result1->dataflow.store#0.operand3",
+                "dataflow.store#0.result0->dataflow.mux#0.operand1",
+                "dataflow.store#0.result0->dataflow.mux#0.operand2",
             },
         )
         assert_mapping_edges_use_switch_multihop(
@@ -2030,6 +2086,7 @@ def main(argv: list[str]) -> int:
             "cumsum",
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
+            "partition",
             "mean",
             "vecnorm_l1",
             "vecnorm_l2",
@@ -2052,6 +2109,7 @@ def main(argv: list[str]) -> int:
             "convolve_1d_same",
             "fir_filter_stateful",
             "compare_swap",
+            "compact",
             "hash_mix",
             "relu",
             "upsample",
@@ -2141,9 +2199,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 49,
-            "fail": 2,
-            "blocked": 58,
+            "pass": 51,
+            "fail": 1,
+            "blocked": 57,
             "unsupported": 0,
             "missing_status": 0,
         }

@@ -1730,6 +1730,54 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"selected_lane"}});
   module.addPe(std::move(muxPe));
 
+  PeSpec controlDemuxPe;
+  controlDemuxPe.inputs = {
+      {"pa", "control_token_demux_sel", "!fabric.bits<32>", ""},
+      {"pb", "ctrl", "!fabric.bits<0>", "!fabric.bits<32>"}};
+  controlDemuxPe.resultNames = {"control_token_demux_false",
+                                "control_token_demux_true"};
+  controlDemuxPe.resultTypes = {"!fabric.bits<32>", "!fabric.bits<32>"};
+  controlDemuxPe.fus.push_back(FuSpec{
+      {{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+       {"value", "pb", "!fabric.bits<32>", "!fabric.bits<0>"}},
+      {"!fabric.bits<32>", "!fabric.bits<32>"},
+      {FabricOpSpec{{"false_lane", "true_lane"},
+                    {"dataflow.demux"},
+                    {"sel", "value"},
+                    {"!fabric.bits<1>", "!fabric.bits<0>"},
+                    {"!fabric.bits<0>", "!fabric.bits<0>"},
+                    {},
+                    {}}},
+      {"false_lane", "true_lane"},
+      {"!fabric.bits<0>", "!fabric.bits<0>"}});
+  module.addPe(std::move(controlDemuxPe));
+
+  PeSpec controlMuxPe;
+  controlMuxPe.inputs = {
+      {"pa", "control_token_mux_sel", "!fabric.bits<32>", ""},
+      {"pb", "control_token_mux_false", "!fabric.bits<0>",
+       "!fabric.bits<32>"},
+      {"pc", "control_token_mux_true", "!fabric.bits<0>",
+       "!fabric.bits<32>"}};
+  controlMuxPe.resultNames = {"control_token_muxed"};
+  controlMuxPe.resultTypes = {"!fabric.bits<32>"};
+  controlMuxPe.fus.push_back(FuSpec{
+      {{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
+       {"false_lane", "pb", "!fabric.bits<32>", "!fabric.bits<0>"},
+       {"true_lane", "pc", "!fabric.bits<32>", "!fabric.bits<0>"}},
+      {"!fabric.bits<32>"},
+      {FabricOpSpec{{"selected_lane"},
+                    {"dataflow.mux"},
+                    {"sel", "false_lane", "true_lane"},
+                    {"!fabric.bits<1>", "!fabric.bits<0>",
+                     "!fabric.bits<0>"},
+                    {"!fabric.bits<0>"},
+                    {},
+                    {}}},
+      {"selected_lane"},
+      {"!fabric.bits<0>"}});
+  module.addPe(std::move(controlMuxPe));
+
   PeSpec vectorSyncPe;
   vectorSyncPe.inputs = {{"pa", "sync_head", "!fabric.bits<0>", ""},
                          {"pb", "vector_sync_mid", "!fabric.bits<0>", ""},
@@ -2038,12 +2086,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                "bit_invariant_aux0", "bit_invariant_aux1",
                                "cast0_result", "cast1_result",
                                "cast2_result", "cast3_result",
-                               "aux_xor"});
+                               "aux_xor", "carried_scan"});
   addSingleResultBits32Switch("select_false",
                               {"i32c", "rotated", "data0", "data1",
                                "carried_scan", "bit_carry",
                                "addr_shift_const", "addr_aux_const",
-                               "addr_bias_const", "aux_xor"});
+                               "addr_bias_const", "aux_xor", "running"});
   addSingleResultBits32Switch(
       "gate_cond",
       {"aux_rwc", "logic_masked", "addr_masked", "cmpi_pred",
@@ -2079,6 +2127,42 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"compute_demux_true", "mac_result", "mac_result1", "mac_result2",
        "mac_result3", "fp_running", "fp_running_aux", "scaled_reduction",
        "data0", "data1"});
+  addSingleResultBits32Switch(
+      "control_token_demux_sel",
+      {"logic_masked", "addr_masked", "cmpi_pred", "cmpi_pred_aux",
+       "cmpf_pred", "fp_gate", "i32a"});
+  module.addExactBodyLine(
+      "%control_token_demux_false_token = fabric.fifo "
+      "%control_token_demux_false [max_depth = 1, bypassable = true] "
+      "{bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
+  module.addExactBodyLine(
+      "%control_token_demux_true_token = fabric.fifo "
+      "%control_token_demux_true [max_depth = 1, bypassable = true] "
+      "{bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
+  module.addExactBodyLine(
+      "%control_token_muxed_token = fabric.fifo %control_token_muxed "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
+  addSingleResultBits32Switch(
+      "control_token_mux_sel",
+      {"logic_masked", "addr_masked", "cmpi_pred", "cmpi_pred_aux",
+       "cmpf_pred", "fp_gate", "i32a"});
+  module.addExactBodyLine(
+      "%control_token_mux_false = fabric.switch [spatial] "
+      "%control_token_demux_false_token, %store_done0, %ctrl");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
+  module.addExactBodyLine(
+      "%control_token_mux_true = fabric.switch [spatial] "
+      "%store_done0, %control_token_demux_true_token, %ctrl");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
   addSingleResultBits32Switch("load1_addr",
                               {"idx", "i32b", "addr_unscaled", "cast0_result",
                                "cast1_result", "cast2_result",
@@ -2118,17 +2202,19 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        "int_xor", "packed_sat", "cast0_result", "cast1_result",
        "cast2_result", "cast3_result", "abs_data", "scaled_reduction",
        "int_product", "reduction_scale", "int_sum", "fp_diff",
-       "fp_diff_aux"});
+       "fp_diff_aux", "compute_demux_false", "compute_demux_true"});
   module.addExactBodyLine(
       "%store1_value = fabric.switch [spatial] %i32d, %selected");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine(
-      "%vector_sync_mid = fabric.switch [spatial] %done1, %store_done0");
-  module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
+      "%vector_sync_mid = fabric.switch [spatial] %done1, %store_done0, "
+      "%control_token_muxed_token");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
   module.addExactBodyLine(
-      "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
   module.addExactBodyLine(
       "%sync_head = fabric.switch [spatial] %done0, %store_done0");
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
@@ -2225,7 +2311,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"idx", "addr_unscaled", "carried_scan",
                                "addr_shift_const", "state_carry",
                                "addr_bias_const", "int_sum", "addr_sum",
-                               "aux_idx", "running", "aux_active_idx"});
+                               "aux_idx", "running", "aux_active_idx",
+                               "control_demux_false", "control_demux_true"});
   addSingleResultBits32Switch(
       "aux_stream_lb",
       {"addr_shift_const", "addr_aux_const", "addr_bias_const"});
@@ -2248,20 +2335,24 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        "addr_bias_const"});
   module.addExactBodyLine(
       "%store0_ctrl = fabric.switch [spatial] %ctrl, %done0, %done1, %done2, "
-      "%done3, %done4, %done5");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
+      "%done3, %done4, %done5, %control_token_demux_false_token, "
+      "%control_token_demux_true_token");
+  module.addExactBodyLine("  [{connectivity_table = [\"111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
       "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>) -> !fabric.bits<0>");
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
   module.addExactBodyLine(
       "%store1_ctrl = fabric.switch [spatial] %ctrl, %done0, %done1, %done2, "
-      "%done3, %done4, %done5");
-  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
+      "%done3, %done4, %done5, %control_token_demux_false_token, "
+      "%control_token_demux_true_token");
+  module.addExactBodyLine("  [{connectivity_table = [\"111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
       "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>) -> !fabric.bits<0>");
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
   module.addExactBodyLine(
       "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
       "%data4, %done4, %data5, %done5, %store_done0, %store_done1 =");
@@ -2473,12 +2564,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  -> (!fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine(
       "%sync_aux_done = fabric.switch [spatial] %store_done0, %done1, "
-      "%done2, %done3, %done4, %done5");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111\"]}]");
+      "%done2, %done3, %done4, %done5, %control_token_muxed_token");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)");
-  module.addExactBodyLine("  -> !fabric.bits<0>");
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>) -> !fabric.bits<0>");
   return module;
 }
 

@@ -339,9 +339,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 49,
-            "fail": 2,
-            "blocked": 58,
+            "pass": 51,
+            "fail": 1,
+            "blocked": 57,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -416,60 +416,10 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
 }
 
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {
-    "compact": "missing hardware resource for software op dataflow.mux",
     "modmul": "missing hardware resource for software op llvm.zext",
 }
 
 SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
-    "compact": {
-        "graph": "g_t_compact_red_0_0",
-        "dynamic_work_items": 12,
-        "final_output_suffix": ["none", "i32:7"],
-        "operation_fire_counts": {
-            "arith.addi": 13,
-            "arith.cmpi": 12,
-            "arith.index_cast": 26,
-            "arith.select": 12,
-            "dataflow.carry": 13,
-            "dataflow.demux": 36,
-            "dataflow.invariant": 28,
-            "dataflow.load": 12,
-            "dataflow.mux": 12,
-            "dataflow.store": 7,
-            "dataflow.stream": 13,
-            "dataflow.sync": 12,
-        },
-        "final_memory_state": {
-            "arg4": [
-                "i32:10",
-                "i32:0",
-                "i32:20",
-                "i32:0",
-                "i32:30",
-                "i32:40",
-                "i32:0",
-                "i32:50",
-                "i32:0",
-                "i32:60",
-                "i32:70",
-                "i32:0",
-            ],
-            "arg6": [
-                "i32:10",
-                "i32:20",
-                "i32:30",
-                "i32:40",
-                "i32:50",
-                "i32:60",
-                "i32:70",
-                "i32:0",
-                "i32:0",
-                "i32:0",
-                "i32:0",
-                "i32:0",
-            ],
-        },
-    },
     "modmul": {
         "graph": "g_t_modmul_kernel_0_0",
         "dynamic_work_items": 1,
@@ -509,81 +459,9 @@ SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
     },
 }
 
-SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {
-    "partition": "one or more component mapping artifacts are not passing: fail,fail",
-}
+SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {
-    "partition": {
-        "graph": "g_t_partition_red_0_0,g_t_partition_red_1_0",
-        "dynamic_work_items": 20,
-        "final_output_suffix": ["none", "i32:5", "none", "i32:10"],
-        "operation_fire_counts": {
-            "arith.addi": 22,
-            "arith.cmpf": 20,
-            "arith.index_cast": 44,
-            "arith.select": 20,
-            "dataflow.carry": 22,
-            "dataflow.demux": 60,
-            "dataflow.invariant": 48,
-            "dataflow.load": 20,
-            "dataflow.mux": 20,
-            "dataflow.store": 10,
-            "dataflow.stream": 22,
-            "dataflow.sync": 20,
-        },
-        "final_memory_state": {
-            "g_t_partition_red_0_0:arg4": [
-                "f32:3",
-                "f32:7",
-                "f32:1",
-                "f32:9",
-                "f32:5",
-                "f32:2",
-                "f32:8",
-                "f32:4",
-                "f32:6",
-                "f32:10",
-            ],
-            "g_t_partition_red_0_0:arg6": [
-                "f32:3",
-                "f32:1",
-                "f32:5",
-                "f32:2",
-                "f32:4",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-            ],
-            "g_t_partition_red_1_0:arg4": [
-                "f32:3",
-                "f32:7",
-                "f32:1",
-                "f32:9",
-                "f32:5",
-                "f32:2",
-                "f32:8",
-                "f32:4",
-                "f32:6",
-                "f32:10",
-            ],
-            "g_t_partition_red_1_0:arg6": [
-                "f32:3",
-                "f32:1",
-                "f32:5",
-                "f32:2",
-                "f32:4",
-                "f32:7",
-                "f32:9",
-                "f32:8",
-                "f32:6",
-                "f32:10",
-            ],
-        },
-    }
-}
+SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {}
 
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
@@ -726,10 +604,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 2,
-            "blocked": 58,
+            "fail": 1,
+            "blocked": 57,
             "unsupported": 0,
-            "missing_status": 49,
+            "missing_status": 51,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
