@@ -249,7 +249,8 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
       mlir::Operation *owner = use.getOwner();
       if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
           mlir::isa<mlir::LLVM::LoadOp>(owner) ||
-          isPointerCarryOp(owner) || isGraphReturnOp(owner))
+          mlir::isa<mlir::LLVM::StoreOp>(owner) || isPointerCarryOp(owner) ||
+          isGraphReturnOp(owner))
         continue;
       return false;
     }
@@ -263,7 +264,8 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
   unsigned pointerResultIndex = isPointerGateOp(op) ? 1 : 0;
   for (mlir::OpOperand &use : op->getResult(pointerResultIndex).getUses()) {
     mlir::Operation *owner = use.getOwner();
-    if (mlir::isa<mlir::LLVM::GEPOp>(owner) || isGraphReturnOp(owner))
+    if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
+        mlir::isa<mlir::LLVM::StoreOp>(owner) || isGraphReturnOp(owner))
       continue;
     if (isPointerGateOp(owner))
       continue;
@@ -290,7 +292,7 @@ std::optional<ResourceKind> resourceKindForSoftwareOp(mlir::Operation *op) {
   }
   if (name == "dataflow.load" || name == "llvm.load")
     return ResourceKind::MemLoad;
-  if (name == "dataflow.store")
+  if (name == "dataflow.store" || name == "llvm.store")
     return ResourceKind::MemStore;
   if (fabric::isFabricOpSupported(name))
     return ResourceKind::FabricOp;
@@ -771,7 +773,7 @@ void addFuToPeBoundarySegments(
 }
 
 std::optional<unsigned>
-hardwareOperandIndexForSoftwareEndpoint(ResourceKind kind,
+hardwareOperandIndexForSoftwareEndpoint(ResourceKind kind, mlir::Operation *op,
                                         unsigned softwareOperandIndex) {
   switch (kind) {
   case ResourceKind::FabricOp:
@@ -783,6 +785,13 @@ hardwareOperandIndexForSoftwareEndpoint(ResourceKind kind,
       return 1;
     return std::nullopt;
   case ResourceKind::MemStore:
+    if (op && op->getName().getStringRef() == "llvm.store") {
+      if (softwareOperandIndex == 0)
+        return 1;
+      if (softwareOperandIndex == 1)
+        return 0;
+      return std::nullopt;
+    }
     if (softwareOperandIndex >= 1 && softwareOperandIndex <= 3)
       return softwareOperandIndex - 1;
     return std::nullopt;
@@ -1049,8 +1058,7 @@ bool resourceSupportsDataflowInvariantTransport(
   if (node.operation != "dataflow.invariant" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 2 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 2 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 2 || resource.op->getNumResults() != 1)
     return false;
 
   std::optional<unsigned> softwareCondWidth =
@@ -1068,17 +1076,15 @@ bool resourceSupportsDataflowInvariantTransport(
   return isFabricBitsWidth(resource.op->getOperand(0).getType(), 1) &&
          isFabricBitsWidth(resource.op->getOperand(1).getType(),
                            transportWidth) &&
-         isFabricBitsWidth(resource.op->getResult(0).getType(),
-                           transportWidth);
+         isFabricBitsWidth(resource.op->getResult(0).getType(), transportWidth);
 }
 
-bool resourceSupportsDataflowConstantTransport(const SoftwareNode &node,
-                                               const HardwareResource &resource) {
+bool resourceSupportsDataflowConstantTransport(
+    const SoftwareNode &node, const HardwareResource &resource) {
   if (node.operation != "dataflow.constant" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 1 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
 
   std::optional<unsigned> softwareControlWidth =
@@ -1092,8 +1098,7 @@ bool resourceSupportsDataflowConstantTransport(const SoftwareNode &node,
     return false;
 
   return isFabricBitsWidth(resource.op->getOperand(0).getType(), 0) &&
-         isFabricBitsWidth(resource.op->getResult(0).getType(),
-                           transportWidth);
+         isFabricBitsWidth(resource.op->getResult(0).getType(), transportWidth);
 }
 
 bool isTransportablePayloadType(mlir::Type type) {
@@ -1108,8 +1113,7 @@ bool resourceSupportsDataflowGateTransport(const SoftwareNode &node,
   if (node.operation != "dataflow.gate" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 2 || node.op->getNumResults() != 2 ||
-      resource.op->getNumOperands() != 2 ||
-      resource.op->getNumResults() != 2)
+      resource.op->getNumOperands() != 2 || resource.op->getNumResults() != 2)
     return false;
 
   std::optional<unsigned> softwareCondWidth =
@@ -1127,8 +1131,7 @@ bool resourceSupportsDataflowGateTransport(const SoftwareNode &node,
          isFabricBitsWidth(resource.op->getOperand(1).getType(),
                            transportWidth) &&
          isFabricBitsWidth(resource.op->getResult(0).getType(), 1) &&
-         isFabricBitsWidth(resource.op->getResult(1).getType(),
-                           transportWidth);
+         isFabricBitsWidth(resource.op->getResult(1).getType(), transportWidth);
 }
 
 bool isIndexAdapterResult(mlir::Value value) {
@@ -1141,8 +1144,7 @@ bool resourceSupportsIndexDomainZExt(const SoftwareNode &node,
   if (node.operation != "llvm.zext" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 1 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
 
   std::optional<unsigned> softwareInputWidth =
@@ -1168,8 +1170,7 @@ bool resourceSupportsIndexAdapterTrunc(const SoftwareNode &node,
   if (node.operation != "llvm.trunc" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 1 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
   if (!isIndexAdapterResult(node.op->getOperand(0)))
     return false;
@@ -1187,8 +1188,7 @@ bool resourceSupportsStreamIndexTrunc(const SoftwareNode &node,
   if (node.operation != "llvm.trunc" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 1 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
   auto stream = node.op->getOperand(0).getDefiningOp<::dataflow::StreamOp>();
   if (!stream || stream.getIndex() != node.op->getOperand(0))
@@ -1214,8 +1214,7 @@ bool resourceSupportsIntegerNarrowingTrunc(const SoftwareNode &node,
   if (node.operation != "llvm.trunc" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 1 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
 
   std::optional<unsigned> softwareInputWidth =
@@ -1230,21 +1229,21 @@ bool resourceSupportsIntegerNarrowingTrunc(const SoftwareNode &node,
   if (!softwareInputWidth || !softwareResultWidth || !hardwareInputWidth ||
       !hardwareResultWidth)
     return false;
-  if (*softwareInputWidth > indexWidth || *softwareResultWidth >= *softwareInputWidth)
+  if (*softwareInputWidth > indexWidth ||
+      *softwareResultWidth >= *softwareInputWidth)
     return false;
   if (*hardwareInputWidth != indexWidth || *hardwareResultWidth != indexWidth)
     return false;
   return valueFeedsOnlyStoreData(node.op->getResult(0));
 }
 
-bool resourceSupportsIntegerWideningExtension(const SoftwareNode &node,
-                                              const HardwareResource &resource) {
+bool resourceSupportsIntegerWideningExtension(
+    const SoftwareNode &node, const HardwareResource &resource) {
   if ((node.operation != "llvm.sext" && node.operation != "llvm.zext") ||
       !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 1 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 1 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 1 || resource.op->getNumResults() != 1)
     return false;
 
   std::optional<unsigned> softwareInputWidth =
@@ -1259,7 +1258,8 @@ bool resourceSupportsIntegerWideningExtension(const SoftwareNode &node,
   return softwareInputWidth && softwareResultWidth && hardwareInputWidth &&
          hardwareResultWidth && *softwareInputWidth < *softwareResultWidth &&
          *softwareResultWidth == indexWidth &&
-         *hardwareInputWidth == indexWidth && *hardwareResultWidth == indexWidth;
+         *hardwareInputWidth == indexWidth &&
+         *hardwareResultWidth == indexWidth;
 }
 
 bool isPredicateConsumerUse(mlir::OpOperand &use) {
@@ -1289,8 +1289,7 @@ bool resourceSupportsPredicateTransportAndI(const SoftwareNode &node,
   if (node.operation != "arith.andi" || !node.op || !resource.op)
     return false;
   if (node.op->getNumOperands() != 2 || node.op->getNumResults() != 1 ||
-      resource.op->getNumOperands() != 2 ||
-      resource.op->getNumResults() != 1)
+      resource.op->getNumOperands() != 2 || resource.op->getNumResults() != 1)
     return false;
   auto isI1 = [](mlir::Type type) {
     auto intType = mlir::dyn_cast<mlir::IntegerType>(type);
@@ -1431,9 +1430,8 @@ bool resourceIsCompatible(const SoftwareNode &node,
   return resourceSupportsSoftwareConfigs(node, resource);
 }
 
-unsigned compatibleResourceCount(
-    const SoftwareNode &node,
-    llvm::ArrayRef<HardwareResource> resources) {
+unsigned compatibleResourceCount(const SoftwareNode &node,
+                                 llvm::ArrayRef<HardwareResource> resources) {
   unsigned count = 0;
   for (const HardwareResource &resource : resources)
     if (resourceIsCompatible(node, resource))
@@ -1441,19 +1439,20 @@ unsigned compatibleResourceCount(
   return count;
 }
 
-void sortNodesByPlacementPriority(
-    llvm::MutableArrayRef<SoftwareNode> nodes,
-    llvm::ArrayRef<HardwareResource> resources) {
-  std::stable_sort(nodes.begin(), nodes.end(), [&](const SoftwareNode &lhs,
-                                                   const SoftwareNode &rhs) {
-    unsigned lhsCount = compatibleResourceCount(lhs, resources);
-    unsigned rhsCount = compatibleResourceCount(rhs, resources);
-    if (lhsCount != rhsCount)
-      return lhsCount < rhsCount;
-    if (lhs.operation != rhs.operation)
-      return lhs.operation < rhs.operation;
-    return lhs.id < rhs.id;
-  });
+void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
+                                  llvm::ArrayRef<HardwareResource> resources) {
+  std::stable_sort(nodes.begin(), nodes.end(),
+                   [&](const SoftwareNode &lhs, const SoftwareNode &rhs) {
+                     unsigned lhsCount =
+                         compatibleResourceCount(lhs, resources);
+                     unsigned rhsCount =
+                         compatibleResourceCount(rhs, resources);
+                     if (lhsCount != rhsCount)
+                       return lhsCount < rhsCount;
+                     if (lhs.operation != rhs.operation)
+                       return lhs.operation < rhs.operation;
+                     return lhs.id < rhs.id;
+                   });
 }
 
 std::optional<std::string> configFor(const HardwareResource &resource,
@@ -1586,8 +1585,7 @@ void addUnroutedEdge(RouteCollection &collection,
                      const RouteBuilder::EdgeKey &edge,
                      llvm::StringRef payloadKind,
                      llvm::StringRef sourceEndpoint,
-                     llvm::StringRef sinkEndpoint,
-                     llvm::StringRef diagnostic) {
+                     llvm::StringRef sinkEndpoint, llvm::StringRef diagnostic) {
   UnroutedEdgeRecord record;
   record.edgeRef = edgeRefFor(edge);
   record.producerBinding = "placement:" + edge.producerSoftwareId;
@@ -1614,13 +1612,16 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
   for (const PlacementRecord &placement : placements)
     hardwareBySoftware.try_emplace(placement.softwareId, placement.hardwareId);
   std::map<std::string, ResourceKind> kindBySoftware;
+  std::map<std::string, mlir::Operation *> opBySoftware;
   for (const SoftwareNode &node : nodes)
     kindBySoftware.try_emplace(node.id, node.resourceKind);
+  for (const SoftwareNode &node : nodes)
+    opBySoftware.try_emplace(node.id, node.op);
 
   for (const SoftwareNode &node : nodes) {
     unsigned operandIndex = 0;
     for (mlir::Value operand : node.op->getOperands()) {
-      if (!hardwareOperandIndexForSoftwareEndpoint(node.resourceKind,
+      if (!hardwareOperandIndexForSoftwareEndpoint(node.resourceKind, node.op,
                                                    operandIndex)) {
         ++operandIndex;
         continue;
@@ -1651,12 +1652,14 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
     auto toKind = kindBySoftware.find(to);
     if (fromKind == kindBySoftware.end() || toKind == kindBySoftware.end())
       continue;
+    auto toOp = opBySoftware.find(to);
     std::optional<unsigned> producerResultIndex =
         hardwareResultIndexForSoftwareEndpoint(fromKind->second,
                                                edge.producerResultIndex);
     std::optional<unsigned> consumerOperandIndex =
-        hardwareOperandIndexForSoftwareEndpoint(toKind->second,
-                                                edge.consumerOperandIndex);
+        hardwareOperandIndexForSoftwareEndpoint(
+            toKind->second, toOp == opBySoftware.end() ? nullptr : toOp->second,
+            edge.consumerOperandIndex);
     if (!producerResultIndex || !consumerOperandIndex) {
       addUnroutedEdge(collection, edge, kind, "", "",
                       "software endpoint has no hardware endpoint");
@@ -2099,16 +2102,15 @@ loom::pnr::createMapping(const MappingOptions &options) {
       return llvm::createStringError(
           std::errc::invalid_argument,
           "mapping placement references unknown software or hardware id");
-    if (llvm::Error err =
-            appendPlacementConfig(summary, *nodeIt->second, *resourceIt->second))
+    if (llvm::Error err = appendPlacementConfig(summary, *nodeIt->second,
+                                                *resourceIt->second))
       return std::move(err);
   }
 
   RouteCollection routeCollection = collectRoutes(
       *nodesOrErr, graph, summary.placements, hardwareModelOrErr->topology);
   summary.routes = std::move(routeCollection.routes);
-  summary.unroutedEdgeDetails =
-      std::move(routeCollection.unroutedEdgeDetails);
+  summary.unroutedEdgeDetails = std::move(routeCollection.unroutedEdgeDetails);
   summary.unroutedEdges = routeCollection.unroutedEdges;
   if (summary.status == "pass" && summary.unroutedEdges != 0) {
     summary.status = "fail";

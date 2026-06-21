@@ -164,6 +164,41 @@
 // LLVMLOAD-JSON-NOT: ".out"
 // LLVMLOAD-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_store_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_store_pointer --output %t.llvmstore.mapping.csv --artifact %t.llvmstore.mapping.json
+// RUN: FileCheck %s --check-prefix=LLVMSTORE-CSV < %t.llvmstore.mapping.csv
+// RUN: FileCheck %s --check-prefix=LLVMSTORE-JSON < %t.llvmstore.mapping.json
+
+// LLVMSTORE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// LLVMSTORE-CSV-NEXT: llvm_store_pointer,shared_reduction_adg,llvm_store_pointer__llvm_store_pointer__shared_reduction_adg,3,2,0,0,pass
+
+// LLVMSTORE-JSON-DAG: "operation": "llvm.fneg"
+// LLVMSTORE-JSON-DAG: "resource_kind": "fabric.op"
+// LLVMSTORE-JSON-DAG: "operation": "llvm.store"
+// LLVMSTORE-JSON-DAG: "resource_kind": "fabric.mem.store"
+// LLVMSTORE-JSON-DAG: "edge_ref": "llvm.load#0.result0->llvm.fneg#0.operand0"
+// LLVMSTORE-JSON-DAG: "edge_ref": "llvm.fneg#0.result0->llvm.store#0.operand0"
+// LLVMSTORE-JSON-DAG: "sink_endpoint": "shared_reduction_adg::mem.store#0.operand1"
+// LLVMSTORE-JSON-NOT: "fabric.mem.copy"
+// LLVMSTORE-JSON-NOT: "memory_copy_binding"
+// LLVMSTORE-JSON-NOT: ".out"
+// LLVMSTORE-JSON-NOT: ".in"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph constant_addr_load_store --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload constant_addr_load_store --output %t.constload.mapping.csv --artifact %t.constload.mapping.json
+// RUN: FileCheck %s --check-prefix=CONSTLOAD-CSV < %t.constload.mapping.csv
+// RUN: FileCheck %s --check-prefix=CONSTLOAD-JSON < %t.constload.mapping.json
+
+// CONSTLOAD-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CONSTLOAD-CSV-NEXT: constant_addr_load_store,shared_reduction_adg,constant_addr_load_store__constant_addr_load_store__shared_reduction_adg,5,6,0,0,pass
+
+// CONSTLOAD-JSON-DAG: "edge_ref": "dataflow.constant#0.result0->dataflow.load#0.operand1"
+// CONSTLOAD-JSON-DAG: "sink_endpoint": "shared_reduction_adg::mem.load#0.operand0"
+// CONSTLOAD-JSON-DAG: "operation": "llvm.fneg"
+// CONSTLOAD-JSON-DAG: "operation": "dataflow.store"
+// CONSTLOAD-JSON-NOT: "fabric.mem.copy"
+// CONSTLOAD-JSON-NOT: "memory_copy_binding"
+// CONSTLOAD-JSON-NOT: ".out"
+// CONSTLOAD-JSON-NOT: ".in"
+
 // RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_semantic_return --output %t.ptrsemantic.mapping.csv --artifact %t.ptrsemantic.mapping.json
 // RUN: FileCheck %s --check-prefix=PTRSEM-CSV < %t.ptrsemantic.mapping.csv
 // RUN: FileCheck %s --check-prefix=PTRSEM-JSON < %t.ptrsemantic.mapping.json
@@ -331,6 +366,24 @@ module {
     %data = llvm.load %next {alignment = 4 : i64} : !llvm.ptr -> i32
     %sum = arith.addi %data, %rhs : i32
     dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @llvm_store_pointer(%ctrl: none, %src: !llvm.ptr,
+                                                  %dst: !llvm.ptr) -> none {
+    %data = llvm.load %src {alignment = 4 : i64} : !llvm.ptr -> f32
+    %negated = llvm.fneg %data : f32
+    llvm.store %negated, %dst {alignment = 4 : i64} : f32, !llvm.ptr
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @constant_addr_load_store(
+      %ctrl: none, %src: memref<?xf32>, %dst: memref<?xf32>) -> none {
+    %idx = dataflow.constant %ctrl {const_value = 0 : index} : index
+    %data, %loaded = dataflow.load %src[%idx] %ctrl : memref<?xf32>
+    %negated = llvm.fneg %data : f32
+    %stored = dataflow.store %dst[%idx] %negated %ctrl : memref<?xf32>
+    %done:2 = dataflow.sync %loaded, %stored : (none, none) -> (none, none)
+    dataflow.graph.return %done#0 : none
   }
 
   dataflow.graph.func private @mem_pointer_semantic_return(

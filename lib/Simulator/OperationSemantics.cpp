@@ -56,7 +56,9 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.uitofp", 3, 3, true, true},
     {"llvm.fptosi", 3, 3, true, true},
     {"llvm.fptoui", 3, 3, true, true},
+    {"llvm.fneg", 1, 1, true, true},
     {"llvm.load", 4, 4, false, true},
+    {"llvm.store", 4, 4, false, true},
     {"llvm.select", 1, 1, true, true},
     {"llvm.getelementptr", 1, 1, false, false},
     {"llvm.intr.memcpy", 8, 8, false, false},
@@ -144,10 +146,10 @@ llvm::Expected<unsigned> asShiftAmount(llvm::StringRef opName,
                                        const PrimitiveValue &value) {
   std::int64_t raw = asInteger(value);
   if (raw < 0 || raw >= 64)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "%s shift amount must be in [0, 63], got %lld",
-                                   opName.str().c_str(),
-                                   static_cast<long long>(raw));
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "%s shift amount must be in [0, 63], got %lld", opName.str().c_str(),
+        static_cast<long long>(raw));
   return static_cast<unsigned>(raw);
 }
 
@@ -227,18 +229,16 @@ std::int64_t signedMinForBitWidth(unsigned bitWidth) {
 std::int64_t saturateSigned(std::int64_t value, unsigned bitWidth) {
   bitWidth = normalizeBitWidth(bitWidth);
   const std::int64_t min = signedMinForBitWidth(bitWidth);
-  const std::int64_t max =
-      bitWidth == 64 ? std::numeric_limits<std::int64_t>::max()
-                     : ((std::int64_t{1} << (bitWidth - 1)) - 1);
+  const std::int64_t max = bitWidth == 64
+                               ? std::numeric_limits<std::int64_t>::max()
+                               : ((std::int64_t{1} << (bitWidth - 1)) - 1);
   return std::min(std::max(value, min), max);
 }
 
-PrimitiveValue
-packedSaturatingBinary(const PrimitiveValue &lhs, const PrimitiveValue &rhs,
-                       unsigned bitWidth, unsigned laneWidth,
-                       llvm::function_ref<std::int64_t(std::int64_t,
-                                                       std::int64_t)>
-                           combine) {
+PrimitiveValue packedSaturatingBinary(
+    const PrimitiveValue &lhs, const PrimitiveValue &rhs, unsigned bitWidth,
+    unsigned laneWidth,
+    llvm::function_ref<std::int64_t(std::int64_t, std::int64_t)> combine) {
   std::uint64_t packed = 0;
   const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
   const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
@@ -269,8 +269,7 @@ std::uint64_t arithmeticRightShiftBits(const PrimitiveValue &value,
     return shifted;
   const unsigned keptBits = bitWidth - amount;
   const std::uint64_t lowMask =
-      keptBits == 64 ? ~std::uint64_t{0}
-                     : ((std::uint64_t{1} << keptBits) - 1);
+      keptBits == 64 ? ~std::uint64_t{0} : ((std::uint64_t{1} << keptBits) - 1);
   return shifted | (maskForBitWidth(bitWidth) & ~lowMask);
 }
 
@@ -349,9 +348,9 @@ evaluateMathUnary(llvm::StringRef opName,
                                  opName.str().c_str());
 }
 
-llvm::Expected<PrimitiveValue>
-byteSwapInteger(llvm::StringRef opName, const PrimitiveValue &value,
-                unsigned bitWidth) {
+llvm::Expected<PrimitiveValue> byteSwapInteger(llvm::StringRef opName,
+                                               const PrimitiveValue &value,
+                                               unsigned bitWidth) {
   bitWidth = normalizeBitWidth(bitWidth);
   if (bitWidth % 8 != 0)
     return llvm::createStringError(
@@ -531,6 +530,11 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     return PrimitiveValue::floating(asFloat(operands[0]) /
                                     asFloat(operands[1]));
   }
+  if (opName == "llvm.fneg") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    return PrimitiveValue::floating(-asFloat(operands[0]));
+  }
   if (opName == "arith.addi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
@@ -576,9 +580,8 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     auto amountOrErr = checkedShiftAmount(opName, operands[1], bitWidth);
     if (!amountOrErr)
       return amountOrErr.takeError();
-    return integerFromBits(toUnsignedBits(operands[0], bitWidth)
-                               << *amountOrErr,
-                           bitWidth);
+    return integerFromBits(
+        toUnsignedBits(operands[0], bitWidth) << *amountOrErr, bitWidth);
   }
   if (opName == "arith.shrui") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
@@ -590,11 +593,9 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
         exactRightShiftWouldDiscardBits(operands[0], bitWidth, *amountOrErr))
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "%s exact shift would discard non-zero bits",
-          opName.str().c_str());
-    return integerFromBits(toUnsignedBits(operands[0], bitWidth) >>
-                               *amountOrErr,
-                           bitWidth);
+          "%s exact shift would discard non-zero bits", opName.str().c_str());
+    return integerFromBits(
+        toUnsignedBits(operands[0], bitWidth) >> *amountOrErr, bitWidth);
   }
   if (opName == "arith.shrsi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
@@ -606,8 +607,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
         exactRightShiftWouldDiscardBits(operands[0], bitWidth, *amountOrErr))
       return llvm::createStringError(
           std::errc::invalid_argument,
-          "%s exact shift would discard non-zero bits",
-          opName.str().c_str());
+          "%s exact shift would discard non-zero bits", opName.str().c_str());
     return integerFromBits(
         arithmeticRightShiftBits(operands[0], bitWidth, *amountOrErr),
         bitWidth);
@@ -626,12 +626,13 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     if (opName == "arith.divsi" && dividend == signedMinForBitWidth(bitWidth) &&
         divisor == -1)
       return llvm::createStringError(std::errc::result_out_of_range,
-                                     "%s signed overflow", opName.str().c_str());
+                                     "%s signed overflow",
+                                     opName.str().c_str());
     if (opName == "arith.divsi") {
       if (descriptor.isExact && dividend % divisor != 0)
-        return llvm::createStringError(
-            std::errc::invalid_argument,
-            "%s exact result would be poison", opName.str().c_str());
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "%s exact result would be poison",
+                                       opName.str().c_str());
       return integerFromSigned(dividend / divisor, bitWidth);
     }
     if (dividend == signedMinForBitWidth(bitWidth) && divisor == -1)
@@ -652,18 +653,15 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "arith.cmpi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    if (llvm::Error predicate =
-            requirePredicate(opName, descriptor.predicate))
+    if (llvm::Error predicate = requirePredicate(opName, descriptor.predicate))
       return std::move(predicate);
-    return PrimitiveValue::boolean(
-        compareInteger(descriptor.predicate, operands[0], operands[1],
-                       bitWidth));
+    return PrimitiveValue::boolean(compareInteger(
+        descriptor.predicate, operands[0], operands[1], bitWidth));
   }
   if (opName == "arith.cmpf") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
-    if (llvm::Error predicate =
-            requirePredicate(opName, descriptor.predicate))
+    if (llvm::Error predicate = requirePredicate(opName, descriptor.predicate))
       return std::move(predicate);
     return PrimitiveValue::boolean(
         compareFloat(descriptor.predicate, operands[0], operands[1]));
@@ -707,10 +705,9 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     const unsigned truncatedBitCount = sourceBitWidth - bitWidth;
     const std::uint64_t truncatedBits = inputBits >> bitWidth;
     if (descriptor.noUnsignedWrap && truncatedBits != 0)
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "%s overflow<nuw> result would be poison",
-          opName.str().c_str());
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "%s overflow<nuw> result would be poison",
+                                     opName.str().c_str());
     if (descriptor.noSignedWrap) {
       const bool resultSign = ((inputBits >> (bitWidth - 1)) & 1u) != 0;
       const std::uint64_t expectedTruncatedBits =
@@ -718,8 +715,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       if (truncatedBits != expectedTruncatedBits)
         return llvm::createStringError(
             std::errc::invalid_argument,
-            "%s overflow<nsw> result would be poison",
-            opName.str().c_str());
+            "%s overflow<nsw> result would be poison", opName.str().c_str());
     }
     return integerFromBits(inputBits, bitWidth);
   }
@@ -744,7 +740,8 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
   if (opName == "llvm.sitofp" || opName == "arith.sitofp") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
-    return PrimitiveValue::floating(static_cast<double>(asInteger(operands[0])));
+    return PrimitiveValue::floating(
+        static_cast<double>(asInteger(operands[0])));
   }
   if (opName == "llvm.uitofp" || opName == "arith.uitofp") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
@@ -818,11 +815,10 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
           "%s result bit width must be a positive multiple of lane width %u",
           opName.str().c_str(), laneWidth);
     const bool isAdd = opName == "llvm.arm.qadd16";
-    return packedSaturatingBinary(
-        operands[0], operands[1], bitWidth, laneWidth,
-        [isAdd](std::int64_t lhs, std::int64_t rhs) {
-          return isAdd ? lhs + rhs : lhs - rhs;
-        });
+    return packedSaturatingBinary(operands[0], operands[1], bitWidth, laneWidth,
+                                  [isAdd](std::int64_t lhs, std::int64_t rhs) {
+                                    return isAdd ? lhs + rhs : lhs - rhs;
+                                  });
   }
   if (opName.starts_with("math.")) {
     if (opName == "math.absi") {

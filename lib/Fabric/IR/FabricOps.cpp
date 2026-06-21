@@ -185,8 +185,8 @@ static bool isPowerOfTwo(int64_t value) {
 
 static bool isBaselineSystemNodeKind(StringRef kind) {
   return kind == "host_core" || kind == "acc_core" ||
-         kind == "fixed_accelerator" || kind == "memory" ||
-         kind == "cache" || kind == "dma_engine";
+         kind == "fixed_accelerator" || kind == "memory" || kind == "cache" ||
+         kind == "dma_engine";
 }
 
 static bool isValidMemoryModel(StringRef model) {
@@ -649,6 +649,7 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("llvm.trunc", {pT(0)}, {pT(1)});
     add("llvm.sext", {pT(0)}, {pT(1)});
     add("llvm.zext", {pT(0)}, {pT(1)});
+    add("llvm.fneg", {pT(0)}, {pT(0)});
     add("llvm.intr.abs", {pT(0)}, {pT(0)});
     add("llvm.intr.fabs", {pT(0)}, {pT(0)});
     add("llvm.intr.fshl", {pT(0), pT(0), pT(0)}, {pT(0)});
@@ -2089,8 +2090,8 @@ LogicalResult NodeOp::verify() {
                          "least one line");
 
     llvm::StringMap<SystemPortProfile> profiles;
-    if (failed(
-            collectSystemPortProfiles(getOperation(), getPortsAttr(), profiles)))
+    if (failed(collectSystemPortProfiles(getOperation(), getPortsAttr(),
+                                         profiles)))
       return failure();
     bool hasSubordinate = false;
     bool hasManager = false;
@@ -2109,8 +2110,8 @@ LogicalResult NodeOp::verify() {
       return emitOpError("kind 'dma_engine' requires positive queue_depth");
 
     llvm::StringMap<SystemPortProfile> profiles;
-    if (failed(
-            collectSystemPortProfiles(getOperation(), getPortsAttr(), profiles)))
+    if (failed(collectSystemPortProfiles(getOperation(), getPortsAttr(),
+                                         profiles)))
       return failure();
     bool hasControlOrDescriptor = false;
     bool hasMemoryManager = false;

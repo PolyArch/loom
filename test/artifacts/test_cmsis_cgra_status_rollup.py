@@ -797,6 +797,107 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
         )
 
 
+def assert_cmsis_cfft_component_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    row = one_row(rows, "cmsis-dsp", "TransformFunctions/arm_cfft_f32.c")
+    expected_graphs = {
+        "g_t_arm_cfft_f32_red_0_0",
+        "g_t_arm_cfft_f32_red_1_0",
+        "g_t_arm_cfft_f32_red_2_0",
+        "g_t_arm_cfft_f32_red_3_0",
+    }
+    if set(row["graph_ids"].split(",")) != expected_graphs:
+        raise AssertionError(f"arm_cfft_f32 row should keep all component graph ids: {row}")
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "component_cgra_status_blocked"
+        or row["blocking_prerequisite"] != "component_graph_evidence"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "fail"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "not_run"
+        or row["required_slice_count"] != "4"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or "arm_cfft_f32.red3.mapping.json (fail)" not in row["diagnostic"]
+    ):
+        raise AssertionError(f"arm_cfft_f32 should expose component mapping blocker evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+
+    required_artifacts = (
+        "arm_cfft_f32.red0.dfg.report.json",
+        "arm_cfft_f32.red0.mapping.json",
+        "arm_cfft_f32.red0.cgra.report.json",
+        "arm_cfft_f32.red3.dfg.report.json",
+        "arm_cfft_f32.red3.mapping.json",
+    )
+    for artifact_name in required_artifacts:
+        artifact = sim_evidence / artifact_name
+        if not artifact.is_file():
+            raise AssertionError(f"arm_cfft_f32 component evidence should emit {artifact}")
+    if (sim_evidence / "arm_cfft_f32.red3.cgra.report.json").exists():
+        raise AssertionError("arm_cfft_f32 red3 must not emit CGRA evidence from failed mapping")
+    if (sim_evidence / "arm_cfft_f32.dfg.report.json").exists():
+        raise AssertionError("arm_cfft_f32 must not emit row aggregate evidence before all component graphs pass")
+
+    red0_memory = {"arg4": ["f32:-1", "f32:2", "f32:-3", "f32:4", "f32:5", "f32:6", "f32:7", "f32:8"]}
+    red0_dfg = json.loads((sim_evidence / "arm_cfft_f32.red0.dfg.report.json").read_text())
+    if (
+        red0_dfg.get("workload") != "TransformFunctions/arm_cfft_f32.c"
+        or red0_dfg.get("graph") != "g_t_arm_cfft_f32_red_0_0"
+        or red0_dfg.get("status") != "pass"
+        or red0_dfg.get("dynamic_work_items") != 3
+        or red0_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 2
+        or red0_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 2
+        or red0_dfg.get("operation_fire_counts", {}).get("llvm.fneg") != 2
+        or red0_dfg.get("final_memory_state") != red0_memory
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red0 DFG evidence: {red0_dfg}")
+    red0_mapping = json.loads((sim_evidence / "arm_cfft_f32.red0.mapping.json").read_text())
+    if (
+        red0_mapping.get("status") != "pass"
+        or red0_mapping.get("hardware") != "shared_reduction_adg"
+        or red0_mapping.get("unrouted_edges") != 0
+        or red0_mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red0 mapping evidence: {red0_mapping}")
+    red0_cgra = json.loads((sim_evidence / "arm_cfft_f32.red0.cgra.report.json").read_text())
+    if (
+        red0_cgra.get("status") != "pass"
+        or red0_cgra.get("final_outputs") != ["none"]
+        or red0_cgra.get("final_memory_state") != red0_memory
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red0 CGRA evidence: {red0_cgra}")
+
+    red3_memory = {"arg5": ["f32:0.500000", "f32:-1", "f32:1.500000", "f32:-2", "f32:5", "f32:6", "f32:7", "f32:8"]}
+    red3_dfg = json.loads((sim_evidence / "arm_cfft_f32.red3.dfg.report.json").read_text())
+    if (
+        red3_dfg.get("workload") != "TransformFunctions/arm_cfft_f32.c"
+        or red3_dfg.get("graph") != "g_t_arm_cfft_f32_red_3_0"
+        or red3_dfg.get("status") != "pass"
+        or red3_dfg.get("dynamic_work_items") != 3
+        or red3_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 2
+        or red3_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 2
+        or red3_dfg.get("operation_fire_counts", {}).get("llvm.fneg") != 2
+        or red3_dfg.get("operation_fire_counts", {}).get("llvm.store") != 2
+        or red3_dfg.get("final_memory_state") != red3_memory
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red3 DFG evidence: {red3_dfg}")
+    red3_mapping = json.loads((sim_evidence / "arm_cfft_f32.red3.mapping.json").read_text())
+    if (
+        red3_mapping.get("status") != "fail"
+        or red3_mapping.get("hardware") != "shared_reduction_adg"
+        or red3_mapping.get("unplaced_records") != 1
+        or red3_mapping.get("unrouted_edges") != 2
+        or "missing hardware resource for software op arith.mulf" not in red3_mapping.get("diagnostics", [])
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red3 mapping blocker: {red3_mapping}")
+
+
 def assert_app_cgra_pass_row(
     repo: Path,
     rows: list[dict[str, str]],
@@ -1798,6 +1899,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_max_shared_adg_evidence(sim_evidence)
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
+    assert_cmsis_cfft_component_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
     assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)
     assert_cmsis_cgra_pass_row(

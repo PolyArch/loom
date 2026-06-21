@@ -143,7 +143,8 @@ std::string tokenToString(const Token &token, mlir::Type type) {
   if (token.kind == TokenKind::Integer)
     return typePrefix(type) + ":" + std::to_string(token.intValue);
   if (token.kind == TokenKind::Pointer)
-    return typePrefix(type) + ":ptr+" + std::to_string(token.pointer.byteOffset);
+    return typePrefix(type) + ":ptr+" +
+           std::to_string(token.pointer.byteOffset);
   std::string storage;
   llvm::raw_string_ostream os(storage);
   os << typePrefix(type) << ':';
@@ -257,9 +258,10 @@ llvm::Expected<std::int64_t> byteSizeOfType(mlir::Type type) {
     return static_cast<std::int64_t>(arrayType.getNumElements()) *
            *elementSizeOrErr;
   }
-  return llvm::createStringError(std::errc::invalid_argument,
-                                 "unsupported llvm.getelementptr element type: %s",
-                                 typeToString(type).c_str());
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "unsupported llvm.getelementptr element type: %s",
+      typeToString(type).c_str());
 }
 
 llvm::Expected<std::shared_ptr<MemoryValue>>
@@ -343,8 +345,9 @@ gepByteOffset(mlir::LLVM::GEPOp op, llvm::ArrayRef<Token> dynamicTokens) {
     std::int64_t index = rawIndex;
     if (rawIndex == mlir::LLVM::GEPOp::kDynamicIndex) {
       if (dynamicIndex >= dynamicTokens.size())
-        return llvm::createStringError(std::errc::invalid_argument,
-                                       "llvm.getelementptr dynamic index is missing");
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "llvm.getelementptr dynamic index is missing");
       const Token &token = dynamicTokens[dynamicIndex++];
       if (token.kind != TokenKind::Integer && token.kind != TokenKind::Bool)
         return llvm::createStringError(
@@ -511,9 +514,7 @@ PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
                                                  mlir::Value result) {
   std::string opName = primitiveOperationName(op);
   PrimitiveOperationDescriptor descriptor{
-      opName,
-      predicate,
-      integerBitWidth(result.getType()),
+      opName, predicate, integerBitWidth(result.getType()),
       integerBitWidth(op->getOperand(0).getType())};
   if (auto div = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
     descriptor.isExact = div.getIsExact();
@@ -703,11 +704,10 @@ bool fireMux(dataflow::MuxOp op, SimulatorState &state) {
     return false;
 
   const Token &sel = state.channels[&selOperand].front();
-  const std::int64_t lane =
-      mlir::isa<mlir::IntegerType>(op.getSel().getType()) ? boolToken(sel)
-                                                           : integerToken(sel);
-  if (lane < 0 ||
-      static_cast<std::size_t>(lane) >= op.getInputs().size()) {
+  const std::int64_t lane = mlir::isa<mlir::IntegerType>(op.getSel().getType())
+                                ? boolToken(sel)
+                                : integerToken(sel);
+  if (lane < 0 || static_cast<std::size_t>(lane) >= op.getInputs().size()) {
     (void)popToken(state.channels, selOperand);
     state.diagnostics.push_back("dataflow.mux selector is out of range");
     return false;
@@ -732,11 +732,10 @@ bool fireDemux(dataflow::DemuxOp op, SimulatorState &state) {
     return false;
 
   const Token &sel = state.channels[&selOperand].front();
-  const std::int64_t lane =
-      mlir::isa<mlir::IntegerType>(op.getSel().getType()) ? boolToken(sel)
-                                                           : integerToken(sel);
-  if (lane < 0 ||
-      static_cast<std::size_t>(lane) >= op.getOutputs().size()) {
+  const std::int64_t lane = mlir::isa<mlir::IntegerType>(op.getSel().getType())
+                                ? boolToken(sel)
+                                : integerToken(sel);
+  if (lane < 0 || static_cast<std::size_t>(lane) >= op.getOutputs().size()) {
     (void)popToken(state.channels, selOperand);
     (void)popToken(state.channels, inputOperand);
     state.diagnostics.push_back("dataflow.demux selector is out of range");
@@ -756,7 +755,8 @@ bool fireCast(mlir::UnrealizedConversionCastOp op, SimulatorState &state) {
   if (!hasToken(state.channels, operand))
     return false;
   Token token = popToken(state.channels, operand);
-  if (auto memrefType = mlir::dyn_cast<mlir::MemRefType>(op.getResult(0).getType())) {
+  if (auto memrefType =
+          mlir::dyn_cast<mlir::MemRefType>(op.getResult(0).getType())) {
     auto tokenOrErr =
         ensurePointerMemory(state, token, memrefType.getElementType());
     if (!tokenOrErr) {
@@ -801,7 +801,8 @@ std::optional<MemoryView> resolveMemoryView(SimulatorState &state,
   if (hasToken(state.channels, memOperand)) {
     Token token = popToken(state.channels, memOperand);
     if (token.kind != TokenKind::Pointer || !token.pointer.memory) {
-      state.diagnostics.push_back("dataflow memory operand is not a memory view");
+      state.diagnostics.push_back(
+          "dataflow memory operand is not a memory view");
       return std::nullopt;
     }
     return token.pointer;
@@ -822,7 +823,8 @@ std::optional<std::size_t> resolveElementIndex(const MemoryView &view,
     return std::nullopt;
   }
   if (*elementSizeOrErr == 0 || view.byteOffset % *elementSizeOrErr != 0) {
-    state.diagnostics.push_back("memory view byte offset is not element-aligned");
+    state.diagnostics.push_back(
+        "memory view byte offset is not element-aligned");
     return std::nullopt;
   }
   const std::int64_t baseIndex = view.byteOffset / *elementSizeOrErr;
@@ -865,13 +867,33 @@ bool fireLLVMLoad(mlir::LLVM::LoadOp op, SimulatorState &state) {
     state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
     return false;
   }
-  std::optional<std::size_t> index =
-      resolveElementIndex(viewOrErr->pointer, integerValueToken(0), state,
-                          "llvm.load");
+  std::optional<std::size_t> index = resolveElementIndex(
+      viewOrErr->pointer, integerValueToken(0), state, "llvm.load");
   if (!index)
     return false;
   emitToken(state, op->getResult(0),
             viewOrErr->pointer.memory->elements[*index]);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool fireLLVMStore(mlir::LLVM::StoreOp op, SimulatorState &state) {
+  mlir::OpOperand &valueOperand = op->getOpOperand(0);
+  mlir::OpOperand &addrOperand = op->getOpOperand(1);
+  if (!hasToken(state.channels, valueOperand) ||
+      !hasToken(state.channels, addrOperand))
+    return false;
+  Token value = popToken(state.channels, valueOperand);
+  Token ptr = popToken(state.channels, addrOperand);
+  auto viewOrErr = ensurePointerMemory(state, ptr, op->getOperand(0).getType());
+  if (!viewOrErr) {
+    state.diagnostics.push_back(llvm::toString(viewOrErr.takeError()));
+    return false;
+  }
+  std::optional<std::size_t> index = resolveElementIndex(
+      viewOrErr->pointer, integerValueToken(0), state, "llvm.store");
+  if (!index)
+    return false;
+  viewOrErr->pointer.memory->elements[*index] = value;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -1000,9 +1022,8 @@ bool firePrimitiveOperation(mlir::Operation *op, mlir::Value result,
     operands.push_back(
         primitiveValueFromToken(popToken(state.channels, operand)));
   std::string predicate = primitivePredicate(op);
-  auto valueOrErr =
-      evaluatePrimitiveOperation(primitiveDescriptor(op, predicate, result),
-                                 operands);
+  auto valueOrErr = evaluatePrimitiveOperation(
+      primitiveDescriptor(op, predicate, result), operands);
   if (!valueOrErr) {
     state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
     return false;
@@ -1065,17 +1086,15 @@ void collectStreamIndexSources(mlir::Value value,
     return;
   }
   auto gate = value.getDefiningOp<dataflow::GateOp>();
-  if (gate &&
-      (gate.getAfterValue() == value || gate.getAfterCond() == value)) {
+  if (gate && (gate.getAfterValue() == value || gate.getAfterCond() == value)) {
     collectStreamIndexSources(gate.getBeforeCond(), sources, seen, depth + 1);
     return;
   }
   mlir::Operation *owner = value.getDefiningOp();
   if (!owner)
     return;
-  if (!mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp,
-                 mlir::arith::MulIOp, mlir::arith::DivSIOp,
-                 mlir::arith::RemSIOp>(owner))
+  if (!mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp, mlir::arith::MulIOp,
+                 mlir::arith::DivSIOp, mlir::arith::RemSIOp>(owner))
     return;
   for (mlir::Value operand : owner->getOperands())
     collectStreamIndexSources(operand, sources, seen, depth + 1);
@@ -1118,6 +1137,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireGEP(typedOp, state); })
       .Case<mlir::LLVM::LoadOp>(
           [&](auto typedOp) { return fireLLVMLoad(typedOp, state); })
+      .Case<mlir::LLVM::StoreOp>(
+          [&](auto typedOp) { return fireLLVMStore(typedOp, state); })
       .Case<mlir::LLVM::MemcpyOp>(
           [&](auto typedOp) { return fireLLVMMemcpy(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
@@ -1137,8 +1158,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::MuxOp, dataflow::DemuxOp, dataflow::LoadOp,
                 dataflow::StoreOp, mlir::UnrealizedConversionCastOp,
-                mlir::LLVM::GEPOp, mlir::LLVM::LoadOp, mlir::LLVM::MemcpyOp,
-                mlir::arith::ConstantOp>(op))
+                mlir::LLVM::GEPOp, mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
+                mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }
@@ -1206,6 +1227,7 @@ bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
   for (mlir::OpOperand &use : arg.getUses()) {
     mlir::Operation *owner = use.getOwner();
     if (mlir::isa<mlir::LLVM::LoadOp>(owner) ||
+        mlir::isa<mlir::LLVM::StoreOp>(owner) ||
         mlir::isa<mlir::LLVM::GEPOp>(owner) ||
         mlir::isa<mlir::LLVM::MemcpyOp>(owner))
       return true;
@@ -1444,15 +1466,14 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       missingReturn = true;
       continue;
     }
-    if (report.dynamicWorkItems > 1 &&
-        requiresCompleteDynamicReturn(value) &&
+    if (report.dynamicWorkItems > 1 && requiresCompleteDynamicReturn(value) &&
         it->second.size() < report.dynamicWorkItems) {
       missingReturn = true;
-      state.diagnostics.push_back(llvm::formatv(
-                                      "dataflow.graph.return value produced "
-                                      "{0} of {1} dynamic work items",
-                                      it->second.size(), report.dynamicWorkItems)
-                                      .str());
+      state.diagnostics.push_back(
+          llvm::formatv("dataflow.graph.return value produced "
+                        "{0} of {1} dynamic work items",
+                        it->second.size(), report.dynamicWorkItems)
+              .str());
     }
     report.finalOutputs.push_back(
         tokenToString(it->second.back(), value.getType()));
@@ -1473,8 +1494,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
   report.eventCount = state.eventCount;
   report.operationFireCounts = state.operationFireCounts;
-  report.optimisticCycles =
-      estimateDynamicPipelineCycles(state.operationFireCounts, state.diagnostics);
+  report.optimisticCycles = estimateDynamicPipelineCycles(
+      state.operationFireCounts, state.diagnostics);
   report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
