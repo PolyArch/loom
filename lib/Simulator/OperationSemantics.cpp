@@ -43,7 +43,9 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.cmpf", 2, 2, true, true},
     {"arith.select", 1, 1, true, true},
     {"arith.index_cast", 1, 1, true, true},
+    {"arith.index_castui", 1, 1, true, false},
     {"arith.extsi", 1, 1, true, true},
+    {"arith.extui", 1, 1, true, false},
     {"arith.trunci", 1, 1, true, true},
     {"arith.sitofp", 3, 3, true, true},
     {"arith.uitofp", 3, 3, true, true},
@@ -64,6 +66,8 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.memcpy", 8, 8, false, false},
     {"llvm.intr.fshl", 1, 1, true, true},
     {"llvm.intr.bswap", 1, 1, true, true},
+    {"llvm.intr.umin", 1, 1, true, false},
+    {"llvm.intr.umax", 1, 1, true, false},
     {"llvm.intr.fmuladd", 8, 8, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"llvm.intr.fabs", 1, 1, true, true},
@@ -725,7 +729,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return std::move(arity);
     return integerFromBits(toUnsignedBits(operands[0], bitWidth), bitWidth);
   }
-  if (opName == "llvm.zext") {
+  if (opName == "arith.extui" || opName == "llvm.zext") {
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     const unsigned sourceBitWidth =
@@ -735,6 +739,14 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
           std::errc::invalid_argument,
           "%s source bit width must not exceed result bit width",
           opName.str().c_str());
+    return integerFromBits(toUnsignedBits(operands[0], sourceBitWidth),
+                           bitWidth);
+  }
+  if (opName == "arith.index_castui") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    const unsigned sourceBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
     return integerFromBits(toUnsignedBits(operands[0], sourceBitWidth),
                            bitWidth);
   }
@@ -785,6 +797,15 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     if (llvm::Error arity = requireArity(opName, operands, 1))
       return std::move(arity);
     return byteSwapInteger(opName, operands[0], bitWidth);
+  }
+  if (opName == "llvm.intr.umin" || opName == "llvm.intr.umax") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    const std::uint64_t lhs = toUnsignedBits(operands[0], bitWidth);
+    const std::uint64_t rhs = toUnsignedBits(operands[1], bitWidth);
+    const std::uint64_t selected =
+        opName == "llvm.intr.umin" ? std::min(lhs, rhs) : std::max(lhs, rhs);
+    return integerFromBits(selected, bitWidth);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

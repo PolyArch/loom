@@ -8,6 +8,8 @@
 // RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.json
 // RUN: loom-dfg-sim %s --graph uint_to_float --arg 0=none --output %t.uitofp.json
 // RUN: FileCheck %s --check-prefix=UITOFP < %t.uitofp.json
+// RUN: loom-dfg-sim %s --graph unsigned_extend_and_minmax --arg 0=none --output %t.unsigned.json
+// RUN: FileCheck %s --check-prefix=UNSIGNED < %t.unsigned.json
 
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
@@ -44,6 +46,19 @@
 // UITOFP-DAG: "optimistic_cycles": 4
 // UITOFP-DAG: "event_count": 2
 // UITOFP-DAG: "f32:7"
+
+// UNSIGNED-DAG: "workload": "unsigned_extend_and_minmax"
+// UNSIGNED-DAG: "graph": "unsigned_extend_and_minmax"
+// UNSIGNED-DAG: "status": "pass"
+// UNSIGNED-DAG: "arith.extui": 1
+// UNSIGNED-DAG: "arith.index_castui": 2
+// UNSIGNED-DAG: "llvm.intr.umin": 1
+// UNSIGNED-DAG: "llvm.intr.umax": 1
+// UNSIGNED-DAG: "i32:255"
+// UNSIGNED-DAG: "i32:7"
+// UNSIGNED-DAG: "i32:-1"
+// UNSIGNED-DAG: "index:255"
+// UNSIGNED-DAG: "i32:1"
 
 module {
   dataflow.graph.func private @compare_select(%ctrl: none) -> (none, f32) {
@@ -88,5 +103,20 @@ module {
     %value = dataflow.constant %ctrl {const_value = 7 : i32} : i32
     %fp = llvm.uitofp %value : i32 to f32
     dataflow.graph.return %ctrl, %fp : none, f32
+  }
+
+  dataflow.graph.func private @unsigned_extend_and_minmax(%ctrl: none)
+      -> (none, i32, i32, i32, index, i32) {
+    %byte = dataflow.constant %ctrl {const_value = -1 : i8} : i8
+    %wide = arith.extui %byte : i8 to i32
+    %idx = arith.index_castui %byte : i8 to index
+    %wide_idx = dataflow.constant %ctrl {const_value = 4294967297 : index} : index
+    %narrow_idx = arith.index_castui %wide_idx : index to i32
+    %seven = dataflow.constant %ctrl {const_value = 7 : i32} : i32
+    %minus_one = dataflow.constant %ctrl {const_value = -1 : i32} : i32
+    %min = llvm.intr.umin(%minus_one, %seven) : (i32, i32) -> i32
+    %max = llvm.intr.umax(%minus_one, %seven) : (i32, i32) -> i32
+    dataflow.graph.return %ctrl, %wide, %min, %max, %idx, %narrow_idx
+        : none, i32, i32, i32, index, i32
   }
 }

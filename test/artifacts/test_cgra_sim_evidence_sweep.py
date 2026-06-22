@@ -1872,27 +1872,31 @@ def main(argv: list[str]) -> int:
         assert_unsupported_operation(
             evidence_dir,
             "autocorrelation",
-            "llvm.intr.umax",
             "scf.for",
-            rejected_dfg_operations=("scf.if",),
+            "scf.for",
+            rejected_dfg_operations=("scf.if", "llvm.intr.umax"),
         )
         assert_unsupported_operation(
             evidence_dir,
             "pack_bits",
-            "llvm.intr.umin",
+            "scf.while",
             "scf.for",
-            rejected_dfg_operations=("scf.if",),
+            rejected_dfg_operations=("scf.if", "llvm.intr.umin"),
         )
         assert_unsupported_operation(
             evidence_dir,
             "merge",
-            "arith.extui",
+            "scf.index_switch",
             "scf.for",
-            rejected_dfg_operations=("scf.if",),
+            rejected_dfg_operations=("scf.if", "arith.extui", "arith.index_castui"),
         )
         assert_unsupported_operation(evidence_dir, "crc32", "scf.for", "scf.for")
         assert_unsupported_operation(
-            evidence_dir, "unpack_bits", "llvm.intr.umin", "scf.for"
+            evidence_dir,
+            "unpack_bits",
+            "scf.while",
+            "scf.for",
+            rejected_dfg_operations=("llvm.intr.umin",),
         )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)

@@ -392,7 +392,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "autocorrelation": "unsupported op: llvm.intr.umax",
+    "autocorrelation": "unsupported op: scf.for",
     "binary_search": "primary workload graph absent: expected token binary_search_candidate",
     "clz": "primary workload graph absent: expected token clz_candidate",
     "crc32": "unsupported op: scf.for",
@@ -400,15 +400,15 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
     "gather": "primary workload graph absent: expected token gather",
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
-    "merge": "unsupported op: arith.extui",
+    "merge": "unsupported op: scf.index_switch",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "outer": "primary workload graph absent: expected token outer_kernel",
-    "pack_bits": "unsupported op: llvm.intr.umin",
+    "pack_bits": "unsupported op: scf.while",
     "parity": "primary workload graph absent: expected token parity",
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
     "transpose": "primary workload graph absent: expected token transpose",
-    "unpack_bits": "unsupported op: llvm.intr.umin",
+    "unpack_bits": "unsupported op: scf.while",
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
