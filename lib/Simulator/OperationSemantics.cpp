@@ -103,6 +103,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"dataflow.mux", 1, 1, false, true},
     {"dataflow.demux", 1, 1, false, true},
     {"dataflow.gate", 1, 1, false, true},
+    {"scf.if", 1, 1, false, false},
 };
 
 const OperationCostEntry *lookupOperationCostEntry(llvm::StringRef opName) {

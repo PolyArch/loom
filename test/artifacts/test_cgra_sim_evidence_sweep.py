@@ -1442,6 +1442,7 @@ def assert_unsupported_operation(
     case: str,
     dfg_operation: str,
     mapping_operation: str | None = None,
+    rejected_dfg_operations: tuple[str, ...] = (),
 ) -> None:
     dfg_path = evidence_dir / f"{case}.dfg.report.json"
     mapping_path = evidence_dir / f"{case}.mapping.json"
@@ -1450,8 +1451,16 @@ def assert_unsupported_operation(
     expected_dfg = f"unsupported op: {dfg_operation}"
     mapping_operation = mapping_operation or dfg_operation
     expected_mapping = f"unsupported PnR graph operation: {mapping_operation}"
-    if expected_dfg not in dfg.get("diagnostics", []):
+    dfg_diagnostics = dfg.get("diagnostics", [])
+    if expected_dfg not in dfg_diagnostics:
         raise AssertionError(f"{case} DFG unsupported diagnostic should be {expected_dfg}: {dfg_path}: {dfg}")
+    for rejected in rejected_dfg_operations:
+        rejected_diagnostic = f"unsupported op: {rejected}"
+        if rejected_diagnostic in dfg_diagnostics:
+            raise AssertionError(
+                f"{case} DFG unsupported diagnostic should not include stale {rejected_diagnostic}: "
+                f"{dfg_path}: {dfg}"
+            )
     if expected_mapping not in mapping.get("diagnostics", []):
         raise AssertionError(
             f"{case} mapping unsupported diagnostic should be {expected_mapping}: {mapping_path}: {mapping}"
@@ -1860,12 +1869,27 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
-        for case in (
+        assert_unsupported_operation(
+            evidence_dir,
             "autocorrelation",
+            "llvm.intr.umax",
+            "scf.for",
+            rejected_dfg_operations=("scf.if",),
+        )
+        assert_unsupported_operation(
+            evidence_dir,
             "pack_bits",
+            "llvm.intr.umin",
+            "scf.for",
+            rejected_dfg_operations=("scf.if",),
+        )
+        assert_unsupported_operation(
+            evidence_dir,
             "merge",
-        ):
-            assert_unsupported_operation(evidence_dir, case, "scf.if", "scf.for")
+            "builtin.unrealized_conversion_cast",
+            "scf.for",
+            rejected_dfg_operations=("scf.if",),
+        )
         for case in (
             "crc32",
             "unpack_bits",

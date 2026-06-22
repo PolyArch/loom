@@ -392,7 +392,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "autocorrelation": "unsupported op: scf.if",
+    "autocorrelation": "unsupported op: llvm.intr.umax",
     "binary_search": "primary workload graph absent: expected token binary_search_candidate",
     "clz": "primary workload graph absent: expected token clz_candidate",
     "crc32": "unsupported op: builtin.unrealized_conversion_cast",
@@ -400,10 +400,10 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
     "gather": "primary workload graph absent: expected token gather",
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
-    "merge": "unsupported op: scf.if",
+    "merge": "unsupported op: builtin.unrealized_conversion_cast",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "outer": "primary workload graph absent: expected token outer_kernel",
-    "pack_bits": "unsupported op: scf.if",
+    "pack_bits": "unsupported op: llvm.intr.umin",
     "parity": "primary workload graph absent: expected token parity",
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
@@ -2245,7 +2245,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "FullyConnectedFunctions/arm_vector_sum_s8.c",
         dfg_status="unsupported",
         diagnostic_class="dfg_report_unsupported",
-        diagnostic_substring="unsupported op: scf.if",
+        diagnostic_substring="unsupported op: scf.for",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
