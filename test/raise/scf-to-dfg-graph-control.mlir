@@ -64,12 +64,10 @@ dataflow.graph.func private @g_bail_effectful_gate(%arg0: none, %arg1: i1,
   dataflow.graph.return %arg0 : none
 }
 
-// Positive (side-effect-aware result gate): a graph.func body with an
-// `scf.if %c -> (i32)` whose then-region issues a llvm.store (effectful)
-// and yields a value. The mux lift bails on the effectful body, so the
-// scf.if envelope is preserved in place and each gate-friendly result
-// is wrapped in a `dataflow.gate %c, %if.result`. Downstream consumers
-// of the scf.if result are rewritten to consume the gate's after_value.
+// Negative-bail (effectful resultful scf.if): a graph.func body with an
+// `scf.if %c -> (i32)` whose then-region issues a llvm.store cannot be
+// wrapped with dataflow.gate. The else-lane result is a real value, and gate
+// would drop it on a false condition before downstream consumers see it.
 
 // CHECK-LABEL: dataflow.graph.func private @g_side_effect_gate_result
 // CHECK: %[[IF:.*]] = scf.if %arg1 -> (i32)
@@ -78,13 +76,14 @@ dataflow.graph.func private @g_bail_effectful_gate(%arg0: none, %arg1: i1,
 // CHECK: } else {
 // CHECK: scf.yield
 // CHECK: }
-// CHECK: %{{.*}}, %[[GATED:.*]] = dataflow.gate %arg1, %[[IF]] : i32
-// CHECK: dataflow.graph.return %arg0, %[[GATED]] : none, i32
+// CHECK-NOT: dataflow.gate %arg1, %[[IF]] : i32
+// CHECK: dataflow.graph.return %arg0, %[[IF]] : none, i32
 dataflow.graph.func private @g_side_effect_gate_result(%arg0: none, %arg1: i1,
                                                        %arg2: i32,
                                                        %arg3: i32,
                                                        %arg4: !llvm.ptr)
     -> (none, i32) {
+  // expected-remark@+1 {{loom-lower-graph-control: scf.if shape not lifted}}
   %0 = scf.if %arg1 -> (i32) {
     llvm.store %arg2, %arg4 : i32, !llvm.ptr
     scf.yield %arg2 : i32

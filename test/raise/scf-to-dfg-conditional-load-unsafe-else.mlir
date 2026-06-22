@@ -6,14 +6,15 @@
 // the scf.if envelope instead of lowering the shape to dataflow.demux/mux.
 
 // CHECK-LABEL: dataflow.graph.func private @unsafe_conditional_load_else
-// CHECK: scf.if
+// CHECK: %[[IF:.*]] = scf.if
 // CHECK-NOT: dataflow.demux
-// CHECK: dataflow.gate
-// CHECK: dataflow.graph.return
+// CHECK-NOT: dataflow.gate
+// CHECK: dataflow.graph.return %arg0, %[[IF]] : none, f32
 dataflow.graph.func private @unsafe_conditional_load_else(
     %ctrl: none, %cond: i1, %input: memref<?xf32>, %fallback: f32)
     -> (none, f32) {
   %idx = dataflow.constant %ctrl {const_value = 0 : index} : index
+  // expected-remark@+1 {{loom-lower-graph-control: scf.if shape not lifted}}
   %next = scf.if %cond -> (f32) {
     %data, %done = dataflow.load %input[%idx] %ctrl : memref<?xf32>
     scf.yield %data : f32

@@ -25,8 +25,16 @@ dfg_one "main_func" "cpp"
 require_kernel_graph "main_func" "autocorrelation_kernel"
 dfg_one "main_inline" "cpp"
 
-if ! grep -E -q 'dataflow\.gate ' "${BUILD_DIR}/main_func.dfg.mlir"; then
-    echo "[${KERNEL}/main_func] no dataflow.gate in ${BUILD_DIR}/main_func.dfg.mlir" >&2
+if ! grep -E -q 'scf\.for .*iter_args' "${BUILD_DIR}/main_func.dfg.mlir"; then
+    echo "[${KERNEL}/main_func] no structured scf.for in ${BUILD_DIR}/main_func.dfg.mlir" >&2
+    exit 1
+fi
+if ! grep -E -q 'scf\.if .*-> \(f32\)' "${BUILD_DIR}/main_func.dfg.mlir"; then
+    echo "[${KERNEL}/main_func] no resultful scf.if in ${BUILD_DIR}/main_func.dfg.mlir" >&2
+    exit 1
+fi
+if ! grep -E -q 'llvm\.intr\.umax' "${BUILD_DIR}/main_func.dfg.mlir"; then
+    echo "[${KERNEL}/main_func] no llvm.intr.umax in ${BUILD_DIR}/main_func.dfg.mlir" >&2
     exit 1
 fi
 

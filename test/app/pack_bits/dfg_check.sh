@@ -26,8 +26,20 @@ dfg_one "main_func" "cpp"
 dfg_one "main_inline" "cpp"
 
 for dfg in "${BUILD_DIR}/main_func.dfg.mlir" "${BUILD_DIR}/main_inline.dfg.mlir"; do
-    if ! grep -E -q 'dataflow\.gate ' "${dfg}"; then
-        echo "[${KERNEL}] no dataflow.gate in ${dfg}" >&2
+    if ! grep -E -q 'scf\.for .*iter_args' "${dfg}"; then
+        echo "[${KERNEL}] no structured scf.for in ${dfg}" >&2
+        exit 1
+    fi
+    if ! grep -E -q 'arith\.shli' "${dfg}"; then
+        echo "[${KERNEL}] no arith.shli in ${dfg}" >&2
+        exit 1
+    fi
+    if ! grep -E -q 'arith\.ori' "${dfg}"; then
+        echo "[${KERNEL}] no arith.ori in ${dfg}" >&2
+        exit 1
+    fi
+    if ! grep -E -q 'arith\.cmpi' "${dfg}"; then
+        echo "[${KERNEL}] no arith.cmpi in ${dfg}" >&2
         exit 1
     fi
 done

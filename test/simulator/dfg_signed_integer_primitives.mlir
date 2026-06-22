@@ -2,6 +2,8 @@
 // RUN: FileCheck %s --check-prefix=SIGNED < %t.signed.json
 // RUN: loom-dfg-sim %s --graph extend_truncate --arg 0=none --output %t.cast.json
 // RUN: FileCheck %s --check-prefix=CAST < %t.cast.json
+// RUN: loom-dfg-sim %s --graph narrow_runtime_signed_compare --arg 0=none --arg 1=255 --arg 2=0 --arg 3=-1 --output %t.narrow-cmp.json
+// RUN: FileCheck %s --check-prefix=NARROW-CMP < %t.narrow-cmp.json
 // RUN: loom-dfg-sim %s --graph llvm_sign_extend --arg 0=none --output %t.llvm-sext.json
 // RUN: FileCheck %s --check-prefix=LLVM-SEXT < %t.llvm-sext.json
 // RUN: loom-dfg-sim %s --graph exact_division_poison --arg 0=none --output %t.exact-div.json
@@ -36,6 +38,16 @@
 // CAST-DAG: "arith.trunci": 1
 // CAST-DAG: "i32:-2"
 // CAST-DAG: "i8:52"
+
+// NARROW-CMP-DAG: "workload": "narrow_runtime_signed_compare"
+// NARROW-CMP-DAG: "graph": "narrow_runtime_signed_compare"
+// NARROW-CMP-DAG: "status": "pass"
+// NARROW-CMP-DAG: "arith.cmpi": 5
+// NARROW-CMP-DAG: "i1:true"
+// NARROW-CMP-DAG: "i1:true"
+// NARROW-CMP-DAG: "i1:true"
+// NARROW-CMP-DAG: "i1:false"
+// NARROW-CMP-DAG: "i1:true"
 
 // LLVM-SEXT-DAG: "workload": "llvm_sign_extend"
 // LLVM-SEXT-DAG: "graph": "llvm_sign_extend"
@@ -86,6 +98,18 @@ module {
     %base = dataflow.constant %ctrl {const_value = 4660 : i32} : i32
     %narrow = arith.trunci %base : i32 to i8
     dataflow.graph.return %ctrl, %wide, %narrow : none, i32, i8
+  }
+
+  dataflow.graph.func private @narrow_runtime_signed_compare(
+      %ctrl: none, %lhs: i8, %zero: i8, %minus_one: i8)
+      -> (none, i1, i1, i1, i1, i1) {
+    %slt = arith.cmpi slt, %lhs, %zero : i8
+    %sgt = arith.cmpi sgt, %zero, %lhs : i8
+    %eq = arith.cmpi eq, %lhs, %minus_one : i8
+    %ult = arith.cmpi ult, %lhs, %zero : i8
+    %ugt = arith.cmpi ugt, %lhs, %zero : i8
+    dataflow.graph.return %ctrl, %slt, %sgt, %eq, %ult, %ugt
+        : none, i1, i1, i1, i1, i1
   }
 
   dataflow.graph.func private @llvm_sign_extend(%ctrl: none) -> (none, i32) {

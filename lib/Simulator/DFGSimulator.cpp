@@ -1371,17 +1371,18 @@ bool assignLocalGate(dataflow::GateOp op, SimulatorState &state,
 bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
                                 LocalValueMap &locals, unsigned captureIndex);
 
-bool evaluateStructuredIfRegion(mlir::scf::IfOp op, mlir::Block *block,
-                                SimulatorState &state,
-                                LocalValueMap &parentLocals,
-                                unsigned captureIndex,
-                                llvm::SmallVectorImpl<Token> &yielded) {
+bool evaluateStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
+                                   llvm::StringRef opName,
+                                   SimulatorState &state,
+                                   LocalValueMap &parentLocals,
+                                   unsigned captureIndex,
+                                   llvm::SmallVectorImpl<Token> &yielded) {
   if (!block)
-    return op->getNumResults() == 0;
+    return parent->getNumResults() == 0;
   LocalValueMap locals = parentLocals;
   for (mlir::Operation &bodyOp : block->getOperations()) {
     if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(bodyOp)) {
-      if (yield.getNumOperands() != op->getNumResults())
+      if (yield.getNumOperands() != parent->getNumResults())
         return false;
       for (mlir::Value value : yield.getResults()) {
         std::optional<Token> token =
@@ -1393,13 +1394,14 @@ bool evaluateStructuredIfRegion(mlir::scf::IfOp op, mlir::Block *block,
       return true;
     }
     if (!executeStructuredForBodyOp(&bodyOp, state, locals, captureIndex)) {
-      state.diagnostics.push_back(("structured scf.if failed to execute " +
+      state.diagnostics.push_back(("structured " + opName +
+                                   " failed to execute " +
                                    bodyOp.getName().getStringRef())
                                       .str());
       return false;
     }
   }
-  return op->getNumResults() == 0;
+  return parent->getNumResults() == 0;
 }
 
 bool evaluateStructuredIf(mlir::scf::IfOp op, SimulatorState &state,
@@ -1413,8 +1415,8 @@ bool evaluateStructuredIf(mlir::scf::IfOp op, SimulatorState &state,
       boolToken(*cond)
           ? op.thenBlock()
           : (op.getElseRegion().empty() ? nullptr : op.elseBlock());
-  return evaluateStructuredIfRegion(op, selected, state, locals, captureIndex,
-                                    yielded);
+  return evaluateStructuredYieldRegion(op.getOperation(), selected, "scf.if",
+                                       state, locals, captureIndex, yielded);
 }
 
 bool executeStructuredIfLocally(mlir::scf::IfOp op, SimulatorState &state,
@@ -1430,10 +1432,56 @@ bool executeStructuredIfLocally(mlir::scf::IfOp op, SimulatorState &state,
   return recordEvent(state, op->getName().getStringRef());
 }
 
+mlir::Block *selectStructuredIndexSwitchBlock(mlir::scf::IndexSwitchOp op,
+                                              SimulatorState &state,
+                                              LocalValueMap &locals,
+                                              unsigned captureIndex) {
+  std::optional<Token> selector =
+      lookupToken(op.getArg(), state, locals, captureIndex);
+  if (!selector)
+    return nullptr;
+  const std::int64_t selected = integerToken(*selector);
+  for (auto [index, value] : llvm::enumerate(op.getCases()))
+    if (selected == value)
+      return &op.getCaseBlock(index);
+  return &op.getDefaultBlock();
+}
+
+bool evaluateStructuredIndexSwitch(mlir::scf::IndexSwitchOp op,
+                                   SimulatorState &state,
+                                   LocalValueMap &locals,
+                                   unsigned captureIndex,
+                                   llvm::SmallVectorImpl<Token> &yielded) {
+  mlir::Block *selected =
+      selectStructuredIndexSwitchBlock(op, state, locals, captureIndex);
+  if (!selected)
+    return false;
+  return evaluateStructuredYieldRegion(op.getOperation(), selected,
+                                       "scf.index_switch", state, locals,
+                                       captureIndex, yielded);
+}
+
+bool executeStructuredIndexSwitchLocally(mlir::scf::IndexSwitchOp op,
+                                         SimulatorState &state,
+                                         LocalValueMap &locals,
+                                         unsigned captureIndex) {
+  llvm::SmallVector<Token> yielded;
+  if (!evaluateStructuredIndexSwitch(op, state, locals, captureIndex, yielded))
+    return false;
+  if (yielded.size() != op->getNumResults())
+    return false;
+  for (auto [result, token] : llvm::zip(op->getResults(), yielded))
+    locals[result] = token;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
                                 LocalValueMap &locals, unsigned captureIndex) {
   if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op))
     return executeStructuredIfLocally(ifOp, state, locals, captureIndex);
+  if (auto switchOp = mlir::dyn_cast<mlir::scf::IndexSwitchOp>(op))
+    return executeStructuredIndexSwitchLocally(switchOp, state, locals,
+                                               captureIndex);
   if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
     auto attr = mlir::dyn_cast<mlir::TypedAttr>(constant.getValue());
     if (!attr) {
@@ -1471,10 +1519,14 @@ std::optional<std::string>
 unsupportedStructuredIfOperation(mlir::scf::IfOp op);
 
 std::optional<std::string>
-unsupportedStructuredIfRegion(mlir::scf::IfOp parent, mlir::Block *block) {
+unsupportedStructuredIndexSwitchOperation(mlir::scf::IndexSwitchOp op);
+
+std::optional<std::string> unsupportedStructuredYieldRegion(
+    mlir::Operation *parent, mlir::Block *block, llvm::StringRef opName) {
   if (!block)
-    return parent->getNumResults() == 0 ? std::nullopt
-                                        : std::optional<std::string>("scf.if");
+    return parent->getNumResults() == 0
+               ? std::nullopt
+               : std::optional<std::string>(opName.str());
   auto yield =
       mlir::dyn_cast<mlir::scf::YieldOp>(block->getTerminator());
   if (!yield || yield.getNumOperands() != parent->getNumResults())
@@ -1484,6 +1536,11 @@ unsupportedStructuredIfRegion(mlir::scf::IfOp parent, mlir::Block *block) {
       continue;
     if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(bodyOp)) {
       if (auto name = unsupportedStructuredIfOperation(ifOp))
+        return name;
+      continue;
+    }
+    if (auto switchOp = mlir::dyn_cast<mlir::scf::IndexSwitchOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredIndexSwitchOperation(switchOp))
         return name;
       continue;
     }
@@ -1507,12 +1564,29 @@ std::optional<std::string>
 unsupportedStructuredIfOperation(mlir::scf::IfOp op) {
   if (op.getThenRegion().empty())
     return "scf.if";
-  if (auto name = unsupportedStructuredIfRegion(op, op.thenBlock()))
+  if (auto name =
+          unsupportedStructuredYieldRegion(op.getOperation(), op.thenBlock(),
+                                           "scf.if"))
     return name;
   if (op.getElseRegion().empty())
     return op->getNumResults() == 0 ? std::nullopt
                                     : std::optional<std::string>("scf.if");
-  return unsupportedStructuredIfRegion(op, op.elseBlock());
+  return unsupportedStructuredYieldRegion(op.getOperation(), op.elseBlock(),
+                                          "scf.if");
+}
+
+std::optional<std::string>
+unsupportedStructuredIndexSwitchOperation(mlir::scf::IndexSwitchOp op) {
+  if (op.getDefaultRegion().empty())
+    return "scf.index_switch";
+  if (auto name = unsupportedStructuredYieldRegion(
+          op.getOperation(), &op.getDefaultBlock(), "scf.index_switch"))
+    return name;
+  for (unsigned index = 0, end = op.getNumCases(); index < end; ++index)
+    if (auto name = unsupportedStructuredYieldRegion(
+            op.getOperation(), &op.getCaseBlock(index), "scf.index_switch"))
+      return name;
+  return std::nullopt;
 }
 
 std::optional<std::string>
@@ -1528,6 +1602,11 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
       continue;
     if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(bodyOp)) {
       if (auto name = unsupportedStructuredIfOperation(ifOp))
+        return name;
+      continue;
+    }
+    if (auto switchOp = mlir::dyn_cast<mlir::scf::IndexSwitchOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredIndexSwitchOperation(switchOp))
         return name;
       continue;
     }
@@ -1578,6 +1657,46 @@ bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
   locals[op.getCondition()] = popToken(state.channels, op->getOpOperand(0));
   llvm::SmallVector<Token> yielded;
   if (!evaluateStructuredIf(op, state, locals, captureIndex, yielded))
+    return false;
+  if (yielded.size() != op->getNumResults())
+    return false;
+  for (auto [result, token] : llvm::zip(op->getResults(), yielded))
+    emitToken(state, result, token);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+unsigned structuredIndexSwitchFireIndex(mlir::scf::IndexSwitchOp op,
+                                        const SimulatorState &state) {
+  if (op->getNumResults() == 0)
+    return 0;
+  auto observedIt = state.observedOutputs.find(op->getResult(0));
+  unsigned count =
+      observedIt == state.observedOutputs.end() ? 0 : observedIt->second.size();
+  auto pendingIt = state.pendingObservedOutputs.find(op->getResult(0));
+  if (pendingIt != state.pendingObservedOutputs.end())
+    count += pendingIt->second.size();
+  return count;
+}
+
+bool fireStructuredIndexSwitch(mlir::scf::IndexSwitchOp op,
+                               SimulatorState &state) {
+  if (!hasToken(state.channels, op->getOpOperand(0)))
+    return false;
+  const unsigned captureIndex = structuredIndexSwitchFireIndex(op, state);
+  Token selector = peekToken(state.channels, op->getOpOperand(0));
+  LocalValueMap probeLocals;
+  probeLocals[op.getArg()] = selector;
+  llvm::SmallVector<Token> probeYielded;
+  SimulatorState probeState = state;
+  (void)isolateProbeStateMemory(probeState);
+  if (!evaluateStructuredIndexSwitch(op, probeState, probeLocals, captureIndex,
+                                     probeYielded))
+    return false;
+
+  LocalValueMap locals;
+  locals[op.getArg()] = popToken(state.channels, op->getOpOperand(0));
+  llvm::SmallVector<Token> yielded;
+  if (!evaluateStructuredIndexSwitch(op, state, locals, captureIndex, yielded))
     return false;
   if (yielded.size() != op->getNumResults())
     return false;
@@ -1767,6 +1886,10 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
       .Case<mlir::scf::IfOp>(
           [&](auto typedOp) { return fireStructuredIf(typedOp, state); })
+      .Case<mlir::scf::IndexSwitchOp>(
+          [&](auto typedOp) {
+            return fireStructuredIndexSwitch(typedOp, state);
+          })
       .Case<mlir::scf::ForOp>(
           [&](auto typedOp) { return fireStructuredFor(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
@@ -1782,6 +1905,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return std::nullopt;
   if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op))
     return unsupportedStructuredIfOperation(ifOp);
+  if (auto switchOp = mlir::dyn_cast<mlir::scf::IndexSwitchOp>(op))
+    return unsupportedStructuredIndexSwitchOperation(switchOp);
   if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op))
     return unsupportedStructuredForOperation(forOp);
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,

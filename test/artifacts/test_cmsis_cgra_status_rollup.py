@@ -400,7 +400,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
     "gather": "primary workload graph absent: expected token gather",
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
-    "merge": "unsupported op: scf.index_switch",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "outer": "primary workload graph absent: expected token outer_kernel",
     "pack_bits": "unsupported op: scf.while",
@@ -419,6 +418,41 @@ SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
 SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {}
+
+SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS = {
+    "merge": "unsupported PnR graph operation: scf.for",
+}
+
+SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {
+    "merge": {
+        "graph": "g_t_merge_red_0_0",
+        "dynamic_work_items": 11,
+        "final_outputs": ["none", "i32:5", "i32:6"],
+        "operation_fire_counts": {
+            "arith.cmpi": 22,
+            "arith.cmpf": 10,
+            "scf.if": 22,
+            "scf.index_switch": 22,
+            "dataflow.load": 31,
+            "dataflow.store": 11,
+        },
+        "final_memory_state": {
+            "arg10": [
+                "f32:1",
+                "f32:2",
+                "f32:3",
+                "f32:4",
+                "f32:9",
+                "f32:10",
+                "f32:13",
+                "f32:14",
+                "f32:20",
+                "f32:21",
+                "f32:22",
+            ],
+        },
+    },
+}
 
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
@@ -537,6 +571,47 @@ def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_e
             actual_values = dfg_report.get("final_memory_state", {}).get(argument)
             if actual_values != expected_values:
                 raise AssertionError(f"{case} should preserve expected DFG final memory before mapping blocker: {dfg_report}")
+    for case, diagnostic in SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS.items():
+        row = one_row(rows, "app", case)
+        if (
+            row["status"] != "blocked"
+            or row["diagnostic_class"] != "mapping_artifact_unsupported"
+            or row["owner"] != "sim_report"
+            or row["blocking_prerequisite"] != "mapping_artifact"
+            or row["dfg_status"] != "pass"
+            or row["mapping_status"] != "unsupported"
+            or row["cgra_status"] != "blocked"
+            or row["comparison_status"] != "blocked"
+            or row["hardware_system"] != "shared_reduction_adg"
+            or row["graph_ids"] != SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE[case]["graph"]
+            or row["final_outputs_present"] != "true"
+            or row["final_memory_state_present"] != "true"
+            or diagnostic not in row["diagnostic"]
+        ):
+            raise AssertionError(f"attempted app row should expose structured mapping unsupported blocker: {row}")
+        for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+            assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+            artifact = sim_evidence / Path(row[key]).name
+            if not artifact.is_file():
+                raise AssertionError(f"attempt manifest should emit {artifact}")
+        dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+        expected = SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE[case]
+        if (
+            dfg_report.get("status") != "pass"
+            or dfg_report.get("dynamic_work_items") != expected["dynamic_work_items"]
+            or dfg_report.get("final_outputs") != expected["final_outputs"]
+        ):
+            raise AssertionError(f"{case} should preserve real DFG evidence before mapping unsupported: {dfg_report}")
+        for op_name, expected_count in expected["operation_fire_counts"].items():
+            actual_count = dfg_report.get("operation_fire_counts", {}).get(op_name)
+            if actual_count != expected_count:
+                raise AssertionError(
+                    f"{case} {op_name} fire count should be {expected_count}, got {actual_count}: {dfg_report}"
+                )
+        for argument, expected_values in expected["final_memory_state"].items():
+            actual_values = dfg_report.get("final_memory_state", {}).get(argument)
+            if actual_values != expected_values:
+                raise AssertionError(f"{case} should preserve expected DFG final memory before mapping unsupported: {dfg_report}")
 
 
 def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:

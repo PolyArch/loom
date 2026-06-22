@@ -108,6 +108,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"dataflow.demux", 1, 1, false, true},
     {"dataflow.gate", 1, 1, false, true},
     {"scf.if", 1, 1, false, false},
+    {"scf.index_switch", 1, 1, false, false},
 };
 
 const OperationCostEntry *lookupOperationCostEntry(llvm::StringRef opName) {
@@ -374,20 +375,22 @@ llvm::Expected<PrimitiveValue> byteSwapInteger(llvm::StringRef opName,
 
 bool compareInteger(llvm::StringRef predicate, const PrimitiveValue &lhs,
                     const PrimitiveValue &rhs, unsigned bitWidth) {
-  if (predicate == "eq")
-    return asInteger(lhs) == asInteger(rhs);
-  if (predicate == "ne")
-    return asInteger(lhs) != asInteger(rhs);
-  if (predicate == "slt")
-    return asInteger(lhs) < asInteger(rhs);
-  if (predicate == "sle")
-    return asInteger(lhs) <= asInteger(rhs);
-  if (predicate == "sgt")
-    return asInteger(lhs) > asInteger(rhs);
-  if (predicate == "sge")
-    return asInteger(lhs) >= asInteger(rhs);
   const std::uint64_t lhsBits = toUnsignedBits(lhs, bitWidth);
   const std::uint64_t rhsBits = toUnsignedBits(rhs, bitWidth);
+  const std::int64_t lhsSigned = fromUnsignedBits(lhsBits, bitWidth);
+  const std::int64_t rhsSigned = fromUnsignedBits(rhsBits, bitWidth);
+  if (predicate == "eq")
+    return lhsBits == rhsBits;
+  if (predicate == "ne")
+    return lhsBits != rhsBits;
+  if (predicate == "slt")
+    return lhsSigned < rhsSigned;
+  if (predicate == "sle")
+    return lhsSigned <= rhsSigned;
+  if (predicate == "sgt")
+    return lhsSigned > rhsSigned;
+  if (predicate == "sge")
+    return lhsSigned >= rhsSigned;
   if (predicate == "ult")
     return lhsBits < rhsBits;
   if (predicate == "ule")
@@ -660,8 +663,10 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return std::move(arity);
     if (llvm::Error predicate = requirePredicate(opName, descriptor.predicate))
       return std::move(predicate);
+    const unsigned compareBitWidth =
+        normalizeBitWidth(descriptor.operandBitWidth);
     return PrimitiveValue::boolean(compareInteger(
-        descriptor.predicate, operands[0], operands[1], bitWidth));
+        descriptor.predicate, operands[0], operands[1], compareBitWidth));
   }
   if (opName == "arith.cmpf") {
     if (llvm::Error arity = requireArity(opName, operands, 2))

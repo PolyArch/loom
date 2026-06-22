@@ -89,6 +89,7 @@ DEFAULT_SWEEP_CASES = (
 )
 MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_UNSUPPORTED_SWEEP_CASES = ("merge",)
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "autocorrelation",
@@ -99,7 +100,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "find_first_set",
     "gather",
     "lower_bound",
-    "merge",
     "moving_avg",
     "outer",
     "pack_bits",
@@ -530,7 +530,12 @@ def assert_structured_blocker_row(
         raise AssertionError(f"{case} should have comparison_status=blocked: {row}")
     if row["hardware_system"] != "shared_reduction_adg":
         raise AssertionError(f"{case} should stay on shared reduction hardware: {row}")
-    expected_diagnostic_class = "mapping_artifact_blocked" if expected_status == "blocked" else "mapping_artifact_failed"
+    if expected_mapping_status == "unsupported":
+        expected_diagnostic_class = "mapping_artifact_unsupported"
+    elif expected_status == "blocked":
+        expected_diagnostic_class = "mapping_artifact_blocked"
+    else:
+        expected_diagnostic_class = "mapping_artifact_failed"
     if row["diagnostic_class"] != expected_diagnostic_class:
         raise AssertionError(f"{case} should name the mapping artifact blocker: {row}")
     if row["blocking_prerequisite"] != "mapping_artifact":
@@ -1437,6 +1442,51 @@ def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges:
         raise AssertionError(f"{case} should expose exact unrouted edges {expected_edges}: {path}: {data}")
 
 
+def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg10": [
+            "f32:1",
+            "f32:2",
+            "f32:3",
+            "f32:4",
+            "f32:9",
+            "f32:10",
+            "f32:13",
+            "f32:14",
+            "f32:20",
+            "f32:21",
+            "f32:22",
+        ],
+        "arg7": ["f32:1", "f32:4", "f32:9", "f32:13", "f32:21"],
+        "arg8": ["f32:2", "f32:3", "f32:10", "f32:14", "f32:20", "f32:22"],
+    }
+    expected_counts = {
+        "arith.addi": 11,
+        "arith.cmpf": 10,
+        "arith.cmpi": 22,
+        "arith.extui": 10,
+        "arith.index_cast": 42,
+        "arith.index_castui": 22,
+        "arith.xori": 10,
+        "dataflow.load": 31,
+        "dataflow.store": 11,
+        "scf.if": 22,
+        "scf.index_switch": 22,
+    }
+    dfg_path = evidence_dir / "merge.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 11
+        or dfg.get("optimistic_cycles") != 349
+        or dfg.get("final_outputs") != ["none", "i32:5", "i32:6"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"merge DFG evidence should preserve the real merge output before PnR blocking: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("merge", dfg, expected_counts)
+
+
 def assert_unsupported_operation(
     evidence_dir: Path,
     case: str,
@@ -1835,6 +1885,11 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "blocked")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
+        for case in MAPPING_UNSUPPORTED_SWEEP_CASES:
+            assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
+            assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
+            assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
+            assert_comparison_artifact(evidence_dir, case, "blocked")
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "blocked")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "pass")
@@ -1883,13 +1938,8 @@ def main(argv: list[str]) -> int:
             "scf.for",
             rejected_dfg_operations=("scf.if", "llvm.intr.umin"),
         )
-        assert_unsupported_operation(
-            evidence_dir,
-            "merge",
-            "scf.index_switch",
-            "scf.for",
-            rejected_dfg_operations=("scf.if", "arith.extui", "arith.index_castui"),
-        )
+        assert_mapping_unsupported_operation(evidence_dir, "merge", "scf.for")
+        assert_merge_dfg_evidence(evidence_dir)
         assert_unsupported_operation(evidence_dir, "crc32", "scf.for", "scf.for")
         assert_unsupported_operation(
             evidence_dir,
@@ -2015,6 +2065,8 @@ def main(argv: list[str]) -> int:
         for case in MAPPING_FAILED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         for case in MAPPING_BLOCKED_SWEEP_CASES:
+            assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
+        for case in MAPPING_UNSUPPORTED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -2241,6 +2293,8 @@ def main(argv: list[str]) -> int:
             assert_structured_blocker_row(repo, rows, case, "fail", "fail")
         for case in MAPPING_BLOCKED_SWEEP_CASES:
             assert_structured_blocker_row(repo, rows, case, "blocked", "blocked")
+        for case in MAPPING_UNSUPPORTED_SWEEP_CASES:
+            assert_structured_blocker_row(repo, rows, case, "blocked", "unsupported")
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_dfg_blocked_row(repo, rows, case)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
