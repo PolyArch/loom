@@ -1886,17 +1886,14 @@ def main(argv: list[str]) -> int:
         assert_unsupported_operation(
             evidence_dir,
             "merge",
-            "builtin.unrealized_conversion_cast",
+            "arith.extui",
             "scf.for",
             rejected_dfg_operations=("scf.if",),
         )
-        for case in (
-            "crc32",
-            "unpack_bits",
-        ):
-            assert_unsupported_operation(
-                evidence_dir, case, "builtin.unrealized_conversion_cast", "scf.for"
-            )
+        assert_unsupported_operation(evidence_dir, "crc32", "scf.for", "scf.for")
+        assert_unsupported_operation(
+            evidence_dir, "unpack_bits", "llvm.intr.umin", "scf.for"
+        )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")

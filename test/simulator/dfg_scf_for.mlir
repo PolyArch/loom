@@ -18,6 +18,10 @@
 // RUN: FileCheck %s --check-prefix=MEMREF-CAST < %t.memref_cast.json
 // RUN: loom-dfg-sim %s --graph structured_for_blocks_partial_dynamic_capture --arg 0=none --arg 0=none --arg 1=0 --arg 1=1 --arg 2=0 --arg 2=0 --arg 3=1 --arg 3=1 --arg 4=1 --arg 4=1 --arg 5=10 --arg 5=20 --arg 6=3 --arg 6=5 --arg 7=0 --memref 8=0,0 --output %t.partial_capture.json
 // RUN: FileCheck %s --check-prefix=PARTIAL-CAPTURE < %t.partial_capture.json
+// RUN: loom-dfg-sim %s --graph structured_for_pointer_memory --arg 0=none --memref 1=1,2,3 --arg 2=0 --arg 3=3 --arg 4=1 --arg 5=0 --output %t.pointer_memory.json
+// RUN: FileCheck %s --check-prefix=POINTER-MEMORY < %t.pointer_memory.json
+// RUN: loom-dfg-sim %s --graph structured_for_carried_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=1 --arg 4=1 --arg 5=0 --output %t.carried_pointer_memory.json
+// RUN: FileCheck %s --check-prefix=CARRIED-POINTER-MEMORY < %t.carried_pointer_memory.json
 
 // CHECK-DAG: "graph": "structured_for_sum"
 // CHECK-DAG: "status": "pass"
@@ -89,6 +93,32 @@
 // PARTIAL-CAPTURE-DAG: "i32:13"
 // PARTIAL-CAPTURE-DAG: "i32:0"
 // PARTIAL-CAPTURE-NOT: "i32:23"
+
+// POINTER-MEMORY-DAG: "graph": "structured_for_pointer_memory"
+// POINTER-MEMORY-DAG: "status": "pass"
+// POINTER-MEMORY-DAG: "dynamic_work_items": 3
+// POINTER-MEMORY-DAG: "llvm.getelementptr": 3
+// POINTER-MEMORY-DAG: "dataflow.load": 3
+// POINTER-MEMORY-DAG: "dataflow.store": 3
+// POINTER-MEMORY-DAG: "final_outputs": [
+// POINTER-MEMORY-DAG: "none"
+// POINTER-MEMORY-DAG: "i32:6"
+// POINTER-MEMORY-DAG: "arg1": [
+// POINTER-MEMORY-DAG: "i32:2"
+// POINTER-MEMORY-DAG: "i32:3"
+// POINTER-MEMORY-DAG: "i32:4"
+
+// CARRIED-POINTER-MEMORY-DAG: "graph": "structured_for_carried_pointer_memory"
+// CARRIED-POINTER-MEMORY-DAG: "status": "pass"
+// CARRIED-POINTER-MEMORY-DAG: "dynamic_work_items": 1
+// CARRIED-POINTER-MEMORY-DAG: "dataflow.load": 1
+// CARRIED-POINTER-MEMORY-DAG: "dataflow.store": 1
+// CARRIED-POINTER-MEMORY-DAG: "final_outputs": [
+// CARRIED-POINTER-MEMORY-DAG: "none"
+// CARRIED-POINTER-MEMORY-DAG: "i32:1"
+// CARRIED-POINTER-MEMORY-DAG: "arg1": [
+// CARRIED-POINTER-MEMORY-DAG: "i32:2"
+// CARRIED-POINTER-MEMORY-NOT: "i32:3"
 
 module {
   dataflow.graph.func private @structured_if_scalar(
@@ -213,5 +243,46 @@ module {
     }
     %done = dataflow.store %mem[%slot] %sum %ctrl : memref<?xi32>
     dataflow.graph.return %done : none
+  }
+
+  dataflow.graph.func private @structured_for_pointer_memory(
+      %ctrl: none, %mem: !llvm.ptr, %lb: i64, %ub: i64, %step: i64,
+      %init: i32) -> (none, i32) {
+    %sum = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
+        -> (i32) : i64 {
+      %ptr = llvm.getelementptr inbounds|nuw %mem[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %view = builtin.unrealized_conversion_cast %ptr
+          : !llvm.ptr to memref<?xi32>
+      %slot = dataflow.constant %ctrl {const_value = 0 : index} : index
+      %value, %load_done = dataflow.load %view[%slot] %ctrl : memref<?xi32>
+      %one = arith.constant 1 : i32
+      %stored = arith.addi %value, %one : i32
+      %store_done = dataflow.store %view[%slot] %stored %ctrl : memref<?xi32>
+      %next = arith.addi %acc, %value : i32
+      scf.yield %next : i32
+    }
+    dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @structured_for_carried_pointer_memory(
+      %ctrl: none, %mem: !llvm.ptr, %lb: i64, %ub: i64, %step: i64,
+      %init: i32) -> (none, i32) {
+    %view = builtin.unrealized_conversion_cast %mem
+        : !llvm.ptr to memref<?xi32>
+    %sum, %view_out = scf.for %i = %lb to %ub step %step
+        iter_args(%acc = %init, %carried = %view)
+        -> (i32, memref<?xi32>) : i64 {
+      %slot = dataflow.constant %ctrl {const_value = 0 : index} : index
+      %value, %load_done = dataflow.load %carried[%slot] %ctrl
+          : memref<?xi32>
+      %one = arith.constant 1 : i32
+      %stored = arith.addi %value, %one : i32
+      %store_done = dataflow.store %carried[%slot] %stored %ctrl
+          : memref<?xi32>
+      %next = arith.addi %acc, %value : i32
+      scf.yield %next, %carried : i32, memref<?xi32>
+    }
+    dataflow.graph.return %ctrl, %sum : none, i32
   }
 }

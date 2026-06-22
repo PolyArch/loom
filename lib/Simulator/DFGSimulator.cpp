@@ -117,6 +117,65 @@ struct SimulatorState {
   std::uint64_t maxStructuredLoopIterations = 0;
 };
 
+using MemoryCloneMap =
+    llvm::DenseMap<const MemoryValue *, std::shared_ptr<MemoryValue>>;
+
+std::shared_ptr<MemoryValue>
+cloneMemoryHandle(const std::shared_ptr<MemoryValue> &memory,
+                  MemoryCloneMap &clones) {
+  if (!memory)
+    return {};
+  auto [it, inserted] =
+      clones.try_emplace(memory.get(), std::shared_ptr<MemoryValue>());
+  if (inserted)
+    it->second = std::make_shared<MemoryValue>(*memory);
+  return it->second;
+}
+
+void retargetTokenMemory(Token &token, MemoryCloneMap &clones) {
+  if (token.kind != TokenKind::Pointer || !token.pointer.memory)
+    return;
+  token.pointer.memory = cloneMemoryHandle(token.pointer.memory, clones);
+}
+
+void retargetChannelMap(ChannelMap &channels, MemoryCloneMap &clones) {
+  for (auto &entry : channels)
+    for (Token &token : entry.second)
+      retargetTokenMemory(token, clones);
+}
+
+void retargetOutputMap(OutputMap &outputs, MemoryCloneMap &clones) {
+  for (auto &entry : outputs)
+    for (Token &token : entry.second)
+      retargetTokenMemory(token, clones);
+}
+
+void retargetTokenVector(llvm::SmallVectorImpl<Token> &tokens,
+                         MemoryCloneMap &clones) {
+  for (Token &token : tokens)
+    retargetTokenMemory(token, clones);
+}
+
+void retargetLoopStates(llvm::DenseMap<mlir::Operation *, LoopState> &states,
+                        MemoryCloneMap &clones) {
+  for (auto &entry : states)
+    if (entry.second.latched)
+      retargetTokenMemory(*entry.second.latched, clones);
+}
+
+MemoryCloneMap isolateProbeStateMemory(SimulatorState &state) {
+  MemoryCloneMap clones;
+  for (auto &entry : state.memories)
+    entry.second = cloneMemoryHandle(entry.second, clones);
+  retargetChannelMap(state.channels, clones);
+  retargetChannelMap(state.pendingChannels, clones);
+  retargetOutputMap(state.observedOutputs, clones);
+  retargetOutputMap(state.pendingObservedOutputs, clones);
+  retargetLoopStates(state.carryStates, clones);
+  retargetLoopStates(state.invariantStates, clones);
+  return clones;
+}
+
 std::string typePrefix(mlir::Type type) {
   if (mlir::isa<mlir::NoneType>(type))
     return "none";
@@ -1077,6 +1136,16 @@ bool hasMemRefValue(mlir::ValueRange values) {
     return mlir::isa<mlir::MemRefType>(value.getType());
   });
 }
+
+bool isSupportedStructuredCast(mlir::UnrealizedConversionCastOp cast) {
+  if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+    return false;
+  if (mlir::isa<mlir::MemRefType>(cast.getResult(0).getType()))
+    return mlir::isa<mlir::LLVM::LLVMPointerType>(cast.getOperand(0).getType());
+  return !hasMemRefValue(cast->getOperands()) &&
+         !hasMemRefValue(cast->getResults());
+}
+
 bool canBroadcastStructuredForCapture(mlir::Value value) {
   if (mlir::isa<mlir::BlockArgument>(value))
     return true;
@@ -1137,6 +1206,166 @@ bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
   }
   locals[result] = tokenFromPrimitiveValue(*valueOrErr);
   return recordEvent(state, primitiveOperationName(op));
+}
+
+bool assignLocalDataflowConstant(dataflow::ConstantOp op,
+                                 SimulatorState &state,
+                                 LocalValueMap &locals,
+                                 unsigned captureIndex) {
+  if (!lookupToken(op.getCtrl(), state, locals, captureIndex))
+    return false;
+  auto attr = mlir::dyn_cast<mlir::TypedAttr>(op.getConstValue());
+  if (!attr) {
+    state.diagnostics.push_back("dataflow.constant has untyped const_value");
+    return false;
+  }
+  auto tokenOrErr = tokenFromTypedAttr(attr);
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  locals[op.getValue()] = *tokenOrErr;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalCast(mlir::UnrealizedConversionCastOp cast,
+                     SimulatorState &state, LocalValueMap &locals,
+                     unsigned captureIndex) {
+  if (!isSupportedStructuredCast(cast))
+    return false;
+  std::optional<Token> token =
+      lookupToken(cast.getOperand(0), state, locals, captureIndex);
+  if (!token)
+    return false;
+  if (auto memrefType =
+          mlir::dyn_cast<mlir::MemRefType>(cast.getResult(0).getType())) {
+    auto tokenOrErr =
+        ensurePointerMemory(state, *token, memrefType.getElementType());
+    if (!tokenOrErr) {
+      state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+      return false;
+    }
+    locals[cast.getResult(0)] = *tokenOrErr;
+    return true;
+  }
+  locals[cast.getResult(0)] = *token;
+  return true;
+}
+
+bool assignLocalGEP(mlir::LLVM::GEPOp op, SimulatorState &state,
+                    LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<Token> base =
+      lookupToken(op.getBase(), state, locals, captureIndex);
+  if (!base)
+    return false;
+  if (base->kind != TokenKind::Pointer) {
+    state.diagnostics.push_back("llvm.getelementptr base is not a pointer");
+    return false;
+  }
+  llvm::SmallVector<Token> dynamicTokens;
+  for (unsigned i = 1, e = op->getNumOperands(); i < e; ++i) {
+    std::optional<Token> token =
+        lookupToken(op->getOperand(i), state, locals, captureIndex);
+    if (!token)
+      return false;
+    dynamicTokens.push_back(*token);
+  }
+  auto offsetOrErr = gepByteOffset(op, dynamicTokens);
+  if (!offsetOrErr) {
+    state.diagnostics.push_back(llvm::toString(offsetOrErr.takeError()));
+    return false;
+  }
+  Token result = *base;
+  result.pointer.byteOffset += *offsetOrErr;
+  locals[op.getResult()] = result;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+std::optional<MemoryView> lookupLocalMemoryView(mlir::Value mem,
+                                                SimulatorState &state,
+                                                LocalValueMap &locals,
+                                                unsigned captureIndex) {
+  if (std::optional<Token> token =
+          lookupToken(mem, state, locals, captureIndex)) {
+    if (token->kind != TokenKind::Pointer || !token->pointer.memory) {
+      state.diagnostics.push_back(
+          "dataflow memory operand is not a memory view");
+      return std::nullopt;
+    }
+    return token->pointer;
+  }
+  auto memIt = state.memories.find(mem);
+  if (memIt != state.memories.end())
+    return MemoryView{memIt->second, mem, 0};
+  return std::nullopt;
+}
+
+bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
+                             LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<MemoryView> view =
+      lookupLocalMemoryView(op.getMem(), state, locals, captureIndex);
+  std::optional<Token> addr =
+      lookupToken(op.getAddr(), state, locals, captureIndex);
+  std::optional<Token> ctrl =
+      lookupToken(op.getCtrl(), state, locals, captureIndex);
+  if (!view || !addr || !ctrl)
+    return false;
+  std::optional<std::size_t> index =
+      resolveElementIndex(*view, *addr, state, "dataflow.load");
+  if (!index)
+    return false;
+  locals[op.getData()] = view->memory->elements[*index];
+  locals[op.getDone()] = noneToken();
+  ++state.loadFireCounts[op.getOperation()];
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalDataflowStore(dataflow::StoreOp op, SimulatorState &state,
+                              LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<MemoryView> view =
+      lookupLocalMemoryView(op.getMem(), state, locals, captureIndex);
+  std::optional<Token> addr =
+      lookupToken(op.getAddr(), state, locals, captureIndex);
+  std::optional<Token> data =
+      lookupToken(op.getData(), state, locals, captureIndex);
+  std::optional<Token> ctrl =
+      lookupToken(op.getCtrl(), state, locals, captureIndex);
+  if (!view || !addr || !data || !ctrl)
+    return false;
+  std::optional<std::size_t> index =
+      resolveElementIndex(*view, *addr, state, "dataflow.store");
+  if (!index)
+    return false;
+  view->memory->elements[*index] = *data;
+  locals[op.getDone()] = noneToken();
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalGate(dataflow::GateOp op, SimulatorState &state,
+                     LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<Token> cond =
+      lookupToken(op.getBeforeCond(), state, locals, captureIndex);
+  std::optional<Token> value =
+      lookupToken(op.getBeforeValue(), state, locals, captureIndex);
+  if (!cond || !value)
+    return false;
+  const bool isContinue = state.gateContinueStates.contains(op.getOperation());
+  const bool open = boolToken(*cond);
+  if (!isContinue) {
+    if (open) {
+      locals[op.getAfterValue()] = *value;
+      state.gateContinueStates.insert(op.getOperation());
+    }
+    return recordEvent(state, op->getName().getStringRef());
+  }
+  if (open) {
+    locals[op.getAfterCond()] = boolValueToken(true);
+    locals[op.getAfterValue()] = *value;
+  } else {
+    locals[op.getAfterCond()] = boolValueToken(false);
+    state.gateContinueStates.erase(op.getOperation());
+  }
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
@@ -1219,19 +1448,18 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     locals[constant.getResult()] = *tokenOrErr;
     return recordEvent(state, constant->getName().getStringRef());
   }
-  if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
-    if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
-      return false;
-    if (hasMemRefValue(cast->getOperands()) ||
-        hasMemRefValue(cast->getResults()))
-      return false;
-    std::optional<Token> token =
-        lookupToken(cast.getOperand(0), state, locals, captureIndex);
-    if (!token)
-      return false;
-    locals[cast.getResult(0)] = *token;
-    return true;
-  }
+  if (auto constant = mlir::dyn_cast<dataflow::ConstantOp>(op))
+    return assignLocalDataflowConstant(constant, state, locals, captureIndex);
+  if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(op))
+    return assignLocalCast(cast, state, locals, captureIndex);
+  if (auto gep = mlir::dyn_cast<mlir::LLVM::GEPOp>(op))
+    return assignLocalGEP(gep, state, locals, captureIndex);
+  if (auto load = mlir::dyn_cast<dataflow::LoadOp>(op))
+    return assignLocalDataflowLoad(load, state, locals, captureIndex);
+  if (auto store = mlir::dyn_cast<dataflow::StoreOp>(op))
+    return assignLocalDataflowStore(store, state, locals, captureIndex);
+  if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
+    return assignLocalGate(gate, state, locals, captureIndex);
   if (op->getNumResults() == 1 &&
       isSupportedPrimitiveOperation(primitiveOperationName(op)))
     return assignLocalPrimitiveResult(op, op->getResult(0), state, locals,
@@ -1260,12 +1488,13 @@ unsupportedStructuredIfRegion(mlir::scf::IfOp parent, mlir::Block *block) {
       continue;
     }
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
-      if (cast->getNumOperands() == 1 && cast->getNumResults() == 1 &&
-          !hasMemRefValue(cast->getOperands()) &&
-          !hasMemRefValue(cast->getResults()))
+      if (isSupportedStructuredCast(cast))
         continue;
       return cast->getName().getStringRef().str();
     }
+    if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
+                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+      continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
       continue;
@@ -1303,12 +1532,13 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
       continue;
     }
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
-      if (cast->getNumOperands() == 1 && cast->getNumResults() == 1 &&
-          !hasMemRefValue(cast->getOperands()) &&
-          !hasMemRefValue(cast->getResults()))
+      if (isSupportedStructuredCast(cast))
         continue;
       return cast->getName().getStringRef().str();
     }
+    if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
+                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+      continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
       continue;
@@ -1339,6 +1569,7 @@ bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
   probeLocals[op.getCondition()] = cond;
   llvm::SmallVector<Token> probeYielded;
   SimulatorState probeState = state;
+  (void)isolateProbeStateMemory(probeState);
   if (!evaluateStructuredIf(op, probeState, probeLocals, captureIndex,
                             probeYielded))
     return false;
@@ -1434,7 +1665,10 @@ bool fireStructuredFor(mlir::scf::ForOp op, SimulatorState &state) {
 
   llvm::SmallVector<Token> probeResults;
   SimulatorState probeState = state;
-  if (!executeStructuredFor(op, probeState, operands, captureIndex,
+  MemoryCloneMap probeClones = isolateProbeStateMemory(probeState);
+  llvm::SmallVector<Token> probeOperands(operands.begin(), operands.end());
+  retargetTokenVector(probeOperands, probeClones);
+  if (!executeStructuredFor(op, probeState, probeOperands, captureIndex,
                             probeResults))
     return false;
 
