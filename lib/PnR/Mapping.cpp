@@ -1439,6 +1439,78 @@ unsigned compatibleResourceCount(const SoftwareNode &node,
   return count;
 }
 
+struct ResourcePressureKey {
+  ResourceKind kind;
+  std::string operation;
+
+  bool operator<(const ResourcePressureKey &other) const {
+    return std::tie(kind, operation) < std::tie(other.kind, other.operation);
+  }
+};
+
+std::string
+resourcePressureDiagnostic(const ResourcePressureRecord &record) {
+  return (llvm::Twine("resource pressure: resource_kind=") +
+          record.resourceKind + " operation=" + record.operation +
+          " required=" + llvm::Twine(record.required) +
+          " available=" + llvm::Twine(record.available) +
+          " placed=" + llvm::Twine(record.placed) +
+          " missing=" + llvm::Twine(record.missing))
+      .str();
+}
+
+void appendResourcePressureRecords(
+    MappingSummary &summary, llvm::ArrayRef<SoftwareNode> nodes,
+    llvm::ArrayRef<HardwareResource> resources) {
+  std::map<ResourcePressureKey, std::uint64_t> requiredByKey;
+  std::map<ResourcePressureKey, std::uint64_t> placedByKey;
+  std::map<ResourcePressureKey, std::set<std::string>> availableByKey;
+  llvm::StringMap<const SoftwareNode *> nodeById;
+
+  for (const SoftwareNode &node : nodes) {
+    ResourcePressureKey key{node.resourceKind, node.operation};
+    ++requiredByKey[key];
+    nodeById.try_emplace(node.id, &node);
+    for (const HardwareResource &resource : resources)
+      if (resourceIsCompatible(node, resource))
+        availableByKey[key].insert(resource.id);
+  }
+  for (const PlacementRecord &placement : summary.placements) {
+    auto nodeIt = nodeById.find(placement.softwareId);
+    if (nodeIt == nodeById.end())
+      continue;
+    ResourcePressureKey key{nodeIt->second->resourceKind,
+                            nodeIt->second->operation};
+    ++placedByKey[key];
+  }
+
+  for (const auto &[key, required] : requiredByKey) {
+    std::uint64_t placed = placedByKey[key];
+    if (placed >= required)
+      continue;
+    std::uint64_t available = availableByKey[key].size();
+    summary.resourcePressure.push_back(ResourcePressureRecord{
+        resourceKindName(key.kind).str(), key.operation, required, available,
+        placed, required - placed});
+  }
+}
+
+void appendResourcePressureDiagnostic(MappingSummary &summary) {
+  if (summary.resourcePressure.empty())
+    return;
+  std::string details;
+  for (const ResourcePressureRecord &record : summary.resourcePressure) {
+    if (!details.empty())
+      details += "; ";
+    details += resourcePressureDiagnostic(record);
+  }
+  if (summary.diagnostic.empty()) {
+    summary.diagnostic = details;
+    return;
+  }
+  summary.diagnostic += " (" + details + ")";
+}
+
 void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
                                   llvm::ArrayRef<HardwareResource> resources) {
   std::stable_sort(nodes.begin(), nodes.end(),
@@ -2014,6 +2086,17 @@ llvm::json::Object configJson(const ConfigEntry &entry) {
   };
 }
 
+llvm::json::Object resourcePressureJson(const ResourcePressureRecord &record) {
+  return llvm::json::Object{
+      {"resource_kind", record.resourceKind},
+      {"operation", record.operation},
+      {"required", static_cast<int64_t>(record.required)},
+      {"available", static_cast<int64_t>(record.available)},
+      {"placed", static_cast<int64_t>(record.placed)},
+      {"missing", static_cast<int64_t>(record.missing)},
+  };
+}
+
 } // namespace
 
 llvm::Expected<MappingSummary>
@@ -2087,6 +2170,9 @@ loom::pnr::createMapping(const MappingOptions &options) {
           node.id, node.operation, resourceKindName(node.resourceKind).str(),
           resource->id, resource->schedule});
     }
+    appendResourcePressureRecords(summary, *nodesOrErr,
+                                  hardwareModelOrErr->resources);
+    appendResourcePressureDiagnostic(summary);
   }
 
   llvm::StringMap<const SoftwareNode *> nodeById;
@@ -2172,6 +2258,10 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
   for (const ConfigEntry &entry : summary.configEntries)
     configEntries.push_back(configJson(entry));
 
+  llvm::json::Array resourcePressure;
+  for (const ResourcePressureRecord &record : summary.resourcePressure)
+    resourcePressure.push_back(resourcePressureJson(record));
+
   llvm::json::Object root{
       {"schema_version", 1},
       {"kind", "pnr_mapping"},
@@ -2194,6 +2284,9 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
       {"unrouted_edge_details", std::move(unroutedEdgeDetails)},
       {"config_bitstream", std::move(configEntries)},
   };
+  if (!summary.resourcePressure.empty())
+    root.try_emplace("resource_pressure", std::move(resourcePressure));
+
   if (!summary.diagnostic.empty()) {
     llvm::json::Array diagnostics;
     diagnostics.push_back(summary.diagnostic);

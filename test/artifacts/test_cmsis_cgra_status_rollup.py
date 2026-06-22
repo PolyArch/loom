@@ -854,6 +854,43 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
         )
 
 
+def assert_resource_pressure_record(
+    mapping: dict[str, object],
+    *,
+    resource_kind: str,
+    operation: str,
+    required: int,
+    available: int,
+    placed: int,
+    missing: int,
+    label: str,
+) -> None:
+    records = mapping.get("resource_pressure")
+    if not isinstance(records, list):
+        raise AssertionError(f"{label} should expose resource_pressure records: {mapping}")
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if (
+            record.get("resource_kind") != resource_kind
+            or record.get("operation") != operation
+        ):
+            continue
+        expected = {
+            "required": required,
+            "available": available,
+            "placed": placed,
+            "missing": missing,
+        }
+        for key, value in expected.items():
+            if record.get(key) != value:
+                raise AssertionError(
+                    f"{label} resource_pressure {key}={record.get(key)!r}, expected {value!r}: {mapping}"
+                )
+        return
+    raise AssertionError(f"{label} missing resource_pressure for {resource_kind}/{operation}: {mapping}")
+
+
 def assert_cmsis_cfft_component_evidence(
     repo: Path,
     rows: list[dict[str, str]],
@@ -959,6 +996,11 @@ def assert_cmsis_cfft_component_evidence(
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 red1 DFG evidence: {red1_dfg}")
     red1_mapping = json.loads((sim_evidence / "arm_cfft_f32.red1.mapping.json").read_text())
+    red1_mapping_diagnostics = red1_mapping.get("diagnostics")
+    red1_pressure_snippets = (
+        "resource pressure: resource_kind=fabric.mem.load operation=llvm.load required=15 available=6 placed=1 missing=14",
+        "resource pressure: resource_kind=fabric.mem.store operation=llvm.store required=12 available=2 placed=0 missing=12",
+    )
     if (
         red1_mapping.get("status") != "fail"
         or red1_mapping.get("hardware") != "shared_reduction_adg"
@@ -966,10 +1008,37 @@ def assert_cmsis_cfft_component_evidence(
         or red1_mapping.get("unplaced_records") != 63
         or red1_mapping.get("routed_edges") != 8
         or red1_mapping.get("unrouted_edges") != 9
-        or red1_mapping.get("diagnostics") != ["missing hardware resource for software op llvm.load"]
+        or not isinstance(red1_mapping_diagnostics, list)
+        or not red1_mapping_diagnostics
+        or not str(red1_mapping_diagnostics[0]).startswith("missing hardware resource for software op llvm.load")
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 red1 mapping blocker evidence: {red1_mapping}")
+    red1_mapping_diagnostic = str(red1_mapping_diagnostics[0])
+    for snippet in red1_pressure_snippets:
+        if snippet not in red1_mapping_diagnostic:
+            raise AssertionError(f"arm_cfft_f32 red1 mapping diagnostic missed {snippet}: {red1_mapping}")
+    assert_resource_pressure_record(
+        red1_mapping,
+        resource_kind="fabric.mem.load",
+        operation="llvm.load",
+        required=15,
+        available=6,
+        placed=1,
+        missing=14,
+        label="arm_cfft_f32 red1",
+    )
+    assert_resource_pressure_record(
+        red1_mapping,
+        resource_kind="fabric.mem.store",
+        operation="llvm.store",
+        required=12,
+        available=2,
+        placed=0,
+        missing=12,
+        label="arm_cfft_f32 red1",
+    )
     red1_cgra = json.loads((sim_evidence / "arm_cfft_f32.red1.cgra.report.json").read_text())
+    red1_cgra_diagnostics = red1_cgra.get("diagnostics")
     if (
         red1_cgra.get("status") != "blocked"
         or red1_cgra.get("dfg_cycles") != 477
@@ -977,11 +1046,17 @@ def assert_cmsis_cfft_component_evidence(
         or red1_cgra.get("final_outputs") != ["none"]
         or red1_cgra.get("final_memory_state") != red1_memory
         or red1_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
-        or red1_cgra.get("diagnostics") != [
+        or not isinstance(red1_cgra_diagnostics, list)
+        or not red1_cgra_diagnostics
+        or not str(red1_cgra_diagnostics[0]).startswith(
             "mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op llvm.load"
-        ]
+        )
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 red1 CGRA blocker evidence: {red1_cgra}")
+    red1_cgra_diagnostic = str(red1_cgra_diagnostics[0])
+    for snippet in red1_pressure_snippets:
+        if snippet not in red1_cgra_diagnostic:
+            raise AssertionError(f"arm_cfft_f32 red1 CGRA diagnostic missed {snippet}: {red1_cgra}")
 
     red3_memory = {"arg5": ["f32:0.500000", "f32:-1", "f32:1.500000", "f32:-2", "f32:5", "f32:6", "f32:7", "f32:8"]}
     red3_dfg = json.loads((sim_evidence / "arm_cfft_f32.red3.dfg.report.json").read_text())

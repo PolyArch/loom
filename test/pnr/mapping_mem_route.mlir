@@ -36,7 +36,7 @@
 // TWOLOAD-CSV-NEXT: mem_two_loads_one_port,mem_route_adg,mem_two_loads_one_port__mem_two_loads_one_port__mem_route_adg,2,1,0,1,fail,missing hardware resource for software op dataflow.load
 
 // TWOLOAD-JSON-DAG: "status": "fail"
-// TWOLOAD-JSON-DAG: "missing hardware resource for software op dataflow.load"
+// TWOLOAD-JSON-DAG: missing hardware resource for software op dataflow.load
 // TWOLOAD-JSON-DAG: "operation": "dataflow.load"
 // TWOLOAD-JSON-DAG: "resource_kind": "fabric.mem.load"
 // TWOLOAD-JSON-DAG: "unplaced_records": 1
@@ -135,7 +135,7 @@
 // CTRLMUX-CSV-NEXT: control_mux_type_guard,data_mux_only_adg,control_mux_type_guard__control_mux_needs_control_resource__data_mux_only_adg,0,0,0,1,fail,missing hardware resource for software op dataflow.mux
 
 // CTRLMUX-JSON-DAG: "status": "fail"
-// CTRLMUX-JSON-DAG: "missing hardware resource for software op dataflow.mux"
+// CTRLMUX-JSON-DAG: missing hardware resource for software op dataflow.mux
 // CTRLMUX-JSON-DAG: "unplaced_records": 1
 // CTRLMUX-JSON-DAG: "placements": []
 // CTRLMUX-JSON-NOT: "hardware": "data_mux_only_adg::fabric.op#0"

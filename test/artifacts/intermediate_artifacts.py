@@ -6407,6 +6407,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         unrouted_edges = data.get("unrouted_edges")
         unplaced_records = data.get("unplaced_records")
         config_records = data.get("config_records")
+        resource_pressure = data.get("resource_pressure")
         if not isinstance(placements, list):
             diagnostics.append("PnR mapping artifact placements must be a list")
         if not isinstance(routes, list):
@@ -6443,6 +6444,63 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("PnR mapping artifact pass status cannot have unrouted_edges")
         if data.get("status") == "pass" and isinstance(unrouted_edge_details, list) and unrouted_edge_details:
             diagnostics.append("PnR mapping artifact pass status cannot have unrouted_edge_details")
+        resource_pressure_records = []
+        if resource_pressure is not None:
+            if not isinstance(resource_pressure, list):
+                diagnostics.append("PnR mapping artifact resource_pressure must be a list")
+            else:
+                resource_pressure_records = resource_pressure
+        if data.get("status") == "pass" and resource_pressure_records:
+            diagnostics.append("PnR mapping artifact pass status cannot have resource_pressure")
+        if (
+            data.get("status") != "pass"
+            and not is_workload_graph_set_aggregate(data)
+            and isinstance(unplaced_records, int)
+            and unplaced_records > 0
+            and (not isinstance(resource_pressure, list) or not resource_pressure)
+        ):
+            diagnostics.append("PnR mapping artifact unplaced_records require resource_pressure")
+        for index, record in enumerate(resource_pressure_records, start=1):
+            if not isinstance(record, dict):
+                diagnostics.append(f"PnR mapping artifact resource_pressure {index} must be an object")
+                continue
+            for key in ("resource_kind", "operation"):
+                if not isinstance(record.get(key), str) or not record.get(key):
+                    diagnostics.append(f"PnR mapping artifact resource_pressure {index} lacks {key}")
+            numeric_values: dict[str, int] = {}
+            for key in ("required", "available", "placed", "missing"):
+                value = record.get(key)
+                if not isinstance(value, int) or value < 0:
+                    diagnostics.append(
+                        f"PnR mapping artifact resource_pressure {index} {key} must be non-negative integer"
+                    )
+                else:
+                    numeric_values[key] = value
+            if len(numeric_values) == 4:
+                required = numeric_values["required"]
+                available = numeric_values["available"]
+                placed = numeric_values["placed"]
+                missing = numeric_values["missing"]
+                if required == 0:
+                    diagnostics.append(
+                        f"PnR mapping artifact resource_pressure {index} required must be positive"
+                    )
+                if placed > required:
+                    diagnostics.append(
+                        f"PnR mapping artifact resource_pressure {index} placed cannot exceed required"
+                    )
+                if available < placed:
+                    diagnostics.append(
+                        f"PnR mapping artifact resource_pressure {index} available cannot be less than placed"
+                    )
+                if missing != required - placed:
+                    diagnostics.append(
+                        f"PnR mapping artifact resource_pressure {index} missing must equal required - placed"
+                    )
+                if missing == 0:
+                    diagnostics.append(
+                        f"PnR mapping artifact resource_pressure {index} missing must be positive"
+                    )
         if isinstance(routes, list):
             for index, route in enumerate(routes, start=1):
                 if not isinstance(route, dict):

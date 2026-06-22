@@ -66,6 +66,15 @@ struct ConfigEntry {
   std::string source;
 };
 
+struct ResourcePressureRecord {
+  std::string resourceKind;
+  std::string operation;
+  std::uint64_t required = 0;
+  std::uint64_t available = 0;
+  std::uint64_t placed = 0;
+  std::uint64_t missing = 0;
+};
+
 struct MappingSummary {
   std::string workload;
   std::string hardware;
@@ -81,6 +90,7 @@ struct MappingSummary {
   llvm::SmallVector<RouteRecord, 0> routes;
   llvm::SmallVector<UnroutedEdgeRecord, 0> unroutedEdgeDetails;
   llvm::SmallVector<ConfigEntry> configEntries;
+  llvm::SmallVector<ResourcePressureRecord, 0> resourcePressure;
   std::uint64_t unplacedRecords = 0;
   std::uint64_t unroutedEdges = 0;
 };

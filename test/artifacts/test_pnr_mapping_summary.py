@@ -455,6 +455,53 @@ def main() -> int:
             "unrouted_edge_details",
         )
 
+        malformed_pressure = out_dir / "malformed-resource-pressure-pnr-mapping.json"
+        malformed_pressure_data = copy.deepcopy(data)
+        malformed_pressure_data["status"] = "fail"
+        malformed_pressure_data["unplaced_records"] = 1
+        malformed_pressure_data["diagnostics"] = ["synthetic resource pressure"]
+        malformed_pressure_data["resource_pressure"] = [
+            {
+                "resource_kind": "fabric.op",
+                "operation": "arith.addi",
+                "required": 2,
+                "available": 1,
+                "placed": 1,
+                "missing": 0,
+            }
+        ]
+        malformed_pressure.write_text(
+            json.dumps(malformed_pressure_data, indent=2, sort_keys=True) + "\n"
+        )
+        expect_audit_failure(
+            repo,
+            malformed_pressure,
+            out_dir / "malformed-resource-pressure-audit.json",
+            "resource_pressure 1 missing must equal required - placed",
+        )
+
+        pass_with_pressure = out_dir / "pass-with-resource-pressure-pnr-mapping.json"
+        pass_with_pressure_data = copy.deepcopy(data)
+        pass_with_pressure_data["resource_pressure"] = [
+            {
+                "resource_kind": "fabric.op",
+                "operation": "arith.addi",
+                "required": 1,
+                "available": 1,
+                "placed": 0,
+                "missing": 1,
+            }
+        ]
+        pass_with_pressure.write_text(
+            json.dumps(pass_with_pressure_data, indent=2, sort_keys=True) + "\n"
+        )
+        expect_audit_failure(
+            repo,
+            pass_with_pressure,
+            out_dir / "pass-with-resource-pressure-audit.json",
+            "pass status cannot have resource_pressure",
+        )
+
         aggregate = load_aggregate_module(repo)
         failed_zero_count_component = copy.deepcopy(data)
         failed_zero_count_component["status"] = "fail"
