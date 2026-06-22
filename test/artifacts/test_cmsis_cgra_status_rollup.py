@@ -392,23 +392,23 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "autocorrelation": "unsupported op: scf.for",
+    "autocorrelation": "unsupported op: scf.if",
     "binary_search": "primary workload graph absent: expected token binary_search_candidate",
     "clz": "primary workload graph absent: expected token clz_candidate",
-    "crc32": "unsupported op: scf.for",
+    "crc32": "unsupported op: builtin.unrealized_conversion_cast",
     "ctz": "primary workload graph absent: expected token ctz_candidate",
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
     "gather": "primary workload graph absent: expected token gather",
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
-    "merge": "unsupported op: scf.for",
+    "merge": "unsupported op: scf.if",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "outer": "primary workload graph absent: expected token outer_kernel",
-    "pack_bits": "unsupported op: scf.for",
+    "pack_bits": "unsupported op: scf.if",
     "parity": "primary workload graph absent: expected token parity",
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
     "transpose": "primary workload graph absent: expected token transpose",
-    "unpack_bits": "unsupported op: scf.for",
+    "unpack_bits": "unsupported op: builtin.unrealized_conversion_cast",
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
@@ -628,7 +628,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "MatrixFunctions/arm_mat_mult_f32.c",
         "arm_mat_mult_f32",
         "g_t_arm_mat_mult_f32_red_0_0",
-        "unsupported op: scf.for",
+        "unsupported op: llvm.getelementptr",
     )
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
@@ -1045,7 +1045,8 @@ def assert_cmsis_fir_component_blocker_evidence(
         or row["comparison_status"] != "not_run"
         or row["required_slice_count"] != "2"
         or row["hardware_system"] != "shared_reduction_adg"
-        or "arm_fir_f32.red0.dfg.report.json (unsupported): unsupported op: scf.for" not in row["diagnostic"]
+        or "arm_fir_f32.red0.dfg.report.json (unsupported): unsupported op: llvm.getelementptr"
+        not in row["diagnostic"]
     ):
         raise AssertionError(f"arm_fir_f32 should expose red1 evidence and the red0 blocker: {row}")
     expected_row_artifacts = {
@@ -1087,7 +1088,7 @@ def assert_cmsis_fir_component_blocker_evidence(
         red0_dfg.get("workload") != "FilteringFunctions/arm_fir_f32.c"
         or red0_dfg.get("graph") != "g_t_arm_fir_f32_red_0_0"
         or red0_dfg.get("status") != "unsupported"
-        or red0_dfg.get("diagnostics") != ["unsupported op: scf.for"]
+        or red0_dfg.get("diagnostics") != ["unsupported op: llvm.getelementptr"]
     ):
         raise AssertionError(f"unexpected arm_fir_f32 red0 DFG blocker evidence: {red0_dfg}")
 
@@ -2169,7 +2170,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "FullyConnectedFunctions/arm_vector_sum_s8.c",
         dfg_status="unsupported",
         diagnostic_class="dfg_report_unsupported",
-        diagnostic_substring="unsupported op: scf.for",
+        diagnostic_substring="unsupported op: scf.if",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")

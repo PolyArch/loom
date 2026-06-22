@@ -1437,13 +1437,19 @@ def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges:
         raise AssertionError(f"{case} should expose exact unrouted edges {expected_edges}: {path}: {data}")
 
 
-def assert_unsupported_operation(evidence_dir: Path, case: str, operation: str) -> None:
+def assert_unsupported_operation(
+    evidence_dir: Path,
+    case: str,
+    dfg_operation: str,
+    mapping_operation: str | None = None,
+) -> None:
     dfg_path = evidence_dir / f"{case}.dfg.report.json"
     mapping_path = evidence_dir / f"{case}.mapping.json"
     dfg = json.loads(dfg_path.read_text())
     mapping = json.loads(mapping_path.read_text())
-    expected_dfg = f"unsupported op: {operation}"
-    expected_mapping = f"unsupported PnR graph operation: {operation}"
+    expected_dfg = f"unsupported op: {dfg_operation}"
+    mapping_operation = mapping_operation or dfg_operation
+    expected_mapping = f"unsupported PnR graph operation: {mapping_operation}"
     if expected_dfg not in dfg.get("diagnostics", []):
         raise AssertionError(f"{case} DFG unsupported diagnostic should be {expected_dfg}: {dfg_path}: {dfg}")
     if expected_mapping not in mapping.get("diagnostics", []):
@@ -1856,10 +1862,17 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "blocked")
         for case in (
             "autocorrelation",
-            "crc32",
+            "pack_bits",
             "merge",
         ):
-            assert_unsupported_operation(evidence_dir, case, "scf.for")
+            assert_unsupported_operation(evidence_dir, case, "scf.if", "scf.for")
+        for case in (
+            "crc32",
+            "unpack_bits",
+        ):
+            assert_unsupported_operation(
+                evidence_dir, case, "builtin.unrealized_conversion_cast", "scf.for"
+            )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")

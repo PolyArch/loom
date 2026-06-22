@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -112,6 +113,8 @@ struct SimulatorState {
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
   std::uint64_t eventCount = 0;
+  std::uint64_t structuredLoopIterations = 0;
+  std::uint64_t maxStructuredLoopIterations = 0;
 };
 
 std::string typePrefix(mlir::Type type) {
@@ -410,25 +413,23 @@ std::uint64_t estimateDynamicPipelineCycles(
   return cycles;
 }
 
-std::uint64_t dynamicWorkItems(const SimulatorState &state) {
+std::uint64_t nonStructuredDynamicWorkItems(const SimulatorState &state) {
   std::uint64_t maxStreamItems = 0;
   for (const auto &entry : state.streamStates)
     maxStreamItems = std::max(maxStreamItems, entry.second.trueEmissions);
   std::uint64_t maxSeededItems = 0;
   for (const auto &entry : state.seededTokenCounts)
     maxSeededItems = std::max(maxSeededItems, entry.second);
-  const std::uint64_t workItems = std::max(maxStreamItems, maxSeededItems);
+  return std::max(maxStreamItems, maxSeededItems);
+}
+
+std::uint64_t dynamicWorkItems(const SimulatorState &state) {
+  const std::uint64_t workItems = std::max(nonStructuredDynamicWorkItems(state),
+                                           state.structuredLoopIterations);
   if (workItems == 0 && state.eventCount > 0)
     return 1;
   return workItems;
 }
-
-bool requiresCompleteDynamicReturn(mlir::Value value) {
-  if (!mlir::isa<mlir::NoneType>(value.getType()))
-    return true;
-  return value.getDefiningOp<dataflow::StoreOp>() != nullptr;
-}
-
 void flushPendingTokens(SimulatorState &state) {
   for (auto &entry : state.pendingChannels) {
     auto &target = state.channels[entry.first];
@@ -1049,7 +1050,6 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
   state.oneShotOps.insert(op.getOperation());
   return recordEvent(state, op->getName().getStringRef());
 }
-
 bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
   if (op->getNumResults() != 1)
     return false;
@@ -1057,11 +1057,244 @@ bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
     return false;
   return firePrimitiveOperation(op, op->getResult(0), state);
 }
-
+using LocalValueMap = llvm::DenseMap<mlir::Value, Token>;
+unsigned observedTokenCount(mlir::Value value, const SimulatorState &state) {
+  unsigned count = 0;
+  auto observedIt = state.observedOutputs.find(value);
+  if (observedIt != state.observedOutputs.end())
+    count += observedIt->second.size();
+  auto pendingIt = state.pendingObservedOutputs.find(value);
+  if (pendingIt != state.pendingObservedOutputs.end())
+    count += pendingIt->second.size();
+  return count;
+}
+bool hasMemRefValue(mlir::ValueRange values) {
+  return llvm::any_of(values, [](mlir::Value value) {
+    return mlir::isa<mlir::MemRefType>(value.getType());
+  });
+}
+bool canBroadcastStructuredForCapture(mlir::Value value) {
+  if (mlir::isa<mlir::BlockArgument>(value))
+    return true;
+  return mlir::isa_and_nonnull<mlir::arith::ConstantOp, dataflow::ConstantOp>(
+      value.getDefiningOp());
+}
+std::optional<Token> lookupToken(mlir::Value value, SimulatorState &state,
+                                 const LocalValueMap &locals,
+                                 unsigned captureIndex = 0) {
+  auto localIt = locals.find(value);
+  if (localIt != locals.end())
+    return localIt->second;
+  const unsigned count = observedTokenCount(value, state);
+  if (count == 0)
+    return std::nullopt;
+  if (count == 1 &&
+      (captureIndex == 0 || canBroadcastStructuredForCapture(value)))
+    captureIndex = 0;
+  auto pendingIt = state.pendingObservedOutputs.find(value);
+  auto observedIt = state.observedOutputs.find(value);
+  const unsigned observedCount =
+      observedIt == state.observedOutputs.end() ? 0 : observedIt->second.size();
+  if (captureIndex >= count)
+    return std::nullopt;
+  if (captureIndex >= observedCount)
+    return pendingIt->second[captureIndex - observedCount];
+  return observedIt->second[captureIndex];
+}
+unsigned structuredForFireIndex(mlir::scf::ForOp op,
+                                const SimulatorState &state) {
+  if (op->getNumResults() == 0)
+    return 0;
+  auto observedIt = state.observedOutputs.find(op->getResult(0));
+  unsigned count =
+      observedIt == state.observedOutputs.end() ? 0 : observedIt->second.size();
+  auto pendingIt = state.pendingObservedOutputs.find(op->getResult(0));
+  if (pendingIt != state.pendingObservedOutputs.end())
+    count += pendingIt->second.size();
+  return count;
+}
+bool isDefinedInStructuredForBody(mlir::scf::ForOp op, mlir::Value value) {
+  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value))
+    return blockArg.getOwner() == op.getBody();
+  mlir::Operation *definingOp = value.getDefiningOp();
+  return definingOp && definingOp->getBlock() == op.getBody();
+}
+bool capturedStructuredForOperandsReady(mlir::scf::ForOp op,
+                                        const SimulatorState &state,
+                                        unsigned captureIndex) {
+  for (mlir::Operation &bodyOp : op.getBody()->getOperations()) {
+    for (mlir::Value operand : bodyOp.getOperands()) {
+      if (isDefinedInStructuredForBody(op, operand))
+        continue;
+      unsigned count = observedTokenCount(operand, state);
+      if (count == 0 ||
+          (count == 1 && captureIndex > 0 &&
+           !canBroadcastStructuredForCapture(operand)) ||
+          (count > 1 && captureIndex >= count))
+        return false;
+    }
+  }
+  return true;
+}
+bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
+                                SimulatorState &state, LocalValueMap &locals,
+                                unsigned captureIndex) {
+  llvm::SmallVector<PrimitiveValue> operands;
+  for (mlir::Value operand : op->getOperands()) {
+    std::optional<Token> token =
+        lookupToken(operand, state, locals, captureIndex);
+    if (!token)
+      return false;
+    operands.push_back(primitiveValueFromToken(*token));
+  }
+  std::string predicate = primitivePredicate(op);
+  auto valueOrErr = evaluatePrimitiveOperation(
+      primitiveDescriptor(op, predicate, result), operands);
+  if (!valueOrErr) {
+    state.diagnostics.push_back(llvm::toString(valueOrErr.takeError()));
+    return false;
+  }
+  locals[result] = tokenFromPrimitiveValue(*valueOrErr);
+  return recordEvent(state, primitiveOperationName(op));
+}
+bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
+                                LocalValueMap &locals, unsigned captureIndex) {
+  if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
+    auto attr = mlir::dyn_cast<mlir::TypedAttr>(constant.getValue());
+    if (!attr) {
+      state.diagnostics.push_back("arith.constant has untyped value");
+      return false;
+    }
+    auto tokenOrErr = tokenFromTypedAttr(attr);
+    if (!tokenOrErr) {
+      state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+      return false;
+    }
+    locals[constant.getResult()] = *tokenOrErr;
+    return recordEvent(state, constant->getName().getStringRef());
+  }
+  if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(op)) {
+    if (cast->getNumOperands() != 1 || cast->getNumResults() != 1)
+      return false;
+    if (hasMemRefValue(cast->getOperands()) ||
+        hasMemRefValue(cast->getResults()))
+      return false;
+    std::optional<Token> token =
+        lookupToken(cast.getOperand(0), state, locals, captureIndex);
+    if (!token)
+      return false;
+    locals[cast.getResult(0)] = *token;
+    return true;
+  }
+  if (op->getNumResults() == 1 &&
+      isSupportedPrimitiveOperation(primitiveOperationName(op)))
+    return assignLocalPrimitiveResult(op, op->getResult(0), state, locals,
+                                      captureIndex);
+  return false;
+}
+std::optional<std::string>
+unsupportedStructuredForOperation(mlir::scf::ForOp op) {
+  auto yield =
+      mlir::dyn_cast<mlir::scf::YieldOp>(op.getBody()->getTerminator());
+  if (!yield)
+    return "scf.for";
+  if (yield.getNumOperands() != op->getNumResults())
+    return "scf.yield";
+  for (mlir::Operation &bodyOp : op.getBody()->without_terminator()) {
+    if (mlir::isa<mlir::arith::ConstantOp>(bodyOp))
+      continue;
+    if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
+      if (cast->getNumOperands() == 1 && cast->getNumResults() == 1 &&
+          !hasMemRefValue(cast->getOperands()) &&
+          !hasMemRefValue(cast->getResults()))
+        continue;
+      return cast->getName().getStringRef().str();
+    }
+    if (bodyOp.getNumResults() == 1 &&
+        isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
+      continue;
+    return bodyOp.getName().getStringRef().str();
+  }
+  return std::nullopt;
+}
+bool fireStructuredFor(mlir::scf::ForOp op, SimulatorState &state) {
+  const unsigned operandCount = op->getNumOperands();
+  for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex) {
+    if (!hasToken(state.channels, op->getOpOperand(operandIndex)))
+      return false;
+  }
+  const unsigned captureIndex = structuredForFireIndex(op, state);
+  if (!capturedStructuredForOperandsReady(op, state, captureIndex))
+    return false;
+  llvm::SmallVector<Token> operands;
+  operands.reserve(operandCount);
+  for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
+    operands.push_back(
+        popToken(state.channels, op->getOpOperand(operandIndex)));
+  std::int64_t iv = integerToken(operands[0]);
+  const std::int64_t ub = integerToken(operands[1]);
+  const std::int64_t step = integerToken(operands[2]);
+  if (step == 0) {
+    state.diagnostics.push_back("scf.for step is zero");
+    return false;
+  }
+  llvm::SmallVector<Token> carried;
+  carried.append(operands.begin() + 3, operands.end());
+  if (carried.size() != op->getNumResults()) {
+    state.diagnostics.push_back("scf.for iter_args/result count mismatch");
+    return false;
+  }
+  auto keepRunning = [&]() { return step > 0 ? iv < ub : iv > ub; };
+  std::uint64_t iterations = 0;
+  while (keepRunning()) {
+    if (state.maxStructuredLoopIterations != 0 &&
+        iterations >= state.maxStructuredLoopIterations) {
+      state.diagnostics.push_back(
+          "maximum structured scf.for iterations reached");
+      return false;
+    }
+    LocalValueMap locals;
+    locals[op.getInductionVar()] = integerValueToken(iv);
+    for (auto [arg, token] : llvm::zip(op.getRegionIterArgs(), carried))
+      locals[arg] = token;
+    llvm::SmallVector<Token> yielded;
+    bool sawYield = false;
+    for (mlir::Operation &bodyOp : op.getBody()->getOperations()) {
+      if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(bodyOp)) {
+        for (mlir::Value value : yield.getResults()) {
+          std::optional<Token> token =
+              lookupToken(value, state, locals, captureIndex);
+          if (!token)
+            return false;
+          yielded.push_back(*token);
+        }
+        sawYield = true;
+        break;
+      }
+      if (!executeStructuredForBodyOp(&bodyOp, state, locals, captureIndex)) {
+        state.diagnostics.push_back(("structured scf.for failed to execute " +
+                                     bodyOp.getName().getStringRef())
+                                        .str());
+        return false;
+      }
+    }
+    if (!sawYield)
+      return false;
+    if (yielded.size() != carried.size())
+      return false;
+    carried = std::move(yielded);
+    iv += step;
+    ++iterations;
+  }
+  state.structuredLoopIterations =
+      std::max(state.structuredLoopIterations, iterations);
+  for (auto [result, token] : llvm::zip(op->getResults(), carried))
+    emitToken(state, result, token);
+  return true;
+}
 bool isSupportedNonEvent(mlir::Operation *op) {
   return mlir::isa<dataflow::GraphReturnOp>(op);
 }
-
 void collectStreamIndexSources(mlir::Value value,
                                llvm::DenseSet<mlir::Operation *> &sources,
                                llvm::DenseSet<mlir::Value> &seen,
@@ -1143,6 +1376,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireLLVMMemcpy(typedOp, state); })
       .Case<mlir::arith::ConstantOp>(
           [&](auto typedOp) { return fireArithConstant(typedOp, state); })
+      .Case<mlir::scf::ForOp>(
+          [&](auto typedOp) { return fireStructuredFor(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
         return fireGenericPrimitive(genericOp, state);
       });
@@ -1154,6 +1389,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (op->getNumResults() == 1 &&
       isSupportedPrimitiveOperation(primitiveOperationName(op)))
     return std::nullopt;
+  if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op))
+    return unsupportedStructuredForOperation(forOp);
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::MuxOp, dataflow::DemuxOp, dataflow::LoadOp,
@@ -1333,7 +1570,6 @@ void captureFinalMemoryState(mlir::Block &entry, SimulatorState &state,
 }
 
 } // namespace
-
 llvm::Expected<DFGSimulationReport>
 loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
                                  const DFGSimulationOptions &options) {
@@ -1365,6 +1601,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   llvm::StringMap<std::string> memories = std::move(*memoriesOrErr);
 
   SimulatorState state;
+  state.maxStructuredLoopIterations = options.maxEventSteps;
   llvm::SmallVector<mlir::Value> returnValues;
   observeReturnOperands(graph, returnValues);
 
@@ -1422,7 +1659,6 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       seedBlockArgument(state, arg, *tokenOrErr);
     }
   }
-
   broadcastRawPointerArguments(entry, state);
 
   if (llvm::Error err = propagateMemoryAliases(entry, state))
@@ -1459,6 +1695,9 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
 
   bool missingReturn = false;
   report.dynamicWorkItems = dynamicWorkItems(state);
+  std::uint64_t requiredReturnItems = nonStructuredDynamicWorkItems(state);
+  if (requiredReturnItems == 0 && state.eventCount > 0)
+    requiredReturnItems = 1;
   for (mlir::Value value : returnValues) {
     auto it = state.observedOutputs.find(value);
     if (it == state.observedOutputs.end() || it->second.empty()) {
@@ -1466,13 +1705,16 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       missingReturn = true;
       continue;
     }
-    if (report.dynamicWorkItems > 1 && requiresCompleteDynamicReturn(value) &&
-        it->second.size() < report.dynamicWorkItems) {
+    const bool requiresComplete =
+        !mlir::isa<mlir::NoneType>(value.getType()) ||
+        value.getDefiningOp<dataflow::StoreOp>() != nullptr;
+    if (requiredReturnItems > 1 && requiresComplete &&
+        it->second.size() < requiredReturnItems) {
       missingReturn = true;
       state.diagnostics.push_back(
           llvm::formatv("dataflow.graph.return value produced "
                         "{0} of {1} dynamic work items",
-                        it->second.size(), report.dynamicWorkItems)
+                        it->second.size(), requiredReturnItems)
               .str());
     }
     report.finalOutputs.push_back(
