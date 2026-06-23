@@ -22,6 +22,10 @@
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY < %t.pointer_memory.json
 // RUN: loom-dfg-sim %s --graph structured_for_carried_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=1 --arg 4=1 --arg 5=0 --output %t.carried_pointer_memory.json
 // RUN: FileCheck %s --check-prefix=CARRIED-POINTER-MEMORY < %t.carried_pointer_memory.json
+// RUN: loom-dfg-sim %s --graph structured_if_nested_for_pointer_memory --arg 0=none --arg 1=true --arg 2=0 --arg 3=3 --arg 4=1 --memref 5=1.000000e+00,2.000000e+00,3.000000e+00 --arg 6=0.000000e+00 --output %t.if_nested_for_memory.json
+// RUN: FileCheck %s --check-prefix=IF-NESTED-FOR-MEMORY < %t.if_nested_for_memory.json
+// RUN: loom-dfg-sim %s --graph structured_for_autocorr_slice --arg 0=none --arg 1=0 --arg 2=3 --arg 3=1 --arg 4=0 --arg 5=0.000000e+00 --arg 6=2 --memref 7=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00 --arg 8=3 --memref 9=0.000000e+00,0.000000e+00,0.000000e+00 --arg 10=0 --arg 11=0 --output %t.autocorr_slice.json
+// RUN: FileCheck %s --check-prefix=AUTOCORR-SLICE < %t.autocorr_slice.json
 
 // CHECK-DAG: "graph": "structured_for_sum"
 // CHECK-DAG: "status": "pass"
@@ -119,6 +123,31 @@
 // CARRIED-POINTER-MEMORY-DAG: "arg1": [
 // CARRIED-POINTER-MEMORY-DAG: "i32:2"
 // CARRIED-POINTER-MEMORY-NOT: "i32:3"
+
+// IF-NESTED-FOR-MEMORY-DAG: "graph": "structured_if_nested_for_pointer_memory"
+// IF-NESTED-FOR-MEMORY-DAG: "status": "pass"
+// IF-NESTED-FOR-MEMORY-DAG: "dynamic_work_items": 3
+// IF-NESTED-FOR-MEMORY-DAG: "scf.if": 1
+// IF-NESTED-FOR-MEMORY-DAG: "dataflow.load": 3
+// IF-NESTED-FOR-MEMORY-DAG: "final_outputs": [
+// IF-NESTED-FOR-MEMORY-DAG: "none"
+// IF-NESTED-FOR-MEMORY-DAG: "f32:6"
+
+// AUTOCORR-SLICE-DAG: "graph": "structured_for_autocorr_slice"
+// AUTOCORR-SLICE-DAG: "status": "pass"
+// AUTOCORR-SLICE-DAG: "dynamic_work_items": 3
+// AUTOCORR-SLICE-DAG: "scf.if": 3
+// AUTOCORR-SLICE-DAG: "llvm.intr.umax": 2
+// AUTOCORR-SLICE-DAG: "llvm.intr.fmuladd": 4
+// AUTOCORR-SLICE-DAG: "dataflow.load": 8
+// AUTOCORR-SLICE-DAG: "dataflow.store": 3
+// AUTOCORR-SLICE-DAG: "final_outputs": [
+// AUTOCORR-SLICE-DAG: "none"
+// AUTOCORR-SLICE-DAG: "i32:0"
+// AUTOCORR-SLICE-DAG: "arg9": [
+// AUTOCORR-SLICE-DAG: "f32:0"
+// AUTOCORR-SLICE-DAG: "f32:8"
+// AUTOCORR-SLICE-DAG: "f32:11"
 
 module {
   dataflow.graph.func private @structured_if_scalar(
@@ -284,5 +313,70 @@ module {
       scf.yield %next, %carried : i32, memref<?xi32>
     }
     dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @structured_if_nested_for_pointer_memory(
+      %ctrl: none, %cond: i1, %lb: i64, %ub: i64, %step: i64,
+      %mem: !llvm.ptr, %init: f32) -> (none, f32) {
+    %sum = scf.if %cond -> (f32) {
+      %inner = scf.for %i = %lb to %ub step %step iter_args(%acc = %init)
+          -> (f32) : i64 {
+        %view = builtin.unrealized_conversion_cast %mem
+            : !llvm.ptr to memref<?xf32>
+        %slot = arith.index_cast %i : i64 to index
+        %value, %load_done = dataflow.load %view[%slot] %ctrl
+            : memref<?xf32>
+        %next = arith.addf %acc, %value : f32
+        scf.yield %next : f32
+      }
+      scf.yield %inner : f32
+    } else {
+      scf.yield %init : f32
+    }
+    dataflow.graph.return %ctrl, %sum : none, f32
+  }
+
+  dataflow.graph.func private @structured_for_autocorr_slice(
+      %ctrl: none, %lb: i64, %ub: i64, %step: i64, %skip_lag: i64,
+      %zero: f32, %min_bound: i32, %input: !llvm.ptr, %mask: i64,
+      %output: !llvm.ptr, %dec: i32, %remaining_init: i32) -> (none, i32) {
+    %remaining = scf.for %lag = %lb to %ub step %step
+        iter_args(%remaining_arg = %remaining_init) -> (i32) : i64 {
+      %skip = arith.cmpi eq, %lag, %skip_lag : i64
+      %sum = scf.if %skip -> (f32) {
+        scf.yield %zero : f32
+      } else {
+        %inner_bound_i32 = llvm.intr.umax(%remaining_arg, %min_bound)
+            : (i32, i32) -> i32
+        %inner_bound = llvm.zext %inner_bound_i32 : i32 to i64
+        %inner = scf.for %i = %lb to %inner_bound step %step
+            iter_args(%acc = %zero) -> (f32) : i64 {
+          %lhs_view = builtin.unrealized_conversion_cast %input
+              : !llvm.ptr to memref<?xf32>
+          %lhs_slot = arith.index_cast %i : i64 to index
+          %lhs_value, %lhs_done = dataflow.load %lhs_view[%lhs_slot] %ctrl
+              : memref<?xf32>
+          %rhs_view = builtin.unrealized_conversion_cast %input
+              : !llvm.ptr to memref<?xf32>
+          %rhs_base = arith.addi %i, %lag : i64
+          %rhs_masked = arith.andi %rhs_base, %mask : i64
+          %rhs_slot = arith.index_cast %rhs_masked : i64 to index
+          %rhs_value, %rhs_done = dataflow.load %rhs_view[%rhs_slot] %ctrl
+              : memref<?xf32>
+          %next = llvm.intr.fmuladd(%lhs_value, %rhs_value, %acc)
+              : (f32, f32, f32) -> f32
+          scf.yield %next : f32
+        }
+        scf.yield %inner : f32
+      }
+      %out_view = builtin.unrealized_conversion_cast %output
+          : !llvm.ptr to memref<?xf32>
+      %out_slot = arith.index_cast %lag : i64 to index
+      %stored = dataflow.store %out_view[%out_slot] %sum %ctrl
+          : memref<?xf32>
+      %next_remaining = arith.addi %remaining_arg, %dec : i32
+      scf.yield %next_remaining : i32
+    }
+    dataflow.graph.return %ctrl, %remaining : none, i32
   }
 }

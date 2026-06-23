@@ -38,6 +38,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "matmul",
     "matvec",
     "mean",
+    "merge",
     "modmul",
     "newton_iter",
     "partition",

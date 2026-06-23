@@ -646,6 +646,9 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
          {"llvm.sitofp", "llvm.uitofp", "llvm.fptosi", "llvm.fptoui"}) {
       add(n, {pT(0)}, {pT(1)});
     }
+    add("arith.extsi", {pT(0)}, {pT(1)});
+    add("arith.extui", {pT(0)}, {pT(1)});
+    add("arith.trunci", {pT(0)}, {pT(1)});
     add("llvm.trunc", {pT(0)}, {pT(1)});
     add("llvm.sext", {pT(0)}, {pT(1)});
     add("llvm.zext", {pT(0)}, {pT(1)});

@@ -20,7 +20,9 @@
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
@@ -193,7 +195,7 @@ bool isIgnoredOp(mlir::Operation *op) {
 bool isAdapterOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
   return name == "builtin.unrealized_conversion_cast" ||
-         name == "arith.index_cast";
+         name == "arith.index_cast" || name == "arith.index_castui";
 }
 
 bool isLlvmPointerType(mlir::Type type) {
@@ -216,6 +218,15 @@ bool isPointerGateOp(mlir::Operation *op) {
 
 bool isGraphReturnOp(mlir::Operation *op) {
   return op->getName().getStringRef() == "dataflow.graph.return";
+}
+
+bool isStructuredContainerOp(mlir::Operation *op) {
+  return mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::scf::IndexSwitchOp>(
+      op);
+}
+
+bool isStructuredTerminatorOp(mlir::Operation *op) {
+  return mlir::isa<mlir::scf::YieldOp>(op);
 }
 
 bool isDataflowMemoryBaseUse(mlir::OpOperand &use) {
@@ -319,6 +330,38 @@ llvm::StringRef resourceKindName(ResourceKind kind) {
   llvm_unreachable("unknown resource kind");
 }
 
+llvm::Error
+collectSoftwareNodesInBlock(mlir::Block &block,
+                            llvm::SmallVectorImpl<SoftwareNode> &nodes,
+                            llvm::StringMap<unsigned> &counts) {
+  for (mlir::Operation &op : block) {
+    if (isStructuredContainerOp(&op)) {
+      for (mlir::Region &region : op.getRegions())
+        for (mlir::Block &nested : region)
+          if (llvm::Error err =
+                  collectSoftwareNodesInBlock(nested, nodes, counts))
+            return err;
+      continue;
+    }
+    if (isStructuredTerminatorOp(&op))
+      continue;
+    if (isIgnoredOp(&op) || isAdapterOp(&op) || isPointerBookkeepingOp(&op))
+      continue;
+    std::optional<ResourceKind> kind = resourceKindForSoftwareOp(&op);
+    if (!kind) {
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "graph contains unsupported operation for PnR mapping: %s",
+          op.getName().getStringRef().str().c_str());
+    }
+    std::string opName = softwareOperationName(&op);
+    unsigned index = counts[opName]++;
+    nodes.push_back(
+        SoftwareNode{opName + "#" + std::to_string(index), opName, *kind, &op});
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<llvm::SmallVector<SoftwareNode>>
 collectSoftwareNodes(mlir::Operation *graph) {
   llvm::SmallVector<SoftwareNode> nodes;
@@ -334,21 +377,9 @@ collectSoftwareNodes(mlir::Operation *graph) {
             "graph returns unsupported pointer value for PnR mapping");
     }
   }
-  for (mlir::Operation &op : graph->getRegion(0).front()) {
-    if (isIgnoredOp(&op) || isAdapterOp(&op) || isPointerBookkeepingOp(&op))
-      continue;
-    std::optional<ResourceKind> kind = resourceKindForSoftwareOp(&op);
-    if (!kind) {
-      return llvm::createStringError(
-          std::errc::invalid_argument,
-          "graph contains unsupported operation for PnR mapping: %s",
-          op.getName().getStringRef().str().c_str());
-    }
-    std::string opName = softwareOperationName(&op);
-    unsigned index = counts[opName]++;
-    nodes.push_back(
-        SoftwareNode{opName + "#" + std::to_string(index), opName, *kind, &op});
-  }
+  if (llvm::Error err = collectSoftwareNodesInBlock(graph->getRegion(0).front(),
+                                                    nodes, counts))
+    return std::move(err);
   return nodes;
 }
 
@@ -1467,8 +1498,7 @@ struct ResourcePressureKey {
   }
 };
 
-std::string
-resourcePressureDiagnostic(const ResourcePressureRecord &record) {
+std::string resourcePressureDiagnostic(const ResourcePressureRecord &record) {
   return (llvm::Twine("resource pressure: resource_kind=") +
           record.resourceKind + " operation=" + record.operation +
           " required=" + llvm::Twine(record.required) +
@@ -1478,9 +1508,9 @@ resourcePressureDiagnostic(const ResourcePressureRecord &record) {
       .str();
 }
 
-void appendResourcePressureRecords(
-    MappingSummary &summary, llvm::ArrayRef<SoftwareNode> nodes,
-    llvm::ArrayRef<HardwareResource> resources) {
+void appendResourcePressureRecords(MappingSummary &summary,
+                                   llvm::ArrayRef<SoftwareNode> nodes,
+                                   llvm::ArrayRef<HardwareResource> resources) {
   std::map<ResourcePressureKey, std::uint64_t> requiredByKey;
   std::map<ResourcePressureKey, std::uint64_t> placedByKey;
   std::map<ResourcePressureKey, std::set<std::string>> availableByKey;
@@ -1508,9 +1538,9 @@ void appendResourcePressureRecords(
     if (placed >= required)
       continue;
     std::uint64_t available = availableByKey[key].size();
-    summary.resourcePressure.push_back(ResourcePressureRecord{
-        resourceKindName(key.kind).str(), key.operation, required, available,
-        placed, required - placed});
+    summary.resourcePressure.push_back(
+        ResourcePressureRecord{resourceKindName(key.kind).str(), key.operation,
+                               required, available, placed, required - placed});
   }
 }
 
@@ -1566,6 +1596,10 @@ struct RouteBuilder {
   struct ProducerRef {
     std::string softwareId;
     unsigned resultIndex = 0;
+
+    bool operator==(const ProducerRef &other) const {
+      return softwareId == other.softwareId && resultIndex == other.resultIndex;
+    }
   };
 
   struct EdgeKey {
@@ -1582,18 +1616,47 @@ struct RouteBuilder {
     }
   };
 
-  llvm::DenseMap<mlir::Value, ProducerRef> producer;
-  llvm::DenseMap<mlir::Value, mlir::Value> adapterForward;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<ProducerRef, 2>> producer;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<mlir::Value, 2>> adapterForward;
   std::map<EdgeKey, std::string> payloadKindByEdge;
 
-  std::optional<ProducerRef> resolve(mlir::Value value) {
+  void addProducer(mlir::Value value, ProducerRef ref) {
+    auto &refs = producer[value];
+    if (llvm::is_contained(refs, ref))
+      return;
+    refs.push_back(std::move(ref));
+  }
+
+  void addForward(mlir::Value value, mlir::Value source) {
+    auto &sources = adapterForward[value];
+    if (llvm::is_contained(sources, source))
+      return;
+    sources.push_back(source);
+  }
+
+  void resolveInto(mlir::Value value,
+                   llvm::SmallVectorImpl<ProducerRef> &resolved,
+                   llvm::DenseSet<mlir::Value> &visiting) {
+    if (!visiting.insert(value).second)
+      return;
     auto direct = producer.find(value);
-    if (direct != producer.end())
-      return direct->second;
+    if (direct != producer.end()) {
+      for (const ProducerRef &ref : direct->second)
+        if (!llvm::is_contained(resolved, ref))
+          resolved.push_back(ref);
+    }
     auto adapter = adapterForward.find(value);
-    if (adapter == adapterForward.end())
-      return std::nullopt;
-    return resolve(adapter->second);
+    if (adapter != adapterForward.end())
+      for (mlir::Value source : adapter->second)
+        resolveInto(source, resolved, visiting);
+    visiting.erase(value);
+  }
+
+  llvm::SmallVector<ProducerRef, 2> resolve(mlir::Value value) {
+    llvm::SmallVector<ProducerRef, 2> resolved;
+    llvm::DenseSet<mlir::Value> visiting;
+    resolveInto(value, resolved, visiting);
+    return resolved;
   }
 };
 
@@ -1604,15 +1667,31 @@ std::string payloadKind(mlir::Value value) {
 }
 
 void collectValueProducers(
-    mlir::Operation *graph,
+    mlir::Block &block,
     const llvm::DenseMap<mlir::Operation *, std::string> &nodeIds,
     RouteBuilder &builder) {
-  for (mlir::Operation &op : graph->getRegion(0).front()) {
+  for (mlir::Operation &op : block) {
+    if (isStructuredContainerOp(&op)) {
+      for (mlir::Region &region : op.getRegions())
+        for (mlir::Block &nested : region)
+          collectValueProducers(nested, nodeIds, builder);
+      for (mlir::Region &region : op.getRegions()) {
+        for (mlir::Block &nested : region) {
+          auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(nested.getTerminator());
+          if (!yield || yield.getNumOperands() != op.getNumResults())
+            continue;
+          for (auto [result, source] :
+               llvm::zip(op.getResults(), yield.getOperands()))
+            builder.addForward(result, source);
+        }
+      }
+      continue;
+    }
     auto nodeIt = nodeIds.find(&op);
     if (nodeIt != nodeIds.end()) {
       unsigned resultIndex = 0;
       for (mlir::Value result : op.getResults())
-        builder.producer.try_emplace(
+        builder.addProducer(
             result, RouteBuilder::ProducerRef{nodeIt->second, resultIndex++});
       continue;
     }
@@ -1622,8 +1701,15 @@ void collectValueProducers(
       continue;
     mlir::Value source = op.getOperand(0);
     for (mlir::Value result : op.getResults())
-      builder.adapterForward.try_emplace(result, source);
+      builder.addForward(result, source);
   }
+}
+
+void collectValueProducers(
+    mlir::Operation *graph,
+    const llvm::DenseMap<mlir::Operation *, std::string> &nodeIds,
+    RouteBuilder &builder) {
+  collectValueProducers(graph->getRegion(0).front(), nodeIds, builder);
 }
 
 std::uint64_t routeSegmentCost(const HardwareRouteSegment &segment) {
@@ -1695,8 +1781,8 @@ findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
           Predecessor{current.endpoint, candidate};
       std::uint64_t estimatedTotal =
           nextCost + routeHeuristic(candidate.sinkEndpoint, sinkEndpoint);
-      frontier.push(SearchState{estimatedTotal, nextCost,
-                                candidate.sinkEndpoint});
+      frontier.push(
+          SearchState{estimatedTotal, nextCost, candidate.sinkEndpoint});
     }
   }
 
@@ -1779,16 +1865,21 @@ RouteCollection collectRoutes(llvm::ArrayRef<SoftwareNode> nodes,
         ++operandIndex;
         continue;
       }
-      std::optional<RouteBuilder::ProducerRef> source =
+      llvm::SmallVector<RouteBuilder::ProducerRef, 2> sources =
           builder.resolve(operand);
-      if (!source || source->softwareId == node.id) {
+      if (sources.empty()) {
         ++operandIndex;
         continue;
       }
-      RouteBuilder::EdgeKey key{source->softwareId, source->resultIndex,
-                                node.id, operandIndex++};
-      builder.payloadKindByEdge.try_emplace(std::move(key),
-                                            payloadKind(operand));
+      unsigned consumerOperandIndex = operandIndex++;
+      for (const RouteBuilder::ProducerRef &source : sources) {
+        if (source.softwareId == node.id)
+          continue;
+        RouteBuilder::EdgeKey key{source.softwareId, source.resultIndex,
+                                  node.id, consumerOperandIndex};
+        builder.payloadKindByEdge.try_emplace(std::move(key),
+                                              payloadKind(operand));
+      }
     }
   }
 

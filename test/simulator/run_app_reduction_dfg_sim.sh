@@ -864,12 +864,12 @@ case "${CASE}" in
         )
         ;;
     crc32)
-        append_ctrl_tokens 16
         append_crc32_input_memref 4
         append_crc32_table_memref 8
         sim_args+=(
             --graph g_t_crc32_kernel_red_0_0
             --workload crc32
+            --arg 0=none
             --arg 1=0
             --arg 2=16
             --arg 3=1

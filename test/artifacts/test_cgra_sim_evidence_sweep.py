@@ -89,15 +89,13 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_FAILED_SWEEP_CASES = ("crc32",)
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
-MAPPING_UNSUPPORTED_SWEEP_CASES = ("merge",)
+MAPPING_UNSUPPORTED_SWEEP_CASES = ("autocorrelation",)
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
-    "autocorrelation",
     "binary_search",
     "clz",
-    "crc32",
     "ctz",
     "find_first_set",
     "gather",
@@ -1645,6 +1643,143 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"merge DFG evidence should preserve the real merge output before PnR blocking: {dfg_path}: {dfg}")
     assert_operation_fire_counts("merge", dfg, expected_counts)
 
+    mapping_path = evidence_dir / "merge.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    expected_edges = {
+        "arith.cmpf#0.result0->arith.xori#0.operand0",
+        "arith.xori#0.result0->arith.extui#0.operand0",
+        "dataflow.load#0.result0->arith.cmpf#0.operand0",
+        "dataflow.load#1.result0->arith.cmpf#0.operand1",
+        "dataflow.load#2.result0->dataflow.store#0.operand2",
+        "dataflow.load#3.result0->dataflow.store#1.operand2",
+    }
+    actual_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("placed_records") != 13
+        or mapping.get("routed_edges") != 6
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or actual_edges != expected_edges
+    ):
+        raise AssertionError(f"merge mapping should route compare, xor, and load-store edges: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "merge.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_reduction_adg"
+        or cgra.get("dfg_cycles") != 349
+        or cgra.get("hardware_aware_cycles") != 395
+        or cgra.get("placed_records") != 13
+        or cgra.get("routed_edges") != 6
+        or cgra.get("final_outputs") != ["none", "i32:5", "i32:6"]
+        or cgra.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"merge CGRA-sim should preserve the real merge output: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "merge.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 349
+        or comparison.get("cgra_sim_cycles") != 395
+    ):
+        raise AssertionError(f"merge comparison should pass with real final-state checks: {comparison_path}: {comparison}")
+
+
+def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg7": [
+            "f32:1",
+            "f32:2",
+            "f32:3",
+            "f32:4",
+            "f32:5",
+            "f32:6",
+            "f32:7",
+            "f32:8",
+        ],
+        "arg9": [
+            "f32:0",
+            "f32:36",
+            "f32:36",
+            "f32:36",
+            "f32:36",
+            "f32:36",
+            "f32:36",
+            "f32:36",
+        ],
+    }
+    expected_counts = {
+        "arith.addi": 64,
+        "arith.andi": 56,
+        "arith.cmpi": 8,
+        "arith.index_cast": 232,
+        "dataflow.load": 112,
+        "dataflow.store": 8,
+        "llvm.intr.fmuladd": 56,
+        "llvm.intr.umax": 7,
+        "llvm.zext": 7,
+        "scf.if": 8,
+    }
+    dfg_path = evidence_dir / "autocorrelation.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("event_count") != 558
+        or dfg.get("final_outputs") != ["none", "i32:0"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"autocorrelation DFG should execute nested structured loops: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("autocorrelation", dfg, expected_counts)
+    assert_mapping_unsupported_operation(evidence_dir, "autocorrelation", "llvm.intr.umax")
+
+
+def assert_crc32_mapping_failure_evidence(evidence_dir: Path) -> None:
+    expected_counts = {
+        "arith.andi": 64,
+        "arith.index_cast": 144,
+        "arith.shli": 64,
+        "arith.shrui": 128,
+        "arith.xori": 128,
+        "dataflow.load": 80,
+    }
+    dfg_path = evidence_dir / "crc32.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 16
+        or dfg.get("event_count") != 608
+        or dfg.get("final_outputs") != ["none", "i32:-1307787247"]
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"crc32 DFG should execute the structured CRC loop before PnR fails: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("crc32", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "crc32.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    expected = (
+        "missing hardware resource for software op arith.shrui "
+        "(resource pressure: resource_kind=fabric.op operation=arith.shrui "
+        "required=2 available=1 placed=1 missing=1)"
+    )
+    if (
+        mapping.get("status") != "fail"
+        or mapping.get("placed_records") != 7
+        or mapping.get("routed_edges") != 1
+        or mapping.get("unrouted_edges") != 3
+        or mapping.get("unplaced_records") != 1
+        or expected not in mapping.get("diagnostics", [])
+    ):
+        raise AssertionError(f"crc32 should expose the exact shared-ADG resource pressure: {mapping_path}: {mapping}")
+
 
 def assert_unsupported_operation(
     evidence_dir: Path,
@@ -2026,6 +2161,7 @@ def main(argv: list[str]) -> int:
             "compact",
             "hash_mix",
             "string_hash",
+            "merge",
             "modmul",
             "relu",
             "upsample",
@@ -2083,6 +2219,8 @@ def main(argv: list[str]) -> int:
         assert_compact_evidence(evidence_dir)
         assert_partition_evidence(evidence_dir)
         assert_string_hash_evidence(evidence_dir)
+        assert_autocorrelation_dfg_evidence(evidence_dir)
+        assert_crc32_mapping_failure_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -2090,26 +2228,17 @@ def main(argv: list[str]) -> int:
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_unsupported_operation(
             evidence_dir,
-            "autocorrelation",
-            "scf.for",
-            "scf.for",
-            rejected_dfg_operations=("scf.if", "llvm.intr.umax"),
-        )
-        assert_unsupported_operation(
-            evidence_dir,
             "pack_bits",
             "scf.while",
-            "scf.for",
+            "llvm.intr.umin",
             rejected_dfg_operations=("scf.if", "llvm.intr.umin"),
         )
-        assert_mapping_unsupported_operation(evidence_dir, "merge", "scf.for")
         assert_merge_dfg_evidence(evidence_dir)
-        assert_unsupported_operation(evidence_dir, "crc32", "scf.for", "scf.for")
         assert_unsupported_operation(
             evidence_dir,
             "unpack_bits",
             "scf.while",
-            "scf.for",
+            "llvm.intr.umin",
             rejected_dfg_operations=("llvm.intr.umin",),
         )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
@@ -2447,6 +2576,7 @@ def main(argv: list[str]) -> int:
             "compact",
             "hash_mix",
             "string_hash",
+            "merge",
             "modmul",
             "relu",
             "upsample",
@@ -2541,9 +2671,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 54,
-            "fail": 0,
-            "blocked": 55,
+            "pass": 55,
+            "fail": 1,
+            "blocked": 53,
             "unsupported": 0,
             "missing_status": 0,
         }

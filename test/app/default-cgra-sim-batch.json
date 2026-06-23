@@ -198,6 +198,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "merge",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "relu",
       "hardware": "shared_reduction_adg"
     },

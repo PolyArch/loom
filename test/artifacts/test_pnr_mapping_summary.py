@@ -336,13 +336,11 @@ def main() -> int:
         unsupported_mlir.write_text(
             """module {
   dataflow.graph.func private @unsupported_loop(%ctrl: none,
-                                                %lower: index,
-                                                %upper: index,
-                                                %step: index)
-      -> (none) {
-    scf.for %i = %lower to %upper step %step {
-    }
-    dataflow.graph.return %ctrl : none
+                                                %lhs: i32,
+                                                %rhs: i32)
+      -> (none, i32) {
+    %min = llvm.intr.umin(%lhs, %rhs) : (i32, i32) -> i32
+    dataflow.graph.return %ctrl, %min : none, i32
   }
 }
 """
@@ -383,8 +381,8 @@ def main() -> int:
         for column in ("placed_records", "routed_edges", "unrouted_edges", "unplaced_records"):
             if unsupported_row[column] != "":
                 raise AssertionError(f"unsupported CSV row must not fake {column}: {unsupported_row}")
-        if "scf.for" not in unsupported_row.get("diagnostic", ""):
-            raise AssertionError(f"unsupported CSV row should name scf.for: {unsupported_row}")
+        if "llvm.intr.umin" not in unsupported_row.get("diagnostic", ""):
+            raise AssertionError(f"unsupported CSV row should name llvm.intr.umin: {unsupported_row}")
         unsupported_data = json.loads(unsupported_artifact.read_text())
         expected_unsupported_json = {
             "kind": "pnr_mapping",
@@ -407,8 +405,8 @@ def main() -> int:
         for key in ("placements", "routes", "unrouted_edge_details", "config_bitstream"):
             if unsupported_data.get(key) != []:
                 raise AssertionError(f"unsupported mapping artifact should leave {key} empty: {unsupported_data}")
-        if not any("scf.for" in str(item) for item in unsupported_data.get("diagnostics", [])):
-            raise AssertionError(f"unsupported mapping artifact should diagnose scf.for: {unsupported_data}")
+        if not any("llvm.intr.umin" in str(item) for item in unsupported_data.get("diagnostics", [])):
+            raise AssertionError(f"unsupported mapping artifact should diagnose llvm.intr.umin: {unsupported_data}")
 
         failed_unrouted_component = copy.deepcopy(data)
         failed_unrouted_component["status"] = "fail"
@@ -531,6 +529,8 @@ def main() -> int:
                 f"aggregate mapping should preserve unsupported components: {unsupported_aggregate_mapping}"
             )
         unsupported_dfg_path = out_dir / "unsupported-loop.dfg.report.json"
+        unsupported_source_dfg_mlir = out_dir / "unsupported_loop.dfg.mlir"
+        unsupported_source_dfg_mlir.write_text("module {}\n")
         unsupported_dfg_report = {
             "schema_version": 1,
             "kind": "dfg_sim_report",
@@ -556,6 +556,7 @@ def main() -> int:
                 hardware="shared_reduction_adg",
                 graph="workload_graph_set",
                 mapping_id="unsupported_loop__workload_graph_set__shared_reduction_adg",
+                source_dfg_mlir=[str(unsupported_source_dfg_mlir)],
             ),
             [unsupported_dfg_path],
             [unsupported_dfg_report],
@@ -564,6 +565,10 @@ def main() -> int:
             raise AssertionError(f"aggregate DFG should preserve unsupported components: {unsupported_aggregate_dfg}")
         if "unsupported op: scf.for" not in unsupported_aggregate_dfg.get("diagnostics", []):
             raise AssertionError(f"aggregate DFG should retain unsupported diagnostics: {unsupported_aggregate_dfg}")
+        source_fingerprints = unsupported_aggregate_dfg.get("input_artifact_fingerprints", {})
+        source_identity = aggregate.artifact_id(unsupported_source_dfg_mlir)
+        if source_fingerprints.get(source_identity) != aggregate.artifact_fingerprint(unsupported_source_dfg_mlir):
+            raise AssertionError(f"aggregate DFG should retain source DFG MLIR fingerprint: {unsupported_aggregate_dfg}")
         unsupported_cgra_report = {
             "schema_version": 1,
             "kind": "cgra_sim_report",

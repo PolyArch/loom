@@ -339,9 +339,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 54,
-            "fail": 0,
-            "blocked": 55,
+            "pass": 55,
+            "fail": 1,
+            "blocked": 53,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -392,10 +392,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "autocorrelation": "unsupported op: scf.for",
     "binary_search": "primary workload graph absent: expected token binary_search_candidate",
     "clz": "primary workload graph absent: expected token clz_candidate",
-    "crc32": "unsupported op: scf.for",
     "ctz": "primary workload graph absent: expected token ctz_candidate",
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
     "gather": "primary workload graph absent: expected token gather",
@@ -411,45 +409,54 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
+    "crc32": (
+        "missing hardware resource for software op arith.shrui "
+        "(resource pressure: resource_kind=fabric.op operation=arith.shrui "
+        "required=2 available=1 placed=1 missing=1)"
+    ),
+}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
+    "crc32": {
+        "graph": "g_t_crc32_kernel_red_0_0",
+        "dynamic_work_items": 16,
+        "final_output_suffix": ["none", "i32:-1307787247"],
+        "operation_fire_counts": {
+            "arith.andi": 64,
+            "arith.index_cast": 144,
+            "arith.shli": 64,
+            "arith.shrui": 128,
+            "arith.xori": 128,
+            "dataflow.load": 80,
+        },
+    },
+}
 
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
 SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {}
 
 SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS = {
-    "merge": "unsupported PnR graph operation: scf.for",
+    "autocorrelation": "unsupported PnR graph operation: llvm.intr.umax",
 }
 
 SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {
-    "merge": {
-        "graph": "g_t_merge_red_0_0",
-        "dynamic_work_items": 11,
-        "final_outputs": ["none", "i32:5", "i32:6"],
+    "autocorrelation": {
+        "graph": "g_t_autocorrelation_kernel_red_0_0",
+        "dynamic_work_items": 8,
+        "final_outputs": ["none", "i32:0"],
         "operation_fire_counts": {
-            "arith.cmpi": 22,
-            "arith.cmpf": 10,
-            "scf.if": 22,
-            "scf.index_switch": 22,
-            "dataflow.load": 31,
-            "dataflow.store": 11,
-        },
-        "final_memory_state": {
-            "arg10": [
-                "f32:1",
-                "f32:2",
-                "f32:3",
-                "f32:4",
-                "f32:9",
-                "f32:10",
-                "f32:13",
-                "f32:14",
-                "f32:20",
-                "f32:21",
-                "f32:22",
-            ],
+            "arith.addi": 64,
+            "arith.andi": 56,
+            "arith.cmpi": 8,
+            "arith.index_cast": 232,
+            "dataflow.load": 112,
+            "dataflow.store": 8,
+            "llvm.intr.fmuladd": 56,
+            "llvm.intr.umax": 7,
+            "llvm.zext": 7,
+            "scf.if": 8,
         },
     },
 }
@@ -608,10 +615,13 @@ def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_e
                 raise AssertionError(
                     f"{case} {op_name} fire count should be {expected_count}, got {actual_count}: {dfg_report}"
                 )
-        for argument, expected_values in expected["final_memory_state"].items():
-            actual_values = dfg_report.get("final_memory_state", {}).get(argument)
-            if actual_values != expected_values:
-                raise AssertionError(f"{case} should preserve expected DFG final memory before mapping unsupported: {dfg_report}")
+        if "final_memory_state" in expected:
+            for argument, expected_values in expected["final_memory_state"].items():
+                actual_values = dfg_report.get("final_memory_state", {}).get(argument)
+                if actual_values != expected_values:
+                    raise AssertionError(
+                        f"{case} should preserve expected DFG final memory before mapping unsupported: {dfg_report}"
+                    )
 
 
 def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
@@ -636,10 +646,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 0,
-            "fail": 0,
-            "blocked": 55,
+            "fail": 1,
+            "blocked": 53,
             "unsupported": 0,
-            "missing_status": 54,
+            "missing_status": 55,
         },
     )
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
@@ -1186,23 +1196,25 @@ def assert_cmsis_fir_component_blocker_evidence(
         raise AssertionError(f"arm_fir_f32 row should keep both component graph ids: {row}")
     if (
         row["status"] != "blocked"
-        or row["diagnostic_class"] != "component_cgra_status_blocked"
-        or row["blocking_prerequisite"] != "component_graph_evidence"
+        or row["diagnostic_class"] != "mapping_artifact_unsupported"
+        or row["blocking_prerequisite"] != "mapping_artifact"
         or row["owner"] != "sim_report"
-        or row["dfg_status"] != "unsupported"
-        or row["mapping_status"] != "pass"
-        or row["cgra_status"] != "pass"
-        or row["comparison_status"] != "not_run"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
         or row["required_slice_count"] != "2"
         or row["hardware_system"] != "shared_reduction_adg"
-        or "arm_fir_f32.red0.dfg.report.json (unsupported): unsupported op: scf.for"
+        or "one or more component mapping artifacts are not passing: unsupported,pass"
+        not in row["diagnostic"]
+        or "unsupported PnR graph operation: llvm.getelementptr"
         not in row["diagnostic"]
     ):
         raise AssertionError(f"arm_fir_f32 should expose red1 evidence and the red0 blocker: {row}")
     expected_row_artifacts = {
-        "dfg_report": "arm_fir_f32.red0.dfg.report.json",
-        "mapping_artifact": "arm_fir_f32.red1.mapping.json",
-        "cgra_report": "arm_fir_f32.red1.cgra.report.json",
+        "dfg_report": "arm_fir_f32.dfg.report.json",
+        "mapping_artifact": "arm_fir_f32.mapping.json",
+        "cgra_report": "arm_fir_f32.cgra.report.json",
     }
     for key, expected_name in expected_row_artifacts.items():
         if Path(row[key]).name != expected_name:
@@ -1211,36 +1223,72 @@ def assert_cmsis_fir_component_blocker_evidence(
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
     required_artifacts = (
+        "arm_fir_f32.dfg.report.json",
+        "arm_fir_f32.mapping.json",
+        "arm_fir_f32.mapping.csv",
+        "arm_fir_f32.cgra.report.json",
         "arm_fir_f32.red0.dfg.report.json",
         "arm_fir_f32.red1.dfg.report.json",
+        "arm_fir_f32.red0.mapping.json",
         "arm_fir_f32.red1.mapping.json",
+        "arm_fir_f32.red0.cgra.report.json",
         "arm_fir_f32.red1.cgra.report.json",
     )
     for artifact_name in required_artifacts:
         artifact = sim_evidence / artifact_name
         if not artifact.is_file():
             raise AssertionError(f"arm_fir_f32 component evidence should emit {artifact}")
-    aggregate_artifacts = (
-        "arm_fir_f32.dfg.report.json",
-        "arm_fir_f32.mapping.json",
-        "arm_fir_f32.mapping.csv",
-        "arm_fir_f32.cgra.report.json",
-        "arm_fir_f32.sim-comparison-report.json",
-        "arm_fir_f32.c.sim-comparison-report.json",
-    )
-    for artifact_name in aggregate_artifacts:
-        artifact = sim_evidence / artifact_name
-        if artifact.exists():
-            raise AssertionError(f"arm_fir_f32 must not emit row aggregate evidence while red0 remains unsupported: {artifact}")
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    for data, kind, status in (
+        (dfg_report, "dfg_sim_report", "pass"),
+        (mapping_artifact, "pnr_mapping", "unsupported"),
+        (cgra_report, "cgra_sim_report", "blocked"),
+    ):
+        if (
+            data.get("kind") != kind
+            or data.get("aggregation_kind") != "workload_graph_set"
+            or data.get("component_graphs") != sorted(expected_graphs)
+            or data.get("status") != status
+        ):
+            raise AssertionError(f"unexpected arm_fir_f32 aggregate evidence: {data}")
+    source_identity = Path(row["dfg_mlir"]).stem
+    input_fingerprints = dfg_report.get("input_artifact_fingerprints", {})
+    if input_fingerprints.get(source_identity) != row["dfg_mlir_fingerprint"]:
+        raise AssertionError(f"arm_fir_f32 aggregate DFG should retain source MLIR fingerprint: {dfg_report}")
+    red0_mapping = json.loads((sim_evidence / "arm_fir_f32.red0.mapping.json").read_text())
+    red1_mapping = json.loads((sim_evidence / "arm_fir_f32.red1.mapping.json").read_text())
+    red0_cgra = json.loads((sim_evidence / "arm_fir_f32.red0.cgra.report.json").read_text())
+    red1_cgra = json.loads((sim_evidence / "arm_fir_f32.red1.cgra.report.json").read_text())
+    if (
+        red0_mapping.get("status") != "unsupported"
+        or "unsupported PnR graph operation: llvm.getelementptr" not in "; ".join(red0_mapping.get("diagnostics", []))
+        or red1_mapping.get("status") != "pass"
+        or red0_cgra.get("status") != "blocked"
+        or red1_cgra.get("status") != "pass"
+    ):
+        raise AssertionError(
+            f"arm_fir_f32 component evidence should preserve red0 blocker and red1 pass: "
+            f"{red0_mapping} {red1_mapping} {red0_cgra} {red1_cgra}"
+        )
 
     red0_dfg = json.loads((sim_evidence / "arm_fir_f32.red0.dfg.report.json").read_text())
+    red0_memory = {
+        "arg8": ["f32:1", "f32:2", "f32:3", "f32:4"],
+        "arg9": ["f32:1", "f32:2", "f32:3", "f32:4"],
+        "arg10": ["f32:0", "f32:0", "f32:0", "f32:0"],
+    }
     if (
         red0_dfg.get("workload") != "FilteringFunctions/arm_fir_f32.c"
         or red0_dfg.get("graph") != "g_t_arm_fir_f32_red_0_0"
-        or red0_dfg.get("status") != "unsupported"
-        or red0_dfg.get("diagnostics") != ["unsupported op: scf.for"]
+        or red0_dfg.get("status") != "pass"
+        or red0_dfg.get("dynamic_work_items") != 4
+        or red0_dfg.get("operation_fire_counts", {}).get("llvm.getelementptr") != 16
+        or red0_dfg.get("final_outputs") != ["none"]
+        or red0_dfg.get("final_memory_state") != red0_memory
     ):
-        raise AssertionError(f"unexpected arm_fir_f32 red0 DFG blocker evidence: {red0_dfg}")
+        raise AssertionError(f"unexpected arm_fir_f32 red0 DFG evidence: {red0_dfg}")
 
     red1_memory = {
         "arg4": ["f32:1", "f32:2", "f32:3", "f32:4"],
@@ -2313,14 +2361,11 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_dfg_blocker_row(
+    assert_cmsis_dfg_ready_for_mapping_row(
         repo,
         rows,
         "cmsis-nn",
         "FullyConnectedFunctions/arm_vector_sum_s8.c",
-        dfg_status="unsupported",
-        diagnostic_class="dfg_report_unsupported",
-        diagnostic_substring="unsupported op: scf.for",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")

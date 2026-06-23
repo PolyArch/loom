@@ -45,7 +45,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.index_cast", 1, 1, true, true},
     {"arith.index_castui", 1, 1, true, false},
     {"arith.extsi", 1, 1, true, true},
-    {"arith.extui", 1, 1, true, false},
+    {"arith.extui", 1, 1, true, true},
     {"arith.trunci", 1, 1, true, true},
     {"arith.sitofp", 3, 3, true, true},
     {"arith.uitofp", 3, 3, true, true},

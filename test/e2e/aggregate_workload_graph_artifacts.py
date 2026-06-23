@@ -27,6 +27,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--hardware", required=True)
     parser.add_argument("--mapping-id", required=True)
     parser.add_argument("--graph", default="workload_graph_set")
+    parser.add_argument("--source-dfg-mlir", action="append", default=[])
     parser.add_argument("--dfg-report", action="append", required=True)
     parser.add_argument("--mapping-artifact", action="append", required=True)
     parser.add_argument("--cgra-report", action="append", required=True)
@@ -65,6 +66,12 @@ def component_identity_list(paths: list[Path]) -> list[str]:
 
 def component_fingerprint_map(paths: list[Path]) -> dict[str, str]:
     return {artifact_id(path): artifact_fingerprint(path) for path in paths}
+
+
+def combined_fingerprint_map(paths: list[Path], extra_paths: list[Path]) -> dict[str, str]:
+    fingerprints = component_fingerprint_map(paths)
+    fingerprints.update(component_fingerprint_map(extra_paths))
+    return fingerprints
 
 
 def sum_int(items: list[dict[str, Any]], key: str) -> int:
@@ -202,7 +209,10 @@ def aggregate_dfg(
         "aggregation_kind": "workload_graph_set",
         "component_graphs": graphs,
         "component_dfg_sim_report_identities": component_identity_list(dfg_paths),
-        "input_artifact_fingerprints": component_fingerprint_map(dfg_paths),
+        "input_artifact_fingerprints": combined_fingerprint_map(
+            dfg_paths,
+            [Path(value) for value in getattr(args, "source_dfg_mlir", [])],
+        ),
         "status": status,
         "metric_definition": same_string(dfg_reports, "metric_definition"),
         "operation_semantics_source": same_string(dfg_reports, "operation_semantics_source"),

@@ -42,6 +42,7 @@ class Attempt:
 @dataclass(frozen=True)
 class AttemptResult:
     attempt: Attempt
+    dfg_mlir: Path
     dfg_report: Path
     mapping_summary: Path | None = None
     mapping_artifact: Path | None = None
@@ -851,9 +852,9 @@ def run_attempt(
     validate_attempt_report(attempt, data, output)
 
     if not attempt.hardware_mlir:
-        return AttemptResult(attempt=attempt, dfg_report=output)
+        return AttemptResult(attempt=attempt, dfg_mlir=dfg_mlir, dfg_report=output)
     if data.get("status") != "pass":
-        return AttemptResult(attempt=attempt, dfg_report=output)
+        return AttemptResult(attempt=attempt, dfg_mlir=dfg_mlir, dfg_report=output)
 
     hardware_mlir = ROOT / attempt.hardware_mlir
     mapping_output = output_dir / f"{output_stem}.mapping.csv"
@@ -900,6 +901,7 @@ def run_attempt(
     )
     return AttemptResult(
         attempt=attempt,
+        dfg_mlir=dfg_mlir,
         dfg_report=output,
         mapping_summary=mapping_output,
         mapping_artifact=mapping_artifact,
@@ -955,6 +957,8 @@ def run_aggregates(
             "--mapping-summary-output",
             str(mapping_summary),
         ]
+        for dfg_mlir in sorted({result.dfg_mlir for result in group}):
+            command.extend(["--source-dfg-mlir", str(dfg_mlir)])
         for result in group:
             command.extend(["--dfg-report", str(result.dfg_report)])
         for result in group:
