@@ -29,17 +29,31 @@ HARDWARE_HEADER = [
 REQUIRED_TOPOLOGY_FAMILIES = {
     "regular": {
         "chain_1d",
+        "folded_ring",
         "mesh_2d",
+        "mesh_diagonal",
+        "multi_lane_pipeline",
         "torus_edge",
         "systolic_array",
         "clustered_array",
     },
     "irregular": {
+        "diamond_bypass",
         "reduction_tree",
         "cross_coupled_switch",
+        "memory_fanout",
+        "mixed_temporal_bridge",
         "sparse_long_link",
         "heterogeneous_islands",
     },
+}
+
+REQUIRED_SYSTEM_FAMILIES = {
+    "heterogeneous_soc",
+    "dual_spatial_shared_memory",
+    "cached_dual_accel",
+    "dma_scratchpad",
+    "fixed_and_spatial",
 }
 
 EXPECTED_TOPOLOGY_SIGNATURES = {
@@ -47,6 +61,12 @@ EXPECTED_TOPOLOGY_SIGNATURES = {
         "layout_class": "irregular",
         "fabric_root": "shared_vector_alu_adg",
         "tile_counts": {"mem": 1, "pe": 7, "switch": 3},
+        "schedule_kinds": {"spatial"},
+    },
+    "vector_math_network": {
+        "layout_class": "irregular",
+        "fabric_root": "shared_vector_math_adg",
+        "tile_counts": {"mem": 1, "pe": 16, "switch": 2},
         "schedule_kinds": {"spatial"},
     },
     "vector_mesh": {
@@ -138,13 +158,14 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
     if data.get("kind") != "adg_inventory":
         raise AssertionError(f"unexpected inventory kind: {data}")
     candidates = data.get("candidates")
-    if not isinstance(candidates, list) or len(candidates) < 12:
+    if not isinstance(candidates, list) or len(candidates) < 24:
         raise AssertionError(f"inventory should contain a reusable ADG matrix: {data}")
 
     ids: set[str] = set()
     root_kinds: set[str] = set()
     layout_classes: set[str] = set()
     families_by_layout = {"regular": set(), "irregular": set()}
+    system_families: set[str] = set()
     topology_fingerprints: dict[str, str] = {}
     for candidate in candidates:
         if not isinstance(candidate, dict):
@@ -162,6 +183,8 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
         layout_classes.add(str(layout_class))
         if str(layout_class) in families_by_layout:
             families_by_layout[str(layout_class)].add(str(topology_family))
+        if root_kind == "fabric.system":
+            system_families.add(str(topology_family))
         if candidate.get("coordinates_semantic") is not False:
             raise AssertionError(f"{candidate_id} must not make visual coordinates semantic")
         if candidate.get("visual_metadata_role") not in {"metadata_only", "absent"}:
@@ -220,9 +243,18 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
                 f"inventory missed {layout_class} topology families {sorted(missing)}: "
                 f"{families_by_layout[layout_class]}"
             )
+    missing_system_families = REQUIRED_SYSTEM_FAMILIES - system_families
+    if missing_system_families:
+        raise AssertionError(
+            f"inventory missed system topology families {sorted(missing_system_families)}: "
+            f"{system_families}"
+        )
     shared_vector_id = "adg-builder::shared-vector-alu::shared_vector_alu_adg"
     if shared_vector_id not in ids:
         raise AssertionError(f"inventory missed reusable shared-vector ALU ADG: {ids}")
+    shared_vector_math_id = "adg-builder::shared-vector-math::shared_vector_math_adg"
+    if shared_vector_math_id not in ids:
+        raise AssertionError(f"inventory missed reusable shared-vector math ADG: {ids}")
     shared_vector_mesh_id = "adg-builder::shared-vector-mesh::shared_vector_mesh_adg"
     if shared_vector_mesh_id not in ids:
         raise AssertionError(f"inventory missed reusable shared-vector mesh ADG: {ids}")

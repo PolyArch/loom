@@ -795,7 +795,8 @@ ModuleBuilder makeTopologyMatrixModule(llvm::StringRef name,
       .addInput("ctrl", "!fabric.bits<0>");
   if (includeTemporal) {
     module.addInput("lhs_t", "!fabric.bits_tag<32, 4>")
-        .addInput("rhs_t", "!fabric.bits_tag<32, 4>");
+        .addInput("rhs_t", "!fabric.bits_tag<32, 4>")
+        .addInput("tag", "!fabric.bits<4>");
   }
   return module;
 }
@@ -832,6 +833,16 @@ std::string uniformTypeList(std::size_t count, llvm::StringRef type) {
   return text;
 }
 
+std::string valueListStrings(llvm::ArrayRef<std::string> names) {
+  std::string text;
+  for (const std::string &name : names) {
+    if (!text.empty())
+      text += ", ";
+    text += valueName(name);
+  }
+  return text;
+}
+
 std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
   std::string text = "[{connectivity_table = [";
   for (std::size_t index = 0; index < rows.size(); ++index) {
@@ -843,6 +854,38 @@ std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
   }
   text += "]}]";
   return text;
+}
+
+std::string uniformConnectivityRows(std::size_t rowCount,
+                                    std::size_t inputCount) {
+  std::string row(inputCount, '1');
+  std::string text = "[{connectivity_table = [";
+  for (std::size_t index = 0; index < rowCount; ++index) {
+    if (index)
+      text += ", ";
+    text += "\"";
+    text += row;
+    text += "\"";
+  }
+  text += "]}]";
+  return text;
+}
+
+void addUniformSwitch(ModuleBuilder &module,
+                      llvm::ArrayRef<std::string> results,
+                      llvm::ArrayRef<std::string> inputs,
+                      llvm::StringRef type) {
+  module.addExactBodyLine(valueListStrings(results) + " =");
+  module.addExactBodyLine("    fabric.switch [spatial] " +
+                          valueListStrings(inputs));
+  module.addExactBodyLine("      " +
+                          uniformConnectivityRows(results.size(),
+                                                  inputs.size()));
+  module.addExactBodyLine("      : " + uniformTypeList(inputs.size(), type));
+  module.addExactBodyLine("      -> " + (results.size() == 1
+                                             ? type.str()
+                                             : uniformTypeList(results.size(),
+                                                               type)));
 }
 
 void addSpatialMemLoad(ModuleBuilder &module) {
@@ -887,6 +930,49 @@ void addSpatialAddPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine(
       "                 : (!fabric.bits<32>, !fabric.bits<32>) -> "
       "!fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
+                llvm::StringRef input, llvm::StringRef opName) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%value = " +
+                          valueName(input) + " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%input = %value : !fabric.bits<32>) -> "
+      "!fabric.bits<32> {");
+  module.addExactBodyLine("        %result = fabric.op [@" + opName.str() +
+                          "] (%input)");
+  module.addExactBodyLine(
+      "                 : (!fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %result : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
+                  llvm::StringRef lhs, llvm::StringRef rhs,
+                  llvm::StringRef acc, llvm::StringRef opName) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " +
+                          valueName(lhs) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %rhs = " +
+                          valueName(rhs) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %acc = " +
+                          valueName(acc) + " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
+  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>,");
+  module.addExactBodyLine("                %c = %acc : !fabric.bits<32>) "
+                          "-> !fabric.bits<32> {");
+  module.addExactBodyLine("        %value = fabric.op [@" + opName.str() +
+                          "] (%a, %b, %c)");
+  module.addExactBodyLine(
+      "                 : (!fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
   module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
   module.addExactBodyLine("      }");
   module.addExactBodyLine("    }");
@@ -950,6 +1036,46 @@ ModuleBuilder buildClusteredArrayAdg() {
   return module;
 }
 
+ModuleBuilder buildFoldedRingAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_folded_ring_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "n0", "data", "a");
+  addSpatialAddPe(module, "n1", "n0", "b");
+  addSpatialAddPe(module, "n2", "n1", "c");
+  addSpatialSwitch(module, {"wrap", "forward"}, {"n2", "n0", "d"},
+                   {"110", "101"});
+  addSpatialAddPe(module, "n3", "wrap", "forward");
+  return module;
+}
+
+ModuleBuilder buildMeshDiagonalAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_mesh_diagonal_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "n00", "data", "a");
+  addSpatialAddPe(module, "n01", "data", "b");
+  addSpatialAddPe(module, "n10", "c", "d");
+  addSpatialSwitch(module, {"east", "south", "diag"},
+                   {"n00", "n01", "n10"}, {"110", "101", "011"});
+  addSpatialAddPe(module, "n11", "diag", "south");
+  return module;
+}
+
+ModuleBuilder buildMultiLanePipelineAdg() {
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_multi_lane_pipeline_adg");
+  addSpatialMemLoad(module);
+  addSpatialSwitch(module, {"lane0_in", "lane1_in"}, {"data", "a", "b"},
+                   {"110", "101"});
+  addSpatialAddPe(module, "lane0_stage0", "lane0_in", "c");
+  addSpatialAddPe(module, "lane1_stage0", "lane1_in", "d");
+  addSpatialAddPe(module, "lane0_stage1", "lane0_stage0", "lane1_stage0");
+  addSpatialAddPe(module, "lane1_stage1", "lane1_stage0", "lane0_stage0");
+  addSpatialSwitch(module, {"merged"}, {"lane0_stage1", "lane1_stage1"},
+                   {"11"});
+  addSpatialAddPe(module, "out", "merged", "data");
+  return module;
+}
+
 ModuleBuilder buildReductionTreeAdg() {
   ModuleBuilder module = makeTopologyMatrixModule("matrix_reduction_tree_adg");
   addSpatialMemLoad(module);
@@ -970,6 +1096,60 @@ ModuleBuilder buildCrossCoupledSwitchAdg() {
   addSpatialSwitch(module, {"x0", "x1"}, {"left", "right"}, {"01", "10"});
   addSpatialSwitch(module, {"x2", "x3"}, {"x0", "x1", "d"}, {"111", "111"});
   addSpatialAddPe(module, "merged", "x2", "x3");
+  return module;
+}
+
+ModuleBuilder buildDiamondBypassAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_diamond_bypass_adg");
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "entry", "data", "a");
+  addSpatialAddPe(module, "upper", "entry", "b");
+  addSpatialAddPe(module, "lower", "entry", "c");
+  addSpatialSwitch(module, {"join", "bypass"}, {"upper", "lower", "entry"},
+                   {"110", "001"});
+  addSpatialAddPe(module, "exit", "join", "bypass");
+  return module;
+}
+
+ModuleBuilder buildMemoryFanoutAdg() {
+  ModuleBuilder module = makeTopologyMatrixModule("matrix_memory_fanout_adg");
+  addSpatialMemLoad(module);
+  addSpatialSwitch(module, {"data_lane0", "data_lane1", "data_lane2"},
+                   {"data", "a", "b"}, {"111", "101", "110"});
+  addSpatialAddPe(module, "lane0", "data_lane0", "c");
+  addSpatialAddPe(module, "lane1", "data_lane1", "d");
+  addSpatialAddPe(module, "lane2", "data_lane2", "lane0");
+  addSpatialSwitch(module, {"combined"}, {"lane0", "lane1", "lane2"},
+                   {"111"});
+  addSpatialAddPe(module, "out", "combined", "data");
+  return module;
+}
+
+ModuleBuilder buildMixedTemporalBridgeAdg() {
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_mixed_temporal_bridge_adg", true);
+  TemporalPeConfig temporal;
+  temporal.tagWidth = 4;
+  temporal.numInstruction = 3;
+  temporal.fuConfigMode = "per_fu_config";
+  temporal.operandBufferMode = "per_input_port";
+  temporal.operandBufferSize = 4;
+  module.addPe(makeMinimalAddPe(Schedule::Temporal, "lhs_t", "rhs_t",
+                                "!fabric.bits_tag<32, 4>", "!fabric.bits<32>",
+                                std::move(temporal)));
+  addSpatialMemLoad(module);
+  addSpatialAddPe(module, "spatial0", "data", "a");
+  module.addExactBodyLine(
+      "%tagged = fabric.boundary [s2t] %spatial0, %tag : "
+      "(!fabric.bits<32>, !fabric.bits<4>) -> !fabric.bits_tag<32, 4>");
+  module.addExactBodyLine(
+      "%queued = fabric.fifo %tagged [max_depth = 4, bypassable = true] : "
+      "!fabric.bits_tag<32, 4>");
+  module.addExactBodyLine(
+      "%untagged = fabric.boundary [t2s] %queued : "
+      "!fabric.bits_tag<32, 4> -> !fabric.bits<32>");
+  addSpatialSwitch(module, {"bridge_out"}, {"untagged", "b", "c"}, {"111"});
+  addSpatialAddPe(module, "spatial1", "bridge_out", "d");
   return module;
 }
 
@@ -1005,6 +1185,112 @@ ModuleBuilder buildHeterogeneousIslandsAdg() {
                    {"111"});
   addSpatialAddPe(module, "bridge", "island_mux", "int_island");
   return module;
+}
+
+SystemBuilder buildDualSpatialSharedMemorySocAdg() {
+  SystemBuilder system("system_dual_spatial_shared_memory_soc", "sequential");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1"));
+  system.addMemory("dram0", 2 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
+  return system;
+}
+
+SystemBuilder buildCachedDualAccelSocAdg() {
+  SystemBuilder system("system_cached_dual_accel_soc", "release_acquire");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> hostCachePorts;
+  appendPorts(hostCachePorts, axiSubordinatePort("host"));
+  appendPorts(hostCachePorts, axiManagerPort("mem"));
+  system.addCache("l1d0", 64, 32 * 1024, std::move(hostCachePorts));
+
+  std::vector<std::string> accCachePorts;
+  appendPorts(accCachePorts, axiSubordinatePort("acc"));
+  appendPorts(accCachePorts, axiManagerPort("mem"));
+  system.addCache("acc_l1d0", 64, 16 * 1024, std::move(accCachePorts));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host_cache"));
+  appendPorts(dramPorts, axiSubordinatePort("acc_cache"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1"));
+  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
+  connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "host_cache");
+  connectAxiMemoryPort(system, "acc0", "mem", "acc_l1d0", "acc");
+  connectAxiMemoryPort(system, "acc_l1d0", "mem", "dram0", "acc_cache");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
+  return system;
+}
+
+SystemBuilder buildDmaScratchpadSocAdg() {
+  SystemBuilder system("system_dma_scratchpad_soc", "tso");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> dmaPorts;
+  appendPorts(dmaPorts, axiSubordinatePort("ctrl"));
+  appendPorts(dmaPorts, axiManagerPort("mem"));
+  system.addDmaEngine("dma0", 8, std::move(dmaPorts));
+
+  std::vector<std::string> scratchPorts;
+  appendPorts(scratchPorts, axiSubordinatePort("acc0"));
+  appendPorts(scratchPorts, axiSubordinatePort("dma0"));
+  system.addMemory("scratch0", 256 * 1024, std::move(scratchPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dma0", "ctrl");
+  connectAxiMemoryPort(system, "dma0", "mem", "scratch0", "dma0");
+  connectAxiMemoryPort(system, "acc0", "mem", "scratch0", "acc0");
+  return system;
+}
+
+SystemBuilder buildFixedAndSpatialSocAdg() {
+  SystemBuilder system("system_fixed_and_spatial_soc", "sequential");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addFixedAccelerator("crypto0", "xor_block", axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("crypto0"));
+  system.addMemory("dram0", 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "crypto0", "mem", "dram0", "crypto0");
+  return system;
+}
+
+llvm::Error printReusableSpatialTemplates(llvm::raw_ostream &os,
+                                          bool includeVectorAlu) {
+  if (llvm::Error err = buildSharedReductionAdg().print(os))
+    return err;
+  if (includeVectorAlu) {
+    os << '\n';
+    if (llvm::Error err = buildSharedVectorAluAdg().print(os))
+      return err;
+  }
+  os << '\n';
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -2873,6 +3159,189 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
   return module;
 }
 
+ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
+  ModuleBuilder module("shared_vector_math_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>");
+  for (unsigned index = 0; index < 8; ++index)
+    module.addInput(("idx" + llvm::Twine(index)).str(), "!fabric.bits<32>");
+  for (unsigned index = 0; index < 4; ++index)
+    module.addInput(("store_idx" + llvm::Twine(index)).str(),
+                    "!fabric.bits<32>");
+  module.addInput("ctrl", "!fabric.bits<0>")
+      .addInput("i32a", "!fabric.bits<32>")
+      .addInput("i32b", "!fabric.bits<32>")
+      .addInput("i32c", "!fabric.bits<32>")
+      .addInput("i32d", "!fabric.bits<32>");
+
+  std::vector<std::string> dataInputs;
+  for (unsigned index = 0; index < 8; ++index)
+    dataInputs.push_back(("data" + llvm::Twine(index)).str());
+  dataInputs.push_back("trunc0");
+  for (unsigned index = 0; index < 3; ++index)
+    dataInputs.push_back(("addr_mul" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 2; ++index)
+    dataInputs.push_back(("addr_add" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 3; ++index)
+    dataInputs.push_back(("neg" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 3; ++index)
+    dataInputs.push_back(("product" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 3; ++index)
+    dataInputs.push_back(("mac" + llvm::Twine(index)).str());
+  dataInputs.push_back("i32a");
+  dataInputs.push_back("i32b");
+  dataInputs.push_back("i32c");
+  dataInputs.push_back("i32d");
+
+  std::vector<std::string> dataOutputs;
+  for (unsigned index = 0; index < 8; ++index)
+    dataOutputs.push_back(("load_addr" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 4; ++index)
+    dataOutputs.push_back(("store_addr" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 4; ++index)
+    dataOutputs.push_back(("store_value" + llvm::Twine(index)).str());
+  dataOutputs.push_back("trunc_in");
+  for (unsigned index = 0; index < 3; ++index) {
+    dataOutputs.push_back(("addr_mul" + llvm::Twine(index) + "_lhs").str());
+    dataOutputs.push_back(("addr_mul" + llvm::Twine(index) + "_rhs").str());
+  }
+  for (unsigned index = 0; index < 2; ++index) {
+    dataOutputs.push_back(("addr_add" + llvm::Twine(index) + "_lhs").str());
+    dataOutputs.push_back(("addr_add" + llvm::Twine(index) + "_rhs").str());
+  }
+  for (unsigned index = 0; index < 3; ++index)
+    dataOutputs.push_back(("neg" + llvm::Twine(index) + "_in").str());
+  for (unsigned index = 0; index < 3; ++index) {
+    dataOutputs.push_back(("mul" + llvm::Twine(index) + "_lhs").str());
+    dataOutputs.push_back(("mul" + llvm::Twine(index) + "_rhs").str());
+  }
+  for (unsigned index = 0; index < 3; ++index) {
+    dataOutputs.push_back(("mac" + llvm::Twine(index) + "_lhs").str());
+    dataOutputs.push_back(("mac" + llvm::Twine(index) + "_rhs").str());
+    dataOutputs.push_back(("mac" + llvm::Twine(index) + "_acc").str());
+  }
+  addUniformSwitch(module, dataOutputs, dataInputs, "!fabric.bits<32>");
+
+  std::vector<std::string> controlInputs;
+  for (unsigned index = 0; index < 8; ++index)
+    controlInputs.push_back(("done" + llvm::Twine(index)).str());
+  for (unsigned index = 0; index < 4; ++index)
+    controlInputs.push_back(("store_done" + llvm::Twine(index)).str());
+  controlInputs.push_back("ctrl");
+
+  std::vector<std::string> controlOutputs;
+  for (unsigned index = 0; index < 16; ++index)
+    controlOutputs.push_back(("sync_in" + llvm::Twine(index)).str());
+  addUniformSwitch(module, controlOutputs, controlInputs, "!fabric.bits<0>");
+
+  addUnaryPe(module, "trunc0", "trunc_in", "llvm.trunc");
+  for (unsigned index = 0; index < 3; ++index)
+    addSpatialAddPe(module, ("addr_mul" + llvm::Twine(index)).str(),
+                    ("addr_mul" + llvm::Twine(index) + "_lhs").str(),
+                    ("addr_mul" + llvm::Twine(index) + "_rhs").str(),
+                    "arith.muli");
+  for (unsigned index = 0; index < 2; ++index)
+    addSpatialAddPe(module, ("addr_add" + llvm::Twine(index)).str(),
+                    ("addr_add" + llvm::Twine(index) + "_lhs").str(),
+                    ("addr_add" + llvm::Twine(index) + "_rhs").str(),
+                    "arith.addi");
+  for (unsigned index = 0; index < 3; ++index)
+    addUnaryPe(module, ("neg" + llvm::Twine(index)).str(),
+               ("neg" + llvm::Twine(index) + "_in").str(), "llvm.fneg");
+  for (unsigned index = 0; index < 3; ++index)
+    addSpatialAddPe(module, ("product" + llvm::Twine(index)).str(),
+                    ("mul" + llvm::Twine(index) + "_lhs").str(),
+                    ("mul" + llvm::Twine(index) + "_rhs").str(),
+                    "arith.mulf");
+  for (unsigned index = 0; index < 3; ++index)
+    addTernaryPe(module, ("mac" + llvm::Twine(index)).str(),
+                 ("mac" + llvm::Twine(index) + "_lhs").str(),
+                 ("mac" + llvm::Twine(index) + "_rhs").str(),
+                 ("mac" + llvm::Twine(index) + "_acc").str(),
+                 "llvm.intr.fmuladd");
+
+  module.addExactBodyLine("%sync_done =");
+  module.addExactBodyLine(
+      "    fabric.pe [spatial] (%p0 = %sync_in0 : !fabric.bits<0>,");
+  for (unsigned index = 1; index < 16; ++index) {
+    std::string suffix = index == 15 ? ")" : ",";
+    module.addExactBodyLine("                         %p" +
+                            std::to_string(index) + " = %sync_in" +
+                            std::to_string(index) +
+                            " : !fabric.bits<0>" + suffix);
+  }
+  module.addExactBodyLine("        -> !fabric.bits<0> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%f0 = %p0 : !fabric.bits<0>,");
+  for (unsigned index = 1; index < 16; ++index) {
+    std::string suffix = index == 15 ? ")" : ",";
+    module.addExactBodyLine("                %f" + std::to_string(index) +
+                            " = %p" + std::to_string(index) +
+                            " : !fabric.bits<0>" + suffix);
+  }
+  module.addExactBodyLine("        -> !fabric.bits<0> {");
+  module.addExactBodyLine(
+      "        %s0, %s1, %s2, %s3, %s4, %s5, %s6, %s7, %s8, %s9, %s10, "
+      "%s11, %s12, %s13, %s14, %s15 =");
+  module.addExactBodyLine(
+      "            fabric.op [@dataflow.sync] (%f0, %f1, %f2, %f3, %f4, "
+      "%f5, %f6, %f7, %f8, %f9, %f10, %f11, %f12, %f13, %f14, %f15)");
+  module.addExactBodyLine(
+      "            {sw_configs = {bitmask = \"1111111111111111\"}}");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>)");
+  module.addExactBodyLine(
+      "            -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>)");
+  module.addExactBodyLine("        fabric.yield %s0 : !fabric.bits<0>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+
+  module.addExactBodyLine(
+      "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
+      "%data4, %done4, %data5, %done5, %data6, %done6, %data7, %done7, "
+      "%store_done0, %store_done1, %store_done2, %store_done3 =");
+  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr)");
+  module.addExactBodyLine(
+      "      load(%load_addr0, %ctrl, %load_addr1, %ctrl, %load_addr2, "
+      "%ctrl, %load_addr3, %ctrl, %load_addr4, %ctrl, %load_addr5, "
+      "%ctrl, %load_addr6, %ctrl, %load_addr7, %ctrl)");
+  module.addExactBodyLine(
+      "      store(%store_addr0, %store_value0, %ctrl, %store_addr1, "
+      "%store_value1, %ctrl, %store_addr2, %store_value2, %ctrl, "
+      "%store_addr3, %store_value3, %ctrl)");
+  module.addExactBodyLine(
+      "      [{load_group_size = 8 : i32, store_group_size = 4 : i32}]");
+  module.addExactBodyLine(
+      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)");
+  module.addExactBodyLine(
+      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
+      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
+      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
+      "!fabric.bits<0>, !fabric.bits<0>)");
+  return module;
+}
+
 ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
   ModuleBuilder module("shared_vector_mesh_adg");
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
@@ -3114,6 +3583,10 @@ llvm::Error loom::adg::writeSharedVectorAluAdg(llvm::raw_ostream &os) {
   return buildSharedVectorAluAdg().print(os);
 }
 
+llvm::Error loom::adg::writeSharedVectorMathAdg(llvm::raw_ostream &os) {
+  return buildSharedVectorMathAdg().print(os);
+}
+
 llvm::Error loom::adg::writeSharedVectorMeshAdg(llvm::raw_ostream &os) {
   return buildSharedVectorMeshAdg().print(os);
 }
@@ -3123,9 +3596,8 @@ llvm::Error loom::adg::writeFullSpatialCoreAdg(llvm::raw_ostream &os) {
 }
 
 llvm::Error loom::adg::writeHeterogeneousSocAdg(llvm::raw_ostream &os) {
-  if (llvm::Error err = buildSharedReductionAdg().print(os))
+  if (llvm::Error err = printReusableSpatialTemplates(os, false))
     return err;
-  os << '\n';
   return buildHeterogeneousSocAdg().print(os);
 }
 
@@ -3141,15 +3613,54 @@ llvm::Error loom::adg::writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,
     return buildSystolicArrayAdg().print(os);
   if (family == "clustered-array")
     return buildClusteredArrayAdg().print(os);
+  if (family == "folded-ring")
+    return buildFoldedRingAdg().print(os);
+  if (family == "mesh-diagonal")
+    return buildMeshDiagonalAdg().print(os);
+  if (family == "multi-lane-pipeline")
+    return buildMultiLanePipelineAdg().print(os);
   if (family == "reduction-tree")
     return buildReductionTreeAdg().print(os);
   if (family == "cross-coupled-switch")
     return buildCrossCoupledSwitchAdg().print(os);
+  if (family == "diamond-bypass")
+    return buildDiamondBypassAdg().print(os);
+  if (family == "memory-fanout")
+    return buildMemoryFanoutAdg().print(os);
+  if (family == "mixed-temporal-bridge")
+    return buildMixedTemporalBridgeAdg().print(os);
   if (family == "sparse-long-link")
     return buildSparseLongLinkAdg().print(os);
   if (family == "heterogeneous-islands")
     return buildHeterogeneousIslandsAdg().print(os);
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unknown topology matrix case %s",
+                                 family.str().c_str());
+}
+
+llvm::Error loom::adg::writeSystemTopologyMatrixAdg(llvm::raw_ostream &os,
+                                                    llvm::StringRef family) {
+  if (family == "dual-spatial-shared-memory") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildDualSpatialSharedMemorySocAdg().print(os);
+  }
+  if (family == "cached-dual-accel") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildCachedDualAccelSocAdg().print(os);
+  }
+  if (family == "dma-scratchpad") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, false))
+      return err;
+    return buildDmaScratchpadSocAdg().print(os);
+  }
+  if (family == "fixed-and-spatial") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, false))
+      return err;
+    return buildFixedAndSpatialSocAdg().print(os);
+  }
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unknown system topology matrix case %s",
                                  family.str().c_str());
 }

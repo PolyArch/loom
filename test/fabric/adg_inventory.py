@@ -31,19 +31,37 @@ LINK_RE = re.compile(r"\bfabric\.link\b")
 
 TOPOLOGY_MATRIX_CASES = (
     ("chain-1d", "regular", "chain_1d"),
+    ("folded-ring", "regular", "folded_ring"),
     ("mesh-2d", "regular", "mesh_2d"),
+    ("mesh-diagonal", "regular", "mesh_diagonal"),
+    ("multi-lane-pipeline", "regular", "multi_lane_pipeline"),
     ("torus-edge", "regular", "torus_edge"),
     ("systolic-array", "regular", "systolic_array"),
     ("clustered-array", "regular", "clustered_array"),
+    ("diamond-bypass", "irregular", "diamond_bypass"),
     ("reduction-tree", "irregular", "reduction_tree"),
     ("cross-coupled-switch", "irregular", "cross_coupled_switch"),
+    ("memory-fanout", "irregular", "memory_fanout"),
+    ("mixed-temporal-bridge", "irregular", "mixed_temporal_bridge"),
     ("sparse-long-link", "irregular", "sparse_long_link"),
     ("heterogeneous-islands", "irregular", "heterogeneous_islands"),
+)
+
+SYSTEM_MATRIX_CASES = (
+    ("dual-spatial-shared-memory", "irregular", "dual_spatial_shared_memory"),
+    ("cached-dual-accel", "irregular", "cached_dual_accel"),
+    ("dma-scratchpad", "irregular", "dma_scratchpad"),
+    ("fixed-and-spatial", "irregular", "fixed_and_spatial"),
 )
 
 TOPOLOGY_CLASSIFICATION_BY_RECIPE = {
     f"adg-builder::topology-{case}": (layout_class, topology_family)
     for case, layout_class, topology_family in TOPOLOGY_MATRIX_CASES
+}
+
+SYSTEM_CLASSIFICATION_BY_RECIPE = {
+    f"adg-builder::system-{case}": (layout_class, topology_family)
+    for case, layout_class, topology_family in SYSTEM_MATRIX_CASES
 }
 
 
@@ -69,6 +87,11 @@ BUILDER_RECIPES = (
         "filename": "shared-vector-alu.mlir",
     },
     {
+        "recipe_id": "adg-builder::shared-vector-math",
+        "arguments": ["--shared-vector-math"],
+        "filename": "shared-vector-math.mlir",
+    },
+    {
         "recipe_id": "adg-builder::shared-vector-mesh",
         "arguments": ["--shared-vector-mesh"],
         "filename": "shared-vector-mesh.mlir",
@@ -90,6 +113,14 @@ BUILDER_RECIPES = (
             "filename": f"topology-{case}.mlir",
         }
         for case, _, _ in TOPOLOGY_MATRIX_CASES
+    ),
+    *(
+        {
+            "recipe_id": f"adg-builder::system-{case}",
+            "arguments": ["--system-matrix-case", case],
+            "filename": f"system-{case}.mlir",
+        }
+        for case, _, _ in SYSTEM_MATRIX_CASES
     ),
 )
 
@@ -200,6 +231,8 @@ def system_bodies(text: str) -> list[tuple[str, list[str]]]:
 
 def classify_layout(recipe_id: str, root_kind: str, root_symbol: str) -> tuple[str, str]:
     if root_kind == "fabric.system":
+        if recipe_id in SYSTEM_CLASSIFICATION_BY_RECIPE:
+            return SYSTEM_CLASSIFICATION_BY_RECIPE[recipe_id]
         return "irregular", "heterogeneous_soc"
     if recipe_id in TOPOLOGY_CLASSIFICATION_BY_RECIPE:
         return TOPOLOGY_CLASSIFICATION_BY_RECIPE[recipe_id]
@@ -209,6 +242,8 @@ def classify_layout(recipe_id: str, root_kind: str, root_symbol: str) -> tuple[s
         return "irregular", "reduction_network"
     if "shared-vector-alu" in recipe_id:
         return "irregular", "vector_alu_network"
+    if "shared-vector-math" in recipe_id:
+        return "irregular", "vector_math_network"
     if "shared-vector-mesh" in recipe_id:
         return "regular", "vector_mesh"
     if "full-spatialcore" in recipe_id:

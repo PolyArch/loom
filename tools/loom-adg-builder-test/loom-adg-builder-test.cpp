@@ -18,6 +18,11 @@ static llvm::cl::opt<bool>
                     llvm::cl::desc("emit a shared vector ALU SpatialCore ADG"),
                     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> sharedVectorMath(
+    "shared-vector-math",
+    llvm::cl::desc("emit a shared vector math SpatialCore ADG"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> sharedVectorMesh(
     "shared-vector-mesh",
     llvm::cl::desc("emit a shared vector mesh SpatialCore ADG"),
@@ -48,6 +53,11 @@ static llvm::cl::opt<std::string> topologyMatrixCase(
     llvm::cl::desc("emit a named topology-matrix SpatialCore ADG"),
     llvm::cl::init(""));
 
+static llvm::cl::opt<std::string> systemMatrixCase(
+    "system-matrix-case",
+    llvm::cl::desc("emit a named topology-matrix system-level ADG"),
+    llvm::cl::init(""));
+
 static llvm::cl::opt<bool> invalidYieldTypes(
     "invalid-yield-types",
     llvm::cl::desc("emit an invalid ADG with mismatched FU yield types"),
@@ -70,10 +80,11 @@ int main(int argc, char **argv) {
 
   unsigned selectedRecipes =
       (sharedReduction ? 1 : 0) + (sharedVectorAlu ? 1 : 0) +
-      (sharedVectorMesh ? 1 : 0) + (fullSpatialCore ? 1 : 0) +
-      (minimalSpatial ? 1 : 0) + (minimalTemporal ? 1 : 0) +
-      (heterogeneousSoc ? 1 : 0) +
-      (!topologyMatrixCase.empty() ? 1 : 0);
+      (sharedVectorMath ? 1 : 0) + (sharedVectorMesh ? 1 : 0) +
+      (fullSpatialCore ? 1 : 0) + (minimalSpatial ? 1 : 0) +
+      (minimalTemporal ? 1 : 0) + (heterogeneousSoc ? 1 : 0) +
+      (!topologyMatrixCase.empty() ? 1 : 0) +
+      (!systemMatrixCase.empty() ? 1 : 0);
   selectedRecipes += (invalidYieldTypes ? 1 : 0) + (invalidYieldCount ? 1 : 0);
   if (selectedRecipes == 0) {
     llvm::errs() << "error: no ADG recipe selected\n";
@@ -99,6 +110,8 @@ int main(int argc, char **argv) {
       return loom::adg::writeMinimalTemporalAdg(out);
     if (sharedVectorAlu)
       return loom::adg::writeSharedVectorAluAdg(out);
+    if (sharedVectorMath)
+      return loom::adg::writeSharedVectorMathAdg(out);
     if (sharedVectorMesh)
       return loom::adg::writeSharedVectorMeshAdg(out);
     if (fullSpatialCore)
@@ -108,6 +121,8 @@ int main(int argc, char **argv) {
     if (!topologyMatrixCase.empty())
       return loom::adg::writeSpatialTopologyMatrixAdg(out,
                                                       topologyMatrixCase);
+    if (!systemMatrixCase.empty())
+      return loom::adg::writeSystemTopologyMatrixAdg(out, systemMatrixCase);
     if (invalidYieldTypes) {
       loom::adg::ModuleBuilder module("invalid_yield_types_adg");
       module.addInput("lhs", "!fabric.bits<32>");

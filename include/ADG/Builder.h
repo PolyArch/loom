@@ -172,6 +172,7 @@ ModuleBuilder buildMinimalSpatialAdg();
 ModuleBuilder buildMinimalTemporalAdg();
 ModuleBuilder buildSharedReductionAdg();
 ModuleBuilder buildSharedVectorAluAdg();
+ModuleBuilder buildSharedVectorMathAdg();
 ModuleBuilder buildSharedVectorMeshAdg();
 ModuleBuilder buildFullSpatialCoreAdg();
 SystemBuilder buildHeterogeneousSocAdg();
@@ -180,11 +181,14 @@ llvm::Error writeMinimalSpatialAdg(llvm::raw_ostream &os);
 llvm::Error writeMinimalTemporalAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedReductionAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedVectorAluAdg(llvm::raw_ostream &os);
+llvm::Error writeSharedVectorMathAdg(llvm::raw_ostream &os);
 llvm::Error writeSharedVectorMeshAdg(llvm::raw_ostream &os);
 llvm::Error writeFullSpatialCoreAdg(llvm::raw_ostream &os);
 llvm::Error writeHeterogeneousSocAdg(llvm::raw_ostream &os);
 llvm::Error writeSpatialTopologyMatrixAdg(llvm::raw_ostream &os,
                                           llvm::StringRef family);
+llvm::Error writeSystemTopologyMatrixAdg(llvm::raw_ostream &os,
+                                         llvm::StringRef family);
 
 } // namespace adg
 } // namespace loom
