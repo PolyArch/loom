@@ -32,8 +32,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
+#include <queue>
 #include <set>
 #include <string>
 #include <system_error>
@@ -600,10 +602,26 @@ bool switchConnectsInputToOutput(llvm::ArrayRef<std::string> rows,
   return row[inputCount - 1 - inputIndex] == '1';
 }
 
+std::tuple<std::string, std::string, std::string, std::string>
+routeSegmentTieKey(const HardwareRouteSegment &segment) {
+  return {segment.sinkEndpoint, segment.segmentKind, segment.hardwareRef,
+          segment.sourceEndpoint};
+}
+
 void addTopologySegment(HardwareTopology &topology,
                         HardwareRouteSegment segment) {
   topology.segmentsBySource[segment.sourceEndpoint].push_back(
       std::move(segment));
+}
+
+void normalizeTopologyRoutes(HardwareTopology &topology) {
+  for (auto &[sourceEndpoint, segments] : topology.segmentsBySource) {
+    (void)sourceEndpoint;
+    llvm::sort(segments, [](const HardwareRouteSegment &lhs,
+                            const HardwareRouteSegment &rhs) {
+      return routeSegmentTieKey(lhs) < routeSegmentTieKey(rhs);
+    });
+  }
 }
 
 std::pair<std::uint64_t, std::uint64_t> memPortCounts(mlir::Operation *op) {
@@ -911,6 +929,7 @@ HardwareTopology buildHardwareTopology(
       }
     }
   });
+  normalizeTopologyRoutes(topology);
   return topology;
 }
 
@@ -1607,40 +1626,102 @@ void collectValueProducers(
   }
 }
 
-bool findRouteDfs(const HardwareTopology &topology,
-                  const std::string &currentEndpoint,
-                  const std::string &targetEndpoint, llvm::StringSet<> &visited,
-                  llvm::SmallVectorImpl<RouteSegment> &path) {
-  if (currentEndpoint == targetEndpoint)
-    return true;
-  auto segmentsIt = topology.segmentsBySource.find(currentEndpoint);
-  if (segmentsIt == topology.segmentsBySource.end())
-    return false;
-  for (const HardwareRouteSegment &candidate : segmentsIt->second) {
-    if (!visited.insert(candidate.sinkEndpoint).second)
-      continue;
-    RouteSegment segment;
-    segment.segmentKind = candidate.segmentKind;
-    segment.sourceEndpoint = candidate.sourceEndpoint;
-    segment.sinkEndpoint = candidate.sinkEndpoint;
-    segment.hardwareRef = candidate.hardwareRef;
-    path.push_back(std::move(segment));
-    if (findRouteDfs(topology, candidate.sinkEndpoint, targetEndpoint, visited,
-                     path))
-      return true;
-    path.pop_back();
-  }
-  return false;
+std::uint64_t routeSegmentCost(const HardwareRouteSegment &segment) {
+  (void)segment;
+  return 1;
+}
+
+std::uint64_t routeHeuristic(llvm::StringRef currentEndpoint,
+                             llvm::StringRef targetEndpoint) {
+  (void)currentEndpoint;
+  (void)targetEndpoint;
+  return 0;
 }
 
 std::optional<llvm::SmallVector<RouteSegment, 2>>
 findRoute(const HardwareTopology &topology, const std::string &sourceEndpoint,
           const std::string &sinkEndpoint) {
-  llvm::StringSet<> visited;
-  visited.insert(sourceEndpoint);
-  llvm::SmallVector<RouteSegment, 2> path;
-  if (!findRouteDfs(topology, sourceEndpoint, sinkEndpoint, visited, path))
+  struct SearchState {
+    std::uint64_t estimatedTotalCost = 0;
+    std::uint64_t routeCost = 0;
+    std::string endpoint;
+
+    bool operator>(const SearchState &other) const {
+      return std::tie(estimatedTotalCost, routeCost, endpoint) >
+             std::tie(other.estimatedTotalCost, other.routeCost,
+                      other.endpoint);
+    }
+  };
+
+  struct Predecessor {
+    std::string previousEndpoint;
+    HardwareRouteSegment segment;
+  };
+
+  constexpr std::uint64_t kUnreachableRouteCost =
+      std::numeric_limits<std::uint64_t>::max() / 4;
+  std::priority_queue<SearchState, std::vector<SearchState>,
+                      std::greater<SearchState>>
+      frontier;
+  std::map<std::string, std::uint64_t> bestCost;
+  std::map<std::string, Predecessor> predecessor;
+
+  bestCost[sourceEndpoint] = 0;
+  frontier.push(SearchState{routeHeuristic(sourceEndpoint, sinkEndpoint), 0,
+                            sourceEndpoint});
+
+  while (!frontier.empty()) {
+    SearchState current = frontier.top();
+    frontier.pop();
+    auto bestIt = bestCost.find(current.endpoint);
+    if (bestIt == bestCost.end() || current.routeCost != bestIt->second)
+      continue;
+    if (current.endpoint == sinkEndpoint)
+      break;
+
+    auto segmentsIt = topology.segmentsBySource.find(current.endpoint);
+    if (segmentsIt == topology.segmentsBySource.end())
+      continue;
+    for (const HardwareRouteSegment &candidate : segmentsIt->second) {
+      std::uint64_t segmentCost = routeSegmentCost(candidate);
+      if (current.routeCost > kUnreachableRouteCost - segmentCost)
+        continue;
+      std::uint64_t nextCost = current.routeCost + segmentCost;
+      auto nextBest = bestCost.find(candidate.sinkEndpoint);
+      if (nextBest != bestCost.end() && nextCost >= nextBest->second)
+        continue;
+      bestCost[candidate.sinkEndpoint] = nextCost;
+      predecessor[candidate.sinkEndpoint] =
+          Predecessor{current.endpoint, candidate};
+      std::uint64_t estimatedTotal =
+          nextCost + routeHeuristic(candidate.sinkEndpoint, sinkEndpoint);
+      frontier.push(SearchState{estimatedTotal, nextCost,
+                                candidate.sinkEndpoint});
+    }
+  }
+
+  if (!bestCost.count(sinkEndpoint))
     return std::nullopt;
+
+  llvm::SmallVector<RouteSegment, 2> reversedPath;
+  std::string currentEndpoint = sinkEndpoint;
+  while (currentEndpoint != sourceEndpoint) {
+    auto predecessorIt = predecessor.find(currentEndpoint);
+    if (predecessorIt == predecessor.end())
+      return std::nullopt;
+    const HardwareRouteSegment &candidate = predecessorIt->second.segment;
+    RouteSegment segment;
+    segment.segmentKind = candidate.segmentKind;
+    segment.sourceEndpoint = candidate.sourceEndpoint;
+    segment.sinkEndpoint = candidate.sinkEndpoint;
+    segment.hardwareRef = candidate.hardwareRef;
+    reversedPath.push_back(std::move(segment));
+    currentEndpoint = predecessorIt->second.previousEndpoint;
+  }
+  llvm::SmallVector<RouteSegment, 2> path;
+  path.reserve(reversedPath.size());
+  for (const RouteSegment &segment : llvm::reverse(reversedPath))
+    path.push_back(segment);
   for (auto [index, segment] : llvm::enumerate(path))
     segment.segmentId = "seg" + std::to_string(index);
   return path;
