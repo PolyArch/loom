@@ -1,7 +1,7 @@
 # ASAP Model Notes
 - The two inner loops that use j as the iterator read from different/disjoint indices of input_A
     - They both have a multiply and accumulate line and can be tree reduce
-- Outer i loop must be sequential since the reads of output_x[j] reads depend on the final values of output_x[i], where i < j
+- Outer i loop must be sequential since the reads of output_x[j] reads depend on the final values of output_x[i], where j < i (these values are produced by earlier outer-loop iterations)
 
 # Gauss-Seidel Iteration Performance
 
@@ -190,4 +190,5 @@ graph TD
     sub --> div
     diag --> div
     div --> st
+    st -->|i becomes i - 1<br>after loop update| prev_store
 ```
