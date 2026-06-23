@@ -688,8 +688,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 3,
-            "fail": 1,
+            "pass": 4,
+            "fail": 0,
             "blocked": 6,
             "unsupported": 8,
             "missing_status": 0,
@@ -720,6 +720,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -1515,6 +1516,123 @@ def assert_cmsis_mapping_blocker_row(
         or comparison_report.get("performance_comparison_status") != "blocked"
     ):
         raise AssertionError(f"unexpected blocked CMSIS comparison report: {comparison_report}")
+
+
+def assert_cmsis_vector_sum_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    assert_cmsis_cgra_pass_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-nn",
+        "FullyConnectedFunctions/arm_vector_sum_s8.c",
+        "arm_vector_sum_s8",
+    )
+    row = one_row(rows, "cmsis-nn", "FullyConnectedFunctions/arm_vector_sum_s8.c")
+    expected_memory = {
+        "arg8": ["i32:3", "i32:7"],
+        "arg9": ["i8:1", "i8:2", "i8:3", "i8:4"],
+    }
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "FullyConnectedFunctions/arm_vector_sum_s8.c"
+        or dfg_report.get("graph") != "g_t_arm_vector_sum_s8_red_0_0"
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("optimistic_cycles") != 68
+        or dfg_report.get("dynamic_work_items") != 2
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 6
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 2
+        or dfg_report.get("operation_fire_counts", {}).get("arith.addi") != 8
+        or dfg_report.get("operation_fire_counts", {}).get("arith.muli") != 2
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.sext") != 4
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_vector_sum_s8 DFG evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    expected_mapping = {
+        "kind": "pnr_mapping",
+        "workload": "FullyConnectedFunctions/arm_vector_sum_s8.c",
+        "graph": "g_t_arm_vector_sum_s8_red_0_0",
+        "hardware": "shared_reduction_adg",
+        "status": "pass",
+        "placed_records": 11,
+        "routed_edges": 10,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 264,
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(
+                f"arm_vector_sum_s8 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}"
+            )
+    routes_by_edge = {
+        route.get("edge_ref"): route
+        for route in mapping_artifact.get("routes", [])
+        if isinstance(route, dict)
+    }
+    required_routes = {
+        "arith.addi#0.result0->arith.addi#1.operand0": (
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand0",
+        ),
+        "arith.addi#1.result0->arith.muli#0.operand0": (
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand0",
+        ),
+        "arith.muli#0.result0->arith.addi#2.operand1": (
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand1",
+        ),
+        "dataflow.load#1.result0->arith.addi#2.operand0": (
+            "shared_reduction_adg::mem.load#1.result0",
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.operand0",
+        ),
+        "arith.addi#2.result0->dataflow.store#0.operand2": (
+            r"re:shared_reduction_adg::fabric\.op#[0-9]+\.result0",
+            "shared_reduction_adg::mem.store#0.operand1",
+        ),
+    }
+    for edge_ref, (source_endpoint, sink_endpoint) in required_routes.items():
+        route = routes_by_edge.get(edge_ref)
+        if route is None:
+            raise AssertionError(f"arm_vector_sum_s8 mapping missed route {edge_ref}: {mapping_artifact}")
+        assert_routed_endpoint_shape(
+            route,
+            edge_ref,
+            source_endpoint=source_endpoint,
+            sink_endpoint=sink_endpoint,
+            label="arm_vector_sum_s8",
+        )
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != "FullyConnectedFunctions/arm_vector_sum_s8.c"
+        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("status") != "pass"
+        or cgra_report.get("dfg_cycles") != 68
+        or cgra_report.get("hardware_aware_cycles") != 126
+        or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
+        or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra_report.get("final_outputs") != ["none"]
+        or cgra_report.get("final_memory_state") != expected_memory
+        or comparison_report.get("status") != "pass"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "pass"
+    ):
+        raise AssertionError(
+            f"unexpected arm_vector_sum_s8 CGRA comparison evidence: {cgra_report} {comparison_report}"
+        )
 
 
 def assert_cmsis_relu_q7_cgra_evidence(
@@ -2401,8 +2519,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 3,
-            "fail": 1,
+            "pass": 4,
+            "fail": 0,
             "blocked": 6,
             "unsupported": 8,
             "missing_status": 0,
@@ -2453,13 +2571,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_mapping_blocker_row(
-        repo,
-        rows,
-        "cmsis-nn",
-        "FullyConnectedFunctions/arm_vector_sum_s8.c",
-        diagnostic_substring="unrouted software edges lack Fabric ADG connectivity",
-    )
+    assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"

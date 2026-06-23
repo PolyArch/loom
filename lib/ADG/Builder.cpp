@@ -2316,6 +2316,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                               "data1",
                                               "data0",
                                               "carried_scan",
+                                              "running",
                                               "squared_data",
                                               "bit_carry",
                                               "reduction_scale",
@@ -2338,13 +2339,15 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"i32b", "data0", "data1", "fp_invariant", "idx", "reduction_scale",
        "bit_invariant", "bit_invariant_aux0", "bit_invariant_aux1", "int_rem",
        "aux_idx", "aux_active_idx", "cast0_result", "cast1_result",
-       "cast2_result", "cast3_result", "int_extui"});
+       "cast2_result", "cast3_result", "int_extui", "int_product",
+       "int_product_aux", "squared_data"});
   addSingleResultBits32Switch("int_mul_lhs",
                               {"i32a", "int_xor", "data0", "data1", "int_div0",
                                "int_div1", "aux_idx", "aux_active_idx",
                                "bit_invariant", "bit_invariant_aux0",
                                "bit_invariant_aux1", "cast0_result",
-                               "cast1_result", "cast2_result", "cast3_result"});
+                               "cast1_result", "cast2_result", "cast3_result",
+                               "int_sum", "running"});
   addSingleResultBits32Switch(
       "int_mul_rhs",
       {"i32b", "data0", "data1", "reduction_scale", "bit_invariant",
@@ -2608,6 +2611,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                                "int_product",
                                                "reduction_scale",
                                                "int_sum",
+                                               "addr_sum",
                                                "fp_diff",
                                                "fp_diff_aux",
                                                "compute_demux_false",
@@ -2651,14 +2655,16 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch("addr_add_lhs",
                               {"idx", "i32a", "i32b", "i32c", "squared_data",
                                "int_product", "running", "reduction_scale",
-                               "int_product_aux"});
+                               "int_product_aux", "data0", "data1"});
   module.addExactBodyLine(
       "%addr_add_rhs = fabric.switch [spatial] %fp_invariant, "
       "%reduction_scale, %i32a, %i32b, %idx, %int_rem, %aux_idx, "
-      "%aux_active_idx, %carried_scan");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111111\"]}]");
+      "%aux_active_idx, %carried_scan, %int_product, %int_product_aux, "
+      "%squared_data");
+  module.addExactBodyLine("  [{connectivity_table = [\"111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
@@ -2817,7 +2823,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"data0", "data1", "data2", "idx", "data4", "int_div0", "int_div1",
        "aux_idx", "aux_active_idx", "bit_invariant", "bit_invariant_aux0",
        "bit_invariant_aux1", "cast0_result", "cast1_result", "cast2_result",
-       "cast3_result", "aux_invariant0", "aux_invariant1", "aux_invariant2"});
+       "cast3_result", "aux_invariant0", "aux_invariant1", "aux_invariant2",
+       "int_sum", "running"});
   addSingleResultBits32Switch(
       "mul_rhs_input",
       {"data0", "data1", "data2", "data4", "reduction_scale", "bit_invariant",
