@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 38
+APP_NO_DFG_TIER_COUNT = 37
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -58,6 +59,7 @@ DEFAULT_SWEEP_CASES = (
     "conv1d",
     "convolve_1d_same",
     "crc32",
+    "cross_product",
     "fir_filter",
     "fir_filter_stateful",
     "gather",
@@ -605,6 +607,163 @@ def assert_operation_fire_counts(case: str, dfg: dict, expected_counts: dict[str
         actual = actual_counts.get(op_name)
         if actual != expected:
             raise AssertionError(f"{case} {op_name} fire count should be {expected}, got {actual}: {dfg}")
+
+
+def f32_token(value: float) -> str:
+    if value == 0.0 and math.copysign(1.0, value) < 0.0:
+        return "f32:-0"
+    if math.floor(value) == value:
+        return f"f32:{int(value)}"
+    return f"f32:{value:.6f}"
+
+
+def dot_product_3d_values() -> list[str]:
+    values = []
+    for i in range(16):
+        lhs0 = i + 1
+        lhs1 = (i % 5) - 2
+        lhs2 = (i % 3) + 1
+        values.append(f32_token(2 * lhs0 - 3 * lhs1 + 4 * lhs2))
+    return values
+
+
+def assert_dot_product_3d_evidence(evidence_dir: Path) -> None:
+    expected_products = dot_product_3d_values()
+    expected_outputs = ["none", "none", "f32:402"]
+
+    dfg_path = evidence_dir / "dot_product_3d.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    memory = dfg.get("final_memory_state", {})
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 32
+        or dfg.get("final_outputs") != expected_outputs
+        or memory.get("g_t_dot_product_3d_0_0:arg6") != expected_products
+        or memory.get("g_t_main_red_0_0:arg4") != expected_products
+    ):
+        raise AssertionError(f"dot_product_3d DFG evidence should carry all real product lanes: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        "dot_product_3d",
+        dfg,
+        {
+            "dataflow.load": 112,
+            "dataflow.store": 16,
+            "llvm.intr.fmuladd": 32,
+            "arith.mulf": 16,
+            "dataflow.sync": 32,
+        },
+    )
+    component_identities = dfg.get("component_dfg_sim_report_identities", [])
+    components = [json.loads((evidence_dir / f"{identity}.json").read_text()) for identity in component_identities]
+    by_graph = {component.get("graph"): component for component in components}
+    core = by_graph.get("g_t_dot_product_3d_0_0")
+    reduction = by_graph.get("g_t_main_red_0_0")
+    if (
+        not isinstance(core, dict)
+        or not isinstance(reduction, dict)
+        or core.get("diagnostics") != []
+        or reduction.get("diagnostics") != []
+        or core.get("final_memory_state", {}).get("arg6") != expected_products
+        or reduction.get("final_memory_state", {}).get("arg4") != expected_products
+    ):
+        raise AssertionError(f"dot_product_3d component reports should carry real product lanes: {dfg_path}: {dfg}")
+
+    cgra_path = evidence_dir / "dot_product_3d.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state", {}).get("g_t_dot_product_3d_0_0:arg6") != expected_products
+        or cgra.get("final_memory_state", {}).get("g_t_main_red_0_0:arg4") != expected_products
+        or cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"dot_product_3d CGRA evidence should carry all real product lanes: {cgra_path}: {cgra}")
+
+
+def cross_product_lhs_values() -> list[str]:
+    values = []
+    for i in range(64):
+        value = 1.0 + i * 0.1
+        values.extend((f32_token(value), "f32:0", "f32:0"))
+    return values
+
+
+def cross_product_rhs_values() -> list[str]:
+    values = []
+    for i in range(64):
+        value = 1.0 + i * 0.1
+        values.extend(("f32:0", f32_token(value), "f32:0"))
+    return values
+
+
+def cross_product_output_values() -> list[str]:
+    values = []
+    for i in range(64):
+        value = 1.0 + i * 0.1
+        values.extend(("f32:0", "f32:0", f32_token(value * value)))
+    return values
+
+
+def assert_cross_product_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg2": cross_product_lhs_values(),
+        "arg5": cross_product_rhs_values(),
+        "arg6": cross_product_output_values(),
+    }
+    dfg_path = evidence_dir / "cross_product.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 64
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"cross_product DFG evidence should write all real output lanes: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        "cross_product",
+        dfg,
+        {
+            "dataflow.load": 384,
+            "dataflow.store": 192,
+            "llvm.fneg": 192,
+            "arith.mulf": 192,
+            "llvm.intr.fmuladd": 192,
+            "dataflow.sync": 64,
+        },
+    )
+
+    mapping_path = evidence_dir / "cross_product.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_vector_math_adg"
+        or mapping.get("placed_records") != 25
+        or mapping.get("routed_edges") != 44
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"cross_product should map onto the shared vector math ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "cross_product.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_vector_math_adg"
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"cross_product CGRA evidence should preserve the DFG final state: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "cross_product.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"cross_product comparison should pass with real final state: {comparison_path}: {comparison}")
 
 
 def assert_prefix_sum_exclusive_evidence(evidence_dir: Path) -> None:
@@ -1778,6 +1937,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "crc32",
                 "--case",
+                "cross_product",
+                "--case",
                 "variance",
                 "--case",
                 "integrate_trapz",
@@ -1851,6 +2012,7 @@ def main(argv: list[str]) -> int:
             "conv1d",
             "variance",
             "covariance",
+            "cross_product",
             "integrate_trapz",
             "delta_encode",
             "delta_decode",
@@ -1908,6 +2070,8 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "covariance", 2048)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
+        assert_dot_product_3d_evidence(evidence_dir)
+        assert_cross_product_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
@@ -1984,6 +2148,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_decode", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "cross_product", "shared_vector_math_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "delta_decode")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -2270,6 +2435,7 @@ def main(argv: list[str]) -> int:
             "conv1d",
             "variance",
             "covariance",
+            "cross_product",
             "integrate_trapz",
             "delta_encode",
             "delta_decode",
@@ -2366,15 +2532,18 @@ def main(argv: list[str]) -> int:
         covariance_row = one_row(rows, "covariance")
         if covariance_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"covariance should use shared reduction hardware: {covariance_row}")
+        cross_product_row = one_row(rows, "cross_product")
+        if cross_product_row["hardware_system"] != "shared_vector_math_adg":
+            raise AssertionError(f"cross_product should use shared vector math hardware: {cross_product_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 53,
+            "pass": 54,
             "fail": 0,
-            "blocked": 56,
+            "blocked": 55,
             "unsupported": 0,
             "missing_status": 0,
         }

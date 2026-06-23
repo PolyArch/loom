@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|adg-builder] [--legacy-app-root DIR]
+usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -95,6 +95,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     conv1d
     convolve_1d_same
     crc32
+    cross_product
     fir_filter
     fir_filter_stateful
     gather

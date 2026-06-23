@@ -478,18 +478,59 @@ dot_product_3d_output_values() {
     printf "%s" "${values}"
 }
 
+cross_product_lhs_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 63); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 1.0 + i * 0.1 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value},0.000000e+00,0.000000e+00"
+    done
+    printf "%s" "${values}"
+}
+
+cross_product_rhs_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 63); do
+        value="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 1.0 + i * 0.1 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="0.000000e+00,${value},0.000000e+00"
+    done
+    printf "%s" "${values}"
+}
+
+configure_cross_product_args() {
+    append_ctrl_tokens 64
+    append_raw_memref 2 "$(cross_product_lhs_values)"
+    append_raw_memref 5 "$(cross_product_rhs_values)"
+    append_constant_memref 6 192 "0.000000e+00"
+    append_index_tokens 7 64
+    append_repeated_arg 1 64 3
+    append_repeated_arg 3 64 1
+    append_repeated_arg 4 64 2
+    sim_args+=(
+        --graph g_t_cross_product_kernel_0_0
+        --workload cross_product
+    )
+}
+
 configure_dot_product_3d_core_args() {
     append_ctrl_tokens 16
     append_raw_memref 2 "$(dot_product_3d_lhs_values)"
     append_raw_memref 5 "$(dot_product_3d_rhs_values)"
     append_constant_memref 6 16 "0.000000e+00"
     append_index_tokens 7 16
+    append_repeated_arg 1 16 3
+    append_repeated_arg 3 16 1
+    append_repeated_arg 4 16 2
     sim_args+=(
         --graph g_t_dot_product_3d_0_0
         --workload dot_product_3d
-        --arg 1=3
-        --arg 3=1
-        --arg 4=2
     )
 }
 
@@ -1112,6 +1153,9 @@ case "${CASE}" in
         ;;
     dot_product_3d)
         configure_dot_product_3d_core_args
+        ;;
+    cross_product)
+        configure_cross_product_args
         ;;
     vecnorm_l2)
         append_ctrl_tokens 64

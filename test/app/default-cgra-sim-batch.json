@@ -162,6 +162,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "cross_product",
+      "hardware": "shared_vector_math_adg"
+    },
+    {
       "case": "convolve_1d",
       "hardware": "shared_reduction_adg"
     },

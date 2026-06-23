@@ -18,6 +18,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "convolve_1d_same",
     "correlation",
     "covariance",
+    "cross_product",
     "cumsum",
     "delta_decode",
     "delta_encode",

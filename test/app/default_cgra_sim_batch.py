@@ -17,7 +17,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "test" / "app" / "default-cgra-sim-batch.json"
 APP_MANIFEST = ROOT / "test" / "app" / "manifest.json"
 INTERMEDIATE_CHAIN = ROOT / "test" / "e2e" / "run_intermediate_artifact_chain.sh"
-ALLOWED_HARDWARE = frozenset({"shared_reduction_adg", "shared_vector_alu_adg"})
+ALLOWED_HARDWARE = frozenset(
+    {"shared_reduction_adg", "shared_vector_alu_adg", "shared_vector_math_adg"}
+)
 CASE_LABEL_RE = re.compile(r"^\s*([A-Za-z0-9_.+-]+)\)\s*$")
 CASE_GRAPH_RE = re.compile(r'case_graph="([^"]+)"')
 

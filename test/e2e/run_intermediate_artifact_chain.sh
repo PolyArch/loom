@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -179,6 +179,9 @@ case "${CASE}" in
   crc32)
     case_graph="g_t_crc32_kernel_red_0_0"
     ;;
+  cross_product)
+    case_graph="g_t_cross_product_kernel_0_0"
+    ;;
   fir_filter)
     case_graph="g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0"
     ;;
@@ -286,7 +289,20 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "axpy" || "${CASE}" == "byte_swap" || "${CASE}" == "xor_block" || "${CASE}" == "vecmul" || "${CASE}" == "vecscale" ]]; then
+    if [[ "${CASE}" == "cross_product" ]]; then
+      hardware_mlir="${OUT_DIR}/shared-vector-math-adg.mlir"
+      hardware_name="shared_vector_math_adg"
+      adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+      if [[ ! -x "${adg_builder_tool}" ]]; then
+        echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+        exit 1
+      fi
+      "${adg_builder_tool}" --shared-vector-math --output "${hardware_mlir}"
+      hardware_summary_recipe_args=(
+        --input-recipe-identity
+        "${hardware_mlir}=adg-builder::shared-vector-math"
+      )
+    elif [[ "${CASE}" == "axpy" || "${CASE}" == "byte_swap" || "${CASE}" == "xor_block" || "${CASE}" == "vecmul" || "${CASE}" == "vecscale" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_vector_alu_adg.mlir"
       hardware_name="shared_vector_alu_adg"
     fi
@@ -302,6 +318,20 @@ case "${HARDWARE_SOURCE}" in
   shared-vector-alu)
     hardware_mlir="${ROOT}/test/pnr/shared_vector_alu_adg.mlir"
     hardware_name="shared_vector_alu_adg"
+    ;;
+  shared-vector-math)
+    hardware_mlir="${OUT_DIR}/shared-vector-math-adg.mlir"
+    hardware_name="shared_vector_math_adg"
+    adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+    if [[ ! -x "${adg_builder_tool}" ]]; then
+      echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+      exit 1
+    fi
+    "${adg_builder_tool}" --shared-vector-math --output "${hardware_mlir}"
+    hardware_summary_recipe_args=(
+      --input-recipe-identity
+      "${hardware_mlir}=adg-builder::shared-vector-math"
+    )
     ;;
   adg-builder)
     hardware_mlir="${OUT_DIR}/adg-builder-shared-reduction-adg.mlir"
