@@ -52,8 +52,10 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include <optional>
 
 namespace {
 
@@ -269,6 +271,182 @@ getStoreAddressOperands(::mlir::Operation *op) {
   return result;
 }
 
+struct LinearExpr {
+  int64_t ivCoeff = 0;
+  int64_t constant = 0;
+};
+
+int64_t abs64(int64_t value) { return value < 0 ? -value : value; }
+
+int64_t positiveMod(int64_t value, int64_t modulus) {
+  int64_t residue = value % modulus;
+  return residue < 0 ? residue + modulus : residue;
+}
+
+std::optional<int64_t> getConstantInt(::mlir::Value value) {
+  if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>()) {
+    if (auto intAttr =
+            ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getValue()))
+      return intAttr.getInt();
+  }
+  return std::nullopt;
+}
+
+std::optional<LinearExpr> addLinear(LinearExpr lhs, LinearExpr rhs) {
+  return LinearExpr{lhs.ivCoeff + rhs.ivCoeff, lhs.constant + rhs.constant};
+}
+
+std::optional<LinearExpr> subLinear(LinearExpr lhs, LinearExpr rhs) {
+  return LinearExpr{lhs.ivCoeff - rhs.ivCoeff, lhs.constant - rhs.constant};
+}
+
+std::optional<LinearExpr> scaleLinear(LinearExpr expr, int64_t scale) {
+  return LinearExpr{expr.ivCoeff * scale, expr.constant * scale};
+}
+
+std::optional<LinearExpr>
+linearExpr(::mlir::Value value, ::mlir::Value iv, ::mlir::scf::ForOp loop,
+           ::llvm::DenseSet<::mlir::Value> &visited) {
+  if (value == iv)
+    return LinearExpr{1, 0};
+  if (auto constant = getConstantInt(value))
+    return LinearExpr{0, *constant};
+  if (isDefinedOutside(value, loop))
+    return std::nullopt;
+  if (!visited.insert(value).second)
+    return std::nullopt;
+  if (::mlir::isa<::mlir::BlockArgument>(value))
+    return std::nullopt;
+
+  ::mlir::Operation *def = value.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+
+  if (::mlir::isa<::mlir::arith::IndexCastOp, ::mlir::arith::IndexCastUIOp,
+                  ::mlir::arith::ExtSIOp, ::mlir::arith::ExtUIOp,
+                  ::mlir::arith::TruncIOp, ::mlir::LLVM::SExtOp,
+                  ::mlir::LLVM::ZExtOp, ::mlir::LLVM::TruncOp>(def))
+    return linearExpr(def->getOperand(0), iv, loop, visited);
+
+  if (::mlir::isa<::mlir::arith::AddIOp, ::mlir::LLVM::AddOp>(def)) {
+    auto lhs = linearExpr(def->getOperand(0), iv, loop, visited);
+    auto rhs = linearExpr(def->getOperand(1), iv, loop, visited);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return addLinear(*lhs, *rhs);
+  }
+
+  if (::mlir::isa<::mlir::arith::SubIOp, ::mlir::LLVM::SubOp>(def)) {
+    auto lhs = linearExpr(def->getOperand(0), iv, loop, visited);
+    auto rhs = linearExpr(def->getOperand(1), iv, loop, visited);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return subLinear(*lhs, *rhs);
+  }
+
+  if (::mlir::isa<::mlir::arith::MulIOp, ::mlir::LLVM::MulOp>(def)) {
+    auto lhsConst = getConstantInt(def->getOperand(0));
+    auto rhsConst = getConstantInt(def->getOperand(1));
+    if (lhsConst) {
+      auto rhs = linearExpr(def->getOperand(1), iv, loop, visited);
+      if (!rhs)
+        return std::nullopt;
+      return scaleLinear(*rhs, *lhsConst);
+    }
+    if (rhsConst) {
+      auto lhs = linearExpr(def->getOperand(0), iv, loop, visited);
+      if (!lhs)
+        return std::nullopt;
+      return scaleLinear(*lhs, *rhsConst);
+    }
+    return std::nullopt;
+  }
+
+  if (::mlir::isa<::mlir::arith::ShLIOp, ::mlir::LLVM::ShlOp>(def)) {
+    auto shift = getConstantInt(def->getOperand(1));
+    if (!shift || *shift < 0 || *shift >= 62)
+      return std::nullopt;
+    auto lhs = linearExpr(def->getOperand(0), iv, loop, visited);
+    if (!lhs)
+      return std::nullopt;
+    return scaleLinear(*lhs, int64_t{1} << *shift);
+  }
+
+  return std::nullopt;
+}
+
+std::optional<LinearExpr>
+linearExpr(::mlir::Value value, ::mlir::Value iv, ::mlir::scf::ForOp loop) {
+  ::llvm::DenseSet<::mlir::Value> visited;
+  return linearExpr(value, iv, loop, visited);
+}
+
+std::optional<LinearExpr>
+linearGepOffset(::mlir::LLVM::GEPOp gep, ::mlir::Value iv,
+                ::mlir::scf::ForOp loop) {
+  LinearExpr total;
+  bool sawIndex = false;
+  for (::mlir::Value operand : gep->getOperands()) {
+    if (operand == gep.getBase())
+      continue;
+    auto expr = linearExpr(operand, iv, loop);
+    if (!expr)
+      return std::nullopt;
+    total = *addLinear(total, *expr);
+    sawIndex = true;
+  }
+  if (!sawIndex)
+    return std::nullopt;
+  return total;
+}
+
+std::optional<LinearExpr> storeLinearAddress(::mlir::Operation *store,
+                                             ::mlir::scf::ForOp loop) {
+  ::mlir::Value iv = loop.getInductionVar();
+  if (auto memrefStore = ::mlir::dyn_cast<::mlir::memref::StoreOp>(store)) {
+    if (memrefStore.getIndices().size() != 1)
+      return std::nullopt;
+    return linearExpr(memrefStore.getIndices().front(), iv, loop);
+  }
+  if (auto llvmStore = ::mlir::dyn_cast<::mlir::LLVM::StoreOp>(store)) {
+    ::mlir::Value addr = llvmStore.getAddr();
+    if (auto gep = addr.getDefiningOp<::mlir::LLVM::GEPOp>())
+      return linearGepOffset(gep, iv, loop);
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+bool sameBaseStoresAreLaneDisjoint(::llvm::ArrayRef<::mlir::Operation *> stores,
+                                   ::mlir::scf::ForOp loop) {
+  if (stores.size() <= 1)
+    return true;
+  auto stepConst = getConstantInt(loop.getStep());
+  if (!stepConst || *stepConst == 0)
+    return false;
+
+  std::optional<int64_t> expectedCoeff;
+  ::llvm::DenseSet<int64_t> residues;
+  int64_t stride = 0;
+  for (::mlir::Operation *store : stores) {
+    auto expr = storeLinearAddress(store, loop);
+    if (!expr || expr->ivCoeff == 0)
+      return false;
+    if (!expectedCoeff) {
+      expectedCoeff = expr->ivCoeff;
+      stride = abs64(expr->ivCoeff * *stepConst);
+      if (stride <= 1)
+        return false;
+    } else if (*expectedCoeff != expr->ivCoeff) {
+      return false;
+    }
+    int64_t residue = positiveMod(expr->constant, stride);
+    if (!residues.insert(residue).second)
+      return false;
+  }
+  return true;
+}
+
 // True if `op` is a call to a callee we cannot model. Pure callees (in
 // the MLIR memory-effect sense -- MemoryEffects::None) are allowed
 // because a parallel iteration that calls a pure function is still
@@ -337,6 +515,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   ::llvm::DenseSet<::mlir::Value> readBases;
   ::llvm::DenseSet<::mlir::Value> writeBases;
   ::llvm::SmallVector<::mlir::Operation *, 8> stores;
+  ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
+      storesByBase;
 
   if (bodyHasMultipleSuccessorTerminator(loop))
     return ::mlir::failure();
@@ -380,8 +560,10 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
     if (::mlir::Value storePtr = getStorePointer(op, isVol)) {
       if (isVol)
         return ::mlir::WalkResult::interrupt();
-      writeBases.insert(getMemoryBase(storePtr));
+      ::mlir::Value base = getMemoryBase(storePtr);
+      writeBases.insert(base);
       stores.push_back(op);
+      storesByBase[base].push_back(op);
       return ::mlir::WalkResult::advance();
     }
 
@@ -406,18 +588,12 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
     if (readBases.count(w))
       return ::mlir::failure();
   }
-  // WAW: a single base used by two distinct stores -- the disjoint
-  // address-expression check below would still allow buf[i*0] vs
-  // buf[i*0+1] of two stores onto the same base; but iv-affine
-  // expressions on the same base typically alias only on identical
-  // index expressions across iterations. The simplest safe rule is:
-  // each writeBase must come from at most one store-op in the body.
-  ::llvm::DenseSet<::mlir::Value> seenBases;
-  for (::mlir::Operation *st : stores) {
-    bool tmp;
-    ::mlir::Value ptr = getStorePointer(st, tmp);
-    ::mlir::Value base = getMemoryBase(ptr);
-    if (!seenBases.insert(base).second)
+  // WAW: same-base stores are allowed only for fixed-width lane groups,
+  // such as out[3*i + {0,1,2}], where the per-iteration address residue
+  // classes are provably disjoint. Anything not proved by this narrow
+  // linear check remains serial.
+  for (auto &entry : storesByBase) {
+    if (!sameBaseStoresAreLaneDisjoint(entry.second, loop))
       return ::mlir::failure();
   }
 
