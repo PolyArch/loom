@@ -61,17 +61,42 @@
 // STORE-JSON-NOT: ".out"
 // STORE-JSON-NOT: ".in"
 
-// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_gep_store --hardware-mlir %s --hardware mem_store_route_adg --workload mem_gep_store --output %t.gep.mapping.csv --artifact %t.gep.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_gep_store --hardware-mlir %s --hardware mem_store_route_adg --workload mem_gep_store --output %t.gep.mapping.csv --artifact %t.gep.mapping.json
 // RUN: FileCheck %s --check-prefix=GEP-CSV < %t.gep.mapping.csv
 // RUN: FileCheck %s --check-prefix=GEP-JSON < %t.gep.mapping.json
 
 // GEP-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
-// GEP-CSV-NEXT: mem_gep_store,mem_store_route_adg,mem_gep_store__mem_gep_store__mem_store_route_adg,,,,,unsupported,unsupported PnR graph operation: llvm.getelementptr
+// GEP-CSV-NEXT: mem_gep_store,mem_store_route_adg,mem_gep_store__mem_gep_store__mem_store_route_adg,2,2,0,0,pass
 
-// GEP-JSON-DAG: "status": "unsupported"
-// GEP-JSON-DAG: "unsupported PnR graph operation: llvm.getelementptr"
-// GEP-JSON-DAG: "placements": []
-// GEP-JSON-DAG: "routes": []
+// GEP-JSON-DAG: "status": "pass"
+// GEP-JSON-DAG: "edge_ref": "dataflow.load#0.result0->dataflow.store#0.operand2"
+// GEP-JSON-DAG: "edge_ref": "dataflow.load#0.result1->dataflow.store#0.operand3"
+// GEP-JSON-NOT: "operation": "llvm.getelementptr"
+// GEP-JSON-NOT: ".out"
+// GEP-JSON-NOT: ".in"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_yield_bookkeeping --output %t.scfgep.mapping.csv --artifact %t.scfgep.mapping.json
+// RUN: FileCheck %s --check-prefix=SCFGEP-CSV < %t.scfgep.mapping.csv
+// RUN: FileCheck %s --check-prefix=SCFGEP-JSON < %t.scfgep.mapping.json
+
+// SCFGEP-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SCFGEP-CSV-NEXT: mem_scf_pointer_yield_bookkeeping,shared_reduction_adg,mem_scf_pointer_yield_bookkeeping__mem_scf_pointer_yield_bookkeeping__shared_reduction_adg,2,2,0,0,pass
+
+// SCFGEP-JSON-DAG: "status": "pass"
+// SCFGEP-JSON-DAG: "edge_ref": "dataflow.load#0.result0->dataflow.store#0.operand2"
+// SCFGEP-JSON-DAG: "edge_ref": "dataflow.load#0.result1->dataflow.store#0.operand3"
+// SCFGEP-JSON-NOT: "operation": "llvm.getelementptr"
+// SCFGEP-JSON-NOT: ".out"
+// SCFGEP-JSON-NOT: ".in"
+
+// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_scf_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_semantic_return --output %t.scfptrret.mapping.csv --artifact %t.scfptrret.mapping.json
+// RUN: FileCheck %s --check-prefix=SCFPTRRET-CSV < %t.scfptrret.mapping.csv
+// RUN: FileCheck %s --check-prefix=SCFPTRRET-JSON < %t.scfptrret.mapping.json
+
+// SCFPTRRET-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SCFPTRRET-CSV-NEXT: mem_scf_pointer_semantic_return,shared_reduction_adg,mem_scf_pointer_semantic_return__mem_scf_pointer_semantic_return__shared_reduction_adg,,,,,unsupported,graph returns unsupported pointer value for PnR mapping
+// SCFPTRRET-JSON-DAG: "status": "unsupported"
+// SCFPTRRET-JSON-DAG: "graph returns unsupported pointer value for PnR mapping"
 
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_pointer_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_pointer_bookkeeping --output %t.ptr.mapping.csv --artifact %t.ptr.mapping.json
 // RUN: FileCheck %s --check-prefix=PTR-CSV < %t.ptr.mapping.csv
@@ -301,6 +326,39 @@ module {
     %data, %done = dataflow.load %src_mem[%idx] %ctrl : memref<?xi32>
     %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xi32>
     dataflow.graph.return %stored : none
+  }
+
+  dataflow.graph.func private @mem_scf_pointer_yield_bookkeeping(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %src: !llvm.ptr,
+      %dst: !llvm.ptr, %idx: index) -> none {
+    %0:2 = scf.for %iv = %lb to %ub step %step iter_args(%src_cur = %src,
+                                                        %dst_cur = %dst)
+        -> (!llvm.ptr, !llvm.ptr) : i32 {
+      %src_next = llvm.getelementptr inbounds|nuw %src_cur[4]
+          : (!llvm.ptr) -> !llvm.ptr, i8
+      %src_mem = builtin.unrealized_conversion_cast %src_cur
+          : !llvm.ptr to memref<?xf32>
+      %data, %done = dataflow.load %src_mem[%idx] %ctrl : memref<?xf32>
+      %dst_next = llvm.getelementptr inbounds|nuw %dst_cur[4]
+          : (!llvm.ptr) -> !llvm.ptr, i8
+      %dst_mem = builtin.unrealized_conversion_cast %dst_cur
+          : !llvm.ptr to memref<?xf32>
+      %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xf32>
+      scf.yield %src_next, %dst_next : !llvm.ptr, !llvm.ptr
+    } {loom.stream_cont_cond = "<"}
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @mem_scf_pointer_semantic_return(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %ptr: !llvm.ptr)
+      -> (none, !llvm.ptr) {
+    %0 = scf.for %iv = %lb to %ub step %step iter_args(%cur = %ptr)
+        -> (!llvm.ptr) : i32 {
+      %next = llvm.getelementptr inbounds|nuw %cur[4]
+          : (!llvm.ptr) -> !llvm.ptr, i8
+      scf.yield %next : !llvm.ptr
+    } {loom.stream_cont_cond = "<"}
+    dataflow.graph.return %ctrl, %0 : none, !llvm.ptr
   }
 
   dataflow.graph.func private @mem_pointer_bookkeeping(

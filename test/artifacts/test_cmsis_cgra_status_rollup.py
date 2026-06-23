@@ -676,9 +676,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 11,
+            "pass": 12,
             "fail": 0,
-            "blocked": 3,
+            "blocked": 2,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -1091,8 +1091,8 @@ def assert_cmsis_cfft_component_evidence(
         or red1_mapping.get("hardware") != "shared_reduction_adg"
         or red1_mapping.get("placed_records") != 16
         or red1_mapping.get("unplaced_records") != 63
-        or red1_mapping.get("routed_edges") != 8
-        or red1_mapping.get("unrouted_edges") != 9
+        or red1_mapping.get("routed_edges") != 11
+        or red1_mapping.get("unrouted_edges") != 6
         or not isinstance(red1_mapping_diagnostics, list)
         or not red1_mapping_diagnostics
         or not str(red1_mapping_diagnostics[0]).startswith("missing hardware resource for software op llvm.load")
@@ -1182,7 +1182,7 @@ def assert_cmsis_cfft_component_evidence(
         raise AssertionError(f"unexpected arm_cfft_f32 red3 CGRA evidence: {red3_cgra}")
 
 
-def assert_cmsis_fir_component_blocker_evidence(
+def assert_cmsis_fir_component_pass_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
@@ -1195,31 +1195,32 @@ def assert_cmsis_fir_component_blocker_evidence(
     if set(row["graph_ids"].split(",")) != expected_graphs:
         raise AssertionError(f"arm_fir_f32 row should keep both component graph ids: {row}")
     if (
-        row["status"] != "blocked"
-        or row["diagnostic_class"] != "mapping_artifact_unsupported"
-        or row["blocking_prerequisite"] != "mapping_artifact"
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
         or row["owner"] != "sim_report"
         or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "unsupported"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "blocked"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
         or row["required_slice_count"] != "2"
         or row["hardware_system"] != "shared_reduction_adg"
-        or "one or more component mapping artifacts are not passing: unsupported,pass"
-        not in row["diagnostic"]
-        or "unsupported PnR graph operation: llvm.getelementptr"
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+        or "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
         not in row["diagnostic"]
     ):
-        raise AssertionError(f"arm_fir_f32 should expose red1 evidence and the red0 blocker: {row}")
+        raise AssertionError(f"arm_fir_f32 should expose workload-level CGRA-sim pass evidence: {row}")
     expected_row_artifacts = {
         "dfg_report": "arm_fir_f32.dfg.report.json",
         "mapping_artifact": "arm_fir_f32.mapping.json",
         "cgra_report": "arm_fir_f32.cgra.report.json",
+        "comparison_report": "arm_fir_f32.c.sim-comparison-report.json",
     }
     for key, expected_name in expected_row_artifacts.items():
         if Path(row[key]).name != expected_name:
             raise AssertionError(f"arm_fir_f32 row {key} should reference {expected_name}: {row}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
     required_artifacts = (
@@ -1243,8 +1244,8 @@ def assert_cmsis_fir_component_blocker_evidence(
     cgra_report = json.loads((repo / row["cgra_report"]).read_text())
     for data, kind, status in (
         (dfg_report, "dfg_sim_report", "pass"),
-        (mapping_artifact, "pnr_mapping", "unsupported"),
-        (cgra_report, "cgra_sim_report", "blocked"),
+        (mapping_artifact, "pnr_mapping", "pass"),
+        (cgra_report, "cgra_sim_report", "pass"),
     ):
         if (
             data.get("kind") != kind
@@ -1262,14 +1263,13 @@ def assert_cmsis_fir_component_blocker_evidence(
     red0_cgra = json.loads((sim_evidence / "arm_fir_f32.red0.cgra.report.json").read_text())
     red1_cgra = json.loads((sim_evidence / "arm_fir_f32.red1.cgra.report.json").read_text())
     if (
-        red0_mapping.get("status") != "unsupported"
-        or "unsupported PnR graph operation: llvm.getelementptr" not in "; ".join(red0_mapping.get("diagnostics", []))
+        red0_mapping.get("status") != "pass"
         or red1_mapping.get("status") != "pass"
-        or red0_cgra.get("status") != "blocked"
+        or red0_cgra.get("status") != "pass"
         or red1_cgra.get("status") != "pass"
     ):
         raise AssertionError(
-            f"arm_fir_f32 component evidence should preserve red0 blocker and red1 pass: "
+            f"arm_fir_f32 component evidence should preserve red0 and red1 pass records: "
             f"{red0_mapping} {red1_mapping} {red0_cgra} {red1_cgra}"
         )
 
@@ -1307,47 +1307,76 @@ def assert_cmsis_fir_component_blocker_evidence(
     ):
         raise AssertionError(f"unexpected arm_fir_f32 red1 DFG evidence: {red1_dfg}")
 
-    red1_mapping = json.loads((sim_evidence / "arm_fir_f32.red1.mapping.json").read_text())
-    placed_records = red1_mapping.get("placed_records")
-    routed_edges = red1_mapping.get("routed_edges")
-    route_records = red1_mapping.get("routes", [])
-    config_records = red1_mapping.get("config_records")
-    if (
-        red1_mapping.get("status") != "pass"
-        or red1_mapping.get("hardware") != "shared_reduction_adg"
-        or not isinstance(placed_records, int)
-        or placed_records <= 0
-        or not isinstance(routed_edges, int)
-        or routed_edges <= 0
-        or red1_mapping.get("unrouted_edges") != 0
-        or red1_mapping.get("unplaced_records") != 0
-        or not isinstance(route_records, list)
-        or len(route_records) != routed_edges
-        or not isinstance(config_records, int)
-        or config_records <= 0
-    ):
-        raise AssertionError(f"unexpected arm_fir_f32 red1 mapping evidence: {red1_mapping}")
+    component_expectations = (
+        ("red0", red0_mapping, red0_cgra, red0_dfg, red0_memory),
+        ("red1", red1_mapping, red1_cgra, red1_dfg, red1_memory),
+    )
+    for label, mapping, cgra, dfg, memory in component_expectations:
+        placed_records = mapping.get("placed_records")
+        routed_edges = mapping.get("routed_edges")
+        route_records = mapping.get("routes", [])
+        config_records = mapping.get("config_records")
+        if (
+            mapping.get("status") != "pass"
+            or mapping.get("hardware") != "shared_reduction_adg"
+            or not isinstance(placed_records, int)
+            or placed_records <= 0
+            or not isinstance(routed_edges, int)
+            or routed_edges <= 0
+            or mapping.get("unrouted_edges") != 0
+            or mapping.get("unplaced_records") != 0
+            or not isinstance(route_records, list)
+            or len(route_records) != routed_edges
+            or not isinstance(config_records, int)
+            or config_records <= 0
+        ):
+            raise AssertionError(f"unexpected arm_fir_f32 {label} mapping evidence: {mapping}")
 
-    red1_cgra = json.loads((sim_evidence / "arm_fir_f32.red1.cgra.report.json").read_text())
-    dfg_cycles = red1_cgra.get("dfg_cycles")
-    cgra_cycles = red1_cgra.get("hardware_aware_cycles")
-    cgra_route_segments = red1_cgra.get("route_segments")
-    cgra_config_records = red1_cgra.get("config_records")
+        dfg_cycles = cgra.get("dfg_cycles")
+        cgra_cycles = cgra.get("hardware_aware_cycles")
+        cgra_route_segments = cgra.get("route_segments")
+        cgra_config_records = cgra.get("config_records")
+        if (
+            cgra.get("status") != "pass"
+            or not isinstance(dfg_cycles, int)
+            or dfg_cycles != dfg.get("optimistic_cycles")
+            or not isinstance(cgra_cycles, int)
+            or cgra_cycles < dfg_cycles
+            or not isinstance(cgra_route_segments, int)
+            or cgra_route_segments <= 0
+            or not isinstance(cgra_config_records, int)
+            or cgra_config_records <= 0
+            or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+            or cgra.get("final_outputs") != ["none"]
+            or cgra.get("final_memory_state") != memory
+        ):
+            raise AssertionError(f"unexpected arm_fir_f32 {label} CGRA evidence: {cgra}")
+
+    aggregate_dfg_cycles = cgra_report.get("dfg_cycles")
+    aggregate_cgra_cycles = cgra_report.get("hardware_aware_cycles")
     if (
-        red1_cgra.get("status") != "pass"
-        or not isinstance(dfg_cycles, int)
-        or dfg_cycles != red1_dfg.get("optimistic_cycles")
-        or not isinstance(cgra_cycles, int)
-        or cgra_cycles < dfg_cycles
-        or not isinstance(cgra_route_segments, int)
-        or cgra_route_segments <= 0
-        or not isinstance(cgra_config_records, int)
-        or cgra_config_records <= 0
-        or red1_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
-        or red1_cgra.get("final_outputs") != ["none"]
-        or red1_cgra.get("final_memory_state") != red1_memory
+        mapping_artifact.get("placed_records") != red0_mapping.get("placed_records") + red1_mapping.get("placed_records")
+        or mapping_artifact.get("unrouted_edges") != 0
+        or mapping_artifact.get("unplaced_records") != 0
+        or not isinstance(aggregate_dfg_cycles, int)
+        or aggregate_dfg_cycles != red0_cgra.get("dfg_cycles") + red1_cgra.get("dfg_cycles")
+        or not isinstance(aggregate_cgra_cycles, int)
+        or aggregate_cgra_cycles < aggregate_dfg_cycles
     ):
-        raise AssertionError(f"unexpected arm_fir_f32 red1 CGRA evidence: {red1_cgra}")
+        raise AssertionError(f"unexpected arm_fir_f32 aggregate mapping/CGRA evidence: {mapping_artifact} {cgra_report}")
+
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        comparison_report.get("status") != "pass"
+        or comparison_report.get("workload") != "FilteringFunctions/arm_fir_f32.c"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "pass"
+        or comparison_report.get("cgra_sim_cycles") != aggregate_cgra_cycles
+        or comparison_report.get("dfg_sim_cycles") != aggregate_dfg_cycles
+        or comparison_report.get("cgra_sim_cycles") < comparison_report.get("dfg_sim_cycles")
+    ):
+        raise AssertionError(f"unexpected arm_fir_f32 comparison evidence: {comparison_report}")
 
 
 def assert_app_cgra_pass_row(
@@ -2297,9 +2326,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 11,
+            "pass": 12,
             "fail": 0,
-            "blocked": 3,
+            "blocked": 2,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -2352,7 +2381,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
     assert_cmsis_var_shared_adg_evidence(sim_evidence)
     assert_cmsis_cfft_component_evidence(repo, rows, sim_evidence)
-    assert_cmsis_fir_component_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_fir_component_pass_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_aggregate_graphs(repo, out_dir, legacy_root)
     assert_generic_artifact_audit_rejects_bad_aggregate_graphs(repo, out_dir)
     assert_cmsis_cgra_pass_row(

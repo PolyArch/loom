@@ -252,6 +252,18 @@ bool isPointerMemrefBaseAdapterOp(mlir::Operation *op) {
   return true;
 }
 
+bool isUnusedStructuredPointerYieldUse(mlir::OpOperand &use) {
+  auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(use.getOwner());
+  if (!yield)
+    return false;
+  mlir::Operation *parent = yield->getParentOp();
+  unsigned resultIndex = use.getOperandNumber();
+  if (!parent || resultIndex >= parent->getNumResults())
+    return false;
+  mlir::Value result = parent->getResult(resultIndex);
+  return isLlvmPointerType(result.getType()) && result.use_empty();
+}
+
 bool isPointerBookkeepingOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
   if (name == "llvm.getelementptr") {
@@ -263,7 +275,8 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
       if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
           mlir::isa<mlir::LLVM::LoadOp>(owner) ||
           mlir::isa<mlir::LLVM::StoreOp>(owner) || isPointerCarryOp(owner) ||
-          isGraphReturnOp(owner))
+          isPointerMemrefBaseAdapterOp(owner) || isGraphReturnOp(owner) ||
+          isUnusedStructuredPointerYieldUse(use))
         continue;
       return false;
     }
