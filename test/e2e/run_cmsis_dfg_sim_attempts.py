@@ -681,6 +681,8 @@ ATTEMPTS = (
             "8=0,0",
             "9=1,2,3,4",
         ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
     ),
 )
 

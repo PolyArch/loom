@@ -75,6 +75,15 @@
 // GEP-JSON-NOT: ".out"
 // GEP-JSON-NOT: ".in"
 
+// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_gep_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_gep_pointer_store_value --output %t.gep-store-value.mapping.csv --artifact %t.gep-store-value.mapping.json
+// RUN: FileCheck %s --check-prefix=GEPSTOREVAL-CSV < %t.gep-store-value.mapping.csv
+// RUN: FileCheck %s --check-prefix=GEPSTOREVAL-JSON < %t.gep-store-value.mapping.json
+
+// GEPSTOREVAL-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// GEPSTOREVAL-CSV-NEXT: mem_gep_pointer_store_value,shared_reduction_adg,mem_gep_pointer_store_value__mem_gep_pointer_store_value__shared_reduction_adg,,,,,unsupported,unsupported PnR graph operation: llvm.getelementptr
+// GEPSTOREVAL-JSON-DAG: "status": "unsupported"
+// GEPSTOREVAL-JSON-DAG: "unsupported PnR graph operation: llvm.getelementptr"
+
 // RUN: loom-pnr-map --dfg-mlir %s --graph mem_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_yield_bookkeeping --output %t.scfgep.mapping.csv --artifact %t.scfgep.mapping.json
 // RUN: FileCheck %s --check-prefix=SCFGEP-CSV < %t.scfgep.mapping.csv
 // RUN: FileCheck %s --check-prefix=SCFGEP-JSON < %t.scfgep.mapping.json
@@ -88,6 +97,29 @@
 // SCFGEP-JSON-NOT: "operation": "llvm.getelementptr"
 // SCFGEP-JSON-NOT: ".out"
 // SCFGEP-JSON-NOT: ".in"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph mem_nested_scf_pointer_yield_bookkeeping --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_nested_scf_pointer_yield_bookkeeping --output %t.nested-scfgep.mapping.csv --artifact %t.nested-scfgep.mapping.json
+// RUN: FileCheck %s --check-prefix=NESTED-SCFGEP-CSV < %t.nested-scfgep.mapping.csv
+// RUN: FileCheck %s --check-prefix=NESTED-SCFGEP-JSON < %t.nested-scfgep.mapping.json
+
+// NESTED-SCFGEP-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// NESTED-SCFGEP-CSV-NEXT: mem_nested_scf_pointer_yield_bookkeeping,shared_reduction_adg,mem_nested_scf_pointer_yield_bookkeeping__mem_nested_scf_pointer_yield_bookkeeping__shared_reduction_adg,{{[1-9][0-9]*}},{{[1-9][0-9]*}},0,0,pass
+
+// NESTED-SCFGEP-JSON-DAG: "status": "pass"
+// NESTED-SCFGEP-JSON-DAG: "operation": "dataflow.load"
+// NESTED-SCFGEP-JSON-DAG: "operation": "dataflow.store"
+// NESTED-SCFGEP-JSON-NOT: "operation": "llvm.getelementptr"
+// NESTED-SCFGEP-JSON-NOT: ".out"
+// NESTED-SCFGEP-JSON-NOT: ".in"
+
+// RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_nested_scf_pointer_store_value --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_nested_scf_pointer_store_value --output %t.nested-store-value.mapping.csv --artifact %t.nested-store-value.mapping.json
+// RUN: FileCheck %s --check-prefix=NESTEDSTOREVAL-CSV < %t.nested-store-value.mapping.csv
+// RUN: FileCheck %s --check-prefix=NESTEDSTOREVAL-JSON < %t.nested-store-value.mapping.json
+
+// NESTEDSTOREVAL-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// NESTEDSTOREVAL-CSV-NEXT: mem_nested_scf_pointer_store_value,shared_reduction_adg,mem_nested_scf_pointer_store_value__mem_nested_scf_pointer_store_value__shared_reduction_adg,,,,,unsupported,unsupported PnR graph operation: llvm.getelementptr
+// NESTEDSTOREVAL-JSON-DAG: "status": "unsupported"
+// NESTEDSTOREVAL-JSON-DAG: "unsupported PnR graph operation: llvm.getelementptr"
 
 // RUN: %python %S/mapping_summary.py --dfg-mlir %s --graph mem_scf_pointer_semantic_return --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload mem_scf_pointer_semantic_return --output %t.scfptrret.mapping.csv --artifact %t.scfptrret.mapping.json
 // RUN: FileCheck %s --check-prefix=SCFPTRRET-CSV < %t.scfptrret.mapping.csv
@@ -328,6 +360,14 @@ module {
     dataflow.graph.return %stored : none
   }
 
+  dataflow.graph.func private @mem_gep_pointer_store_value(
+      %ctrl: none, %src: !llvm.ptr, %slot: !llvm.ptr) -> none {
+    %src_next = llvm.getelementptr inbounds|nuw %src[4]
+        : (!llvm.ptr) -> !llvm.ptr, i8
+    llvm.store %src_next, %slot : !llvm.ptr, !llvm.ptr
+    dataflow.graph.return %ctrl : none
+  }
+
   dataflow.graph.func private @mem_scf_pointer_yield_bookkeeping(
       %ctrl: none, %lb: i32, %ub: i32, %step: i32, %src: !llvm.ptr,
       %dst: !llvm.ptr, %idx: index) -> none {
@@ -346,6 +386,62 @@ module {
       %stored = dataflow.store %dst_mem[%idx] %data %done : memref<?xf32>
       scf.yield %src_next, %dst_next : !llvm.ptr, !llvm.ptr
     } {loom.stream_cont_cond = "<"}
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @mem_nested_scf_pointer_yield_bookkeeping(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %inner_ub: i32,
+      %active: i1, %scale: i32, %out: !llvm.ptr, %in: !llvm.ptr) -> none {
+    %0:2 = scf.for %iv = %lb to %ub step %step iter_args(%out_cur = %out,
+                                                        %in_cur = %in)
+        -> (!llvm.ptr, !llvm.ptr) : i32 {
+      %1:2 = scf.if %active -> (!llvm.ptr, i32) {
+        %11:2 = scf.for %j = %lb to %inner_ub step %step
+            iter_args(%acc = %lb, %in_inner = %in_cur)
+            -> (i32, !llvm.ptr) : i32 {
+          %inner_next = llvm.getelementptr inbounds|nuw %in_inner[1]
+              : (!llvm.ptr) -> !llvm.ptr, i8
+          scf.yield %acc, %inner_next : i32, !llvm.ptr
+        }
+        %after_inner = llvm.getelementptr %in_cur[%inner_ub]
+            : (!llvm.ptr, i32) -> !llvm.ptr, i8
+        scf.yield %after_inner, %11#0 : !llvm.ptr, i32
+      } else {
+        scf.yield %in_cur, %lb : !llvm.ptr, i32
+      }
+      %in_mem = builtin.unrealized_conversion_cast %1#0
+          : !llvm.ptr to memref<?xi8>
+      %zero_in = dataflow.constant %ctrl {const_value = 0 : index} : index
+      %data_i8, %loaded_i8 =
+          dataflow.load %in_mem[%zero_in] %ctrl : memref<?xi8>
+      %out_mem = builtin.unrealized_conversion_cast %out_cur
+          : !llvm.ptr to memref<?xi8>
+      %zero_out = dataflow.constant %ctrl {const_value = 0 : index} : index
+      %stored = dataflow.store %out_mem[%zero_out] %data_i8 %loaded_i8
+          : memref<?xi8>
+      %out_next = llvm.getelementptr inbounds|nuw %out_cur[4]
+          : (!llvm.ptr) -> !llvm.ptr, i8
+      scf.yield %out_next, %1#0 : !llvm.ptr, !llvm.ptr
+    } {loom.stream_cont_cond = "<"}
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @mem_nested_scf_pointer_store_value(
+      %ctrl: none, %lb: i32, %ub: i32, %step: i32, %slot: !llvm.ptr,
+      %src: !llvm.ptr) -> none {
+    %0 = scf.for %iv = %lb to %ub step %step iter_args(%src_cur = %src)
+        -> (!llvm.ptr) : i32 {
+      %active = arith.cmpi slt, %iv, %ub : i32
+      %1 = scf.if %active -> (!llvm.ptr) {
+        %next = llvm.getelementptr inbounds|nuw %src_cur[1]
+            : (!llvm.ptr) -> !llvm.ptr, i8
+        scf.yield %next : !llvm.ptr
+      } else {
+        scf.yield %src_cur : !llvm.ptr
+      }
+      scf.yield %1 : !llvm.ptr
+    } {loom.stream_cont_cond = "<"}
+    llvm.store %0, %slot : !llvm.ptr, !llvm.ptr
     dataflow.graph.return %ctrl : none
   }
 

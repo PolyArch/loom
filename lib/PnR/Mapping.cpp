@@ -252,6 +252,38 @@ bool isPointerMemrefBaseAdapterOp(mlir::Operation *op) {
   return true;
 }
 
+bool isLlvmPointerMemoryAddressUse(mlir::OpOperand &use) {
+  mlir::Operation *owner = use.getOwner();
+  if (mlir::isa<mlir::LLVM::LoadOp>(owner))
+    return use.getOperandNumber() == 0;
+  if (mlir::isa<mlir::LLVM::StoreOp>(owner))
+    return use.getOperandNumber() == 1;
+  return false;
+}
+
+bool isStructuredPointerValueOnlyBookkeeping(mlir::Value value) {
+  if (!isLlvmPointerType(value.getType()))
+    return false;
+  if (value.use_empty())
+    return true;
+  for (mlir::OpOperand &use : value.getUses()) {
+    mlir::Operation *owner = use.getOwner();
+    if (isPointerMemrefBaseAdapterOp(owner) ||
+        isLlvmPointerMemoryAddressUse(use))
+      continue;
+    auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(owner);
+    if (!yield)
+      return false;
+    mlir::Operation *parent = yield->getParentOp();
+    unsigned resultIndex = use.getOperandNumber();
+    if (!parent || resultIndex >= parent->getNumResults())
+      return false;
+    if (!isStructuredPointerValueOnlyBookkeeping(parent->getResult(resultIndex)))
+      return false;
+  }
+  return true;
+}
+
 bool isUnusedStructuredPointerYieldUse(mlir::OpOperand &use) {
   auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(use.getOwner());
   if (!yield)
@@ -260,8 +292,7 @@ bool isUnusedStructuredPointerYieldUse(mlir::OpOperand &use) {
   unsigned resultIndex = use.getOperandNumber();
   if (!parent || resultIndex >= parent->getNumResults())
     return false;
-  mlir::Value result = parent->getResult(resultIndex);
-  return isLlvmPointerType(result.getType()) && result.use_empty();
+  return isStructuredPointerValueOnlyBookkeeping(parent->getResult(resultIndex));
 }
 
 bool isPointerBookkeepingOp(mlir::Operation *op) {
@@ -273,8 +304,7 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
     for (mlir::OpOperand &use : op->getResult(0).getUses()) {
       mlir::Operation *owner = use.getOwner();
       if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
-          mlir::isa<mlir::LLVM::LoadOp>(owner) ||
-          mlir::isa<mlir::LLVM::StoreOp>(owner) || isPointerCarryOp(owner) ||
+          isLlvmPointerMemoryAddressUse(use) || isPointerCarryOp(owner) ||
           isPointerMemrefBaseAdapterOp(owner) || isGraphReturnOp(owner) ||
           isUnusedStructuredPointerYieldUse(use))
         continue;
@@ -291,7 +321,7 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
   for (mlir::OpOperand &use : op->getResult(pointerResultIndex).getUses()) {
     mlir::Operation *owner = use.getOwner();
     if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
-        mlir::isa<mlir::LLVM::StoreOp>(owner) || isGraphReturnOp(owner))
+        isLlvmPointerMemoryAddressUse(use) || isGraphReturnOp(owner))
       continue;
     if (isPointerGateOp(owner))
       continue;

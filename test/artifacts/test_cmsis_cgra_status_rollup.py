@@ -689,8 +689,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         {
             "total": 18,
             "pass": 3,
-            "fail": 0,
-            "blocked": 7,
+            "fail": 1,
+            "blocked": 6,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -1452,6 +1452,69 @@ def assert_cmsis_dfg_ready_for_mapping_row(
     ):
         raise AssertionError(f"CMSIS row should expose DFG pass evidence and a missing mapping artifact: {row}")
     assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+
+
+def assert_cmsis_mapping_blocker_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    suite: str,
+    case: str,
+    *,
+    diagnostic_substring: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "fail"
+        or row["diagnostic_class"] != "mapping_artifact_failed"
+        or row["blocking_prerequisite"] != "mapping_artifact"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "fail"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or not row["mapping_artifact"]
+        or not row["cgra_report"]
+        or not row["comparison_report"]
+        or row["hardware_system"] != "shared_reduction_adg"
+        or diagnostic_substring not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose exact PnR mapping blocker evidence: {row}")
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+    assert_sha256_file(row["mapping_artifact"], row["mapping_artifact_fingerprint"], repo)
+    assert_sha256_file(row["cgra_report"], row["cgra_report_fingerprint"], repo)
+    assert_sha256_file(row["comparison_report"], row["comparison_report_fingerprint"], repo)
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    mapping_diagnostics = " ".join(mapping_artifact.get("diagnostics", []))
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("hardware") != "shared_reduction_adg"
+        or mapping_artifact.get("status") != "fail"
+        or mapping_artifact.get("unrouted_edges", 0) <= 0
+        or diagnostic_substring not in mapping_diagnostics
+        or not mapping_artifact.get("unrouted_edge_details")
+    ):
+        raise AssertionError(f"unexpected CMSIS mapping blocker artifact: {mapping_artifact}")
+    cgra_diagnostics = " ".join(cgra_report.get("diagnostics", []))
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != case
+        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("status") != "blocked"
+        or diagnostic_substring not in cgra_diagnostics
+    ):
+        raise AssertionError(f"unexpected blocked CMSIS CGRA report: {cgra_report}")
+    if (
+        comparison_report.get("kind") != "sim_comparison_report"
+        or comparison_report.get("workload") != case
+        or comparison_report.get("status") != "blocked"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "blocked"
+    ):
+        raise AssertionError(f"unexpected blocked CMSIS comparison report: {comparison_report}")
 
 
 def assert_cmsis_relu_q7_cgra_evidence(
@@ -2339,8 +2402,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         {
             "total": 18,
             "pass": 3,
-            "fail": 0,
-            "blocked": 7,
+            "fail": 1,
+            "blocked": 6,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -2390,11 +2453,12 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_dfg_ready_for_mapping_row(
+    assert_cmsis_mapping_blocker_row(
         repo,
         rows,
         "cmsis-nn",
         "FullyConnectedFunctions/arm_vector_sum_s8.c",
+        diagnostic_substring="unrouted software edges lack Fabric ADG connectivity",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
