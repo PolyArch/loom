@@ -1357,6 +1357,106 @@ def build_gather(N=1024, src_size=256):
     return dag, contract
 
 
+def build_merge(N=8, M=6):
+    """Merge two sorted arrays for the concrete main.cpp trace.
+
+    The main merge loop alternates six takes from input_a and six takes from
+    input_b, then exits with j == M. The first tail loop copies the two
+    remaining input_a elements; the second tail loop performs only its failing
+    bound check. The binding loop-control recurrence is the selected i/j update;
+    k is still a true carry for output addressing, but its writeback is slack
+    because the next output[k] use waits behind the next value compare. First
+    reads of the constant-initialized carries are rooted; the init stores are
+    counted dead work. Reproduces the eval numbers: CP=108, A=70, LD=72, ST=45.
+    """
+    dag = Dag()
+    r = dag.region("merge")
+
+    ld_N = r.load(kind="N")
+    ld_M = r.load(kind="M")
+    r.store(kind="i_init")
+    r.store(kind="j_init")
+    r.store(kind="k_init")
+
+    last_i = None
+    last_j = None
+    last_k = None
+    loop_gate = None
+
+    # Concrete main.cpp trace:
+    # a0,b0,a1,b1,...,a5,b5, then j == M and two a-tail copies.
+    for take in ("a", "b") * M:
+        i_preds = []
+        if last_i is not None:
+            i_preds.append(last_i)
+        if loop_gate is not None:
+            i_preds.append(loop_gate)
+        ld_i = r.load(*i_preds, kind="main_i")
+        cmp_i = r.arith(ld_i, ld_N, kind="main_i_lt_N")
+
+        j_preds = [cmp_i]
+        if last_j is not None:
+            j_preds.append(last_j)
+        ld_j = r.load(*j_preds, kind="main_j")
+        cmp_j = r.arith(ld_j, ld_M, kind="main_j_lt_M")
+
+        ld_a = r.load(cmp_j, ld_i, kind="input_a")
+        ld_b = r.load(cmp_j, ld_j, kind="input_b")
+        cmp_ab = r.arith(ld_a, ld_b, kind="a_le_b")
+
+        k_preds = [cmp_ab]
+        if last_k is not None:
+            k_preds.append(last_k)
+        ld_k = r.load(*k_preds, kind="k")
+
+        if take == "a":
+            idx_add = r.arith(cmp_ab, ld_i, kind="i_add")
+            selected_store = r.store(idx_add, kind="i_store")
+            last_i = selected_store
+            selected = ld_a
+        else:
+            idx_add = r.arith(cmp_ab, ld_j, kind="j_add")
+            selected_store = r.store(idx_add, kind="j_store")
+            last_j = selected_store
+            selected = ld_b
+
+        r.store(cmp_ab, selected, ld_k, output=True, kind="output_main")
+        k_add = r.arith(cmp_ab, ld_k, kind="k_add")
+        last_k = r.store(k_add, kind="k_store")
+        loop_gate = selected_store
+
+    # Failing check of while (i < N && j < M): i < N is true, j < M is false.
+    ld_i = r.load(last_i, loop_gate, kind="main_i_exit")
+    cmp_i = r.arith(ld_i, ld_N, kind="main_i_lt_N_exit")
+    ld_j = r.load(last_j, cmp_i, kind="main_j_exit")
+    main_exit = r.arith(ld_j, ld_M, kind="main_j_lt_M_fail")
+
+    # Copy the two remaining input_a elements.
+    tail_gate = main_exit
+    for _ in range(N - M):
+        ld_i = r.load(last_i, tail_gate, kind="tail_a_i")
+        cmp_i = r.arith(ld_i, ld_N, kind="tail_a_i_lt_N")
+        ld_a = r.load(cmp_i, ld_i, kind="tail_a_input")
+        ld_k = r.load(last_k, cmp_i, kind="tail_a_k")
+        i_add = r.arith(cmp_i, ld_i, kind="tail_a_i_add")
+        last_i = r.store(i_add, kind="tail_a_i_store")
+        r.store(cmp_i, ld_a, ld_k, output=True, kind="output_tail_a")
+        k_add = r.arith(cmp_i, ld_k, kind="tail_a_k_add")
+        last_k = r.store(k_add, kind="tail_a_k_store")
+        tail_gate = last_i
+
+    # Final failing checks. They are counted and scheduled, but not
+    # output-reachable under the spec's CP semantics.
+    ld_i = r.load(last_i, tail_gate, kind="tail_a_i_exit")
+    tail_a_exit = r.arith(ld_i, ld_N, kind="tail_a_i_lt_N_fail")
+    ld_j = r.load(last_j, tail_a_exit, kind="tail_b_j_exit")
+    r.arith(ld_j, ld_M, kind="tail_b_j_lt_M_fail")
+
+    contract = [RegionContract("merge", A=70, LD=72, ST=45, CP=108,
+                               aggregate=108)]
+    return dag, contract
+
+
 def build_edge_update(E=16, K=2):
     """Single CSR edge update for the concrete main.cpp trace.
 
@@ -2103,6 +2203,7 @@ BUILDERS = {
     "bitonic_stage-modified": build_bitonic_stage_modified,
     "binary_search": build_binary_search,
     "gather": build_gather,
+    "merge": build_merge,
     "edge_update": build_edge_update,
     "interpolate_linear": build_interpolate_linear,
     "bitonic_stage-tweak": build_bitonic_stage_tweak,
@@ -2125,10 +2226,10 @@ PILOTS = ("axpy", "autocorrelation", "fft_butterfly")
 WRITTEN_KERNELS = PILOTS + ("conv2d", "batchnorm", "bit_reverse",
                             "bisection_step", "bitonic_stage",
                             "bitonic_stage-modified", "binary_search",
-                            "gather", "edge_update", "interpolate_linear",
-                            "bitonic_stage-tweak", "clz", "crc32",
-                            "kmp_table", "wildcard_match", "sort_insertion",
-                            "sort_quick")
+                            "gather", "merge", "edge_update",
+                            "interpolate_linear", "bitonic_stage-tweak",
+                            "clz", "crc32", "kmp_table", "wildcard_match",
+                            "sort_insertion", "sort_quick")
 
 EVAL_PATHS = {
     name: Path(__file__).resolve().parents[1] / "app" / name / f"{name}_eval.md"
@@ -2447,6 +2548,8 @@ def _run_golden_tests(errors):
                           "regions": [("binary_search", 48, 124, 69, 41, 48)]},
         "gather": {"aggregate": 257,
                    "regions": [("gather", 4, 3072, 3074, 2048, 257)]},
+        "merge": {"aggregate": 108,
+                  "regions": [("merge", 108, 70, 72, 45, 108)]},
         "edge_update": {"aggregate": 6,
                         "regions": [("edge_update", 6, 40, 38, 37, 6)]},
         "interpolate_linear": {

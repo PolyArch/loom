@@ -1,6 +1,7 @@
 # ASAP Model Notes
-- The kernel loop is fully sequential. Every iteration needs the previous iteration’s run state before it can decide whether input_data[i] extends the current run or starts a new one.
-- There can be overlap inside each loop iteration's DAG (comparisons, stores, loads can be parallel), but there is no parallelism between loop iterations
+- The kernel loop is state-carried: each iteration needs the previous run state before it can decide whether
+`input_data[i]` extends the current run or starts a new one.
+- The scan is a loop-carried state machine, so the `i` loop is not fully unrollable; however, ordinary `i` induction/control and `input_data[i]` loads can overlap in ASAP. The steady-state critical path is the carried run-state recurrence through `current_value`, `current_count`, and `write_idx`.
 
 # Run Length Encoding Performance
 Run-length encoding compresses each maximal run of equal input values into one
