@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -712,7 +713,41 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--loom-pnr-map")
     parser.add_argument("--loom-cgra-sim")
     parser.add_argument("--timeout-seconds", type=int, default=120)
+    parser.add_argument("--jobs", type=positive_int, default=None)
     return parser.parse_args(argv)
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return positive_int(value)
+    except argparse.ArgumentTypeError as exc:
+        raise SystemExit(f"[cmsis-dfg-sim] {name} {exc}") from exc
+
+
+def cmsis_dfg_sim_jobs(args: argparse.Namespace, attempt_count: int) -> int:
+    if attempt_count < 1:
+        return 1
+    budget = (
+        args.jobs
+        or positive_env_int("LOOM_CMSIS_DFG_SIM_JOBS")
+        or positive_env_int("LOOM_TEST_JOBS")
+        or positive_env_int("JOBS")
+        or (os.cpu_count() or 1)
+    )
+    return max(1, min(attempt_count, budget))
 
 
 def attempt_matches_stem(attempt: Attempt, stem: str) -> bool:
@@ -1040,6 +1075,43 @@ def run_aggregates(
     return artifacts
 
 
+def run_attempts(
+    dfg_tool: Path,
+    lower_tool: Path,
+    pnr_tool: Path,
+    cgra_tool: Path,
+    output_dir: Path,
+    args: argparse.Namespace,
+    attempts: tuple[Attempt, ...],
+) -> list[AttemptResult]:
+    results: list[AttemptResult | None] = [None] * len(attempts)
+    jobs = cmsis_dfg_sim_jobs(args, len(attempts))
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {
+            executor.submit(
+                run_attempt,
+                dfg_tool,
+                lower_tool,
+                pnr_tool,
+                cgra_tool,
+                output_dir,
+                args,
+                attempt,
+            ): index
+            for index, attempt in enumerate(attempts)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            attempt = attempts[index]
+            try:
+                results[index] = future.result()
+            except SystemExit:
+                raise
+            except BaseException as exc:
+                raise SystemExit(f"[cmsis-dfg-sim] {attempt.case} failed: {exc}") from exc
+    return [result for result in results if result is not None]
+
+
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     selected_attempts = select_attempts(args)
@@ -1068,11 +1140,15 @@ def main(argv: list[str]) -> int:
     if any(attempt.hardware_mlir for attempt in selected_attempts):
         require_tool(pnr_tool, "loom-pnr-map")
     output_dir = Path(args.output_dir)
-    results: list[AttemptResult] = []
-    for attempt in selected_attempts:
-        results.append(
-            run_attempt(dfg_tool, lower_tool, pnr_tool, cgra_tool, output_dir, args, attempt)
-        )
+    results = run_attempts(
+        dfg_tool,
+        lower_tool,
+        pnr_tool,
+        cgra_tool,
+        output_dir,
+        args,
+        selected_attempts,
+    )
     artifacts: list[Path] = []
     for result in results:
         artifacts.append(result.dfg_report)

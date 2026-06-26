@@ -513,6 +513,7 @@ if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then
         --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}"
         --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}"
         --output-dir "${STATUS_SIM_EVIDENCE_DIR}"
+        --jobs "${PARALLEL_JOBS}"
     )
     for attempt_stem in "${CMSIS_SIM_ATTEMPT_STEMS[@]}"; do
         cmsis_sim_args+=(--attempt-stem "${attempt_stem}")

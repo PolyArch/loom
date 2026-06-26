@@ -26,12 +26,42 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--primitive-coverage")
     parser.add_argument("--dfg-report", action="append", default=[])
     parser.add_argument("--cgra-report", action="append", default=[])
+    parser.add_argument("--jobs", type=positive_int, default=None)
     parser.add_argument(
         "--equivalence-groups",
         default=str(ROOT / "test/app/sim-cycle-equivalence-groups.json"),
         help="JSON file describing simulator cycle equivalence groups",
     )
     return parser.parse_args(argv)
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return positive_int(value)
+    except argparse.ArgumentTypeError as exc:
+        raise SystemExit(f"{name} {exc}") from exc
+
+
+def sim_cycle_summary_jobs(args: argparse.Namespace) -> int:
+    return (
+        args.jobs
+        or positive_env_int("LOOM_TEST_JOBS")
+        or positive_env_int("JOBS")
+        or (os.cpu_count() or 1)
+    )
 
 
 def workloads_from_primitive_coverage(path: Path) -> list[str]:
@@ -362,7 +392,7 @@ def summarize_reports(
     return result.returncode
 
 
-def emit_default_batch_summary(output: Path, equivalence_groups: Path) -> int:
+def emit_default_batch_summary(output: Path, equivalence_groups: Path, args: argparse.Namespace) -> int:
     default_cases = default_cgra_sim_batch.load_default_cases()
     default_root = output.parent / f"{output.stem}-default-evidence"
     evidence_dir = default_root / "current-sim-cycle"
@@ -374,6 +404,7 @@ def emit_default_batch_summary(output: Path, equivalence_groups: Path) -> int:
         "--output-dir",
         str(evidence_dir),
     ]
+    command.extend(["--jobs", str(sim_cycle_summary_jobs(args))])
     for case in default_cases:
         command.extend(["--case", case])
     result = run_command(command)
@@ -428,7 +459,7 @@ def main(argv: list[str]) -> int:
                 )
             intermediate_artifacts.write_csv("sim_cycle", output)
             return 0
-        return emit_default_batch_summary(output, equivalence_groups)
+        return emit_default_batch_summary(output, equivalence_groups, args)
     if valid_dfg_reports:
         tool = find_tool()
         if tool is not None:

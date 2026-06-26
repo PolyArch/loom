@@ -81,6 +81,24 @@ def assert_source_compat_parallelized(path: Path) -> None:
     require("LOOM_TEST_JOBS" in text, f"{path} must honor the shared test worker budget")
 
 
+def assert_cmsis_dfg_attempts_parallelized(path: Path) -> None:
+    text = path.read_text()
+    require("--jobs" in text, f"{path} must expose an explicit --jobs option")
+    require("ThreadPoolExecutor" in text, f"{path} must parallelize independent CMSIS attempts")
+    require("LOOM_CMSIS_DFG_SIM_JOBS" in text, f"{path} must expose a CMSIS DFG-sim worker budget")
+    require("LOOM_TEST_JOBS" in text, f"{path} must honor the shared test worker budget")
+
+
+def assert_sim_cycle_summary_parallelized(path: Path) -> None:
+    text = path.read_text()
+    require("--jobs" in text, f"{path} must expose an explicit --jobs option")
+    require("LOOM_TEST_JOBS" in text, f"{path} must honor the shared test worker budget")
+    require(
+        'command.extend(["--jobs", str(sim_cycle_summary_jobs(args))])' in text,
+        f"{path} must pass a bounded worker budget to the default CGRA evidence sweep",
+    )
+
+
 def assert_artifact_lit_group(repo: Path) -> None:
     cfg = (repo / "test/lit.cfg.py").read_text()
     local_cfg = repo / "test/artifacts/lit.local.cfg.py"
@@ -102,6 +120,8 @@ def assert_artifact_lit_group(repo: Path) -> None:
         '"LOOM_ARTIFACT_GATES_JOBS", "LOOM_CHAIN_BREADTH_JOBS"' in cfg,
         "lit must forward artifact sub-runner worker budgets into test processes",
     )
+    for name in ("LOOM_APP_BUILD_DIR_JOBS", "LOOM_SOURCE_COMPAT_JOBS", "LOOM_CMSIS_DFG_SIM_JOBS"):
+        require(name in cfg, f"lit must forward {name} into test processes")
     require(
         'config.parallelism_group = "artifacts"' in local_text,
         "artifact lit tests must use the artifacts parallelism group",
@@ -122,6 +142,8 @@ def main(argv: list[str]) -> int:
     assert_artifact_gates_parallelized(repo / "test/artifacts/test_intermediate_artifacts.py")
     assert_app_build_dir_runner_parallelized(repo / "test/artifacts/test_app_runner_build_dir.py")
     assert_source_compat_parallelized(repo / "test/app/source_compat_summary.py")
+    assert_cmsis_dfg_attempts_parallelized(repo / "test/e2e/run_cmsis_dfg_sim_attempts.py")
+    assert_sim_cycle_summary_parallelized(repo / "test/app/sim_cycle_summary.py")
     return 0
 
 

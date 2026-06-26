@@ -22,7 +22,9 @@ llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
      "LOOM_BIN", "LOOM_PERF", "LOOM_PERF_CACHE", "LOOM_PERF_TIMEOUT_S",
      "JOBS", "LOOM_TEST_JOBS", "LOOM_ARTIFACT_TEST_JOBS",
-     "LOOM_ARTIFACT_GATES_JOBS", "LOOM_CHAIN_BREADTH_JOBS"])
+     "LOOM_ARTIFACT_GATES_JOBS", "LOOM_CHAIN_BREADTH_JOBS",
+     "LOOM_APP_BUILD_DIR_JOBS", "LOOM_SOURCE_COMPAT_JOBS",
+     "LOOM_CMSIS_DFG_SIM_JOBS"])
 llvm_config.use_default_substitutions()
 
 config.excludes = ["lit.cfg.py", "lit.site.cfg.py", "CMakeLists.txt"]
