@@ -377,6 +377,170 @@ bound when local resource pressure exceeds the smoothed average. It is:
   class. It **MUST NOT** be described as modeling mapper, placement, routing,
   or memory-bank-conflict effects.
 
+## Optional Loom-Pragma Design-Space Estimate
+
+The aggregate CGRA lower bound and the finite-resource schedule estimate above
+operate on the fully-unrolled ASAP dynamic operation set. A separate exploratory
+model **MAY** be used to compare explicit Loom loop-pragmas before committing to
+compiler or hardware mapping work. This optional model is called the
+**Loom-pragma design-space estimate**.
+
+The Loom-pragma design-space estimate consumes source-loop metadata such as loop
+kind, trip count, `LOOM_PARALLEL(P)`, `LOOM_UNROLL(U)`, and schedule strategy.
+Loop kind controls legality: dependency-parallel loops may use parallel workers,
+sequential loops must preserve carried recurrences, and reductions may use
+parallel workers only when the carried operation is treated as a reduction. The
+`LOOM_PARALLEL(P)` and `LOOM_UNROLL(U)` values control finite exposure: a single
+candidate chunk contains only the iterations exposed by the chosen workers and
+unroll factor, rather than the whole fully-unrolled loop nest.
+
+For a single dependency-parallel loop, an implementation of this optional model
+SHOULD build one candidate chunk with:
+
+```
+exposed_iters = min(trip_count, P * U)
+waves         = ceil(trip_count / exposed_iters)
+```
+
+The implementation then schedules that chunk with the deterministic
+finite-resource scheduler defined above and reports an estimated total such as:
+
+```
+estimated_cycles = chunk_scheduled_cycles * waves
+```
+
+More detailed implementations MAY model a smaller tail chunk separately, nested
+loop placement, reduction merge trees, and schedule strategy effects such as
+contiguous versus interleaved distribution. Any such report **MUST** state the
+assumptions it uses.
+
+### Wave serialization and what the bracket means
+
+The `estimated_cycles = chunk_scheduled_cycles * waves` form above models
+**wave-serialized** execution: each wave's chunk is scheduled in isolation and the
+makespans are summed, as if no wave begins before the previous wave fully drains.
+Real Loom dataflow maps the DAG spatially and **pipelines** successive waves, so
+this form is a conservative over-estimate that falls **monotonically** as exposure
+grows. Used directly as the objective, it therefore always selects the maximum
+`P · U`, which is **not** a meaningful design recommendation (see exposure
+selection below).
+
+Three quantities **MAY** be reported per candidate. With exposure
+`E = min(trip_count, P · U)`, `full_waves = trip_count // E`, and
+`tail = trip_count % E`, define a wave-summed aggregate and a wave-summed schedule
+estimate:
+
+```
+pragma_exposure_aggregate = full_waves * chunk_aggregate(E) + (chunk_aggregate(tail) if tail else 0)
+schedule_estimate         = full_waves * chunk_scheduled(E) + (chunk_scheduled(tail) if tail else 0)
+```
+
+where `chunk_aggregate(E)` is the aggregate CGRA bound (Metric 1) of the
+`E`-iteration chunk and `chunk_scheduled(E)` is its finite-resource schedule
+makespan (Metric 2). These relate to the genuine resource floor by the bracket
+
+```
+absolute_cgra_lb  <=  pragma_exposure_aggregate  <=  schedule_estimate
+```
+
+where `absolute_cgra_lb` is the aggregate CGRA lower bound (Metric 1) evaluated
+over the kernel's **full unrolled** op set — the same Metric-1 lower bound applied
+to the whole loop, independent of `P` and `U`. The left inequality holds because
+`ceil` is subadditive across the wave partition and `CP` is unchanged; the right
+inequality is the per-region conditional invariant of Metric 2 summed over waves.
+
+**Only `absolute_cgra_lb` is a lower bound.** Both
+`pragma_exposure_aggregate` and `schedule_estimate` embed the wave-serialization
+assumption and therefore sit **above** the true hardware floor — real pipelined
+execution can fall below them, toward `absolute_cgra_lb`. The phrase "lower
+bound" **MUST NOT** be applied to `pragma_exposure_aggregate` or
+`schedule_estimate`, consistent with the prohibition stated at the end of this
+section. In particular, the ratio `pragma_exposure_aggregate / absolute_cgra_lb`
+measures the **wave-serialization penalty of the chosen exposure** — it vanishes
+as `E → trip_count` — and **MUST NOT** be described as a pure "finite-exposure
+penalty," since it is dominated by the model's non-overlap assumption rather than
+a hardware cost.
+
+### Steady-state saturation and exposure selection
+
+To *select* an exposure, an implementation **MUST NOT** minimize the wave-summed
+estimate directly (it is monotone in exposure) and **MUST NOT** constrain on zero
+scheduler backlog (see below). It instead reasons about **steady-state resource
+saturation**.
+
+For a single dependency-parallel loop of trip count `T`, define the
+**per-iteration class demand** — the `P`/`L`/`S` op counts charged by one
+iteration, with loop-invariant values hoisted and charged once for the whole loop,
+not per iteration:
+
+```
+a_iter, ld_iter, st_iter
+```
+
+The resource floor is then
+
+```
+absolute_cgra_lb = max(CP, ceil(T * a_iter / P), ceil(T * ld_iter / L), ceil(T * st_iter / S))
+```
+
+The **binding class** is the class achieving that `max` (excluding `CP`); let
+`count_binding` and `cap_binding` be its per-iteration demand and its capacity. A
+single wave's chunk has class totals `≈ E · {a_iter, ld_iter, st_iter}` (plus the
+`O(1)` per-wave invariant re-loads), so
+
+```
+chunk_aggregate(E) = max(CP, ceil(E * a_iter / P), ceil(E * ld_iter / L), ceil(E * st_iter / S))
+```
+
+A wave is **latency-bound** while `chunk_aggregate(E) == CP` — the binding class
+idles for `CP − ceil(E * count_binding / cap_binding)` cycles of every wave — and
+**resource-bound** once the binding class's per-wave ceiling reaches `CP`. The
+**saturation exposure** `E_sat` is the smallest exposure at which the binding
+class becomes resource-bound:
+
+```
+E_sat = smallest E such that ceil(E * count_binding / cap_binding) >= CP
+```
+
+Physically, `E_sat` is the exposure at which the binding resource's
+initiation-interval pressure first fills its issue width every cycle. Below
+`E_sat`, adding parallelism strictly improves throughput (the binding resource is
+idle part of each wave). At and above `E_sat`, each wave is resource-bound; under
+pipelined execution the steady-state rate equals the resource floor, and further
+exposure yields **no modeled steady-state throughput gain** — the wave-summed
+aggregate creeps toward `absolute_cgra_lb` only through per-wave ceiling rounding
+and invariant-reload amortization, while the instantaneous (transient) ready
+backlog rises linearly. `E_sat` is therefore the diminishing-returns **knee**.
+
+An implementation that selects an exposure **SHOULD** recommend the smallest legal
+exposure `E >= E_sat` — the smallest `P · U` consistent with pragma legality and
+loop nesting — and **SHOULD** flag larger exposures as **oversubscribed**:
+diminishing aggregate gains traded against linearly growing transient backlog and
+hardware area.
+
+### Backlog is a diagnostic, not a constraint
+
+The `peak_ready_backlog` reported by the finite-resource scheduler is the largest
+number of ready ops of a class that could not issue in one cycle. In the chunk
+model it is a **transient artifact** of fully unrolling `E` iterations and
+releasing all their independent roots at cycle 1; it is **not** a steady-state
+hardware property, because pipelined dataflow throttles iteration entry by the
+initiation interval rather than releasing a whole chunk at once.
+
+An implementation **MUST NOT** use `peak_ready_backlog == 0` as a feasibility
+constraint when selecting an exposure. Because the wave-summed estimate falls
+monotonically with exposure while backlog rises monotonically with exposure, a
+zero-backlog constraint selects the **smallest** exposures and therefore the
+**worst** throughput — the opposite of the design goal. Backlog **SHOULD** be
+reported as a pressure diagnostic only and read together with `E_sat`: backlog
+that appears only beyond `E_sat` signals oversubscription, not infeasibility.
+
+This exploratory estimate is **not** the aggregate CGRA lower bound, **not** the
+fully-unrolled ASAP metric, **not** cycle-accurate RTL, and **not** a
+place-and-route or memory-bank-conflict model. It **MUST NOT** replace or rename
+the aggregate lower bound in eval files, and the phrase "lower bound" **MUST
+NOT** be applied to the Loom-pragma design-space estimate.
+
 ## Eval Reporting Format
 
 Each pilot eval (`tests/app/<kernel>/<kernel>_eval.md`) already contains a
