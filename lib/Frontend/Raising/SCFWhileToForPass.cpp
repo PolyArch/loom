@@ -14,7 +14,7 @@
 //                  : (i64, T) -> (i64, T) {
 //             ... body using %iv, %carry ...
 //             %iv_next = arith.addi %iv, %step
-//             %cond = arith.cmpi ne, %iv_next, %ub
+//             %cond = arith.cmpi <ne|ult>, %iv_next, %ub
 //             scf.condition(%cond) %iv_next, %carry_next : i64, T
 //          } do {
 //          ^bb0(%iv_next: i64, %carry_next: T):
@@ -28,13 +28,16 @@
 //      the bump).
 //
 // Correctness constraints on the do-while shape:
-//   * The predicate is restricted to `cmpi ne %iv_next, %ub` -- the
-//     EXACT shape upstream `--lift-cf-to-scf` emits for an LLVM
-//     counted loop with post-increment-then-test. Inclusive predicates
-//     (sle / ule / sge / uge) and reversed predicates (sgt / ugt / slt
-//     / ult on iv_next) would require lb/ub adjustment or direction
-//     reversal we do not perform; we leave those scf.while ops alone
-//     rather than mis-rewrite them.
+//   * The predicate is restricted to `cmpi ne %iv_next, %ub`, or to
+//     unsigned strict ascending `cmpi ult %iv_next, %ub`. Signed strict
+//     less-than, inclusive predicates (sle / ule / sge / uge), and
+//     reversed predicates require range proof, lb/ub adjustment, or
+//     direction reversal we do not perform; we leave those scf.while ops
+//     alone rather than mis-rewrite them.
+//   * The before operands, after operands, and loop results must have
+//     the same arity. Some raised SCF while loops carry extra result
+//     state through scf.condition; those are not equivalent to an
+//     scf.for with the iv slot simply removed.
 //   * The after-region must consist of nothing more than the
 //     scf.yield of the same iv and carried values back. A non-trivial
 //     after-region would be silently dropped by this rewrite, so we
@@ -98,26 +101,38 @@ matchCountedDoWhile(::mlir::scf::WhileOp loop) {
   if (cmpOp->getParentRegion() != &loop.getBefore())
     return ::mlir::failure();
 
-  // Predicate accepted: only `ne` -- the EXACT shape that upstream
-  // `--lift-cf-to-scf` emits for an ascending counted loop with the
-  // increment in the latch. Inclusive (sle/ule/sge/uge), reversed
-  // (sgt/ugt), and "<" on iv_next (slt/ult) would either need lb/ub
-  // adjustment or direction reversal we do not perform; we leave those
-  // scf.while ops alone for the next layer to handle rather than
-  // mis-rewrite them. `eq` would terminate after at most one iteration
-  // and is not a loop in the conventional sense.
+  // Only same-arity while loops are equivalent to an scf.for whose iv
+  // slot is removed from iter_args. Arity-changing while loops can carry
+  // additional state through scf.condition and must stay as scf.while.
+  unsigned initCount = loop.getInits().size();
+  if (loop->getNumResults() != initCount ||
+      condOp.getArgs().size() != initCount ||
+      afterBody->getNumArguments() != initCount ||
+      yieldOp.getResults().size() != initCount)
+    return ::mlir::failure();
+
+  // Accepted predicates are `ne`, or unsigned strict ascending
+  // `%iv_next < %ub` (`ult`). Signed `slt` needs range proof before it is
+  // safely equivalent to a half-open scf.for.
   using Pred = ::mlir::arith::CmpIPredicate;
   Pred pred = cmpOp.getPredicate();
-  if (pred != Pred::ne)
+  bool isStrictLess = pred == Pred::ult;
+  if (pred != Pred::ne && !isStrictLess)
     return ::mlir::failure();
 
   // The bumped iv comes from an arith.addi of a before-block argument
-  // and a loop-invariant step. Try both lhs and rhs of the cmpi.
+  // and a loop-invariant step. For `ne`, try both cmp sides because the
+  // predicate is symmetric. For `<`, only `%iv_next < %ub` is safe.
   ::mlir::Value lhs = cmpOp.getLhs();
   ::mlir::Value rhs = cmpOp.getRhs();
   ::mlir::arith::AddIOp addOp;
   ::mlir::Value upperBound;
-  for (bool flip : {false, true}) {
+  ::llvm::SmallVector<bool, 2> flips;
+  if (isStrictLess)
+    flips.push_back(false);
+  else
+    flips.append({false, true});
+  for (bool flip : flips) {
     ::mlir::Value bumped = flip ? rhs : lhs;
     ::mlir::Value bound = flip ? lhs : rhs;
     auto candAdd = bumped.getDefiningOp<::mlir::arith::AddIOp>();

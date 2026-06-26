@@ -36,9 +36,9 @@ std::unique_ptr<::mlir::Pass> createLLVMCfToCfPass();
 std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 
 // Uplift counted scf.while loops produced by --lift-cf-to-scf into
-// scf.for. This is a thin wrapper around the upstream
-// scf::populateUpliftWhileToForPatterns. Loops that do not match the
-// counted shape are left as scf.while.
+// scf.for. This combines upstream counted-loop patterns with Loom's
+// conservative do-while counted-loop fallback. Loops that do not match
+// a supported counted shape are left as scf.while.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
 // Lift trivially parallel scf.for loops (no iter_args, iv-dependent
