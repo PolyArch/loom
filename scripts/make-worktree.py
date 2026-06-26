@@ -29,6 +29,7 @@ import errno
 import fcntl
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,12 @@ LLVM_GCC_MIN = (7, 4)
 LOOM_C_COMPILER = "clang"
 LOOM_CXX_COMPILER = "clang++"
 LOOM_CLANG_MIN = (21, 1, 8)
+HEAVY_LIT_TESTS = (
+    "artifacts/cmsis_cgra_status_rollup.mlir",
+    "artifacts/cgra_sim_evidence_sweep.mlir",
+    "artifacts/artifact_gates.mlir",
+    "artifacts/sim_cycle_summary.mlir",
+)
 
 
 def info(msg: str) -> None:
@@ -527,6 +534,10 @@ def lit_opts(*parts: str) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def lit_extra_args(extra: str) -> list[str]:
+    return shlex.split(extra) if extra else []
+
+
 def explicit_lit_workers(extra: str) -> int | None:
     patterns = (
         r"(^|\s)-j([0-9]+)(?=\s|$)",
@@ -549,11 +560,62 @@ def lit_jobs_opt(jobs: int, extra: str) -> str:
     return f"-j{jobs}"
 
 
+def lit_jobs_arg(jobs: int, extra: str) -> list[str]:
+    value = lit_jobs_opt(jobs, extra)
+    return [value] if value else []
+
+
+def positive_env_int(env: dict[str, str], name: str) -> int | None:
+    value = env.get(name, "").strip()
+    if not value:
+        return None
+    if not re.fullmatch(r"[0-9]+", value) or int(value) < 1:
+        die(f"{name} must be a positive integer")
+    return int(value)
+
+
+def heavy_lit_workers(total_jobs: int, extra: str, env: dict[str, str]) -> int:
+    explicit = explicit_lit_workers(extra)
+    if explicit is not None:
+        return max(1, explicit)
+    configured = positive_env_int(env, "LOOM_HEAVY_LIT_WORKERS")
+    if configured is not None:
+        return max(1, min(total_jobs, configured))
+    return max(1, min(total_jobs, 2))
+
+
+def heavy_nested_jobs(total_jobs: int, workers: int, extra: str, env: dict[str, str]) -> int:
+    explicit = explicit_lit_workers(extra)
+    if explicit is not None:
+        return max(1, explicit)
+    configured = positive_env_int(env, "LOOM_HEAVY_TEST_JOBS")
+    if configured is not None:
+        return configured
+    return max(1, (total_jobs + workers - 1) // workers)
+
+
+def broad_filter_out_pattern() -> str:
+    return "|".join(["techmap/perf", *(re.escape(test) for test in HEAVY_LIT_TESTS)])
+
+
 def run_with_lit_filter(
     cmd: list[str],
     lit_filter: Path,
     env: dict[str, str] | None = None,
 ) -> None:
+    proc, py = start_lit_filter(cmd, lit_filter, env)
+    proc_rc, py_rc = wait_lit_filter(proc, py)
+    if proc_rc != 0:
+        sys.exit(proc_rc)
+    if py_rc != 0:
+        sys.exit(py_rc)
+
+
+def start_lit_filter(
+    cmd: list[str],
+    lit_filter: Path,
+    env: dict[str, str] | None = None,
+) -> tuple[subprocess.Popen, subprocess.Popen]:
     proc = subprocess.Popen(
         cmd,
         env=env,
@@ -566,12 +628,29 @@ def run_with_lit_filter(
         stdin=proc.stdout,
     )
     proc.stdout.close()
+    return proc, py
+
+
+def wait_lit_filter(proc: subprocess.Popen, py: subprocess.Popen) -> tuple[int, int]:
     py_rc = py.wait()
     proc_rc = proc.wait()
-    if proc_rc != 0:
-        sys.exit(proc_rc)
-    if py_rc != 0:
-        sys.exit(py_rc)
+    return proc_rc, py_rc
+
+
+def run_lit_filters_parallel(
+    runs: list[tuple[list[str], dict[str, str]]],
+    lit_filter: Path,
+) -> None:
+    launched = [start_lit_filter(cmd, lit_filter, env) for cmd, env in runs]
+    failure = 0
+    for proc, py in launched:
+        proc_rc, py_rc = wait_lit_filter(proc, py)
+        if failure == 0 and proc_rc != 0:
+            failure = proc_rc
+        if failure == 0 and py_rc != 0:
+            failure = py_rc
+    if failure != 0:
+        sys.exit(failure)
 
 
 def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
@@ -581,33 +660,52 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     base_env = os.environ.copy()
     extra = base_env.get("LIT_OPTS", "").strip()
     nested_jobs = explicit_lit_workers(extra) or args.jobs
+    extra_args = lit_extra_args(extra)
     broad_env = base_env.copy()
     broad_env.setdefault("LOOM_TEST_JOBS", str(nested_jobs))
-    broad_env["LIT_OPTS"] = lit_opts(
+    broad_env["LIT_OPTS"] = lit_opts(extra)
+    lit_filter = paths.root / "test" / "lit_top_slowest.py"
+    broad_cmd = [
+        str(paths.llvm_lit),
         "-sv",
         "--time-tests",
-        lit_jobs_opt(args.jobs, extra),
+        *lit_jobs_arg(args.jobs, extra),
         "--filter-out",
-        "techmap/perf",
-        extra,
-    )
-    lit_filter = paths.root / "test" / "lit_top_slowest.py"
-    run_with_lit_filter(
+        broad_filter_out_pattern(),
+        *extra_args,
+        str(paths.loom_build / "test"),
+    ]
+
+    heavy_workers = heavy_lit_workers(args.jobs, extra, base_env)
+    heavy_env = base_env.copy()
+    heavy_env.setdefault("LOOM_TEST_JOBS", str(heavy_nested_jobs(args.jobs, heavy_workers, extra, base_env)))
+    heavy_env["LIT_OPTS"] = lit_opts(extra)
+    heavy_cmd = [
+        str(paths.llvm_lit),
+        "-sv",
+        "--time-tests",
+        f"-j{heavy_workers}",
+        *extra_args,
+        *(str(paths.loom_build / "test" / test) for test in HEAVY_LIT_TESTS),
+    ]
+    run_lit_filters_parallel(
         [
-            "cmake", "--build", str(paths.loom_build),
-            f"-j{args.jobs}", "--target", "check-fabric",
+            (broad_cmd, broad_env),
+            (heavy_cmd, heavy_env),
         ],
         lit_filter,
-        env=broad_env,
     )
 
     perf_env = base_env.copy()
     perf_env.setdefault("LOOM_TEST_JOBS", str(nested_jobs))
-    perf_env["LIT_OPTS"] = lit_opts("-sv", "--time-tests", extra)
+    perf_env["LIT_OPTS"] = lit_opts(extra)
     run_with_lit_filter(
         [
             str(paths.llvm_lit),
+            "-sv",
+            "--time-tests",
             "-j1",
+            *extra_args,
             str(paths.loom_build / "test" / "techmap" / "perf"),
         ],
         lit_filter,

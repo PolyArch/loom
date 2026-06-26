@@ -147,8 +147,9 @@ class MakeWorktreeTest(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
 
-    def test_cmd_test_runs_perf_lit_separately(self):
+    def test_cmd_test_isolates_perf_lit_from_artifact_groups(self):
         popen_calls = []
+        wait_seen_launch_counts = []
         self.args.jobs = 7
 
         class FakePipe:
@@ -163,6 +164,7 @@ class MakeWorktreeTest(unittest.TestCase):
                 popen_calls.append(self)
 
             def wait(self):
+                wait_seen_launch_counts.append(len(popen_calls))
                 return 0
 
         with (
@@ -173,22 +175,31 @@ class MakeWorktreeTest(unittest.TestCase):
         ):
             self.module.cmd_test(self.paths, self.args)
 
-        build_calls = [call for call in popen_calls if call.cmd[0] == "cmake"]
         lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
         filter_calls = [call for call in popen_calls if call.cmd[0] == sys.executable]
-        self.assertEqual(len(build_calls), 1)
-        self.assertEqual(len(lit_calls), 1)
-        self.assertEqual(len(filter_calls), 2)
+        self.assertEqual(len(lit_calls), 3)
+        self.assertEqual(len(filter_calls), 3)
+        self.assertEqual(min(wait_seen_launch_counts), 4)
+        self.assertEqual(max(wait_seen_launch_counts), 6)
         self.assertEqual(
             {call.cmd[1] for call in filter_calls},
             {str(self.paths.root / "test" / "lit_top_slowest.py")},
         )
-        self.assertIn("--filter-out", build_calls[0].kwargs["env"]["LIT_OPTS"])
-        self.assertIn("techmap/perf", build_calls[0].kwargs["env"]["LIT_OPTS"])
-        self.assertIn("-j7", build_calls[0].kwargs["env"]["LIT_OPTS"])
-        self.assertEqual(build_calls[0].kwargs["env"]["LOOM_TEST_JOBS"], "7")
-        self.assertIn("-j1", lit_calls[0].cmd)
-        self.assertEqual(lit_calls[0].cmd[-1], str(self.paths.loom_build / "test" / "techmap" / "perf"))
+        broad_call = lit_calls[0]
+        heavy_call = lit_calls[1]
+        perf_call = lit_calls[2]
+        self.assertEqual(broad_call.cmd[-1], str(self.paths.loom_build / "test"))
+        self.assertIn("--filter-out", broad_call.cmd)
+        broad_filter = broad_call.cmd[broad_call.cmd.index("--filter-out") + 1]
+        self.assertIn("techmap/perf", broad_filter)
+        self.assertIn("artifacts/cmsis_cgra_status_rollup\\.mlir", broad_filter)
+        self.assertIn("-j7", broad_call.cmd)
+        self.assertEqual(broad_call.kwargs["env"]["LOOM_TEST_JOBS"], "7")
+        self.assertIn("-j2", heavy_call.cmd)
+        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "4")
+        self.assertIn(str(self.paths.loom_build / "test" / "artifacts" / "cmsis_cgra_status_rollup.mlir"), heavy_call.cmd)
+        self.assertIn("-j1", perf_call.cmd)
+        self.assertEqual(perf_call.cmd[-1], str(self.paths.loom_build / "test" / "techmap" / "perf"))
 
     def test_cmd_test_uses_explicit_lit_worker_budget_for_nested_runners(self):
         popen_calls = []
@@ -217,11 +228,15 @@ class MakeWorktreeTest(unittest.TestCase):
         ):
             self.module.cmd_test(self.paths, self.args)
 
-        build_calls = [call for call in popen_calls if call.cmd[0] == "cmake"]
-        self.assertEqual(len(build_calls), 1)
-        self.assertIn("-j1", build_calls[0].kwargs["env"]["LIT_OPTS"])
-        self.assertNotIn("-j32", build_calls[0].kwargs["env"]["LIT_OPTS"])
-        self.assertEqual(build_calls[0].kwargs["env"]["LOOM_TEST_JOBS"], "1")
+        lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
+        self.assertEqual(len(lit_calls), 3)
+        broad_call = lit_calls[0]
+        heavy_call = lit_calls[1]
+        self.assertIn("-j1", broad_call.cmd)
+        self.assertNotIn("-j32", broad_call.cmd)
+        self.assertEqual(broad_call.kwargs["env"]["LOOM_TEST_JOBS"], "1")
+        self.assertIn("-j1", heavy_call.cmd)
+        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "1")
 
 
 if __name__ == "__main__":
