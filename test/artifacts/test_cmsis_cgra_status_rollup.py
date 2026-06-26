@@ -391,6 +391,86 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         raise AssertionError(f"app sweep mode should not reuse stale dotprod evidence: {dotprod}")
 
 
+def assert_loombench_cgra_pass_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    case: str,
+    *,
+    expected_hardware: str,
+) -> None:
+    row = one_row(rows, "loombench", case)
+    if (
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
+        or row["hardware_system"] != expected_hardware
+        or row["manifest_case"] != case
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+    ):
+        raise AssertionError(f"LoomBench row should expose real CGRA-sim evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+
+
+def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
+    legacy_root = out_dir / "legacy-loombench"
+    write_legacy_case(legacy_root, "byte_swap")
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-seed-batch",
+            "--jobs",
+            "8",
+        ],
+    )
+    rows = read_rows(out_dir / "cgra-status-summary.csv")
+    data = json.loads((out_dir / "cgra-status-summary.json").read_text())
+    assert_counts(
+        data,
+        "app",
+        {
+            "total": 109,
+            "pass": 1,
+            "fail": 0,
+            "blocked": 37,
+            "unsupported": 0,
+            "missing_status": 71,
+        },
+    )
+    assert_counts(
+        data,
+        "loombench",
+        {
+            "total": 1,
+            "pass": 1,
+            "fail": 0,
+            "blocked": 0,
+            "unsupported": 0,
+            "missing_status": 0,
+        },
+    )
+    assert_app_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
+    vecsum = one_row(rows, "app", "vecsum")
+    if vecsum["status"] == "pass" or vecsum["dfg_report"]:
+        raise AssertionError(f"app seed batch should not consume unselected vecsum evidence: {vecsum}")
+    for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
+        artifact = out_dir / "current-sim-cycle" / f"byte_swap.{suffix}"
+        if not artifact.is_file():
+            raise AssertionError(f"app seed batch should emit {artifact}")
+
+
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "binary_search": "primary workload graph absent: expected token binary_search_candidate",
     "clz": "primary workload graph absent: expected token clz_candidate",
@@ -2634,6 +2714,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
+        assert_app_seed_batch_mode(repo, out_dir / "app-seed-batch")
         assert_app_attempt_manifest_mode(repo, out_dir / "app-attempt-manifest", legacy_root)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)

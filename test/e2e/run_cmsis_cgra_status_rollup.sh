@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
@@ -18,11 +18,12 @@ Each --cmsis-sim-attempt-stem or --cmsis-sim-case restricts those CMSIS
 attempts to the selected row evidence.
 --app-sim-default-batch runs the shared-ADG app CGRA evidence batch used by the
 default simulator cycle summary, plus the default shared-ADG blocker-attempt
-batch so app rows do not remain silent missing_status entries. Each
---app-sim-attempt-manifest declares app rows that should be attempted on shared
-ADGs and recorded honestly even when the resulting evidence is blocked or
-unsupported. Each --app-sim-case runs the app CGRA evidence sweep for that app
-row into the status evidence directory.
+batch so app rows do not remain silent missing_status entries.
+--app-sim-seed-batch runs the tracked app CGRA seed rows into the status
+evidence directory. Each --app-sim-attempt-manifest declares app rows that
+should be attempted on shared ADGs and recorded honestly even when the resulting
+evidence is blocked or unsupported. Each --app-sim-case runs the app CGRA
+evidence sweep for that app row into the status evidence directory.
 When a legacy LoomBench root is supplied, the rollup also generates and
 consumes the dedicated LoomBench manifest so legacy rows are structured status
 records rather than manifest omissions.
@@ -33,9 +34,11 @@ OUT_DIR=""
 LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
 DEFAULT_APP_BLOCKER_MANIFEST="${ROOT}/test/app/shared-cgra-blocker-batch.json"
+DEFAULT_APP_SIM_SEED_BATCH="${ROOT}/test/app/cgra-sim-seed-batch.json"
 DEFAULT_CMSIS_SIM_SEED_BATCH="${ROOT}/test/e2e/cmsis-cgra-sim-seed-batch.json"
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
+APP_SIM_SEED_BATCH=0
 CMSIS_SIM_DEFAULT=0
 CMSIS_SIM_SEED_BATCH=0
 JOBS_ARG=""
@@ -81,6 +84,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --app-sim-default-batch)
             APP_SIM_DEFAULT_BATCH=1
+            shift
+            ;;
+        --app-sim-seed-batch)
+            APP_SIM_SEED_BATCH=1
             shift
             ;;
         --app-sim-attempt-manifest)
@@ -201,6 +208,18 @@ if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
         fi
         APP_SIM_CASES+=("${default_blocker_case}")
     done <<< "${default_blocker_case_output}"
+fi
+
+if [[ "${APP_SIM_SEED_BATCH}" -eq 1 ]]; then
+    if ! seed_case_output="$(load_app_sim_manifest_cases "${DEFAULT_APP_SIM_SEED_BATCH}")"; then
+        exit 1
+    fi
+    while IFS= read -r seed_case; do
+        if [[ -z "${seed_case}" ]]; then
+            continue
+        fi
+        APP_SIM_CASES+=("${seed_case}")
+    done <<< "${seed_case_output}"
 fi
 
 for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do
@@ -410,6 +429,11 @@ run_app_sim_producer() {
     bash "${ROOT}/test/e2e/run_cgra_sim_evidence_sweep.sh" "${app_sweep_args[@]}"
     if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
         python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
+            --validate-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}"
+    fi
+    if [[ "${APP_SIM_SEED_BATCH}" -eq 1 ]]; then
+        python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
+            --manifest "${DEFAULT_APP_SIM_SEED_BATCH}" \
             --validate-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}"
     fi
 }
