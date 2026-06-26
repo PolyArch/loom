@@ -9,7 +9,7 @@ LEGACY_LOOMBENCH_ROOT="${LOOM_LEGACY_LOOMBENCH_ROOT:-${ROOT}/temp/old_implementa
 LEGACY_LOOMBENCH_ROOT_SUPPLIED=0
 LOOMBENCH_MANIFEST=""
 NO_LEGACY_LOOMBENCH=0
-CMSIS_DFG_AUTO=0
+CMSIS_DFG_AUTO=1
 CMSIS_DSP_DFG_DIR=""
 CMSIS_NN_DFG_DIR=""
 declare -a FORWARD_ARGS=()
@@ -24,6 +24,10 @@ while [[ "${index}" -lt "${#ARGS[@]}" ]]; do
             ;;
         --cmsis-dfg-auto)
             CMSIS_DFG_AUTO=1
+            index=$((index + 1))
+            ;;
+        --no-cmsis-dfg-auto)
+            CMSIS_DFG_AUTO=0
             index=$((index + 1))
             ;;
         --output)
@@ -115,7 +119,7 @@ fi
 
 if [[ "${CMSIS_DFG_AUTO}" -eq 1 ]]; then
     if [[ -z "${OUTPUT}" ]]; then
-        echo "--cmsis-dfg-auto requires --output" >&2
+        echo "CMSIS DFG auto mode requires --output; pass --no-cmsis-dfg-auto for metadata-only status" >&2
         exit 2
     fi
     output_dir="$(dirname "${OUTPUT}")"

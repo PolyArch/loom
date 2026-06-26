@@ -485,17 +485,28 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
             }
             if suite_counts != expected:
                 raise AssertionError(f"app baseline should structure app rows without dfg tier: {suite_counts}")
-        elif suite in {"cmsis-dsp", "cmsis-nn"}:
+        elif suite == "cmsis-dsp":
             expected = {
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": total,
-                "unsupported": 0,
+                "blocked": 14,
+                "unsupported": 2,
                 "missing_status": 0,
             }
             if suite_counts != expected:
-                raise AssertionError(f"{suite} baseline should structure rows without DFG MLIR evidence: {suite_counts}")
+                raise AssertionError(f"{suite} baseline should consume default DFG MLIR evidence: {suite_counts}")
+        elif suite == "cmsis-nn":
+            expected = {
+                "total": total,
+                "pass": 0,
+                "fail": 0,
+                "blocked": 10,
+                "unsupported": 8,
+                "missing_status": 0,
+            }
+            if suite_counts != expected:
+                raise AssertionError(f"{suite} baseline should consume default DFG MLIR evidence: {suite_counts}")
         else:
             if suite_counts.get("missing_status") != total:
                 raise AssertionError(f"{suite} missing_status should equal total in baseline: {suite_counts}")
@@ -583,22 +594,58 @@ def main() -> int:
             raise AssertionError(f"unexpected CMSIS-DSP root: {cmsis_dsp}")
         if (
             cmsis_dsp["status"] != "blocked"
-            or cmsis_dsp["diagnostic_class"] != "cmsis_dfg_mlir_missing"
-            or cmsis_dsp["blocking_prerequisite"] != "dfg_mlir"
+            or cmsis_dsp["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or cmsis_dsp["blocking_prerequisite"] != "dfg_sim_report"
             or cmsis_dsp["owner"] != "compiler_pipeline"
+            or not cmsis_dsp["dfg_mlir"]
+            or not cmsis_dsp["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-DSP baseline row should block on missing DFG MLIR: {cmsis_dsp}")
+            raise AssertionError(f"CMSIS-DSP baseline row should consume DFG MLIR evidence: {cmsis_dsp}")
 
         cmsis_nn = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         if cmsis_nn["software_root"] != "externals/cmsis-nn/Source":
             raise AssertionError(f"unexpected CMSIS-NN root: {cmsis_nn}")
         if (
             cmsis_nn["status"] != "blocked"
-            or cmsis_nn["diagnostic_class"] != "cmsis_dfg_mlir_missing"
-            or cmsis_nn["blocking_prerequisite"] != "dfg_mlir"
+            or cmsis_nn["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or cmsis_nn["blocking_prerequisite"] != "dfg_sim_report"
             or cmsis_nn["owner"] != "compiler_pipeline"
+            or not cmsis_nn["dfg_mlir"]
+            or not cmsis_nn["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-NN baseline row should block on missing DFG MLIR: {cmsis_nn}")
+            raise AssertionError(f"CMSIS-NN baseline row should consume DFG MLIR evidence: {cmsis_nn}")
+        cmsis_dsp_no_graph = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
+        if (
+            cmsis_dsp_no_graph["status"] != "unsupported"
+            or cmsis_dsp_no_graph["diagnostic_class"] != "cmsis_no_dataflow_graph"
+            or cmsis_dsp_no_graph["blocking_prerequisite"] != "dataflow_graph"
+            or not cmsis_dsp_no_graph["dfg_mlir"]
+        ):
+            raise AssertionError(f"CMSIS-DSP no-graph row should be structured unsupported: {cmsis_dsp_no_graph}")
+        no_cmsis_auto_csv = out_dir / "no-cmsis-auto-cgra-status-summary.csv"
+        no_cmsis_auto_json = out_dir / "no-cmsis-auto-cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(no_cmsis_auto_csv),
+                "--json-output",
+                str(no_cmsis_auto_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--no-cmsis-dfg-auto",
+            ],
+        )
+        no_cmsis_auto_rows = read_rows(no_cmsis_auto_csv)
+        no_cmsis_auto_dsp = one_row(no_cmsis_auto_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        if (
+            no_cmsis_auto_dsp["status"] != "blocked"
+            or no_cmsis_auto_dsp["diagnostic_class"] != "cmsis_dfg_mlir_missing"
+            or no_cmsis_auto_dsp["blocking_prerequisite"] != "dfg_mlir"
+        ):
+            raise AssertionError(f"opt-out CMSIS row should preserve missing-DFG blocker: {no_cmsis_auto_dsp}")
 
         tampered_cmsis_rows = [dict(row) for row in rows]
         tampered_cmsis = one_row(tampered_cmsis_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
@@ -1054,15 +1101,16 @@ def main() -> int:
                 str(stale_default_json),
                 "--legacy-loombench-root",
                 str(legacy_root),
+                "--no-cmsis-dfg-auto",
             ],
         )
         stale_default_rows = read_rows(stale_default_csv)
         stale_default_add = one_row(stale_default_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         if stale_default_add["status"] != "blocked" or stale_default_add["diagnostic_class"] != "cmsis_dfg_mlir_missing":
-            raise AssertionError(f"default CGRA status must not consume stale CMSIS DFG evidence: {stale_default_add}")
+            raise AssertionError(f"opt-out CGRA status must not consume stale CMSIS DFG evidence: {stale_default_add}")
 
-        cmsis_dsp_dfg_dir = out_dir / "cmsis-dsp-dfg"
-        cmsis_nn_dfg_dir = out_dir / "cmsis-nn-dfg"
+        cmsis_dsp_dfg_dir = out_dir / "cmsis-dsp-fixture-dfg"
+        cmsis_nn_dfg_dir = out_dir / "cmsis-nn-fixture-dfg"
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_add_q15.dfg.mlir", symbol="arm_add_q15", graph=True)
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_mult_f32.dfg.mlir", symbol="wrong_symbol", graph=True)
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_sin_f32.dfg.mlir", symbol="arm_sin_f32", graph=False)
