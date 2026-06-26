@@ -89,7 +89,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_FAILED_SWEEP_CASES = ("pack_bits",)
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
@@ -101,7 +101,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "lower_bound",
     "moving_avg",
     "outer",
-    "pack_bits",
     "parity",
     "popcount",
     "scatter_add",
@@ -123,6 +122,20 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("transpose", "transpose"),
     ("upper_bound", "upper_bound_candidate"),
 )
+MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {
+    "pack_bits": {
+        "diagnostic": "missing hardware resource for software op llvm.trunc",
+        "graph": "g_t_pack_bits_kernel_red_0_0",
+        "dynamic_work_items": 32,
+        "final_outputs": ["none", "i64:32"],
+        "final_memory_state": {"arg11": ["i32:-749385939"]},
+        "operation_fire_counts": {
+            "dataflow.load": 32,
+            "dataflow.store": 1,
+            "llvm.intr.umin": 1,
+        },
+    },
+}
 
 HEADER = [
     "suite",
@@ -603,6 +616,28 @@ def assert_operation_fire_counts(case: str, dfg: dict, expected_counts: dict[str
         actual = actual_counts.get(op_name)
         if actual != expected:
             raise AssertionError(f"{case} {op_name} fire count should be {expected}, got {actual}: {dfg}")
+
+
+def assert_mapping_failed_evidence(evidence_dir: Path, case: str) -> None:
+    expected = MAPPING_FAILED_SWEEP_EVIDENCE[case]
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    dfg = json.loads(dfg_path.read_text())
+    mapping = json.loads(mapping_path.read_text())
+    if not any(expected["diagnostic"] in diagnostic for diagnostic in mapping.get("diagnostics", [])):
+        raise AssertionError(f"{case} should expose the expected mapping failure: {mapping_path}: {mapping}")
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != expected["graph"]
+        or dfg.get("dynamic_work_items") != expected["dynamic_work_items"]
+        or dfg.get("final_outputs") != expected["final_outputs"]
+    ):
+        raise AssertionError(f"{case} should preserve real DFG evidence before mapping failure: {dfg_path}: {dfg}")
+    for argument, values in expected["final_memory_state"].items():
+        actual = dfg.get("final_memory_state", {}).get(argument)
+        if actual != values:
+            raise AssertionError(f"{case} final memory {argument} should be {values}, got {actual}: {dfg}")
+    assert_operation_fire_counts(case, dfg, expected["operation_fire_counts"])
 
 
 def f32_token(value: float) -> str:
@@ -2346,6 +2381,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "fail")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
+            assert_mapping_failed_evidence(evidence_dir, case)
         for case in MAPPING_BLOCKED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "pass")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "blocked")
@@ -2395,19 +2431,12 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
-        assert_unsupported_operation(
-            evidence_dir,
-            "pack_bits",
-            "scf.while",
-            "scf.while",
-            rejected_dfg_operations=("scf.if", "llvm.intr.umin"),
-        )
         assert_merge_dfg_evidence(evidence_dir)
         assert_unsupported_operation(
             evidence_dir,
             "unpack_bits",
-            "scf.while",
-            "scf.while",
+            "scf.forall",
+            "scf.forall",
             rejected_dfg_operations=("llvm.intr.umin",),
         )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
@@ -2857,8 +2886,8 @@ def main(argv: list[str]) -> int:
         expected_counts = {
             "total": 109,
             "pass": 58,
-            "fail": 0,
-            "blocked": 51,
+            "fail": 1,
+            "blocked": 50,
             "unsupported": 0,
             "missing_status": 0,
         }

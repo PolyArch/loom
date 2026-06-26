@@ -340,8 +340,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         {
             "total": 109,
             "pass": 58,
-            "fail": 0,
-            "blocked": 51,
+            "fail": 1,
+            "blocked": 50,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -479,18 +479,31 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "outer": "primary workload graph absent: expected token outer_kernel",
-    "pack_bits": "unsupported op: scf.while",
     "parity": "primary workload graph absent: expected token parity",
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
     "transpose": "primary workload graph absent: expected token transpose",
-    "unpack_bits": "unsupported op: scf.while",
+    "unpack_bits": "unsupported op: scf.forall",
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
+    "pack_bits": "missing hardware resource for software op llvm.trunc",
+}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
+    "pack_bits": {
+        "graph": "g_t_pack_bits_kernel_red_0_0",
+        "dynamic_work_items": 32,
+        "final_output_suffix": ["none", "i64:32"],
+        "final_memory_state": {"arg11": ["i32:-749385939"]},
+        "operation_fire_counts": {
+            "dataflow.load": 32,
+            "dataflow.store": 1,
+            "llvm.intr.umin": 1,
+        },
+    },
+}
 
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
@@ -685,8 +698,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 2,
-            "fail": 0,
-            "blocked": 51,
+            "fail": 1,
+            "blocked": 50,
             "unsupported": 0,
             "missing_status": 56,
         },

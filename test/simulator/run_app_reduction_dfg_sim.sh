@@ -1245,19 +1245,19 @@ case "${CASE}" in
             --graph g_t_pack_bits_kernel_red_0_0
             --workload pack_bits
             --arg 0=none
-            --arg 1=5
-            --arg 2=0
-            --arg 3=32
-            --arg 4=100
-            --arg 5=0
-            --arg 6=1
-            --arg 7=0
+            --arg 1=0
+            --arg 2=1
+            --arg 3=1
+            --arg 4=5
+            --arg 5=32
+            --arg 6=32
+            --arg 7=32
             --memref 8=1,0,1,1,0,1,0,0,1,1,1,0,0,0,1,0,1,0,1,0,1,0,1,0,1,1,0,0,1,0,1,1
             --arg 9=1
             --arg 10=0
-            --memref 11=0,0,0,0
-            --arg 12=0
-            --arg 13=1
+            --memref 11=0
+            --arg 12=32
+            --arg 13=0
         )
         ;;
     unpack_bits)
