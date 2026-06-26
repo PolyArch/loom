@@ -65,6 +65,10 @@ The baseline semantic scope includes:
 * `dataflow.sync`;
 * `dataflow.mux`;
 * `dataflow.demux`;
+* `dataflow.parallelize`;
+* `dataflow.pack`;
+* `dataflow.unpack`;
+* `dataflow.serialize`;
 * arithmetic and math operations required by target workloads;
 * control, done, and memory-order token behavior required by dataflow
   graph execution.
@@ -72,6 +76,8 @@ The baseline semantic scope includes:
 The simulator must follow the target dataflow specs for sentinel
 tokens, body-phase behavior, loop feedback, control tokens, memory
 tokens, and graph completion.
+Vector token-cardinality changes follow
+`docs/spec-dataflow-vectorization.md`.
 
 Unsupported operations must produce structured diagnostics. Unsupported
 operations must not be silently approximated.

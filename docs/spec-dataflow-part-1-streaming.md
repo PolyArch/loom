@@ -5,6 +5,11 @@ stream-shaping ops in the `dataflow` dialect:
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, and
 `dataflow.gate`.
 
+Vector stream grouping and scalar/packed stream adaptation are specified
+separately in `docs/spec-dataflow-vectorization.md`. This document owns
+the scalar stream-shaping primitives that those vectorization ops build
+on.
+
 The canonical IR source is `include/Dataflow/IR/DataflowOps.td`; the
 verifier implementation lives in `lib/Dataflow/IR/DataflowOps.cpp`.
 This document is the design-level companion for compiler specs that use

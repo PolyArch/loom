@@ -153,6 +153,94 @@ def Dataflow_GateOp : Dataflow_Op<"gate", [Pure,
   }];
 }
 
+def Dataflow_ParallelizeOp : Dataflow_Op<"parallelize", [Pure]> {
+  let summary = "group scalar tokens into fixed-width lane streams plus mask";
+  let description = [{
+    Groups a scalar integer stream and a continuation stream into
+    `vec_size` parallel lane streams and one `iN` mask stream. True
+    continuation tokens fill pending lanes; a false continuation token
+    flushes any pending partial group and resets the lane pointer.
+
+    The optional stride operand advances the lane pointer by a dynamic
+    amount. If omitted, stride is one.
+  }];
+
+  let arguments = (ins
+      AnySignlessInteger:$data,
+      I1:$cont,
+      Optional<AnySignlessInteger>:$stride,
+      I64Attr:$vec_size);
+  let results = (outs
+      Variadic<AnySignlessInteger>:$outputs,
+      AnySignlessInteger:$mask);
+
+  let assemblyFormat = [{
+    $data `,` $cont (`,` $stride^)? attr-dict `:`
+    functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def Dataflow_PackOp : Dataflow_Op<"pack", [Pure]> {
+  let summary = "pack masked lane streams into one wide integer stream";
+  let description = [{
+    Waits for one mask token, consumes only the lane tokens whose mask
+    bits are set, and emits a wide signless integer whose least
+    significant slot is lane zero. Inactive slots are zero-filled.
+  }];
+
+  let arguments = (ins
+      Variadic<AnySignlessInteger>:$inputs,
+      AnySignlessInteger:$mask,
+      I64Attr:$vec_size);
+  let results = (outs AnySignlessInteger:$packed);
+
+  let assemblyFormat = [{
+    $inputs `mask` $mask attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def Dataflow_UnpackOp : Dataflow_Op<"unpack", [Pure]> {
+  let summary = "unpack a wide integer stream into masked lane streams";
+  let description = [{
+    Consumes one packed integer token and one mask token. For each set
+    mask bit, emits the corresponding lane value; unset lanes emit no
+    token. Lane zero is the least significant packed slot.
+  }];
+
+  let arguments = (ins
+      AnySignlessInteger:$packed,
+      AnySignlessInteger:$mask,
+      I64Attr:$vec_size);
+  let results = (outs Variadic<AnySignlessInteger>:$outputs);
+
+  let assemblyFormat = [{
+    $packed `,` $mask attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def Dataflow_SerializeOp : Dataflow_Op<"serialize", [Pure]> {
+  let summary = "serialize masked lane streams into scalar data and cont";
+  let description = [{
+    Waits for one mask token, consumes only active lane tokens in lane
+    order, emits each active lane on the scalar data stream with a true
+    continuation token, and emits one trailing false continuation token.
+  }];
+
+  let arguments = (ins
+      Variadic<AnySignlessInteger>:$inputs,
+      AnySignlessInteger:$mask,
+      I64Attr:$vec_size);
+  let results = (outs AnySignlessInteger:$data, I1:$cont);
+
+  let assemblyFormat = [{
+    $inputs `mask` $mask attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Control Ops
 //

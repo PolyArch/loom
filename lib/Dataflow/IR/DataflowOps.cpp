@@ -35,6 +35,127 @@ LogicalResult StreamOp::verify() {
   return success();
 }
 
+// dataflow.parallelize / pack / unpack / serialize
+
+static FailureOr<unsigned> verifyVecSizeAttr(Operation *op) {
+  auto attr = op->getAttrOfType<IntegerAttr>("vec_size");
+  if (!attr)
+    return op->emitOpError("requires integer attribute 'vec_size'");
+  int64_t value = attr.getInt();
+  if (value < 1 || value > 64 || (value & (value - 1)) != 0)
+    return op->emitOpError(
+        "'vec_size' must be a power of two in the range [1, 64]");
+  return static_cast<unsigned>(value);
+}
+
+static unsigned signlessIntegerWidth(Type type) {
+  auto intType = dyn_cast<IntegerType>(type);
+  if (!intType || !intType.isSignless())
+    return 0;
+  return intType.getWidth();
+}
+
+static LogicalResult verifyMaskWidth(Operation *op, Type maskType,
+                                     unsigned vecSize) {
+  unsigned maskWidth = signlessIntegerWidth(maskType);
+  if (maskWidth != vecSize)
+    return op->emitOpError("mask type width ")
+           << maskWidth << " must match 'vec_size' " << vecSize;
+  return success();
+}
+
+static LogicalResult verifyLaneTypes(Operation *op, TypeRange lanes,
+                                     Type expected,
+                                     unsigned vecSize) {
+  if (lanes.size() != vecSize)
+    return op->emitOpError("lane count ")
+           << lanes.size() << " must match 'vec_size' " << vecSize;
+  for (auto [i, laneType] : llvm::enumerate(lanes)) {
+    if (laneType != expected)
+      return op->emitOpError("lane #")
+             << i << " type " << laneType << " must match lane #0 type "
+             << expected;
+  }
+  return success();
+}
+
+static LogicalResult verifyPackedWidth(Operation *op, Type packedType,
+                                       Type laneType, unsigned vecSize) {
+  unsigned packedWidth = signlessIntegerWidth(packedType);
+  unsigned laneWidth = signlessIntegerWidth(laneType);
+  if (packedWidth != laneWidth * vecSize)
+    return op->emitOpError("packed type width ")
+           << packedWidth << " must equal lane width " << laneWidth
+           << " times 'vec_size' " << vecSize;
+  return success();
+}
+
+LogicalResult ParallelizeOp::verify() {
+  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
+  if (failed(vecSize))
+    return failure();
+  if (failed(verifyLaneTypes(getOperation(), getOutputs().getTypes(),
+                             getData().getType(), *vecSize)))
+    return failure();
+  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
+    return failure();
+  if (getStride() && getStride().getType() != getData().getType())
+    return emitOpError("stride type ")
+           << getStride().getType() << " must match data type "
+           << getData().getType();
+  return success();
+}
+
+LogicalResult PackOp::verify() {
+  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
+  if (failed(vecSize))
+    return failure();
+  if (getInputs().empty())
+    return emitOpError("requires at least one lane input");
+  Type laneType = getInputs().front().getType();
+  if (failed(verifyLaneTypes(getOperation(), getInputs().getTypes(), laneType,
+                             *vecSize)))
+    return failure();
+  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
+    return failure();
+  return verifyPackedWidth(getOperation(), getPacked().getType(), laneType,
+                           *vecSize);
+}
+
+LogicalResult UnpackOp::verify() {
+  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
+  if (failed(vecSize))
+    return failure();
+  if (getOutputs().empty())
+    return emitOpError("requires at least one lane output");
+  Type laneType = getOutputs().front().getType();
+  if (failed(verifyLaneTypes(getOperation(), getOutputs().getTypes(), laneType,
+                             *vecSize)))
+    return failure();
+  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
+    return failure();
+  return verifyPackedWidth(getOperation(), getPacked().getType(), laneType,
+                           *vecSize);
+}
+
+LogicalResult SerializeOp::verify() {
+  FailureOr<unsigned> vecSize = verifyVecSizeAttr(getOperation());
+  if (failed(vecSize))
+    return failure();
+  if (getInputs().empty())
+    return emitOpError("requires at least one lane input");
+  Type laneType = getInputs().front().getType();
+  if (failed(verifyLaneTypes(getOperation(), getInputs().getTypes(), laneType,
+                             *vecSize)))
+    return failure();
+  if (failed(verifyMaskWidth(getOperation(), getMask().getType(), *vecSize)))
+    return failure();
+  if (getData().getType() != laneType)
+    return emitOpError("data result type ")
+           << getData().getType() << " must match lane type " << laneType;
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Control Ops
 //===----------------------------------------------------------------------===//

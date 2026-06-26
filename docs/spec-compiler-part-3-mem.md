@@ -39,6 +39,12 @@ chain into a compositional model: each scope of structured control
 flow builds its own chain, and nested SCF ops participate in the
 parent chain through an explicit boundary contract.
 
+Vector lane masks do not create a separate memory-order network. The
+scalar/packed stream boundary is specified in
+`docs/spec-dataflow-vectorization.md`; this document remains the source
+of truth for alias-aware ordering and for the `ctrl` / `done` edges of
+masked or unmasked memory operations.
+
 The model has two complementary token roles. The structural role
 encodes dynamic execution path and region phase. The memory-order
 role encodes alias-aware ordering, partitioned per alias bucket so

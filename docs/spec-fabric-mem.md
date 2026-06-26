@@ -11,6 +11,9 @@ fabric dialect. The canonical IR source is `Fabric_MemOp` in
 * The op wraps `dataflow.load` / `dataflow.store` semantics into a
   fabric-domain leaf op. See the dataflow load/store specs for the
   semantic origin.
+* Vector lane masks and their software semantics are specified in
+  `docs/spec-dataflow-vectorization.md`. This document owns the Fabric
+  projection from those masks to memory-port structure and byte enables.
 * Variadic SSA operands and variadic SSA results (anonymous form) or a
   zero-operand / zero-result template (named form) whose port signature
   is captured in a `function_type` attribute.
