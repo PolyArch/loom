@@ -80,6 +80,14 @@ def assert_artifact_lit_group(repo: Path) -> None:
         "artifact lit concurrency must be externally configurable",
     )
     require(
+        '"JOBS", "LOOM_TEST_JOBS"' in cfg,
+        "lit must forward shared worker budgets into test processes",
+    )
+    require(
+        '"LOOM_ARTIFACT_GATES_JOBS", "LOOM_CHAIN_BREADTH_JOBS"' in cfg,
+        "lit must forward artifact sub-runner worker budgets into test processes",
+    )
+    require(
         'config.parallelism_group = "artifacts"' in local_text,
         "artifact lit tests must use the artifacts parallelism group",
     )

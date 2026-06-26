@@ -30,6 +30,7 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 # LIT_OPTS is consulted by `make test`; export it so the dispatcher's
 # environment matches an interactive shell invocation.
 export LIT_OPTS
+export JOBS
 
 .PHONY: all doctor llvm loom test clean distclean
 
