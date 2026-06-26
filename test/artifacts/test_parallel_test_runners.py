@@ -66,6 +66,21 @@ def assert_artifact_gates_parallelized(path: Path) -> None:
     require("LOOM_TEST_JOBS" in text, f"{path} must honor the shared test worker budget")
 
 
+def assert_app_build_dir_runner_parallelized(path: Path) -> None:
+    text = path.read_text()
+    require("ThreadPoolExecutor" in text, f"{path} must parallelize independent case runner checks")
+    require("LOOM_APP_BUILD_DIR_JOBS" in text, f"{path} must expose an app BUILD_DIR worker budget")
+    require("LOOM_TEST_JOBS" in text, f"{path} must honor the shared test worker budget")
+
+
+def assert_source_compat_parallelized(path: Path) -> None:
+    text = path.read_text()
+    require("--jobs" in text, f"{path} must expose an explicit --jobs option")
+    require("ThreadPoolExecutor" in text, f"{path} must parallelize independent compatibility checks")
+    require("LOOM_SOURCE_COMPAT_JOBS" in text, f"{path} must expose a source-compat worker budget")
+    require("LOOM_TEST_JOBS" in text, f"{path} must honor the shared test worker budget")
+
+
 def assert_artifact_lit_group(repo: Path) -> None:
     cfg = (repo / "test/lit.cfg.py").read_text()
     local_cfg = repo / "test/artifacts/lit.local.cfg.py"
@@ -105,6 +120,8 @@ def main(argv: list[str]) -> int:
     assert_app_runner_parallelized(repo / "test/app/run_dfg_all.sh")
     assert_chain_breadth_parallelized(repo / "test/artifacts/test_intermediate_artifact_chain_breadth.py")
     assert_artifact_gates_parallelized(repo / "test/artifacts/test_intermediate_artifacts.py")
+    assert_app_build_dir_runner_parallelized(repo / "test/artifacts/test_app_runner_build_dir.py")
+    assert_source_compat_parallelized(repo / "test/app/source_compat_summary.py")
     return 0
 
 
