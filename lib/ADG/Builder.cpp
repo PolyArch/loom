@@ -1730,6 +1730,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addConfigurableConstPe("addr_bias_const");
   addConfigurableConstPe("addr_extra_const0");
   addConfigurableConstPe("addr_extra_const1");
+  addBinary32Pe("logic_shifted", "logic_shift_lhs", "logic_shift_rhs",
+                "shifted", {"arith.shrui"});
 
   PeSpec addrUnscalePe;
   addrUnscalePe.inputs = {{"pa", "addr_unscale_lhs", "!fabric.bits<32>", ""},
@@ -2270,7 +2272,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       };
   addSingleResultBits32Switch("logic_mask_lhs",
                               {"i32a", "data0", "data1", "bit_carry",
-                               "addr_unscaled", "cmpi_pred", "cmpi_pred_aux"});
+                               "addr_unscaled", "logic_shifted", "int_xor",
+                               "aux_xor", "cmpi_pred", "cmpi_pred_aux"});
   addSingleResultBits32Switch(
       "logic_mask_rhs", {"i32b", "i32c", "reduction_scale", "fp_invariant",
                          "bit_invariant", "bit_invariant_aux0",
@@ -2292,15 +2295,17 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "addr_aux_const",
       "addr_bias_const"};
   const std::initializer_list<llvm::StringRef> auxXorLhsSources = {
-      "selected",    "addr_shifted", "carried_scan",
-      "bit_carry",   "state_carry",  "logic_masked",
-      "addr_masked", "int_xor",      "aux_masked"};
+      "selected",      "addr_shifted", "addr_unscaled", "logic_shifted",
+      "carried_scan",  "bit_carry",    "state_carry",   "logic_masked",
+      "addr_masked",   "int_xor",      "aux_masked"};
   const std::initializer_list<llvm::StringRef> auxXorRhsSources = {
       "carried_scan",
       "bit_carry",
       "state_carry",
       "i32a",
       "i32b",
+      "data0",
+      "data1",
       "i32c",
       "i32d",
       "reduction_scale",
@@ -2397,8 +2402,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                               {"i32b", "logic_masked", "data0", "data1"});
   addSingleResultBits32Switch(
       "int_xor_lhs",
-      {"i32a", "rotated", "logic_masked", "data0", "packed_sat", "selected",
-       "addr_masked", "aux_masked", "cmpf_pred", "cmpi_pred", "cmpi_pred_aux"});
+      {"i32a", "rotated", "logic_shifted", "addr_unscaled", "logic_masked",
+       "data0", "packed_sat", "selected", "addr_masked", "aux_masked",
+       "cmpf_pred", "cmpi_pred", "cmpi_pred_aux"});
   addSingleResultBits32Switch(
       "int_xor_rhs",
       {"i32b", "data1", "data0", "logic_masked", "reduction_scale",
@@ -2694,6 +2700,17 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>) -> !fabric.bits<32>");
+  addSingleResultBits32Switch(
+      "logic_shift_lhs",
+      {"i32a", "data0", "data1", "carried_scan", "bit_carry", "state_carry",
+       "running", "addr_unscaled", "addr_shifted", "logic_masked",
+       "addr_masked", "int_xor", "aux_xor"});
+  addSingleResultBits32Switch(
+      "logic_shift_rhs",
+      {"i32b", "addr_shifted", "reduction_scale", "addr_shift_const",
+       "addr_aux_const", "addr_bias_const", "bit_invariant",
+       "bit_invariant_aux0", "bit_invariant_aux1", "aux_invariant0",
+       "aux_invariant1", "aux_invariant2"});
   addSingleResultBits32Switch(
       "addr_shift_lhs", {"i32a", "carried_scan", "idx", "bit_carry",
                          "state_carry", "selected", "aux_masked", "aux_xor"});

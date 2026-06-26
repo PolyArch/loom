@@ -89,7 +89,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("crc32",)
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES = ("autocorrelation",)
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
@@ -1742,7 +1742,7 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
     assert_mapping_unsupported_operation(evidence_dir, "autocorrelation", "llvm.intr.umax")
 
 
-def assert_crc32_mapping_failure_evidence(evidence_dir: Path) -> None:
+def assert_crc32_evidence(evidence_dir: Path) -> None:
     expected_counts = {
         "arith.andi": 64,
         "arith.index_cast": 144,
@@ -1760,25 +1760,59 @@ def assert_crc32_mapping_failure_evidence(evidence_dir: Path) -> None:
         or dfg.get("final_outputs") != ["none", "i32:-1307787247"]
         or dfg.get("diagnostics") != []
     ):
-        raise AssertionError(f"crc32 DFG should execute the structured CRC loop before PnR fails: {dfg_path}: {dfg}")
+        raise AssertionError(f"crc32 DFG should execute the structured CRC loop: {dfg_path}: {dfg}")
     assert_operation_fire_counts("crc32", dfg, expected_counts)
+    memory = dfg.get("final_memory_state", {})
+    if (
+        not isinstance(memory, dict)
+        or len(memory.get("arg4", [])) != 16
+        or len(memory.get("arg8", [])) != 256
+        or memory.get("arg4", [None])[1] != "i32:305419896"
+        or memory.get("arg8", [None])[-1] != "i32:755167117"
+    ):
+        raise AssertionError(f"crc32 DFG should carry real input/table memory state: {dfg_path}: {dfg}")
 
     mapping_path = evidence_dir / "crc32.mapping.json"
     mapping = json.loads(mapping_path.read_text())
-    expected = (
-        "missing hardware resource for software op arith.shrui "
-        "(resource pressure: resource_kind=fabric.op operation=arith.shrui "
-        "required=2 available=1 placed=1 missing=1)"
-    )
     if (
-        mapping.get("status") != "fail"
-        or mapping.get("placed_records") != 7
-        or mapping.get("routed_edges") != 1
-        or mapping.get("unrouted_edges") != 3
-        or mapping.get("unplaced_records") != 1
-        or expected not in mapping.get("diagnostics", [])
+        mapping.get("status") != "pass"
+        or mapping.get("placed_records") != 8
+        or mapping.get("routed_edges") != 7
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 177
     ):
-        raise AssertionError(f"crc32 should expose the exact shared-ADG resource pressure: {mapping_path}: {mapping}")
+        raise AssertionError(f"crc32 should map the two-shift CRC slice on shared ADG: {mapping_path}: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    expected_route_edges = {
+        "arith.andi#0.result0->dataflow.load#1.operand1",
+        "arith.shli#0.result0->arith.shrui#1.operand1",
+        "arith.shrui#0.result0->arith.xori#1.operand0",
+        "arith.shrui#1.result0->arith.xori#0.operand0",
+        "arith.xori#0.result0->arith.andi#0.operand0",
+        "dataflow.load#0.result0->arith.shrui#1.operand0",
+        "dataflow.load#1.result0->arith.xori#1.operand1",
+    }
+    if route_edges != expected_route_edges:
+        raise AssertionError(f"crc32 should expose all CRC mix route edges: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "crc32.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 848
+        or cgra.get("hardware_aware_cycles") != 887
+        or cgra.get("routed_edges") != 7
+        or cgra.get("route_segments") != 31
+        or cgra.get("final_outputs") != ["none", "i32:-1307787247"]
+        or cgra.get("final_memory_state") != memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"crc32 CGRA evidence should carry the real CRC result state: {cgra_path}: {cgra}")
 
 
 def assert_unsupported_operation(
@@ -2154,6 +2188,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "convolve_1d_same",
+            "crc32",
             "fir_filter",
             "fir_filter_stateful",
             "gf_mul",
@@ -2220,7 +2255,7 @@ def main(argv: list[str]) -> int:
         assert_partition_evidence(evidence_dir)
         assert_string_hash_evidence(evidence_dir)
         assert_autocorrelation_dfg_evidence(evidence_dir)
-        assert_crc32_mapping_failure_evidence(evidence_dir)
+        assert_crc32_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -2423,6 +2458,19 @@ def main(argv: list[str]) -> int:
         )
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
+            "crc32",
+            {
+                "arith.andi#0.result0->dataflow.load#1.operand1",
+                "arith.shli#0.result0->arith.shrui#1.operand1",
+                "arith.shrui#0.result0->arith.xori#1.operand0",
+                "arith.shrui#1.result0->arith.xori#0.operand0",
+                "arith.xori#0.result0->arith.andi#0.operand0",
+                "dataflow.load#0.result0->arith.shrui#1.operand0",
+                "dataflow.load#1.result0->arith.xori#1.operand1",
+            },
+        )
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
             "bit_reverse",
             {
                 "arith.ori#0.result0->dataflow.carry#0.operand2",
@@ -2571,6 +2619,7 @@ def main(argv: list[str]) -> int:
             "correlation",
             "convolve_1d",
             "convolve_1d_same",
+            "crc32",
             "fir_filter_stateful",
             "compare_swap",
             "compact",
@@ -2671,8 +2720,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 55,
-            "fail": 1,
+            "pass": 56,
+            "fail": 0,
             "blocked": 53,
             "unsupported": 0,
             "missing_status": 0,

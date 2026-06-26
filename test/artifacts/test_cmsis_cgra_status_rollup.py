@@ -339,8 +339,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 55,
-            "fail": 1,
+            "pass": 56,
+            "fail": 0,
             "blocked": 53,
             "unsupported": 0,
             "missing_status": 0,
@@ -409,29 +409,9 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS = {
-    "crc32": (
-        "missing hardware resource for software op arith.shrui "
-        "(resource pressure: resource_kind=fabric.op operation=arith.shrui "
-        "required=2 available=1 placed=1 missing=1)"
-    ),
-}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
-    "crc32": {
-        "graph": "g_t_crc32_kernel_red_0_0",
-        "dynamic_work_items": 16,
-        "final_output_suffix": ["none", "i32:-1307787247"],
-        "operation_fire_counts": {
-            "arith.andi": 64,
-            "arith.index_cast": 144,
-            "arith.shli": 64,
-            "arith.shrui": 128,
-            "arith.xori": 128,
-            "dataflow.load": 80,
-        },
-    },
-}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
 
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
@@ -645,13 +625,14 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 0,
-            "fail": 1,
+            "pass": 1,
+            "fail": 0,
             "blocked": 53,
             "unsupported": 0,
             "missing_status": 55,
         },
     )
+    assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 
