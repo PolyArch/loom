@@ -5,13 +5,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
 attempts into that directory before consuming the reports. --cmsis-sim-default
 runs those bounded CMSIS attempts into the default status evidence directory.
+--cmsis-sim-seed-batch runs the tracked default CMSIS seed attempts into the
+default status evidence directory.
 Each --cmsis-sim-attempt-stem or --cmsis-sim-case restricts those CMSIS
 attempts to the selected row evidence.
 --app-sim-default-batch runs the shared-ADG app CGRA evidence batch used by the
@@ -31,9 +33,11 @@ OUT_DIR=""
 LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
 DEFAULT_APP_BLOCKER_MANIFEST="${ROOT}/test/app/shared-cgra-blocker-batch.json"
+DEFAULT_CMSIS_SIM_SEED_BATCH="${ROOT}/test/e2e/cmsis-cgra-sim-seed-batch.json"
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
 CMSIS_SIM_DEFAULT=0
+CMSIS_SIM_SEED_BATCH=0
 JOBS_ARG=""
 declare -a APP_SIM_CASES=()
 declare -a APP_SIM_ATTEMPT_MANIFESTS=()
@@ -91,6 +95,11 @@ while [[ $# -gt 0 ]]; do
             CMSIS_SIM_DEFAULT=1
             shift
             ;;
+        --cmsis-sim-seed-batch)
+            CMSIS_SIM_SEED_BATCH=1
+            CMSIS_SIM_DEFAULT=1
+            shift
+            ;;
         --cmsis-sim-attempt-stem)
             if [[ $# -lt 2 ]]; then
                 usage
@@ -142,6 +151,37 @@ load_app_sim_attempt_manifest_cases() {
         --emit-cases
 }
 
+load_cmsis_sim_seed_stems() {
+    python3 - "${ROOT}" "${DEFAULT_CMSIS_SIM_SEED_BATCH}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+
+root = Path(sys.argv[1])
+manifest = Path(sys.argv[2])
+sys.path.insert(0, str(root / "test" / "e2e"))
+import run_cmsis_dfg_sim_attempts as attempts  # noqa: E402
+
+data = json.loads(manifest.read_text())
+if data.get("schema_version") != 1:
+    raise SystemExit(f"{manifest} schema_version must be 1")
+stems = data.get("attempt_stems")
+if not isinstance(stems, list) or not stems:
+    raise SystemExit(f"{manifest} attempt_stems must be a non-empty list")
+seen: set[str] = set()
+for stem in stems:
+    if not isinstance(stem, str) or not stem.strip():
+        raise SystemExit(f"{manifest} attempt_stems entries must be non-empty strings")
+    if stem in seen:
+        raise SystemExit(f"{manifest} contains duplicate CMSIS attempt stem {stem}")
+    if not any(attempts.attempt_matches_stem(attempt, stem) for attempt in attempts.ATTEMPTS):
+        raise SystemExit(f"{manifest} contains unknown CMSIS attempt stem {stem}")
+    seen.add(stem)
+    print(stem)
+PY
+}
+
 if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
     if ! default_case_output="$(load_app_sim_manifest_cases)"; then
         exit 1
@@ -174,6 +214,18 @@ for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do
         APP_SIM_CASES+=("${attempt_case}")
     done <<< "${attempt_case_output}"
 done
+
+if [[ "${CMSIS_SIM_SEED_BATCH}" -eq 1 ]]; then
+    if ! seed_stems_output="$(load_cmsis_sim_seed_stems)"; then
+        exit 1
+    fi
+    while IFS= read -r seed_stem; do
+        if [[ -z "${seed_stem}" ]]; then
+            continue
+        fi
+        CMSIS_SIM_ATTEMPT_STEMS+=("${seed_stem}")
+    done <<< "${seed_stems_output}"
+fi
 
 if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
     deduped_app_sim_cases=()
