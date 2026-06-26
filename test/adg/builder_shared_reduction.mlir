@@ -19,6 +19,7 @@
 // RUN: env BUILD_DIR=%t.dir/variance LOOM_CC=%loom-cc LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/variance/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/newton_iter LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/newton_iter/dfg_check.sh
 // RUN: env BUILD_DIR=%t.dir/runge_kutta_step LOOM_CC=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/runge_kutta_step/dfg_check.sh
+// RUN: env BUILD_DIR=%t.dir/autocorrelation LOOM_CC=%loom-c++ LOOM_CXX=%loom-c++ LOOM_RAISE=%loom-raise LOOM_LOWER=%loom-lower LOOM_RAISE_OPT=%loom-raise-opt bash %S/../app/autocorrelation/dfg_check.sh
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecsum/main_func.dfg.mlir --graph g_t_vecsum_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecsum --output %t.dir/mapping.csv --artifact %t.dir/mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l1/main_func.dfg.mlir --graph g_t_vecnorm_l1_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecnorm_l1 --output %t.dir/vecnorm_l1.mapping.csv --artifact %t.dir/vecnorm_l1.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/vecnorm_l2/main_func.dfg.mlir --graph g_t_vecnorm_l2_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload vecnorm_l2 --output %t.dir/vecnorm_l2.mapping.csv --artifact %t.dir/vecnorm_l2.mapping.json
@@ -37,6 +38,7 @@
 // RUN: loom-pnr-map --dfg-mlir %t.dir/variance/main_func.dfg.mlir --graph g_t_variance_red_1_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload variance --output %t.dir/variance.mapping.csv --artifact %t.dir/variance.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/newton_iter/main_func.dfg.mlir --graph g_t_newton_iter_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload newton_iter --output %t.dir/newton_iter.mapping.csv --artifact %t.dir/newton_iter.mapping.json
 // RUN: loom-pnr-map --dfg-mlir %t.dir/runge_kutta_step/main_func.dfg.mlir --graph g_t_runge_kutta_step_kernel_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload runge_kutta_step --output %t.dir/runge_kutta_step.mapping.csv --artifact %t.dir/runge_kutta_step.mapping.json
+// RUN: loom-pnr-map --dfg-mlir %t.dir/autocorrelation/main_func.dfg.mlir --graph g_t_autocorrelation_kernel_red_0_0 --hardware-mlir %t.hardware.mlir --hardware shared_reduction_adg --workload autocorrelation --output %t.dir/autocorrelation.mapping.csv --artifact %t.dir/autocorrelation.mapping.json
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L1 < %t.dir/vecnorm_l1.mapping.json
 // RUN: FileCheck %s --check-prefix=VECNORM-L2 < %t.dir/vecnorm_l2.mapping.json
@@ -55,6 +57,7 @@
 // RUN: FileCheck %s --check-prefix=VARIANCE < %t.dir/variance.mapping.json
 // RUN: FileCheck %s --check-prefix=NEWTON < %t.dir/newton_iter.mapping.json
 // RUN: FileCheck %s --check-prefix=RUNGE-KUTTA < %t.dir/runge_kutta_step.mapping.json
+// RUN: FileCheck %s --check-prefix=AUTOCORR < %t.dir/autocorrelation.mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_reduction_adg
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
@@ -71,6 +74,7 @@
 // HARDWARE-DAG: fabric.op [@arith.divui, @arith.remui]
 // HARDWARE-DAG: fabric.op [@llvm.intr.abs]
 // HARDWARE-DAG: fabric.op [@llvm.intr.fabs]
+// HARDWARE-DAG: fabric.op [@llvm.intr.umax]
 // HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.addf]
 // HARDWARE-DAG: fabric.op [@arith.subf]
@@ -323,3 +327,14 @@
 // RUNGE-KUTTA-DAG: "segment_kind": "module_path"
 // RUNGE-KUTTA-NOT: ".out"
 // RUNGE-KUTTA-NOT: ".in"
+
+// AUTOCORR-DAG: "workload": "autocorrelation"
+// AUTOCORR-DAG: "hardware": "shared_reduction_adg"
+// AUTOCORR-DAG: "unplaced_records": 0
+// AUTOCORR-DAG: "unrouted_edges": 0
+// AUTOCORR-DAG: "status": "pass"
+// AUTOCORR-DAG: "operation": "llvm.intr.umax"
+// AUTOCORR-DAG: "edge_ref": "llvm.intr.umax#0.result0->llvm.zext#0.operand0"
+// AUTOCORR-DAG: "segment_kind": "module_path"
+// AUTOCORR-NOT: ".out"
+// AUTOCORR-NOT: ".in"

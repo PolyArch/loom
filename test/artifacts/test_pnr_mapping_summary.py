@@ -339,8 +339,8 @@ def main() -> int:
                                                 %lhs: i32,
                                                 %rhs: i32)
       -> (none, i32) {
-    %min = llvm.intr.umin(%lhs, %rhs) : (i32, i32) -> i32
-    dataflow.graph.return %ctrl, %min : none, i32
+    %pop = llvm.intr.ctpop(%lhs) : (i32) -> i32
+    dataflow.graph.return %ctrl, %pop : none, i32
   }
 }
 """
@@ -381,8 +381,8 @@ def main() -> int:
         for column in ("placed_records", "routed_edges", "unrouted_edges", "unplaced_records"):
             if unsupported_row[column] != "":
                 raise AssertionError(f"unsupported CSV row must not fake {column}: {unsupported_row}")
-        if "llvm.intr.umin" not in unsupported_row.get("diagnostic", ""):
-            raise AssertionError(f"unsupported CSV row should name llvm.intr.umin: {unsupported_row}")
+        if "llvm.intr.ctpop" not in unsupported_row.get("diagnostic", ""):
+            raise AssertionError(f"unsupported CSV row should name llvm.intr.ctpop: {unsupported_row}")
         unsupported_data = json.loads(unsupported_artifact.read_text())
         expected_unsupported_json = {
             "kind": "pnr_mapping",
@@ -405,8 +405,8 @@ def main() -> int:
         for key in ("placements", "routes", "unrouted_edge_details", "config_bitstream"):
             if unsupported_data.get(key) != []:
                 raise AssertionError(f"unsupported mapping artifact should leave {key} empty: {unsupported_data}")
-        if not any("llvm.intr.umin" in str(item) for item in unsupported_data.get("diagnostics", [])):
-            raise AssertionError(f"unsupported mapping artifact should diagnose llvm.intr.umin: {unsupported_data}")
+        if not any("llvm.intr.ctpop" in str(item) for item in unsupported_data.get("diagnostics", [])):
+            raise AssertionError(f"unsupported mapping artifact should diagnose llvm.intr.ctpop: {unsupported_data}")
 
         failed_unrouted_component = copy.deepcopy(data)
         failed_unrouted_component["status"] = "fail"

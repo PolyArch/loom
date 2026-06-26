@@ -655,6 +655,8 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("llvm.fneg", {pT(0)}, {pT(0)});
     add("llvm.intr.abs", {pT(0)}, {pT(0)});
     add("llvm.intr.fabs", {pT(0)}, {pT(0)});
+    add("llvm.intr.umin", {pT(0), pT(0)}, {pT(0)});
+    add("llvm.intr.umax", {pT(0), pT(0)}, {pT(0)});
     add("llvm.intr.fshl", {pT(0), pT(0), pT(0)}, {pT(0)});
     add("llvm.intr.bswap", {pT(0)}, {pT(0)});
     add("llvm.arm.qadd16", {pT(0), pT(0)}, {pT(0)});

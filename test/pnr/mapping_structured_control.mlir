@@ -63,6 +63,19 @@
 // CMPI-UGT-JSON-DAG: "ugt"
 // CMPI-UGT-JSON-NOT: "missing hardware resource for software op arith.cmpi"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph structured_cmpi_i64_extui_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_cmpi_i64_extui_map --output %t.cmpi-i64-extui.mapping.csv --artifact %t.cmpi-i64-extui.mapping.json
+// RUN: FileCheck %s --check-prefix=CMPI-I64-EXTUI-CSV < %t.cmpi-i64-extui.mapping.csv
+// RUN: FileCheck %s --check-prefix=CMPI-I64-EXTUI-JSON < %t.cmpi-i64-extui.mapping.json
+
+// CMPI-I64-EXTUI-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CMPI-I64-EXTUI-CSV-NEXT: structured_cmpi_i64_extui_map,shared_reduction_adg,structured_cmpi_i64_extui_map__structured_cmpi_i64_extui_map__shared_reduction_adg,3,2,0,0,pass
+
+// CMPI-I64-EXTUI-JSON-DAG: "status": "pass"
+// CMPI-I64-EXTUI-JSON-DAG: "edge_ref": "arith.cmpi#0.result0->arith.extui#0.operand0"
+// CMPI-I64-EXTUI-JSON-DAG: "edge_ref": "arith.extui#0.result0->llvm.trunc#0.operand0"
+// CMPI-I64-EXTUI-JSON-NOT: ".out"
+// CMPI-I64-EXTUI-JSON-NOT: ".in"
+
 // RUN: loom-pnr-map --dfg-mlir %s --graph structured_cmpf_xori_extui_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_cmpf_xori_extui_map --output %t.cmpf-xori-extui.mapping.csv --artifact %t.cmpf-xori-extui.mapping.json
 // RUN: FileCheck %s --check-prefix=CMPF-XORI-CSV < %t.cmpf-xori-extui.mapping.csv
 // RUN: FileCheck %s --check-prefix=CMPF-XORI-JSON < %t.cmpf-xori-extui.mapping.json
@@ -141,6 +154,14 @@ module {
     %as_i32 = arith.extui %pred : i1 to i32
     %sum = arith.addi %bias, %as_i32 : i32
     dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @structured_cmpi_i64_extui_map(%ctrl: none,
+      %lhs: i64, %rhs: i64) -> (none, i32) {
+    %pred = arith.cmpi ult, %lhs, %rhs : i64
+    %wide = arith.extui %pred : i1 to i64
+    %narrow = llvm.trunc %wide : i64 to i32
+    dataflow.graph.return %ctrl, %narrow : none, i32
   }
 
   dataflow.graph.func private @structured_cmpf_xori_extui_map(%ctrl: none,

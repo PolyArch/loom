@@ -91,7 +91,7 @@ DEFAULT_SWEEP_CASES = (
 )
 MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
-MAPPING_UNSUPPORTED_SWEEP_CASES = ("autocorrelation",)
+MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "binary_search",
@@ -1739,7 +1739,51 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
     ):
         raise AssertionError(f"autocorrelation DFG should execute nested structured loops: {dfg_path}: {dfg}")
     assert_operation_fire_counts("autocorrelation", dfg, expected_counts)
-    assert_mapping_unsupported_operation(evidence_dir, "autocorrelation", "llvm.intr.umax")
+    mapping_path = evidence_dir / "autocorrelation.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("placed_records") != 10
+        or mapping.get("routed_edges") != 6
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"autocorrelation mapping should route on shared reduction ADG: {mapping_path}: {mapping}")
+    expected_edges = {
+        "arith.addi#0.result0->arith.andi#0.operand0",
+        "arith.andi#0.result0->dataflow.load#1.operand1",
+        "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand0",
+        "dataflow.load#1.result0->llvm.intr.fmuladd#0.operand1",
+        "llvm.intr.fmuladd#0.result0->dataflow.store#0.operand2",
+        "llvm.intr.umax#0.result0->llvm.zext#0.operand0",
+    }
+    actual_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    if actual_edges != expected_edges:
+        raise AssertionError(f"autocorrelation mapping should expose routed DFG edges: {mapping_path}: {mapping}")
+    cgra_path = evidence_dir / "autocorrelation.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("placed_records") != 10
+        or cgra.get("routed_edges") != 6
+        or cgra.get("hardware_aware_cycles") != 1348
+        or cgra.get("dfg_cycles") != 1310
+        or cgra.get("final_outputs") != ["none", "i32:0"]
+        or cgra.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"autocorrelation CGRA-sim should preserve final state: {cgra_path}: {cgra}")
+    comparison_path = evidence_dir / "autocorrelation.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 1310
+        or comparison.get("cgra_sim_cycles") != 1348
+    ):
+        raise AssertionError(f"autocorrelation comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
 
 def assert_crc32_evidence(evidence_dir: Path) -> None:
@@ -2265,7 +2309,7 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "pack_bits",
             "scf.while",
-            "llvm.intr.umin",
+            "scf.while",
             rejected_dfg_operations=("scf.if", "llvm.intr.umin"),
         )
         assert_merge_dfg_evidence(evidence_dir)
@@ -2273,7 +2317,7 @@ def main(argv: list[str]) -> int:
             evidence_dir,
             "unpack_bits",
             "scf.while",
-            "llvm.intr.umin",
+            "scf.while",
             rejected_dfg_operations=("llvm.intr.umin",),
         )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
@@ -2632,6 +2676,7 @@ def main(argv: list[str]) -> int:
             "sbox_lookup",
             "rotate_bits",
             "runge_kutta_step",
+            "autocorrelation",
         ):
             assert_promoted_row(repo, rows, case)
         for case in MAPPING_FAILED_SWEEP_CASES:
@@ -2720,9 +2765,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 56,
+            "pass": 57,
             "fail": 0,
-            "blocked": 53,
+            "blocked": 52,
             "unsupported": 0,
             "missing_status": 0,
         }

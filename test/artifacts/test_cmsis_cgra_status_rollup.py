@@ -339,9 +339,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 56,
+            "pass": 57,
             "fail": 0,
-            "blocked": 53,
+            "blocked": 52,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -497,29 +497,9 @@ SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
 SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {}
 
-SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS = {
-    "autocorrelation": "unsupported PnR graph operation: llvm.intr.umax",
-}
+SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {
-    "autocorrelation": {
-        "graph": "g_t_autocorrelation_kernel_red_0_0",
-        "dynamic_work_items": 8,
-        "final_outputs": ["none", "i32:0"],
-        "operation_fire_counts": {
-            "arith.addi": 64,
-            "arith.andi": 56,
-            "arith.cmpi": 8,
-            "arith.index_cast": 232,
-            "dataflow.load": 112,
-            "dataflow.store": 8,
-            "llvm.intr.fmuladd": 56,
-            "llvm.intr.umax": 7,
-            "llvm.zext": 7,
-            "scf.if": 8,
-        },
-    },
-}
+SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {}
 
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
@@ -705,14 +685,15 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 1,
+            "pass": 2,
             "fail": 0,
-            "blocked": 53,
+            "blocked": 52,
             "unsupported": 0,
             "missing_status": 55,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "autocorrelation", expected_hardware="shared_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 
