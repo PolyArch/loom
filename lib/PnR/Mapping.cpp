@@ -220,13 +220,27 @@ bool isGraphReturnOp(mlir::Operation *op) {
   return op->getName().getStringRef() == "dataflow.graph.return";
 }
 
+bool isEffectFormForall(mlir::scf::ForallOp op) {
+  if (!op.getOutputs().empty() || op->getNumResults() != 0)
+    return false;
+  auto inParallel = op.getTerminator();
+  return !inParallel.getRegion().empty() &&
+         inParallel.getRegion().front().empty();
+}
+
 bool isStructuredContainerOp(mlir::Operation *op) {
-  return mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::scf::IndexSwitchOp>(
-      op);
+  if (auto forall = mlir::dyn_cast<mlir::scf::ForallOp>(op))
+    return isEffectFormForall(forall);
+  return mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp,
+                   mlir::scf::IndexSwitchOp>(op);
 }
 
 bool isStructuredTerminatorOp(mlir::Operation *op) {
-  return mlir::isa<mlir::scf::YieldOp>(op);
+  if (mlir::isa<mlir::scf::YieldOp>(op))
+    return true;
+  auto inParallel = mlir::dyn_cast<mlir::scf::InParallelOp>(op);
+  return inParallel && !inParallel.getRegion().empty() &&
+         inParallel.getRegion().front().empty();
 }
 
 bool isDataflowMemoryBaseUse(mlir::OpOperand &use) {

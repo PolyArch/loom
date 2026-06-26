@@ -55,6 +55,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "spmv",
     "spmspv",
     "string_hash",
+    "unpack_bits",
     "upsample",
     "variance",
     "vecadd",

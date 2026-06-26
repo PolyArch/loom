@@ -111,6 +111,27 @@
 // IF-RESULT-JSON-NOT: ".out"
 // IF-RESULT-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph structured_forall_store_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_forall_store_map --output %t.forall-store.mapping.csv --artifact %t.forall-store.mapping.json
+// RUN: FileCheck %s --check-prefix=FORALL-STORE-CSV < %t.forall-store.mapping.csv
+// RUN: FileCheck %s --check-prefix=FORALL-STORE-JSON < %t.forall-store.mapping.json
+
+// FORALL-STORE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// FORALL-STORE-CSV-NEXT: structured_forall_store_map,shared_reduction_adg,structured_forall_store_map__structured_forall_store_map__shared_reduction_adg,3,2,0,0,pass
+
+// FORALL-STORE-JSON-DAG: "status": "pass"
+// FORALL-STORE-JSON-DAG: "operation": "dataflow.load"
+// FORALL-STORE-JSON-DAG: "operation": "arith.addi"
+// FORALL-STORE-JSON-DAG: "operation": "dataflow.store"
+// FORALL-STORE-JSON-DAG: "edge_ref": "dataflow.load#0.result0->arith.addi#0.operand0"
+// FORALL-STORE-JSON-DAG: "edge_ref": "arith.addi#0.result0->dataflow.store#0.operand2"
+// FORALL-STORE-JSON-NOT: "unsupported PnR graph operation: scf.forall"
+// FORALL-STORE-JSON-NOT: ".out"
+// FORALL-STORE-JSON-NOT: ".in"
+
+// RUN: not loom-pnr-map --dfg-mlir %s --graph structured_forall_shared_out_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_forall_shared_out_map --output %t.forall-shared-out.mapping.csv --artifact %t.forall-shared-out.mapping.json 2>&1 | FileCheck %s --check-prefix=FORALL-SHARED-OUT-ERR
+
+// FORALL-SHARED-OUT-ERR: graph contains unsupported operation for PnR mapping: scf.forall
+
 module {
   dataflow.graph.func private @structured_for_map(%ctrl: none, %lb: i32,
       %ub: i32, %step: i32, %init: i32, %mem: memref<?xi32>) -> (none, i32) {
@@ -195,5 +216,25 @@ module {
     }
     %out = arith.addi %branch, %tail : i32
     dataflow.graph.return %ctrl, %out : none, i32
+  }
+
+  dataflow.graph.func private @structured_forall_store_map(%ctrl: none,
+      %lb: index, %ub: index, %mem: memref<?xi32>, %addend: i32) -> none {
+    scf.forall (%i) = (%lb) to (%ub) step (1) {
+      %value, %done = dataflow.load %mem[%i] %ctrl : memref<?xi32>
+      %stored = arith.addi %value, %addend : i32
+      %store_done = dataflow.store %mem[%i] %stored %ctrl : memref<?xi32>
+    }
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @structured_forall_shared_out_map(%ctrl: none,
+      %init: tensor<2xi32>) -> (none, tensor<2xi32>) {
+    %result = scf.forall (%i) in (2) shared_outs(%out = %init)
+        -> (tensor<2xi32>) {
+      scf.forall.in_parallel {
+      }
+    }
+    dataflow.graph.return %ctrl, %result : none, tensor<2xi32>
   }
 }

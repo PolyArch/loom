@@ -86,6 +86,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "unpack_bits",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "partition",
       "hardware": "shared_reduction_adg"
     },

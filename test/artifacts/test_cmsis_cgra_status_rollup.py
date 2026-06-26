@@ -363,9 +363,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 59,
+            "pass": 60,
             "fail": 0,
-            "blocked": 50,
+            "blocked": 49,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -507,7 +507,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
     "transpose": "primary workload graph absent: expected token transpose",
-    "unpack_bits": "unsupported op: scf.forall",
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
@@ -707,15 +706,16 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 2,
+            "pass": 3,
             "fail": 0,
-            "blocked": 50,
+            "blocked": 49,
             "unsupported": 0,
             "missing_status": 57,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "autocorrelation", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "unpack_bits", expected_hardware="shared_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 

@@ -26,6 +26,8 @@
 // RUN: FileCheck %s --check-prefix=IF-NESTED-FOR-MEMORY < %t.if_nested_for_memory.json
 // RUN: loom-dfg-sim %s --graph structured_for_autocorr_slice --arg 0=none --arg 1=0 --arg 2=3 --arg 3=1 --arg 4=0 --arg 5=0.000000e+00 --arg 6=2 --memref 7=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00 --arg 8=3 --memref 9=0.000000e+00,0.000000e+00,0.000000e+00 --arg 10=0 --arg 11=0 --output %t.autocorr_slice.json
 // RUN: FileCheck %s --check-prefix=AUTOCORR-SLICE < %t.autocorr_slice.json
+// RUN: loom-dfg-sim %s --graph structured_forall_store --arg 0=none --arg 1=0 --arg 2=3 --memref 3=1,2,3 --arg 4=10 --output %t.forall_store.json
+// RUN: FileCheck %s --check-prefix=FORALL-STORE < %t.forall_store.json
 
 // CHECK-DAG: "graph": "structured_for_sum"
 // CHECK-DAG: "status": "pass"
@@ -148,6 +150,20 @@
 // AUTOCORR-SLICE-DAG: "f32:0"
 // AUTOCORR-SLICE-DAG: "f32:8"
 // AUTOCORR-SLICE-DAG: "f32:11"
+
+// FORALL-STORE-DAG: "graph": "structured_forall_store"
+// FORALL-STORE-DAG: "status": "pass"
+// FORALL-STORE-DAG: "dynamic_work_items": 3
+// FORALL-STORE-DAG: "scf.forall": 1
+// FORALL-STORE-DAG: "dataflow.load": 3
+// FORALL-STORE-DAG: "dataflow.store": 3
+// FORALL-STORE-DAG: "arith.addi": 3
+// FORALL-STORE-DAG: "final_outputs": [
+// FORALL-STORE-DAG: "none"
+// FORALL-STORE-DAG: "arg3": [
+// FORALL-STORE-DAG: "i32:11"
+// FORALL-STORE-DAG: "i32:12"
+// FORALL-STORE-DAG: "i32:13"
 
 module {
   dataflow.graph.func private @structured_if_scalar(
@@ -378,5 +394,16 @@ module {
       scf.yield %next_remaining : i32
     }
     dataflow.graph.return %ctrl, %remaining : none, i32
+  }
+
+  dataflow.graph.func private @structured_forall_store(
+      %ctrl: none, %lb: index, %ub: index, %mem: memref<?xi32>, %addend: i32)
+      -> none {
+    scf.forall (%i) = (%lb) to (%ub) step (1) {
+      %value, %done = dataflow.load %mem[%i] %ctrl : memref<?xi32>
+      %stored = arith.addi %value, %addend : i32
+      %store_done = dataflow.store %mem[%i] %stored %ctrl : memref<?xi32>
+    }
+    dataflow.graph.return %ctrl : none
   }
 }

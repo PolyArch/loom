@@ -113,6 +113,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"dataflow.gate", 1, 1, false, true},
     {"scf.if", 1, 1, false, false},
     {"scf.index_switch", 1, 1, false, false},
+    {"scf.forall", 1, 1, false, false},
 };
 
 const OperationCostEntry *lookupOperationCostEntry(llvm::StringRef opName) {

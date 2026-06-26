@@ -105,7 +105,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "popcount",
     "scatter_add",
     "transpose",
-    "unpack_bits",
     "upper_bound",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
@@ -694,6 +693,58 @@ def assert_pack_bits_evidence(evidence_dir: Path) -> None:
         or cgra.get("final_memory_state") != expected_memory
     ):
         raise AssertionError(f"pack_bits should preserve real CGRA evidence: {cgra}")
+
+
+def signed_i32(value: int) -> int:
+    value &= 0xFFFFFFFF
+    if value & 0x80000000:
+        return value - 0x100000000
+    return value
+
+
+def assert_unpack_bits_evidence(evidence_dir: Path) -> None:
+    packed_words = [0xAAAAAAAA, 0x13579BDF, 0x80000001, 0x0000000F]
+    expected_bits = [
+        f"i32:{(packed_words[bit // 32] >> (bit % 32)) & 1}"
+        for bit in range(100)
+    ]
+    expected_memory = {
+        "arg4": [f"i32:{signed_i32(word)}" for word in packed_words],
+        "arg10": expected_bits,
+    }
+    expected_outputs = ["none", "i64:128"]
+    expected_counts = {
+        "dataflow.load": 4,
+        "dataflow.store": 100,
+        "arith.shrui": 100,
+        "arith.andi": 100,
+        "llvm.intr.umin": 4,
+        "scf.forall": 4,
+    }
+    dfg = json.loads((evidence_dir / "unpack_bits.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("event_count", 0) <= 0
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unpack_bits should preserve real unpacked-bit DFG evidence: {dfg}")
+    assert_operation_fire_counts("unpack_bits", dfg, expected_counts)
+    cgra = json.loads((evidence_dir / "unpack_bits.cgra.report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware_aware_cycles", 0) < dfg.get("optimistic_cycles", 0)
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unpack_bits should preserve real CGRA evidence: {cgra}")
+    comparison = json.loads((evidence_dir / "unpack_bits.sim-comparison-report.json").read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"unpack_bits comparison should pass on real final state: {comparison}")
 
 
 def f32_token(value: float) -> str:
@@ -2393,6 +2444,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
             "pack_bits",
+            "unpack_bits",
             "partition",
             "mean",
             "newton_iter",
@@ -2486,19 +2538,13 @@ def main(argv: list[str]) -> int:
         assert_crc32_evidence(evidence_dir)
         assert_gather_evidence(evidence_dir)
         assert_pack_bits_evidence(evidence_dir)
+        assert_unpack_bits_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_merge_dfg_evidence(evidence_dir)
-        assert_unsupported_operation(
-            evidence_dir,
-            "unpack_bits",
-            "scf.forall",
-            "scf.forall",
-            rejected_dfg_operations=("llvm.intr.umin",),
-        )
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
@@ -2832,6 +2878,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
             "pack_bits",
+            "unpack_bits",
             "partition",
             "mean",
             "vecnorm_l1",
@@ -2957,9 +3004,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 59,
+            "pass": 60,
             "fail": 0,
-            "blocked": 50,
+            "blocked": 49,
             "unsupported": 0,
             "missing_status": 0,
         }
