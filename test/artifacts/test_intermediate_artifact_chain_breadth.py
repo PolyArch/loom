@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
+import traceback
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import artifact_test_common
@@ -627,10 +630,47 @@ def assert_case(repo: Path, case_name: str, expected: Mapping[str, object]) -> N
             raise AssertionError(f"manifest missed {case_name} dependency edges {missing_edges}: {edges}")
 
 
+def positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise AssertionError(f"{name} must be a positive integer") from exc
+    if parsed < 1:
+        raise AssertionError(f"{name} must be a positive integer")
+    return parsed
+
+
+def chain_case_jobs(case_count: int) -> int:
+    explicit = positive_env_int("LOOM_CHAIN_BREADTH_JOBS")
+    if explicit is not None:
+        return min(case_count, explicit)
+    shared_budget = positive_env_int("LOOM_TEST_JOBS") or positive_env_int("JOBS") or (os.cpu_count() or 1)
+    return max(1, min(case_count, 4, shared_budget))
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
-    for case_name, expected in CASES.items():
-        assert_case(repo, case_name, expected)
+    jobs = chain_case_jobs(len(CASES))
+    failures: list[tuple[str, str]] = []
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        futures = {
+            executor.submit(assert_case, repo, case_name, expected): case_name
+            for case_name, expected in CASES.items()
+        }
+        for future in as_completed(futures):
+            case_name = futures[future]
+            try:
+                future.result()
+            except Exception:
+                failures.append((case_name, traceback.format_exc()))
+    if failures:
+        detail = "\n\n".join(
+            f"case {case_name} failed:\n{failure}" for case_name, failure in failures
+        )
+        raise AssertionError(detail)
     return 0
 
 

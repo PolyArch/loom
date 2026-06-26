@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]...
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
@@ -32,6 +32,7 @@ DEFAULT_APP_BLOCKER_MANIFEST="${ROOT}/test/app/shared-cgra-blocker-batch.json"
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
 CMSIS_SIM_DEFAULT=0
+JOBS_ARG=""
 declare -a APP_SIM_CASES=()
 declare -a APP_SIM_ATTEMPT_MANIFESTS=()
 
@@ -85,6 +86,14 @@ while [[ $# -gt 0 ]]; do
         --cmsis-sim-default)
             CMSIS_SIM_DEFAULT=1
             shift
+            ;;
+        --jobs)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 2
+            fi
+            JOBS_ARG="$2"
+            shift 2
             ;;
         -h|--help)
             usage
@@ -188,6 +197,20 @@ if [[ -z "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
     rm -rf "${STATUS_SIM_EVIDENCE_DIR}"
 fi
 
+default_jobs() {
+    local value="${JOBS_ARG:-${LOOM_TEST_JOBS:-${JOBS:-}}}"
+    if [[ -z "${value}" ]]; then
+        value="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    fi
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 )); then
+        echo "invalid --jobs value: ${value}" >&2
+        exit 2
+    fi
+    printf '%s\n' "${value}"
+}
+
+PARALLEL_JOBS="$(default_jobs)"
+
 clean_app_sim_evidence() {
     local evidence_dir="$1"
     if [[ -z "${SIM_EVIDENCE_DIR}" ]]; then
@@ -232,12 +255,23 @@ for case in cases:
 PY
 }
 
-OUT_OVERRIDE="${CMSIS_DSP_DFG_DIR}" bash "${ROOT}/test/cmsis-dsp/run_cmsis_dsp_dfg.sh"
-OUT_OVERRIDE="${CMSIS_NN_DFG_DIR}" bash "${ROOT}/test/cmsis-nn/run_cmsis_nn_dfg.sh"
+PRODUCER_LOG_DIR="${OUT_DIR}/_producer-logs"
+PRODUCER_STATUS_DIR="${OUT_DIR}/_producer-status"
+rm -rf "${PRODUCER_LOG_DIR}" "${PRODUCER_STATUS_DIR}"
+mkdir -p "${PRODUCER_LOG_DIR}" "${PRODUCER_STATUS_DIR}"
+declare -a PRODUCER_NAMES=()
 
-if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
+run_cmsis_dsp_dfg_producer() {
+    OUT_OVERRIDE="${CMSIS_DSP_DFG_DIR}" bash "${ROOT}/test/cmsis-dsp/run_cmsis_dsp_dfg.sh"
+}
+
+run_cmsis_nn_dfg_producer() {
+    OUT_OVERRIDE="${CMSIS_NN_DFG_DIR}" bash "${ROOT}/test/cmsis-nn/run_cmsis_nn_dfg.sh"
+}
+
+run_app_sim_producer() {
     clean_app_sim_evidence "${STATUS_SIM_EVIDENCE_DIR}"
-    app_sweep_args=(--output-dir "${STATUS_SIM_EVIDENCE_DIR}")
+    app_sweep_args=(--output-dir "${STATUS_SIM_EVIDENCE_DIR}" --jobs "${PARALLEL_JOBS}")
     for app_case in "${APP_SIM_CASES[@]}"; do
         app_sweep_args+=(--case "${app_case}")
     done
@@ -246,9 +280,75 @@ if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
         python3 "${ROOT}/test/app/default_cgra_sim_batch.py" \
             --validate-evidence-dir "${STATUS_SIM_EVIDENCE_DIR}"
     fi
+}
+
+run_rollup_producer_job() {
+    local name="$1"
+    shift
+    local log_file="${PRODUCER_LOG_DIR}/${name}.log"
+    local status_file="${PRODUCER_STATUS_DIR}/${name}.status"
+    PRODUCER_NAMES+=("${name}")
+    echo "fail" > "${status_file}"
+    (
+        if "$@"; then
+            echo "pass" > "${status_file}"
+        else
+            echo "fail" > "${status_file}"
+            exit 1
+        fi
+    ) > "${log_file}" 2>&1 &
+}
+
+active_jobs=0
+producer_failed=0
+run_rollup_producer_job cmsis-dsp-dfg run_cmsis_dsp_dfg_producer
+active_jobs=$((active_jobs + 1))
+if (( active_jobs >= PARALLEL_JOBS )); then
+    if ! wait -n; then
+        producer_failed=1
+    fi
+    active_jobs=$((active_jobs - 1))
+fi
+run_rollup_producer_job cmsis-nn-dfg run_cmsis_nn_dfg_producer
+active_jobs=$((active_jobs + 1))
+if (( active_jobs >= PARALLEL_JOBS )); then
+    if ! wait -n; then
+        producer_failed=1
+    fi
+    active_jobs=$((active_jobs - 1))
+fi
+if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then
+    run_rollup_producer_job app-sim-evidence run_app_sim_producer
+    active_jobs=$((active_jobs + 1))
+    if (( active_jobs >= PARALLEL_JOBS )); then
+        if ! wait -n; then
+            producer_failed=1
+        fi
+        active_jobs=$((active_jobs - 1))
+    fi
 elif [[ "${CMSIS_SIM_DEFAULT}" -eq 1 && -z "${SIM_EVIDENCE_DIR}" ]]; then
     rm -rf "${STATUS_SIM_EVIDENCE_DIR}"
     mkdir -p "${STATUS_SIM_EVIDENCE_DIR}"
+fi
+
+while (( active_jobs > 0 )); do
+    if ! wait -n; then
+        producer_failed=1
+    fi
+    active_jobs=$((active_jobs - 1))
+done
+
+for producer_name in "${PRODUCER_NAMES[@]}"; do
+    log_file="${PRODUCER_LOG_DIR}/${producer_name}.log"
+    status_file="${PRODUCER_STATUS_DIR}/${producer_name}.status"
+    [[ -s "${log_file}" ]] && cat "${log_file}"
+    if [[ "$(cat "${status_file}" 2>/dev/null || echo fail)" != "pass" ]]; then
+        producer_failed=1
+    fi
+done
+
+if (( producer_failed != 0 )); then
+    exit 1
 fi
 
 if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then

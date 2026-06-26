@@ -8,6 +8,8 @@ import json
 import os
 import subprocess
 import sys
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import artifact_test_common
@@ -233,6 +235,37 @@ def run_command(repo: Path, argv: list[str]) -> subprocess.CompletedProcess[str]
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise AssertionError(f"{name} must be a positive integer") from exc
+    if parsed < 1:
+        raise AssertionError(f"{name} must be a positive integer")
+    return parsed
+
+
+def artifact_gate_jobs(command_count: int) -> int:
+    explicit = positive_env_int("LOOM_ARTIFACT_GATES_JOBS")
+    if explicit is not None:
+        return min(command_count, explicit)
+    shared_budget = positive_env_int("LOOM_TEST_JOBS") or positive_env_int("JOBS") or (os.cpu_count() or 1)
+    return max(1, min(command_count, 4, shared_budget))
+
+
+def run_csv_command(
+    repo: Path,
+    out_dir: Path,
+    script: str,
+    filename: str,
+) -> tuple[Path, subprocess.CompletedProcess[str]]:
+    output = out_dir / filename
+    return output, run_command(repo, ["bash", script, "--output", str(output)])
 
 
 def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -557,9 +590,33 @@ def main() -> int:
         if standard_sim not in discovered:
             raise AssertionError("standard artifact discovery missed RTL sim EDA report")
 
-        for script, filename, required_columns in CSV_COMMANDS:
-            output = out_dir / filename
-            result = run_command(repo, ["bash", script, "--output", str(output)])
+        csv_results: list[tuple[int, str, str, list[str], Path, subprocess.CompletedProcess[str]]] = []
+        csv_failures: list[tuple[str, str]] = []
+        with ThreadPoolExecutor(max_workers=artifact_gate_jobs(len(CSV_COMMANDS))) as executor:
+            futures = {
+                executor.submit(run_csv_command, repo, out_dir, script, filename): (
+                    index,
+                    script,
+                    filename,
+                    required_columns,
+                )
+                for index, (script, filename, required_columns) in enumerate(CSV_COMMANDS)
+            }
+            for future in as_completed(futures):
+                index, script, filename, required_columns = futures[future]
+                try:
+                    output, result = future.result()
+                except Exception:
+                    csv_failures.append((script, traceback.format_exc()))
+                    continue
+                csv_results.append((index, script, filename, required_columns, output, result))
+        if csv_failures:
+            detail = "\n\n".join(
+                f"{script} failed:\n{failure}" for script, failure in csv_failures
+            )
+            raise AssertionError(detail)
+
+        for _index, script, filename, required_columns, output, result in sorted(csv_results):
             if result.returncode != 0:
                 raise AssertionError(
                     f"{script} failed with {result.returncode}\n"

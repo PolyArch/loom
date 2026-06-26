@@ -149,6 +149,7 @@ class MakeWorktreeTest(unittest.TestCase):
 
     def test_cmd_test_runs_perf_lit_separately(self):
         popen_calls = []
+        self.args.jobs = 7
 
         class FakePipe:
             def close(self):
@@ -184,8 +185,43 @@ class MakeWorktreeTest(unittest.TestCase):
         )
         self.assertIn("--filter-out", build_calls[0].kwargs["env"]["LIT_OPTS"])
         self.assertIn("techmap/perf", build_calls[0].kwargs["env"]["LIT_OPTS"])
+        self.assertIn("-j7", build_calls[0].kwargs["env"]["LIT_OPTS"])
+        self.assertEqual(build_calls[0].kwargs["env"]["LOOM_TEST_JOBS"], "7")
         self.assertIn("-j1", lit_calls[0].cmd)
         self.assertEqual(lit_calls[0].cmd[-1], str(self.paths.loom_build / "test" / "techmap" / "perf"))
+
+    def test_cmd_test_uses_explicit_lit_worker_budget_for_nested_runners(self):
+        popen_calls = []
+        self.args.jobs = 32
+
+        class FakePipe:
+            def close(self):
+                pass
+
+        class FakeProcess:
+            def __init__(self, cmd, **kwargs):
+                self.cmd = cmd
+                self.kwargs = kwargs
+                self.stdout = FakePipe()
+                popen_calls.append(self)
+
+            def wait(self):
+                return 0
+
+        with (
+            patch.dict("os.environ", {"LIT_OPTS": "-j1"}),
+            patch.object(self.module, "check_git_version"),
+            patch.object(self.module, "check_loom_compilers"),
+            patch.object(self.module, "build_loom"),
+            patch.object(subprocess, "Popen", side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)),
+        ):
+            self.module.cmd_test(self.paths, self.args)
+
+        build_calls = [call for call in popen_calls if call.cmd[0] == "cmake"]
+        self.assertEqual(len(build_calls), 1)
+        self.assertIn("-j1", build_calls[0].kwargs["env"]["LIT_OPTS"])
+        self.assertNotIn("-j32", build_calls[0].kwargs["env"]["LIT_OPTS"])
+        self.assertEqual(build_calls[0].kwargs["env"]["LOOM_TEST_JOBS"], "1")
 
 
 if __name__ == "__main__":

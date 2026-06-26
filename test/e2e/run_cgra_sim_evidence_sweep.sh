@@ -5,13 +5,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|adg-builder] [--legacy-app-root DIR]
+usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|adg-builder] [--legacy-app-root DIR] [--jobs N]
 USAGE
 }
 
 OUT_DIR=""
 HARDWARE_SOURCE="checked-in"
 LEGACY_APP_ROOT="${ROOT}/temp/old_implementation_loom/loom/tests/app"
+JOBS_ARG=""
 declare -a CASES=()
 
 while [[ $# -gt 0 ]]; do
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --legacy-app-root)
       LEGACY_APP_ROOT="${2:?missing --legacy-app-root value}"
+      shift 2
+      ;;
+    --jobs)
+      JOBS_ARG="${2:?missing --jobs value}"
       shift 2
       ;;
     -h|--help)
@@ -127,9 +132,37 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
   )
 fi
 
+validate_unique_cases() {
+  local case_name
+  declare -A seen=()
+  for case_name in "${CASES[@]}"; do
+    if [[ -n "${seen[${case_name}]:-}" ]]; then
+      echo "duplicate --case: ${case_name}" >&2
+      exit 2
+    fi
+    seen["${case_name}"]=1
+  done
+}
+
+validate_unique_cases
+
 mkdir -p "${OUT_DIR}"
 chain_root="${OUT_DIR}/_chains"
 mkdir -p "${chain_root}"
+
+default_jobs() {
+  local value="${JOBS_ARG:-${LOOM_TEST_JOBS:-${JOBS:-}}}"
+  if [[ -z "${value}" ]]; then
+    value="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+  fi
+  if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 )); then
+    echo "invalid --jobs value: ${value}" >&2
+    exit 2
+  fi
+  printf '%s\n' "${value}"
+}
+
+PARALLEL_JOBS="$(default_jobs)"
 
 normalize_case_artifacts() {
   local case_name="$1"
@@ -295,25 +328,81 @@ else:
 PY
 }
 
-for case_name in "${CASES[@]}"; do
-  case_out="${chain_root}/${case_name}"
+run_case_job() {
+  local case_name="$1"
+  local case_out="${chain_root}/${case_name}"
   rm -rf "${case_out}"
-  case_hardware_source="${HARDWARE_SOURCE}"
+  local case_hardware_source="${HARDWARE_SOURCE}"
   if [[ "${HARDWARE_SOURCE}" == "checked-in" && "${case_name}" == "vecscale" ]]; then
     case_hardware_source="shared-vector-alu"
   fi
   mkdir -p "${case_out}"
-  if ! bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
-      --output-dir "${case_out}" \
-      --case "${case_name}" \
-      --hardware-source "${case_hardware_source}" \
-      --legacy-app-root "${LEGACY_APP_ROOT}" \
-      > "${case_out}/chain.stdout.log" \
-      2> "${case_out}/chain.stderr.log"; then
-    cat "${case_out}/chain.stdout.log"
-    cat "${case_out}/chain.stderr.log" >&2
-    exit 1
+  (
+    if ! bash "${ROOT}/test/e2e/run_intermediate_artifact_chain.sh" \
+        --output-dir "${case_out}" \
+        --case "${case_name}" \
+        --hardware-source "${case_hardware_source}" \
+        --legacy-app-root "${LEGACY_APP_ROOT}" \
+        > "${case_out}/chain.stdout.log" \
+        2> "${case_out}/chain.stderr.log"; then
+      echo "fail" > "${case_out}/job.status"
+      exit 1
+    fi
+    if ! normalize_case_artifacts "${case_name}" "${case_out}" \
+        > "${case_out}/normalize.stdout.log" \
+        2> "${case_out}/normalize.stderr.log"; then
+      echo "fail" > "${case_out}/job.status"
+      exit 1
+    fi
+    echo "[${case_name}] $(case_aggregate_status "${case_name}")" > "${case_out}/status.line"
+    echo "pass" > "${case_out}/job.status"
+  ) &
+}
+
+print_case_failure() {
+  local case_name="$1"
+  local case_out="${chain_root}/${case_name}"
+  echo "[${case_name}] failed" >&2
+  for log in \
+      "${case_out}/chain.stdout.log" \
+      "${case_out}/chain.stderr.log" \
+      "${case_out}/normalize.stdout.log" \
+      "${case_out}/normalize.stderr.log"; do
+    if [[ -s "${log}" ]]; then
+      cat "${log}" >&2
+    fi
+  done
+}
+
+active_jobs=0
+job_failed=0
+for case_name in "${CASES[@]}"; do
+  run_case_job "${case_name}"
+  active_jobs=$((active_jobs + 1))
+  if (( active_jobs >= PARALLEL_JOBS )); then
+    if ! wait -n; then
+      job_failed=1
+    fi
+    active_jobs=$((active_jobs - 1))
   fi
-  normalize_case_artifacts "${case_name}" "${case_out}"
-  echo "[${case_name}] $(case_aggregate_status "${case_name}")"
 done
+while (( active_jobs > 0 )); do
+  if ! wait -n; then
+    job_failed=1
+  fi
+  active_jobs=$((active_jobs - 1))
+done
+
+for case_name in "${CASES[@]}"; do
+  case_out="${chain_root}/${case_name}"
+  if [[ -f "${case_out}/status.line" ]]; then
+    cat "${case_out}/status.line"
+  else
+    job_failed=1
+    print_case_failure "${case_name}"
+  fi
+done
+
+if (( job_failed != 0 )); then
+  exit 1
+fi

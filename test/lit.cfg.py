@@ -51,7 +51,43 @@ def _perf_parallelism_limit():
     return max(1, len(affinity))
 
 
+def _positive_env_int(name):
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        lit_config.fatal(f"{name} must be a positive integer")
+    if parsed < 1:
+        lit_config.fatal(f"{name} must be a positive integer")
+    return parsed
+
+
+def _default_cpu_budget():
+    try:
+        affinity = os.sched_getaffinity(0)
+    except AttributeError:
+        affinity = set()
+    if affinity:
+        return max(1, len(affinity))
+    return max(1, os.cpu_count() or 1)
+
+
+def _artifact_parallelism_limit():
+    explicit = _positive_env_int("LOOM_ARTIFACT_TEST_JOBS")
+    if explicit is not None:
+        return explicit
+    test_budget = (
+        _positive_env_int("LOOM_TEST_JOBS")
+        or _positive_env_int("JOBS")
+        or _default_cpu_budget()
+    )
+    return max(1, min(4, test_budget))
+
+
 lit_config.parallelism_groups["perf"] = _perf_parallelism_limit()
+lit_config.parallelism_groups["artifacts"] = _artifact_parallelism_limit()
 
 tool_dirs = [
     os.path.join(config.loom_obj_root, "tools", "loom"),

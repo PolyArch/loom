@@ -527,6 +527,28 @@ def lit_opts(*parts: str) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def explicit_lit_workers(extra: str) -> int | None:
+    patterns = (
+        r"(^|\s)-j([0-9]+)(?=\s|$)",
+        r"(^|\s)-j\s+([0-9]+)(?=\s|$)",
+        r"(^|\s)--workers=([0-9]+)(?=\s|$)",
+        r"(^|\s)--workers\s+([0-9]+)(?=\s|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, extra)
+        if match:
+            return int(match.group(2))
+    return None
+
+
+def lit_jobs_opt(jobs: int, extra: str) -> str:
+    if explicit_lit_workers(extra) is not None:
+        return ""
+    if re.search(r"(^|\s)--workers(=|\s|$)", extra):
+        return ""
+    return f"-j{jobs}"
+
+
 def run_with_lit_filter(
     cmd: list[str],
     lit_filter: Path,
@@ -558,10 +580,13 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     build_loom(paths, args)
     base_env = os.environ.copy()
     extra = base_env.get("LIT_OPTS", "").strip()
+    nested_jobs = explicit_lit_workers(extra) or args.jobs
     broad_env = base_env.copy()
+    broad_env.setdefault("LOOM_TEST_JOBS", str(nested_jobs))
     broad_env["LIT_OPTS"] = lit_opts(
         "-sv",
         "--time-tests",
+        lit_jobs_opt(args.jobs, extra),
         "--filter-out",
         "techmap/perf",
         extra,
@@ -577,6 +602,7 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     )
 
     perf_env = base_env.copy()
+    perf_env.setdefault("LOOM_TEST_JOBS", str(nested_jobs))
     perf_env["LIT_OPTS"] = lit_opts("-sv", "--time-tests", extra)
     run_with_lit_filter(
         [
