@@ -189,7 +189,7 @@ case "${CASE}" in
     case_graph="g_t_fir_filter_stateful_kernel_red_0_0"
     ;;
   gather)
-    case_graph="missing_primary_graph"
+    case_graph="g_t_gather_0_0"
     ;;
   gemv)
     case_graph="g_t_gemv_kernel_0_0"
@@ -865,7 +865,7 @@ elif [[ "${CASE}" == "partition" ]]; then
     "${cgra_lower_report}"
     "${cgra_upper_report}"
   )
-elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "gather" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "outer" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "transpose" || "${CASE}" == "upper_bound" ]]; then
+elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "outer" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "transpose" || "${CASE}" == "upper_bound" ]]; then
   case "${CASE}" in
     binary_search)
       expected_primary_graph_token="binary_search_candidate"
@@ -878,9 +878,6 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz"
       ;;
     find_first_set)
       expected_primary_graph_token="find_first_set_candidate"
-      ;;
-    gather)
-      expected_primary_graph_token="gather"
       ;;
     lower_bound)
       expected_primary_graph_token="lower_bound_candidate"

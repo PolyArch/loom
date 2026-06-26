@@ -98,7 +98,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "clz",
     "ctz",
     "find_first_set",
-    "gather",
     "lower_bound",
     "moving_avg",
     "outer",
@@ -115,7 +114,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("clz", "clz_candidate"),
     ("ctz", "ctz_candidate"),
     ("find_first_set", "find_first_set_candidate"),
-    ("gather", "gather"),
     ("lower_bound", "lower_bound_candidate"),
     ("moving_avg", "moving_avg_kernel"),
     ("outer", "outer_kernel"),
@@ -1859,6 +1857,97 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"crc32 CGRA evidence should carry the real CRC result state: {cgra_path}: {cgra}")
 
 
+def assert_gather_evidence(evidence_dir: Path) -> None:
+    expected_dst = [
+        "i32:1",
+        "i32:10",
+        "i32:28",
+        "i32:0",
+        "i32:7",
+        "i32:22",
+        "i32:0",
+        "i32:4",
+        "i32:16",
+        "i32:25",
+        "i32:19",
+        "i32:13",
+        "i32:0",
+        "i32:1",
+        "i32:28",
+        "i32:0",
+    ]
+    expected_counts = {
+        "arith.cmpi": 16,
+        "arith.index_cast": 12,
+        "dataflow.load": 28,
+        "dataflow.store": 16,
+        "dataflow.sync": 16,
+        "scf.if": 16,
+    }
+    dfg_path = evidence_dir / "gather.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_gather_0_0"
+        or dfg.get("dynamic_work_items") != 16
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"gather DFG should execute the indirect-load graph: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("gather", dfg, expected_counts)
+    memory = dfg.get("final_memory_state", {})
+    if not isinstance(memory, dict) or memory.get("arg5") != expected_dst:
+        raise AssertionError(f"gather DFG should preserve real dst memory state: {dfg_path}: {dfg}")
+
+    mapping_path = evidence_dir / "gather.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("placed_records") != 5
+        or mapping.get("routed_edges") != 5
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 97
+    ):
+        raise AssertionError(f"gather should map the bounded indirect load/store graph: {mapping_path}: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    required_edges = {
+        "dataflow.load#0.result0->arith.cmpi#0.operand0",
+        "dataflow.load#0.result0->dataflow.load#1.operand1",
+        "dataflow.load#1.result0->dataflow.store#0.operand2",
+        "dataflow.store#0.result0->dataflow.sync#0.operand1",
+    }
+    if not required_edges <= route_edges:
+        raise AssertionError(f"gather mapping missed required routed edges: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "gather.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 236
+        or cgra.get("hardware_aware_cycles") != 263
+        or cgra.get("performance_delta_cycles") != 27
+        or cgra.get("final_memory_state", {}).get("arg5") != expected_dst
+    ):
+        raise AssertionError(f"gather CGRA report should carry real final state: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "gather.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 236
+        or comparison.get("cgra_sim_cycles") != 263
+    ):
+        raise AssertionError(f"gather comparison should pass with real final-state checks: {comparison_path}: {comparison}")
+
+
 def assert_unsupported_operation(
     evidence_dir: Path,
     case: str,
@@ -2300,6 +2389,7 @@ def main(argv: list[str]) -> int:
         assert_string_hash_evidence(evidence_dir)
         assert_autocorrelation_dfg_evidence(evidence_dir)
         assert_crc32_evidence(evidence_dir)
+        assert_gather_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -2667,6 +2757,7 @@ def main(argv: list[str]) -> int:
             "fir_filter_stateful",
             "compare_swap",
             "compact",
+            "gather",
             "hash_mix",
             "string_hash",
             "merge",
@@ -2765,9 +2856,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 57,
+            "pass": 58,
             "fail": 0,
-            "blocked": 52,
+            "blocked": 51,
             "unsupported": 0,
             "missing_status": 0,
         }

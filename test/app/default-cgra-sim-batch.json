@@ -182,6 +182,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "gather",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "compare_swap",
       "hardware": "shared_reduction_adg"
     },

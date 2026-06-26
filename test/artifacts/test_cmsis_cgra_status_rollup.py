@@ -339,9 +339,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 57,
+            "pass": 58,
             "fail": 0,
-            "blocked": 52,
+            "blocked": 51,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -476,7 +476,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "clz": "primary workload graph absent: expected token clz_candidate",
     "ctz": "primary workload graph absent: expected token ctz_candidate",
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
-    "gather": "primary workload graph absent: expected token gather",
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "outer": "primary workload graph absent: expected token outer_kernel",
@@ -687,9 +686,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 2,
             "fail": 0,
-            "blocked": 52,
+            "blocked": 51,
             "unsupported": 0,
-            "missing_status": 55,
+            "missing_status": 56,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")

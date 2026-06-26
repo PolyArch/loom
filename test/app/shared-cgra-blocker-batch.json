@@ -26,10 +26,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "gather",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "lower_bound",
       "hardware": "shared_reduction_adg"
     },

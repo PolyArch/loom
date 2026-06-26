@@ -224,6 +224,15 @@ append_sbox_lookup_memrefs() {
     sim_args+=(--memref "${output_index}=${output_values}")
 }
 
+append_gather_memrefs() {
+    local indices_index="$1"
+    local src_index="$2"
+    local dst_index="$3"
+    sim_args+=(--memref "${indices_index}=0,3,9,10,2,7,12,1,5,8,6,4,15,0,9,11")
+    sim_args+=(--memref "${src_index}=1,4,7,10,13,16,19,22,25,28")
+    append_constant_memref "${dst_index}" 16 "0"
+}
+
 to_i32_literal() {
     local value=$(( $1 & 0xffffffff ))
     if (( value >= 2147483648 )); then
@@ -915,6 +924,17 @@ case "${CASE}" in
         ;;
     downsample_avg)
         configure_downsample_avg_args 0
+        ;;
+    gather)
+        append_ctrl_tokens 16
+        append_gather_memrefs 1 3 5
+        append_repeated_arg 2 16 10
+        append_repeated_arg 4 16 0
+        append_index_tokens 6 16
+        sim_args+=(
+            --graph g_t_gather_0_0
+            --workload gather
+        )
         ;;
     downsample)
         append_ctrl_tokens 4

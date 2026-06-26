@@ -622,8 +622,26 @@ struct LowerForToGraphPass
               op))
         return false;
       if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::ForallOp,
-                      ::mlir::scf::WhileOp, ::mlir::scf::IfOp>(op))
+                      ::mlir::scf::WhileOp>(op))
         return false;
+      if (::llvm::isa<::mlir::scf::IfOp>(op)) {
+        bool hasNestedBoundary = false;
+        op.walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+          if (nested == &op)
+            return ::mlir::WalkResult::advance();
+          if (::llvm::isa<::dataflow::GraphLaunchOp,
+                          ::dataflow::ThreadLaunchOp, ::mlir::scf::ForOp,
+                          ::mlir::scf::ForallOp, ::mlir::scf::WhileOp>(
+                  nested)) {
+            hasNestedBoundary = true;
+            return ::mlir::WalkResult::interrupt();
+          }
+          return ::mlir::WalkResult::advance();
+        });
+        if (hasNestedBoundary)
+          return false;
+        continue;
+      }
       if (op.getNumRegions() != 0)
         return false;
       if (op.hasTrait<::mlir::OpTrait::SymbolTable>())
