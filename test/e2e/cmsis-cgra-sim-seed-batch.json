@@ -2,6 +2,7 @@
   "schema_version": 1,
   "attempt_stems": [
     "arm_add_q15",
+    "arm_abs_f32",
     "arm_relu_q15"
   ]
 }

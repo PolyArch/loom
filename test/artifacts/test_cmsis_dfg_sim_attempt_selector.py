@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import subprocess
+import json
 from pathlib import Path
 
 import artifact_test_common
@@ -117,15 +118,13 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
 
-        import json
-
         data = json.loads((out_dir / "cgra-status-summary.json").read_text())
         expected_counts = {
             "cmsis-dsp": {
                 "total": 16,
-                "pass": 1,
+                "pass": 2,
                 "fail": 0,
-                "blocked": 13,
+                "blocked": 12,
                 "unsupported": 2,
                 "missing_status": 0,
             },
@@ -144,9 +143,10 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 raise AssertionError(f"{suite} seed-batch counts {actual}, expected {expected}")
 
         add = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        abs_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
-        for row in (add, relu_q15):
+        for row in (add, abs_f32, relu_q15):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"seed-batch row should expose CGRA-sim pass evidence: {row}")
         if relu_q7["status"] == "pass" or relu_q7["cgra_status"] != "not_run":
@@ -157,12 +157,24 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_add_q15.dfg.report.json",
             evidence_dir / "arm_add_q15.mapping.json",
             evidence_dir / "arm_add_q15.cgra.report.json",
+            evidence_dir / "arm_abs_f32.dfg.report.json",
+            evidence_dir / "arm_abs_f32.mapping.json",
+            evidence_dir / "arm_abs_f32.cgra.report.json",
             evidence_dir / "arm_relu_q15.dfg.report.json",
             evidence_dir / "arm_relu_q15.mapping.json",
             evidence_dir / "arm_relu_q15.cgra.report.json",
         ):
             if not artifact.is_file():
                 raise AssertionError(f"seed-batch rollup did not emit {artifact}")
+        abs_dfg = json.loads((evidence_dir / "arm_abs_f32.dfg.report.json").read_text())
+        abs_cgra = json.loads((evidence_dir / "arm_abs_f32.cgra.report.json").read_text())
+        expected_abs_memory = {
+            "arg4": ["f32:-1", "f32:2", "f32:-3.500000", "f32:4.250000"],
+            "arg5": ["f32:1", "f32:2", "f32:3.500000", "f32:4.250000"],
+        }
+        for label, report in (("DFG", abs_dfg), ("CGRA", abs_cgra)):
+            if report.get("status") != "pass" or report.get("final_memory_state") != expected_abs_memory:
+                raise AssertionError(f"arm_abs_f32 {label} report should preserve real abs final state: {report}")
 
 
 def main() -> int:
