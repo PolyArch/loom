@@ -2567,13 +2567,15 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             str(out_dir / "cmsis-nn-dfg"),
             "--output-dir",
             str(no_cgra_evidence),
+            "--attempt-stem",
+            "arm_abs_f32",
             "--loom-cgra-sim",
             str(fake_cgra_tool),
         ],
         expect_success=False,
     )
     if "CGRA-sim" not in fake_result.stderr and "loom-cgra-sim" not in fake_result.stderr:
-        raise AssertionError(f"CMSIS offset should fail at unavailable CGRA-sim: {fake_result.stderr}")
+        raise AssertionError(f"selected CMSIS attempt should fail at unavailable CGRA-sim: {fake_result.stderr}")
     if not (no_cgra_evidence / "arm_abs_f32.mapping.json").is_file():
         raise AssertionError("CMSIS abs should emit mapping evidence before requiring CGRA-sim")
     if (no_cgra_evidence / "arm_abs_f32.cgra.report.json").exists():

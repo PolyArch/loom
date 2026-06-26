@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Regression tests for selectable CMSIS DFG-sim attempts."""
+
+from __future__ import annotations
+
+import sys
+import subprocess
+from pathlib import Path
+
+import artifact_test_common
+
+
+def load_attempt_module(repo: Path):
+    sys.path.insert(0, str(repo / "test" / "e2e"))
+    import run_cmsis_dfg_sim_attempts as attempts  # noqa: E402
+
+    return attempts
+
+
+def labels(selected) -> list[str]:
+    return [attempt.artifact_stem or attempt.stem for attempt in selected]
+
+
+def run_rollup(repo: Path, out_dir: Path, evidence_dir: Path, stem: str) -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--sim-evidence-dir",
+            str(evidence_dir),
+            "--cmsis-sim-attempt-stem",
+            stem,
+            "--jobs",
+            "8",
+        ],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"selected CMSIS rollup failed for {stem} with {result.returncode}\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+
+def row_by_case(csv_path: Path, suite: str, case: str) -> dict[str, str]:
+    import csv
+
+    with csv_path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row["suite"] == suite and row["case"] == case:
+                return row
+    raise AssertionError(f"missing {suite} row for {case}")
+
+
+def assert_selected_rollup_drops_stale_cmsis_evidence(repo: Path) -> None:
+    with artifact_test_common.repo_temp_dir(repo, "cmsis-selector-stale-") as tmp:
+        root = Path(tmp)
+        out_dir = root / "rollup"
+        evidence_dir = root / "shared-sim-evidence"
+
+        run_rollup(repo, out_dir, evidence_dir, "arm_relu_q15")
+        relu_first = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-nn",
+            "ActivationFunctions/arm_relu_q15.c",
+        )
+        if relu_first["status"] != "pass" or relu_first["cgra_status"] != "pass":
+            raise AssertionError(f"initial selected relu evidence should pass: {relu_first}")
+
+        run_rollup(repo, out_dir, evidence_dir, "arm_add_q15")
+        add_second = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_add_q15.c",
+        )
+        relu_second = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-nn",
+            "ActivationFunctions/arm_relu_q15.c",
+        )
+        if add_second["status"] != "pass" or add_second["cgra_status"] != "pass":
+            raise AssertionError(f"second selected add evidence should pass: {add_second}")
+        if relu_second["status"] == "pass" or relu_second["cgra_status"] != "not_run":
+            raise AssertionError(f"stale relu evidence survived selected rerun: {relu_second}")
+        if relu_second["comparison_report"] or relu_second["comparison_status"] != "not_run":
+            raise AssertionError(f"stale relu comparison survived selected rerun: {relu_second}")
+
+
+def main() -> int:
+    repo = Path(sys.argv[1]).resolve()
+    attempts = load_attempt_module(repo)
+
+    add_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "arm_add_q15",
+        ]
+    )
+    add_selected = attempts.select_attempts(add_args)
+    if labels(add_selected) != ["arm_add_q15"]:
+        raise AssertionError(f"arm_add_q15 selector chose unexpected attempts: {labels(add_selected)}")
+
+    relu_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--case",
+            "ActivationFunctions/arm_relu_q7.c",
+        ]
+    )
+    relu_selected = attempts.select_attempts(relu_args)
+    if labels(relu_selected) != ["arm_relu_q7.red0", "arm_relu_q7.red1"]:
+        raise AssertionError(f"arm_relu_q7 case selector chose unexpected attempts: {labels(relu_selected)}")
+
+    aggregate_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "arm_var_f32",
+        ]
+    )
+    aggregate_selected = attempts.select_attempts(aggregate_args)
+    if labels(aggregate_selected) != ["arm_var_f32.red0", "arm_var_f32.red1"]:
+        raise AssertionError(f"aggregate selector chose unexpected attempts: {labels(aggregate_selected)}")
+
+    bad_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "not_a_cmsis_attempt",
+        ]
+    )
+    try:
+        attempts.select_attempts(bad_args)
+    except SystemExit as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("unknown CMSIS attempt selector unexpectedly passed")
+    if "not_a_cmsis_attempt" not in message or "arm_add_q15" not in message:
+        raise AssertionError(f"unknown selector diagnostic is not actionable: {message}")
+
+    blank_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "",
+        ]
+    )
+    try:
+        attempts.select_attempts(blank_args)
+    except SystemExit as exc:
+        blank_message = str(exc)
+    else:
+        raise AssertionError("blank CMSIS attempt selector unexpectedly passed")
+    if "must not be blank" not in blank_message:
+        raise AssertionError(f"blank selector diagnostic is not actionable: {blank_message}")
+
+    bad_cli = subprocess.run(
+        [
+            sys.executable,
+            "test/e2e/run_cmsis_dfg_sim_attempts.py",
+            "--cmsis-dsp-dfg-dir",
+            "missing-dsp",
+            "--cmsis-nn-dfg-dir",
+            "missing-nn",
+            "--output-dir",
+            "temp/cmsis-selector-bad-cli",
+            "--attempt-stem",
+            "not_a_cmsis_attempt",
+            "--loom-dfg-sim",
+            "definitely-missing-loom-dfg-sim",
+        ],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if bad_cli.returncode == 0:
+        raise AssertionError("unknown CMSIS attempt selector CLI unexpectedly passed")
+    if "not_a_cmsis_attempt" not in bad_cli.stderr or "not executable" in bad_cli.stderr:
+        raise AssertionError(f"CLI should validate selectors before tools: {bad_cli.stderr}")
+
+    no_mode = subprocess.run(
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            "temp/cmsis-selector-no-mode",
+            "--cmsis-sim-attempt-stem",
+            "arm_add_q15",
+        ],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if no_mode.returncode == 0:
+        raise AssertionError("CMSIS sim selector without a sim evidence mode unexpectedly passed")
+    if "require --cmsis-sim-default or --sim-evidence-dir" not in no_mode.stderr:
+        raise AssertionError(f"CMSIS sim selector mode diagnostic is not actionable: {no_mode.stderr}")
+
+    assert_selected_rollup_drops_stale_cmsis_evidence(repo)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

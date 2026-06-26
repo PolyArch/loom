@@ -5,13 +5,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
 attempts into that directory before consuming the reports. --cmsis-sim-default
 runs those bounded CMSIS attempts into the default status evidence directory.
+Each --cmsis-sim-attempt-stem or --cmsis-sim-case restricts those CMSIS
+attempts to the selected row evidence.
 --app-sim-default-batch runs the shared-ADG app CGRA evidence batch used by the
 default simulator cycle summary, plus the default shared-ADG blocker-attempt
 batch so app rows do not remain silent missing_status entries. Each
@@ -35,6 +37,8 @@ CMSIS_SIM_DEFAULT=0
 JOBS_ARG=""
 declare -a APP_SIM_CASES=()
 declare -a APP_SIM_ATTEMPT_MANIFESTS=()
+declare -a CMSIS_SIM_ATTEMPT_STEMS=()
+declare -a CMSIS_SIM_CASES=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -86,6 +90,22 @@ while [[ $# -gt 0 ]]; do
         --cmsis-sim-default)
             CMSIS_SIM_DEFAULT=1
             shift
+            ;;
+        --cmsis-sim-attempt-stem)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 2
+            fi
+            CMSIS_SIM_ATTEMPT_STEMS+=("$2")
+            shift 2
+            ;;
+        --cmsis-sim-case)
+            if [[ $# -lt 2 ]]; then
+                usage
+                exit 2
+            fi
+            CMSIS_SIM_CASES+=("$2")
+            shift 2
             ;;
         --jobs)
             if [[ $# -lt 2 ]]; then
@@ -178,6 +198,12 @@ if [[ -z "${OUT_DIR}" ]]; then
     exit 2
 fi
 
+if [[ "${CMSIS_SIM_DEFAULT}" -eq 0 && -z "${SIM_EVIDENCE_DIR}" && ( ${#CMSIS_SIM_ATTEMPT_STEMS[@]} -gt 0 || ${#CMSIS_SIM_CASES[@]} -gt 0 ) ]]; then
+    echo "CMSIS sim selectors require --cmsis-sim-default or --sim-evidence-dir" >&2
+    usage
+    exit 2
+fi
+
 mkdir -p "${OUT_DIR}"
 CMSIS_DSP_DFG_DIR="${OUT_DIR}/cmsis-dsp-dfg"
 CMSIS_NN_DFG_DIR="${OUT_DIR}/cmsis-nn-dfg"
@@ -252,6 +278,60 @@ for case in cases:
             path.unlink()
         elif path.is_dir():
             shutil.rmtree(path)
+PY
+}
+
+clean_cmsis_sim_evidence() {
+    local evidence_dir="$1"
+    local comparison_dir="$2"
+    python3 - "${ROOT}" "${evidence_dir}" "${comparison_dir}" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+
+root = Path(sys.argv[1])
+evidence_dir = Path(sys.argv[2])
+comparison_dir = Path(sys.argv[3])
+sys.path.insert(0, str(root / "test" / "e2e"))
+import run_cmsis_dfg_sim_attempts as attempts  # noqa: E402
+
+evidence_dir.mkdir(parents=True, exist_ok=True)
+
+labels: set[str] = set()
+cases: set[str] = set()
+for attempt in attempts.ATTEMPTS:
+    cases.add(attempt.case)
+    for label in (attempt.stem, attempt.artifact_stem, attempt.aggregate_stem):
+        if label:
+            labels.add(label)
+
+suffixes = (
+    ".dfg.report.json",
+    ".mapping.csv",
+    ".mapping.json",
+    ".cgra.report.json",
+    ".lowered.dfg.mlir",
+)
+for label in labels:
+    for suffix in suffixes:
+        path = evidence_dir / f"{label}{suffix}"
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+for case in cases:
+    comparison = comparison_dir / f"{case}.sim-comparison-report.json"
+    if comparison.is_file() or comparison.is_symlink():
+        comparison.unlink()
+
+for directory in sorted(comparison_dir.glob("**/*"), reverse=True):
+    if directory.is_dir():
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
 PY
 }
 
@@ -352,10 +432,20 @@ if (( producer_failed != 0 )); then
 fi
 
 if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then
-    python3 "${ROOT}/test/e2e/run_cmsis_dfg_sim_attempts.py" \
-        --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}" \
-        --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}" \
+    clean_cmsis_sim_evidence "${STATUS_SIM_EVIDENCE_DIR}" "${OUT_DIR}/cgra-status-comparisons"
+    cmsis_sim_args=(
+        --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}"
+        --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}"
         --output-dir "${STATUS_SIM_EVIDENCE_DIR}"
+    )
+    for attempt_stem in "${CMSIS_SIM_ATTEMPT_STEMS[@]}"; do
+        cmsis_sim_args+=(--attempt-stem "${attempt_stem}")
+    done
+    for cmsis_case in "${CMSIS_SIM_CASES[@]}"; do
+        cmsis_sim_args+=(--case "${cmsis_case}")
+    done
+    python3 "${ROOT}/test/e2e/run_cmsis_dfg_sim_attempts.py" \
+        "${cmsis_sim_args[@]}"
 fi
 
 if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then

@@ -692,12 +692,78 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cmsis-dsp-dfg-dir", required=True)
     parser.add_argument("--cmsis-nn-dfg-dir", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--attempt-stem",
+        action="append",
+        default=[],
+        help=(
+            "run only attempts matching this artifact stem, input stem, or aggregate stem; "
+            "may be repeated"
+        ),
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        default=[],
+        help="run only attempts for this full CMSIS source row; may be repeated",
+    )
     parser.add_argument("--loom-dfg-sim")
     parser.add_argument("--loom-raise-opt")
     parser.add_argument("--loom-pnr-map")
     parser.add_argument("--loom-cgra-sim")
     parser.add_argument("--timeout-seconds", type=int, default=120)
     return parser.parse_args(argv)
+
+
+def attempt_matches_stem(attempt: Attempt, stem: str) -> bool:
+    return stem in {attempt.stem, attempt.artifact_stem, attempt.aggregate_stem}
+
+
+def select_attempts(args: argparse.Namespace) -> tuple[Attempt, ...]:
+    requested_stems = tuple(args.attempt_stem)
+    requested_cases = tuple(args.case)
+    blank_selectors = [
+        selector
+        for selector in (*requested_stems, *requested_cases)
+        if not selector.strip()
+    ]
+    if blank_selectors:
+        raise SystemExit("[cmsis-dfg-sim] CMSIS attempt selectors must not be blank")
+    if not requested_stems and not requested_cases:
+        return ATTEMPTS
+
+    selected: list[Attempt] = []
+    matched_stems: set[str] = set()
+    matched_cases: set[str] = set()
+    for attempt in ATTEMPTS:
+        include = False
+        for stem in requested_stems:
+            if attempt_matches_stem(attempt, stem):
+                include = True
+                matched_stems.add(stem)
+        for case in requested_cases:
+            if attempt.case == case:
+                include = True
+                matched_cases.add(case)
+        if include:
+            selected.append(attempt)
+
+    missing = [stem for stem in requested_stems if stem not in matched_stems]
+    missing.extend(case for case in requested_cases if case not in matched_cases)
+    if missing:
+        available = sorted(
+            {
+                label
+                for attempt in ATTEMPTS
+                for label in (attempt.stem, attempt.artifact_stem, attempt.aggregate_stem, attempt.case)
+                if label
+            }
+        )
+        raise SystemExit(
+            "[cmsis-dfg-sim] unknown CMSIS attempt selector(s): "
+            f"{', '.join(missing)}; available selectors include: {', '.join(available)}"
+        )
+    return tuple(selected)
 
 
 def resolve_tool(explicit: str | None, env_var: str, default: Path) -> Path:
@@ -976,6 +1042,7 @@ def run_aggregates(
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    selected_attempts = select_attempts(args)
     dfg_tool = resolve_tool(
         args.loom_dfg_sim,
         "LOOM_DFG_SIM",
@@ -998,10 +1065,11 @@ def main(argv: list[str]) -> int:
     )
     require_tool(dfg_tool, "loom-dfg-sim")
     require_tool(lower_tool, "loom-raise-opt")
-    require_tool(pnr_tool, "loom-pnr-map")
+    if any(attempt.hardware_mlir for attempt in selected_attempts):
+        require_tool(pnr_tool, "loom-pnr-map")
     output_dir = Path(args.output_dir)
     results: list[AttemptResult] = []
-    for attempt in ATTEMPTS:
+    for attempt in selected_attempts:
         results.append(
             run_attempt(dfg_tool, lower_tool, pnr_tool, cgra_tool, output_dir, args, attempt)
         )
