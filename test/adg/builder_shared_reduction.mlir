@@ -75,6 +75,7 @@
 // HARDWARE-DAG: fabric.op [@llvm.intr.abs]
 // HARDWARE-DAG: fabric.op [@llvm.intr.fabs]
 // HARDWARE-DAG: fabric.op [@llvm.intr.umax]
+// HARDWARE-DAG: fabric.op [@llvm.intr.umin]
 // HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.addf]
 // HARDWARE-DAG: fabric.op [@arith.subf]

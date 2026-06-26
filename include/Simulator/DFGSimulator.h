@@ -44,6 +44,9 @@ struct DFGSimulationReport {
   std::string operationSemanticsSource = kOperationSemanticsSource;
   std::string operationCostModelSource = kOperationCostModelSource;
   std::uint64_t optimisticCycles = 0;
+  std::uint64_t pipelineLatencyThroughputCycles = 0;
+  std::uint64_t operationMixCycles = 0;
+  std::uint64_t memoryAddressSetupCycles = 0;
   std::uint64_t wavefrontSteps = 0;
   std::uint64_t eventCount = 0;
   std::uint64_t dynamicWorkItems = 0;

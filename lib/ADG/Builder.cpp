@@ -1856,6 +1856,25 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
              {"selected"}});
   module.addPe(std::move(unsignedMinMaxPe));
 
+  PeSpec unsignedMinPe;
+  unsignedMinPe.inputs = {{"pa", "minmax_lhs", "!fabric.bits<32>", ""},
+                          {"pb", "minmax_rhs", "!fabric.bits<32>", ""}};
+  unsignedMinPe.resultNames = {"unsigned_min"};
+  unsignedMinPe.resultTypes = {"!fabric.bits<32>"};
+  unsignedMinPe.fus.push_back(
+      FuSpec{{{"lhs", "pa", "!fabric.bits<32>", ""},
+              {"rhs", "pb", "!fabric.bits<32>", ""}},
+             {"!fabric.bits<32>"},
+             {FabricOpSpec{{"selected"},
+                           {"llvm.intr.umin"},
+                           {"lhs", "rhs"},
+                           {"!fabric.bits<32>", "!fabric.bits<32>"},
+                           {"!fabric.bits<32>"},
+                           {},
+                           {}}},
+             {"selected"}});
+  module.addPe(std::move(unsignedMinPe));
+
   auto makeUnary32YieldFu = [](std::string resultName, std::string opName) {
     std::string yieldName = resultName;
     return FuSpec{{{"value", "pa", "!fabric.bits<32>", ""}},
@@ -1988,23 +2007,41 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                   {"arith.muli"});
   addWideBinaryPe("wide_remainder", "wide_rem_lhs", "wide_rem_rhs",
                   {"arith.divui", "arith.remui"});
+  addWideBinaryPe("wide_sum", "wide_add_lhs", "wide_add_rhs",
+                  {"arith.addi", "arith.subi"});
+  addWideBinaryPe("wide_sum_aux", "wide_add_aux_lhs", "wide_add_aux_rhs",
+                  {"arith.addi", "arith.subi"});
+  addWideBinaryPe("wide_shifted", "wide_shift_lhs", "wide_shift_rhs",
+                  {"arith.shli"});
 
-  PeSpec wideTruncPe;
-  wideTruncPe.inputs = {{"pa", "wide_trunc_input", "!fabric.bits<64>", ""}};
-  wideTruncPe.resultNames = {"wide_truncated_wide"};
-  wideTruncPe.resultTypes = {"!fabric.bits<64>"};
-  wideTruncPe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<64>", ""}},
-                                   {"!fabric.bits<64>"},
-                                   {FabricOpSpec{{"narrow"},
-                                                 {"llvm.trunc"},
-                                                 {"value"},
-                                                 {"!fabric.bits<64>"},
-                                                 {"!fabric.bits<32>"},
-                                                 {},
-                                                 {}}},
-                                   {"narrow"},
-                                   {"!fabric.bits<32>"}});
-  module.addPe(std::move(wideTruncPe));
+  auto addWideTruncPe = [&](std::string resultName, std::string inputName) {
+    PeSpec pe;
+    pe.inputs = {{"pa", std::move(inputName), "!fabric.bits<64>", ""}};
+    pe.resultNames = {std::move(resultName)};
+    pe.resultTypes = {"!fabric.bits<64>"};
+    pe.fus.push_back(FuSpec{{{"value", "pa", "!fabric.bits<64>", ""}},
+                            {"!fabric.bits<64>"},
+                            {FabricOpSpec{{"narrow"},
+                                          {"llvm.trunc"},
+                                          {"value"},
+                                          {"!fabric.bits<64>"},
+                                          {"!fabric.bits<32>"},
+                                          {},
+                                          {}}},
+                            {"narrow"},
+                            {"!fabric.bits<32>"}});
+    module.addPe(std::move(pe));
+  };
+  addWideTruncPe("wide_truncated_wide", "wide_trunc_input");
+  addWideTruncPe("wide_truncated_aux_wide", "wide_trunc_aux_input");
+  module.addExactBodyLine(
+      "%wide_truncated = fabric.fifo %wide_truncated_wide "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%wide_truncated_aux = fabric.fifo %wide_truncated_aux_wide "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
 
   addUnary32YieldPe("fp", "llvm.uitofp");
   addUnary32YieldPe("fp_negated", "llvm.fneg", "fp_negated_input");
@@ -2398,7 +2435,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                               "cast1_result",
                                               "cast2_result",
                                               "cast3_result",
-                                              "int_extui"});
+                                              "int_extui",
+                                              "wide_truncated",
+                                              "wide_truncated_aux"});
   addSingleResultBits32Switch(
       "int_add_rhs",
       {"i32b", "data0", "data1", "fp_invariant", "idx", "reduction_scale",
@@ -2457,7 +2496,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                        "bit_invariant_aux0", "bit_invariant_aux1",
                        "aux_invariant0", "aux_invariant1", "aux_invariant2"});
   addSingleResultBits32Switch(
-      "int_or_lhs", {"i32a", "logic_masked", "data0", "data1", "addr_shifted"});
+      "int_or_lhs",
+      {"i32a", "logic_masked", "data0", "data1", "addr_shifted", "selected"});
   addSingleResultBits32Switch("int_or_rhs",
                               {"i32b", "logic_masked", "data0", "data1"});
   addSingleResultBits32Switch(
@@ -2539,7 +2579,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch(
       "select_false", {"i32c", "rotated", "data0", "data1", "carried_scan",
                        "bit_carry", "addr_shift_const", "addr_aux_const",
-                       "addr_bias_const", "aux_xor", "running"});
+                       "addr_bias_const", "aux_xor", "running",
+                       "addr_shifted"});
   addSingleResultBits32Switch(
       "gate_cond", {"aux_rwc", "logic_masked", "addr_masked", "cmpi_pred",
                     "cmpi_pred_aux", "cmpf_pred", "fp_gate", "i32a"});
@@ -2630,7 +2671,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits32Switch(
       "wide_zext0_input",
       {"data0", "data1", "i32a", "cast0_result", "cast1_result",
-       "unsigned_minmax"});
+       "unsigned_minmax", "unsigned_min"});
   addSingleResultBits32Switch(
       "wide_zext1_input",
       {"data1", "data0", "i32b", "cast0_result", "cast1_result"});
@@ -2643,17 +2684,44 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits64Switch(
       "wide_rem_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
   addSingleResultBits64Switch(
+      "wide_add_lhs",
+      {"i64a", "i64b", "i64c", "wide_shifted", "wide_zext0", "wide_zext1",
+       "wide_product", "wide_remainder"});
+  addSingleResultBits64Switch(
+      "wide_add_rhs",
+      {"i64a", "i64b", "i64c", "wide_shifted", "wide_zext0", "wide_zext1",
+       "wide_product", "wide_remainder"});
+  addSingleResultBits64Switch(
+      "wide_add_aux_lhs",
+      {"i64a", "i64b", "i64c", "wide_shifted", "wide_sum", "wide_zext0",
+       "wide_zext1", "wide_product", "wide_remainder"});
+  addSingleResultBits64Switch(
+      "wide_add_aux_rhs",
+      {"i64a", "i64b", "i64c", "wide_shifted", "wide_sum", "wide_zext0",
+       "wide_zext1", "wide_product", "wide_remainder"});
+  addSingleResultBits64Switch(
+      "wide_shift_lhs",
+      {"i64a", "i64b", "i64c", "wide_sum", "wide_sum_aux", "wide_zext0",
+       "wide_zext1", "wide_product", "wide_remainder"});
+  addSingleResultBits64Switch("wide_shift_rhs",
+                              {"i64a", "i64b", "i64c", "wide_zext0",
+                               "wide_zext1"});
+  addSingleResultBits64Switch(
       "wide_trunc_input",
       {"wide_remainder", "wide_product", "wide_zext0", "wide_zext1",
-       "wide_pred_extui"});
+       "wide_pred_extui", "wide_shifted", "wide_sum", "wide_sum_aux"});
+  addSingleResultBits64Switch(
+      "wide_trunc_aux_input",
+      {"wide_sum", "wide_sum_aux", "wide_shifted", "wide_remainder",
+       "wide_product", "wide_zext0", "wide_zext1", "wide_pred_extui"});
   addSingleResultBits64Switch(
       "cmp64_lhs",
       {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1", "wide_product",
-       "wide_remainder"});
+       "wide_remainder", "wide_shifted"});
   addSingleResultBits64Switch(
       "cmp64_rhs",
       {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1", "wide_product",
-       "wide_remainder"});
+       "wide_remainder", "wide_shifted"});
   addSingleResultBits32Switch("fp_negated_input",
                               {"data0", "data1", "data2", "data3", "data4",
                                "data5", "fp_running", "fp_running_aux",
@@ -2665,10 +2733,6 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        "aux_active_idx", "data0", "data1", "int_extui", "addr_shift_const",
        "addr_aux_const", "addr_bias_const", "addr_extra_const0",
        "addr_extra_const1"});
-  module.addExactBodyLine(
-      "%wide_truncated = fabric.fifo %wide_truncated_wide "
-      "[max_depth = 1, bypassable = true] {bypassed = true}");
-  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
   addSingleResultBits32Switch("store0_value", {"scan_store_value",
                                                "fp_running",
                                                "fp_running_aux",
@@ -2687,6 +2751,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                                "rotated",
                                                "addr_masked",
                                                "logic_masked",
+                                               "int_or",
                                                "int_xor",
                                                "packed_sat",
                                                "cast0_result",
@@ -2792,7 +2857,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"i32b", "addr_shifted", "reduction_scale", "addr_shift_const",
        "addr_aux_const", "addr_bias_const", "bit_invariant",
        "bit_invariant_aux0", "bit_invariant_aux1", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2"});
+       "aux_invariant1", "aux_invariant2", "wide_truncated",
+       "wide_truncated_aux"});
   addSingleResultBits32Switch(
       "addr_shift_lhs", {"i32a", "carried_scan", "idx", "bit_carry",
                          "state_carry", "selected", "aux_masked", "aux_xor"});
@@ -2801,7 +2867,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       {"i32b", "reduction_scale", "bit_invariant", "bit_invariant_aux0",
        "bit_invariant_aux1", "addr_shift_const", "addr_aux_const",
        "addr_bias_const", "aux_masked", "aux_xor", "aux_invariant0",
-       "aux_invariant1", "aux_invariant2"});
+       "aux_invariant1", "aux_invariant2", "wide_truncated",
+       "wide_truncated_aux"});
   addSingleResultBits32Switch("load0_addr", {"idx",
                                              "addr_masked",
                                              "addr_shifted",

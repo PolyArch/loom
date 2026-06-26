@@ -105,6 +105,17 @@ CGRA_FUNCTIONAL_STATE_SOURCES = {
     "carried_from_dfg_sim_report",
     "component_cgra_sim_reports_carried_from_dfg_sim_reports",
 }
+CGRA_DELTA_COMPONENT_KEYS = (
+    "route_latency_cycles",
+    "memory_latency_cycles",
+    "width_adapter_latency_cycles",
+    "functional_unit_latency_cycles",
+    "resource_mix_latency_cycles",
+    "load_address_latency_cycles",
+    "store_address_latency_cycles",
+    "config_load_latency_cycles",
+    "temporal_penalty_cycles",
+)
 ARTIFACT_EDGE_PAIRS = (
     ("old-app-corpus-inventory", "app-corpus-import-status"),
     ("app-corpus-import-status", "source-compat-summary"),
@@ -625,6 +636,10 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "operation_semantics_source",
             "operation_cost_model_source",
             "optimistic_cycles",
+            "pipeline_latency_throughput_cycles",
+            "operation_mix_cycles",
+            "memory_address_setup_cycles",
+            "cycle_breakdown",
             "wavefront_steps",
             "event_count",
             "dynamic_work_items",
@@ -652,9 +667,7 @@ JSON_SCHEMAS: dict[str, dict[str, object]] = {
             "dfg_cycles",
             "modeled_lower_bound_cycles",
             "performance_delta_cycles",
-            "route_latency_cycles",
-            "memory_latency_cycles",
-            "temporal_penalty_cycles",
+            *CGRA_DELTA_COMPONENT_KEYS,
             "hardware_aware_cycles",
             "cycle_breakdown",
             "unmodeled_constraints",
@@ -6090,6 +6103,43 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         cycles = data.get("optimistic_cycles")
         if not isinstance(cycles, int) or cycles < 0:
             diagnostics.append("DFG simulator report optimistic_cycles must be non-negative integer")
+        pipeline_cycles = data.get("pipeline_latency_throughput_cycles")
+        if not isinstance(pipeline_cycles, int) or pipeline_cycles < 0:
+            diagnostics.append(
+                "DFG simulator report pipeline_latency_throughput_cycles must be non-negative integer"
+            )
+        operation_mix_cycles = data.get("operation_mix_cycles")
+        if not isinstance(operation_mix_cycles, int) or operation_mix_cycles < 0:
+            diagnostics.append("DFG simulator report operation_mix_cycles must be non-negative integer")
+        memory_address_setup_cycles = data.get("memory_address_setup_cycles")
+        if not isinstance(memory_address_setup_cycles, int) or memory_address_setup_cycles < 0:
+            diagnostics.append(
+                "DFG simulator report memory_address_setup_cycles must be non-negative integer"
+            )
+        cycle_breakdown = data.get("cycle_breakdown")
+        if not isinstance(cycle_breakdown, list):
+            diagnostics.append("DFG simulator report cycle_breakdown must be a list")
+        else:
+            breakdown_sum = 0
+            for entry in cycle_breakdown:
+                if not isinstance(entry, dict):
+                    diagnostics.append("DFG simulator report cycle_breakdown entries must be objects")
+                    continue
+                if not isinstance(entry.get("category"), str) or not entry.get("category"):
+                    diagnostics.append("DFG simulator report cycle_breakdown entry needs category")
+                entry_cycles = entry.get("cycles")
+                if not isinstance(entry_cycles, int) or entry_cycles < 0:
+                    diagnostics.append(
+                        "DFG simulator report cycle_breakdown cycles must be non-negative integers"
+                    )
+                else:
+                    breakdown_sum += entry_cycles
+                if not isinstance(entry.get("evidence"), str) or not entry.get("evidence"):
+                    diagnostics.append("DFG simulator report cycle_breakdown entry needs evidence")
+                if entry.get("modeled") is not True:
+                    diagnostics.append("DFG simulator report cycle_breakdown entry must be modeled")
+            if isinstance(cycles, int) and breakdown_sum != cycles:
+                diagnostics.append("DFG simulator report cycle_breakdown does not sum to optimistic_cycles")
         event_count = data.get("event_count")
         if not isinstance(event_count, int) or event_count < 0:
             diagnostics.append("DFG simulator report event_count must be non-negative integer")
@@ -6148,7 +6198,15 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 declared_graphs = set(aggregate_component_identities(data, "component_graphs"))
                 if declared_graphs and declared_graphs != component_graphs:
                     diagnostics.append("DFG simulator aggregate component_graphs do not match components")
-                for key in ("optimistic_cycles", "wavefront_steps", "event_count", "dynamic_work_items"):
+                for key in (
+                    "optimistic_cycles",
+                    "pipeline_latency_throughput_cycles",
+                    "operation_mix_cycles",
+                    "memory_address_setup_cycles",
+                    "wavefront_steps",
+                    "event_count",
+                    "dynamic_work_items",
+                ):
                     value = data.get(key)
                     component_sum = sum(
                         int(component[key])
@@ -6184,9 +6242,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         hardware_cycles = data.get("hardware_aware_cycles")
         lower_bound = data.get("modeled_lower_bound_cycles")
         delta = data.get("performance_delta_cycles")
-        route_cycles = data.get("route_latency_cycles")
-        memory_cycles = data.get("memory_latency_cycles")
-        temporal_cycles = data.get("temporal_penalty_cycles")
+        delta_components = {key: data.get(key) for key in CGRA_DELTA_COMPONENT_KEYS}
         if not isinstance(dfg_cycles, int) or dfg_cycles < 0:
             diagnostics.append("CGRA simulator report dfg_cycles must be non-negative integer")
         if not isinstance(hardware_cycles, int) or hardware_cycles < 0:
@@ -6195,12 +6251,9 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
             diagnostics.append("CGRA simulator report modeled_lower_bound_cycles must be non-negative integer")
         if not isinstance(delta, int) or delta < 0:
             diagnostics.append("CGRA simulator report performance_delta_cycles must be non-negative integer")
-        if not isinstance(route_cycles, int) or route_cycles < 0:
-            diagnostics.append("CGRA simulator report route_latency_cycles must be non-negative integer")
-        if not isinstance(memory_cycles, int) or memory_cycles < 0:
-            diagnostics.append("CGRA simulator report memory_latency_cycles must be non-negative integer")
-        if not isinstance(temporal_cycles, int) or temporal_cycles < 0:
-            diagnostics.append("CGRA simulator report temporal_penalty_cycles must be non-negative integer")
+        for key, value in delta_components.items():
+            if not isinstance(value, int) or value < 0:
+                diagnostics.append(f"CGRA simulator report {key} must be non-negative integer")
         if isinstance(dfg_cycles, int) and isinstance(hardware_cycles, int) and hardware_cycles < dfg_cycles:
             diagnostics.append("CGRA simulator report is more optimistic than DFG-sim")
         if isinstance(lower_bound, int) and isinstance(hardware_cycles, int) and hardware_cycles < lower_bound:
@@ -6215,12 +6268,11 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 diagnostics.append("CGRA simulator positive-delta report needs hardware-constraint classification")
             if report_status != "pass" and difference != "unsupported_scope":
                 diagnostics.append("blocked CGRA simulator report needs unsupported_scope difference classification")
-        if all(
-            isinstance(value, int)
-            for value in (route_cycles, memory_cycles, temporal_cycles, delta)
-        ):
-            if route_cycles + memory_cycles + temporal_cycles != delta:
-                diagnostics.append("CGRA simulator report delta is not explained by route, memory, and temporal cycles")
+        if all(isinstance(value, int) for value in (*delta_components.values(), delta)):
+            if sum(delta_components.values()) != delta:
+                diagnostics.append(
+                    "CGRA simulator report delta is not explained by route, memory, width-adapter, functional-unit, resource-mix, load-address, store-address, configuration-load, and temporal cycles"
+                )
         breakdown = data.get("cycle_breakdown")
         if not isinstance(breakdown, list) or not breakdown:
             diagnostics.append("CGRA simulator report needs non-empty cycle_breakdown")
@@ -6289,9 +6341,7 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
                 for key in (
                     "dfg_cycles",
                     "hardware_aware_cycles",
-                    "route_latency_cycles",
-                    "memory_latency_cycles",
-                    "temporal_penalty_cycles",
+                    *CGRA_DELTA_COMPONENT_KEYS,
                     "performance_delta_cycles",
                     "route_segments",
                     "config_records",
@@ -8172,20 +8222,47 @@ def aggregate_dfg_equivalence_signature(
 
 def aggregate_cgra_equivalence_signature(
     reports: list[dict[str, object]],
-) -> tuple[int, int, int | None, int | None] | None:
+) -> tuple[int, int, int, int, int, int, int, int, int | None, int | None] | None:
     if not reports:
         return None
     route_segments = 0
     memory_latency_cycles = 0
+    width_adapter_latency_cycles = 0
+    functional_unit_latency_cycles = 0
+    resource_mix_latency_cycles = 0
+    load_address_latency_cycles = 0
+    store_address_latency_cycles = 0
+    config_load_latency_cycles = 0
     route_latency_cycles: int | None = 0
     temporal_penalty_cycles: int | None = 0
     for report in reports:
         segments = report.get("route_segments")
         memory = report.get("memory_latency_cycles")
-        if not isinstance(segments, int) or not isinstance(memory, int):
+        width_adapter = report.get("width_adapter_latency_cycles")
+        functional_unit = report.get("functional_unit_latency_cycles")
+        resource_mix = report.get("resource_mix_latency_cycles")
+        load_address = report.get("load_address_latency_cycles")
+        store_address = report.get("store_address_latency_cycles")
+        config_load = report.get("config_load_latency_cycles")
+        if (
+            not isinstance(segments, int)
+            or not isinstance(memory, int)
+            or not isinstance(width_adapter, int)
+            or not isinstance(functional_unit, int)
+            or not isinstance(resource_mix, int)
+            or not isinstance(load_address, int)
+            or not isinstance(store_address, int)
+            or not isinstance(config_load, int)
+        ):
             return None
         route_segments += segments
         memory_latency_cycles += memory
+        width_adapter_latency_cycles += width_adapter
+        functional_unit_latency_cycles += functional_unit
+        resource_mix_latency_cycles += resource_mix
+        load_address_latency_cycles += load_address
+        store_address_latency_cycles += store_address
+        config_load_latency_cycles += config_load
         route_latency = report.get("route_latency_cycles")
         if isinstance(route_latency, int) and route_latency_cycles is not None:
             route_latency_cycles += route_latency
@@ -8199,6 +8276,12 @@ def aggregate_cgra_equivalence_signature(
     return (
         route_segments,
         memory_latency_cycles,
+        width_adapter_latency_cycles,
+        functional_unit_latency_cycles,
+        resource_mix_latency_cycles,
+        load_address_latency_cycles,
+        store_address_latency_cycles,
+        config_load_latency_cycles,
         route_latency_cycles,
         temporal_penalty_cycles,
     )

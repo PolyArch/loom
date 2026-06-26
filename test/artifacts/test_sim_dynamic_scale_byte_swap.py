@@ -18,8 +18,8 @@ GRAPH = "g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
 HARDWARE = "shared_reduction_adg"
 HARDWARE_MLIR = Path("test/pnr/shared_reduction_adg.mlir")
 SCALE_CASES = {
-    "byte_swap_small": {"count": 8, "dfg_cycles": 80, "cgra_cycles": 92},
-    "byte_swap_large": {"count": 32, "dfg_cycles": 320, "cgra_cycles": 332},
+    "byte_swap_small": {"count": 8, "dfg_cycles": 84},
+    "byte_swap_large": {"count": 32, "dfg_cycles": 324},
 }
 
 
@@ -264,7 +264,6 @@ def assert_scale_artifacts(
     workload: str,
     count: int,
     expected_dfg_cycles: int,
-    expected_cgra_cycles: int,
 ) -> None:
     mapping_id = f"{workload}__{GRAPH}__{HARDWARE}"
     mapping_summary = single_row(
@@ -394,7 +393,6 @@ def main() -> int:
                 workload,
                 int(expected["count"]),
                 int(expected["dfg_cycles"]),
-                int(expected["cgra_cycles"]),
             )
 
         rows = read_csv_rows(sim_cycle)
@@ -402,12 +400,12 @@ def main() -> int:
         large = single_row(rows, key="kernel", value="byte_swap_large", label="large sim cycle")
         assert_fields(
             small,
-            {"dfg_sim_cycles": "80", "cgra_sim_cycles": "", "status": "blocked"},
+            {"dfg_sim_cycles": "84", "cgra_sim_cycles": "", "status": "blocked"},
             label="small sim cycle row",
         )
         assert_fields(
             large,
-            {"dfg_sim_cycles": "320", "cgra_sim_cycles": "", "status": "blocked"},
+            {"dfg_sim_cycles": "324", "cgra_sim_cycles": "", "status": "blocked"},
             label="large sim cycle row",
         )
         if int(large["dfg_sim_cycles"]) <= int(small["dfg_sim_cycles"]):

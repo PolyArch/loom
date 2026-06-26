@@ -218,9 +218,36 @@ def aggregate_dfg(
         "operation_semantics_source": same_string(dfg_reports, "operation_semantics_source"),
         "operation_cost_model_source": same_string(dfg_reports, "operation_cost_model_source"),
         "optimistic_cycles": sum_int(dfg_reports, "optimistic_cycles"),
+        "pipeline_latency_throughput_cycles": sum_int(
+            dfg_reports, "pipeline_latency_throughput_cycles"
+        ),
         "wavefront_steps": sum_int(dfg_reports, "wavefront_steps"),
         "event_count": sum_int(dfg_reports, "event_count"),
         "dynamic_work_items": sum_int(dfg_reports, "dynamic_work_items"),
+        "operation_mix_cycles": sum_int(dfg_reports, "operation_mix_cycles"),
+        "memory_address_setup_cycles": sum_int(
+            dfg_reports, "memory_address_setup_cycles"
+        ),
+        "cycle_breakdown": [
+            {
+                "category": "pipeline_latency_throughput",
+                "cycles": sum_int(dfg_reports, "pipeline_latency_throughput_cycles"),
+                "evidence": "component DFG simulator reports",
+                "modeled": True,
+            },
+            {
+                "category": "operation_mix",
+                "cycles": sum_int(dfg_reports, "operation_mix_cycles"),
+                "evidence": "component DFG simulator reports",
+                "modeled": True,
+            },
+            {
+                "category": "memory_address_setup",
+                "cycles": sum_int(dfg_reports, "memory_address_setup_cycles"),
+                "evidence": "component DFG simulator reports",
+                "modeled": True,
+            },
+        ],
         "operation_fire_counts": merge_counts(dfg_reports, "operation_fire_counts"),
         "final_outputs": final_outputs,
         "final_memory_state": final_memory_state,
@@ -403,6 +430,24 @@ def aggregate_cgra(
         "performance_delta_cycles": performance_delta,
         "route_latency_cycles": sum_int(cgra_reports, "route_latency_cycles"),
         "memory_latency_cycles": sum_int(cgra_reports, "memory_latency_cycles"),
+        "width_adapter_latency_cycles": sum_int(
+            cgra_reports, "width_adapter_latency_cycles"
+        ),
+        "functional_unit_latency_cycles": sum_int(
+            cgra_reports, "functional_unit_latency_cycles"
+        ),
+        "resource_mix_latency_cycles": sum_int(
+            cgra_reports, "resource_mix_latency_cycles"
+        ),
+        "load_address_latency_cycles": sum_int(
+            cgra_reports, "load_address_latency_cycles"
+        ),
+        "store_address_latency_cycles": sum_int(
+            cgra_reports, "store_address_latency_cycles"
+        ),
+        "config_load_latency_cycles": sum_int(
+            cgra_reports, "config_load_latency_cycles"
+        ),
         "temporal_penalty_cycles": sum_int(cgra_reports, "temporal_penalty_cycles"),
         "hardware_aware_cycles": hardware_aware_cycles,
         "cycle_breakdown": aggregate_cycle_breakdown(cgra_reports),

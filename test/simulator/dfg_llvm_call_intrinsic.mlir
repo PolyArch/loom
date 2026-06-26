@@ -10,7 +10,7 @@
 // QSUB16-DAG: "workload": "arm_qsub16"
 // QSUB16-DAG: "graph": "arm_qsub16"
 // QSUB16-DAG: "status": "pass"
-// QSUB16-DAG: "optimistic_cycles": 3
+// QSUB16-DAG: "optimistic_cycles": 5
 // QSUB16-DAG: "event_count": 3
 // QSUB16-DAG: "llvm.arm.qsub16": 1
 // QSUB16-DAG: "i32:-1"

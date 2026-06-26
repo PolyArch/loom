@@ -42,6 +42,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "merge",
     "modmul",
     "newton_iter",
+    "pack_bits",
     "partition",
     "prefix_sum",
     "prefix_sum_exclusive",

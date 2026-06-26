@@ -141,7 +141,7 @@ def main() -> int:
         dfg_report = read_json_object(out_dir / "xor_block-dfg-sim-report.json")
         if dfg_report.get("status") != "pass" or dfg_report.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block DFG-sim report: {dfg_report}")
-        if dfg_report.get("optimistic_cycles") != 448 or dfg_report.get("dynamic_work_items") != 32:
+        if dfg_report.get("optimistic_cycles") != 452 or dfg_report.get("dynamic_work_items") != 32:
             raise AssertionError(f"unexpected xor_block DFG-sim cycles: {dfg_report}")
         fire_counts = dfg_report.get("operation_fire_counts", {})
         if not isinstance(fire_counts, dict):
@@ -159,7 +159,7 @@ def main() -> int:
             raise AssertionError(f"unexpected xor_block CGRA-sim report: {cgra_report}")
         if cgra_report.get("mapping_id") != MAPPING_ID or cgra_report.get("hardware") != HARDWARE:
             raise AssertionError(f"unexpected xor_block CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("hardware_aware_cycles") != 480:
+        if cgra_report.get("hardware_aware_cycles") != 491:
             raise AssertionError(f"unexpected xor_block CGRA-sim cycles: {cgra_report}")
         if cgra_report.get("route_segments") != 20:
             raise AssertionError(f"unexpected xor_block route segment count: {cgra_report}")
@@ -176,16 +176,16 @@ def main() -> int:
         )
         assert_fields(
             sim_row,
-            {"dfg_sim_cycles": "448", "cgra_sim_cycles": "480", "status": "pass"},
+            {"dfg_sim_cycles": "452", "cgra_sim_cycles": "491", "status": "pass"},
             label="xor_block sim row",
         )
-        if int(sim_row["dfg_sim_cycles"]) in {579, 1027}:
+        if int(sim_row["dfg_sim_cycles"]) in {649, 1417}:
             raise AssertionError(f"xor_block cycles should differ from existing vecsum/dotproduct evidence: {sim_row}")
 
         comparison = read_json_object(out_dir / "sim-comparison-report.json")
         if comparison.get("status") != "pass" or comparison.get("workload") != WORKLOAD:
             raise AssertionError(f"unexpected xor_block comparison report: {comparison}")
-        if comparison.get("dfg_sim_cycles") != 448 or comparison.get("cgra_sim_cycles") != 480:
+        if comparison.get("dfg_sim_cycles") != 452 or comparison.get("cgra_sim_cycles") != 491:
             raise AssertionError(f"comparison should preserve xor_block cycles: {comparison}")
         if comparison.get("difference_classification") != "expected_hardware_constraint":
             raise AssertionError(f"comparison should classify mapped hardware evidence: {comparison}")
@@ -227,11 +227,11 @@ def main() -> int:
             xor_dse,
             {
                 "mapping_id": MAPPING_ID,
-                "cgra_sim_cycles": "480",
+                "cgra_sim_cycles": "491",
                 "frequency_mhz": "390.000",
                 "area_um2": "3750.000",
                 "dynamic_power_mw": "3.200",
-                "energy_nj": "4.523",
+                "energy_nj": "4.627",
                 "selection_status": "selected",
             },
             label="xor_block DSE",

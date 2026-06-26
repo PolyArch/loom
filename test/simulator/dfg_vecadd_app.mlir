@@ -10,7 +10,7 @@
 // REPORT-DAG: "graph": "g_t_vecadd_0_0"
 // REPORT-DAG: "status": "pass"
 // REPORT-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// REPORT-DAG: "optimistic_cycles": 960
+// REPORT-DAG: "optimistic_cycles": 964
 // REPORT-DAG: "wavefront_steps": 67
 // REPORT-DAG: "event_count": 320
 // REPORT-DAG: "none"
@@ -19,8 +19,8 @@
 // REDUCTION-DAG: "workload": "vecadd"
 // REDUCTION-DAG: "graph": "g_t_main_red_0_0"
 // REDUCTION-DAG: "status": "pass"
-// REDUCTION-DAG: "optimistic_cycles": 643
+// REDUCTION-DAG: "optimistic_cycles": 713
 // REDUCTION-DAG: "f32:3024"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY: vecadd,1603,,blocked,DFG-sim report available
+// SUMMARY: vecadd,1677,,blocked,DFG-sim report available

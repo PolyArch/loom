@@ -35,10 +35,18 @@ namespace {
 
 constexpr std::uint64_t kRouteLatencyPerSegment = 1;
 constexpr std::uint64_t kMemoryLatencyPerAccess = 4;
+constexpr std::uint64_t kStoreCommitLatencyPerPlacement = 3;
+constexpr std::uint64_t kWidthAdapterLatencyPerPlacement = 1;
+constexpr std::uint64_t kFunctionalUnitLatencyPerPlacement = 1;
+constexpr std::uint64_t kLoadAddressLatencyPerRoute = 1;
+constexpr std::uint64_t kStoreAddressLatencyPerRoute = 2;
+constexpr std::uint64_t kConfigRecordsPerIssuePage = 128;
 
 struct RouteStats {
   std::uint64_t routeCount = 0;
   std::uint64_t segmentCount = 0;
+  std::uint64_t computedLoadAddressRoutes = 0;
+  std::uint64_t computedStoreAddressRoutes = 0;
 };
 
 struct ConfigEntries {
@@ -1103,11 +1111,6 @@ validateMappingConfigFingerprint(const llvm::json::Object &mapping,
   return llvm::Error::success();
 }
 
-bool isMemPlacement(llvm::StringRef resourceKind) {
-  return resourceKind == "fabric.mem.load" ||
-         resourceKind == "fabric.mem.store";
-}
-
 bool isSupportedResourceKind(llvm::StringRef resourceKind) {
   return resourceKind == "fabric.op" || resourceKind == "fabric.mem.load" ||
          resourceKind == "fabric.mem.store";
@@ -1115,6 +1118,29 @@ bool isSupportedResourceKind(llvm::StringRef resourceKind) {
 
 bool isSupportedSchedule(llvm::StringRef schedule) {
   return schedule == "spatial" || schedule == "temporal";
+}
+
+bool isWidthAdapterOperation(llvm::StringRef operation) {
+  return operation == "llvm.trunc" || operation == "llvm.zext";
+}
+
+bool isComputedStoreAddressEdge(llvm::StringRef edgeRef) {
+  return edgeRef.contains("->dataflow.store#") &&
+         edgeRef.contains(".operand1");
+}
+
+bool isComputedLoadAddressEdge(llvm::StringRef edgeRef) {
+  return edgeRef.contains("->dataflow.load#") &&
+         edgeRef.contains(".operand1") &&
+         !edgeRef.starts_with("dataflow.stream#");
+}
+
+bool hasFunctionalUnitLatency(llvm::StringRef operation) {
+  return operation == "arith.muli" || operation == "arith.mulf" ||
+         operation == "arith.divsi" || operation == "arith.divui" ||
+         operation == "arith.divf" || operation == "arith.remsi" ||
+         operation == "arith.remui" || operation == "arith.remf" ||
+         operation == "llvm.intr.fmuladd";
 }
 
 llvm::StringRef differenceClassification(const CGRASimReport &report) {
@@ -1178,6 +1204,8 @@ llvm::Error collectConfigEntries(const llvm::json::Object &mapping,
         static_cast<unsigned long long>(*declaredRecordsOrErr),
         static_cast<unsigned long long>(configArray->size()));
   report.configRecords = configArray->size();
+  report.configLoadLatencyCycles =
+      report.configRecords / kConfigRecordsPerIssuePage;
   for (const llvm::json::Value &value : *configArray) {
     const llvm::json::Object *entry = value.getAsObject();
     if (!entry)
@@ -1223,7 +1251,11 @@ llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
     return llvm::createStringError(std::errc::invalid_argument,
                                    "mapping artifact lacks placements");
   report.placedRecords = placements->size();
-  std::uint64_t memPlacements = 0;
+  std::uint64_t loadPlacements = 0;
+  std::uint64_t storePlacements = 0;
+  std::uint64_t widthAdapterPlacements = 0;
+  std::uint64_t functionalUnitPlacements = 0;
+  std::set<std::string> placedOperationKinds;
   for (const llvm::json::Value &value : *placements) {
     const llvm::json::Object *placement = value.getAsObject();
     if (!placement)
@@ -1256,10 +1288,27 @@ llvm::Error collectPlacementStats(const llvm::json::Object &mapping,
                                      "supported by operation semantics",
                                      operation ? operation->str().c_str()
                                                : "<missing>");
-    if (isMemPlacement(*resourceKind))
-      ++memPlacements;
+    if (*resourceKind == "fabric.op" && operation &&
+        isWidthAdapterOperation(*operation))
+      ++widthAdapterPlacements;
+    if (*resourceKind == "fabric.op" && operation &&
+        hasFunctionalUnitLatency(*operation))
+      ++functionalUnitPlacements;
+    if (operation && !operation->empty())
+      placedOperationKinds.insert(operation->str());
+    if (*resourceKind == "fabric.mem.load")
+      ++loadPlacements;
+    if (*resourceKind == "fabric.mem.store")
+      ++storePlacements;
   }
-  report.memoryLatencyCycles = memPlacements * kMemoryLatencyPerAccess;
+  report.memoryLatencyCycles =
+      (loadPlacements + storePlacements) * kMemoryLatencyPerAccess +
+      storePlacements * kStoreCommitLatencyPerPlacement;
+  report.widthAdapterLatencyCycles =
+      widthAdapterPlacements * kWidthAdapterLatencyPerPlacement;
+  report.functionalUnitLatencyCycles =
+      functionalUnitPlacements * kFunctionalUnitLatencyPerPlacement;
+  report.resourceMixLatencyCycles = placedOperationKinds.size();
   report.temporalPenaltyCycles =
       report.temporalPlacements == 0
           ? 0
@@ -1291,6 +1340,14 @@ collectRouteStats(const llvm::json::Object &mapping,
     if (!route)
       return llvm::createStringError(std::errc::invalid_argument,
                                      "mapping route is not an object");
+    auto edgeRefOrErr =
+        requireObjectString(*route, "edge_ref", "mapping route");
+    if (!edgeRefOrErr)
+      return edgeRefOrErr.takeError();
+    if (isComputedLoadAddressEdge(*edgeRefOrErr))
+      ++stats.computedLoadAddressRoutes;
+    if (isComputedStoreAddressEdge(*edgeRefOrErr))
+      ++stats.computedStoreAddressRoutes;
     const llvm::json::Array *segments = route->getArray("segments");
     if (!segments || segments->empty())
       return llvm::createStringError(std::errc::invalid_argument,
@@ -1546,6 +1603,12 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
       return std::move(err);
     report.memoryLatencyCycles = 0;
+    report.widthAdapterLatencyCycles = 0;
+    report.functionalUnitLatencyCycles = 0;
+    report.resourceMixLatencyCycles = 0;
+    report.loadAddressLatencyCycles = 0;
+    report.storeAddressLatencyCycles = 0;
+    report.configLoadLatencyCycles = 0;
     report.temporalPenaltyCycles = 0;
     report.hardwareAwareCycles = report.dfgCycles;
     report.modeledLowerBoundCycles = report.dfgCycles;
@@ -1580,6 +1643,12 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
     if (llvm::Error err = collectPlacementStats(*mappingOrErr, report))
       return std::move(err);
     report.memoryLatencyCycles = 0;
+    report.widthAdapterLatencyCycles = 0;
+    report.functionalUnitLatencyCycles = 0;
+    report.resourceMixLatencyCycles = 0;
+    report.loadAddressLatencyCycles = 0;
+    report.storeAddressLatencyCycles = 0;
+    report.configLoadLatencyCycles = 0;
     report.temporalPenaltyCycles = 0;
     report.hardwareAwareCycles = report.dfgCycles;
     report.modeledLowerBoundCycles = report.dfgCycles;
@@ -1605,6 +1674,11 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
   report.routedEdges = routeStatsOrErr->routeCount;
   report.routeSegments = routeStatsOrErr->segmentCount;
   report.routeLatencyCycles = report.routeSegments * kRouteLatencyPerSegment;
+  report.loadAddressLatencyCycles =
+      routeStatsOrErr->computedLoadAddressRoutes * kLoadAddressLatencyPerRoute;
+  report.storeAddressLatencyCycles =
+      routeStatsOrErr->computedStoreAddressRoutes *
+      kStoreAddressLatencyPerRoute;
 
   ConfigEntries configEntries;
   if (llvm::Error err = collectConfigEntries(
@@ -1619,13 +1693,21 @@ loom::sim::runCGRASimulation(const CGRASimOptions &options) {
 
   report.hardwareAwareCycles = report.dfgCycles + report.routeLatencyCycles +
                                report.memoryLatencyCycles +
+                               report.widthAdapterLatencyCycles +
+                               report.functionalUnitLatencyCycles +
+                               report.resourceMixLatencyCycles +
+                               report.loadAddressLatencyCycles +
+                               report.storeAddressLatencyCycles +
+                               report.configLoadLatencyCycles +
                                report.temporalPenaltyCycles;
   report.modeledLowerBoundCycles = report.hardwareAwareCycles;
   report.performanceDeltaCycles = report.hardwareAwareCycles - report.dfgCycles;
   report.status = "pass";
   report.diagnostic =
       "CGRA-sim mapping-constraint estimate: DFG cycles plus modeled route, "
-      "memory, and temporal penalties; report lists unmodeled "
+      "memory, width-adapter, functional-unit, resource-mix, load-address, "
+      "store-address, configuration-load, and temporal penalties; report "
+      "lists unmodeled "
       "microarchitectural constraints";
   return report;
 }
@@ -1651,7 +1733,62 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"evidence", "fabric.mem placement"},
       {"modeled", true},
       {"explanation",
-       "fixed first-order memory tile latency per mapped load/store resource"},
+       "fixed first-order memory tile latency per mapped load/store resource "
+       "plus write-port commit latency for mapped stores"},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "width_adapter_latency"},
+      {"cycles", static_cast<int64_t>(report.widthAdapterLatencyCycles)},
+      {"evidence", "mapping.placements.operation"},
+      {"modeled", true},
+      {"explanation",
+       "first-order fabric width adapter latency for mapped truncation and "
+       "zero-extension resources"},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "functional_unit_latency"},
+      {"cycles", static_cast<int64_t>(report.functionalUnitLatencyCycles)},
+      {"evidence", "mapping.placements.operation"},
+      {"modeled", true},
+      {"explanation",
+       "first-order multi-cycle FU placement latency for mapped multiply, "
+       "divide, remainder, and fused multiply-add resources"},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "resource_mix_latency"},
+      {"cycles", static_cast<int64_t>(report.resourceMixLatencyCycles)},
+      {"evidence", "mapping.placements.operation"},
+      {"modeled", true},
+      {"explanation",
+       "first-order issue/control latency for the number of distinct mapped "
+       "operation kinds"},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "load_address_latency"},
+      {"cycles", static_cast<int64_t>(report.loadAddressLatencyCycles)},
+      {"evidence", "mapping.routes.edge_ref"},
+      {"modeled", true},
+      {"explanation",
+       "first-order setup latency when computed SSA values feed a fabric "
+       "load-address port"},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "store_address_latency"},
+      {"cycles", static_cast<int64_t>(report.storeAddressLatencyCycles)},
+      {"evidence", "mapping.routes.edge_ref"},
+      {"modeled", true},
+      {"explanation",
+       "first-order setup latency when computed SSA values feed a fabric "
+       "store-address port"},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "configuration_load"},
+      {"cycles", static_cast<int64_t>(report.configLoadLatencyCycles)},
+      {"evidence", "mapping.config_records"},
+      {"modeled", true},
+      {"explanation",
+       "first-order configuration loading pressure for bitstreams larger than "
+       "one issue page"},
   });
   cycleBreakdown.push_back(llvm::json::Object{
       {"category", "temporal_conflict"},
@@ -1665,7 +1802,7 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
 
   llvm::json::Array unmodeledConstraints;
   unmodeledConstraints.push_back("explicit_fabric_route_paths");
-  unmodeledConstraints.push_back("fifo_latency");
+  unmodeledConstraints.push_back("fifo_queueing_latency");
   unmodeledConstraints.push_back("cache_behavior");
   unmodeledConstraints.push_back("scratchpad_bank_conflicts");
   unmodeledConstraints.push_back("coherence_consistency");
@@ -1685,7 +1822,13 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"name", "delta_explained_by_modeled_constraints"},
       {"status", "pass"},
       {"evidence", "performance_delta_cycles = route_latency_cycles + "
-                   "memory_latency_cycles + temporal_penalty_cycles"},
+                   "memory_latency_cycles + width_adapter_latency_cycles + "
+                   "functional_unit_latency_cycles + "
+                   "resource_mix_latency_cycles + "
+                   "load_address_latency_cycles + "
+                   "store_address_latency_cycles + "
+                   "config_load_latency_cycles + "
+                   "temporal_penalty_cycles"},
   });
 
   llvm::json::Object root{
@@ -1714,6 +1857,18 @@ llvm::Error loom::sim::writeCGRASimReportJson(llvm::StringRef outputPath,
       {"route_latency_cycles", static_cast<int64_t>(report.routeLatencyCycles)},
       {"memory_latency_cycles",
        static_cast<int64_t>(report.memoryLatencyCycles)},
+      {"width_adapter_latency_cycles",
+       static_cast<int64_t>(report.widthAdapterLatencyCycles)},
+      {"functional_unit_latency_cycles",
+       static_cast<int64_t>(report.functionalUnitLatencyCycles)},
+      {"resource_mix_latency_cycles",
+       static_cast<int64_t>(report.resourceMixLatencyCycles)},
+      {"load_address_latency_cycles",
+       static_cast<int64_t>(report.loadAddressLatencyCycles)},
+      {"store_address_latency_cycles",
+       static_cast<int64_t>(report.storeAddressLatencyCycles)},
+      {"config_load_latency_cycles",
+       static_cast<int64_t>(report.configLoadLatencyCycles)},
       {"temporal_penalty_cycles",
        static_cast<int64_t>(report.temporalPenaltyCycles)},
       {"hardware_aware_cycles",

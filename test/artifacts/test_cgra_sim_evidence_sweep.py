@@ -89,7 +89,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("pack_bits",)
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
@@ -122,20 +122,7 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("transpose", "transpose"),
     ("upper_bound", "upper_bound_candidate"),
 )
-MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {
-    "pack_bits": {
-        "diagnostic": "missing hardware resource for software op llvm.trunc",
-        "graph": "g_t_pack_bits_kernel_red_0_0",
-        "dynamic_work_items": 32,
-        "final_outputs": ["none", "i64:32"],
-        "final_memory_state": {"arg11": ["i32:-749385939"]},
-        "operation_fire_counts": {
-            "dataflow.load": 32,
-            "dataflow.store": 1,
-            "llvm.intr.umin": 1,
-        },
-    },
-}
+MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {}
 
 HEADER = [
     "suite",
@@ -640,6 +627,75 @@ def assert_mapping_failed_evidence(evidence_dir: Path, case: str) -> None:
     assert_operation_fire_counts(case, dfg, expected["operation_fire_counts"])
 
 
+def assert_pack_bits_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg11": ["i32:-749385939"],
+        "arg8": [
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:0",
+            "i32:1",
+            "i32:1",
+            "i32:1",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:1",
+            "i32:0",
+            "i32:0",
+            "i32:1",
+            "i32:0",
+            "i32:1",
+            "i32:1",
+        ],
+    }
+    expected_outputs = ["none", "i64:32"]
+    expected_counts = {
+        "dataflow.load": 32,
+        "dataflow.store": 1,
+        "arith.ori": 32,
+        "arith.select": 32,
+        "arith.subi": 32,
+        "llvm.intr.umin": 1,
+        "llvm.trunc": 33,
+    }
+    dfg = json.loads((evidence_dir / "pack_bits.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 32
+        or dfg.get("event_count") != 298
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"pack_bits should preserve real packed-bit DFG evidence: {dfg}")
+    assert_operation_fire_counts("pack_bits", dfg, expected_counts)
+    cgra = json.loads((evidence_dir / "pack_bits.cgra.report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware_aware_cycles") != 546
+        or cgra.get("width_adapter_latency_cycles") != 3
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"pack_bits should preserve real CGRA evidence: {cgra}")
+
+
 def f32_token(value: float) -> str:
     if value == 0.0 and math.copysign(1.0, value) < 0.0:
         return "f32:-0"
@@ -912,7 +968,7 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 3
-        or dfg.get("optimistic_cycles") != 66
+        or dfg.get("optimistic_cycles") != 82
         or dfg.get("final_outputs") != ["none", "i32:4"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -924,8 +980,8 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 66
-        or cgra.get("hardware_aware_cycles") != 124
+        or cgra.get("dfg_cycles") != 82
+        or cgra.get("hardware_aware_cycles") != 149
         or cgra.get("final_outputs") != ["none", "i32:4"]
         or cgra.get("final_memory_state") != expected_memory
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -960,7 +1016,7 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 3
-        or dfg.get("optimistic_cycles") != 91
+        or dfg.get("optimistic_cycles") != 107
         or dfg.get("final_outputs") != ["none", "f32:0.835938"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -972,8 +1028,8 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 91
-        or cgra.get("hardware_aware_cycles") != 153
+        or cgra.get("dfg_cycles") != 107
+        or cgra.get("hardware_aware_cycles") != 183
         or cgra.get("routed_edges") != 14
         or cgra.get("route_segments") != 54
         or cgra.get("final_outputs") != ["none", "f32:0.835938"]
@@ -1013,7 +1069,7 @@ def assert_string_hash_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 8
-        or dfg.get("optimistic_cycles") != 168
+        or dfg.get("optimistic_cycles") != 185
         or dfg.get("final_outputs") != ["none", "i32:38"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1025,8 +1081,8 @@ def assert_string_hash_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 168
-        or cgra.get("hardware_aware_cycles") != 220
+        or cgra.get("dfg_cycles") != 185
+        or cgra.get("hardware_aware_cycles") != 248
         or cgra.get("routed_edges") != 12
         or cgra.get("route_segments") != 48
         or cgra.get("final_outputs") != ["none", "i32:38"]
@@ -1066,7 +1122,7 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 4
-        or dfg.get("optimistic_cycles") != 105
+        or dfg.get("optimistic_cycles") != 122
         or dfg.get("final_outputs") != ["none", "f32:1.250000"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1078,7 +1134,7 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 105
+        or cgra.get("dfg_cycles") != 122
         or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
         or cgra.get("routed_edges") != 13
         or cgra.get("route_segments") != 49
@@ -1117,7 +1173,7 @@ def assert_covariance_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 2048
-        or dfg.get("optimistic_cycles") != 44043
+        or dfg.get("optimistic_cycles") != 48153
         or dfg.get("final_outputs") != expected_outputs
         or dfg.get("component_graphs") != ["g_t_covariance_kernel_red_0_0", "g_t_covariance_kernel_red_1_0"]
     ):
@@ -1152,8 +1208,8 @@ def assert_covariance_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 44043
-        or cgra.get("hardware_aware_cycles") != 44166
+        or cgra.get("dfg_cycles") != 48153
+        or cgra.get("hardware_aware_cycles") != 48293
         or cgra.get("routed_edges") != 27
         or cgra.get("route_segments") != 107
         or cgra.get("final_outputs") != expected_outputs
@@ -1204,7 +1260,7 @@ def assert_modmul_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 1
-        or dfg.get("optimistic_cycles") != 27
+        or dfg.get("optimistic_cycles") != 34
         or dfg.get("final_outputs") != ["none"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1229,8 +1285,9 @@ def assert_modmul_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 27
-        or cgra.get("hardware_aware_cycles") != 81
+        or cgra.get("dfg_cycles") != 34
+        or cgra.get("hardware_aware_cycles") != 104
+        or cgra.get("width_adapter_latency_cycles") != 3
         or cgra.get("routed_edges") != 10
         or cgra.get("route_segments") != 42
         or cgra.get("final_outputs") != ["none"]
@@ -1260,7 +1317,7 @@ def assert_newton_iter_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 1
-        or dfg.get("optimistic_cycles") != 31
+        or dfg.get("optimistic_cycles") != 36
         or dfg.get("final_outputs") != ["none"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1290,8 +1347,8 @@ def assert_newton_iter_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 31
-        or cgra.get("hardware_aware_cycles") != 78
+        or cgra.get("dfg_cycles") != 36
+        or cgra.get("hardware_aware_cycles") != 93
         or cgra.get("routed_edges") != 9
         or cgra.get("route_segments") != 31
         or cgra.get("final_outputs") != ["none"]
@@ -1323,7 +1380,7 @@ def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 1
-        or dfg.get("optimistic_cycles") != 51
+        or dfg.get("optimistic_cycles") != 56
         or dfg.get("final_outputs") != ["none"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1357,8 +1414,8 @@ def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 51
-        or cgra.get("hardware_aware_cycles") != 126
+        or cgra.get("dfg_cycles") != 56
+        or cgra.get("hardware_aware_cycles") != 144
         or cgra.get("routed_edges") != 15
         or cgra.get("route_segments") != 51
         or cgra.get("final_outputs") != ["none"]
@@ -1387,7 +1444,7 @@ def assert_gf_mul_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 8
-        or dfg.get("optimistic_cycles") != 188
+        or dfg.get("optimistic_cycles") != 197
         or dfg.get("final_outputs") != expected_outputs
         or dfg.get("final_memory_state") != {}
         or dfg.get("diagnostics") != []
@@ -1399,7 +1456,7 @@ def assert_gf_mul_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 188
+        or cgra.get("dfg_cycles") != 197
         or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
         or cgra.get("routed_edges", 0) <= 19
         or cgra.get("route_segments", 0) <= 0
@@ -1497,8 +1554,8 @@ def assert_compact_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 253
-        or cgra.get("hardware_aware_cycles") != 374
+        or cgra.get("dfg_cycles") != 339
+        or cgra.get("hardware_aware_cycles") != 480
         or cgra.get("routed_edges") != 25
         or cgra.get("route_segments") != 113
         or cgra.get("final_outputs") != ["none", "i32:7"]
@@ -1579,7 +1636,7 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 20
-        or dfg.get("optimistic_cycles") != 438
+        or dfg.get("optimistic_cycles") != 582
         or dfg.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
         or dfg.get("final_memory_state") != expected_memory
         or "derived workload graph-set DFG report from component DFG simulator reports" not in dfg.get("diagnostics", [])
@@ -1605,8 +1662,8 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 438
-        or cgra.get("hardware_aware_cycles") != 680
+        or cgra.get("dfg_cycles") != 582
+        or cgra.get("hardware_aware_cycles") != 864
         or cgra.get("routed_edges") != 50
         or cgra.get("route_segments") != 226
         or cgra.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
@@ -1668,7 +1725,7 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 11
-        or dfg.get("optimistic_cycles") != 349
+        or dfg.get("optimistic_cycles") != 413
         or dfg.get("final_outputs") != ["none", "i32:5", "i32:6"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -1703,8 +1760,8 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
     if (
         cgra.get("status") != "pass"
         or cgra.get("hardware") != "shared_reduction_adg"
-        or cgra.get("dfg_cycles") != 349
-        or cgra.get("hardware_aware_cycles") != 395
+        or cgra.get("dfg_cycles") != 413
+        or cgra.get("hardware_aware_cycles") != 473
         or cgra.get("placed_records") != 13
         or cgra.get("routed_edges") != 6
         or cgra.get("final_outputs") != ["none", "i32:5", "i32:6"]
@@ -1719,8 +1776,8 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
         or comparison.get("functional_comparison_status") != "pass"
         or comparison.get("memory_comparison_status") != "pass"
         or comparison.get("performance_comparison_status") != "pass"
-        or comparison.get("dfg_sim_cycles") != 349
-        or comparison.get("cgra_sim_cycles") != 395
+        or comparison.get("dfg_sim_cycles") != 413
+        or comparison.get("cgra_sim_cycles") != 473
     ):
         raise AssertionError(f"merge comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
@@ -1800,8 +1857,9 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
         cgra.get("status") != "pass"
         or cgra.get("placed_records") != 10
         or cgra.get("routed_edges") != 6
-        or cgra.get("hardware_aware_cycles") != 1348
-        or cgra.get("dfg_cycles") != 1310
+        or cgra.get("hardware_aware_cycles") != 1501
+        or cgra.get("width_adapter_latency_cycles") != 1
+        or cgra.get("dfg_cycles") != 1448
         or cgra.get("final_outputs") != ["none", "i32:0"]
         or cgra.get("final_memory_state") != expected_memory
     ):
@@ -1813,8 +1871,8 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
         or comparison.get("functional_comparison_status") != "pass"
         or comparison.get("memory_comparison_status") != "pass"
         or comparison.get("performance_comparison_status") != "pass"
-        or comparison.get("dfg_sim_cycles") != 1310
-        or comparison.get("cgra_sim_cycles") != 1348
+        or comparison.get("dfg_sim_cycles") != 1448
+        or comparison.get("cgra_sim_cycles") != 1501
     ):
         raise AssertionError(f"autocorrelation comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
@@ -1881,8 +1939,8 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 848
-        or cgra.get("hardware_aware_cycles") != 887
+        or cgra.get("dfg_cycles") != 934
+        or cgra.get("hardware_aware_cycles") != 980
         or cgra.get("routed_edges") != 7
         or cgra.get("route_segments") != 31
         or cgra.get("final_outputs") != ["none", "i32:-1307787247"]
@@ -1963,9 +2021,9 @@ def assert_gather_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 236
-        or cgra.get("hardware_aware_cycles") != 263
-        or cgra.get("performance_delta_cycles") != 27
+        or cgra.get("dfg_cycles") != 254
+        or cgra.get("hardware_aware_cycles") != 289
+        or cgra.get("performance_delta_cycles") != 35
         or cgra.get("final_memory_state", {}).get("arg5") != expected_dst
     ):
         raise AssertionError(f"gather CGRA report should carry real final state: {cgra_path}: {cgra}")
@@ -1977,8 +2035,8 @@ def assert_gather_evidence(evidence_dir: Path) -> None:
         or comparison.get("functional_comparison_status") != "pass"
         or comparison.get("memory_comparison_status") != "pass"
         or comparison.get("performance_comparison_status") != "pass"
-        or comparison.get("dfg_sim_cycles") != 236
-        or comparison.get("cgra_sim_cycles") != 263
+        or comparison.get("dfg_sim_cycles") != 254
+        or comparison.get("cgra_sim_cycles") != 289
     ):
         raise AssertionError(f"gather comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
@@ -2334,6 +2392,7 @@ def main(argv: list[str]) -> int:
             "cumsum",
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
+            "pack_bits",
             "partition",
             "mean",
             "newton_iter",
@@ -2426,6 +2485,7 @@ def main(argv: list[str]) -> int:
         assert_autocorrelation_dfg_evidence(evidence_dir)
         assert_crc32_evidence(evidence_dir)
         assert_gather_evidence(evidence_dir)
+        assert_pack_bits_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -2498,6 +2558,17 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_exclusive", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "pack_bits", "shared_reduction_adg")
+        assert_mapping_edges_use_switch_multihop(
+            evidence_dir,
+            "pack_bits",
+            {
+                "arith.ori#0.result0->dataflow.store#0.operand2",
+                "arith.select#0.result0->arith.ori#0.operand0",
+                "arith.shli#0.result0->arith.cmpi#0.operand0",
+                "llvm.trunc#0.result0->arith.addi#0.operand0",
+                "llvm.trunc#1.result0->arith.shli#1.operand1",
+            },
+        )
         assert_mapping_hardware(evidence_dir, "parity", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "unpack_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "popcount", "shared_reduction_adg")
@@ -2760,6 +2831,7 @@ def main(argv: list[str]) -> int:
             "cumsum",
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
+            "pack_bits",
             "partition",
             "mean",
             "vecnorm_l1",
@@ -2885,8 +2957,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 58,
-            "fail": 1,
+            "pass": 59,
+            "fail": 0,
             "blocked": 50,
             "unsupported": 0,
             "missing_status": 0,

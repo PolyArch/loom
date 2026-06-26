@@ -183,6 +183,43 @@ def write_json(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
+def dfg_cycle_fixture_fields(
+    cycles: int,
+    *,
+    operation_mix_cycles: int = 0,
+    memory_address_setup_cycles: int = 0,
+    evidence: str = "fixture DFG report",
+) -> dict[str, object]:
+    pipeline_cycles = cycles - operation_mix_cycles - memory_address_setup_cycles
+    if pipeline_cycles < 0:
+        raise AssertionError("fixture DFG cycle components exceed optimistic_cycles")
+    return {
+        "pipeline_latency_throughput_cycles": pipeline_cycles,
+        "operation_mix_cycles": operation_mix_cycles,
+        "memory_address_setup_cycles": memory_address_setup_cycles,
+        "cycle_breakdown": [
+            {
+                "category": "pipeline_latency_throughput",
+                "cycles": pipeline_cycles,
+                "evidence": evidence,
+                "modeled": True,
+            },
+            {
+                "category": "operation_mix",
+                "cycles": operation_mix_cycles,
+                "evidence": evidence,
+                "modeled": True,
+            },
+            {
+                "category": "memory_address_setup",
+                "cycles": memory_address_setup_cycles,
+                "evidence": evidence,
+                "modeled": True,
+            },
+        ],
+    }
+
+
 def write_loombench_manifest(path: Path, cases: list[dict[str, object]]) -> None:
     write_json(
         path,
@@ -218,6 +255,7 @@ def write_sim_evidence_case(
             "graph": graph,
             "status": "pass",
             "optimistic_cycles": 10,
+            **dfg_cycle_fixture_fields(10),
             "final_outputs": final_outputs,
             "final_memory_state": final_memory_state,
             "metric_definition": "fixture",
@@ -281,6 +319,7 @@ def write_chain_style_sim_evidence_case(evidence_dir: Path, case: str) -> Path:
             "graph": f"g_{case}_0",
             "status": "pass",
             "optimistic_cycles": 10,
+            **dfg_cycle_fixture_fields(10),
             "final_outputs": final_outputs,
             "final_memory_state": final_memory_state,
             "metric_definition": "fixture",
@@ -380,6 +419,7 @@ def write_component_only_evidence(evidence_dir: Path, case: str) -> None:
             "graph": f"g_{case}_aggregate",
             "status": "pass",
             "optimistic_cycles": 11,
+            **dfg_cycle_fixture_fields(11),
             "final_outputs": ["i32:11"],
             "final_memory_state": {"arg0": ["i32:11"]},
             "metric_definition": "fixture",
@@ -1126,6 +1166,7 @@ def main() -> int:
                 "graph": "g_arm_add_q15_0",
                 "status": "unsupported",
                 "optimistic_cycles": 0,
+                **dfg_cycle_fixture_fields(0),
                 "wavefront_steps": 0,
                 "event_count": 0,
                 "dynamic_work_items": 0,
@@ -1673,6 +1714,7 @@ def main() -> int:
                 "status": "pass",
                 "metric_definition": "fixture",
                 "optimistic_cycles": 17,
+                **dfg_cycle_fixture_fields(17),
                 "final_outputs": final_outputs,
                 "final_memory_state": final_memory_state,
             },
@@ -1919,6 +1961,7 @@ def main() -> int:
                 "graph": "g_mean_0",
                 "status": "fail",
                 "optimistic_cycles": 0,
+                **dfg_cycle_fixture_fields(0),
                 "final_outputs": [],
                 "final_memory_state": {},
                 "diagnostics": ["fixture DFG-sim failure"],

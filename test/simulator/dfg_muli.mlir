@@ -7,7 +7,7 @@
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
 // CHECK-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// CHECK-DAG: "optimistic_cycles": 5
+// CHECK-DAG: "optimistic_cycles": 7
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 3
 // CHECK-DAG: "i32:42"

@@ -28,8 +28,8 @@
 // REPORT: "kind": "dfg_sim_report"
 // REPORT: "dataflow.load": 8
 // REPORT: "llvm.intr.fmuladd": 4
-// REPORT: "optimistic_cycles": 105
+// REPORT: "optimistic_cycles": 122
 // REPORT: "status": "pass"
 // REPORT: "workload": "fir_filter_stateful"
 
-// SUMMARY: fir_filter_stateful,105,,blocked,DFG-sim report available; CGRA-sim requires Fabric ADG and mapping artifact evidence
+// SUMMARY: fir_filter_stateful,122,,blocked,DFG-sim report available; CGRA-sim requires Fabric ADG and mapping artifact evidence

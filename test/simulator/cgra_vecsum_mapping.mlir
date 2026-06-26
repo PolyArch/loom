@@ -32,15 +32,15 @@
 // CGRA-DAG: "operation_semantics_source": "loom.sim.operation_semantics.v1"
 // CGRA-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
 // CGRA-DAG: "difference_classification": "expected_hardware_constraint"
-// CGRA-DAG: "dfg_cycles": 579
-// CGRA-DAG: "modeled_lower_bound_cycles": 607
+// CGRA-DAG: "dfg_cycles": 649
+// CGRA-DAG: "modeled_lower_bound_cycles": 683
 // CGRA-DAG: "hardware_bound_classification": "within_modeled_bounds"
-// CGRA-DAG: "performance_delta_cycles": 28
+// CGRA-DAG: "performance_delta_cycles": 34
 // CGRA-DAG: "route_latency_cycles": 24
 // CGRA-DAG: "route_segments": 24
 // CGRA-DAG: "memory_latency_cycles": 4
 // CGRA-DAG: "temporal_penalty_cycles": 0
-// CGRA-DAG: "hardware_aware_cycles": 607
+// CGRA-DAG: "hardware_aware_cycles": 683
 // CGRA-DAG: "config_records": 137
 // CGRA-DAG: "functional_state_source": "carried_from_dfg_sim_report"
 // CGRA-DAG: "cycle_breakdown"
@@ -52,7 +52,7 @@
 // CGRA-DAG: "evidence": "placement schedule"
 // CGRA-DAG: "unmodeled_constraints"
 // CGRA-DAG: "explicit_fabric_route_paths"
-// CGRA-DAG: "fifo_latency"
+// CGRA-DAG: "fifo_queueing_latency"
 // CGRA-DAG: "cache_behavior"
 // CGRA-DAG: "scratchpad_bank_conflicts"
 // CGRA-DAG: "coherence_consistency"
@@ -61,4 +61,4 @@
 // CGRA-DAG: "delta_explained_by_modeled_constraints"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-NEXT: vecsum,579,607,pass,"DFG-sim and CGRA-sim reports available; CGRA-sim includes mapping route, memory, and temporal penalties"
+// SUMMARY-NEXT: vecsum,649,683,pass,"DFG-sim and CGRA-sim reports available; CGRA-sim includes mapping route, memory, and temporal penalties"

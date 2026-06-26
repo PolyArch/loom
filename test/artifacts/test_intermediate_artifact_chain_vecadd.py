@@ -178,7 +178,7 @@ def main() -> int:
         if dfg_report.get("status") != "pass" or dfg_report.get("workload") != "vecadd":
             raise AssertionError(f"unexpected vecadd DFG-sim report: {dfg_report}")
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "vecadd DFG-sim cycles")
-        if dfg_cycles != 1603:
+        if dfg_cycles != 1677:
             raise AssertionError(f"vecadd aggregate DFG cycles should include checksum reduction tail: {dfg_report}")
         if set(dfg_report.get("component_graphs", [])) != {"g_t_vecadd_0_0", "g_t_main_red_0_0"}:
             raise AssertionError(f"aggregate DFG report must cite both component graphs: {dfg_report}")
@@ -195,9 +195,9 @@ def main() -> int:
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected vecadd CGRA mapping identity: {cgra_report}")
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "vecadd CGRA-sim cycles")
-        if cgra_cycles != 1661:
+        if cgra_cycles != 1748:
             raise AssertionError(f"vecadd aggregate CGRA report should include both component latencies: {cgra_report}")
-        if cgra_report.get("performance_delta_cycles") != 58 or cgra_report.get("route_segments") != 42:
+        if cgra_report.get("performance_delta_cycles") != 71 or cgra_report.get("route_segments") != 42:
             raise AssertionError(f"vecadd aggregate CGRA report should expose routed component cost: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")

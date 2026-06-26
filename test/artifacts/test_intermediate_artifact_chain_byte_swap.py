@@ -145,7 +145,7 @@ def main() -> int:
                 "status": "pass",
                 "workload": WORKLOAD,
                 "graph": GRAPH,
-                "optimistic_cycles": 320,
+                "optimistic_cycles": 324,
                 "dynamic_work_items": 32,
             },
             label="byte_swap DFG-sim report",
@@ -171,9 +171,9 @@ def main() -> int:
                 "status": "pass",
                 "workload": WORKLOAD,
                 "mapping_id": MAPPING_ID,
-                "dfg_cycles": 320,
+                "dfg_cycles": 324,
                 "hardware": HARDWARE,
-                "hardware_aware_cycles": 342,
+                "hardware_aware_cycles": 353,
                 "difference_classification": "expected_hardware_constraint",
                 "route_segments": 14,
             },
@@ -190,7 +190,7 @@ def main() -> int:
         )
         assert_fields(
             sim_row,
-            {"dfg_sim_cycles": "320", "cgra_sim_cycles": "342", "status": "pass"},
+            {"dfg_sim_cycles": "324", "cgra_sim_cycles": "353", "status": "pass"},
             label="byte_swap sim row",
         )
         if int(sim_row["dfg_sim_cycles"]) in {448, 579, 1027}:
@@ -202,8 +202,8 @@ def main() -> int:
             {
                 "status": "pass",
                 "workload": WORKLOAD,
-                "dfg_sim_cycles": 320,
-                "cgra_sim_cycles": 342,
+                "dfg_sim_cycles": 324,
+                "cgra_sim_cycles": 353,
                 "difference_classification": "expected_hardware_constraint",
             },
             label="byte_swap simulation comparison",
@@ -246,11 +246,11 @@ def main() -> int:
             dse_row,
             {
                 "mapping_id": MAPPING_ID,
-                "cgra_sim_cycles": "342",
+                "cgra_sim_cycles": "353",
                 "frequency_mhz": "390.000",
                 "area_um2": "3750.000",
                 "dynamic_power_mw": "3.200",
-                "energy_nj": "3.223",
+                "energy_nj": "3.326",
                 "selection_status": "selected",
             },
             label="byte_swap DSE",

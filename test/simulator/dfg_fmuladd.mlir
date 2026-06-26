@@ -8,7 +8,7 @@
 // CHECK-DAG: "graph": "fmuladd"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// CHECK-DAG: "optimistic_cycles": 11
+// CHECK-DAG: "optimistic_cycles": 13
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 4
 // CHECK-DAG: "f32:10"
@@ -18,7 +18,7 @@
 // SPLIT-DAG: "graph": "split_mulf_addf"
 // SPLIT-DAG: "status": "pass"
 // SPLIT-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// SPLIT-DAG: "optimistic_cycles": 8
+// SPLIT-DAG: "optimistic_cycles": 11
 // SPLIT-DAG: "wavefront_steps": 3
 // SPLIT-DAG: "event_count": 5
 // SPLIT-DAG: "f32:10"

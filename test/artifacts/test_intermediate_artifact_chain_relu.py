@@ -140,7 +140,7 @@ def main() -> int:
 
         dfg_report = json.loads((out_dir / "relu-dfg-sim-report.json").read_text())
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "relu DFG-sim cycles")
-        if dfg_cycles != 707:
+        if dfg_cycles != 750:
             raise AssertionError(f"relu aggregate DFG cycles should include checksum slice: {dfg_report}")
         if set(dfg_report.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"relu aggregate DFG report missed component graphs: {dfg_report}")
@@ -149,9 +149,9 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "relu CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected relu CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("status") != "pass" or cgra_cycles != 763:
+        if cgra_report.get("status") != "pass" or cgra_cycles != 821:
             raise AssertionError(f"relu aggregate CGRA report should preserve routed component latency: {cgra_report}")
-        if cgra_report.get("performance_delta_cycles") != 56 or cgra_report.get("route_segments") != 44:
+        if cgra_report.get("performance_delta_cycles") != 71 or cgra_report.get("route_segments") != 44:
             raise AssertionError(f"relu aggregate CGRA report should expose routed component cost: {cgra_report}")
         if cgra_cycles < dfg_cycles:
             raise AssertionError(f"relu CGRA-sim must not be more optimistic than DFG-sim: {cgra_report}")

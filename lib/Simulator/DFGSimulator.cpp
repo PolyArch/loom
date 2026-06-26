@@ -33,6 +33,9 @@ using namespace loom::sim;
 
 namespace {
 
+constexpr std::uint64_t kLoadAddressSetupCycles = 1;
+constexpr std::uint64_t kStoreAddressSetupCycles = 2;
+
 struct MemoryValue;
 
 struct MemoryView {
@@ -120,6 +123,7 @@ struct SimulatorState {
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
   std::uint64_t eventCount = 0;
+  std::uint64_t memoryAddressSetupCycles = 0;
   std::uint64_t structuredLoopIterations = 0;
   std::uint64_t maxStructuredLoopIterations = 0;
 };
@@ -462,6 +466,13 @@ bool recordEvent(SimulatorState &state, llvm::StringRef opName) {
   ++state.eventCount;
   ++state.operationFireCounts[opName.str()];
   return true;
+}
+
+bool hasComputedAddress(mlir::Value value) {
+  mlir::Operation *def = value.getDefiningOp();
+  if (!def)
+    return false;
+  return def->getName().getStringRef() != "dataflow.stream";
 }
 
 std::uint64_t estimateDynamicPipelineCycles(
@@ -1120,6 +1131,8 @@ bool fireLoad(dataflow::LoadOp op, SimulatorState &state) {
   emitToken(state, op.getData(), view->memory->elements[*index]);
   emitToken(state, op.getDone(), noneToken());
   ++state.loadFireCounts[op.getOperation()];
+  if (hasComputedAddress(op.getAddr()))
+    state.memoryAddressSetupCycles += kLoadAddressSetupCycles;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -1274,6 +1287,8 @@ bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
     return false;
   view->memory->elements[*index] = data;
   emitToken(state, op.getDone(), noneToken());
+  if (hasComputedAddress(op.getAddr()))
+    state.memoryAddressSetupCycles += kStoreAddressSetupCycles;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -1517,6 +1532,8 @@ bool assignLocalDataflowLoad(dataflow::LoadOp op, SimulatorState &state,
   locals[op.getData()] = view->memory->elements[*index];
   locals[op.getDone()] = noneToken();
   ++state.loadFireCounts[op.getOperation()];
+  if (hasComputedAddress(op.getAddr()))
+    state.memoryAddressSetupCycles += kLoadAddressSetupCycles;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -1538,6 +1555,8 @@ bool assignLocalDataflowStore(dataflow::StoreOp op, SimulatorState &state,
     return false;
   view->memory->elements[*index] = *data;
   locals[op.getDone()] = noneToken();
+  if (hasComputedAddress(op.getAddr()))
+    state.memoryAddressSetupCycles += kStoreAddressSetupCycles;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -2522,8 +2541,13 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
   }
   report.eventCount = state.eventCount;
   report.operationFireCounts = state.operationFireCounts;
-  report.optimisticCycles = estimateDynamicPipelineCycles(
+  report.pipelineLatencyThroughputCycles = estimateDynamicPipelineCycles(
       state.operationFireCounts, state.diagnostics);
+  report.optimisticCycles = report.pipelineLatencyThroughputCycles;
+  report.operationMixCycles = report.operationFireCounts.size();
+  report.optimisticCycles += report.operationMixCycles;
+  report.memoryAddressSetupCycles = state.memoryAddressSetupCycles;
+  report.optimisticCycles += report.memoryAddressSetupCycles;
   report.diagnostics.append(state.diagnostics.begin(), state.diagnostics.end());
   return report;
 }
@@ -2548,6 +2572,30 @@ loom::sim::writeDFGSimulationReportJson(llvm::StringRef outputPath,
   root["operation_semantics_source"] = report.operationSemanticsSource;
   root["operation_cost_model_source"] = report.operationCostModelSource;
   root["optimistic_cycles"] = report.optimisticCycles;
+  root["pipeline_latency_throughput_cycles"] =
+      static_cast<int64_t>(report.pipelineLatencyThroughputCycles);
+  root["operation_mix_cycles"] = report.operationMixCycles;
+  root["memory_address_setup_cycles"] = report.memoryAddressSetupCycles;
+  llvm::json::Array cycleBreakdown;
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "pipeline_latency_throughput"},
+      {"cycles", static_cast<int64_t>(report.pipelineLatencyThroughputCycles)},
+      {"evidence", "operation_fire_counts"},
+      {"modeled", true},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "operation_mix"},
+      {"cycles", static_cast<int64_t>(report.operationMixCycles)},
+      {"evidence", "distinct operation_fire_counts keys"},
+      {"modeled", true},
+  });
+  cycleBreakdown.push_back(llvm::json::Object{
+      {"category", "memory_address_setup"},
+      {"cycles", static_cast<int64_t>(report.memoryAddressSetupCycles)},
+      {"evidence", "computed dataflow.load/store address operands"},
+      {"modeled", true},
+  });
+  root["cycle_breakdown"] = std::move(cycleBreakdown);
   root["wavefront_steps"] = report.wavefrontSteps;
   root["event_count"] = report.eventCount;
   root["dynamic_work_items"] = report.dynamicWorkItems;

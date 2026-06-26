@@ -541,6 +541,29 @@ def main() -> int:
             "operation_semantics_source": "loom.sim.operation_semantics.v1",
             "operation_cost_model_source": "loom.sim.operation_cost.v1",
             "optimistic_cycles": 0,
+            "pipeline_latency_throughput_cycles": 0,
+            "operation_mix_cycles": 0,
+            "memory_address_setup_cycles": 0,
+            "cycle_breakdown": [
+                {
+                    "category": "pipeline_latency_throughput",
+                    "cycles": 0,
+                    "evidence": "synthetic unsupported DFG component",
+                    "modeled": True,
+                },
+                {
+                    "category": "operation_mix",
+                    "cycles": 0,
+                    "evidence": "synthetic unsupported DFG component",
+                    "modeled": True,
+                },
+                {
+                    "category": "memory_address_setup",
+                    "cycles": 0,
+                    "evidence": "synthetic unsupported DFG component",
+                    "modeled": True,
+                },
+            ],
             "wavefront_steps": 0,
             "event_count": 0,
             "dynamic_work_items": 0,
@@ -587,6 +610,12 @@ def main() -> int:
             "hardware_aware_cycles": 0,
             "route_latency_cycles": 0,
             "memory_latency_cycles": 0,
+            "width_adapter_latency_cycles": 0,
+            "functional_unit_latency_cycles": 0,
+            "resource_mix_latency_cycles": 0,
+            "load_address_latency_cycles": 0,
+            "store_address_latency_cycles": 0,
+            "config_load_latency_cycles": 0,
             "temporal_penalty_cycles": 0,
             "cycle_breakdown": [],
             "unmodeled_constraints": ["unsupported op: scf.for"],
@@ -655,6 +684,29 @@ def main() -> int:
         pass_dfg_report["graph"] = "passing_loop"
         pass_dfg_report["status"] = "pass"
         pass_dfg_report["optimistic_cycles"] = 1
+        pass_dfg_report["pipeline_latency_throughput_cycles"] = 0
+        pass_dfg_report["operation_mix_cycles"] = 1
+        pass_dfg_report["memory_address_setup_cycles"] = 0
+        pass_dfg_report["cycle_breakdown"] = [
+            {
+                "category": "pipeline_latency_throughput",
+                "cycles": 0,
+                "evidence": "synthetic passing DFG component",
+                "modeled": True,
+            },
+            {
+                "category": "operation_mix",
+                "cycles": 1,
+                "evidence": "synthetic passing DFG component",
+                "modeled": True,
+            },
+            {
+                "category": "memory_address_setup",
+                "cycles": 0,
+                "evidence": "synthetic passing DFG component",
+                "modeled": True,
+            },
+        ]
         pass_dfg_report["wavefront_steps"] = 1
         pass_dfg_report["event_count"] = 1
         pass_dfg_report["dynamic_work_items"] = 1

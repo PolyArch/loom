@@ -34,6 +34,12 @@ struct CGRASimReport {
   std::uint64_t dfgCycles = 0;
   std::uint64_t routeLatencyCycles = 0;
   std::uint64_t memoryLatencyCycles = 0;
+  std::uint64_t widthAdapterLatencyCycles = 0;
+  std::uint64_t functionalUnitLatencyCycles = 0;
+  std::uint64_t resourceMixLatencyCycles = 0;
+  std::uint64_t loadAddressLatencyCycles = 0;
+  std::uint64_t storeAddressLatencyCycles = 0;
+  std::uint64_t configLoadLatencyCycles = 0;
   std::uint64_t temporalPenaltyCycles = 0;
   std::uint64_t performanceDeltaCycles = 0;
   std::uint64_t modeledLowerBoundCycles = 0;

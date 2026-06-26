@@ -38,10 +38,6 @@
       "hardware": "shared_reduction_adg"
     },
     {
-      "case": "pack_bits",
-      "hardware": "shared_reduction_adg"
-    },
-    {
       "case": "parity",
       "hardware": "shared_reduction_adg"
     },

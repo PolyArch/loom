@@ -15,7 +15,7 @@
 // COMPARE-DAG: "graph": "compare_select"
 // COMPARE-DAG: "status": "pass"
 // COMPARE-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// COMPARE-DAG: "optimistic_cycles": 5
+// COMPARE-DAG: "optimistic_cycles": 8
 // COMPARE-DAG: "event_count": 4
 // COMPARE-DAG: "f32:3"
 
@@ -23,27 +23,27 @@
 // INTEGER-DAG: "graph": "integer_mix"
 // INTEGER-DAG: "status": "pass"
 // INTEGER-DAG: "operation_cost_model_source": "loom.sim.operation_cost.v1"
-// INTEGER-DAG: "optimistic_cycles": 21
+// INTEGER-DAG: "optimistic_cycles": 29
 // INTEGER-DAG: "event_count": 14
 // INTEGER-DAG: "i32:3"
 
 // BSWAP-DAG: "workload": "byte_swap"
 // BSWAP-DAG: "graph": "byte_swap"
 // BSWAP-DAG: "status": "pass"
-// BSWAP-DAG: "optimistic_cycles": 2
+// BSWAP-DAG: "optimistic_cycles": 4
 // BSWAP-DAG: "event_count": 2
 // BSWAP-DAG: "i32:2018915346"
 
 // ZEXT-DAG: "workload": "zext_bits"
 // ZEXT-DAG: "graph": "zext_bits"
 // ZEXT-DAG: "status": "pass"
-// ZEXT-DAG: "optimistic_cycles": 2
+// ZEXT-DAG: "optimistic_cycles": 4
 // ZEXT-DAG: "i64:4294967295"
 
 // UITOFP-DAG: "workload": "uint_to_float"
 // UITOFP-DAG: "graph": "uint_to_float"
 // UITOFP-DAG: "status": "pass"
-// UITOFP-DAG: "optimistic_cycles": 4
+// UITOFP-DAG: "optimistic_cycles": 6
 // UITOFP-DAG: "event_count": 2
 // UITOFP-DAG: "f32:7"
 

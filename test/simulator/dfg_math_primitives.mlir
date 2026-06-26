@@ -87,7 +87,7 @@
 // AUDIT-DAG: "verdict": "pass"
 
 // CYCLE: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// CYCLE: math_unary_float,221,,blocked,DFG-sim report available; CGRA-sim requires Fabric ADG and mapping artifact evidence
+// CYCLE: math_unary_float,239,,blocked,DFG-sim report available; CGRA-sim requires Fabric ADG and mapping artifact evidence
 
 module {
   dataflow.graph.func private @math_unary_float(%ctrl: none)

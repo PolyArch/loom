@@ -6,7 +6,7 @@
 // CHECK-DAG: "graph": "store_then_load"
 // CHECK-DAG: "status": "pass"
 // CHECK-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// CHECK-DAG: "optimistic_cycles": 8
+// CHECK-DAG: "optimistic_cycles": 10
 // CHECK-DAG: "wavefront_steps": 2
 // CHECK-DAG: "event_count": 2
 // CHECK-DAG: "f32:7"

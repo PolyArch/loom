@@ -102,7 +102,7 @@
 // BIT-REVERSE-DAG: "workload": "bit_reverse"
 // BIT-REVERSE-DAG: "graph": "g_t_bit_reverse_kernel_0_0"
 // BIT-REVERSE-DAG: "status": "pass"
-// BIT-REVERSE-DAG: "optimistic_cycles": 267
+// BIT-REVERSE-DAG: "optimistic_cycles": 274
 // BIT-REVERSE-DAG: "event_count": 267
 // BIT-REVERSE-DAG: "i32:510274632"
 // BIT-REVERSE-DAG: "i32:0"
@@ -111,7 +111,7 @@
 // BYTE-SWAP-DAG: "workload": "byte_swap"
 // BYTE-SWAP-DAG: "graph": "g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
 // BYTE-SWAP-DAG: "status": "pass"
-// BYTE-SWAP-DAG: "optimistic_cycles": 320
+// BYTE-SWAP-DAG: "optimistic_cycles": 324
 // BYTE-SWAP-DAG: "wavefront_steps": 35
 // BYTE-SWAP-DAG: "event_count": 128
 // BYTE-SWAP-DAG: "dynamic_work_items": 32
@@ -124,7 +124,7 @@
 // DOWNSAMPLE-AVG-INIT-DAG: "workload": "downsample_avg"
 // DOWNSAMPLE-AVG-INIT-DAG: "graph": "g_t_main_0_0"
 // DOWNSAMPLE-AVG-INIT-DAG: "status": "pass"
-// DOWNSAMPLE-AVG-INIT-DAG: "optimistic_cycles": 224
+// DOWNSAMPLE-AVG-INIT-DAG: "optimistic_cycles": 231
 // DOWNSAMPLE-AVG-INIT-DAG: "wavefront_steps": 22
 // DOWNSAMPLE-AVG-INIT-DAG: "event_count": 112
 // DOWNSAMPLE-AVG-INIT-DAG: "dynamic_work_items": 16
@@ -136,7 +136,7 @@
 // DOWNSAMPLE-AVG-DAG: "workload": "downsample_avg"
 // DOWNSAMPLE-AVG-DAG: "graph": "g_t_downsample_avg_0_0"
 // DOWNSAMPLE-AVG-DAG: "status": "pass"
-// DOWNSAMPLE-AVG-DAG: "optimistic_cycles": 64
+// DOWNSAMPLE-AVG-DAG: "optimistic_cycles": 76
 // DOWNSAMPLE-AVG-DAG: "wavefront_steps": 12
 // DOWNSAMPLE-AVG-DAG: "event_count": 38
 // DOWNSAMPLE-AVG-DAG: "dynamic_work_items": 4
@@ -152,14 +152,14 @@
 // DOWNSAMPLE-AVG-ROW1-DAG: "workload": "downsample_avg"
 // DOWNSAMPLE-AVG-ROW1-DAG: "graph": "g_t_downsample_avg_0_0"
 // DOWNSAMPLE-AVG-ROW1-DAG: "status": "pass"
-// DOWNSAMPLE-AVG-ROW1-DAG: "optimistic_cycles": 64
+// DOWNSAMPLE-AVG-ROW1-DAG: "optimistic_cycles": 76
 // DOWNSAMPLE-AVG-ROW1-DAG: "f32:17.500000"
 
 // CONV1D-DAG: "kind": "dfg_sim_report"
 // CONV1D-DAG: "workload": "conv1d"
 // CONV1D-DAG: "graph": "g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
 // CONV1D-DAG: "status": "pass"
-// CONV1D-DAG: "optimistic_cycles": 103
+// CONV1D-DAG: "optimistic_cycles": 119
 // CONV1D-DAG: "wavefront_steps": 13
 // CONV1D-DAG: "event_count": 38
 // CONV1D-DAG: "f32:5"
@@ -168,7 +168,7 @@
 // CONVOLVE-1D-DAG: "workload": "convolve_1d"
 // CONVOLVE-1D-DAG: "graph": "g_t_convolve_1d_kernel_0_0"
 // CONVOLVE-1D-DAG: "status": "pass"
-// CONVOLVE-1D-DAG: "optimistic_cycles": 187
+// CONVOLVE-1D-DAG: "optimistic_cycles": 210
 // CONVOLVE-1D-DAG: "wavefront_steps": 19
 // CONVOLVE-1D-DAG: "event_count": 96
 // CONVOLVE-1D-DAG: "f32:1.000000"
@@ -177,7 +177,7 @@
 // CORRELATION-DAG: "workload": "correlation"
 // CORRELATION-DAG: "graph": "g_t_correlation_kernel_0_0"
 // CORRELATION-DAG: "status": "pass"
-// CORRELATION-DAG: "optimistic_cycles": 412
+// CORRELATION-DAG: "optimistic_cycles": 453
 // CORRELATION-DAG: "wavefront_steps": 37
 // CORRELATION-DAG: "event_count": 204
 // CORRELATION-DAG: "f32:16"
@@ -186,7 +186,7 @@
 // CUMSUM-DAG: "workload": "cumsum"
 // CUMSUM-DAG: "graph": "g_t_cumsum_kernel_red_0_0"
 // CUMSUM-DAG: "status": "pass"
-// CUMSUM-DAG: "optimistic_cycles": 14339
+// CUMSUM-DAG: "optimistic_cycles": 17418
 // CUMSUM-DAG: "wavefront_steps": 2052
 // CUMSUM-DAG: "event_count": 7171
 // CUMSUM-DAG: "f32:5620"
@@ -195,7 +195,7 @@
 // COMPARE-SWAP-DAG: "workload": "compare_swap"
 // COMPARE-SWAP-DAG: "graph": "g_t_main_0_0"
 // COMPARE-SWAP-DAG: "status": "pass"
-// COMPARE-SWAP-DAG: "optimistic_cycles": 336
+// COMPARE-SWAP-DAG: "optimistic_cycles": 341
 // COMPARE-SWAP-DAG: "wavefront_steps": 20
 // COMPARE-SWAP-DAG: "event_count": 128
 // COMPARE-SWAP-DAG: "dynamic_work_items": 16
@@ -205,7 +205,7 @@
 // HASH-MIX-DAG: "graph": "g_t_main_1_0"
 // HASH-MIX-DAG: "status": "pass"
 // HASH-MIX-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// HASH-MIX-DAG: "optimistic_cycles": 1280
+// HASH-MIX-DAG: "optimistic_cycles": 1287
 // HASH-MIX-DAG: "wavefront_steps": 71
 // HASH-MIX-DAG: "event_count": 576
 // HASH-MIX-DAG: "dynamic_work_items": 64
@@ -216,7 +216,7 @@
 // XOR-BLOCK-DAG: "workload": "xor_block"
 // XOR-BLOCK-DAG: "graph": "g_t_xor_block_0_0"
 // XOR-BLOCK-DAG: "status": "pass"
-// XOR-BLOCK-DAG: "optimistic_cycles": 448
+// XOR-BLOCK-DAG: "optimistic_cycles": 452
 // XOR-BLOCK-DAG: "wavefront_steps": 35
 // XOR-BLOCK-DAG: "event_count": 160
 // XOR-BLOCK-DAG: "dynamic_work_items": 32
@@ -229,7 +229,7 @@
 // AXPY-DAG: "workload": "axpy"
 // AXPY-DAG: "graph": "g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
 // AXPY-DAG: "status": "pass"
-// AXPY-DAG: "optimistic_cycles": 136
+// AXPY-DAG: "optimistic_cycles": 141
 // AXPY-DAG: "wavefront_steps": 12
 // AXPY-DAG: "event_count": 48
 // AXPY-DAG: "dynamic_work_items": 8
@@ -242,7 +242,7 @@
 // RELU-DAG: "workload": "relu"
 // RELU-DAG: "graph": "g_t_relu_0_0"
 // RELU-DAG: "status": "pass"
-// RELU-DAG: "optimistic_cycles": 384
+// RELU-DAG: "optimistic_cycles": 389
 // RELU-DAG: "wavefront_steps": 36
 // RELU-DAG: "event_count": 160
 // RELU-DAG: "dynamic_work_items": 32
@@ -255,7 +255,7 @@
 // RELU-CHECKSUM-DAG: "workload": "relu"
 // RELU-CHECKSUM-DAG: "graph": "g_t_main_red_0_0"
 // RELU-CHECKSUM-DAG: "status": "pass"
-// RELU-CHECKSUM-DAG: "optimistic_cycles": 323
+// RELU-CHECKSUM-DAG: "optimistic_cycles": 361
 // RELU-CHECKSUM-DAG: "dynamic_work_items": 32
 // RELU-CHECKSUM-DAG: "f32:42"
 
@@ -263,7 +263,7 @@
 // ROTATE-BITS-DAG: "workload": "rotate_bits"
 // ROTATE-BITS-DAG: "graph": "g_t_rotate_bits_0_0"
 // ROTATE-BITS-DAG: "status": "pass"
-// ROTATE-BITS-DAG: "optimistic_cycles": 544
+// ROTATE-BITS-DAG: "optimistic_cycles": 551
 // ROTATE-BITS-DAG: "wavefront_steps": 37
 // ROTATE-BITS-DAG: "event_count": 256
 // ROTATE-BITS-DAG: "dynamic_work_items": 32
@@ -278,7 +278,7 @@
 // VARIANCE-MEAN-DAG: "workload": "variance"
 // VARIANCE-MEAN-DAG: "graph": "g_t_variance_red_0_0"
 // VARIANCE-MEAN-DAG: "status": "pass"
-// VARIANCE-MEAN-DAG: "optimistic_cycles": 232
+// VARIANCE-MEAN-DAG: "optimistic_cycles": 256
 // VARIANCE-MEAN-DAG: "wavefront_steps": 36
 // VARIANCE-MEAN-DAG: "event_count": 134
 // VARIANCE-MEAN-DAG: "dynamic_work_items": 16
@@ -291,7 +291,7 @@
 // VARIANCE-VAR-DAG: "workload": "variance"
 // VARIANCE-VAR-DAG: "graph": "g_t_variance_red_1_0"
 // VARIANCE-VAR-DAG: "status": "pass"
-// VARIANCE-VAR-DAG: "optimistic_cycles": 378
+// VARIANCE-VAR-DAG: "optimistic_cycles": 403
 // VARIANCE-VAR-DAG: "wavefront_steps": 37
 // VARIANCE-VAR-DAG: "event_count": 168
 // VARIANCE-VAR-DAG: "dynamic_work_items": 16
@@ -304,7 +304,7 @@
 // MATVEC-DAG: "workload": "matvec"
 // MATVEC-DAG: "graph": "g_t_matvec_kernel_0_0"
 // MATVEC-DAG: "status": "pass"
-// MATVEC-DAG: "optimistic_cycles": 83
+// MATVEC-DAG: "optimistic_cycles": 100
 // MATVEC-DAG: "wavefront_steps": 14
 // MATVEC-DAG: "event_count": 43
 // MATVEC-DAG: "dynamic_work_items": 5
@@ -316,14 +316,14 @@
 // MATVEC-ROW1-DAG: "workload": "matvec"
 // MATVEC-ROW1-DAG: "graph": "g_t_matvec_kernel_0_0"
 // MATVEC-ROW1-DAG: "status": "pass"
-// MATVEC-ROW1-DAG: "optimistic_cycles": 83
+// MATVEC-ROW1-DAG: "optimistic_cycles": 100
 // MATVEC-ROW1-DAG: "i32:130"
 
 // MATVEC-CHECKSUM-DAG: "kind": "dfg_sim_report"
 // MATVEC-CHECKSUM-DAG: "workload": "matvec"
 // MATVEC-CHECKSUM-DAG: "graph": "g_t_main_red_0_0"
 // MATVEC-CHECKSUM-DAG: "status": "pass"
-// MATVEC-CHECKSUM-DAG: "optimistic_cycles": 39
+// MATVEC-CHECKSUM-DAG: "optimistic_cycles": 49
 // MATVEC-CHECKSUM-DAG: "dynamic_work_items": 4
 // MATVEC-CHECKSUM-DAG: "i32:370"
 
@@ -331,7 +331,7 @@
 // GEMV-DAG: "workload": "gemv"
 // GEMV-DAG: "graph": "g_t_gemv_kernel_0_0"
 // GEMV-DAG: "status": "pass"
-// GEMV-DAG: "optimistic_cycles": 96
+// GEMV-DAG: "optimistic_cycles": 115
 // GEMV-DAG: "wavefront_steps": 15
 // GEMV-DAG: "event_count": 56
 // GEMV-DAG: "dynamic_work_items": 5
@@ -344,14 +344,14 @@
 // GEMV-ROW1-DAG: "workload": "gemv"
 // GEMV-ROW1-DAG: "graph": "g_t_gemv_kernel_0_0"
 // GEMV-ROW1-DAG: "status": "pass"
-// GEMV-ROW1-DAG: "optimistic_cycles": 96
+// GEMV-ROW1-DAG: "optimistic_cycles": 115
 // GEMV-ROW1-DAG: "i32:260"
 
 // GEMV-CHECKSUM-DAG: "kind": "dfg_sim_report"
 // GEMV-CHECKSUM-DAG: "workload": "gemv"
 // GEMV-CHECKSUM-DAG: "graph": "g_t_main_red_0_0"
 // GEMV-CHECKSUM-DAG: "status": "pass"
-// GEMV-CHECKSUM-DAG: "optimistic_cycles": 39
+// GEMV-CHECKSUM-DAG: "optimistic_cycles": 49
 // GEMV-CHECKSUM-DAG: "dynamic_work_items": 4
 // GEMV-CHECKSUM-DAG: "i32:758"
 
@@ -360,7 +360,7 @@
 // VECADD-DAG: "graph": "g_t_vecadd_0_0"
 // VECADD-DAG: "status": "pass"
 // VECADD-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// VECADD-DAG: "optimistic_cycles": 960
+// VECADD-DAG: "optimistic_cycles": 964
 // VECADD-DAG: "wavefront_steps": 67
 // VECADD-DAG: "event_count": 320
 // VECADD-DAG: "none"
@@ -369,14 +369,14 @@
 // VECADD-REDUCTION-DAG: "workload": "vecadd"
 // VECADD-REDUCTION-DAG: "graph": "g_t_main_red_0_0"
 // VECADD-REDUCTION-DAG: "status": "pass"
-// VECADD-REDUCTION-DAG: "optimistic_cycles": 643
+// VECADD-REDUCTION-DAG: "optimistic_cycles": 713
 // VECADD-REDUCTION-DAG: "f32:3024"
 
 // VECMUL-DAG: "kind": "dfg_sim_report"
 // VECMUL-DAG: "workload": "vecmul"
 // VECMUL-DAG: "graph": "g_t__ZN12_GLOBAL__N_116vecmul_candidateEPKfS1_Pfj_0_0"
 // VECMUL-DAG: "status": "pass"
-// VECMUL-DAG: "optimistic_cycles": 256
+// VECMUL-DAG: "optimistic_cycles": 260
 // VECMUL-DAG: "wavefront_steps": 19
 // VECMUL-DAG: "event_count": 80
 // VECMUL-DAG: "dynamic_work_items": 16
@@ -386,7 +386,7 @@
 // VECSCALE-DAG: "workload": "vecscale"
 // VECSCALE-DAG: "graph": "g_t__ZN12_GLOBAL__N_118vecscale_candidateEPKjjPjj_0_0"
 // VECSCALE-DAG: "status": "pass"
-// VECSCALE-DAG: "optimistic_cycles": 384
+// VECSCALE-DAG: "optimistic_cycles": 388
 // VECSCALE-DAG: "wavefront_steps": 35
 // VECSCALE-DAG: "event_count": 128
 // VECSCALE-DAG: "dynamic_work_items": 32
@@ -397,7 +397,7 @@
 // VECSUM-DAG: "graph": "g_t_vecsum_red_0_0"
 // VECSUM-DAG: "status": "pass"
 // VECSUM-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// VECSUM-DAG: "optimistic_cycles": 579
+// VECSUM-DAG: "optimistic_cycles": 649
 // VECSUM-DAG: "wavefront_steps": 131
 // VECSUM-DAG: "event_count": 387
 // VECSUM-DAG: "dynamic_work_items": 64
@@ -407,7 +407,7 @@
 // REDUCTION-DAG: "workload": "reduction"
 // REDUCTION-DAG: "graph": "g_t_reduce_sum_red_0_0"
 // REDUCTION-DAG: "status": "pass"
-// REDUCTION-DAG: "optimistic_cycles": 1155
+// REDUCTION-DAG: "optimistic_cycles": 1289
 // REDUCTION-DAG: "wavefront_steps": 259
 // REDUCTION-DAG: "event_count": 771
 // REDUCTION-DAG: "dynamic_work_items": 128
@@ -417,7 +417,7 @@
 // SPMV-DAG: "workload": "spmv"
 // SPMV-DAG: "graph": "g_t_spmv_kernel_red_0_0"
 // SPMV-DAG: "status": "pass"
-// SPMV-DAG: "optimistic_cycles": 45
+// SPMV-DAG: "optimistic_cycles": 58
 // SPMV-DAG: "wavefront_steps": 10
 // SPMV-DAG: "event_count": 23
 // SPMV-DAG: "i32:12"
@@ -426,7 +426,7 @@
 // MEAN-DAG: "workload": "mean"
 // MEAN-DAG: "graph": "g_t_mean_kernel_red_0_0"
 // MEAN-DAG: "status": "pass"
-// MEAN-DAG: "optimistic_cycles": 904
+// MEAN-DAG: "optimistic_cycles": 976
 // MEAN-DAG: "event_count": 518
 // MEAN-DAG: "f32:4.312500"
 
@@ -435,7 +435,7 @@
 // DOTPRODUCT-DAG: "graph": "g_t_dotproduct_red_0_0"
 // DOTPRODUCT-DAG: "status": "pass"
 // DOTPRODUCT-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// DOTPRODUCT-DAG: "optimistic_cycles": 1283
+// DOTPRODUCT-DAG: "optimistic_cycles": 1417
 // DOTPRODUCT-DAG: "wavefront_steps": 131
 // DOTPRODUCT-DAG: "event_count": 451
 // DOTPRODUCT-DAG: "f32:2016"
@@ -444,7 +444,7 @@
 // VECNORM-L1-DAG: "workload": "vecnorm_l1"
 // VECNORM-L1-DAG: "graph": "g_t_vecnorm_l1_red_0_0"
 // VECNORM-L1-DAG: "status": "pass"
-// VECNORM-L1-DAG: "optimistic_cycles": 643
+// VECNORM-L1-DAG: "optimistic_cycles": 714
 // VECNORM-L1-DAG: "event_count": 451
 // VECNORM-L1-DAG: "i32:171"
 
@@ -453,7 +453,7 @@
 // VECNORM-L2-DAG: "graph": "g_t_vecnorm_l2_red_0_0"
 // VECNORM-L2-DAG: "status": "pass"
 // VECNORM-L2-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// VECNORM-L2-DAG: "optimistic_cycles": 771
+// VECNORM-L2-DAG: "optimistic_cycles": 842
 // VECNORM-L2-DAG: "wavefront_steps": 132
 // VECNORM-L2-DAG: "event_count": 451
 // VECNORM-L2-DAG: "i32:619"
@@ -462,7 +462,7 @@
 // PREFIX-SUM-DAG: "workload": "prefix_sum"
 // PREFIX-SUM-DAG: "graph": "g_t_prefix_sum_red_0_0"
 // PREFIX-SUM-DAG: "status": "pass"
-// PREFIX-SUM-DAG: "optimistic_cycles": 835
+// PREFIX-SUM-DAG: "optimistic_cycles": 1034
 // PREFIX-SUM-DAG: "event_count": 451
 // PREFIX-SUM-DAG: "i32:2016"
 
@@ -470,7 +470,7 @@
 // PREFIX-SUM-INCLUSIVE-DAG: "workload": "prefix_sum_inclusive"
 // PREFIX-SUM-INCLUSIVE-DAG: "graph": "g_t_prefix_sum_inclusive_kernel_red_0_0"
 // PREFIX-SUM-INCLUSIVE-DAG: "status": "pass"
-// PREFIX-SUM-INCLUSIVE-DAG: "optimistic_cycles": 13302
+// PREFIX-SUM-INCLUSIVE-DAG: "optimistic_cycles": 16378
 // PREFIX-SUM-INCLUSIVE-DAG: "wavefront_steps": 2050
 // PREFIX-SUM-INCLUSIVE-DAG: "event_count": 7164
 // PREFIX-SUM-INCLUSIVE-DAG: "dynamic_work_items": 1023
@@ -481,38 +481,38 @@
 // INTEGRATE-TRAPZ-DAG: "graph": "g_t_integrate_trapz_red_0_0"
 // INTEGRATE-TRAPZ-DAG: "status": "pass"
 // INTEGRATE-TRAPZ-DAG: "metric_definition": "optimistic_pipeline_latency_throughput_sum"
-// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 333
+// INTEGRATE-TRAPZ-DAG: "optimistic_cycles": 376
 // INTEGRATE-TRAPZ-DAG: "wavefront_steps": 21
 // INTEGRATE-TRAPZ-DAG: "event_count": 149
 // INTEGRATE-TRAPZ-DAG: "f32:0.335938"
 
 // SUMMARY: kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic
-// SUMMARY-DAG: axpy,136,,blocked,DFG-sim report available
-// SUMMARY-DAG: bit_reverse,267,,blocked,DFG-sim report available
-// SUMMARY-DAG: byte_swap,320,,blocked,DFG-sim report available
-// SUMMARY-DAG: conv1d,103,,blocked,DFG-sim report available
-// SUMMARY-DAG: convolve_1d,187,,blocked,DFG-sim report available
-// SUMMARY-DAG: correlation,412,,blocked,DFG-sim report available
-// SUMMARY-DAG: cumsum,14339,,blocked,DFG-sim report available
-// SUMMARY-DAG: compare_swap,336,,blocked,DFG-sim report available
-// SUMMARY-DAG: dotproduct,1283,,blocked,DFG-sim report available
-// SUMMARY-DAG: downsample_avg,480,,blocked,DFG-sim report available
-// SUMMARY-DAG: gemv,423,,blocked,DFG-sim report available
-// SUMMARY-DAG: hash_mix,1280,,blocked,DFG-sim report available
-// SUMMARY-DAG: integrate_trapz,333,,blocked,DFG-sim report available
-// SUMMARY-DAG: mean,904,,blocked,DFG-sim report available
-// SUMMARY-DAG: matvec,371,,blocked,DFG-sim report available
-// SUMMARY-DAG: prefix_sum,835,,blocked,DFG-sim report available
-// SUMMARY-DAG: prefix_sum_inclusive,13302,,blocked,DFG-sim report available
-// SUMMARY-DAG: reduction,1155,,blocked,DFG-sim report available
-// SUMMARY-DAG: relu,707,,blocked,DFG-sim report available
-// SUMMARY-DAG: rotate_bits,544,,blocked,DFG-sim report available
-// SUMMARY-DAG: spmv,45,,blocked,DFG-sim report available
-// SUMMARY-DAG: variance,610,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecadd,1603,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecmul,256,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecnorm_l1,643,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecnorm_l2,771,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecscale,384,,blocked,DFG-sim report available
-// SUMMARY-DAG: vecsum,579,,blocked,DFG-sim report available
-// SUMMARY-DAG: xor_block,448,,blocked,DFG-sim report available
+// SUMMARY-DAG: axpy,141,,blocked,DFG-sim report available
+// SUMMARY-DAG: bit_reverse,274,,blocked,DFG-sim report available
+// SUMMARY-DAG: byte_swap,324,,blocked,DFG-sim report available
+// SUMMARY-DAG: conv1d,119,,blocked,DFG-sim report available
+// SUMMARY-DAG: convolve_1d,210,,blocked,DFG-sim report available
+// SUMMARY-DAG: correlation,453,,blocked,DFG-sim report available
+// SUMMARY-DAG: cumsum,17418,,blocked,DFG-sim report available
+// SUMMARY-DAG: compare_swap,341,,blocked,DFG-sim report available
+// SUMMARY-DAG: dotproduct,1417,,blocked,DFG-sim report available
+// SUMMARY-DAG: downsample_avg,535,,blocked,DFG-sim report available
+// SUMMARY-DAG: gemv,509,,blocked,DFG-sim report available
+// SUMMARY-DAG: hash_mix,1287,,blocked,DFG-sim report available
+// SUMMARY-DAG: integrate_trapz,376,,blocked,DFG-sim report available
+// SUMMARY-DAG: mean,976,,blocked,DFG-sim report available
+// SUMMARY-DAG: matvec,449,,blocked,DFG-sim report available
+// SUMMARY-DAG: prefix_sum,1034,,blocked,DFG-sim report available
+// SUMMARY-DAG: prefix_sum_inclusive,16378,,blocked,DFG-sim report available
+// SUMMARY-DAG: reduction,1289,,blocked,DFG-sim report available
+// SUMMARY-DAG: relu,750,,blocked,DFG-sim report available
+// SUMMARY-DAG: rotate_bits,551,,blocked,DFG-sim report available
+// SUMMARY-DAG: spmv,58,,blocked,DFG-sim report available
+// SUMMARY-DAG: variance,659,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecadd,1677,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecmul,260,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l1,714,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecnorm_l2,842,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecscale,388,,blocked,DFG-sim report available
+// SUMMARY-DAG: vecsum,649,,blocked,DFG-sim report available
+// SUMMARY-DAG: xor_block,452,,blocked,DFG-sim report available
