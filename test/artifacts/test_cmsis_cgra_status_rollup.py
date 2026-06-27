@@ -1893,7 +1893,7 @@ def assert_cmsis_softmax_u8_resource_pressure_evidence(
     case = "SoftmaxFunctions/arm_softmax_u8.c"
     stem = "arm_softmax_u8"
     graph = "g_t_arm_softmax_u8_red_0_0"
-    diagnostic = "resource_kind=fabric.op operation=arith.divsi required=17 available=0"
+    diagnostic = "resource_kind=fabric.op operation=arith.divsi required=17 available=1 placed=1 missing=16"
     assert_cmsis_mapping_blocker_row(
         repo,
         rows,
@@ -1959,6 +1959,35 @@ def assert_cmsis_softmax_u8_resource_pressure_evidence(
         for record in mapping_artifact.get("resource_pressure", [])
     ):
         raise AssertionError(f"{stem} should not report llvm.intr.ctlz resource pressure: {mapping_artifact}")
+    divsi_placements = [
+        placement
+        for placement in placements
+        if isinstance(placement, dict) and placement.get("operation") == "arith.divsi"
+    ]
+    if (
+        len(divsi_placements) != 1
+        or divsi_placements[0].get("resource_kind") != "fabric.op"
+        or not str(divsi_placements[0].get("hardware", "")).startswith(
+            "shared_reduction_adg::fabric.op#"
+        )
+    ):
+        raise AssertionError(f"{stem} should place one i64 arith.divsi on shared fabric: {mapping_artifact}")
+    divsi_pressure = [
+        record
+        for record in mapping_artifact.get("resource_pressure", [])
+        if isinstance(record, dict) and record.get("operation") == "arith.divsi"
+    ]
+    if divsi_pressure != [
+        {
+            "resource_kind": "fabric.op",
+            "operation": "arith.divsi",
+            "required": 17,
+            "available": 1,
+            "placed": 1,
+            "missing": 16,
+        }
+    ]:
+        raise AssertionError(f"{stem} should expose exact remaining arith.divsi pressure: {mapping_artifact}")
 
     cgra_report = json.loads((repo / row["cgra_report"]).read_text())
     comparison_report = json.loads((repo / row["comparison_report"]).read_text())

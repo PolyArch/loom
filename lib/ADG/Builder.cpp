@@ -2044,6 +2044,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   };
   addWideBinaryPe("wide_product", "wide_mul_lhs", "wide_mul_rhs",
                   {"arith.muli"});
+  addWideBinaryPe("wide_signed_quotient", "wide_div_lhs", "wide_div_rhs",
+                  {"arith.divsi"});
   addWideBinaryPe("wide_remainder", "wide_rem_lhs", "wide_rem_rhs",
                   {"arith.divui", "arith.remui"});
   addWideBinaryPe("wide_sum", "wide_add_lhs", "wide_add_rhs",
@@ -2743,43 +2745,56 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addSingleResultBits64Switch("wide_mul_rhs",
                               {"wide_zext0", "wide_zext1", "i64a", "i64c"});
   addSingleResultBits64Switch(
+      "wide_div_lhs", {"wide_product", "wide_zext0", "wide_zext1", "i64a"});
+  addSingleResultBits64Switch(
+      "wide_div_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
+  addSingleResultBits64Switch(
       "wide_rem_lhs", {"wide_product", "wide_zext0", "wide_zext1", "i64a"});
   addSingleResultBits64Switch(
       "wide_rem_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
   addSingleResultBits64Switch(
       "wide_add_lhs", {"i64a", "i64b", "i64c", "wide_shifted", "wide_zext0",
-                       "wide_zext1", "wide_product", "wide_remainder"});
+                       "wide_zext1", "wide_product", "wide_signed_quotient",
+                       "wide_remainder"});
   addSingleResultBits64Switch(
       "wide_add_rhs", {"i64a", "i64b", "i64c", "wide_shifted", "wide_zext0",
-                       "wide_zext1", "wide_product", "wide_remainder"});
+                       "wide_zext1", "wide_product", "wide_signed_quotient",
+                       "wide_remainder"});
   addSingleResultBits64Switch("wide_add_aux_lhs",
                               {"i64a", "i64b", "i64c", "wide_shifted",
                                "wide_sum", "wide_zext0", "wide_zext1",
-                               "wide_product", "wide_remainder"});
+                               "wide_product", "wide_signed_quotient",
+                               "wide_remainder"});
   addSingleResultBits64Switch("wide_add_aux_rhs",
                               {"i64a", "i64b", "i64c", "wide_shifted",
                                "wide_sum", "wide_zext0", "wide_zext1",
-                               "wide_product", "wide_remainder"});
+                               "wide_product", "wide_signed_quotient",
+                               "wide_remainder"});
   addSingleResultBits64Switch("wide_shift_lhs",
                               {"i64a", "i64b", "i64c", "wide_sum",
                                "wide_sum_aux", "wide_zext0", "wide_zext1",
-                               "wide_product", "wide_remainder"});
+                               "wide_product", "wide_signed_quotient",
+                               "wide_remainder"});
   addSingleResultBits64Switch(
       "wide_shift_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1"});
   addSingleResultBits64Switch("wide_trunc_input",
                               {"wide_remainder", "wide_product", "wide_zext0",
-                               "wide_zext1", "wide_pred_extui", "wide_shifted",
+                               "wide_zext1", "wide_pred_extui",
+                               "wide_signed_quotient", "wide_shifted",
                                "wide_sum", "wide_sum_aux"});
   addSingleResultBits64Switch("wide_trunc_aux_input",
                               {"wide_sum", "wide_sum_aux", "wide_shifted",
-                               "wide_remainder", "wide_product", "wide_zext0",
+                               "wide_remainder", "wide_product",
+                               "wide_signed_quotient", "wide_zext0",
                                "wide_zext1", "wide_pred_extui"});
   addSingleResultBits64Switch(
       "cmp64_lhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1",
-                    "wide_product", "wide_remainder", "wide_shifted"});
+                    "wide_product", "wide_signed_quotient", "wide_remainder",
+                    "wide_shifted"});
   addSingleResultBits64Switch(
       "cmp64_rhs", {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1",
-                    "wide_product", "wide_remainder", "wide_shifted"});
+                    "wide_product", "wide_signed_quotient", "wide_remainder",
+                    "wide_shifted"});
   addSingleResultBits32Switch("fp_negated_input",
                               {"data0", "data1", "data2", "data3", "data4",
                                "data5", "fp_running", "fp_running_aux",

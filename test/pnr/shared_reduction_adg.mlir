@@ -478,6 +478,14 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
       fabric.yield %value : !fabric.bits<64>
     }
   }
+  %wide_signed_quotient = fabric.pe [spatial] (%pa = %wide_div_lhs : !fabric.bits<64>,
+                    %pb = %wide_div_rhs : !fabric.bits<64>) -> !fabric.bits<64> {
+    fabric.fu(%lhs = %pa : !fabric.bits<64>,
+              %rhs = %pb : !fabric.bits<64>) -> !fabric.bits<64> {
+      %value = fabric.op [@arith.divsi] (%lhs, %rhs) : (!fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+      fabric.yield %value : !fabric.bits<64>
+    }
+  }
   %wide_remainder = fabric.pe [spatial] (%pa = %wide_rem_lhs : !fabric.bits<64>,
                     %pb = %wide_rem_rhs : !fabric.bits<64>) -> !fabric.bits<64> {
     fabric.fu(%lhs = %pa : !fabric.bits<64>,
@@ -918,42 +926,48 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %wide_mul_rhs = fabric.switch [spatial] %wide_zext0, %wide_zext1, %i64a, %i64c
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_div_lhs = fabric.switch [spatial] %wide_product, %wide_zext0, %wide_zext1, %i64a
+    [{connectivity_table = ["1111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_div_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1
+    [{connectivity_table = ["11111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
   %wide_rem_lhs = fabric.switch [spatial] %wide_product, %wide_zext0, %wide_zext1, %i64a
     [{connectivity_table = ["1111"]}]
     : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
   %wide_rem_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1
     [{connectivity_table = ["11111"]}]
     : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_add_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder
-    [{connectivity_table = ["11111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_add_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder
-    [{connectivity_table = ["11111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_add_aux_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_sum, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder
+  %wide_add_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder
     [{connectivity_table = ["111111111"]}]
     : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_add_aux_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_sum, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder
+  %wide_add_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder
     [{connectivity_table = ["111111111"]}]
     : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_shift_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_sum, %wide_sum_aux, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder
-    [{connectivity_table = ["111111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_add_aux_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_sum, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder
+    [{connectivity_table = ["1111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_add_aux_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_shifted, %wide_sum, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder
+    [{connectivity_table = ["1111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_shift_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_sum, %wide_sum_aux, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder
+    [{connectivity_table = ["1111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
   %wide_shift_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1
     [{connectivity_table = ["11111"]}]
     : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_trunc_input = fabric.switch [spatial] %wide_remainder, %wide_product, %wide_zext0, %wide_zext1, %wide_pred_extui, %wide_shifted, %wide_sum, %wide_sum_aux
-    [{connectivity_table = ["11111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %wide_trunc_aux_input = fabric.switch [spatial] %wide_sum, %wide_sum_aux, %wide_shifted, %wide_remainder, %wide_product, %wide_zext0, %wide_zext1, %wide_pred_extui
-    [{connectivity_table = ["11111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %cmp64_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder, %wide_shifted
-    [{connectivity_table = ["11111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
-  %cmp64_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1, %wide_product, %wide_remainder, %wide_shifted
-    [{connectivity_table = ["11111111"]}]
-    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_trunc_input = fabric.switch [spatial] %wide_remainder, %wide_product, %wide_zext0, %wide_zext1, %wide_pred_extui, %wide_signed_quotient, %wide_shifted, %wide_sum, %wide_sum_aux
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %wide_trunc_aux_input = fabric.switch [spatial] %wide_sum, %wide_sum_aux, %wide_shifted, %wide_remainder, %wide_product, %wide_signed_quotient, %wide_zext0, %wide_zext1, %wide_pred_extui
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %cmp64_lhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder, %wide_shifted
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
+  %cmp64_rhs = fabric.switch [spatial] %i64a, %i64b, %i64c, %wide_zext0, %wide_zext1, %wide_product, %wide_signed_quotient, %wide_remainder, %wide_shifted
+    [{connectivity_table = ["111111111"]}]
+    : (!fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>, !fabric.bits<64>) -> !fabric.bits<64>
   %fp_negated_input = fabric.switch [spatial] %data0, %data1, %data2, %data3, %data4, %data5, %fp_running, %fp_running_aux, %fp_diff, %fp_diff_aux, %scaled_reduction
     [{connectivity_table = ["11111111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
