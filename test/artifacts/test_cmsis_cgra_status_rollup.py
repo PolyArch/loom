@@ -778,6 +778,17 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_dfg_unsupported_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-nn",
+        "FullyConnectedFunctions/arm_fully_connected_s8.c",
+        "arm_fully_connected_s8",
+        "g_t_arm_fully_connected_s8_red_0_0",
+        "unsupported op: llvm.call",
+        expected_callee="@arm_nn_vec_mat_mult_t_s8",
+    )
     run(
         repo,
         [
@@ -867,6 +878,7 @@ def assert_cmsis_dfg_unsupported_row(
     stem: str,
     graph: str,
     diagnostic: str,
+    expected_callee: str | None = None,
 ) -> None:
     row = one_row(rows, suite, case)
     if (
@@ -878,6 +890,12 @@ def assert_cmsis_dfg_unsupported_row(
         or row["mapping_status"] != "not_run"
         or row["cgra_status"] != "not_run"
         or row["comparison_status"] != "not_run"
+        or row["mapping_artifact"] != ""
+        or row["mapping_artifact_fingerprint"] != ""
+        or row["cgra_report"] != ""
+        or row["cgra_report_fingerprint"] != ""
+        or row["comparison_report"] != ""
+        or row["comparison_report_fingerprint"] != ""
         or row["final_outputs_present"] != "false"
         or row["final_memory_state_present"] != "false"
         or diagnostic not in row["diagnostic"]
@@ -903,6 +921,15 @@ def assert_cmsis_dfg_unsupported_row(
         or diagnostic not in report_data.get("diagnostics", [])
     ):
         raise AssertionError(f"unexpected CMSIS unsupported DFG report: {report_data}")
+    if expected_callee is not None:
+        lowered_dfg = sim_evidence / f"{stem}.lowered.dfg.mlir"
+        if not lowered_dfg.is_file():
+            raise AssertionError(f"CMSIS unsupported DFG row should emit {lowered_dfg}")
+        lowered_text = lowered_dfg.read_text()
+        if "llvm.call" not in lowered_text or expected_callee not in lowered_text:
+            raise AssertionError(
+                f"CMSIS unsupported DFG row should preserve call to {expected_callee}: {lowered_dfg}"
+            )
 
 
 def assert_cmsis_mat_mult_f32_dfg_ready_for_mapping_evidence(
@@ -2797,6 +2824,17 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_dfg_unsupported_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-nn",
+        "FullyConnectedFunctions/arm_fully_connected_s8.c",
+        "arm_fully_connected_s8",
+        "g_t_arm_fully_connected_s8_red_0_0",
+        "unsupported op: llvm.call",
+        expected_callee="@arm_nn_vec_mat_mult_t_s8",
+    )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"
