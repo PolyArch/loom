@@ -94,7 +94,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES = ("mmtile",)
+MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
@@ -133,42 +133,7 @@ PARTIAL_LOWERING_SWEEP_CASES = {
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
     ),
 }
-MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {
-    "mmtile": {
-        "diagnostic": "missing hardware resource for software op arith.addi",
-        "graph": "g_t_mmtile_kernel_red_0_0",
-        "dynamic_work_items": 2,
-        "final_outputs": ["none", "i32:6"],
-        "operation_fire_counts": {
-            "arith.addi": 232,
-            "arith.cmpi": 22,
-            "arith.index_cast": 432,
-            "arith.muli": 192,
-            "dataflow.load": 120,
-            "dataflow.store": 24,
-            "llvm.intr.umin": 16,
-            "llvm.trunc": 144,
-            "llvm.zext": 24,
-            "scf.if": 54,
-        },
-        "final_memory_state": {
-            "arg11": [
-                "i32:3",
-                "i32:8",
-                "i32:5",
-                "i32:11",
-                "i32:5",
-                "i32:7",
-                "i32:20",
-                "i32:11",
-                "i32:3",
-                "i32:12",
-                "i32:7",
-                "i32:7",
-            ],
-        },
-    },
-}
+MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {}
 
 HEADER = [
     "suite",
@@ -1137,6 +1102,69 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
+
+
+def assert_mmtile_evidence(evidence_dir: Path) -> None:
+    expected_output = [
+        "i32:3",
+        "i32:8",
+        "i32:5",
+        "i32:11",
+        "i32:5",
+        "i32:7",
+        "i32:20",
+        "i32:11",
+        "i32:3",
+        "i32:12",
+        "i32:7",
+        "i32:7",
+    ]
+    expected_counts = {
+        "arith.addi": 232,
+        "arith.cmpi": 22,
+        "arith.index_cast": 432,
+        "arith.muli": 192,
+        "dataflow.load": 120,
+        "dataflow.store": 24,
+        "llvm.intr.umin": 16,
+        "llvm.trunc": 144,
+        "llvm.zext": 24,
+        "scf.if": 54,
+    }
+
+    dfg_path = evidence_dir / "mmtile.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_mmtile_kernel_red_0_0"
+        or dfg.get("dynamic_work_items") != 2
+        or dfg.get("final_outputs") != ["none", "i32:6"]
+        or dfg.get("final_memory_state", {}).get("arg11") != expected_output
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"mmtile DFG evidence should match the real tiled multiply output: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("mmtile", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "mmtile.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"mmtile mapping should route on the shared memory reduction ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "mmtile.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("final_outputs") != ["none", "i32:6"]
+        or cgra.get("final_memory_state", {}).get("arg11") != expected_output
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"mmtile CGRA evidence should carry real final memory state: {cgra_path}: {cgra}")
 
 
 def assert_string_hash_evidence(evidence_dir: Path) -> None:
@@ -2773,6 +2801,7 @@ def main(argv: list[str]) -> int:
             "gemv",
             "gemm",
             "matmul",
+            "mmtile",
             "mat3x3_mult",
             "matvec",
             "downsample_avg",
@@ -2849,6 +2878,7 @@ def main(argv: list[str]) -> int:
         assert_cross_product_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
+        assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
         assert_covariance_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
@@ -2880,6 +2910,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "dotprod", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bisection_step", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "mmtile", "shared_memory_reduction_adg")
         assert_component_references_resolve(evidence_dir, "dotprod")
         assert_component_references_resolve(evidence_dir, "dot_product_3d")
         assert_component_mapping_status(
@@ -3219,6 +3250,7 @@ def main(argv: list[str]) -> int:
             "gemm",
             "matmul",
             "mat3x3_mult",
+            "mmtile",
             "matvec",
             "downsample_avg",
             "vecadd",
@@ -3337,8 +3369,8 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 63,
-            "fail": 1,
+            "pass": 64,
+            "fail": 0,
             "blocked": 45,
             "unsupported": 0,
             "missing_status": 0,

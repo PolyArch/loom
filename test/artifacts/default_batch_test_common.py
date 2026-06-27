@@ -43,6 +43,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "matvec",
     "mean",
     "merge",
+    "mmtile",
     "modmul",
     "newton_iter",
     "pack_bits",

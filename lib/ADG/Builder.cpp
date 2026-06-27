@@ -963,6 +963,43 @@ void addUnaryPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
+                        llvm::StringRef input, llvm::StringRef opName) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%value = " +
+                          valueName(input) +
+                          " : !fabric.bits<32> to !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%input = %value : !fabric.bits<64> to "
+      "!fabric.bits<32>) -> !fabric.bits<64> {");
+  module.addExactBodyLine("        %result = fabric.op [@" + opName.str() +
+                          "] (%input)");
+  module.addExactBodyLine(
+      "                 : (!fabric.bits<32>) -> !fabric.bits<64>");
+  module.addExactBodyLine("        fabric.yield %result : !fabric.bits<64>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
+                    llvm::StringRef input) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%value = " +
+                          valueName(input) + " : !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%input = %value : !fabric.bits<64>) -> "
+      "!fabric.bits<64> {");
+  module.addExactBodyLine("        %result = fabric.op [@llvm.trunc] (%input)");
+  module.addExactBodyLine(
+      "                 : (!fabric.bits<64>) -> !fabric.bits<32>");
+  module.addExactBodyLine(
+      "        fabric.yield %result : !fabric.bits<32> to !fabric.bits<64>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
 void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
                   llvm::StringRef lhs, llvm::StringRef rhs, llvm::StringRef acc,
                   llvm::StringRef opName) {
@@ -3538,11 +3575,13 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   constexpr unsigned kCmpCount = 12;
   constexpr unsigned kMinCount = 10;
   constexpr unsigned kMaxCount = 10;
+  constexpr unsigned kUnsignedMinCount = 4;
   constexpr unsigned kSelectCount = 8;
   constexpr unsigned kMulCount = 8;
   constexpr unsigned kLogicCount = 8;
   constexpr unsigned kShiftCount = 8;
   constexpr unsigned kCastCount = 8;
+  constexpr unsigned kWideCastCount = 4;
   constexpr unsigned kExtuiCount = 4;
   constexpr unsigned kFpAddCount = 4;
   constexpr unsigned kFpMulCount = 4;
@@ -3561,6 +3600,8 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
 
   std::vector<std::string> sources32 = {"i32a", "i32b", "i32c", "i32d"};
   std::vector<std::string> sinks32;
+  std::vector<std::string> sources64;
+  std::vector<std::string> sinks64;
   std::vector<std::string> sources0 = {"ctrl"};
   std::vector<std::string> sinks0;
 
@@ -3584,6 +3625,32 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
       addUnaryPe(module, result, input, opName);
       sources32.push_back(result);
       sinks32.push_back(input);
+    }
+  };
+  auto addWideExtensionBank = [&](llvm::StringRef prefix, unsigned count,
+                                  llvm::StringRef opName) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string input = result + "_input";
+      addWideExtensionPe(module, result, input, opName);
+      sources64.push_back(result);
+      sinks32.push_back(input);
+    }
+  };
+  auto addWideTruncBank = [&](llvm::StringRef prefix, unsigned count) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string wideResult = result + "_wide";
+      std::string input = result + "_input";
+      addWideTruncPe(module, wideResult, input);
+      module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
+                              valueName(wideResult) +
+                              " [max_depth = 1, bypassable = true] "
+                              "{bypassed = true}");
+      module.addExactBodyLine(
+          "  : !fabric.bits<64> to !fabric.bits<32>");
+      sources32.push_back(result);
+      sinks64.push_back(input);
     }
   };
   auto addTernaryBank = [&](llvm::StringRef prefix, unsigned count,
@@ -3619,6 +3686,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   addBinaryBank("xor", kLogicCount, {"arith.xori"});
   addBinaryBank("shift", kShiftCount,
                 {"arith.shli", "arith.shrsi", "arith.shrui"});
+  addBinaryBank("umin", kUnsignedMinCount, {"llvm.intr.umin"});
   addBinaryBank("smin", kMinCount, {"llvm.intr.smin"});
   addBinaryBank("smax", kMaxCount, {"llvm.intr.smax"});
 
@@ -3657,6 +3725,8 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   addUnaryBank("cast", kCastCount, "llvm.trunc");
   addUnaryBank("sext", kCastCount, "llvm.sext");
   addUnaryBank("zext", kCastCount, "llvm.zext");
+  addWideExtensionBank("wide_zext", kWideCastCount, "llvm.zext");
+  addWideTruncBank("wide_trunc", kWideCastCount);
   addUnaryBank("extui", kExtuiCount, "arith.extui");
 
   for (unsigned index = 0; index < kSyncCount; ++index) {
@@ -3683,6 +3753,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   }
 
   addUniformSwitch(module, sinks32, sources32, "!fabric.bits<32>");
+  addUniformSwitch(module, sinks64, sources64, "!fabric.bits<64>");
   addUniformSwitch(module, sinks0, sources0, "!fabric.bits<0>");
   addMemoryReductionMem(module, kLoadCount, kStoreCount);
   return module;

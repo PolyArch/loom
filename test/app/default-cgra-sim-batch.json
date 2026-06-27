@@ -134,6 +134,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "mmtile",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "mat3x3_mult",
       "hardware": "shared_reduction_adg"
     },

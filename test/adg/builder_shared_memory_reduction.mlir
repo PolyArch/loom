@@ -16,9 +16,12 @@
 // HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
 // HARDWARE-DAG: fabric.op [@arith.cmpf]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
+// HARDWARE-DAG: fabric.op [@llvm.intr.umin]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smin]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
 // HARDWARE-DAG: fabric.op [@arith.select]
+// HARDWARE-DAG: fabric.op [@llvm.trunc]
+// HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.mem [spatial]
 
 // MAPPING-DAG: "workload": "minmax_pressure"

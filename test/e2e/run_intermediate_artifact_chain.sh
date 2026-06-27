@@ -317,7 +317,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" ]]; then
+    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "mmtile" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(

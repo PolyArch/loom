@@ -35,7 +35,7 @@
     },
     {
       "case": "mmtile",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "outer",

@@ -363,8 +363,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 63,
-            "fail": 1,
+            "pass": 64,
+            "fail": 0,
             "blocked": 45,
             "unsupported": 0,
             "missing_status": 0,
@@ -527,45 +527,9 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {
-    "mmtile": "missing hardware resource for software op arith.addi",
-}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
-    "mmtile": {
-        "graph": "g_t_mmtile_kernel_red_0_0",
-        "dynamic_work_items": 2,
-        "final_output_suffix": ["i32:6"],
-        "operation_fire_counts": {
-            "arith.addi": 232,
-            "arith.cmpi": 22,
-            "arith.index_cast": 432,
-            "arith.muli": 192,
-            "dataflow.load": 120,
-            "dataflow.store": 24,
-            "llvm.intr.umin": 16,
-            "llvm.trunc": 144,
-            "llvm.zext": 24,
-            "scf.if": 54,
-        },
-        "final_memory_state": {
-            "arg11": [
-                "i32:3",
-                "i32:8",
-                "i32:5",
-                "i32:11",
-                "i32:5",
-                "i32:7",
-                "i32:20",
-                "i32:11",
-                "i32:3",
-                "i32:12",
-                "i32:7",
-                "i32:7",
-            ],
-        },
-    },
-}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
 
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
@@ -759,8 +723,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 3,
-            "fail": 1,
+            "pass": 4,
+            "fail": 0,
             "blocked": 45,
             "unsupported": 0,
             "missing_status": 60,
@@ -769,6 +733,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "autocorrelation", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "unpack_bits", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "mmtile", expected_hardware="shared_memory_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 
