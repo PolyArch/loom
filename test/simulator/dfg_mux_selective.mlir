@@ -12,6 +12,8 @@
 // RUN: FileCheck %s --check-prefix=COMPUTED-SELECT-TRUE < %t.computed_select_true.json
 // RUN: loom-dfg-sim %s --graph computed_i1_arith_select --arg 0=none --arg 1=false --arg 2=11 --arg 3=22 --output %t.computed_select_false.json
 // RUN: FileCheck %s --check-prefix=COMPUTED-SELECT-FALSE < %t.computed_select_false.json
+// RUN: loom-dfg-sim %s --graph structured_mux_loop --arg 0=none --arg 1=true --arg 2=11 --arg 3=22 --output %t.structured_mux.json
+// RUN: FileCheck %s --check-prefix=STRUCTURED-MUX < %t.structured_mux.json
 
 // FALSE-DAG: "status": "pass"
 // FALSE-DAG: "dataflow.mux": 1
@@ -45,6 +47,11 @@
 
 // COMPUTED-SELECT-FALSE-DAG: "status": "pass"
 // COMPUTED-SELECT-FALSE-DAG: "i64:11"
+
+// STRUCTURED-MUX-DAG: "status": "pass"
+// STRUCTURED-MUX-DAG: "dataflow.mux": 1
+// STRUCTURED-MUX-DAG: "i64:22"
+// STRUCTURED-MUX-NOT: "unsupported op: dataflow.mux"
 
 module {
   dataflow.graph.func private @mux_false_lane(%ctrl: none, %sel: i1,
@@ -95,6 +102,19 @@ module {
       -> (none, i64) {
     %computed_sel = arith.andi %sel, %sel : i1
     %out = arith.select %computed_sel, %true_value, %false_value : i64
+    dataflow.graph.return %ctrl, %out : none, i64
+  }
+
+  dataflow.graph.func private @structured_mux_loop(%ctrl: none, %sel: i1,
+                                                   %false_value: i64,
+                                                   %true_value: i64)
+      -> (none, i64) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %out = scf.for %i = %c0 to %c1 step %c1 iter_args(%carry = %false_value) -> (i64) {
+      %selected = dataflow.mux %sel, %carry, %true_value : (i1, i64, i64) -> i64
+      scf.yield %selected : i64
+    }
     dataflow.graph.return %ctrl, %out : none, i64
   }
 }

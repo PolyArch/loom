@@ -1595,6 +1595,47 @@ bool assignLocalGate(dataflow::GateOp op, SimulatorState &state,
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool assignLocalMux(dataflow::MuxOp op, SimulatorState &state,
+                    LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<Token> sel =
+      lookupToken(op.getSel(), state, locals, captureIndex);
+  if (!sel)
+    return false;
+  const std::int64_t lane = mlir::isa<mlir::IntegerType>(op.getSel().getType())
+                                ? boolToken(*sel)
+                                : integerToken(*sel);
+  if (lane < 0 || static_cast<std::size_t>(lane) >= op.getInputs().size()) {
+    state.diagnostics.push_back("dataflow.mux selector is out of range");
+    return false;
+  }
+  std::optional<Token> selected =
+      lookupToken(op.getInputs()[static_cast<unsigned>(lane)], state, locals,
+                  captureIndex);
+  if (!selected)
+    return false;
+  locals[op.getOutput()] = *selected;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalDemux(dataflow::DemuxOp op, SimulatorState &state,
+                      LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<Token> sel =
+      lookupToken(op.getSel(), state, locals, captureIndex);
+  std::optional<Token> input =
+      lookupToken(op.getInput(), state, locals, captureIndex);
+  if (!sel || !input)
+    return false;
+  const std::int64_t lane = mlir::isa<mlir::IntegerType>(op.getSel().getType())
+                                ? boolToken(*sel)
+                                : integerToken(*sel);
+  if (lane < 0 || static_cast<std::size_t>(lane) >= op.getOutputs().size()) {
+    state.diagnostics.push_back("dataflow.demux selector is out of range");
+    return false;
+  }
+  locals[op.getOutputs()[static_cast<unsigned>(lane)]] = *input;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
                                 LocalValueMap &locals, unsigned captureIndex);
 bool executeStructuredFor(mlir::scf::ForOp op, SimulatorState &state,
@@ -1787,6 +1828,10 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalDataflowStore(store, state, locals, captureIndex);
   if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
     return assignLocalGate(gate, state, locals, captureIndex);
+  if (auto mux = mlir::dyn_cast<dataflow::MuxOp>(op))
+    return assignLocalMux(mux, state, locals, captureIndex);
+  if (auto demux = mlir::dyn_cast<dataflow::DemuxOp>(op))
+    return assignLocalDemux(demux, state, locals, captureIndex);
   if (op->getNumResults() == 1 &&
       isSupportedPrimitiveOperation(primitiveOperationName(op)))
     return assignLocalPrimitiveResult(op, op->getResult(0), state, locals,
@@ -1852,7 +1897,8 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
       return cast->getName().getStringRef().str();
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
-                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+                  dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
+                  mlir::LLVM::GEPOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -1932,7 +1978,8 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
       return cast->getName().getStringRef().str();
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
-                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+                  dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
+                  mlir::LLVM::GEPOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -1984,7 +2031,8 @@ unsupportedStructuredWhileBody(mlir::Block *block,
       return cast->getName().getStringRef().str();
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
-                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+                  dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
+                  mlir::LLVM::GEPOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2051,7 +2099,8 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
       return cast->getName().getStringRef().str();
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
-                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+                  dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
+                  mlir::LLVM::GEPOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))

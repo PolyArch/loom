@@ -70,6 +70,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.umax", 1, 1, true, true},
     {"llvm.intr.smin", 1, 1, true, true},
     {"llvm.intr.smax", 1, 1, true, true},
+    {"llvm.intr.ctlz", 1, 1, true, true},
     {"llvm.intr.fmuladd", 8, 8, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"llvm.intr.fabs", 1, 1, true, true},
@@ -830,6 +831,18 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     const std::int64_t selected =
         opName == "llvm.intr.smin" ? std::min(lhs, rhs) : std::max(lhs, rhs);
     return integerFromSigned(selected, bitWidth);
+  }
+  if (opName == "llvm.intr.ctlz") {
+    if (llvm::Error arity = requireArity(opName, operands, 1))
+      return std::move(arity);
+    const std::uint64_t bits = toUnsignedBits(operands[0], bitWidth);
+    unsigned leadingZeros = 0;
+    for (unsigned bit = bitWidth; bit > 0; --bit) {
+      if ((bits & (std::uint64_t{1} << (bit - 1))) != 0)
+        break;
+      ++leadingZeros;
+    }
+    return integerFromBits(leadingZeros, bitWidth);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

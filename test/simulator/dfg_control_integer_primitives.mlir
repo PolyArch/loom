@@ -12,6 +12,8 @@
 // RUN: FileCheck %s --check-prefix=UNSIGNED < %t.unsigned.json
 // RUN: loom-dfg-sim %s --graph signed_minmax --arg 0=none --output %t.signed-minmax.json
 // RUN: FileCheck %s --check-prefix=SIGNED-MINMAX < %t.signed-minmax.json
+// RUN: loom-dfg-sim %s --graph count_leading_zeros --arg 0=none --output %t.ctlz.json
+// RUN: FileCheck %s --check-prefix=CTLZ < %t.ctlz.json
 
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
@@ -69,6 +71,12 @@
 // SIGNED-MINMAX-DAG: "llvm.intr.smax": 1
 // SIGNED-MINMAX-DAG: "i8:-4"
 // SIGNED-MINMAX-DAG: "i8:7"
+
+// CTLZ-DAG: "workload": "count_leading_zeros"
+// CTLZ-DAG: "graph": "count_leading_zeros"
+// CTLZ-DAG: "status": "pass"
+// CTLZ-DAG: "llvm.intr.ctlz": 1
+// CTLZ-DAG: "i32:27"
 
 module {
   dataflow.graph.func private @compare_select(%ctrl: none) -> (none, f32) {
@@ -137,5 +145,12 @@ module {
     %min = llvm.intr.smin(%minus_four, %seven) : (i8, i8) -> i8
     %max = llvm.intr.smax(%minus_four, %seven) : (i8, i8) -> i8
     dataflow.graph.return %ctrl, %min, %max : none, i8, i8
+  }
+
+  dataflow.graph.func private @count_leading_zeros(%ctrl: none)
+      -> (none, i32) {
+    %value = dataflow.constant %ctrl {const_value = 16 : i32} : i32
+    %zeros = "llvm.intr.ctlz"(%value) <{is_zero_poison = false}> : (i32) -> i32
+    dataflow.graph.return %ctrl, %zeros : none, i32
   }
 }

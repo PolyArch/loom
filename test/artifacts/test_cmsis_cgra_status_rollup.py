@@ -778,6 +778,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_softmax_u8_mapping_unsupported_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
@@ -1766,6 +1767,37 @@ def assert_cmsis_vector_sum_cgra_evidence(
         )
 
 
+def assert_cmsis_mapping_unsupported_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    suite: str,
+    case: str,
+    *,
+    diagnostic_substring: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "mapping_artifact_unsupported"
+        or row["blocking_prerequisite"] != "mapping_artifact"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or not row["mapping_artifact"]
+        or not row["cgra_report"]
+        or not row["comparison_report"]
+        or row["hardware_system"] != "shared_reduction_adg"
+        or diagnostic_substring not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose exact PnR unsupported evidence: {row}")
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+    assert_sha256_file(row["mapping_artifact"], row["mapping_artifact_fingerprint"], repo)
+    assert_sha256_file(row["cgra_report"], row["cgra_report_fingerprint"], repo)
+    assert_sha256_file(row["comparison_report"], row["comparison_report_fingerprint"], repo)
+
+
 def assert_cmsis_minmax_s8_mapping_blocker_evidence(
     repo: Path,
     rows: list[dict[str, str]],
@@ -1882,6 +1914,82 @@ def assert_cmsis_maximum_s8_mapping_blocker_evidence(
         intrinsic="llvm.intr.smax",
         expected_output=["i8:3", "i8:5", "i8:7"],
     )
+
+
+def assert_cmsis_softmax_u8_mapping_unsupported_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "SoftmaxFunctions/arm_softmax_u8.c"
+    stem = "arm_softmax_u8"
+    graph = "g_t_arm_softmax_u8_red_0_0"
+    diagnostic = "unsupported PnR graph operation: llvm.intr.ctlz"
+    assert_cmsis_mapping_unsupported_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        case,
+        diagnostic_substring=diagnostic,
+    )
+    row = one_row(rows, "cmsis-nn", case)
+    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        artifact = sim_evidence / Path(row[key]).name
+        if not artifact.is_file():
+            raise AssertionError(f"attempt manifest should emit {artifact}")
+    expected_memory = {
+        "arg45": ["i8:1", "i8:2", "i8:3"],
+        "arg46": ["i8:0", "i8:0", "i8:0"],
+    }
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 9
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.mux") != 6
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.ctlz") != 1
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    mapping_diagnostics = " ".join(mapping_artifact.get("diagnostics", []))
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("graph") != graph
+        or mapping_artifact.get("hardware") != "shared_reduction_adg"
+        or mapping_artifact.get("status") != "unsupported"
+        or diagnostic not in mapping_diagnostics
+    ):
+        raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    cgra_diagnostics = " ".join(cgra_report.get("diagnostics", []))
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != case
+        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("status") != "blocked"
+        or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra_report.get("final_outputs") != ["none"]
+        or cgra_report.get("final_memory_state") != expected_memory
+        or diagnostic not in cgra_diagnostics
+        or comparison_report.get("status") != "blocked"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "blocked"
+    ):
+        raise AssertionError(
+            f"unexpected {stem} CGRA comparison evidence: {cgra_report} {comparison_report}"
+        )
 
 
 def assert_cmsis_relu_q7_cgra_evidence(
@@ -2824,6 +2932,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_softmax_u8_mapping_unsupported_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
