@@ -7,8 +7,10 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
@@ -1495,6 +1497,29 @@ std::optional<Token> lookupToken(mlir::Value value, SimulatorState &state,
     return pendingIt->second[captureIndex - observedCount];
   return observedIt->second[captureIndex];
 }
+
+bool valueAvailableForStructuredRegion(mlir::Value value, SimulatorState &state,
+                                       const LocalValueMap &locals,
+                                       unsigned captureIndex) {
+  if (locals.contains(value))
+    return true;
+  if (state.memories.contains(value))
+    return true;
+  return lookupToken(value, state, locals, captureIndex).has_value();
+}
+
+bool structuredRegionCapturesAvailable(mlir::Region &region,
+                                       SimulatorState &state,
+                                       const LocalValueMap &locals,
+                                       unsigned captureIndex) {
+  llvm::SetVector<mlir::Value> captures;
+  mlir::getUsedValuesDefinedAbove(region, captures);
+  for (mlir::Value value : captures) {
+    if (!valueAvailableForStructuredRegion(value, state, locals, captureIndex))
+      return false;
+  }
+  return true;
+}
 unsigned structuredForFireIndex(mlir::scf::ForOp op,
                                 const SimulatorState &state) {
   if (op->getNumResults() == 0)
@@ -2744,6 +2769,8 @@ bool fireStructuredForall(mlir::scf::ForallOp op, SimulatorState &state) {
   LocalValueMap operands;
   for (mlir::OpOperand &operand : op->getOpOperands())
     operands[operand.get()] = peekToken(state.channels, operand);
+  if (!structuredRegionCapturesAvailable(op.getRegion(), state, operands, 0))
+    return false;
 
   SimulatorState probeState = state;
   MemoryCloneMap probeClones = isolateProbeStateMemory(probeState);

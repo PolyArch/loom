@@ -621,18 +621,21 @@ struct LowerForToGraphPass
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp>(
               op))
         return false;
-      if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::ForallOp,
-                      ::mlir::scf::WhileOp>(op))
+      if (::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::WhileOp>(op))
         return false;
+      if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(op)) {
+        if (!isEffectFormForallGraphCandidate(forall))
+          return false;
+        continue;
+      }
       if (::llvm::isa<::mlir::scf::IfOp>(op)) {
         bool hasNestedBoundary = false;
         op.walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
           if (nested == &op)
             return ::mlir::WalkResult::advance();
-          if (::llvm::isa<::dataflow::GraphLaunchOp,
-                          ::dataflow::ThreadLaunchOp, ::mlir::scf::ForOp,
-                          ::mlir::scf::ForallOp, ::mlir::scf::WhileOp>(
-                  nested)) {
+          if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                          ::mlir::scf::ForOp, ::mlir::scf::ForallOp,
+                          ::mlir::scf::WhileOp>(nested)) {
             hasNestedBoundary = true;
             return ::mlir::WalkResult::interrupt();
           }
@@ -650,6 +653,28 @@ struct LowerForToGraphPass
         return false;
     }
     return hasBodyOp;
+  }
+
+  bool isEffectFormForallGraphCandidate(::mlir::scf::ForallOp forall) {
+    if (!forall.getOutputs().empty() || forall.getNumResults() != 0)
+      return false;
+    auto inParallel = forall.getTerminator();
+    if (!inParallel.getRegion().front().empty())
+      return false;
+
+    bool hasNestedBoundary = false;
+    forall.walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+      if (nested == forall.getOperation())
+        return ::mlir::WalkResult::advance();
+      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                      ::mlir::scf::ForOp, ::mlir::scf::ForallOp,
+                      ::mlir::scf::WhileOp>(nested)) {
+        hasNestedBoundary = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      return ::mlir::WalkResult::advance();
+    });
+    return !hasNestedBoundary;
   }
 
   ::mlir::LogicalResult promoteStraightLineThreads(::mlir::ModuleOp module,

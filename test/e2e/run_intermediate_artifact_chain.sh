@@ -228,7 +228,7 @@ case "${CASE}" in
     case_graph="g_t_newton_iter_kernel_0_0"
     ;;
   outer)
-    case_graph="missing_primary_graph"
+    case_graph="g_t_outer_kernel_0_0"
     ;;
   byte_swap)
     case_graph="g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
@@ -258,7 +258,7 @@ case "${CASE}" in
     case_graph="g_t_sort_insertion_kernel_0_0"
     ;;
   transpose)
-    case_graph="missing_primary_graph"
+    case_graph="g_t_transpose_0_0"
     ;;
   transform_point)
     case_graph="g_t_transform_point_kernel_0_0"
@@ -895,7 +895,108 @@ elif [[ "${CASE}" == "partition" ]]; then
     "${cgra_lower_report}"
     "${cgra_upper_report}"
   )
-elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "outer" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" || "${CASE}" == "transpose" || "${CASE}" == "upper_bound" ]]; then
+elif [[ "${CASE}" == "outer" || "${CASE}" == "transpose" ]]; then
+  tiled_rows=3
+  tiled_output_arg="arg3"
+  case "${CASE}" in
+    outer)
+      tiled_graph="g_t_outer_kernel_0_0"
+      tiled_output_values="0,0,0,0,0,0,0,0,0,0,0,0"
+      ;;
+    transpose)
+      tiled_graph="g_t_transpose_0_0"
+      tiled_input_values="1,3,5,7,9,11,13,15,17,19,21,23,25,27,29"
+      tiled_output_values="0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"
+      ;;
+  esac
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for ((row = 0; row < tiled_rows; row++)); do
+    row_dfg_report="${OUT_DIR}/${CASE}-dfg-sim-row${row}.report.json"
+    row_mapping_artifact="${OUT_DIR}/pnr-mapping-row${row}.json"
+    row_mapping_summary="${OUT_DIR}/pnr-mapping-row${row}-summary.csv"
+    row_cgra_report="${OUT_DIR}/${CASE}-cgra-sim-row${row}-report.json"
+    if [[ "${CASE}" == "outer" ]]; then
+      ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+        "${case_dfg_dir}/main_func.dfg.mlir" \
+        --graph "${tiled_graph}" \
+        --workload "${CASE}" \
+        --arg 0=none \
+        --memref "1=1,2,3" \
+        --arg 2=4 \
+        --memref "3=${tiled_output_values}" \
+        --memref "4=1,3,5,7" \
+        --arg "5=${row}" \
+        --output "${row_dfg_report}"
+    else
+      ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+        "${case_dfg_dir}/main_func.dfg.mlir" \
+        --graph "${tiled_graph}" \
+        --workload "${CASE}" \
+        --arg 0=none \
+        --arg 1=20 \
+        --memref "2=${tiled_input_values}" \
+        --memref "3=${tiled_output_values}" \
+        --arg 4=12 \
+        --arg "5=${row}" \
+        --output "${row_dfg_report}"
+    fi
+    tiled_output_values="$(
+      python3 - "${row_dfg_report}" "${tiled_output_arg}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+values = report.get("final_memory_state", {}).get(sys.argv[2])
+if not isinstance(values, list):
+    raise SystemExit(f"row report lacks final_memory_state.{sys.argv[2]}")
+clean = []
+for value in values:
+    if not isinstance(value, str) or ":" not in value:
+        raise SystemExit(f"unexpected memory value {value!r}")
+    clean.append(value.split(":", 1)[1])
+print(",".join(clean))
+PY
+    )"
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${tiled_graph}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${row_mapping_artifact}" \
+      --output "${row_mapping_summary}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${row_dfg_report}" \
+      --mapping-artifact "${row_mapping_artifact}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${row_cgra_report}"
+    dfg_component_args+=(--dfg-report "${row_dfg_report}")
+    mapping_component_args+=(--mapping-artifact "${row_mapping_artifact}")
+    cgra_component_args+=(--cgra-report "${row_cgra_report}")
+    component_artifacts+=(
+      "${row_dfg_report}"
+      "${row_mapping_artifact}"
+      "${row_cgra_report}"
+    )
+  done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" || "${CASE}" == "upper_bound" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     binary_search)
@@ -916,9 +1017,6 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz"
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"
       ;;
-    outer)
-      expected_primary_graph_token="outer_kernel"
-      ;;
     parity)
       expected_primary_graph_token="parity"
       ;;
@@ -935,9 +1033,6 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz"
         --diagnostic "primary workload graph is partial: sort_insertion lowering covers the copy loop while the insertion-sort compare-and-shift loop remains outside dataflow"
         --evidence "partial dataflow lowering boundary"
       )
-      ;;
-    transpose)
-      expected_primary_graph_token="transpose"
       ;;
     upper_bound)
       expected_primary_graph_token="upper_bound_candidate"

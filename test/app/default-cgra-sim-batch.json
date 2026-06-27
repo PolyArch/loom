@@ -110,6 +110,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "outer",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "vecnorm_l1",
       "hardware": "shared_reduction_adg"
     },
@@ -239,6 +243,10 @@
     },
     {
       "case": "sbox_lookup",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "transpose",
       "hardware": "shared_reduction_adg"
     },
     {

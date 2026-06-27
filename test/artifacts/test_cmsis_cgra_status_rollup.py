@@ -366,9 +366,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 64,
+            "pass": 66,
             "fail": 0,
-            "blocked": 45,
+            "blocked": 43,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -518,7 +518,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
     "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
-    "outer": "primary workload graph absent: expected token outer_kernel",
     "parity": "primary workload graph absent: expected token parity",
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
@@ -526,7 +525,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
     ),
-    "transpose": "primary workload graph absent: expected token transpose",
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
@@ -726,9 +724,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 4,
+            "pass": 6,
             "fail": 0,
-            "blocked": 45,
+            "blocked": 43,
             "unsupported": 0,
             "missing_status": 60,
         },
@@ -737,6 +735,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "autocorrelation", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "unpack_bits", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "mmtile", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "outer", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "transpose", expected_hardware="shared_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 

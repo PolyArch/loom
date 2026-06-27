@@ -105,12 +105,10 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "find_first_set",
     "lower_bound",
     "moving_avg",
-    "outer",
     "parity",
     "popcount",
     "scatter_add",
     "sort_insertion",
-    "transpose",
     "upper_bound",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
@@ -120,11 +118,9 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("find_first_set", "find_first_set_candidate"),
     ("lower_bound", "lower_bound_candidate"),
     ("moving_avg", "moving_avg_kernel"),
-    ("outer", "outer_kernel"),
     ("parity", "parity"),
     ("popcount", "popcount_candidate"),
     ("scatter_add", "scatter_add"),
-    ("transpose", "transpose"),
     ("upper_bound", "upper_bound_candidate"),
 )
 PARTIAL_LOWERING_SWEEP_CASES = {
@@ -2048,6 +2044,190 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"partition CGRA-sim should carry the two-sided real partition state: {cgra_path}: {cgra}")
 
 
+def assert_outer_evidence(evidence_dir: Path) -> None:
+    graph = "g_t_outer_kernel_0_0"
+    expected_graphs = [graph, graph, graph]
+    expected_lhs = ["i32:1", "i32:2", "i32:3"]
+    expected_rhs = ["i32:1", "i32:3", "i32:5", "i32:7"]
+    expected_output = [
+        "i32:1",
+        "i32:3",
+        "i32:5",
+        "i32:7",
+        "i32:2",
+        "i32:6",
+        "i32:10",
+        "i32:14",
+        "i32:3",
+        "i32:9",
+        "i32:15",
+        "i32:21",
+    ]
+    expected_memory = {
+        f"{graph}:arg1": expected_lhs,
+        f"{graph}:arg3": expected_output,
+        f"{graph}:arg4": expected_rhs,
+    }
+    expected_counts = {
+        "arith.index_cast": 3,
+        "arith.muli": 12,
+        "arith.shli": 3,
+        "dataflow.load": 24,
+        "dataflow.store": 12,
+        "llvm.getelementptr": 3,
+        "scf.forall": 3,
+    }
+
+    dfg_path = evidence_dir / "outer.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 12
+        or dfg.get("optimistic_cycles") != 213
+        or dfg.get("component_graphs") != expected_graphs
+        or dfg.get("final_outputs") != ["none", "none", "none"]
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"outer DFG aggregate should carry full 3x4 outer product state: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("outer", dfg, expected_counts)
+
+    component_identities = dfg.get("component_dfg_sim_report_identities", [])
+    components = [json.loads((evidence_dir / f"{identity}.json").read_text()) for identity in component_identities]
+    if len(components) != 3 or any(component.get("graph") != graph for component in components):
+        raise AssertionError(f"outer should cite three row component reports: {dfg}")
+    if components[-1].get("final_memory_state", {}).get("arg3") != expected_output:
+        raise AssertionError(f"outer final row component should contain complete product output: {components[-1]}")
+
+    mapping_path = evidence_dir / "outer.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("component_graphs") != expected_graphs
+        or mapping.get("placed_records") != 15
+        or mapping.get("routed_edges") != 9
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("route_segments") != 33
+    ):
+        raise AssertionError(f"outer should aggregate three passing row mappings: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "outer.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 213
+        or cgra.get("hardware_aware_cycles") != 306
+        or cgra.get("component_graphs") != expected_graphs
+        or cgra.get("routed_edges") != 9
+        or cgra.get("route_segments") != 33
+        or cgra.get("final_outputs") != ["none", "none", "none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"outer CGRA aggregate should carry full 3x4 outer product state: {cgra_path}: {cgra}")
+
+
+def assert_transpose_evidence(evidence_dir: Path) -> None:
+    graph = "g_t_transpose_0_0"
+    expected_graphs = [graph, graph, graph]
+    expected_input = [
+        "i32:1",
+        "i32:3",
+        "i32:5",
+        "i32:7",
+        "i32:9",
+        "i32:11",
+        "i32:13",
+        "i32:15",
+        "i32:17",
+        "i32:19",
+        "i32:21",
+        "i32:23",
+        "i32:25",
+        "i32:27",
+        "i32:29",
+    ]
+    expected_output = [
+        "i32:1",
+        "i32:11",
+        "i32:21",
+        "i32:3",
+        "i32:13",
+        "i32:23",
+        "i32:5",
+        "i32:15",
+        "i32:25",
+        "i32:7",
+        "i32:17",
+        "i32:27",
+        "i32:9",
+        "i32:19",
+        "i32:29",
+    ]
+    expected_memory = {
+        f"{graph}:arg2": expected_input,
+        f"{graph}:arg3": expected_output,
+    }
+    expected_counts = {
+        "arith.index_cast": 18,
+        "arith.muli": 18,
+        "arith.shrui": 15,
+        "dataflow.constant": 15,
+        "dataflow.load": 15,
+        "dataflow.store": 15,
+        "llvm.getelementptr": 6,
+        "scf.forall": 3,
+    }
+
+    dfg_path = evidence_dir / "transpose.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 15
+        or dfg.get("optimistic_cycles") != 285
+        or dfg.get("component_graphs") != expected_graphs
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"transpose DFG aggregate should carry full 3x5 transpose state: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("transpose", dfg, expected_counts)
+
+    component_identities = dfg.get("component_dfg_sim_report_identities", [])
+    components = [json.loads((evidence_dir / f"{identity}.json").read_text()) for identity in component_identities]
+    if len(components) != 3 or any(component.get("graph") != graph for component in components):
+        raise AssertionError(f"transpose should cite three row component reports: {dfg}")
+    if components[-1].get("final_memory_state", {}).get("arg3") != expected_output:
+        raise AssertionError(f"transpose final row component should contain complete transposed output: {components[-1]}")
+
+    mapping_path = evidence_dir / "transpose.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("component_graphs") != expected_graphs
+        or mapping.get("placed_records") != 18
+        or mapping.get("routed_edges") != 12
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("route_segments") != 54
+    ):
+        raise AssertionError(f"transpose should aggregate three passing row mappings: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "transpose.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 285
+        or cgra.get("hardware_aware_cycles") != 399
+        or cgra.get("component_graphs") != expected_graphs
+        or cgra.get("routed_edges") != 12
+        or cgra.get("route_segments") != 54
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"transpose CGRA aggregate should carry full 3x5 transpose state: {cgra_path}: {cgra}")
+
+
 def assert_mapping_unrouted_edges(evidence_dir: Path, case: str, expected_edges: set[str]) -> None:
     path = evidence_dir / f"{case}.mapping.json"
     data = json.loads(path.read_text())
@@ -2796,6 +2976,7 @@ def main(argv: list[str]) -> int:
             "partition",
             "mean",
             "newton_iter",
+            "outer",
             "vecnorm_l1",
             "vecnorm_l2",
             "gemv",
@@ -2832,6 +3013,7 @@ def main(argv: list[str]) -> int:
             "rotate_bits",
             "rle_decode",
             "runge_kutta_step",
+            "transpose",
             "transform_point",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
@@ -2890,6 +3072,8 @@ def main(argv: list[str]) -> int:
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
         assert_partition_evidence(evidence_dir)
+        assert_outer_evidence(evidence_dir)
+        assert_transpose_evidence(evidence_dir)
         assert_string_hash_evidence(evidence_dir)
         assert_autocorrelation_dfg_evidence(evidence_dir)
         assert_crc32_evidence(evidence_dir)
@@ -3162,6 +3346,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_mapping_uses_switch_multihop(evidence_dir, "sbox_lookup")
+        assert_mapping_uses_switch_multihop(evidence_dir, "outer")
+        assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
             "sbox_lookup",
@@ -3202,6 +3388,8 @@ def main(argv: list[str]) -> int:
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "variance")
         assert_component_references_resolve(evidence_dir, "covariance")
+        assert_component_references_resolve(evidence_dir, "outer")
+        assert_component_references_resolve(evidence_dir, "transpose")
 
         status_csv = out_dir / "cgra-status-summary.csv"
         status_json = out_dir / "cgra-status-summary.json"
@@ -3369,9 +3557,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 64,
+            "pass": 66,
             "fail": 0,
-            "blocked": 45,
+            "blocked": 43,
             "unsupported": 0,
             "missing_status": 0,
         }

@@ -191,6 +191,16 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "u32[20];u32[5];u32[4]",
         "alignment_bytes": 4,
     },
+    "transpose": {
+        "byte_size": 120,
+        "element_layout": "u32[15];u32[15]",
+        "alignment_bytes": 4,
+    },
+    "outer": {
+        "byte_size": 76,
+        "element_layout": "u32[3];u32[4];u32[12]",
+        "alignment_bytes": 4,
+    },
 }
 
 

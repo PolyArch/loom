@@ -30,6 +30,8 @@
 // RUN: FileCheck %s --check-prefix=AUTOCORR-SLICE < %t.autocorr_slice.json
 // RUN: loom-dfg-sim %s --graph structured_forall_store --arg 0=none --arg 1=0 --arg 2=3 --memref 3=1,2,3 --arg 4=10 --output %t.forall_store.json
 // RUN: FileCheck %s --check-prefix=FORALL-STORE < %t.forall_store.json
+// RUN: loom-dfg-sim %s --graph structured_forall_pointer_capture_memory --arg 0=none --arg 1=4 --memref 2=10,20,30,40,50 --memref 3=0,0,0,0,0 --arg 4=1 --output %t.forall_pointer_capture.json
+// RUN: FileCheck %s --check-prefix=FORALL-POINTER-CAPTURE < %t.forall_pointer_capture.json
 
 // CHECK-DAG: "graph": "structured_for_sum"
 // CHECK-DAG: "status": "pass"
@@ -171,6 +173,20 @@
 // FORALL-STORE-DAG: "i32:11"
 // FORALL-STORE-DAG: "i32:12"
 // FORALL-STORE-DAG: "i32:13"
+
+// FORALL-POINTER-CAPTURE-DAG: "graph": "structured_forall_pointer_capture_memory"
+// FORALL-POINTER-CAPTURE-DAG: "status": "pass"
+// FORALL-POINTER-CAPTURE-DAG: "dynamic_work_items": 3
+// FORALL-POINTER-CAPTURE-DAG: "scf.forall": 1
+// FORALL-POINTER-CAPTURE-DAG: "dataflow.load": 3
+// FORALL-POINTER-CAPTURE-DAG: "dataflow.store": 3
+// FORALL-POINTER-CAPTURE-DAG: "arg3": [
+// FORALL-POINTER-CAPTURE-DAG: "i32:0"
+// FORALL-POINTER-CAPTURE-DAG: "i32:20"
+// FORALL-POINTER-CAPTURE-DAG: "i32:30"
+// FORALL-POINTER-CAPTURE-DAG: "i32:40"
+// FORALL-POINTER-CAPTURE-DAG: "i32:0"
+// FORALL-POINTER-CAPTURE-NOT: "structured scf.forall failed"
 
 module {
   dataflow.graph.func private @structured_if_scalar(
@@ -410,6 +426,28 @@ module {
       %value, %done = dataflow.load %mem[%i] %ctrl : memref<?xi32>
       %stored = arith.addi %value, %addend : i32
       %store_done = dataflow.store %mem[%i] %stored %ctrl : memref<?xi32>
+    }
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @structured_forall_pointer_capture_memory(
+      %ctrl: none, %stride: i64, %src: !llvm.ptr, %dst: !llvm.ptr,
+      %row: index) -> none {
+    %row64 = arith.index_cast %row : index to i64
+    %base = arith.muli %row64, %stride : i64
+    %src_at = llvm.getelementptr inbounds %src[%base]
+        : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %dst_at = llvm.getelementptr inbounds %dst[%base]
+        : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    scf.forall (%i) in (3) {
+      %src_view = builtin.unrealized_conversion_cast %src_at
+          : !llvm.ptr to memref<?xi32>
+      %value, %load_done = dataflow.load %src_view[%i] %ctrl
+          : memref<?xi32>
+      %dst_view = builtin.unrealized_conversion_cast %dst_at
+          : !llvm.ptr to memref<?xi32>
+      %store_done = dataflow.store %dst_view[%i] %value %ctrl
+          : memref<?xi32>
     }
     dataflow.graph.return %ctrl : none
   }

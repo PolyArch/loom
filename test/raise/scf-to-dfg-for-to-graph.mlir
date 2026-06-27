@@ -31,6 +31,10 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
 // graph results forces downstream mapping to model fake live pointer outputs.
 // CHECK-LABEL: dataflow.thread private @t_unused_ptr_walk
 // CHECK: dataflow.graph.launch @g_t_unused_ptr_walk_0(%{{.*}}) : (none, index, index, index, !llvm.ptr, !llvm.ptr) -> none
+// CHECK-LABEL: dataflow.thread private @t_forall_store
+// CHECK-SAME: ctrl (%[[FORALL_CTRL:.*]]: none) iv
+// CHECK: dataflow.graph.launch @g_t_forall_store_0(%[[FORALL_CTRL]]
+// CHECK-NOT: scf.forall
 // CHECK-LABEL: func.func @host_reduction
 // CHECK: dataflow.thread.launch @t_host_reduction_red_0
 // CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
@@ -45,6 +49,21 @@ dataflow.thread private @t_unused_ptr_walk(%src: !llvm.ptr, %dst: !llvm.ptr,
     %s_next = llvm.getelementptr %s[4] : (!llvm.ptr) -> !llvm.ptr, i8
     %d_next = llvm.getelementptr %d[4] : (!llvm.ptr) -> !llvm.ptr, i8
     scf.yield %s_next, %d_next : !llvm.ptr, !llvm.ptr
+  }
+  dataflow.thread.yield
+}
+
+// Effect-form scf.forall inside a thread is still a SpatialCore graph body.
+// It must be extracted as a structured graph.func rather than leaving the
+// kernel body stranded in the thread.
+dataflow.thread private @t_forall_store(%src: memref<?xi32>, %dst: memref<?xi32>,
+                                        %n: index) ctrl (%c: none) iv (%tile: index) {
+  %c4 = arith.constant 4 : index
+  %base = arith.muli %tile, %c4 : index
+  scf.forall (%lane) in (4) {
+    %idx = arith.addi %base, %lane : index
+    %v = memref.load %src[%idx] : memref<?xi32>
+    memref.store %v, %dst[%idx] : memref<?xi32>
   }
   dataflow.thread.yield
 }
@@ -64,3 +83,8 @@ func.func @host_reduction(%buf: memref<?xf32>, %n: index) -> f32 {
 // CHECK: dataflow.graph.func private @g_t_host_reduction_red_0_0
 // CHECK-SAME: -> (none, f32)
 // CHECK: dataflow.graph.return %{{.*}}, %{{.*}} : none, f32
+// CHECK-LABEL: dataflow.graph.func private @g_t_forall_store_0
+// CHECK: scf.forall
+// CHECK: memref.load
+// CHECK: memref.store
+// CHECK: dataflow.graph.return
