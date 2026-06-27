@@ -3567,30 +3567,33 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   return module;
 }
 
-ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
-  constexpr unsigned kLoadCount = 18;
-  constexpr unsigned kStoreCount = 9;
-  constexpr unsigned kConstantCount = 30;
-  constexpr unsigned kAddCount = 12;
-  constexpr unsigned kCmpCount = 12;
-  constexpr unsigned kMinCount = 10;
-  constexpr unsigned kMaxCount = 10;
-  constexpr unsigned kUnsignedMinCount = 4;
-  constexpr unsigned kSelectCount = 8;
-  constexpr unsigned kMulCount = 8;
-  constexpr unsigned kLogicCount = 8;
-  constexpr unsigned kShiftCount = 8;
-  constexpr unsigned kCastCount = 8;
-  constexpr unsigned kWideCastCount = 4;
-  constexpr unsigned kExtuiCount = 4;
-  constexpr unsigned kFpAddCount = 4;
-  constexpr unsigned kFpMulCount = 4;
-  constexpr unsigned kFmaCount = 6;
-  constexpr unsigned kFpCmpCount = 4;
-  constexpr unsigned kSyncCount = 4;
-  constexpr unsigned kSyncArity = 6;
+struct SharedMemoryAdgConfig {
+  llvm::StringRef moduleName;
+  unsigned loadCount = 18;
+  unsigned storeCount = 9;
+  unsigned constantCount = 30;
+  unsigned addCount = 12;
+  unsigned cmpCount = 12;
+  unsigned minCount = 10;
+  unsigned maxCount = 10;
+  unsigned unsignedMinCount = 4;
+  unsigned selectCount = 8;
+  unsigned mulCount = 8;
+  unsigned logicCount = 8;
+  unsigned shiftCount = 8;
+  unsigned castCount = 8;
+  unsigned wideCastCount = 4;
+  unsigned extuiCount = 4;
+  unsigned fpAddCount = 4;
+  unsigned fpMulCount = 4;
+  unsigned fmaCount = 6;
+  unsigned fpCmpCount = 4;
+  unsigned syncCount = 4;
+  unsigned syncArity = 6;
+};
 
-  ModuleBuilder module("shared_memory_reduction_adg");
+ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
+  ModuleBuilder module(config.moduleName.str());
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
       .addInput("i32a", "!fabric.bits<32>")
       .addInput("i32b", "!fabric.bits<32>")
@@ -3668,7 +3671,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
     }
   };
 
-  for (unsigned index = 0; index < kConstantCount; ++index) {
+  for (unsigned index = 0; index < config.constantCount; ++index) {
     std::string result = numbered("const", index);
     std::string control = result + "_ctrl";
     addConfigurableConstantPe(module, result, control);
@@ -3676,21 +3679,21 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
     sinks0.push_back(control);
   }
 
-  addBinaryBank("add", kAddCount, {"arith.addi", "arith.subi"});
-  addBinaryBank("mul", kMulCount, {"arith.muli"});
-  addBinaryBank("fp_add", kFpAddCount, {"arith.addf", "arith.subf"});
-  addBinaryBank("fp_mul", kFpMulCount, {"arith.mulf"});
-  addTernaryBank("fma", kFmaCount, "llvm.intr.fmuladd");
-  addBinaryBank("and", kLogicCount, {"arith.andi"});
-  addBinaryBank("or", kLogicCount, {"arith.ori"});
-  addBinaryBank("xor", kLogicCount, {"arith.xori"});
-  addBinaryBank("shift", kShiftCount,
+  addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
+  addBinaryBank("mul", config.mulCount, {"arith.muli"});
+  addBinaryBank("fp_add", config.fpAddCount, {"arith.addf", "arith.subf"});
+  addBinaryBank("fp_mul", config.fpMulCount, {"arith.mulf"});
+  addTernaryBank("fma", config.fmaCount, "llvm.intr.fmuladd");
+  addBinaryBank("and", config.logicCount, {"arith.andi"});
+  addBinaryBank("or", config.logicCount, {"arith.ori"});
+  addBinaryBank("xor", config.logicCount, {"arith.xori"});
+  addBinaryBank("shift", config.shiftCount,
                 {"arith.shli", "arith.shrsi", "arith.shrui"});
-  addBinaryBank("umin", kUnsignedMinCount, {"llvm.intr.umin"});
-  addBinaryBank("smin", kMinCount, {"llvm.intr.smin"});
-  addBinaryBank("smax", kMaxCount, {"llvm.intr.smax"});
+  addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
+  addBinaryBank("smin", config.minCount, {"llvm.intr.smin"});
+  addBinaryBank("smax", config.maxCount, {"llvm.intr.smax"});
 
-  for (unsigned index = 0; index < kCmpCount; ++index) {
+  for (unsigned index = 0; index < config.cmpCount; ++index) {
     std::string result = numbered("cmp", index);
     std::string lhs = result + "_lhs";
     std::string rhs = result + "_rhs";
@@ -3700,7 +3703,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
     sinks32.push_back(rhs);
   }
 
-  for (unsigned index = 0; index < kFpCmpCount; ++index) {
+  for (unsigned index = 0; index < config.fpCmpCount; ++index) {
     std::string result = numbered("fp_cmp", index);
     std::string lhs = result + "_lhs";
     std::string rhs = result + "_rhs";
@@ -3710,7 +3713,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
     sinks32.push_back(rhs);
   }
 
-  for (unsigned index = 0; index < kSelectCount; ++index) {
+  for (unsigned index = 0; index < config.selectCount; ++index) {
     std::string result = numbered("select", index);
     std::string pred = result + "_pred";
     std::string trueValue = result + "_true";
@@ -3722,30 +3725,30 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
     sinks32.push_back(falseValue);
   }
 
-  addUnaryBank("cast", kCastCount, "llvm.trunc");
-  addUnaryBank("sext", kCastCount, "llvm.sext");
-  addUnaryBank("zext", kCastCount, "llvm.zext");
-  addWideExtensionBank("wide_zext", kWideCastCount, "llvm.zext");
-  addWideTruncBank("wide_trunc", kWideCastCount);
-  addUnaryBank("extui", kExtuiCount, "arith.extui");
+  addUnaryBank("cast", config.castCount, "llvm.trunc");
+  addUnaryBank("sext", config.castCount, "llvm.sext");
+  addUnaryBank("zext", config.castCount, "llvm.zext");
+  addWideExtensionBank("wide_zext", config.wideCastCount, "llvm.zext");
+  addWideTruncBank("wide_trunc", config.wideCastCount);
+  addUnaryBank("extui", config.extuiCount, "arith.extui");
 
-  for (unsigned index = 0; index < kSyncCount; ++index) {
+  for (unsigned index = 0; index < config.syncCount; ++index) {
     std::string prefix = numbered("sync", index);
-    addControlSyncPe(module, prefix, kSyncArity);
-    for (unsigned lane = 0; lane < kSyncArity; ++lane) {
+    addControlSyncPe(module, prefix, config.syncArity);
+    for (unsigned lane = 0; lane < config.syncArity; ++lane) {
       sinks0.push_back((prefix + llvm::Twine("_in") + llvm::Twine(lane)).str());
       sources0.push_back(
           (prefix + llvm::Twine("_done") + llvm::Twine(lane)).str());
     }
   }
 
-  for (unsigned index = 0; index < kLoadCount; ++index) {
+  for (unsigned index = 0; index < config.loadCount; ++index) {
     sources32.push_back(numbered("data", index));
     sources0.push_back(numbered("done", index));
     sinks32.push_back(numbered("load_addr", index));
     sinks0.push_back(numbered("load_ctrl", index));
   }
-  for (unsigned index = 0; index < kStoreCount; ++index) {
+  for (unsigned index = 0; index < config.storeCount; ++index) {
     sources0.push_back(numbered("store_done", index));
     sinks32.push_back(numbered("store_addr", index));
     sinks32.push_back(numbered("store_value", index));
@@ -3755,8 +3758,24 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   addUniformSwitch(module, sinks32, sources32, "!fabric.bits<32>");
   addUniformSwitch(module, sinks64, sources64, "!fabric.bits<64>");
   addUniformSwitch(module, sinks0, sources0, "!fabric.bits<0>");
-  addMemoryReductionMem(module, kLoadCount, kStoreCount);
+  addMemoryReductionMem(module, config.loadCount, config.storeCount);
   return module;
+}
+
+ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
+  return buildSharedMemoryLikeAdg({"shared_memory_reduction_adg"});
+}
+
+ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
+  SharedMemoryAdgConfig config;
+  config.moduleName = "shared_quantized_window_adg";
+  config.constantCount = 40;
+  config.addCount = 40;
+  config.cmpCount = 20;
+  config.selectCount = 16;
+  config.mulCount = 16;
+  config.shiftCount = 36;
+  return buildSharedMemoryLikeAdg(config);
 }
 
 ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
@@ -4362,6 +4381,10 @@ llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
 
 llvm::Error loom::adg::writeSharedMemoryReductionAdg(llvm::raw_ostream &os) {
   return buildSharedMemoryReductionAdg().print(os);
+}
+
+llvm::Error loom::adg::writeSharedQuantizedWindowAdg(llvm::raw_ostream &os) {
+  return buildSharedQuantizedWindowAdg().print(os);
 }
 
 llvm::Error loom::adg::writeSharedVectorAluAdg(llvm::raw_ostream &os) {

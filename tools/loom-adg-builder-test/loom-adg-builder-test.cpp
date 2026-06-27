@@ -18,6 +18,11 @@ static llvm::cl::opt<bool> sharedMemoryReduction(
     llvm::cl::desc("emit a shared memory-pressure reduction SpatialCore ADG"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> sharedQuantizedWindow(
+    "shared-quantized-window",
+    llvm::cl::desc("emit a shared quantized-window SpatialCore ADG"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool>
     sharedVectorAlu("shared-vector-alu",
                     llvm::cl::desc("emit a shared vector ALU SpatialCore ADG"),
@@ -86,9 +91,10 @@ int main(int argc, char **argv) {
   unsigned selectedRecipes =
       (sharedReduction ? 1 : 0) + (sharedVectorAlu ? 1 : 0) +
       (sharedMemoryReduction ? 1 : 0) + (sharedVectorMath ? 1 : 0) +
-      (sharedVectorMesh ? 1 : 0) + (fullSpatialCore ? 1 : 0) +
-      (minimalSpatial ? 1 : 0) + (minimalTemporal ? 1 : 0) +
-      (heterogeneousSoc ? 1 : 0) + (!topologyMatrixCase.empty() ? 1 : 0) +
+      (sharedQuantizedWindow ? 1 : 0) + (sharedVectorMesh ? 1 : 0) +
+      (fullSpatialCore ? 1 : 0) + (minimalSpatial ? 1 : 0) +
+      (minimalTemporal ? 1 : 0) + (heterogeneousSoc ? 1 : 0) +
+      (!topologyMatrixCase.empty() ? 1 : 0) +
       (!systemMatrixCase.empty() ? 1 : 0);
   selectedRecipes += (invalidYieldTypes ? 1 : 0) + (invalidYieldCount ? 1 : 0);
   if (selectedRecipes == 0) {
@@ -115,6 +121,8 @@ int main(int argc, char **argv) {
       return loom::adg::writeMinimalTemporalAdg(out);
     if (sharedMemoryReduction)
       return loom::adg::writeSharedMemoryReductionAdg(out);
+    if (sharedQuantizedWindow)
+      return loom::adg::writeSharedQuantizedWindowAdg(out);
     if (sharedVectorAlu)
       return loom::adg::writeSharedVectorAluAdg(out);
     if (sharedVectorMath)
