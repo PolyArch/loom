@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 EXPECTED_DEFAULT_BATCH_CASES = {
+    "autocorrelation",
     "axpy",
     "bisection_step",
     "bit_reverse",
@@ -19,6 +20,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "convolve_1d_same",
     "correlation",
     "covariance",
+    "crc32",
     "cross_product",
     "cumsum",
     "delta_decode",

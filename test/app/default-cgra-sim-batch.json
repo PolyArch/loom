@@ -34,6 +34,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "autocorrelation",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "axpy",
       "hardware": "shared_vector_alu_adg"
     },
@@ -171,6 +175,10 @@
     },
     {
       "case": "covariance",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "crc32",
       "hardware": "shared_reduction_adg"
     },
     {
