@@ -1966,7 +1966,7 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
         or mapping.get("routed_edges") != 7
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
-        or mapping.get("config_records") != 177
+        or mapping.get("config_records") != 179
     ):
         raise AssertionError(f"crc32 should map the two-shift CRC slice on shared ADG: {mapping_path}: {mapping}")
     route_edges = {

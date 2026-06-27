@@ -1731,7 +1731,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addConfigurableConstPe("addr_extra_const0");
   addConfigurableConstPe("addr_extra_const1");
   addBinary32Pe("logic_shifted", "logic_shift_lhs", "logic_shift_rhs",
-                "shifted", {"arith.shrui"});
+                "shifted", {"arith.shrsi", "arith.shrui"});
 
   PeSpec addrUnscalePe;
   addrUnscalePe.inputs = {{"pa", "addr_unscale_lhs", "!fabric.bits<32>", ""},
@@ -1743,7 +1743,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
               {"rhs", "pb", "!fabric.bits<32>", ""}},
              {"!fabric.bits<32>"},
              {FabricOpSpec{{"shifted"},
-                           {"arith.shrui"},
+                           {"arith.shrsi", "arith.shrui"},
                            {"lhs", "rhs"},
                            {"!fabric.bits<32>", "!fabric.bits<32>"},
                            {"!fabric.bits<32>"},

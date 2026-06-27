@@ -1988,6 +1988,40 @@ def assert_cmsis_softmax_u8_resource_pressure_evidence(
         }
     ]:
         raise AssertionError(f"{stem} should expose exact remaining arith.divsi pressure: {mapping_artifact}")
+    shrsi_placements = [
+        placement
+        for placement in placements
+        if isinstance(placement, dict) and placement.get("operation") == "arith.shrsi"
+    ]
+    if (
+        len(shrsi_placements) != 1
+        or shrsi_placements[0].get("resource_kind") != "fabric.op"
+        or not str(shrsi_placements[0].get("hardware", "")).startswith(
+            "shared_reduction_adg::fabric.op#"
+        )
+    ):
+        raise AssertionError(f"{stem} should place one arith.shrsi on shared fabric: {mapping_artifact}")
+    if any(
+        isinstance(record, dict) and record.get("operation") == "arith.shrsi"
+        for record in mapping_artifact.get("resource_pressure", [])
+    ):
+        raise AssertionError(f"{stem} should not report arith.shrsi resource pressure: {mapping_artifact}")
+    shrui_pressure = [
+        record
+        for record in mapping_artifact.get("resource_pressure", [])
+        if isinstance(record, dict) and record.get("operation") == "arith.shrui"
+    ]
+    if shrui_pressure != [
+        {
+            "resource_kind": "fabric.op",
+            "operation": "arith.shrui",
+            "required": 2,
+            "available": 2,
+            "placed": 1,
+            "missing": 1,
+        }
+    ]:
+        raise AssertionError(f"{stem} should expose exact remaining arith.shrui pressure: {mapping_artifact}")
 
     cgra_report = json.loads((repo / row["cgra_report"]).read_text())
     comparison_report = json.loads((repo / row["comparison_report"]).read_text())
@@ -2179,7 +2213,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         "routed_edges": 44,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 989,
+        "config_records": 990,
         "route_segments": 180,
         "status": "pass",
     }
@@ -2199,7 +2233,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         or aggregate_cgra.get("hardware_aware_cycles") != 420
         or aggregate_cgra.get("performance_delta_cycles") != 237
         or aggregate_cgra.get("routed_edges") != 44
-        or aggregate_cgra.get("config_records") != 989
+        or aggregate_cgra.get("config_records") != 990
         or aggregate_cgra.get("route_segments") != 180
         or aggregate_cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
         or aggregate_cgra.get("final_outputs") != ["none", "none"]

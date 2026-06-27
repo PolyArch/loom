@@ -82,7 +82,7 @@
 // HARDWARE-DAG: fabric.op [@arith.mulf]
 // HARDWARE-DAG: fabric.op [@arith.divf, @arith.remf]
 // HARDWARE-DAG: predicate = ["oeq", "ogt", "ugt", "ule", "olt"]
-// HARDWARE-DAG: fabric.op [@arith.shrui]
+// HARDWARE-DAG: fabric.op [@arith.shrsi, @arith.shrui]
 // HARDWARE-DAG: fabric.op [@arith.shli]
 // HARDWARE-DAG: fabric.op [@arith.andi]
 // HARDWARE-DAG: fabric.op [@arith.ori]

@@ -76,7 +76,7 @@ CASES = {
         "mapping_id": "downsample__g_t_downsample_0_0__shared_reduction_adg",
         "placed_records": "6",
         "route_edge_count": "6",
-        "config_records": 140,
+        "config_records": 141,
         "dfg_cycles": 63,
         "dynamic_work_items": 4,
         "cgra_cycles": 106,
