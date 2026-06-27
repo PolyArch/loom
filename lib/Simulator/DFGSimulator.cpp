@@ -188,6 +188,16 @@ MemoryCloneMap isolateProbeStateMemory(SimulatorState &state) {
   return clones;
 }
 
+void appendProbeDiagnostics(SimulatorState &state,
+                            const SimulatorState &probeState) {
+  for (const std::string &diagnostic : probeState.diagnostics) {
+    if (std::find(state.diagnostics.begin(), state.diagnostics.end(),
+                  diagnostic) != state.diagnostics.end())
+      continue;
+    state.diagnostics.push_back(diagnostic);
+  }
+}
+
 std::string typePrefix(mlir::Type type) {
   if (mlir::isa<mlir::NoneType>(type))
     return "none";
@@ -2287,8 +2297,10 @@ bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
   SimulatorState probeState = state;
   (void)isolateProbeStateMemory(probeState);
   if (!evaluateStructuredIf(op, probeState, probeLocals, captureIndex,
-                            probeYielded))
+                            probeYielded)) {
+    appendProbeDiagnostics(state, probeState);
     return false;
+  }
 
   LocalValueMap locals;
   locals[op.getCondition()] = popToken(state.channels, op->getOpOperand(0));
@@ -2327,8 +2339,10 @@ bool fireStructuredIndexSwitch(mlir::scf::IndexSwitchOp op,
   SimulatorState probeState = state;
   (void)isolateProbeStateMemory(probeState);
   if (!evaluateStructuredIndexSwitch(op, probeState, probeLocals, captureIndex,
-                                     probeYielded))
+                                     probeYielded)) {
+    appendProbeDiagnostics(state, probeState);
     return false;
+  }
 
   LocalValueMap locals;
   locals[op.getArg()] = popToken(state.channels, op->getOpOperand(0));
@@ -2428,8 +2442,10 @@ bool fireStructuredFor(mlir::scf::ForOp op, SimulatorState &state) {
   llvm::SmallVector<Token> probeOperands(operands.begin(), operands.end());
   retargetTokenVector(probeOperands, probeClones);
   if (!executeStructuredFor(op, probeState, probeOperands, captureIndex,
-                            probeResults))
+                            probeResults)) {
+    appendProbeDiagnostics(state, probeState);
     return false;
+  }
 
   for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
     (void)popToken(state.channels, op->getOpOperand(operandIndex));
@@ -2579,8 +2595,10 @@ bool fireStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state) {
   llvm::SmallVector<Token> probeOperands(operands.begin(), operands.end());
   retargetTokenVector(probeOperands, probeClones);
   if (!executeStructuredWhile(op, probeState, probeOperands, captureIndex,
-                              probeResults))
+                              probeResults)) {
+    appendProbeDiagnostics(state, probeState);
     return false;
+  }
 
   for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
     (void)popToken(state.channels, op->getOpOperand(operandIndex));
@@ -2728,8 +2746,10 @@ bool fireStructuredForall(mlir::scf::ForallOp op, SimulatorState &state) {
   MemoryCloneMap probeClones = isolateProbeStateMemory(probeState);
   LocalValueMap probeOperands = operands;
   retargetLocalValueMap(probeOperands, probeClones);
-  if (!executeStructuredForall(op, probeState, probeOperands))
+  if (!executeStructuredForall(op, probeState, probeOperands)) {
+    appendProbeDiagnostics(state, probeState);
     return false;
+  }
 
   for (mlir::OpOperand &operand : op->getOpOperands())
     operands[operand.get()] = popToken(state.channels, operand);

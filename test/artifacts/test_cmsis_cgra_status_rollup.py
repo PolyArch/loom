@@ -818,8 +818,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 7,
-            "fail": 2,
+            "pass": 8,
+            "fail": 1,
             "blocked": 1,
             "unsupported": 8,
             "missing_status": 0,
@@ -845,7 +845,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
-    assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
@@ -2162,27 +2162,117 @@ def assert_cmsis_softmax_u8_resource_pressure_evidence(
         )
 
 
-def assert_cmsis_depthwise_conv_mapping_blocker_evidence(
+def assert_cmsis_depthwise_conv_s8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
 ) -> None:
     case = "ConvolutionFunctions/arm_depthwise_conv_s8.c"
     stem = "arm_depthwise_conv_s8"
-    graph = "g_t_arm_depthwise_conv_s8_red_0_0"
-    diagnostic = "resource_kind=fabric.op operation=arith.addi required=29 available=5 placed=1 missing=28"
-    assert_cmsis_mapping_blocker_row(
+    hardware = "shared_quantized_window_adg"
+    expected_graphs = [
+        "g_t_arm_depthwise_conv_s8_red_0_0",
+        "g_t_arm_depthwise_conv_s8_red_1_0",
+    ]
+    expected_memory = {
+        "g_t_arm_depthwise_conv_s8_red_1_0:arg21": ["i32:0", "i32:0", "i32:0", "i32:0"],
+        "g_t_arm_depthwise_conv_s8_red_1_0:arg23": ["i8:1", "i8:1", "i8:1", "i8:1"],
+        "g_t_arm_depthwise_conv_s8_red_1_0:arg27": ["i32:1", "i32:1", "i32:1", "i32:1"],
+        "g_t_arm_depthwise_conv_s8_red_1_0:arg28": ["i32:0", "i32:0", "i32:0", "i32:0"],
+        "g_t_arm_depthwise_conv_s8_red_1_0:arg34": ["i8:0", "i8:0", "i8:0", "i8:0"],
+        "g_t_arm_depthwise_conv_s8_red_1_0:arg42": ["i8:0", "i8:0", "i8:0", "i8:0"],
+    }
+    assert_cmsis_cgra_pass_row(
         repo,
         rows,
+        sim_evidence,
         "cmsis-nn",
         case,
-        diagnostic_substring=diagnostic,
+        stem,
+        expected_hardware=hardware,
     )
     row = one_row(rows, "cmsis-nn", case)
-    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
-        artifact = sim_evidence / Path(row[key]).name
+    if (
+        row["required_slice_count"] != "2"
+        or row["graph_ids"].split(",") != expected_graphs
+        or Path(row["dfg_report"]).name != f"{stem}.dfg.report.json"
+        or Path(row["mapping_artifact"]).name != f"{stem}.mapping.json"
+        or Path(row["cgra_report"]).name != f"{stem}.cgra.report.json"
+    ):
+        raise AssertionError(f"{stem} should expose row-complete aggregate evidence: {row}")
+    for artifact_name in (
+        f"{stem}.red0.dfg.report.json",
+        f"{stem}.red0.mapping.json",
+        f"{stem}.red0.cgra.report.json",
+        f"{stem}.red1.dfg.report.json",
+        f"{stem}.red1.mapping.json",
+        f"{stem}.red1.cgra.report.json",
+        f"{stem}.dfg.report.json",
+        f"{stem}.mapping.json",
+        f"{stem}.mapping.csv",
+        f"{stem}.cgra.report.json",
+    ):
+        artifact = sim_evidence / artifact_name
         if not artifact.is_file():
-            raise AssertionError(f"attempt manifest should emit {artifact}")
+            raise AssertionError(f"{stem} evidence should emit {artifact}")
+
+    red0_dfg = json.loads((sim_evidence / f"{stem}.red0.dfg.report.json").read_text())
+    red0_mapping = json.loads((sim_evidence / f"{stem}.red0.mapping.json").read_text())
+    red0_cgra = json.loads((sim_evidence / f"{stem}.red0.cgra.report.json").read_text())
+    if (
+        red0_dfg.get("kind") != "dfg_sim_report"
+        or red0_dfg.get("workload") != case
+        or red0_dfg.get("graph") != expected_graphs[0]
+        or red0_dfg.get("status") != "pass"
+        or red0_dfg.get("dynamic_work_items") != 1
+        or red0_dfg.get("operation_fire_counts", {}).get("llvm.intr.smax") != 1
+        or red0_dfg.get("final_outputs") != ["none", "i32:0"]
+        or red0_mapping.get("status") != "pass"
+        or red0_mapping.get("hardware") != hardware
+        or red0_mapping.get("placed_records") != 163
+        or red0_mapping.get("routed_edges") != 167
+        or red0_mapping.get("unrouted_edges") != 0
+        or red0_mapping.get("unplaced_records") != 0
+        or red0_mapping.get("config_records") != 4424
+        or red0_cgra.get("status") != "pass"
+        or red0_cgra.get("dfg_cycles") != 8
+        or red0_cgra.get("hardware_aware_cycles") != 995
+        or red0_cgra.get("final_outputs") != ["none", "i32:0"]
+    ):
+        raise AssertionError(f"unexpected {stem} red0 evidence: {red0_dfg} {red0_mapping} {red0_cgra}")
+
+    red1_dfg = json.loads((sim_evidence / f"{stem}.red1.dfg.report.json").read_text())
+    red1_mapping = json.loads((sim_evidence / f"{stem}.red1.mapping.json").read_text())
+    red1_cgra = json.loads((sim_evidence / f"{stem}.red1.cgra.report.json").read_text())
+    red1_memory = {
+        key.split(":", 1)[1]: value for key, value in expected_memory.items()
+    }
+    if (
+        red1_dfg.get("kind") != "dfg_sim_report"
+        or red1_dfg.get("workload") != case
+        or red1_dfg.get("graph") != expected_graphs[1]
+        or red1_dfg.get("status") != "pass"
+        or red1_dfg.get("dynamic_work_items") != 1
+        or red1_dfg.get("operation_fire_counts", {}).get("arith.divsi") != 4
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 5
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.mux") != 4
+        or red1_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 1
+        or red1_dfg.get("final_outputs") != ["none", "i32:1"]
+        or red1_dfg.get("final_memory_state") != red1_memory
+        or red1_mapping.get("status") != "pass"
+        or red1_mapping.get("hardware") != hardware
+        or red1_mapping.get("placed_records") != 86
+        or red1_mapping.get("routed_edges") != 93
+        or red1_mapping.get("unrouted_edges") != 0
+        or red1_mapping.get("unplaced_records") != 0
+        or red1_mapping.get("config_records") != 2476
+        or red1_cgra.get("status") != "pass"
+        or red1_cgra.get("dfg_cycles") != 224
+        or red1_cgra.get("hardware_aware_cycles") != 766
+        or red1_cgra.get("final_outputs") != ["none", "i32:1"]
+        or red1_cgra.get("final_memory_state") != red1_memory
+    ):
+        raise AssertionError(f"unexpected {stem} red1 evidence: {red1_dfg} {red1_mapping} {red1_cgra}")
 
     dfg_report = json.loads((repo / row["dfg_report"]).read_text())
     mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
@@ -2190,60 +2280,62 @@ def assert_cmsis_depthwise_conv_mapping_blocker_evidence(
     if (
         dfg_report.get("kind") != "dfg_sim_report"
         or dfg_report.get("workload") != case
-        or dfg_report.get("graph") != graph
+        or dfg_report.get("graph") != "workload_graph_set"
+        or dfg_report.get("aggregation_kind") != "workload_graph_set"
+        or dfg_report.get("component_graphs") != expected_graphs
         or dfg_report.get("status") != "pass"
-        or dfg_report.get("dynamic_work_items") != 1
-        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.smax") != 1
-        or dfg_report.get("final_outputs") != ["none", "i32:0"]
-    ):
-        raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
-
-    icmp_placements = [
-        placement
-        for placement in mapping_artifact.get("placements", [])
-        if isinstance(placement, dict) and placement.get("operation") == "llvm.icmp"
-    ]
-    icmp_pressure = [
-        record
-        for record in mapping_artifact.get("resource_pressure", [])
-        if isinstance(record, dict) and record.get("operation") == "llvm.icmp"
-    ]
-    if (
-        mapping_artifact.get("kind") != "pnr_mapping"
-        or mapping_artifact.get("status") != "fail"
-        or mapping_artifact.get("routed_edges") != 6
-        or mapping_artifact.get("unrouted_edges") != 13
-        or mapping_artifact.get("unplaced_records") != 119
-        or len(icmp_placements) != 1
-        or icmp_pressure
-    ):
-        raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
-    assert_resource_pressure_record(
-        mapping_artifact,
-        resource_kind="fabric.op",
-        operation="llvm.zext",
-        required=4,
-        available=6,
-        placed=1,
-        missing=3,
-        label=stem,
-    )
-    assert_resource_pressure_record(
-        mapping_artifact,
-        resource_kind="fabric.mem.load",
-        operation="dataflow.load",
-        required=17,
-        available=6,
-        placed=6,
-        missing=11,
-        label=stem,
-    )
-    if (
-        cgra_report.get("kind") != "cgra_sim_report"
-        or cgra_report.get("status") != "blocked"
+        or dfg_report.get("optimistic_cycles") != 232
+        or dfg_report.get("dynamic_work_items") != 2
+        or dfg_report.get("operation_fire_counts", {}).get("arith.divsi") != 4
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 5
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 1
+        or dfg_report.get("final_outputs") != ["none", "i32:0", "none", "i32:1"]
+        or dfg_report.get("final_memory_state") != expected_memory
+        or mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("hardware") != hardware
+        or mapping_artifact.get("graph") != "workload_graph_set"
+        or mapping_artifact.get("aggregation_kind") != "workload_graph_set"
+        or mapping_artifact.get("component_graphs") != expected_graphs
+        or mapping_artifact.get("status") != "pass"
+        or mapping_artifact.get("placed_records") != 249
+        or mapping_artifact.get("routed_edges") != 260
+        or mapping_artifact.get("unrouted_edges") != 0
+        or mapping_artifact.get("unplaced_records") != 0
+        or mapping_artifact.get("config_records") != 6900
+        or mapping_artifact.get("route_segments") != 1246
+        or cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != case
+        or cgra_report.get("hardware") != hardware
+        or cgra_report.get("graph") != "workload_graph_set"
+        or cgra_report.get("aggregation_kind") != "workload_graph_set"
+        or cgra_report.get("component_graphs") != expected_graphs
+        or cgra_report.get("status") != "pass"
         or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
+        or cgra_report.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+        or cgra_report.get("dfg_cycles") != 232
+        or cgra_report.get("hardware_aware_cycles") != 1761
+        or cgra_report.get("performance_delta_cycles") != 1529
+        or cgra_report.get("route_segments") != 1246
+        or cgra_report.get("config_records") != 6900
+        or cgra_report.get("final_outputs") != ["none", "i32:0", "none", "i32:1"]
+        or cgra_report.get("final_memory_state") != expected_memory
     ):
-        raise AssertionError(f"unexpected {stem} CGRA blocker evidence: {cgra_report}")
+        raise AssertionError(
+            f"unexpected {stem} aggregate evidence: {dfg_report} {mapping_artifact} {cgra_report}"
+        )
+    comparison = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        comparison.get("kind") != "sim_comparison_report"
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 232
+        or comparison.get("cgra_sim_cycles") != 1761
+        or comparison.get("performance_delta_cycles") != 1529
+    ):
+        raise AssertionError(f"{stem} comparison should pass: {comparison}")
 
 
 def assert_cmsis_max_pool_s8_cgra_evidence(
@@ -3365,8 +3457,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 7,
-            "fail": 2,
+            "pass": 8,
+            "fail": 1,
             "blocked": 1,
             "unsupported": 8,
             "missing_status": 0,
@@ -3422,7 +3514,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
-    assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,

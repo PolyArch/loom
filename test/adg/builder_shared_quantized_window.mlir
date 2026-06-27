@@ -10,8 +10,10 @@
 // HARDWARE-DAG: store_group_size = 9 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
+// HARDWARE-DAG: fabric.op [@arith.divsi]
 // HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
 // HARDWARE-DAG: fabric.op [@arith.shli, @arith.shrsi, @arith.shrui]
+// HARDWARE-DAG: fabric.op [@dataflow.mux]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
 // HARDWARE-DAG: fabric.mem [spatial]
 
@@ -35,6 +37,7 @@ module {
     %c1 = dataflow.constant %ctrl {const_value = 1 : index} : index
     %c2 = dataflow.constant %ctrl {const_value = 2 : index} : index
     %c3 = dataflow.constant %ctrl {const_value = 3 : index} : index
+    %one = dataflow.constant %ctrl {const_value = 1 : i32} : i32
     %a0, %a0_done = dataflow.load %in[%idx] %ctrl : memref<?xi8>
     %a1, %a1_done = dataflow.load %in[%c1] %ctrl : memref<?xi8>
     %a2, %a2_done = dataflow.load %in[%c2] %ctrl : memref<?xi8>
@@ -48,11 +51,19 @@ module {
     %s2 = arith.shrui %s1, %y : i32
     %d0 = arith.subi %s2, %x : i32
     %u0 = arith.addi %d0, %y : i32
+    %q0 = arith.divsi %u0, %one : i32
+    %q1 = arith.divsi %x, %one : i32
+    %q2 = arith.divsi %y, %one : i32
+    %q3 = arith.divsi %s2, %one : i32
     %sel0 = arith.select %p0, %u0, %x : i32
     %sel1 = arith.select %p1, %sel0, %y : i32
+    %mux0 = dataflow.mux %p0, %q0, %q1 : (i1, i32, i32) -> i32
+    %mux1 = dataflow.mux %p1, %q2, %q3 : (i1, i32, i32) -> i32
+    %mux2 = dataflow.mux %p0, %mux0, %mux1 : (i1, i32, i32) -> i32
+    %mux3 = dataflow.mux %p1, %mux2, %sel1 : (i1, i32, i32) -> i32
     %store0 = dataflow.store %out[%c0] %m0 %ctrl : memref<?xi8>
     %store1 = dataflow.store %out[%c1] %m1 %ctrl : memref<?xi8>
-    %store2 = dataflow.store %out32[%c2] %sel1 %ctrl : memref<?xi32>
+    %store2 = dataflow.store %out32[%c2] %mux3 %ctrl : memref<?xi32>
     dataflow.graph.return %ctrl : none
   }
 }

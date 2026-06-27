@@ -20,6 +20,8 @@
 // RUN: FileCheck %s --check-prefix=PARTIAL-CAPTURE < %t.partial_capture.json
 // RUN: loom-dfg-sim %s --graph structured_for_pointer_memory --arg 0=none --memref 1=1,2,3 --arg 2=0 --arg 3=3 --arg 4=1 --arg 5=0 --output %t.pointer_memory.json
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY < %t.pointer_memory.json
+// RUN: loom-dfg-sim %s --graph structured_for_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=3 --arg 4=1 --arg 5=0 --output %t.pointer_memory_oob.json
+// RUN: FileCheck %s --check-prefix=POINTER-MEMORY-OOB < %t.pointer_memory_oob.json
 // RUN: loom-dfg-sim %s --graph structured_for_carried_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=1 --arg 4=1 --arg 5=0 --output %t.carried_pointer_memory.json
 // RUN: FileCheck %s --check-prefix=CARRIED-POINTER-MEMORY < %t.carried_pointer_memory.json
 // RUN: loom-dfg-sim %s --graph structured_if_nested_for_pointer_memory --arg 0=none --arg 1=true --arg 2=0 --arg 3=3 --arg 4=1 --memref 5=1.000000e+00,2.000000e+00,3.000000e+00 --arg 6=0.000000e+00 --output %t.if_nested_for_memory.json
@@ -113,6 +115,11 @@
 // POINTER-MEMORY-DAG: "i32:2"
 // POINTER-MEMORY-DAG: "i32:3"
 // POINTER-MEMORY-DAG: "i32:4"
+
+// POINTER-MEMORY-OOB-DAG: "graph": "structured_for_pointer_memory"
+// POINTER-MEMORY-OOB-DAG: "status": "blocked"
+// POINTER-MEMORY-OOB-DAG: "dataflow.load address is out of range"
+// POINTER-MEMORY-OOB-DAG: "DFG-sim stopped before all returned values produced complete outputs"
 
 // CARRIED-POINTER-MEMORY-DAG: "graph": "structured_for_carried_pointer_memory"
 // CARRIED-POINTER-MEMORY-DAG: "status": "pass"

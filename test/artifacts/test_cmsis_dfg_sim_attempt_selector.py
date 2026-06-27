@@ -258,7 +258,7 @@ def main() -> int:
         ]
     )
     depthwise_selected = attempts.select_attempts(depthwise_args)
-    if labels(depthwise_selected) != ["arm_depthwise_conv_s8"]:
+    if labels(depthwise_selected) != ["arm_depthwise_conv_s8.red0", "arm_depthwise_conv_s8.red1"]:
         raise AssertionError(f"arm_depthwise_conv_s8 selector chose unexpected attempts: {labels(depthwise_selected)}")
 
     bad_args = attempts.parse_args(

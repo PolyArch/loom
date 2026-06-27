@@ -1185,6 +1185,33 @@ void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
+                  llvm::StringRef pred, llvm::StringRef falseValue,
+                  llvm::StringRef trueValue) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
+                          valueName(pred) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %false_value = " +
+                          valueName(falseValue) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %true_value = " +
+                          valueName(trueValue) + " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
+  module.addExactBodyLine(
+      "                %a = %false_value : !fabric.bits<32>,");
+  module.addExactBodyLine("                %b = %true_value : "
+                          "!fabric.bits<32>) -> !fabric.bits<32> {");
+  module.addExactBodyLine("        %value = fabric.op [@dataflow.mux] "
+                          "(%sel, %a, %b)");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<1>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
 void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
                            unsigned storeCount) {
   std::vector<std::string> resultNames;
@@ -3579,6 +3606,8 @@ struct SharedMemoryAdgConfig {
   unsigned unsignedMinCount = 4;
   unsigned selectCount = 8;
   unsigned mulCount = 8;
+  unsigned divCount = 0;
+  unsigned muxCount = 0;
   unsigned logicCount = 8;
   unsigned shiftCount = 8;
   unsigned castCount = 8;
@@ -3681,6 +3710,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
 
   addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
   addBinaryBank("mul", config.mulCount, {"arith.muli"});
+  addBinaryBank("div", config.divCount, {"arith.divsi"});
   addBinaryBank("fp_add", config.fpAddCount, {"arith.addf", "arith.subf"});
   addBinaryBank("fp_mul", config.fpMulCount, {"arith.mulf"});
   addTernaryBank("fma", config.fmaCount, "llvm.intr.fmuladd");
@@ -3723,6 +3753,17 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks32.push_back(pred);
     sinks32.push_back(trueValue);
     sinks32.push_back(falseValue);
+  }
+  for (unsigned index = 0; index < config.muxCount; ++index) {
+    std::string result = numbered("mux", index);
+    std::string pred = result + "_pred";
+    std::string falseValue = result + "_false";
+    std::string trueValue = result + "_true";
+    addDataMuxPe(module, result, pred, falseValue, trueValue);
+    sources32.push_back(result);
+    sinks32.push_back(pred);
+    sinks32.push_back(falseValue);
+    sinks32.push_back(trueValue);
   }
 
   addUnaryBank("cast", config.castCount, "llvm.trunc");
@@ -3774,6 +3815,8 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.cmpCount = 20;
   config.selectCount = 16;
   config.mulCount = 16;
+  config.divCount = 4;
+  config.muxCount = 4;
   config.shiftCount = 36;
   return buildSharedMemoryLikeAdg(config);
 }
