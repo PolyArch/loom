@@ -2921,13 +2921,14 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
       "%addr_add_rhs = fabric.switch [spatial] %fp_invariant, "
       "%reduction_scale, %i32a, %i32b, %idx, %int_rem, %aux_idx, "
       "%aux_active_idx, %carried_scan, %int_product, %int_product_aux, "
-      "%squared_data");
-  module.addExactBodyLine("  [{connectivity_table = [\"111111111111\"]}]");
+      "%squared_data, %running");
+  module.addExactBodyLine("  [{connectivity_table = [\"1111111111111\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
       "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>)");
+      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, "
+      "!fabric.bits<32>)");
   module.addExactBodyLine("  -> !fabric.bits<32>");
   addSingleResultBits32Switch(
       "addr_mask_lhs",

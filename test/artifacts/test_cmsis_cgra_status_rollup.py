@@ -792,9 +792,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 2,
+            "blocked": 1,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -821,7 +821,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "arm_biquad_cascade_df1_f32",
     )
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
-    assert_cmsis_mat_mult_f32_dfg_ready_for_mapping_evidence(repo, rows, sim_evidence)
+    assert_cmsis_mat_mult_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
@@ -1005,22 +1005,18 @@ def assert_cmsis_dfg_unsupported_row(
             )
 
 
-def assert_cmsis_mat_mult_f32_dfg_ready_for_mapping_evidence(
+def assert_cmsis_mat_mult_f32_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
 ) -> None:
     case = "MatrixFunctions/arm_mat_mult_f32.c"
     stem = "arm_mat_mult_f32"
-    assert_cmsis_dfg_ready_for_mapping_row(repo, rows, "cmsis-dsp", case)
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-dsp", case, stem)
     row = one_row(rows, "cmsis-dsp", case)
     report_path = sim_evidence / f"{stem}.dfg.report.json"
     if not report_path.is_file():
         raise AssertionError(f"CMSIS evidence mode should emit {report_path}")
-    for suffix in ("mapping.csv", "mapping.json", "cgra.report.json"):
-        artifact = sim_evidence / f"{stem}.{suffix}"
-        if artifact.exists():
-            raise AssertionError(f"CMSIS DFG-ready row must not emit {artifact}")
     expected_memory = {
         "arg4": ["f32:66", "f32:72", "f32:78"],
         "arg9": [
@@ -1049,7 +1045,29 @@ def assert_cmsis_mat_mult_f32_dfg_ready_for_mapping_evidence(
         or report_data.get("final_outputs") != ["none", "i32:3"]
         or report_data.get("final_memory_state") != expected_memory
     ):
-        raise AssertionError(f"unexpected arm_mat_mult_f32 DFG-ready evidence: {report_data}")
+        raise AssertionError(f"unexpected arm_mat_mult_f32 DFG evidence: {report_data}")
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("hardware") != "shared_reduction_adg"
+        or mapping_artifact.get("graph") != "g_t_arm_mat_mult_f32_red_0_0"
+        or mapping_artifact.get("status") != "pass"
+        or mapping_artifact.get("unrouted_edges") != 0
+    ):
+        raise AssertionError(f"unexpected arm_mat_mult_f32 mapping evidence: {mapping_artifact}")
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        cgra_report.get("status") != "pass"
+        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("final_outputs") != ["none", "i32:3"]
+        or cgra_report.get("final_memory_state") != expected_memory
+        or comparison_report.get("status") != "pass"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"unexpected arm_mat_mult_f32 CGRA comparison evidence: {cgra_report} {comparison_report}")
 
 
 def assert_cmsis_concat_memcpy_cgra_evidence(
@@ -2997,9 +3015,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 2,
+            "blocked": 1,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -3025,6 +3043,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "MatrixFunctions/arm_mat_add_f32.c", "arm_mat_add_f32"
     )
+    assert_cmsis_mat_mult_f32_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-dsp", "StatisticsFunctions/arm_mean_f32.c", "arm_mean_f32"
     )

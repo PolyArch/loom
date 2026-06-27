@@ -157,6 +157,8 @@ ATTEMPTS = (
             "1.300000e+01,1.400000e+01,1.500000e+01",
             "10=1.000000e+00,2.000000e+00,3.000000e+00",
         ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
     ),
     Attempt(
         suite="cmsis-dsp",
