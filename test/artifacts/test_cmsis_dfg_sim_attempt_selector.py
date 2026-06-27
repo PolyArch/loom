@@ -245,6 +245,22 @@ def main() -> int:
     if labels(max_pool_selected) != ["arm_max_pool_s8"]:
         raise AssertionError(f"arm_max_pool_s8 selector chose unexpected attempts: {labels(max_pool_selected)}")
 
+    depthwise_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "arm_depthwise_conv_s8",
+        ]
+    )
+    depthwise_selected = attempts.select_attempts(depthwise_args)
+    if labels(depthwise_selected) != ["arm_depthwise_conv_s8"]:
+        raise AssertionError(f"arm_depthwise_conv_s8 selector chose unexpected attempts: {labels(depthwise_selected)}")
+
     bad_args = attempts.parse_args(
         [
             "--cmsis-dsp-dfg-dir",
