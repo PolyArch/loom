@@ -36,12 +36,14 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -514,18 +516,22 @@ getElementIndex(::mlir::OpBuilder &builder, ::dataflow::GraphFuncOp graph,
                               ::llvm::DenseMap<::mlir::Value, ::mlir::Value>
                                   &cache,
                               ::mlir::Value value, ::mlir::Location loc,
-                              ::mlir::Operation *insertBefore) {
+                              ::mlir::Operation *insertBefore,
+                              bool cacheResult = true) {
   if (::llvm::isa<::mlir::IndexType>(value.getType()))
     return value;
-  if (auto it = cache.find(value); it != cache.end())
-    return it->second;
+  if (cacheResult) {
+    if (auto it = cache.find(value); it != cache.end())
+      return it->second;
+  }
   ::mlir::OpBuilder::InsertionGuard g(builder);
   builder.setInsertionPoint(insertBefore);
   ::mlir::Value idx =
       ::mlir::arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
                                          value)
           .getResult();
-  cache.try_emplace(value, idx);
+  if (cacheResult)
+    cache.try_emplace(value, idx);
   return idx;
 }
 
@@ -550,6 +556,63 @@ struct RewriteCtx {
   ::mlir::Value zeroIdx;
   ::llvm::SmallVector<::mlir::Operation *, 8> deadGeps;
 };
+
+bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
+                            ::mlir::OpBuilder &builder, RewriteCtx &ctx) {
+  if (memcpy.getIsVolatile())
+    return false;
+
+  ::mlir::Type lenType = memcpy.getLen().getType();
+  if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
+    return false;
+
+  ::mlir::Type byteTy = builder.getI8Type();
+  if (!::llvm::isa<::mlir::LLVM::LLVMPointerType>(
+          memcpy.getSrc().getType()) ||
+      !::llvm::isa<::mlir::LLVM::LLVMPointerType>(memcpy.getDst().getType()))
+    return false;
+
+  ::mlir::Location loc = memcpy.getLoc();
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(memcpy);
+
+  ::mlir::Value lower =
+      getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 0, loc);
+  ::mlir::Value step =
+      getDataflowConstant(builder, builder.getIndexType(), ctx.ctrl, 1, loc);
+  ::mlir::Value upper = getIndexFromInt(builder, ctx.indexCastCache,
+                                        memcpy.getLen(), loc, memcpy,
+                                        /*cacheResult=*/false);
+  if (!lower || !step || !upper)
+    return false;
+
+  ::mlir::Value srcMem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getSrc(),
+                      byteTy, loc, /*topLevel=*/false, memcpy);
+  ::mlir::Value dstMem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getDst(),
+                      byteTy, loc, /*topLevel=*/false, memcpy);
+  if (!srcMem || !dstMem)
+    return false;
+
+  auto buildBody = [&](::mlir::OpBuilder &bodyBuilder, ::mlir::Location bodyLoc,
+                       ::mlir::Value iv, ::mlir::ValueRange) {
+    auto load = ::dataflow::LoadOp::create(
+        bodyBuilder, bodyLoc, /*data=*/byteTy,
+        /*done=*/bodyBuilder.getNoneType(), /*mem=*/srcMem,
+        /*addr=*/iv, /*ctrl=*/ctx.ctrl);
+    ::dataflow::StoreOp::create(bodyBuilder, bodyLoc,
+                                /*done=*/bodyBuilder.getNoneType(),
+                                /*mem=*/dstMem, /*addr=*/iv,
+                                /*data=*/load.getData(),
+                                /*ctrl=*/load.getDone());
+    ::mlir::scf::YieldOp::create(bodyBuilder, bodyLoc);
+  };
+  ::mlir::scf::ForOp::create(builder, loc, lower, upper, step,
+                             ::mlir::ValueRange{}, buildBody);
+  memcpy->erase();
+  return true;
+}
 
 // Attempt to rewrite a single load or store. Returns true if a
 // rewrite happened.
@@ -621,11 +684,11 @@ bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
 
 bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
                       ::mlir::OpBuilder &builder, RewriteCtx &ctx) {
-  if (!topLevel)
-    return false;
   auto memcpy = ::llvm::dyn_cast<::mlir::LLVM::MemcpyOp>(op);
   if (!memcpy || memcpy.getIsVolatile())
     return false;
+  if (!topLevel)
+    return tryRewriteNestedMemcpy(memcpy, builder, ctx);
 
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType>(lenType))
@@ -757,9 +820,13 @@ unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph,
   // Erase orphan geps (those whose only uses were the rewritten
   // load/store ops). Some may have other live uses -- skip those
   // silently.
-  for (::mlir::Operation *gep : ctx.deadGeps)
+  ::llvm::SmallPtrSet<::mlir::Operation *, 8> visitedDeadGeps;
+  for (::mlir::Operation *gep : ctx.deadGeps) {
+    if (!visitedDeadGeps.insert(gep).second)
+      continue;
     if (gep->use_empty())
       gep->erase();
+  }
   return rewrites;
 }
 
@@ -780,7 +847,7 @@ struct LowerGraphMemoryPass
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
     registry.insert<::mlir::arith::ArithDialect, ::mlir::func::FuncDialect,
                     ::mlir::LLVM::LLVMDialect, ::mlir::memref::MemRefDialect,
-                    ::dataflow::DataflowDialect>();
+                    ::mlir::scf::SCFDialect, ::dataflow::DataflowDialect>();
   }
 
   void runOnOperation() final {

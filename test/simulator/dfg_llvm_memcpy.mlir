@@ -4,6 +4,9 @@
 // RUN: FileCheck %s --check-prefix=DIRECT < %t.direct.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_structured_if --arg 0=none --memref 1=5,6,7 --memref 2=0,0,0 --arg 3=2 --arg 4=true --output %t.structured-if.json
 // RUN: FileCheck %s --check-prefix=STRUCTURED-IF < %t.structured-if.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
+// RUN: loom-dfg-sim %t.lowered.mlir --graph pointer_memcpy_structured_i32_gep --arg 0=none --arg 1=2 --arg 2=true --arg 3=1 --memref 4=10,11,12,13,20,21,22,23 --memref 5=0,0,0,0 --output %t.structured-i32-gep.json
+// RUN: FileCheck %s --check-prefix=STRUCTURED-I32-GEP < %t.structured-i32-gep.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_stream --arg 0=none --arg 1=0 --arg 2=2 --arg 3=1 --arg 4=2 --arg 5=2 --memref 6=1,2,3,4 --memref 7=0,0,0 --output %t.oob.json
 // RUN: FileCheck %s --check-prefix=OOB < %t.oob.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --memref 1=1,2 --memref 2=0,0 --arg 3=-1 --output %t.negative.json
@@ -54,6 +57,15 @@
 // STRUCTURED-IF: "llvm.intr.memcpy": 1
 // STRUCTURED-IF: "scf.if": 1
 // STRUCTURED-IF: "status": "pass"
+
+// STRUCTURED-I32-GEP: "final_memory_state": {
+// STRUCTURED-I32-GEP: "arg5": [
+// STRUCTURED-I32-GEP-NEXT: "i8:20",
+// STRUCTURED-I32-GEP-NEXT: "i8:21",
+// STRUCTURED-I32-GEP-NEXT: "i8:0",
+// STRUCTURED-I32-GEP-NEXT: "i8:0"
+// STRUCTURED-I32-GEP-NOT: "llvm.intr.memcpy"
+// STRUCTURED-I32-GEP: "status": "pass"
 
 // OOB-DAG: "status": "blocked"
 // OOB-DAG: "llvm.intr.memcpy destination range is out of range"
@@ -118,6 +130,19 @@ module {
       %do_copy: i1) -> none {
     scf.if %do_copy {
       "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
+        <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
+           isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    }
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @pointer_memcpy_structured_i32_gep(
+      %ctrl: none, %copy_bytes: i32, %do_copy: i1, %elem_offset: i32,
+      %src: !llvm.ptr, %dst: !llvm.ptr) -> none {
+    scf.if %do_copy {
+      %src_at = llvm.getelementptr %src[%elem_offset]
+          : (!llvm.ptr, i32) -> !llvm.ptr, i32
+      "llvm.intr.memcpy"(%dst, %src_at, %copy_bytes)
         <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
            isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
     }
