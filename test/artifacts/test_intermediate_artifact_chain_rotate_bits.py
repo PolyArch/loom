@@ -106,7 +106,7 @@ def main() -> int:
             raise AssertionError(f"unexpected rotate_bits mapping id: {mapping_artifact}")
         if (
             mapping_artifact.get("status") != "pass"
-            or mapping_artifact.get("config_records") != 246
+            or mapping_artifact.get("config_records") != 247
             or mapping_artifact.get("unrouted_edges") != 0
         ):
             raise AssertionError(f"rotate_bits mapping should preserve full route evidence: {mapping_artifact}")

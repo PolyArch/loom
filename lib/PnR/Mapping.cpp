@@ -348,6 +348,23 @@ bool isStructuredPointerForwardingUse(mlir::OpOperand &use) {
 
 bool isPointerBookkeepingOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
+  if (name == "llvm.mlir.zero") {
+    if (op->getNumResults() != 1 ||
+        !isLlvmPointerType(op->getResult(0).getType()))
+      return false;
+    for (mlir::OpOperand &use : op->getResult(0).getUses()) {
+      mlir::Operation *owner = use.getOwner();
+      if (mlir::isa<mlir::LLVM::ICmpOp>(owner) ||
+          mlir::isa<mlir::LLVM::GEPOp>(owner) ||
+          isLlvmPointerMemoryAddressUse(use) || isPointerCarryOp(owner) ||
+          isPointerMemrefBaseAdapterOp(owner) || isGraphReturnOp(owner) ||
+          isStructuredPointerForwardingUse(use))
+        continue;
+      return false;
+    }
+    return true;
+  }
+
   if (name == "llvm.getelementptr") {
     if (op->getNumResults() != 1 ||
         !isLlvmPointerType(op->getResult(0).getType()))
@@ -549,6 +566,8 @@ std::optional<std::string> predicateConfig(mlir::Operation *op) {
     return mlir::arith::stringifyCmpIPredicate(cmp.getPredicate()).str();
   if (auto cmp = mlir::dyn_cast<mlir::arith::CmpFOp>(op))
     return mlir::arith::stringifyCmpFPredicate(cmp.getPredicate()).str();
+  if (auto cmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op))
+    return mlir::LLVM::stringifyICmpPredicate(cmp.getPredicate()).str();
   return std::nullopt;
 }
 
@@ -1131,6 +1150,8 @@ std::optional<unsigned> softwareBitWidth(mlir::Type type) {
     return floatType.getWidth();
   if (mlir::isa<mlir::IndexType>(type))
     return loom::getIndexWidth();
+  if (isLlvmPointerType(type))
+    return loom::getIndexWidth();
   return std::nullopt;
 }
 
@@ -1192,6 +1213,8 @@ bool softwareTypeFitsFabricType(mlir::Type softwareType,
     return *softwareWidth == *hardwareWidth;
   if (mlir::isa<mlir::FloatType>(softwareType))
     return *softwareWidth == *hardwareWidth;
+  if (isLlvmPointerType(softwareType))
+    return *softwareWidth <= *hardwareWidth;
   if (mlir::isa<mlir::IntegerType, mlir::IndexType>(softwareType))
     return *softwareWidth <= *hardwareWidth;
   return false;

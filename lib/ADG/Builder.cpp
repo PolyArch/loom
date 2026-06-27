@@ -2087,7 +2087,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addUnary32YieldPe("fp", "llvm.uitofp");
   addUnary32YieldPe("fp_negated", "llvm.fneg", "fp_negated_input");
 
-  auto addCmpPe = [&](std::string resultName, std::string opName,
+  auto addCmpPe = [&](std::string resultName, std::vector<std::string> opNames,
                       std::vector<std::string> predicates) {
     PeSpec pe;
     pe.inputs = {{"pa", "cmp_lhs", "!fabric.bits<32>", ""},
@@ -2099,7 +2099,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                 {"rhs", "pb", "!fabric.bits<32>", ""}},
                {"!fabric.bits<32>"},
                {FabricOpSpec{{"pred"},
-                             {std::move(opName)},
+                             std::move(opNames),
                              {"lhs", "rhs"},
                              {"!fabric.bits<32>", "!fabric.bits<32>"},
                              {"!fabric.bits<1>"},
@@ -2109,11 +2109,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                {"!fabric.bits<1>"}});
     module.addPe(std::move(pe));
   };
-  addCmpPe("cmpf_pred", "arith.cmpf", {"oeq", "ogt", "ugt", "ule", "olt"});
+  addCmpPe("cmpf_pred", {"arith.cmpf"}, {"oeq", "ogt", "ugt", "ule", "olt"});
   std::vector<std::string> integerCmpPredicates = {
       "eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"};
-  addCmpPe("cmpi_pred", "arith.cmpi", integerCmpPredicates);
-  addCmpPe("cmpi_pred_aux", "arith.cmpi", std::move(integerCmpPredicates));
+  addCmpPe("cmpi_pred", {"arith.cmpi", "llvm.icmp"}, integerCmpPredicates);
+  addCmpPe("cmpi_pred_aux", {"arith.cmpi", "llvm.icmp"},
+           std::move(integerCmpPredicates));
 
   PeSpec wideCmpPe;
   wideCmpPe.inputs = {{"pa", "cmp64_lhs", "!fabric.bits<64>", ""},

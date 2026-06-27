@@ -783,6 +783,8 @@ ATTEMPTS = (
             "27=0,0,0,0",
             "34=0,0,0,0",
         ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
     ),
     Attempt(
         suite="cmsis-nn",

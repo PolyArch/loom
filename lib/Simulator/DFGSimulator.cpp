@@ -368,6 +368,23 @@ Token pointerToken(mlir::Value root, std::shared_ptr<MemoryValue> memory = {},
   return token;
 }
 
+llvm::Expected<Token> zeroToken(mlir::Type type) {
+  if (mlir::isa<mlir::LLVM::LLVMPointerType>(type))
+    return pointerToken(mlir::Value{});
+  if (mlir::isa<mlir::IndexType>(type))
+    return integerValueToken(0);
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    if (intType.getWidth() == 1)
+      return boolValueToken(false);
+    return integerValueToken(0);
+  }
+  if (mlir::isa<mlir::FloatType>(type))
+    return floatValueToken(0.0);
+  return llvm::createStringError(std::errc::invalid_argument,
+                                 "unsupported llvm.mlir.zero type: %s",
+                                 typeToString(type).c_str());
+}
+
 llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
                                           mlir::Type elementType) {
   if (token.kind != TokenKind::Pointer)
@@ -538,6 +555,34 @@ bool boolToken(const Token &token) {
   if (token.kind == TokenKind::Bool)
     return token.boolValue;
   return token.intValue != 0;
+}
+
+bool samePointer(const MemoryView &lhs, const MemoryView &rhs) {
+  return lhs.root == rhs.root && lhs.byteOffset == rhs.byteOffset;
+}
+
+bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op) {
+  if (!mlir::isa<mlir::LLVM::LLVMPointerType>(op.getLhs().getType()) ||
+      !mlir::isa<mlir::LLVM::LLVMPointerType>(op.getRhs().getType()))
+    return false;
+  return op.getPredicate() == mlir::LLVM::ICmpPredicate::eq ||
+         op.getPredicate() == mlir::LLVM::ICmpPredicate::ne;
+}
+
+llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
+                                          const Token &lhs,
+                                          const Token &rhs) {
+  if (!isSupportedPointerICmp(op))
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "llvm.icmp supports only pointer eq/ne in DFG-sim");
+  if (lhs.kind != TokenKind::Pointer || rhs.kind != TokenKind::Pointer)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "llvm.icmp operands are not pointers");
+  bool equal = samePointer(lhs.pointer, rhs.pointer);
+  if (op.getPredicate() == mlir::LLVM::ICmpPredicate::ne)
+    equal = !equal;
+  return boolValueToken(equal);
 }
 
 PrimitiveValue primitiveValueFromToken(const Token &token) {
@@ -1332,6 +1377,37 @@ bool fireArithConstant(mlir::arith::ConstantOp op, SimulatorState &state) {
   state.oneShotOps.insert(op.getOperation());
   return recordEvent(state, op->getName().getStringRef());
 }
+
+bool fireLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state) {
+  if (state.oneShotOps.contains(op.getOperation()))
+    return false;
+  auto tokenOrErr = zeroToken(op->getResult(0).getType());
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  emitToken(state, op->getResult(0), *tokenOrErr);
+  state.oneShotOps.insert(op.getOperation());
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool fireLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state) {
+  mlir::OpOperand &lhsOperand = op->getOpOperand(0);
+  mlir::OpOperand &rhsOperand = op->getOpOperand(1);
+  if (!hasToken(state.channels, lhsOperand) ||
+      !hasToken(state.channels, rhsOperand))
+    return false;
+  Token lhs = popToken(state.channels, lhsOperand);
+  Token rhs = popToken(state.channels, rhsOperand);
+  auto resultOrErr = evaluatePointerICmp(op, lhs, rhs);
+  if (!resultOrErr) {
+    state.diagnostics.push_back(llvm::toString(resultOrErr.takeError()));
+    return false;
+  }
+  emitToken(state, op->getResult(0), *resultOrErr);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
   if (op->getNumResults() != 1)
     return false;
@@ -1431,6 +1507,34 @@ bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
   }
   locals[result] = tokenFromPrimitiveValue(*valueOrErr);
   return recordEvent(state, primitiveOperationName(op));
+}
+
+bool assignLocalLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state,
+                         LocalValueMap &locals) {
+  auto tokenOrErr = zeroToken(op->getResult(0).getType());
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  locals[op->getResult(0)] = *tokenOrErr;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state,
+                         LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<Token> lhs =
+      lookupToken(op.getLhs(), state, locals, captureIndex);
+  std::optional<Token> rhs =
+      lookupToken(op.getRhs(), state, locals, captureIndex);
+  if (!lhs || !rhs)
+    return false;
+  auto resultOrErr = evaluatePointerICmp(op, *lhs, *rhs);
+  if (!resultOrErr) {
+    state.diagnostics.push_back(llvm::toString(resultOrErr.takeError()));
+    return false;
+  }
+  locals[op->getResult(0)] = *resultOrErr;
+  return recordEvent(state, op->getName().getStringRef());
 }
 
 bool assignLocalDataflowConstant(dataflow::ConstantOp op, SimulatorState &state,
@@ -1822,6 +1926,10 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalCast(cast, state, locals, captureIndex);
   if (auto gep = mlir::dyn_cast<mlir::LLVM::GEPOp>(op))
     return assignLocalGEP(gep, state, locals, captureIndex);
+  if (auto zero = mlir::dyn_cast<mlir::LLVM::ZeroOp>(op))
+    return assignLocalLLVMZero(zero, state, locals);
+  if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op))
+    return assignLocalLLVMICmp(icmp, state, locals, captureIndex);
   if (auto load = mlir::dyn_cast<dataflow::LoadOp>(op))
     return assignLocalDataflowLoad(load, state, locals, captureIndex);
   if (auto store = mlir::dyn_cast<dataflow::StoreOp>(op))
@@ -1896,9 +2004,14 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
         continue;
       return cast->getName().getStringRef().str();
     }
+    if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
+      if (isSupportedPointerICmp(icmp))
+        continue;
+      return bodyOp.getName().getStringRef().str();
+    }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -1977,9 +2090,14 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
         continue;
       return cast->getName().getStringRef().str();
     }
+    if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
+      if (isSupportedPointerICmp(icmp))
+        continue;
+      return bodyOp.getName().getStringRef().str();
+    }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2030,9 +2148,14 @@ unsupportedStructuredWhileBody(mlir::Block *block,
         continue;
       return cast->getName().getStringRef().str();
     }
+    if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
+      if (isSupportedPointerICmp(icmp))
+        continue;
+      return bodyOp.getName().getStringRef().str();
+    }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2098,9 +2221,14 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
         continue;
       return cast->getName().getStringRef().str();
     }
+    if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
+      if (isSupportedPointerICmp(icmp))
+        continue;
+      return bodyOp.getName().getStringRef().str();
+    }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2670,6 +2798,10 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireCast(typedOp, state); })
       .Case<mlir::LLVM::GEPOp>(
           [&](auto typedOp) { return fireGEP(typedOp, state); })
+      .Case<mlir::LLVM::ZeroOp>(
+          [&](auto typedOp) { return fireLLVMZero(typedOp, state); })
+      .Case<mlir::LLVM::ICmpOp>(
+          [&](auto typedOp) { return fireLLVMICmp(typedOp, state); })
       .Case<mlir::LLVM::LoadOp>(
           [&](auto typedOp) { return fireLLVMLoad(typedOp, state); })
       .Case<mlir::LLVM::StoreOp>(
@@ -2710,14 +2842,19 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return unsupportedStructuredWhileOperation(whileOp);
   if (auto forallOp = mlir::dyn_cast<mlir::scf::ForallOp>(op))
     return unsupportedStructuredForallOperation(forallOp);
+  if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
+    if (isSupportedPointerICmp(icmp))
+      return std::nullopt;
+    return op->getName().getStringRef().str();
+  }
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
                 dataflow::MuxOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
                 dataflow::PackOp, dataflow::UnpackOp, dataflow::SerializeOp,
                 dataflow::LoadOp, dataflow::StoreOp,
                 mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
-                mlir::LLVM::LoadOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
-                mlir::arith::ConstantOp>(op))
+                mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
+                mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }

@@ -805,8 +805,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         {
             "total": 18,
             "pass": 4,
-            "fail": 3,
-            "blocked": 3,
+            "fail": 4,
+            "blocked": 2,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -831,6 +831,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
+    assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
@@ -851,16 +852,6 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "arm_max_pool_s8",
         "g_t_arm_max_pool_s8_red_0_0",
         "unsupported op: llvm.intr.memcpy",
-    )
-    assert_cmsis_dfg_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-nn",
-        "ConvolutionFunctions/arm_depthwise_conv_s8.c",
-        "arm_depthwise_conv_s8",
-        "g_t_arm_depthwise_conv_s8_red_0_0",
-        "unsupported op: llvm.icmp",
     )
     run(
         repo,
@@ -2142,6 +2133,90 @@ def assert_cmsis_softmax_u8_resource_pressure_evidence(
         )
 
 
+def assert_cmsis_depthwise_conv_mapping_blocker_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "ConvolutionFunctions/arm_depthwise_conv_s8.c"
+    stem = "arm_depthwise_conv_s8"
+    graph = "g_t_arm_depthwise_conv_s8_red_0_0"
+    diagnostic = "resource_kind=fabric.op operation=arith.addi required=29 available=5 placed=1 missing=28"
+    assert_cmsis_mapping_blocker_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        case,
+        diagnostic_substring=diagnostic,
+    )
+    row = one_row(rows, "cmsis-nn", case)
+    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        artifact = sim_evidence / Path(row[key]).name
+        if not artifact.is_file():
+            raise AssertionError(f"attempt manifest should emit {artifact}")
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.smax") != 1
+        or dfg_report.get("final_outputs") != ["none", "i32:0"]
+    ):
+        raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
+
+    icmp_placements = [
+        placement
+        for placement in mapping_artifact.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "llvm.icmp"
+    ]
+    icmp_pressure = [
+        record
+        for record in mapping_artifact.get("resource_pressure", [])
+        if isinstance(record, dict) and record.get("operation") == "llvm.icmp"
+    ]
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("status") != "fail"
+        or mapping_artifact.get("routed_edges") != 6
+        or mapping_artifact.get("unrouted_edges") != 13
+        or mapping_artifact.get("unplaced_records") != 119
+        or len(icmp_placements) != 1
+        or icmp_pressure
+    ):
+        raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
+    assert_resource_pressure_record(
+        mapping_artifact,
+        resource_kind="fabric.op",
+        operation="llvm.zext",
+        required=4,
+        available=6,
+        placed=1,
+        missing=3,
+        label=stem,
+    )
+    assert_resource_pressure_record(
+        mapping_artifact,
+        resource_kind="fabric.mem.load",
+        operation="dataflow.load",
+        required=17,
+        available=6,
+        placed=6,
+        missing=11,
+        label=stem,
+    )
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("status") != "blocked"
+        or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
+    ):
+        raise AssertionError(f"unexpected {stem} CGRA blocker evidence: {cgra_report}")
+
+
 def assert_cmsis_relu_q7_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
@@ -2218,7 +2293,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         "routed_edges": 18,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 401,
+        "config_records": 402,
         "status": "pass",
     }
     for key, value in expected_red1_mapping.items():
@@ -2271,7 +2346,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         or red1_cgra.get("dfg_cycles") != 100
         or red1_cgra.get("hardware_aware_cycles") != 199
         or red1_cgra.get("fidelity_level") != "mapping_constraint_estimate"
-        or red1_cgra.get("config_records") != 401
+        or red1_cgra.get("config_records") != 402
         or red1_cgra.get("route_segments") != 72
         or red1_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
         or red1_cgra.get("final_outputs") != ["none"]
@@ -2310,7 +2385,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         "routed_edges": 44,
         "unrouted_edges": 0,
         "unplaced_records": 0,
-        "config_records": 990,
+        "config_records": 991,
         "route_segments": 180,
         "status": "pass",
     }
@@ -2330,7 +2405,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         or aggregate_cgra.get("hardware_aware_cycles") != 420
         or aggregate_cgra.get("performance_delta_cycles") != 237
         or aggregate_cgra.get("routed_edges") != 44
-        or aggregate_cgra.get("config_records") != 990
+        or aggregate_cgra.get("config_records") != 991
         or aggregate_cgra.get("route_segments") != 180
         or aggregate_cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
         or aggregate_cgra.get("final_outputs") != ["none", "none"]
@@ -3028,8 +3103,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         {
             "total": 18,
             "pass": 4,
-            "fail": 3,
-            "blocked": 3,
+            "fail": 4,
+            "blocked": 2,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -3084,6 +3159,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
+    assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
@@ -3104,16 +3180,6 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "arm_max_pool_s8",
         "g_t_arm_max_pool_s8_red_0_0",
         "unsupported op: llvm.intr.memcpy",
-    )
-    assert_cmsis_dfg_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-nn",
-        "ConvolutionFunctions/arm_depthwise_conv_s8.c",
-        "arm_depthwise_conv_s8",
-        "g_t_arm_depthwise_conv_s8_red_0_0",
-        "unsupported op: llvm.icmp",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")

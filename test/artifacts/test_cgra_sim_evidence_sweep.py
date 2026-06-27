@@ -2061,7 +2061,7 @@ def assert_gather_evidence(evidence_dir: Path) -> None:
         or mapping.get("routed_edges") != 5
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
-        or mapping.get("config_records") != 97
+        or mapping.get("config_records") != 98
     ):
         raise AssertionError(f"gather should map the bounded indirect load/store graph: {mapping_path}: {mapping}")
     route_edges = {

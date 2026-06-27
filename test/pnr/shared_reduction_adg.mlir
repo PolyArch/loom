@@ -3,6 +3,7 @@
 // CHECK: fabric.module @shared_reduction_adg
 // CHECK: fabric.op [@llvm.intr.ctlz]
 // CHECK: fabric.op [@arith.extui]
+// CHECK: fabric.op [@arith.cmpi, @llvm.icmp]
 // CHECK: fabric.mem
 // CHECK: fabric.switch
 
@@ -554,7 +555,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                     %pb = %cmp_rhs : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
               %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
-      %pred = fabric.op [@arith.cmpi] (%lhs, %rhs) {hw_params = [{predicate = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"]}]} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+      %pred = fabric.op [@arith.cmpi, @llvm.icmp] (%lhs, %rhs) {hw_params = [{predicate = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"]}]} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
       fabric.yield %pred : !fabric.bits<1> to !fabric.bits<32>
     }
   }
@@ -562,7 +563,7 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                     %pb = %cmp_rhs : !fabric.bits<32>) -> !fabric.bits<32> {
     fabric.fu(%lhs = %pa : !fabric.bits<32>,
               %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
-      %pred = fabric.op [@arith.cmpi] (%lhs, %rhs) {hw_params = [{predicate = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"]}]} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
+      %pred = fabric.op [@arith.cmpi, @llvm.icmp] (%lhs, %rhs) {hw_params = [{predicate = ["eq", "ne", "slt", "sle", "sgt", "sge", "ult", "ule", "ugt", "uge"]}]} : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
       fabric.yield %pred : !fabric.bits<1> to !fabric.bits<32>
     }
   }

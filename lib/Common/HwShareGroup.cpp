@@ -18,6 +18,7 @@ namespace common {
           {"arith.andi", "arith.ori", "arith.xori"},
           {"arith.minsi", "arith.maxsi"},
           {"arith.minui", "arith.maxui"},
+          {"arith.cmpi", "llvm.icmp"},
           {"arith.sitofp", "arith.uitofp"},
           {"arith.fptosi", "arith.fptoui"},
           {"arith.addf", "arith.subf"},

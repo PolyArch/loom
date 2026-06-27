@@ -628,6 +628,7 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
       add(n, {pT(0), pT(0)}, {pT(0)});
     }
     add("arith.cmpi", {pT(0), pT(0)}, {pF(1)});
+    add("llvm.icmp", {pT(0), pT(0)}, {pF(1)});
 
     // --- arith floating-point arithmetic / comparison ---
     for (StringRef n : {"arith.addf", "arith.subf", "arith.mulf", "arith.divf",

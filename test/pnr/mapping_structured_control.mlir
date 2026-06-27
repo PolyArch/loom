@@ -76,6 +76,21 @@
 // CMPI-I64-EXTUI-JSON-NOT: ".out"
 // CMPI-I64-EXTUI-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph structured_llvm_pointer_icmp_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_llvm_pointer_icmp_map --output %t.llvm-pointer-icmp.mapping.csv --artifact %t.llvm-pointer-icmp.mapping.json
+// RUN: FileCheck %s --check-prefix=LLVM-POINTER-ICMP-CSV < %t.llvm-pointer-icmp.mapping.csv
+// RUN: FileCheck %s --check-prefix=LLVM-POINTER-ICMP-JSON < %t.llvm-pointer-icmp.mapping.json
+
+// LLVM-POINTER-ICMP-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// LLVM-POINTER-ICMP-CSV-NEXT: structured_llvm_pointer_icmp_map,shared_reduction_adg,structured_llvm_pointer_icmp_map__structured_llvm_pointer_icmp_map__shared_reduction_adg,1,0,0,0,pass
+
+// LLVM-POINTER-ICMP-JSON-DAG: "status": "pass"
+// LLVM-POINTER-ICMP-JSON-DAG: "operation": "llvm.icmp"
+// LLVM-POINTER-ICMP-JSON-DAG: "sw_configs.predicate"
+// LLVM-POINTER-ICMP-JSON-DAG: "eq"
+// LLVM-POINTER-ICMP-JSON-NOT: "operation": "llvm.mlir.zero"
+// LLVM-POINTER-ICMP-JSON-NOT: "unsupported PnR graph operation: llvm.icmp"
+// LLVM-POINTER-ICMP-JSON-NOT: "unsupported PnR graph operation: llvm.mlir.zero"
+
 // RUN: loom-pnr-map --dfg-mlir %s --graph structured_cmpf_xori_extui_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_cmpf_xori_extui_map --output %t.cmpf-xori-extui.mapping.csv --artifact %t.cmpf-xori-extui.mapping.json
 // RUN: FileCheck %s --check-prefix=CMPF-XORI-CSV < %t.cmpf-xori-extui.mapping.csv
 // RUN: FileCheck %s --check-prefix=CMPF-XORI-JSON < %t.cmpf-xori-extui.mapping.json
@@ -196,6 +211,13 @@ module {
     %wide = arith.extui %pred : i1 to i64
     %narrow = llvm.trunc %wide : i64 to i32
     dataflow.graph.return %ctrl, %narrow : none, i32
+  }
+
+  dataflow.graph.func private @structured_llvm_pointer_icmp_map(
+      %ctrl: none, %ptr: !llvm.ptr) -> (none, i1) {
+    %null = llvm.mlir.zero : !llvm.ptr
+    %pred = llvm.icmp "eq" %ptr, %null : !llvm.ptr
+    dataflow.graph.return %ctrl, %pred : none, i1
   }
 
   dataflow.graph.func private @structured_cmpf_xori_extui_map(%ctrl: none,
