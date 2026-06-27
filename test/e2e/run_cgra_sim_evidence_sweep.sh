@@ -125,6 +125,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     runge_kutta_step
     sbox_lookup
     transpose
+    transform_point
     upper_bound
     upsample
     vecadd

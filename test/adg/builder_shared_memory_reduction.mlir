@@ -12,6 +12,7 @@
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
 // HARDWARE-DAG: fabric.op [@arith.addf, @arith.subf]
 // HARDWARE-DAG: fabric.op [@arith.mulf]
+// HARDWARE-DAG: fabric.op [@llvm.intr.fmuladd]
 // HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
 // HARDWARE-DAG: fabric.op [@arith.cmpf]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]

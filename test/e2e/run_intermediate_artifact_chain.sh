@@ -254,6 +254,9 @@ case "${CASE}" in
   transpose)
     case_graph="missing_primary_graph"
     ;;
+  transform_point)
+    case_graph="g_t_transform_point_kernel_0_0"
+    ;;
   upper_bound)
     case_graph="missing_primary_graph"
     ;;
@@ -308,7 +311,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "bisection_step" ]]; then
+    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "transform_point" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(

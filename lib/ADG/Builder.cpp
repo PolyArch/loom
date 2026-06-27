@@ -3546,6 +3546,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   constexpr unsigned kExtuiCount = 4;
   constexpr unsigned kFpAddCount = 4;
   constexpr unsigned kFpMulCount = 4;
+  constexpr unsigned kFmaCount = 6;
   constexpr unsigned kFpCmpCount = 4;
   constexpr unsigned kSyncCount = 4;
   constexpr unsigned kSyncArity = 6;
@@ -3585,6 +3586,20 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
       sinks32.push_back(input);
     }
   };
+  auto addTernaryBank = [&](llvm::StringRef prefix, unsigned count,
+                            llvm::StringRef opName) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string lhs = result + "_lhs";
+      std::string rhs = result + "_rhs";
+      std::string acc = result + "_acc";
+      addTernaryPe(module, result, lhs, rhs, acc, opName);
+      sources32.push_back(result);
+      sinks32.push_back(lhs);
+      sinks32.push_back(rhs);
+      sinks32.push_back(acc);
+    }
+  };
 
   for (unsigned index = 0; index < kConstantCount; ++index) {
     std::string result = numbered("const", index);
@@ -3598,6 +3613,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   addBinaryBank("mul", kMulCount, {"arith.muli"});
   addBinaryBank("fp_add", kFpAddCount, {"arith.addf", "arith.subf"});
   addBinaryBank("fp_mul", kFpMulCount, {"arith.mulf"});
+  addTernaryBank("fma", kFmaCount, "llvm.intr.fmuladd");
   addBinaryBank("and", kLogicCount, {"arith.andi"});
   addBinaryBank("or", kLogicCount, {"arith.ori"});
   addBinaryBank("xor", kLogicCount, {"arith.xori"});

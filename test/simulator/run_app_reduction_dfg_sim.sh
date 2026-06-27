@@ -1483,6 +1483,31 @@ case "${CASE}" in
             --arg 9=0
         )
         ;;
+    transform_point)
+        sim_args+=(
+            --graph g_t_transform_point_kernel_0_0
+            --workload transform_point
+            --arg 0=none
+            --arg 1=3
+            --memref 2=1.000000e+00,2.000000e+00,3.000000e+00,1.100000e+00,2.200000e+00,3.300000e+00,1.200000e+00,2.400000e+00,3.600000e+00,1.300000e+00,2.600000e+00,3.900000e+00
+            --arg 3=1
+            --arg 4=2
+            --arg 5=0.000000e+00
+            --arg 6=2.000000e+00
+            --arg 7=0.000000e+00
+            --arg 8=1.000000e+00
+            --memref 9=0,0,0,0,0,0,0,0,0,0,0,0
+            --arg 10=2.000000e+00
+            --arg 11=0.000000e+00
+            --arg 12=0.000000e+00
+            --arg 13=2.000000e+00
+            --arg 14=0.000000e+00
+            --arg 15=0.000000e+00
+            --arg 16=2.000000e+00
+            --arg 17=3.000000e+00
+            --arg 18=2
+        )
+        ;;
     partition)
         configure_partition_lower_args
         ;;

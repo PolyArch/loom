@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 35
+APP_NO_DFG_TIER_COUNT = 34
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -84,6 +84,7 @@ DEFAULT_SWEEP_CASES = (
     "runge_kutta_step",
     "sbox_lookup",
     "transpose",
+    "transform_point",
     "upper_bound",
     "upsample",
     "vecadd",
@@ -1488,6 +1489,102 @@ def assert_bisection_step_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"bisection_step CGRA evidence should carry the real final interval state: {cgra_path}: {cgra}")
 
 
+def assert_transform_point_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg2": [
+            "f32:1",
+            "f32:2",
+            "f32:3",
+            "f32:1.100000",
+            "f32:2.200000",
+            "f32:3.300000",
+            "f32:1.200000",
+            "f32:2.400000",
+            "f32:3.600000",
+            "f32:1.300000",
+            "f32:2.600000",
+            "f32:3.900000",
+        ],
+        "arg9": [
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:3.400000",
+            "f32:6.800000",
+            "f32:10.200000",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+        ],
+    }
+    expected_counts = {
+        "arith.addf": 3,
+        "arith.addi": 2,
+        "arith.index_cast": 9,
+        "arith.mulf": 3,
+        "arith.muli": 3,
+        "dataflow.load": 3,
+        "dataflow.store": 3,
+        "dataflow.sync": 1,
+        "llvm.intr.fmuladd": 6,
+        "llvm.trunc": 1,
+    }
+
+    dfg_path = evidence_dir / "transform_point.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("optimistic_cycles") != 128
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"transform_point DFG evidence should update the real output point: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("transform_point", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "transform_point.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 25
+        or mapping.get("routed_edges") != 38
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"transform_point should route on shared memory reduction hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.addf#0.result0->dataflow.store#0.operand2",
+        "arith.addf#1.result0->dataflow.store#1.operand2",
+        "arith.addf#2.result0->dataflow.store#2.operand2",
+        "llvm.intr.fmuladd#0.result0->llvm.intr.fmuladd#1.operand2",
+        "llvm.intr.fmuladd#5.result0->arith.addf#2.operand1",
+        "dataflow.store#2.result0->dataflow.sync#0.operand5",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"transform_point mapping should expose fma/add/store routes: {mapping}")
+
+    cgra_path = evidence_dir / "transform_point.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 128
+        or cgra.get("hardware_aware_cycles") != 358
+        or cgra.get("routed_edges") != 38
+        or cgra.get("route_segments") != 160
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra.get("fidelity_level") != "mapping_constraint_estimate"
+    ):
+        raise AssertionError(f"transform_point CGRA evidence should carry the real affine output state: {cgra_path}: {cgra}")
+
+
 def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:1", "f32:1.100000", "f32:1.200000", "f32:1.300000"],
@@ -2512,6 +2609,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "transpose",
                 "--case",
+                "transform_point",
+                "--case",
                 "upper_bound",
                 "--case",
                 "upsample",
@@ -2580,6 +2679,7 @@ def main(argv: list[str]) -> int:
             "sbox_lookup",
             "rotate_bits",
             "runge_kutta_step",
+            "transform_point",
         ):
             assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
             assert_sweep_artifact(evidence_dir, case, "mapping.json")
@@ -2613,6 +2713,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
+        assert_dfg_dynamic_work_items(evidence_dir, "transform_point", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "string_hash", 8)
@@ -2629,6 +2730,7 @@ def main(argv: list[str]) -> int:
         assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
+        assert_transform_point_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
@@ -2772,6 +2874,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in MAPPING_FAILED_SWEEP_CASES:
@@ -3107,9 +3210,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 61,
+            "pass": 62,
             "fail": 0,
-            "blocked": 48,
+            "blocked": 47,
             "unsupported": 0,
             "missing_status": 0,
         }
