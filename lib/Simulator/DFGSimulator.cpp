@@ -1258,19 +1258,13 @@ std::optional<std::size_t> resolveByteRangeStart(const MemoryView &view,
   return static_cast<std::size_t>(start);
 }
 
-bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state) {
-  if (!hasToken(state.channels, op.getDstMutable()) ||
-      !hasToken(state.channels, op.getSrcMutable()) ||
-      !hasToken(state.channels, op.getLenMutable()))
-    return false;
+bool executeLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
+                       const Token &dst, const Token &src, const Token &len) {
   if (op.getIsVolatile()) {
     state.diagnostics.push_back("volatile llvm.intr.memcpy is unsupported");
     return false;
   }
 
-  Token dst = popToken(state.channels, op.getDstMutable());
-  Token src = popToken(state.channels, op.getSrcMutable());
-  Token len = popToken(state.channels, op.getLenMutable());
   if (len.kind != TokenKind::Integer && len.kind != TokenKind::Bool) {
     state.diagnostics.push_back("llvm.intr.memcpy length is not integer-like");
     return false;
@@ -1314,6 +1308,18 @@ bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state) {
   for (auto [offset, token] : llvm::enumerate(copied))
     dstOrErr->pointer.memory->elements[*dstStart + offset] = token;
   return recordEvent(state, op->getName().getStringRef());
+}
+
+bool fireLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state) {
+  if (!hasToken(state.channels, op.getDstMutable()) ||
+      !hasToken(state.channels, op.getSrcMutable()) ||
+      !hasToken(state.channels, op.getLenMutable()))
+    return false;
+
+  Token dst = popToken(state.channels, op.getDstMutable());
+  Token src = popToken(state.channels, op.getSrcMutable());
+  Token len = popToken(state.channels, op.getLenMutable());
+  return executeLLVMMemcpy(op, state, dst, src, len);
 }
 
 bool fireStore(dataflow::StoreOp op, SimulatorState &state) {
@@ -1672,6 +1678,19 @@ bool assignLocalDataflowStore(dataflow::StoreOp op, SimulatorState &state,
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool assignLocalLLVMMemcpy(mlir::LLVM::MemcpyOp op, SimulatorState &state,
+                           LocalValueMap &locals, unsigned captureIndex) {
+  std::optional<Token> dst =
+      lookupToken(op.getDst(), state, locals, captureIndex);
+  std::optional<Token> src =
+      lookupToken(op.getSrc(), state, locals, captureIndex);
+  std::optional<Token> len =
+      lookupToken(op.getLen(), state, locals, captureIndex);
+  if (!dst || !src || !len)
+    return false;
+  return executeLLVMMemcpy(op, state, *dst, *src, *len);
+}
+
 bool assignLocalGate(dataflow::GateOp op, SimulatorState &state,
                      LocalValueMap &locals, unsigned captureIndex) {
   std::optional<Token> cond =
@@ -1934,6 +1953,8 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalDataflowLoad(load, state, locals, captureIndex);
   if (auto store = mlir::dyn_cast<dataflow::StoreOp>(op))
     return assignLocalDataflowStore(store, state, locals, captureIndex);
+  if (auto memcpy = mlir::dyn_cast<mlir::LLVM::MemcpyOp>(op))
+    return assignLocalLLVMMemcpy(memcpy, state, locals, captureIndex);
   if (auto gate = mlir::dyn_cast<dataflow::GateOp>(op))
     return assignLocalGate(gate, state, locals, captureIndex);
   if (auto mux = mlir::dyn_cast<dataflow::MuxOp>(op))
@@ -2011,7 +2032,8 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
+                  mlir::LLVM::MemcpyOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2097,7 +2119,8 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
+                  mlir::LLVM::MemcpyOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2155,7 +2178,8 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
+                  mlir::LLVM::MemcpyOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2228,7 +2252,8 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
+                  mlir::LLVM::MemcpyOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))

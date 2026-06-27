@@ -2,6 +2,8 @@
 // RUN: FileCheck %s < %t.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0 --arg 3=2 --arg 3=2 --output %t.direct.json
 // RUN: FileCheck %s --check-prefix=DIRECT < %t.direct.json
+// RUN: loom-dfg-sim %s --graph pointer_memcpy_structured_if --arg 0=none --memref 1=5,6,7 --memref 2=0,0,0 --arg 3=2 --arg 4=true --output %t.structured-if.json
+// RUN: FileCheck %s --check-prefix=STRUCTURED-IF < %t.structured-if.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_stream --arg 0=none --arg 1=0 --arg 2=2 --arg 3=1 --arg 4=2 --arg 5=2 --memref 6=1,2,3,4 --memref 7=0,0,0 --output %t.oob.json
 // RUN: FileCheck %s --check-prefix=OOB < %t.oob.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --memref 1=1,2 --memref 2=0,0 --arg 3=-1 --output %t.negative.json
@@ -42,6 +44,16 @@
 // DIRECT-NEXT: "i8:0"
 // DIRECT: "llvm.intr.memcpy": 2
 // DIRECT: "status": "pass"
+
+// STRUCTURED-IF: "dynamic_work_items": 1
+// STRUCTURED-IF: "final_memory_state": {
+// STRUCTURED-IF: "arg2": [
+// STRUCTURED-IF-NEXT: "i8:5",
+// STRUCTURED-IF-NEXT: "i8:6",
+// STRUCTURED-IF-NEXT: "i8:0"
+// STRUCTURED-IF: "llvm.intr.memcpy": 1
+// STRUCTURED-IF: "scf.if": 1
+// STRUCTURED-IF: "status": "pass"
 
 // OOB-DAG: "status": "blocked"
 // OOB-DAG: "llvm.intr.memcpy destination range is out of range"
@@ -98,6 +110,17 @@ module {
     "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
       <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
          isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @pointer_memcpy_structured_if(
+      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr, %copy_bytes: i32,
+      %do_copy: i1) -> none {
+    scf.if %do_copy {
+      "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
+        <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
+           isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    }
     dataflow.graph.return %ctrl : none
   }
 

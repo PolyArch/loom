@@ -736,6 +736,18 @@ ATTEMPTS = (
             "37=1,2,3,4",
             "38=0,0,0,0",
         ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+        expected_dynamic_work_items=1,
+        expected_operation_fire_counts=(
+            ("dataflow.load", 1),
+            ("dataflow.store", 1),
+            ("scf.if", 3),
+        ),
+        expected_final_outputs=("none",),
+        expected_final_memory_state=(
+            ("arg38", ("i8:0", "i8:0", "i8:0", "i8:0")),
+        ),
     ),
     Attempt(
         suite="cmsis-nn",

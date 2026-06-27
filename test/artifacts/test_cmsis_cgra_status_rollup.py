@@ -832,6 +832,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_max_pool_mapping_unsupported_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
@@ -842,16 +843,6 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "g_t_arm_fully_connected_s8_red_0_0",
         "unsupported op: llvm.call",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
-    )
-    assert_cmsis_dfg_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-nn",
-        "PoolingFunctions/arm_max_pool_s8.c",
-        "arm_max_pool_s8",
-        "g_t_arm_max_pool_s8_red_0_0",
-        "unsupported op: llvm.intr.memcpy",
     )
     run(
         repo,
@@ -1738,6 +1729,37 @@ def assert_cmsis_mapping_blocker_row(
         raise AssertionError(f"unexpected blocked CMSIS comparison report: {comparison_report}")
 
 
+def assert_cmsis_mapping_unsupported_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    suite: str,
+    case: str,
+    *,
+    diagnostic_substring: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "mapping_artifact_unsupported"
+        or row["blocking_prerequisite"] != "mapping_artifact"
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or not row["mapping_artifact"]
+        or not row["cgra_report"]
+        or not row["comparison_report"]
+        or row["hardware_system"] != "shared_reduction_adg"
+        or diagnostic_substring not in row["diagnostic"]
+    ):
+        raise AssertionError(f"CMSIS row should expose exact PnR unsupported evidence: {row}")
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+    assert_sha256_file(row["mapping_artifact"], row["mapping_artifact_fingerprint"], repo)
+    assert_sha256_file(row["cgra_report"], row["cgra_report_fingerprint"], repo)
+    assert_sha256_file(row["comparison_report"], row["comparison_report_fingerprint"], repo)
+
+
 def assert_cmsis_vector_sum_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
@@ -2215,6 +2237,75 @@ def assert_cmsis_depthwise_conv_mapping_blocker_evidence(
         or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
     ):
         raise AssertionError(f"unexpected {stem} CGRA blocker evidence: {cgra_report}")
+
+
+def assert_cmsis_max_pool_mapping_unsupported_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "PoolingFunctions/arm_max_pool_s8.c"
+    stem = "arm_max_pool_s8"
+    graph = "g_t_arm_max_pool_s8_red_0_0"
+    diagnostic = "unsupported PnR graph operation: llvm.getelementptr"
+    assert_cmsis_mapping_unsupported_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        case,
+        diagnostic_substring=diagnostic,
+    )
+    row = one_row(rows, "cmsis-nn", case)
+    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        artifact = sim_evidence / Path(row[key]).name
+        if not artifact.is_file():
+            raise AssertionError(f"attempt manifest should emit {artifact}")
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("scf.if") != 3
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != {
+            "arg38": ["i8:0", "i8:0", "i8:0", "i8:0"]
+        }
+    ):
+        raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("graph") != graph
+        or mapping_artifact.get("hardware") != "shared_reduction_adg"
+        or mapping_artifact.get("status") != "unsupported"
+        or diagnostic not in mapping_artifact.get("diagnostics", [])
+    ):
+        raise AssertionError(f"unexpected {stem} mapping unsupported evidence: {mapping_artifact}")
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != case
+        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("status") != "blocked"
+        or diagnostic not in " ".join(cgra_report.get("diagnostics", []))
+    ):
+        raise AssertionError(f"unexpected {stem} CGRA blocker evidence: {cgra_report}")
+    if (
+        comparison_report.get("kind") != "sim_comparison_report"
+        or comparison_report.get("workload") != case
+        or comparison_report.get("status") != "blocked"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "blocked"
+    ):
+        raise AssertionError(f"unexpected {stem} comparison evidence: {comparison_report}")
 
 
 def assert_cmsis_relu_q7_cgra_evidence(
@@ -3160,6 +3251,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_max_pool_mapping_unsupported_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
@@ -3170,16 +3262,6 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "g_t_arm_fully_connected_s8_red_0_0",
         "unsupported op: llvm.call",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
-    )
-    assert_cmsis_dfg_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-nn",
-        "PoolingFunctions/arm_max_pool_s8.c",
-        "arm_max_pool_s8",
-        "g_t_arm_max_pool_s8_red_0_0",
-        "unsupported op: llvm.intr.memcpy",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
