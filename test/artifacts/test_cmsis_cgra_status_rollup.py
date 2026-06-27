@@ -804,8 +804,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 4,
-            "fail": 5,
+            "pass": 6,
+            "fail": 3,
             "blocked": 1,
             "unsupported": 8,
             "missing_status": 0,
@@ -828,8 +828,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
-    assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_mapping_blocker_evidence(repo, rows, sim_evidence)
@@ -1846,7 +1846,7 @@ def assert_cmsis_vector_sum_cgra_evidence(
         )
 
 
-def assert_cmsis_minmax_s8_mapping_blocker_evidence(
+def assert_cmsis_minmax_s8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
@@ -1857,14 +1857,23 @@ def assert_cmsis_minmax_s8_mapping_blocker_evidence(
     intrinsic: str,
     expected_output: list[str],
 ) -> None:
-    assert_cmsis_mapping_blocker_row(
-        repo,
-        rows,
-        "cmsis-nn",
-        case,
-        diagnostic_substring=f"resource_kind=fabric.op operation={intrinsic}",
-    )
     row = one_row(rows, "cmsis-nn", case)
+    if (
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
+        or row["hardware_system"] != "shared_memory_reduction_adg"
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+    ):
+        raise AssertionError(f"{stem} row should expose real shared-memory CGRA evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
     for key in ("dfg_report", "mapping_artifact", "cgra_report"):
         artifact = sim_evidence / Path(row[key]).name
         if not artifact.is_file():
@@ -1891,22 +1900,30 @@ def assert_cmsis_minmax_s8_mapping_blocker_evidence(
         raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
 
     mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
-    resource_pressure = {
-        (record.get("resource_kind"), record.get("operation")): record
-        for record in mapping_artifact.get("resource_pressure", [])
-        if isinstance(record, dict)
-    }
-    intrinsic_pressure = resource_pressure.get(("fabric.op", intrinsic))
+    placements = [
+        placement
+        for placement in mapping_artifact.get("placements", [])
+        if isinstance(placement, dict)
+    ]
+    placement_counts: dict[str, int] = {}
+    for placement in placements:
+        operation = placement.get("operation")
+        if isinstance(operation, str):
+            placement_counts[operation] = placement_counts.get(operation, 0) + 1
     if (
         mapping_artifact.get("kind") != "pnr_mapping"
         or mapping_artifact.get("workload") != case
         or mapping_artifact.get("graph") != graph
-        or mapping_artifact.get("hardware") != "shared_reduction_adg"
-        or mapping_artifact.get("status") != "fail"
-        or mapping_artifact.get("unplaced_records", 0) <= 0
-        or not intrinsic_pressure
-        or intrinsic_pressure.get("missing", 0) <= 0
-        or intrinsic_pressure.get("required", 0) <= intrinsic_pressure.get("available", 0)
+        or mapping_artifact.get("hardware") != "shared_memory_reduction_adg"
+        or mapping_artifact.get("status") != "pass"
+        or mapping_artifact.get("unplaced_records") != 0
+        or mapping_artifact.get("unrouted_edges") != 0
+        or mapping_artifact.get("placed_records") != 84
+        or mapping_artifact.get("routed_edges") != 55
+        or placement_counts.get("dataflow.load") != 18
+        or placement_counts.get("dataflow.store") != 9
+        or placement_counts.get(intrinsic) != 9
+        or "resource_pressure" in mapping_artifact
     ):
         raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
 
@@ -1915,27 +1932,33 @@ def assert_cmsis_minmax_s8_mapping_blocker_evidence(
     if (
         cgra_report.get("kind") != "cgra_sim_report"
         or cgra_report.get("workload") != case
-        or cgra_report.get("hardware") != "shared_reduction_adg"
-        or cgra_report.get("status") != "blocked"
+        or cgra_report.get("hardware") != "shared_memory_reduction_adg"
+        or cgra_report.get("status") != "pass"
+        or cgra_report.get("dfg_cycles") != 92
+        or cgra_report.get("hardware_aware_cycles") != 521
+        or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
         or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
         or cgra_report.get("final_outputs") != ["none"]
         or cgra_report.get("final_memory_state") != expected_memory
-        or comparison_report.get("status") != "blocked"
+        or comparison_report.get("status") != "pass"
         or comparison_report.get("functional_comparison_status") != "pass"
         or comparison_report.get("memory_comparison_status") != "pass"
-        or comparison_report.get("performance_comparison_status") != "blocked"
+        or comparison_report.get("performance_comparison_status") != "pass"
+        or comparison_report.get("cgra_sim_cycles") != 521
+        or comparison_report.get("dfg_sim_cycles") != 92
+        or comparison_report.get("cgra_sim_cycles") < comparison_report.get("dfg_sim_cycles")
     ):
         raise AssertionError(
             f"unexpected {stem} CGRA comparison evidence: {cgra_report} {comparison_report}"
         )
 
 
-def assert_cmsis_minimum_s8_mapping_blocker_evidence(
+def assert_cmsis_minimum_s8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
 ) -> None:
-    assert_cmsis_minmax_s8_mapping_blocker_evidence(
+    assert_cmsis_minmax_s8_cgra_evidence(
         repo,
         rows,
         sim_evidence,
@@ -1947,12 +1970,12 @@ def assert_cmsis_minimum_s8_mapping_blocker_evidence(
     )
 
 
-def assert_cmsis_maximum_s8_mapping_blocker_evidence(
+def assert_cmsis_maximum_s8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
 ) -> None:
-    assert_cmsis_minmax_s8_mapping_blocker_evidence(
+    assert_cmsis_minmax_s8_cgra_evidence(
         repo,
         rows,
         sim_evidence,
@@ -3201,8 +3224,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 4,
-            "fail": 5,
+            "pass": 6,
+            "fail": 3,
             "blocked": 1,
             "unsupported": 8,
             "missing_status": 0,
@@ -3255,8 +3278,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
-    assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_mapping_blocker_evidence(repo, rows, sim_evidence)

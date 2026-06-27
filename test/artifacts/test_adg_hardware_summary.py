@@ -65,6 +65,27 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
         raise AssertionError(f"unexpected diagnostic: {row}")
 
 
+def assert_shared_memory_reduction_adg(rows: list[dict[str, str]]) -> None:
+    matches = [row for row in rows if row["hardware"].endswith("::shared_memory_reduction_adg")]
+    if len(matches) != 1:
+        raise AssertionError(f"expected one shared_memory_reduction_adg row, got {rows}")
+    row = matches[0]
+    expected = {
+        "topology_class": "fabric_module_template",
+        "node_count": "153",
+        "link_count": "0",
+        "verify_status": "pass",
+        "tile_kinds": "mem;pe;switch",
+        "schedule_kinds": "spatial",
+        "adg_builder_recipe_identity": "adg-builder::shared-memory-reduction",
+    }
+    for key, value in expected.items():
+        if row[key] != value:
+            raise AssertionError(f"shared_memory_reduction_adg {key}={row[key]!r}, expected {value!r}")
+    if "fabric.module template verified" not in row["diagnostic"]:
+        raise AssertionError(f"unexpected diagnostic: {row}")
+
+
 def assert_dotproduct_fmuladd_adg(rows: list[dict[str, str]]) -> None:
     matches = [row for row in rows if row["hardware"].endswith("::dotproduct_fmuladd_adg")]
     if len(matches) != 1:
@@ -235,6 +256,7 @@ def main() -> int:
         )
         assert_pe_two_pes(rows)
         assert_shared_reduction_adg(rows)
+        assert_shared_memory_reduction_adg(rows)
         assert_dotproduct_fmuladd_adg(rows)
         assert_byte_swap_store_adg(rows)
         assert_shared_vector_alu_adg(rows)

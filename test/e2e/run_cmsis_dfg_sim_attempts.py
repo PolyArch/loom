@@ -883,8 +883,8 @@ ATTEMPTS = (
             "41=2,5,-9",
             "42=0,0,0",
         ),
-        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
-        hardware="shared_reduction_adg",
+        hardware_mlir="test/pnr/shared_memory_reduction_adg.mlir",
+        hardware="shared_memory_reduction_adg",
         expected_dynamic_work_items=3,
         expected_operation_fire_counts=(
             ("dataflow.load", 6),
@@ -951,8 +951,8 @@ ATTEMPTS = (
             "41=2,5,-9",
             "42=0,0,0",
         ),
-        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
-        hardware="shared_reduction_adg",
+        hardware_mlir="test/pnr/shared_memory_reduction_adg.mlir",
+        hardware="shared_memory_reduction_adg",
         expected_dynamic_work_items=3,
         expected_operation_fire_counts=(
             ("dataflow.load", 6),

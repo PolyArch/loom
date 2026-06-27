@@ -843,6 +843,17 @@ std::string valueListStrings(llvm::ArrayRef<std::string> names) {
   return text;
 }
 
+std::string opNameList(llvm::ArrayRef<llvm::StringRef> names) {
+  std::string text;
+  for (llvm::StringRef name : names) {
+    if (!text.empty())
+      text += ", ";
+    text += "@";
+    text += name.str();
+  }
+  return text;
+}
+
 std::string switchConnectivity(llvm::ArrayRef<llvm::StringRef> rows) {
   std::string text = "[{connectivity_table = [";
   for (std::size_t index = 0; index < rows.size(); ++index) {
@@ -975,6 +986,165 @@ void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
   module.addExactBodyLine("      }");
   module.addExactBodyLine("    }");
+}
+
+std::string numbered(llvm::StringRef prefix, unsigned index) {
+  return (prefix + llvm::Twine(index)).str();
+}
+
+void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
+                               llvm::StringRef control) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pa = " +
+                          valueName(control) +
+                          " : !fabric.bits<0> to !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%token = %pa : !fabric.bits<32> to "
+      "!fabric.bits<0>) -> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "        %value = fabric.op [@dataflow.constant] (%token)");
+  module.addExactBodyLine(
+      "            {hw_params = [{const_hex_value = [\"0x00000000\", "
+      "\"0x00000001\", \"0x00000002\", \"0x00000003\", "
+      "\"0xffffffff\"]}]}");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<0>) -> !fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
+                             llvm::StringRef lhs, llvm::StringRef rhs,
+                             llvm::ArrayRef<llvm::StringRef> opNames) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
+                          " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
+                          " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
+  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>) "
+                          "-> !fabric.bits<32> {");
+  module.addExactBodyLine("        %value = fabric.op [" +
+                          opNameList(opNames) + "] (%a, %b)");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<32>, !fabric.bits<32>) -> "
+      "!fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
+              llvm::StringRef lhs, llvm::StringRef rhs) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
+                          " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
+                          " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
+  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>) "
+                          "-> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "        %pred = fabric.op [@arith.cmpi, @llvm.icmp] (%a, %b)");
+  module.addExactBodyLine(
+      "            {hw_params = [{predicate = [\"eq\", \"ne\", \"slt\", "
+      "\"sle\", \"sgt\", \"sge\", \"ult\", \"ule\", \"ugt\", \"uge\"]}]}");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<32>, !fabric.bits<32>) -> "
+      "!fabric.bits<1>");
+  module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
+                          "!fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
+                 llvm::StringRef pred, llvm::StringRef trueValue,
+                 llvm::StringRef falseValue) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
+                          valueName(pred) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %true_value = " +
+                          valueName(trueValue) + " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %false_value = " +
+                          valueName(falseValue) + " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
+  module.addExactBodyLine(
+      "                %a = %true_value : !fabric.bits<32>,");
+  module.addExactBodyLine("                %b = %false_value : "
+                          "!fabric.bits<32>) -> !fabric.bits<32> {");
+  module.addExactBodyLine("        %value = fabric.op [@arith.select] "
+                          "(%sel, %a, %b)");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<1>, !fabric.bits<32>, "
+      "!fabric.bits<32>) -> !fabric.bits<32>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
+                           unsigned storeCount) {
+  std::vector<std::string> resultNames;
+  for (unsigned index = 0; index < loadCount; ++index) {
+    resultNames.push_back(numbered("data", index));
+    resultNames.push_back(numbered("done", index));
+  }
+  for (unsigned index = 0; index < storeCount; ++index)
+    resultNames.push_back(numbered("store_done", index));
+
+  std::vector<std::string> loadOperands;
+  for (unsigned index = 0; index < loadCount; ++index) {
+    loadOperands.push_back(numbered("load_addr", index));
+    loadOperands.push_back(numbered("load_ctrl", index));
+  }
+  std::vector<std::string> storeOperands;
+  for (unsigned index = 0; index < storeCount; ++index) {
+    storeOperands.push_back(numbered("store_addr", index));
+    storeOperands.push_back(numbered("store_value", index));
+    storeOperands.push_back(numbered("store_ctrl", index));
+  }
+
+  module.addExactBodyLine(valueListStrings(resultNames) + " =");
+  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr) load(" +
+                          valueListStrings(loadOperands) + ")");
+  module.addExactBodyLine("                              store(" +
+                          valueListStrings(storeOperands) + ")");
+  module.addExactBodyLine("      [{load_group_size = " +
+                          std::to_string(loadCount) +
+                          " : i32, store_group_size = " +
+                          std::to_string(storeCount) + " : i32}]");
+
+  std::string operandTypes = "(memref<?x!fabric.bits<32>>";
+  for (unsigned index = 0; index < loadCount; ++index)
+    operandTypes += ", !fabric.bits<32>, !fabric.bits<0>";
+  for (unsigned index = 0; index < storeCount; ++index)
+    operandTypes += ", !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>";
+  operandTypes += ")";
+  module.addExactBodyLine("      : " + operandTypes);
+
+  std::string resultTypes = "(";
+  bool first = true;
+  auto appendResultType = [&](llvm::StringRef type) {
+    if (!first)
+      resultTypes += ", ";
+    first = false;
+    resultTypes += type;
+  };
+  for (unsigned index = 0; index < loadCount; ++index) {
+    appendResultType("!fabric.bits<32>");
+    appendResultType("!fabric.bits<0>");
+  }
+  for (unsigned index = 0; index < storeCount; ++index)
+    appendResultType("!fabric.bits<0>");
+  resultTypes += ")";
+  module.addExactBodyLine("      -> " + resultTypes);
 }
 
 ModuleBuilder buildChain1DAdg() {
@@ -3301,6 +3471,121 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   return module;
 }
 
+ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
+  constexpr unsigned kLoadCount = 18;
+  constexpr unsigned kStoreCount = 9;
+  constexpr unsigned kConstantCount = 30;
+  constexpr unsigned kAddCount = 12;
+  constexpr unsigned kCmpCount = 12;
+  constexpr unsigned kMinCount = 10;
+  constexpr unsigned kMaxCount = 10;
+  constexpr unsigned kSelectCount = 8;
+  constexpr unsigned kMulCount = 8;
+  constexpr unsigned kLogicCount = 8;
+  constexpr unsigned kShiftCount = 8;
+  constexpr unsigned kCastCount = 8;
+  constexpr unsigned kExtuiCount = 4;
+
+  ModuleBuilder module("shared_memory_reduction_adg");
+  module.addInput("mgr", "memref<?x!fabric.bits<32>>")
+      .addInput("i32a", "!fabric.bits<32>")
+      .addInput("i32b", "!fabric.bits<32>")
+      .addInput("i32c", "!fabric.bits<32>")
+      .addInput("i32d", "!fabric.bits<32>")
+      .addInput("ctrl", "!fabric.bits<0>");
+
+  std::vector<std::string> sources32 = {"i32a", "i32b", "i32c", "i32d"};
+  std::vector<std::string> sinks32;
+  std::vector<std::string> sources0 = {"ctrl"};
+  std::vector<std::string> sinks0;
+
+  auto addBinaryBank = [&](llvm::StringRef prefix, unsigned count,
+                           llvm::ArrayRef<llvm::StringRef> opNames) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string lhs = result + "_lhs";
+      std::string rhs = result + "_rhs";
+      addConfigurableBinaryPe(module, result, lhs, rhs, opNames);
+      sources32.push_back(result);
+      sinks32.push_back(lhs);
+      sinks32.push_back(rhs);
+    }
+  };
+  auto addUnaryBank = [&](llvm::StringRef prefix, unsigned count,
+                          llvm::StringRef opName) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string input = result + "_input";
+      addUnaryPe(module, result, input, opName);
+      sources32.push_back(result);
+      sinks32.push_back(input);
+    }
+  };
+
+  for (unsigned index = 0; index < kConstantCount; ++index) {
+    std::string result = numbered("const", index);
+    std::string control = result + "_ctrl";
+    addConfigurableConstantPe(module, result, control);
+    sources32.push_back(result);
+    sinks0.push_back(control);
+  }
+
+  addBinaryBank("add", kAddCount, {"arith.addi", "arith.subi"});
+  addBinaryBank("mul", kMulCount, {"arith.muli"});
+  addBinaryBank("and", kLogicCount, {"arith.andi"});
+  addBinaryBank("or", kLogicCount, {"arith.ori"});
+  addBinaryBank("xor", kLogicCount, {"arith.xori"});
+  addBinaryBank("shift", kShiftCount,
+                {"arith.shli", "arith.shrsi", "arith.shrui"});
+  addBinaryBank("smin", kMinCount, {"llvm.intr.smin"});
+  addBinaryBank("smax", kMaxCount, {"llvm.intr.smax"});
+
+  for (unsigned index = 0; index < kCmpCount; ++index) {
+    std::string result = numbered("cmp", index);
+    std::string lhs = result + "_lhs";
+    std::string rhs = result + "_rhs";
+    addCmpPe(module, result, lhs, rhs);
+    sources32.push_back(result);
+    sinks32.push_back(lhs);
+    sinks32.push_back(rhs);
+  }
+
+  for (unsigned index = 0; index < kSelectCount; ++index) {
+    std::string result = numbered("select", index);
+    std::string pred = result + "_pred";
+    std::string trueValue = result + "_true";
+    std::string falseValue = result + "_false";
+    addSelectPe(module, result, pred, trueValue, falseValue);
+    sources32.push_back(result);
+    sinks32.push_back(pred);
+    sinks32.push_back(trueValue);
+    sinks32.push_back(falseValue);
+  }
+
+  addUnaryBank("cast", kCastCount, "llvm.trunc");
+  addUnaryBank("sext", kCastCount, "llvm.sext");
+  addUnaryBank("zext", kCastCount, "llvm.zext");
+  addUnaryBank("extui", kExtuiCount, "arith.extui");
+
+  for (unsigned index = 0; index < kLoadCount; ++index) {
+    sources32.push_back(numbered("data", index));
+    sources0.push_back(numbered("done", index));
+    sinks32.push_back(numbered("load_addr", index));
+    sinks0.push_back(numbered("load_ctrl", index));
+  }
+  for (unsigned index = 0; index < kStoreCount; ++index) {
+    sources0.push_back(numbered("store_done", index));
+    sinks32.push_back(numbered("store_addr", index));
+    sinks32.push_back(numbered("store_value", index));
+    sinks0.push_back(numbered("store_ctrl", index));
+  }
+
+  addUniformSwitch(module, sinks32, sources32, "!fabric.bits<32>");
+  addUniformSwitch(module, sinks0, sources0, "!fabric.bits<0>");
+  addMemoryReductionMem(module, kLoadCount, kStoreCount);
+  return module;
+}
+
 ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
   ModuleBuilder module("shared_vector_alu_adg");
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
@@ -3900,6 +4185,10 @@ llvm::Error loom::adg::writeMinimalTemporalAdg(llvm::raw_ostream &os) {
 
 llvm::Error loom::adg::writeSharedReductionAdg(llvm::raw_ostream &os) {
   return buildSharedReductionAdg().print(os);
+}
+
+llvm::Error loom::adg::writeSharedMemoryReductionAdg(llvm::raw_ostream &os) {
+  return buildSharedMemoryReductionAdg().print(os);
 }
 
 llvm::Error loom::adg::writeSharedVectorAluAdg(llvm::raw_ostream &os) {

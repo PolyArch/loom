@@ -255,6 +255,9 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
     shared_vector_math_id = "adg-builder::shared-vector-math::shared_vector_math_adg"
     if shared_vector_math_id not in ids:
         raise AssertionError(f"inventory missed reusable shared-vector math ADG: {ids}")
+    shared_memory_reduction_id = "adg-builder::shared-memory-reduction::shared_memory_reduction_adg"
+    if shared_memory_reduction_id not in ids:
+        raise AssertionError(f"inventory missed reusable shared-memory reduction ADG: {ids}")
     shared_vector_mesh_id = "adg-builder::shared-vector-mesh::shared_vector_mesh_adg"
     if shared_vector_mesh_id not in ids:
         raise AssertionError(f"inventory missed reusable shared-vector mesh ADG: {ids}")

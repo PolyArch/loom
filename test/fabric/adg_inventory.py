@@ -82,6 +82,11 @@ BUILDER_RECIPES = (
         "filename": "shared-reduction.mlir",
     },
     {
+        "recipe_id": "adg-builder::shared-memory-reduction",
+        "arguments": ["--shared-memory-reduction"],
+        "filename": "shared-memory-reduction.mlir",
+    },
+    {
         "recipe_id": "adg-builder::shared-vector-alu",
         "arguments": ["--shared-vector-alu"],
         "filename": "shared-vector-alu.mlir",
