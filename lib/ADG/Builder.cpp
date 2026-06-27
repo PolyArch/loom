@@ -1074,6 +1074,28 @@ void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addConfigurableWideBinaryPe(ModuleBuilder &module, llvm::StringRef result,
+                                 llvm::StringRef lhs, llvm::StringRef rhs,
+                                 llvm::ArrayRef<llvm::StringRef> opNames) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
+                          " : !fabric.bits<64>,");
+  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
+                          " : !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<64>,");
+  module.addExactBodyLine("                %b = %rhs : !fabric.bits<64>) "
+                          "-> !fabric.bits<64> {");
+  module.addExactBodyLine("        %value = fabric.op [" +
+                          opNameList(opNames) + "] (%a, %b)");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<64>, !fabric.bits<64>) -> "
+      "!fabric.bits<64>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
 void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
               llvm::StringRef lhs, llvm::StringRef rhs) {
   module.addExactBodyLine(valueName(result) + " =");
@@ -3604,6 +3626,7 @@ struct SharedMemoryAdgConfig {
   unsigned minCount = 10;
   unsigned maxCount = 10;
   unsigned unsignedMinCount = 4;
+  unsigned unsignedMaxCount = 0;
   unsigned selectCount = 8;
   unsigned mulCount = 8;
   unsigned divCount = 0;
@@ -3612,6 +3635,9 @@ struct SharedMemoryAdgConfig {
   unsigned shiftCount = 8;
   unsigned castCount = 8;
   unsigned wideCastCount = 4;
+  unsigned wideSextCount = 0;
+  unsigned wideDivCount = 0;
+  unsigned ctlzCount = 0;
   unsigned extuiCount = 4;
   unsigned fpAddCount = 4;
   unsigned fpMulCount = 4;
@@ -3685,6 +3711,18 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       sinks64.push_back(input);
     }
   };
+  auto addWideBinaryBank = [&](llvm::StringRef prefix, unsigned count,
+                               llvm::ArrayRef<llvm::StringRef> opNames) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string lhs = result + "_lhs";
+      std::string rhs = result + "_rhs";
+      addConfigurableWideBinaryPe(module, result, lhs, rhs, opNames);
+      sources64.push_back(result);
+      sinks64.push_back(lhs);
+      sinks64.push_back(rhs);
+    }
+  };
   auto addTernaryBank = [&](llvm::StringRef prefix, unsigned count,
                             llvm::StringRef opName) {
     for (unsigned index = 0; index < count; ++index) {
@@ -3720,6 +3758,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("shift", config.shiftCount,
                 {"arith.shli", "arith.shrsi", "arith.shrui"});
   addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
+  addBinaryBank("umax", config.unsignedMaxCount, {"llvm.intr.umax"});
   addBinaryBank("smin", config.minCount, {"llvm.intr.smin"});
   addBinaryBank("smax", config.maxCount, {"llvm.intr.smax"});
 
@@ -3769,7 +3808,10 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addUnaryBank("cast", config.castCount, "llvm.trunc");
   addUnaryBank("sext", config.castCount, "llvm.sext");
   addUnaryBank("zext", config.castCount, "llvm.zext");
+  addUnaryBank("ctlz", config.ctlzCount, "llvm.intr.ctlz");
   addWideExtensionBank("wide_zext", config.wideCastCount, "llvm.zext");
+  addWideExtensionBank("wide_sext", config.wideSextCount, "llvm.sext");
+  addWideBinaryBank("wide_div", config.wideDivCount, {"arith.divsi"});
   addWideTruncBank("wide_trunc", config.wideCastCount);
   addUnaryBank("extui", config.extuiCount, "arith.extui");
 
@@ -3812,12 +3854,19 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
   config.moduleName = "shared_quantized_window_adg";
   config.constantCount = 40;
   config.addCount = 40;
-  config.cmpCount = 20;
-  config.selectCount = 16;
-  config.mulCount = 16;
+  config.cmpCount = 48;
+  config.selectCount = 48;
+  config.mulCount = 20;
   config.divCount = 4;
   config.muxCount = 4;
+  config.logicCount = 18;
+  config.unsignedMaxCount = 2;
   config.shiftCount = 36;
+  config.castCount = 24;
+  config.wideCastCount = 20;
+  config.wideSextCount = 20;
+  config.wideDivCount = 20;
+  config.ctlzCount = 2;
   return buildSharedMemoryLikeAdg(config);
 }
 

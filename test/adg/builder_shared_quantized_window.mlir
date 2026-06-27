@@ -14,7 +14,10 @@
 // HARDWARE-DAG: fabric.op [@arith.cmpi, @llvm.icmp]
 // HARDWARE-DAG: fabric.op [@arith.shli, @arith.shrsi, @arith.shrui]
 // HARDWARE-DAG: fabric.op [@dataflow.mux]
+// HARDWARE-DAG: fabric.op [@llvm.intr.ctlz]
+// HARDWARE-DAG: fabric.op [@llvm.intr.umax]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
+// HARDWARE-DAG: fabric.op [@llvm.sext]
 // HARDWARE-DAG: fabric.mem [spatial]
 
 // MAPPING-DAG: "workload": "quantized_window_pressure"

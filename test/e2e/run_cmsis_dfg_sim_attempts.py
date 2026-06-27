@@ -1111,8 +1111,8 @@ ATTEMPTS = (
             "45=1,2,3",
             "46=0,0,0",
         ),
-        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
-        hardware="shared_reduction_adg",
+        hardware_mlir="test/pnr/shared_quantized_window_adg.mlir",
+        hardware="shared_quantized_window_adg",
         expected_dynamic_work_items=3,
         expected_operation_fire_counts=(
             ("dataflow.load", 9),
