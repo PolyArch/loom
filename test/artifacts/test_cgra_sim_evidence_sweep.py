@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 34
+APP_NO_DFG_TIER_COUNT = 33
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -81,6 +81,7 @@ DEFAULT_SWEEP_CASES = (
     "xor_block",
     "relu",
     "rotate_bits",
+    "rle_decode",
     "runge_kutta_step",
     "sbox_lookup",
     "transpose",
@@ -1585,6 +1586,88 @@ def assert_transform_point_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"transform_point CGRA evidence should carry the real affine output state: {cgra_path}: {cgra}")
 
 
+def assert_rle_decode_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": ["i32:1", "i32:2", "i32:3", "i32:4", "i32:5", "i32:6", "i32:7"],
+        "arg5": ["i32:3", "i32:2", "i32:4", "i32:5", "i32:1", "i32:3", "i32:2"],
+        "arg7": [
+            "i32:1",
+            "i32:1",
+            "i32:1",
+            "i32:2",
+            "i32:2",
+            "i32:3",
+            "i32:3",
+            "i32:3",
+            "i32:3",
+            "i32:4",
+            "i32:4",
+            "i32:4",
+            "i32:4",
+            "i32:4",
+            "i32:5",
+            "i32:6",
+            "i32:6",
+            "i32:6",
+            "i32:7",
+            "i32:7",
+        ],
+    }
+
+    dfg_path = evidence_dir / "rle_decode.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 7
+        or dfg.get("optimistic_cycles") != 227
+        or dfg.get("final_outputs") != ["none", "i32:20"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"rle_decode DFG evidence should decode the real run-length stream: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        "rle_decode",
+        dfg,
+        {
+            "arith.addi": 14,
+            "arith.cmpi": 7,
+            "arith.index_cast": 35,
+            "dataflow.load": 14,
+            "dataflow.store": 20,
+            "scf.forall": 7,
+            "scf.if": 7,
+        },
+    )
+
+    mapping_path = evidence_dir / "rle_decode.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 6
+        or mapping.get("routed_edges") != 4
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"rle_decode should route on shared memory reduction hardware: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "rle_decode.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 227
+        or cgra.get("hardware_aware_cycles") != 258
+        or cgra.get("routed_edges") != 4
+        or cgra.get("route_segments") != 12
+        or cgra.get("final_outputs") != ["none", "i32:20"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+    ):
+        raise AssertionError(f"rle_decode CGRA evidence should carry the decoded output state: {cgra_path}: {cgra}")
+
+
 def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:1", "f32:1.100000", "f32:1.200000", "f32:1.300000"],
@@ -2603,6 +2686,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "rotate_bits",
                 "--case",
+                "rle_decode",
+                "--case",
                 "runge_kutta_step",
                 "--case",
                 "sbox_lookup",
@@ -2678,6 +2763,7 @@ def main(argv: list[str]) -> int:
             "upsample",
             "sbox_lookup",
             "rotate_bits",
+            "rle_decode",
             "runge_kutta_step",
             "transform_point",
         ):
@@ -2731,6 +2817,7 @@ def main(argv: list[str]) -> int:
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
         assert_transform_point_evidence(evidence_dir)
+        assert_rle_decode_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
@@ -2872,6 +2959,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "convolve_1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "relu", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "rle_decode", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
@@ -3120,6 +3208,7 @@ def main(argv: list[str]) -> int:
             "upsample",
             "sbox_lookup",
             "rotate_bits",
+            "rle_decode",
             "runge_kutta_step",
             "autocorrelation",
         ):
@@ -3210,9 +3299,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 62,
+            "pass": 63,
             "fail": 0,
-            "blocked": 47,
+            "blocked": 46,
             "unsupported": 0,
             "missing_status": 0,
         }

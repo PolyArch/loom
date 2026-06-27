@@ -1508,6 +1508,21 @@ case "${CASE}" in
             --arg 18=2
         )
         ;;
+    rle_decode)
+        sim_args+=(
+            --graph g_t_rle_decode_kernel_red_0_0
+            --workload rle_decode
+            --arg 0=none
+            --arg 1=0
+            --arg 2=7
+            --arg 3=1
+            --memref 4=1,2,3,4,5,6,7
+            --memref 5=3,2,4,5,1,3,2
+            --arg 6=0
+            --memref 7=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+            --arg 8=0
+        )
+        ;;
     partition)
         configure_partition_lower_args
         ;;

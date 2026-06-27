@@ -363,10 +363,22 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 62,
+            "pass": 63,
             "fail": 0,
-            "blocked": 47,
+            "blocked": 46,
             "unsupported": 0,
+            "missing_status": 0,
+        },
+    )
+    assert_counts(
+        data,
+        "loombench",
+        {
+            "total": 4,
+            "pass": 2,
+            "fail": 0,
+            "blocked": 1,
+            "unsupported": 1,
             "missing_status": 0,
         },
     )
@@ -377,6 +389,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
             if not artifact.is_file():
                 raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
+    assert_loombench_cgra_pass_row(repo, rows, "rle_decode", expected_hardware="shared_memory_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
     run(
@@ -401,9 +414,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 34,
+            "blocked": 33,
             "unsupported": 0,
-            "missing_status": 74,
+            "missing_status": 75,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -467,9 +480,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 34,
+            "blocked": 33,
             "unsupported": 0,
-            "missing_status": 74,
+            "missing_status": 75,
         },
     )
     assert_counts(
@@ -712,9 +725,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 3,
             "fail": 0,
-            "blocked": 47,
+            "blocked": 46,
             "unsupported": 0,
-            "missing_status": 59,
+            "missing_status": 60,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
@@ -3373,6 +3386,7 @@ def main() -> int:
         legacy_root = out_dir / "legacy-loombench"
         write_legacy_case(legacy_root, "legacy_missing")
         write_legacy_case(legacy_root, "vecadd")
+        write_legacy_case(legacy_root, "rle_decode")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
         assert_app_seed_batch_mode(repo, out_dir / "app-seed-batch")
@@ -3411,10 +3425,10 @@ def main() -> int:
             data,
             "loombench",
             {
-                "total": 3,
+                "total": 4,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 2,
+                "blocked": 3,
                 "unsupported": 1,
                 "missing_status": 0,
             },
@@ -3470,6 +3484,14 @@ def main() -> int:
             or loombench_vecadd["manifest_case"] != "vecadd"
         ):
             raise AssertionError(f"LoomBench accepted row should expose explicit evidence bridge: {loombench_vecadd}")
+        loombench_rle_decode = one_row(rows, "loombench", "rle_decode")
+        if (
+            loombench_rle_decode["status"] != "blocked"
+            or loombench_rle_decode["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+            or loombench_rle_decode["blocking_prerequisite"] != "sim_evidence"
+            or loombench_rle_decode["manifest_case"] != "rle_decode"
+        ):
+            raise AssertionError(f"LoomBench rle_decode row should expose explicit evidence bridge: {loombench_rle_decode}")
         loombench_deferred = one_row(rows, "loombench", "legacy_missing")
         if (
             loombench_deferred["status"] != "blocked"

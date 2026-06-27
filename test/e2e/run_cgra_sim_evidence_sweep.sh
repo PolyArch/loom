@@ -122,6 +122,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     xor_block
     relu
     rotate_bits
+    rle_decode
     runge_kutta_step
     sbox_lookup
     transpose
