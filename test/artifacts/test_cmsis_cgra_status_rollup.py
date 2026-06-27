@@ -364,8 +364,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         {
             "total": 109,
             "pass": 63,
-            "fail": 0,
-            "blocked": 46,
+            "fail": 1,
+            "blocked": 45,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -414,9 +414,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 33,
+            "blocked": 32,
             "unsupported": 0,
-            "missing_status": 75,
+            "missing_status": 76,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -480,9 +480,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 33,
+            "blocked": 32,
             "unsupported": 0,
-            "missing_status": 75,
+            "missing_status": 76,
         },
     )
     assert_counts(
@@ -527,9 +527,45 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
 
-SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
+SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {
+    "mmtile": "missing hardware resource for software op arith.addi",
+}
 
-SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {}
+SHARED_APP_MAPPING_FAILURE_EVIDENCE: dict[str, dict[str, object]] = {
+    "mmtile": {
+        "graph": "g_t_mmtile_kernel_red_0_0",
+        "dynamic_work_items": 2,
+        "final_output_suffix": ["i32:6"],
+        "operation_fire_counts": {
+            "arith.addi": 232,
+            "arith.cmpi": 22,
+            "arith.index_cast": 432,
+            "arith.muli": 192,
+            "dataflow.load": 120,
+            "dataflow.store": 24,
+            "llvm.intr.umin": 16,
+            "llvm.trunc": 144,
+            "llvm.zext": 24,
+            "scf.if": 54,
+        },
+        "final_memory_state": {
+            "arg11": [
+                "i32:3",
+                "i32:8",
+                "i32:5",
+                "i32:11",
+                "i32:5",
+                "i32:7",
+                "i32:20",
+                "i32:11",
+                "i32:3",
+                "i32:12",
+                "i32:7",
+                "i32:7",
+            ],
+        },
+    },
+}
 
 SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
@@ -724,8 +760,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         {
             "total": 109,
             "pass": 3,
-            "fail": 0,
-            "blocked": 46,
+            "fail": 1,
+            "blocked": 45,
             "unsupported": 0,
             "missing_status": 60,
         },

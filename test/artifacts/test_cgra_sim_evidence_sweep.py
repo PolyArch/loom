@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 33
+APP_NO_DFG_TIER_COUNT = 32
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -68,6 +68,7 @@ DEFAULT_SWEEP_CASES = (
     "gemv",
     "gemm",
     "matmul",
+    "mmtile",
     "mat3x3_mult",
     "spmspv",
     "lower_bound",
@@ -93,7 +94,7 @@ DEFAULT_SWEEP_CASES = (
     "vecscale",
     "variance",
 )
-MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_FAILED_SWEEP_CASES = ("mmtile",)
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
@@ -132,7 +133,42 @@ PARTIAL_LOWERING_SWEEP_CASES = {
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
     ),
 }
-MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {}
+MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {
+    "mmtile": {
+        "diagnostic": "missing hardware resource for software op arith.addi",
+        "graph": "g_t_mmtile_kernel_red_0_0",
+        "dynamic_work_items": 2,
+        "final_outputs": ["none", "i32:6"],
+        "operation_fire_counts": {
+            "arith.addi": 232,
+            "arith.cmpi": 22,
+            "arith.index_cast": 432,
+            "arith.muli": 192,
+            "dataflow.load": 120,
+            "dataflow.store": 24,
+            "llvm.intr.umin": 16,
+            "llvm.trunc": 144,
+            "llvm.zext": 24,
+            "scf.if": 54,
+        },
+        "final_memory_state": {
+            "arg11": [
+                "i32:3",
+                "i32:8",
+                "i32:5",
+                "i32:11",
+                "i32:5",
+                "i32:7",
+                "i32:20",
+                "i32:11",
+                "i32:3",
+                "i32:12",
+                "i32:7",
+                "i32:7",
+            ],
+        },
+    },
+}
 
 HEADER = [
     "suite",
@@ -2674,6 +2710,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "matmul",
                 "--case",
+                "mmtile",
+                "--case",
                 "mat3x3_mult",
                 "--case",
                 "correlation",
@@ -3300,8 +3338,8 @@ def main(argv: list[str]) -> int:
         expected_counts = {
             "total": 109,
             "pass": 63,
-            "fail": 0,
-            "blocked": 46,
+            "fail": 1,
+            "blocked": 45,
             "unsupported": 0,
             "missing_status": 0,
         }

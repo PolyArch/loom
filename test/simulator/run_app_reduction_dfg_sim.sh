@@ -1440,6 +1440,28 @@ case "${CASE}" in
             --arg 9=0
         )
         ;;
+    mmtile)
+        sim_args+=(
+            --graph g_t_mmtile_kernel_red_0_0
+            --workload mmtile
+            --arg 0=none
+            --arg 1=0
+            --arg 2=4
+            --arg 3=2
+            --arg 4=2
+            --arg 5=3
+            --arg 6=2
+            --arg 7=4
+            --memref 8=1,2,0,1,3,1,2,0,0,1,4,2,2,0,1,3
+            --memref 9=1,0,2,0,3,1,4,1,0,2,2,1
+            --arg 10=1
+            --memref 11=0,0,0,0,0,0,0,0,0,0,0,0
+            --arg 12=1
+            --arg 13=false
+            --arg 14=false
+            --arg 15=2
+        )
+        ;;
     modmul)
         append_ctrl_tokens 1
         sim_args+=(

@@ -34,6 +34,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "mmtile",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "outer",
       "hardware": "shared_reduction_adg"
     },

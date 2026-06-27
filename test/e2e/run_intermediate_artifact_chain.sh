@@ -206,6 +206,9 @@ case "${CASE}" in
   matmul)
     case_graph="g_t_matmul_kernel_0_0"
     ;;
+  mmtile)
+    case_graph="g_t_mmtile_kernel_red_0_0"
+    ;;
   mat3x3_mult)
     case_graph="g_t_mat3x3_mult_kernel_red_0_0"
     ;;
