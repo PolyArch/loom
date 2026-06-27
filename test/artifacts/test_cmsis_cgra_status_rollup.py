@@ -753,8 +753,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         {
             "total": 18,
             "pass": 4,
-            "fail": 2,
-            "blocked": 4,
+            "fail": 3,
+            "blocked": 3,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -778,7 +778,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
-    assert_cmsis_softmax_u8_mapping_unsupported_evidence(repo, rows, sim_evidence)
+    assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,
@@ -1767,37 +1767,6 @@ def assert_cmsis_vector_sum_cgra_evidence(
         )
 
 
-def assert_cmsis_mapping_unsupported_row(
-    repo: Path,
-    rows: list[dict[str, str]],
-    suite: str,
-    case: str,
-    *,
-    diagnostic_substring: str,
-) -> None:
-    row = one_row(rows, suite, case)
-    if (
-        row["status"] != "blocked"
-        or row["diagnostic_class"] != "mapping_artifact_unsupported"
-        or row["blocking_prerequisite"] != "mapping_artifact"
-        or row["owner"] != "sim_report"
-        or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "unsupported"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "blocked"
-        or not row["mapping_artifact"]
-        or not row["cgra_report"]
-        or not row["comparison_report"]
-        or row["hardware_system"] != "shared_reduction_adg"
-        or diagnostic_substring not in row["diagnostic"]
-    ):
-        raise AssertionError(f"CMSIS row should expose exact PnR unsupported evidence: {row}")
-    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
-    assert_sha256_file(row["mapping_artifact"], row["mapping_artifact_fingerprint"], repo)
-    assert_sha256_file(row["cgra_report"], row["cgra_report_fingerprint"], repo)
-    assert_sha256_file(row["comparison_report"], row["comparison_report_fingerprint"], repo)
-
-
 def assert_cmsis_minmax_s8_mapping_blocker_evidence(
     repo: Path,
     rows: list[dict[str, str]],
@@ -1916,7 +1885,7 @@ def assert_cmsis_maximum_s8_mapping_blocker_evidence(
     )
 
 
-def assert_cmsis_softmax_u8_mapping_unsupported_evidence(
+def assert_cmsis_softmax_u8_resource_pressure_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
@@ -1924,8 +1893,8 @@ def assert_cmsis_softmax_u8_mapping_unsupported_evidence(
     case = "SoftmaxFunctions/arm_softmax_u8.c"
     stem = "arm_softmax_u8"
     graph = "g_t_arm_softmax_u8_red_0_0"
-    diagnostic = "unsupported PnR graph operation: llvm.intr.ctlz"
-    assert_cmsis_mapping_unsupported_row(
+    diagnostic = "resource_kind=fabric.op operation=arith.divsi required=17 available=0"
+    assert_cmsis_mapping_blocker_row(
         repo,
         rows,
         "cmsis-nn",
@@ -1965,10 +1934,31 @@ def assert_cmsis_softmax_u8_mapping_unsupported_evidence(
         or mapping_artifact.get("workload") != case
         or mapping_artifact.get("graph") != graph
         or mapping_artifact.get("hardware") != "shared_reduction_adg"
-        or mapping_artifact.get("status") != "unsupported"
+        or mapping_artifact.get("status") != "fail"
+        or mapping_artifact.get("unplaced_records", 0) <= 0
+        or mapping_artifact.get("unrouted_edges", 0) <= 0
         or diagnostic not in mapping_diagnostics
     ):
         raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
+    placements = mapping_artifact.get("placements", [])
+    ctlz_placements = [
+        placement
+        for placement in placements
+        if isinstance(placement, dict) and placement.get("operation") == "llvm.intr.ctlz"
+    ]
+    if (
+        len(ctlz_placements) != 1
+        or ctlz_placements[0].get("resource_kind") != "fabric.op"
+        or not str(ctlz_placements[0].get("hardware", "")).startswith(
+            "shared_reduction_adg::fabric.op#"
+        )
+    ):
+        raise AssertionError(f"{stem} should place llvm.intr.ctlz on shared fabric: {mapping_artifact}")
+    if any(
+        isinstance(record, dict) and record.get("operation") == "llvm.intr.ctlz"
+        for record in mapping_artifact.get("resource_pressure", [])
+    ):
+        raise AssertionError(f"{stem} should not report llvm.intr.ctlz resource pressure: {mapping_artifact}")
 
     cgra_report = json.loads((repo / row["cgra_report"]).read_text())
     comparison_report = json.loads((repo / row["comparison_report"]).read_text())
@@ -2878,8 +2868,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         {
             "total": 18,
             "pass": 4,
-            "fail": 2,
-            "blocked": 4,
+            "fail": 3,
+            "blocked": 3,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -2932,7 +2922,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
-    assert_cmsis_softmax_u8_mapping_unsupported_evidence(repo, rows, sim_evidence)
+    assert_cmsis_softmax_u8_resource_pressure_evidence(repo, rows, sim_evidence)
     assert_cmsis_dfg_unsupported_row(
         repo,
         rows,

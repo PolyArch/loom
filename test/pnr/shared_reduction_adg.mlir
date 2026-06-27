@@ -1,6 +1,7 @@
 // RUN: loom %s | FileCheck %s
 
 // CHECK: fabric.module @shared_reduction_adg
+// CHECK: fabric.op [@llvm.intr.ctlz]
 // CHECK: fabric.op [@arith.extui]
 // CHECK: fabric.mem
 // CHECK: fabric.switch
@@ -428,6 +429,12 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
     fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
       %swapped = fabric.op [@llvm.intr.bswap] (%value) : (!fabric.bits<32>) -> !fabric.bits<32>
       fabric.yield %swapped : !fabric.bits<32>
+    }
+  }
+  %leading_zero_count = fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%value = %pa : !fabric.bits<32>) -> !fabric.bits<32> {
+      %leading_zero_count = fabric.op [@llvm.intr.ctlz] (%value) : (!fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %leading_zero_count : !fabric.bits<32>
     }
   }
   %cast0_result, %cast1_result, %cast2_result, %cast3_result = fabric.pe [spatial] (%pa = %cast0_input : !fabric.bits<32>,

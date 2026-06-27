@@ -1965,6 +1965,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
 
   addUnary32YieldPe("abs", "llvm.intr.abs");
   addUnary32YieldPe("swapped", "llvm.intr.bswap");
+  addUnary32YieldPe("leading_zero_count", "llvm.intr.ctlz");
 
   auto addCastBankPe = [&]() {
     constexpr unsigned kCastLanes = 4;
