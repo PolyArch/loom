@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit structured unsupported evidence when only non-primary graphs exist."""
+"""Emit structured unsupported evidence when a complete primary graph is unavailable."""
 
 from __future__ import annotations
 
@@ -23,6 +23,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--workload", required=True)
     parser.add_argument("--dfg-mlir", required=True)
     parser.add_argument("--expected-graph-token", required=True)
+    parser.add_argument(
+        "--expected-graph-presence",
+        choices=("absent", "present"),
+        default="absent",
+    )
+    parser.add_argument("--diagnostic")
+    parser.add_argument("--evidence", default="primary workload graph unavailable")
     parser.add_argument("--hardware", required=True)
     parser.add_argument("--graph", default="missing_primary_graph")
     parser.add_argument("--dfg-output", required=True)
@@ -57,7 +64,9 @@ def write_json(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def build_diagnostic(expected_token: str) -> str:
+def build_diagnostic(expected_token: str, explicit_diagnostic: str | None) -> str:
+    if explicit_diagnostic:
+        return explicit_diagnostic
     return f"primary workload graph absent: expected token {expected_token}"
 
 
@@ -65,14 +74,20 @@ def emit_artifacts(args: argparse.Namespace) -> None:
     dfg_mlir = Path(args.dfg_mlir)
     text = dfg_mlir.read_text(errors="replace")
     graph_ids = graph_ids_from_text(text)
-    if any(args.expected_graph_token in graph_id for graph_id in graph_ids):
+    token_present = any(args.expected_graph_token in graph_id for graph_id in graph_ids)
+    if args.expected_graph_presence == "absent" and token_present:
         raise SystemExit(
             "primary workload graph is present; use the real DFG-sim and PnR chain instead: "
             f"{args.expected_graph_token}"
         )
+    if args.expected_graph_presence == "present" and not token_present:
+        raise SystemExit(
+            "expected workload graph is absent; use the primary-graph absence path instead: "
+            f"{args.expected_graph_token}"
+        )
 
     map_id = mapping_summary.mapping_id(args.workload, args.graph, args.hardware)
-    diagnostic = build_diagnostic(args.expected_graph_token)
+    diagnostic = build_diagnostic(args.expected_graph_token, args.diagnostic)
     dfg_report = {
         "schema_version": 1,
         "kind": "dfg_sim_report",
@@ -90,19 +105,19 @@ def emit_artifacts(args: argparse.Namespace) -> None:
             {
                 "category": "pipeline_latency_throughput",
                 "cycles": 0,
-                "evidence": "primary workload graph absent",
+                "evidence": args.evidence,
                 "modeled": True,
             },
             {
                 "category": "operation_mix",
                 "cycles": 0,
-                "evidence": "primary workload graph absent",
+                "evidence": args.evidence,
                 "modeled": True,
             },
             {
                 "category": "memory_address_setup",
                 "cycles": 0,
-                "evidence": "primary workload graph absent",
+                "evidence": args.evidence,
                 "modeled": True,
             },
         ],

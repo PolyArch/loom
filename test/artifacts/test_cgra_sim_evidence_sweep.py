@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 37
+APP_NO_DFG_TIER_COUNT = 36
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -76,6 +76,7 @@ DEFAULT_SWEEP_CASES = (
     "outer",
     "byte_swap",
     "scatter_add",
+    "sort_insertion",
     "xor_block",
     "relu",
     "rotate_bits",
@@ -104,6 +105,7 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "parity",
     "popcount",
     "scatter_add",
+    "sort_insertion",
     "transpose",
     "upper_bound",
 )
@@ -121,6 +123,12 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("transpose", "transpose"),
     ("upper_bound", "upper_bound_candidate"),
 )
+PARTIAL_LOWERING_SWEEP_CASES = {
+    "sort_insertion": (
+        "primary workload graph is partial: sort_insertion lowering covers the copy loop "
+        "while the insertion-sort compare-and-shift loop remains outside dataflow"
+    ),
+}
 MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {}
 
 HEADER = [
@@ -299,6 +307,8 @@ def app_manifest_no_dfg_cases(repo: Path) -> tuple[str, ...]:
             f"expected {APP_NO_DFG_TIER_COUNT} app rows without dfg tier, "
             f"got {len(no_dfg_cases)}: {no_dfg_cases}"
         )
+    if "sort_insertion" in no_dfg_cases:
+        raise AssertionError(f"sort_insertion should keep its DFG tier: {no_dfg_cases}")
     return tuple(no_dfg_cases)
 
 
@@ -2147,6 +2157,20 @@ def assert_primary_graph_missing(evidence_dir: Path, case: str, expected_token: 
         raise AssertionError(f"{case} should not expose its primary graph token yet: {dfg_path}: {dfg}")
 
 
+def assert_partial_lowering_blocker(evidence_dir: Path, case: str, expected_diagnostic: str) -> None:
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    dfg = json.loads(dfg_path.read_text())
+    mapping = json.loads(mapping_path.read_text())
+    for artifact_path, artifact in ((dfg_path, dfg), (mapping_path, mapping)):
+        diagnostics = artifact.get("diagnostics")
+        if not isinstance(diagnostics, list) or expected_diagnostic not in diagnostics:
+            raise AssertionError(f"{case} should report partial lowering: {artifact_path}: {artifact}")
+    graph_ids = dfg.get("discovered_graph_ids")
+    if not isinstance(graph_ids, list) or not any("sort_insertion_kernel" in str(graph_id) for graph_id in graph_ids):
+        raise AssertionError(f"{case} should preserve the partial graph identity: {dfg_path}: {dfg}")
+
+
 def assert_component_mapping_status(
     evidence_dir: Path,
     case: str,
@@ -2361,6 +2385,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "scatter_add",
                 "--case",
+                "sort_insertion",
+                "--case",
                 "unpack_bits",
                 "--case",
                 "mean",
@@ -2547,6 +2573,8 @@ def main(argv: list[str]) -> int:
         assert_merge_dfg_evidence(evidence_dir)
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
+        for case, expected_diagnostic in PARTIAL_LOWERING_SWEEP_CASES.items():
+            assert_partial_lowering_blocker(evidence_dir, case, expected_diagnostic)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dotprod", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")

@@ -245,6 +245,9 @@ case "${CASE}" in
   sbox_lookup)
     case_graph="g_t_main_2_0"
     ;;
+  sort_insertion)
+    case_graph="g_t_sort_insertion_kernel_0_0"
+    ;;
   transpose)
     case_graph="missing_primary_graph"
     ;;
@@ -865,7 +868,8 @@ elif [[ "${CASE}" == "partition" ]]; then
     "${cgra_lower_report}"
     "${cgra_upper_report}"
   )
-elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "outer" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "transpose" || "${CASE}" == "upper_bound" ]]; then
+elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "outer" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" || "${CASE}" == "transpose" || "${CASE}" == "upper_bound" ]]; then
+  graph_absence_args=()
   case "${CASE}" in
     binary_search)
       expected_primary_graph_token="binary_search_candidate"
@@ -897,6 +901,14 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz"
     scatter_add)
       expected_primary_graph_token="scatter_add"
       ;;
+    sort_insertion)
+      expected_primary_graph_token="sort_insertion_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is partial: sort_insertion lowering covers the copy loop while the insertion-sort compare-and-shift loop remains outside dataflow"
+        --evidence "partial dataflow lowering boundary"
+      )
+      ;;
     transpose)
       expected_primary_graph_token="transpose"
       ;;
@@ -913,7 +925,8 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz"
     --dfg-output "${dfg_report}" \
     --dfg-cycle-output "${dfg_cycle}" \
     --mapping-output "${mapping_artifact}" \
-    --mapping-summary-output "${mapping}"
+    --mapping-summary-output "${mapping}" \
+    "${graph_absence_args[@]}"
   ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
     --dfg-report "${dfg_report}" \
     --mapping-artifact "${mapping_artifact}" \

@@ -50,6 +50,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "sort_insertion",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "transpose",
       "hardware": "shared_reduction_adg"
     },

@@ -401,9 +401,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 37,
+            "blocked": 36,
             "unsupported": 0,
-            "missing_status": 71,
+            "missing_status": 72,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -467,9 +467,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 37,
+            "blocked": 36,
             "unsupported": 0,
-            "missing_status": 71,
+            "missing_status": 72,
         },
     )
     assert_counts(
@@ -506,6 +506,10 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "parity": "primary workload graph absent: expected token parity",
     "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
+    "sort_insertion": (
+        "primary workload graph is partial: sort_insertion lowering covers the copy loop "
+        "while the insertion-sort compare-and-shift loop remains outside dataflow"
+    ),
     "transpose": "primary workload graph absent: expected token transpose",
     "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
 }
@@ -717,6 +721,54 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "autocorrelation", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "unpack_bits", expected_hardware="shared_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
+
+
+def assert_sort_insertion_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
+    out_dir.mkdir(parents=True)
+    attempt_manifest = out_dir / "sort-insertion-attempt.json"
+    attempt_manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cases": [{"case": "sort_insertion", "hardware": "shared_reduction_adg"}],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir / "rollup"),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-attempt-manifest",
+            str(attempt_manifest),
+        ],
+    )
+    rows = read_rows(out_dir / "rollup" / "cgra-status-summary.csv")
+    row = one_row(rows, "app", "sort_insertion")
+    if (
+        row["status"] != "blocked"
+        or row["diagnostic_class"] != "dfg_report_unsupported"
+        or row["owner"] != "sim_report"
+        or row["blocking_prerequisite"] != "dfg_report"
+        or row["dfg_status"] != "unsupported"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["final_outputs_present"] != "false"
+        or row["final_memory_state_present"] != "false"
+        or SHARED_APP_BLOCKER_DIAGNOSTICS["sort_insertion"] not in row["diagnostic"]
+    ):
+        raise AssertionError(f"sort_insertion attempt should publish structured lowering-boundary evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
 
 def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
@@ -3087,6 +3139,7 @@ def main() -> int:
         assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
         assert_app_seed_batch_mode(repo, out_dir / "app-seed-batch")
         assert_app_attempt_manifest_mode(repo, out_dir / "app-attempt-manifest", legacy_root)
+        assert_sort_insertion_attempt_manifest_mode(repo, out_dir / "sort-insertion-attempt", legacy_root)
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)
         assert_cmsis_sim_default_mode(repo, out_dir / "cmsis-sim-default", legacy_root)
