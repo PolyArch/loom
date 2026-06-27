@@ -229,6 +229,22 @@ def main() -> int:
     if labels(aggregate_selected) != ["arm_var_f32.red0", "arm_var_f32.red1"]:
         raise AssertionError(f"aggregate selector chose unexpected attempts: {labels(aggregate_selected)}")
 
+    max_pool_args = attempts.parse_args(
+        [
+            "--cmsis-dsp-dfg-dir",
+            "dsp",
+            "--cmsis-nn-dfg-dir",
+            "nn",
+            "--output-dir",
+            "out",
+            "--attempt-stem",
+            "arm_max_pool_s8",
+        ]
+    )
+    max_pool_selected = attempts.select_attempts(max_pool_args)
+    if labels(max_pool_selected) != ["arm_max_pool_s8"]:
+        raise AssertionError(f"arm_max_pool_s8 selector chose unexpected attempts: {labels(max_pool_selected)}")
+
     bad_args = attempts.parse_args(
         [
             "--cmsis-dsp-dfg-dir",

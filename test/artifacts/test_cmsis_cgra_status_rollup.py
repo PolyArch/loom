@@ -842,6 +842,16 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "unsupported op: llvm.call",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
     )
+    assert_cmsis_dfg_unsupported_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-nn",
+        "PoolingFunctions/arm_max_pool_s8.c",
+        "arm_max_pool_s8",
+        "g_t_arm_max_pool_s8_red_0_0",
+        "unsupported op: llvm.intr.memcpy",
+    )
     run(
         repo,
         [
@@ -3055,6 +3065,16 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "g_t_arm_fully_connected_s8_red_0_0",
         "unsupported op: llvm.call",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
+    )
+    assert_cmsis_dfg_unsupported_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-nn",
+        "PoolingFunctions/arm_max_pool_s8.c",
+        "arm_max_pool_s8",
+        "g_t_arm_max_pool_s8_red_0_0",
+        "unsupported op: llvm.intr.memcpy",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
