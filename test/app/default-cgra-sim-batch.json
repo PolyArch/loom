@@ -42,6 +42,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "bisection_step",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "byte_swap",
       "hardware": "shared_vector_alu_adg"
     },

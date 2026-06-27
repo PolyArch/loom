@@ -9,6 +9,7 @@ from pathlib import Path
 
 EXPECTED_DEFAULT_BATCH_CASES = {
     "axpy",
+    "bisection_step",
     "bit_reverse",
     "byte_swap",
     "compare_swap",

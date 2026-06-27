@@ -1062,6 +1062,65 @@ void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addFloatCmpPe(ModuleBuilder &module, llvm::StringRef result,
+                   llvm::StringRef lhs, llvm::StringRef rhs) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
+                          " : !fabric.bits<32>,");
+  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
+                          " : !fabric.bits<32>)");
+  module.addExactBodyLine("        -> !fabric.bits<32> {");
+  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<32>,");
+  module.addExactBodyLine("                %b = %rhs : !fabric.bits<32>) "
+                          "-> !fabric.bits<32> {");
+  module.addExactBodyLine("        %pred = fabric.op [@arith.cmpf] (%a, %b)");
+  module.addExactBodyLine(
+      "            {hw_params = [{predicate = [\"oeq\", \"ogt\", \"oge\", "
+      "\"olt\", \"ole\", \"one\", \"ord\", \"ueq\", \"ugt\", \"uge\", "
+      "\"ult\", \"ule\", \"une\", \"uno\"]}]}");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<32>, !fabric.bits<32>) -> "
+      "!fabric.bits<1>");
+  module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
+                          "!fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addControlSyncPe(ModuleBuilder &module, llvm::StringRef prefix,
+                      unsigned inputCount) {
+  PeSpec pe;
+  for (unsigned index = 0; index < inputCount; ++index) {
+    pe.inputs.push_back(
+        {(llvm::Twine("p") + llvm::Twine(index)).str(),
+         (prefix + llvm::Twine("_in") + llvm::Twine(index)).str(),
+         "!fabric.bits<0>", ""});
+    pe.resultNames.push_back(
+        (prefix + llvm::Twine("_done") + llvm::Twine(index)).str());
+    pe.resultTypes.push_back("!fabric.bits<0>");
+  }
+
+  FuSpec fu;
+  FabricOpSpec sync;
+  for (unsigned index = 0; index < inputCount; ++index) {
+    std::string local = (llvm::Twine("f") + llvm::Twine(index)).str();
+    fu.inputs.push_back({local, pe.inputs[index].localName,
+                         "!fabric.bits<0>", ""});
+    fu.resultTypes.push_back("!fabric.bits<0>");
+    std::string result = (llvm::Twine("s") + llvm::Twine(index)).str();
+    sync.results.push_back(result);
+    sync.operands.push_back(local);
+    sync.operandTypes.push_back("!fabric.bits<0>");
+    sync.resultTypes.push_back("!fabric.bits<0>");
+    fu.yieldValues.push_back(result);
+  }
+  sync.opList.push_back("dataflow.sync");
+  sync.swConfigs["bitmask"] = std::string(inputCount, '1');
+  fu.operations.push_back(std::move(sync));
+  pe.fus.push_back(std::move(fu));
+  module.addPe(std::move(pe));
+}
+
 void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
                  llvm::StringRef pred, llvm::StringRef trueValue,
                  llvm::StringRef falseValue) {
@@ -3485,6 +3544,11 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   constexpr unsigned kShiftCount = 8;
   constexpr unsigned kCastCount = 8;
   constexpr unsigned kExtuiCount = 4;
+  constexpr unsigned kFpAddCount = 4;
+  constexpr unsigned kFpMulCount = 4;
+  constexpr unsigned kFpCmpCount = 4;
+  constexpr unsigned kSyncCount = 4;
+  constexpr unsigned kSyncArity = 6;
 
   ModuleBuilder module("shared_memory_reduction_adg");
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
@@ -3532,6 +3596,8 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
 
   addBinaryBank("add", kAddCount, {"arith.addi", "arith.subi"});
   addBinaryBank("mul", kMulCount, {"arith.muli"});
+  addBinaryBank("fp_add", kFpAddCount, {"arith.addf", "arith.subf"});
+  addBinaryBank("fp_mul", kFpMulCount, {"arith.mulf"});
   addBinaryBank("and", kLogicCount, {"arith.andi"});
   addBinaryBank("or", kLogicCount, {"arith.ori"});
   addBinaryBank("xor", kLogicCount, {"arith.xori"});
@@ -3545,6 +3611,16 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
     std::string lhs = result + "_lhs";
     std::string rhs = result + "_rhs";
     addCmpPe(module, result, lhs, rhs);
+    sources32.push_back(result);
+    sinks32.push_back(lhs);
+    sinks32.push_back(rhs);
+  }
+
+  for (unsigned index = 0; index < kFpCmpCount; ++index) {
+    std::string result = numbered("fp_cmp", index);
+    std::string lhs = result + "_lhs";
+    std::string rhs = result + "_rhs";
+    addFloatCmpPe(module, result, lhs, rhs);
     sources32.push_back(result);
     sinks32.push_back(lhs);
     sinks32.push_back(rhs);
@@ -3566,6 +3642,16 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   addUnaryBank("sext", kCastCount, "llvm.sext");
   addUnaryBank("zext", kCastCount, "llvm.zext");
   addUnaryBank("extui", kExtuiCount, "arith.extui");
+
+  for (unsigned index = 0; index < kSyncCount; ++index) {
+    std::string prefix = numbered("sync", index);
+    addControlSyncPe(module, prefix, kSyncArity);
+    for (unsigned lane = 0; lane < kSyncArity; ++lane) {
+      sinks0.push_back((prefix + llvm::Twine("_in") + llvm::Twine(lane)).str());
+      sources0.push_back(
+          (prefix + llvm::Twine("_done") + llvm::Twine(lane)).str());
+    }
+  }
 
   for (unsigned index = 0; index < kLoadCount; ++index) {
     sources32.push_back(numbered("data", index));

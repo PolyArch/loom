@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 36
+APP_NO_DFG_TIER_COUNT = 35
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -25,6 +25,7 @@ DEFAULT_SWEEP_CASES = (
     "axpy",
     "binary_search",
     "bit_reverse",
+    "bisection_step",
     "clz",
     "ctz",
     "downsample",
@@ -1419,6 +1420,74 @@ def assert_newton_iter_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"newton_iter CGRA evidence should carry x - f/df final state: {cgra_path}: {cgra}")
 
 
+def assert_bisection_step_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": ["f32:0", "f32:1", "f32:2"],
+        "arg2": ["f32:2", "f32:5", "f32:6"],
+        "arg4": ["f32:-1", "f32:-2", "f32:4"],
+        "arg5": ["f32:0.250000", "f32:-0.500000", "f32:5"],
+        "arg7": ["f32:0", "f32:3", "f32:0"],
+        "arg8": ["f32:0", "f32:5", "f32:0"],
+    }
+    expected_counts = {
+        "arith.addf": 1,
+        "arith.cmpf": 1,
+        "arith.mulf": 2,
+        "arith.select": 2,
+        "dataflow.load": 4,
+        "dataflow.store": 2,
+        "dataflow.sync": 1,
+    }
+
+    dfg_path = evidence_dir / "bisection_step.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("optimistic_cycles") != 44
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"bisection_step DFG evidence should update the real interval row: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("bisection_step", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "bisection_step.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("routed_edges") != 20
+    ):
+        raise AssertionError(f"bisection_step should route on shared memory reduction hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.addf#0.result0->arith.mulf#0.operand0",
+        "arith.mulf#1.result0->arith.cmpf#0.operand0",
+        "arith.cmpf#0.result0->arith.select#0.operand0",
+        "arith.select#0.result0->dataflow.store#0.operand2",
+        "dataflow.store#1.result0->dataflow.sync#0.operand5",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"bisection_step mapping should expose add/mul/cmp/select/store routes: {mapping}")
+
+    cgra_path = evidence_dir / "bisection_step.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 44
+        or cgra.get("hardware_aware_cycles") != 162
+        or cgra.get("routed_edges") != 20
+        or cgra.get("route_segments") != 76
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"bisection_step CGRA evidence should carry the real final interval state: {cgra_path}: {cgra}")
+
+
 def assert_runge_kutta_step_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:1", "f32:1.100000", "f32:1.200000", "f32:1.300000"],
@@ -2319,6 +2388,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "bit_reverse",
                 "--case",
+                "bisection_step",
+                "--case",
                 "clz",
                 "--case",
                 "ctz",
@@ -2460,6 +2531,7 @@ def main(argv: list[str]) -> int:
             "spmspv",
             "axpy",
             "bit_reverse",
+            "bisection_step",
             "byte_swap",
             "downsample",
             "xor_block",
@@ -2537,6 +2609,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
+        assert_dfg_dynamic_work_items(evidence_dir, "bisection_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
@@ -2555,6 +2628,7 @@ def main(argv: list[str]) -> int:
         assert_covariance_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
+        assert_bisection_step_evidence(evidence_dir)
         assert_runge_kutta_step_evidence(evidence_dir)
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
@@ -2578,6 +2652,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dotprod", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "bisection_step", "shared_memory_reduction_adg")
         assert_component_references_resolve(evidence_dir, "dotprod")
         assert_component_references_resolve(evidence_dir, "dot_product_3d")
         assert_component_mapping_status(
@@ -3032,9 +3107,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 60,
+            "pass": 61,
             "fail": 0,
-            "blocked": 49,
+            "blocked": 48,
             "unsupported": 0,
             "missing_status": 0,
         }

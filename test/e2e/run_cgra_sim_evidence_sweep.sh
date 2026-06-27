@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|adg-builder] [--legacy-app-root DIR] [--jobs N]
+usage: run_cgra_sim_evidence_sweep.sh --output-dir DIR [--case NAME]... [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-memory-reduction|adg-builder] [--legacy-app-root DIR] [--jobs N]
 USAGE
 }
 
@@ -66,6 +66,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     axpy
     binary_search
     bit_reverse
+    bisection_step
     clz
     ctz
     downsample

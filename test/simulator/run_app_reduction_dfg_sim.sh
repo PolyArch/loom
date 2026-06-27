@@ -1305,6 +1305,22 @@ case "${CASE}" in
             --workload compare_swap
         )
         ;;
+    bisection_step)
+        sim_args+=(
+            --graph g_t_main_1_0
+            --workload bisection_step
+            --arg 0=none
+            --memref 1=0.000000e+00,1.000000e+00,2.000000e+00
+            --memref 2=2.000000e+00,5.000000e+00,6.000000e+00
+            --arg 3=5.000000e-01
+            --memref 4=-1.000000e+00,-2.000000e+00,4.000000e+00
+            --memref 5=2.500000e-01,-5.000000e-01,5.000000e+00
+            --arg 6=0.000000e+00
+            --memref 7=0.000000e+00,0.000000e+00,0.000000e+00
+            --memref 8=0.000000e+00,0.000000e+00,0.000000e+00
+            --arg 9=1
+        )
+        ;;
     compact)
         append_ctrl_tokens 12
         append_compact_memrefs 4 6

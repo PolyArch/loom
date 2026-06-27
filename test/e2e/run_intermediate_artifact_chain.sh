@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-memory-reduction|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -76,6 +76,9 @@ case "${CASE}" in
     ;;
   bit_reverse)
     case_graph="g_t_bit_reverse_kernel_0_0"
+    ;;
+  bisection_step)
+    case_graph="g_t_main_1_0"
     ;;
   clz)
     case_graph="missing_primary_graph"
@@ -305,6 +308,13 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
+    elif [[ "${CASE}" == "bisection_step" ]]; then
+      hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
+      hardware_name="shared_memory_reduction_adg"
+      hardware_summary_recipe_args=(
+        --input-recipe-identity
+        "${hardware_mlir}=adg-builder::shared-memory-reduction"
+      )
     elif [[ "${CASE}" == "axpy" || "${CASE}" == "byte_swap" || "${CASE}" == "xor_block" || "${CASE}" == "vecmul" || "${CASE}" == "vecscale" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_vector_alu_adg.mlir"
       hardware_name="shared_vector_alu_adg"
@@ -334,6 +344,14 @@ case "${HARDWARE_SOURCE}" in
     hardware_summary_recipe_args=(
       --input-recipe-identity
       "${hardware_mlir}=adg-builder::shared-vector-math"
+    )
+    ;;
+  shared-memory-reduction)
+    hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
+    hardware_name="shared_memory_reduction_adg"
+    hardware_summary_recipe_args=(
+      --input-recipe-identity
+      "${hardware_mlir}=adg-builder::shared-memory-reduction"
     )
     ;;
   adg-builder)
