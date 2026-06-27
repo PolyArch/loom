@@ -2276,7 +2276,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                          {"pd", "sync_extra", "!fabric.bits<0>", ""},
                          {"pe", "done4", "!fabric.bits<0>", ""},
                          {"pf", "sync_lane5", "!fabric.bits<0>", ""},
-                         {"pg", "store_done0", "!fabric.bits<0>", ""}};
+                         {"pg", "store_done0", "!fabric.bits<0>", ""},
+                         {"ph", "sync_lane6", "!fabric.bits<0>", ""},
+                         {"pi", "sync_lane7", "!fabric.bits<0>", ""}};
   vectorSyncPe.resultTypes = {"!fabric.bits<0>"};
   vectorSyncPe.fus.push_back(FuSpec{
       {{"fa", "pa", "!fabric.bits<0>", ""},
@@ -2285,20 +2287,25 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        {"fd", "pd", "!fabric.bits<0>", ""},
        {"fe", "pe", "!fabric.bits<0>", ""},
        {"ff", "pf", "!fabric.bits<0>", ""},
-       {"fg", "pg", "!fabric.bits<0>", ""}},
+       {"fg", "pg", "!fabric.bits<0>", ""},
+       {"fh", "ph", "!fabric.bits<0>", ""},
+       {"fi", "pi", "!fabric.bits<0>", ""}},
       {"!fabric.bits<0>"},
       {FabricOpSpec{{"sync_done0", "sync_done1", "sync_done2", "sync_done3",
-                     "sync_done4", "sync_done5", "sync_done6"},
+                     "sync_done4", "sync_done5", "sync_done6", "sync_done7",
+                     "sync_done8"},
                     {"dataflow.sync"},
-                    {"fa", "fb", "fc", "fd", "fe", "ff", "fg"},
+                    {"fa", "fb", "fc", "fd", "fe", "ff", "fg", "fh", "fi"},
                     {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
                      "!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
+                     "!fabric.bits<0>", "!fabric.bits<0>",
                      "!fabric.bits<0>"},
                     {"!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
                      "!fabric.bits<0>", "!fabric.bits<0>", "!fabric.bits<0>",
+                     "!fabric.bits<0>", "!fabric.bits<0>",
                      "!fabric.bits<0>"},
                     {},
-                    {{"bitmask", "1111111"}}}},
+                    {{"bitmask", "111111111"}}}},
       {"sync_done0"}});
   module.addPe(std::move(vectorSyncPe));
 
@@ -2893,6 +2900,19 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  [{connectivity_table = [\"11\"]}]");
   module.addExactBodyLine(
       "  : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>");
+  module.addExactBodyLine(
+      "%sync_lane6 = fabric.switch [spatial] %done1, %done4, %store_done0");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
+  module.addExactBodyLine(
+      "%sync_lane7 = fabric.switch [spatial] %done2, %done5, "
+      "%control_token_muxed_token");
+  module.addExactBodyLine("  [{connectivity_table = [\"111\"]}]");
+  module.addExactBodyLine(
+      "  : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> "
+      "!fabric.bits<0>");
   addSingleResultBits32Switch("addr_add_lhs",
                               {"idx", "i32a", "i32b", "i32c", "squared_data",
                                "int_product", "running", "reduction_scale",

@@ -646,15 +646,19 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
                     %pd = %sync_extra : !fabric.bits<0>,
                     %pe = %done4 : !fabric.bits<0>,
                     %pf = %sync_lane5 : !fabric.bits<0>,
-                    %pg = %store_done0 : !fabric.bits<0>) -> !fabric.bits<0> {
+                    %pg = %store_done0 : !fabric.bits<0>,
+                    %ph = %sync_lane6 : !fabric.bits<0>,
+                    %pi = %sync_lane7 : !fabric.bits<0>) -> !fabric.bits<0> {
     fabric.fu(%fa = %pa : !fabric.bits<0>,
               %fb = %pb : !fabric.bits<0>,
               %fc = %pc : !fabric.bits<0>,
               %fd = %pd : !fabric.bits<0>,
               %fe = %pe : !fabric.bits<0>,
               %ff = %pf : !fabric.bits<0>,
-              %fg = %pg : !fabric.bits<0>) -> !fabric.bits<0> {
-      %sync_done0, %sync_done1, %sync_done2, %sync_done3, %sync_done4, %sync_done5, %sync_done6 = fabric.op [@dataflow.sync] (%fa, %fb, %fc, %fd, %fe, %ff, %fg) {sw_configs = {bitmask = "1111111"}} : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)
+              %fg = %pg : !fabric.bits<0>,
+              %fh = %ph : !fabric.bits<0>,
+              %fi = %pi : !fabric.bits<0>) -> !fabric.bits<0> {
+      %sync_done0, %sync_done1, %sync_done2, %sync_done3, %sync_done4, %sync_done5, %sync_done6, %sync_done7, %sync_done8 = fabric.op [@dataflow.sync] (%fa, %fb, %fc, %fd, %fe, %ff, %fg, %fh, %fi) {sw_configs = {bitmask = "111111111"}} : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>)
       fabric.yield %sync_done0 : !fabric.bits<0>
     }
   }
@@ -995,6 +999,12 @@ fabric.module @shared_reduction_adg(%mgr : memref<?x!fabric.bits<32>>,
   %sync_lane5 = fabric.switch [spatial] %done5, %store_done0
     [{connectivity_table = ["11"]}]
     : (!fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>
+  %sync_lane6 = fabric.switch [spatial] %done1, %done4, %store_done0
+    [{connectivity_table = ["111"]}]
+    : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>
+  %sync_lane7 = fabric.switch [spatial] %done2, %done5, %control_token_muxed_token
+    [{connectivity_table = ["111"]}]
+    : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>) -> !fabric.bits<0>
   %addr_add_lhs = fabric.switch [spatial] %idx, %i32a, %i32b, %i32c, %squared_data, %int_product, %running, %reduction_scale, %int_product_aux, %data0, %data1
     [{connectivity_table = ["11111111111"]}]
     : (!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>

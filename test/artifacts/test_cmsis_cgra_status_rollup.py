@@ -1222,15 +1222,22 @@ def assert_cmsis_cfft_component_evidence(
     if (
         red1_mapping.get("status") != "fail"
         or red1_mapping.get("hardware") != "shared_reduction_adg"
-        or red1_mapping.get("placed_records") != 16
-        or red1_mapping.get("unplaced_records") != 63
-        or red1_mapping.get("routed_edges") != 11
-        or red1_mapping.get("unrouted_edges") != 6
+        or red1_mapping.get("placed_records") != 17
+        or red1_mapping.get("unplaced_records") != 62
+        or red1_mapping.get("routed_edges") != 15
+        or red1_mapping.get("unrouted_edges") != 9
         or not isinstance(red1_mapping_diagnostics, list)
         or not red1_mapping_diagnostics
         or not str(red1_mapping_diagnostics[0]).startswith("missing hardware resource for software op llvm.load")
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 red1 mapping blocker evidence: {red1_mapping}")
+    for record in red1_mapping.get("resource_pressure", []):
+        if (
+            isinstance(record, dict)
+            and record.get("resource_kind") == "fabric.op"
+            and record.get("operation") == "dataflow.sync"
+        ):
+            raise AssertionError(f"arm_cfft_f32 red1 should not retain the old sync resource blocker: {red1_mapping}")
     red1_mapping_diagnostic = str(red1_mapping_diagnostics[0])
     for snippet in red1_pressure_snippets:
         if snippet not in red1_mapping_diagnostic:
