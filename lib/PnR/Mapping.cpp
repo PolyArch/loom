@@ -231,12 +231,12 @@ bool isEffectFormForall(mlir::scf::ForallOp op) {
 bool isStructuredContainerOp(mlir::Operation *op) {
   if (auto forall = mlir::dyn_cast<mlir::scf::ForallOp>(op))
     return isEffectFormForall(forall);
-  return mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp,
-                   mlir::scf::IndexSwitchOp>(op);
+  return mlir::isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::scf::IndexSwitchOp,
+                   mlir::scf::WhileOp>(op);
 }
 
 bool isStructuredTerminatorOp(mlir::Operation *op) {
-  if (mlir::isa<mlir::scf::YieldOp>(op))
+  if (mlir::isa<mlir::scf::YieldOp, mlir::scf::ConditionOp>(op))
     return true;
   auto inParallel = mlir::dyn_cast<mlir::scf::InParallelOp>(op);
   return inParallel && !inParallel.getRegion().empty() &&
@@ -282,31 +282,68 @@ bool isStructuredPointerValueOnlyBookkeeping(mlir::Value value) {
     return true;
   for (mlir::OpOperand &use : value.getUses()) {
     mlir::Operation *owner = use.getOwner();
-    if (isPointerMemrefBaseAdapterOp(owner) ||
-        isLlvmPointerMemoryAddressUse(use))
+    if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
+        isLlvmPointerMemoryAddressUse(use) || isPointerCarryOp(owner) ||
+        isPointerGateOp(owner) || isPointerMemrefBaseAdapterOp(owner) ||
+        isGraphReturnOp(owner))
       continue;
-    auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(owner);
-    if (!yield)
+    mlir::Operation *parent = nullptr;
+    unsigned resultIndex = 0;
+    if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(owner)) {
+      parent = yield->getParentOp();
+      resultIndex = use.getOperandNumber();
+    } else if (auto condition = mlir::dyn_cast<mlir::scf::ConditionOp>(owner)) {
+      parent = condition->getParentOp();
+      if (use.getOperandNumber() == 0)
+        return false;
+      resultIndex = use.getOperandNumber() - 1;
+    } else if (mlir::isa<mlir::scf::WhileOp>(owner)) {
+      parent = owner;
+      resultIndex = use.getOperandNumber();
+    } else if (mlir::isa<mlir::scf::ForOp>(owner)) {
+      parent = owner;
+      if (use.getOperandNumber() < 3)
+        return false;
+      resultIndex = use.getOperandNumber() - 3;
+    } else {
       return false;
-    mlir::Operation *parent = yield->getParentOp();
-    unsigned resultIndex = use.getOperandNumber();
+    }
     if (!parent || resultIndex >= parent->getNumResults())
       return false;
-    if (!isStructuredPointerValueOnlyBookkeeping(parent->getResult(resultIndex)))
+    if (!isStructuredPointerValueOnlyBookkeeping(
+            parent->getResult(resultIndex)))
       return false;
   }
   return true;
 }
 
-bool isUnusedStructuredPointerYieldUse(mlir::OpOperand &use) {
-  auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(use.getOwner());
-  if (!yield)
+bool isStructuredPointerForwardingUse(mlir::OpOperand &use) {
+  mlir::Operation *owner = use.getOwner();
+  mlir::Operation *parent = nullptr;
+  unsigned resultIndex = 0;
+  if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(owner)) {
+    parent = yield->getParentOp();
+    resultIndex = use.getOperandNumber();
+  } else if (auto condition = mlir::dyn_cast<mlir::scf::ConditionOp>(owner)) {
+    parent = condition->getParentOp();
+    if (use.getOperandNumber() == 0)
+      return false;
+    resultIndex = use.getOperandNumber() - 1;
+  } else if (mlir::isa<mlir::scf::WhileOp>(owner)) {
+    parent = owner;
+    resultIndex = use.getOperandNumber();
+  } else if (mlir::isa<mlir::scf::ForOp>(owner)) {
+    parent = owner;
+    if (use.getOperandNumber() < 3)
+      return false;
+    resultIndex = use.getOperandNumber() - 3;
+  } else {
     return false;
-  mlir::Operation *parent = yield->getParentOp();
-  unsigned resultIndex = use.getOperandNumber();
+  }
   if (!parent || resultIndex >= parent->getNumResults())
     return false;
-  return isStructuredPointerValueOnlyBookkeeping(parent->getResult(resultIndex));
+  return isStructuredPointerValueOnlyBookkeeping(
+      parent->getResult(resultIndex));
 }
 
 bool isPointerBookkeepingOp(mlir::Operation *op) {
@@ -320,7 +357,7 @@ bool isPointerBookkeepingOp(mlir::Operation *op) {
       if (mlir::isa<mlir::LLVM::GEPOp>(owner) ||
           isLlvmPointerMemoryAddressUse(use) || isPointerCarryOp(owner) ||
           isPointerMemrefBaseAdapterOp(owner) || isGraphReturnOp(owner) ||
-          isUnusedStructuredPointerYieldUse(use))
+          isStructuredPointerForwardingUse(use))
         continue;
       return false;
     }
@@ -1732,9 +1769,28 @@ void collectValueProducers(
       for (mlir::Region &region : op.getRegions())
         for (mlir::Block &nested : region)
           collectValueProducers(nested, nodeIds, builder);
+      if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(op)) {
+        auto condition = whileOp.getConditionOp();
+        if (condition && condition.getArgs().size() == op.getNumResults()) {
+          for (auto [result, source] :
+               llvm::zip(op.getResults(), condition.getArgs()))
+            builder.addForward(result, source);
+        }
+        continue;
+      }
       for (mlir::Region &region : op.getRegions()) {
         for (mlir::Block &nested : region) {
-          auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(nested.getTerminator());
+          if (auto condition = mlir::dyn_cast<mlir::scf::ConditionOp>(
+                  nested.getTerminator())) {
+            if (condition.getArgs().size() != op.getNumResults())
+              continue;
+            for (auto [result, source] :
+                 llvm::zip(op.getResults(), condition.getArgs()))
+              builder.addForward(result, source);
+            continue;
+          }
+          auto yield =
+              mlir::dyn_cast<mlir::scf::YieldOp>(nested.getTerminator());
           if (!yield || yield.getNumOperands() != op.getNumResults())
             continue;
           for (auto [result, source] :

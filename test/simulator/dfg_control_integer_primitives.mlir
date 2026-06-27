@@ -10,6 +10,8 @@
 // RUN: FileCheck %s --check-prefix=UITOFP < %t.uitofp.json
 // RUN: loom-dfg-sim %s --graph unsigned_extend_and_minmax --arg 0=none --output %t.unsigned.json
 // RUN: FileCheck %s --check-prefix=UNSIGNED < %t.unsigned.json
+// RUN: loom-dfg-sim %s --graph signed_minmax --arg 0=none --output %t.signed-minmax.json
+// RUN: FileCheck %s --check-prefix=SIGNED-MINMAX < %t.signed-minmax.json
 
 // COMPARE-DAG: "workload": "compare_select"
 // COMPARE-DAG: "graph": "compare_select"
@@ -59,6 +61,14 @@
 // UNSIGNED-DAG: "i32:-1"
 // UNSIGNED-DAG: "index:255"
 // UNSIGNED-DAG: "i32:1"
+
+// SIGNED-MINMAX-DAG: "workload": "signed_minmax"
+// SIGNED-MINMAX-DAG: "graph": "signed_minmax"
+// SIGNED-MINMAX-DAG: "status": "pass"
+// SIGNED-MINMAX-DAG: "llvm.intr.smin": 1
+// SIGNED-MINMAX-DAG: "llvm.intr.smax": 1
+// SIGNED-MINMAX-DAG: "i8:-4"
+// SIGNED-MINMAX-DAG: "i8:7"
 
 module {
   dataflow.graph.func private @compare_select(%ctrl: none) -> (none, f32) {
@@ -118,5 +128,14 @@ module {
     %max = llvm.intr.umax(%minus_one, %seven) : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %wide, %min, %max, %idx, %narrow_idx
         : none, i32, i32, i32, index, i32
+  }
+
+  dataflow.graph.func private @signed_minmax(%ctrl: none)
+      -> (none, i8, i8) {
+    %minus_four = dataflow.constant %ctrl {const_value = -4 : i8} : i8
+    %seven = dataflow.constant %ctrl {const_value = 7 : i8} : i8
+    %min = llvm.intr.smin(%minus_four, %seven) : (i8, i8) -> i8
+    %max = llvm.intr.smax(%minus_four, %seven) : (i8, i8) -> i8
+    dataflow.graph.return %ctrl, %min, %max : none, i8, i8
   }
 }

@@ -753,8 +753,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         {
             "total": 18,
             "pass": 4,
-            "fail": 0,
-            "blocked": 6,
+            "fail": 1,
+            "blocked": 5,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -769,22 +769,14 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "arm_biquad_cascade_df1_f32",
     )
     assert_cmsis_biquad_shared_adg_evidence(sim_evidence)
-    assert_cmsis_dfg_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-dsp",
-        "MatrixFunctions/arm_mat_mult_f32.c",
-        "arm_mat_mult_f32",
-        "g_t_arm_mat_mult_f32_red_0_0",
-        "unsupported op: scf.while",
-    )
+    assert_cmsis_mat_mult_f32_dfg_ready_for_mapping_evidence(repo, rows, sim_evidence)
     assert_cmsis_cgra_pass_row(
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -910,6 +902,53 @@ def assert_cmsis_dfg_unsupported_row(
         or diagnostic not in report_data.get("diagnostics", [])
     ):
         raise AssertionError(f"unexpected CMSIS unsupported DFG report: {report_data}")
+
+
+def assert_cmsis_mat_mult_f32_dfg_ready_for_mapping_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "MatrixFunctions/arm_mat_mult_f32.c"
+    stem = "arm_mat_mult_f32"
+    assert_cmsis_dfg_ready_for_mapping_row(repo, rows, "cmsis-dsp", case)
+    row = one_row(rows, "cmsis-dsp", case)
+    report_path = sim_evidence / f"{stem}.dfg.report.json"
+    if not report_path.is_file():
+        raise AssertionError(f"CMSIS evidence mode should emit {report_path}")
+    for suffix in ("mapping.csv", "mapping.json", "cgra.report.json"):
+        artifact = sim_evidence / f"{stem}.{suffix}"
+        if artifact.exists():
+            raise AssertionError(f"CMSIS DFG-ready row must not emit {artifact}")
+    expected_memory = {
+        "arg4": ["f32:66", "f32:72", "f32:78"],
+        "arg9": [
+            "f32:7",
+            "f32:8",
+            "f32:9",
+            "f32:10",
+            "f32:11",
+            "f32:12",
+            "f32:13",
+            "f32:14",
+            "f32:15",
+        ],
+        "arg10": ["f32:1", "f32:2", "f32:3"],
+    }
+    report_data = json.loads((repo / row["dfg_report"]).read_text())
+    if (
+        report_data.get("kind") != "dfg_sim_report"
+        or report_data.get("workload") != case
+        or report_data.get("graph") != "g_t_arm_mat_mult_f32_red_0_0"
+        or report_data.get("status") != "pass"
+        or report_data.get("dynamic_work_items") != 3
+        or report_data.get("operation_fire_counts", {}).get("dataflow.load") != 18
+        or report_data.get("operation_fire_counts", {}).get("llvm.intr.fmuladd") != 9
+        or report_data.get("operation_fire_counts", {}).get("dataflow.store") != 3
+        or report_data.get("final_outputs") != ["none", "i32:3"]
+        or report_data.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_mat_mult_f32 DFG-ready evidence: {report_data}")
 
 
 def assert_cmsis_concat_memcpy_cgra_evidence(
@@ -1696,6 +1735,84 @@ def assert_cmsis_vector_sum_cgra_evidence(
     ):
         raise AssertionError(
             f"unexpected arm_vector_sum_s8 CGRA comparison evidence: {cgra_report} {comparison_report}"
+        )
+
+
+def assert_cmsis_minimum_s8_mapping_blocker_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    assert_cmsis_mapping_blocker_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        "BasicMathFunctions/arm_minimum_s8.c",
+        diagnostic_substring="resource_kind=fabric.op operation=llvm.intr.smin",
+    )
+    row = one_row(rows, "cmsis-nn", "BasicMathFunctions/arm_minimum_s8.c")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        artifact = sim_evidence / Path(row[key]).name
+        if not artifact.is_file():
+            raise AssertionError(f"attempt manifest should emit {artifact}")
+    expected_memory = {
+        "arg40": ["i8:3", "i8:-4", "i8:7"],
+        "arg41": ["i8:2", "i8:-5", "i8:9"],
+        "arg42": ["i8:2", "i8:-5", "i8:7"],
+    }
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "BasicMathFunctions/arm_minimum_s8.c"
+        or dfg_report.get("graph") != "g_t_arm_minimum_s8_red_0_0"
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 6
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.smin") != 3
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 3
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_minimum_s8 DFG evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    resource_pressure = {
+        (record.get("resource_kind"), record.get("operation")): record
+        for record in mapping_artifact.get("resource_pressure", [])
+        if isinstance(record, dict)
+    }
+    smin_pressure = resource_pressure.get(("fabric.op", "llvm.intr.smin"))
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != "BasicMathFunctions/arm_minimum_s8.c"
+        or mapping_artifact.get("graph") != "g_t_arm_minimum_s8_red_0_0"
+        or mapping_artifact.get("hardware") != "shared_reduction_adg"
+        or mapping_artifact.get("status") != "fail"
+        or mapping_artifact.get("unplaced_records", 0) <= 0
+        or not smin_pressure
+        or smin_pressure.get("missing", 0) <= 0
+        or smin_pressure.get("required", 0) <= smin_pressure.get("available", 0)
+    ):
+        raise AssertionError(f"unexpected arm_minimum_s8 mapping evidence: {mapping_artifact}")
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != "BasicMathFunctions/arm_minimum_s8.c"
+        or cgra_report.get("hardware") != "shared_reduction_adg"
+        or cgra_report.get("status") != "blocked"
+        or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra_report.get("final_outputs") != ["none"]
+        or cgra_report.get("final_memory_state") != expected_memory
+        or comparison_report.get("status") != "blocked"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "blocked"
+    ):
+        raise AssertionError(
+            f"unexpected arm_minimum_s8 CGRA comparison evidence: {cgra_report} {comparison_report}"
         )
 
 
@@ -2585,8 +2702,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         {
             "total": 18,
             "pass": 4,
-            "fail": 0,
-            "blocked": 6,
+            "fail": 1,
+            "blocked": 5,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -2637,6 +2754,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"

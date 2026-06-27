@@ -68,6 +68,8 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"llvm.intr.bswap", 1, 1, true, true},
     {"llvm.intr.umin", 1, 1, true, true},
     {"llvm.intr.umax", 1, 1, true, true},
+    {"llvm.intr.smin", 1, 1, true, true},
+    {"llvm.intr.smax", 1, 1, true, true},
     {"llvm.intr.fmuladd", 8, 8, true, true},
     {"llvm.intr.abs", 1, 1, true, true},
     {"llvm.intr.fabs", 1, 1, true, true},
@@ -113,6 +115,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"dataflow.gate", 1, 1, false, true},
     {"scf.if", 1, 1, false, false},
     {"scf.index_switch", 1, 1, false, false},
+    {"scf.while", 1, 1, false, false},
     {"scf.forall", 1, 1, false, false},
 };
 
@@ -816,6 +819,17 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
     const std::uint64_t selected =
         opName == "llvm.intr.umin" ? std::min(lhs, rhs) : std::max(lhs, rhs);
     return integerFromBits(selected, bitWidth);
+  }
+  if (opName == "llvm.intr.smin" || opName == "llvm.intr.smax") {
+    if (llvm::Error arity = requireArity(opName, operands, 2))
+      return std::move(arity);
+    const std::int64_t lhs =
+        fromUnsignedBits(toUnsignedBits(operands[0], bitWidth), bitWidth);
+    const std::int64_t rhs =
+        fromUnsignedBits(toUnsignedBits(operands[1], bitWidth), bitWidth);
+    const std::int64_t selected =
+        opName == "llvm.intr.smin" ? std::min(lhs, rhs) : std::max(lhs, rhs);
+    return integerFromSigned(selected, bitWidth);
   }
   if (opName == "llvm.intr.abs") {
     if (llvm::Error arity = requireArity(opName, operands, 1))

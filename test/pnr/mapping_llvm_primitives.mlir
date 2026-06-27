@@ -6,6 +6,8 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph fshl_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload fshl_graph --output %t.fshl.csv --artifact %t.fshl.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph bswap_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload bswap_graph --output %t.bswap.csv --artifact %t.bswap.json
 // RUN: loom-pnr-map --dfg-mlir %s --graph umax_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload umax_graph --output %t.umax.csv --artifact %t.umax.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph smin_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload smin_graph --output %t.smin.csv --artifact %t.smin.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph smax_graph --hardware-mlir %s --hardware llvm_primitive_adg --workload smax_graph --output %t.smax.csv --artifact %t.smax.json
 // RUN: FileCheck %s --check-prefix=ZEXT < %t.zext.csv
 // RUN: FileCheck %s --check-prefix=SEXT < %t.sext.csv
 // RUN: FileCheck %s --check-prefix=ABS < %t.abs.csv
@@ -14,6 +16,8 @@
 // RUN: FileCheck %s --check-prefix=FSHL < %t.fshl.csv
 // RUN: FileCheck %s --check-prefix=BSWAP < %t.bswap.csv
 // RUN: FileCheck %s --check-prefix=UMAX < %t.umax.csv
+// RUN: FileCheck %s --check-prefix=SMIN < %t.smin.csv
+// RUN: FileCheck %s --check-prefix=SMAX < %t.smax.csv
 
 // ZEXT: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // ZEXT-NEXT: zext_graph,llvm_primitive_adg,zext_graph__zext_graph__llvm_primitive_adg,1,0,0,0,pass
@@ -38,6 +42,12 @@
 
 // UMAX: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // UMAX-NEXT: umax_graph,llvm_primitive_adg,umax_graph__umax_graph__llvm_primitive_adg,1,0,0,0,pass
+
+// SMIN: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SMIN-NEXT: smin_graph,llvm_primitive_adg,smin_graph__smin_graph__llvm_primitive_adg,1,0,0,0,pass
+
+// SMAX: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// SMAX-NEXT: smax_graph,llvm_primitive_adg,smax_graph__smax_graph__llvm_primitive_adg,1,0,0,0,pass
 
 module {
   dataflow.graph.func private @zext_graph(%ctrl: none, %narrow: i32)
@@ -88,6 +98,18 @@ module {
       -> (none, i32) {
     %result = llvm.intr.umax(%lhs, %rhs) : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %result : none, i32
+  }
+
+  dataflow.graph.func private @smin_graph(%ctrl: none, %lhs: i8, %rhs: i8)
+      -> (none, i8) {
+    %result = llvm.intr.smin(%lhs, %rhs) : (i8, i8) -> i8
+    dataflow.graph.return %ctrl, %result : none, i8
+  }
+
+  dataflow.graph.func private @smax_graph(%ctrl: none, %lhs: i8, %rhs: i8)
+      -> (none, i8) {
+    %result = llvm.intr.smax(%lhs, %rhs) : (i8, i8) -> i8
+    dataflow.graph.return %ctrl, %result : none, i8
   }
 
   fabric.module @llvm_primitive_adg(%i32a : !fabric.bits<32>,
@@ -158,6 +180,26 @@ module {
       fabric.fu(%lhs = %pa : !fabric.bits<32>,
                 %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
         %result = fabric.op [@llvm.intr.umax] (%lhs, %rhs)
+                  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                         %pb = %i32b : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%lhs = %pa : !fabric.bits<32>,
+                %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@llvm.intr.smin] (%lhs, %rhs)
+                  : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+        fabric.yield %result : !fabric.bits<32>
+      }
+    }
+    fabric.pe [spatial] (%pa = %i32a : !fabric.bits<32>,
+                         %pb = %i32b : !fabric.bits<32>)
+        -> !fabric.bits<32> {
+      fabric.fu(%lhs = %pa : !fabric.bits<32>,
+                %rhs = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+        %result = fabric.op [@llvm.intr.smax] (%lhs, %rhs)
                   : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
         fabric.yield %result : !fabric.bits<32>
       }

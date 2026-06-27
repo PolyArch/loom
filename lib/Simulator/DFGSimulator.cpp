@@ -600,7 +600,8 @@ std::optional<unsigned> signlessIntegerBitWidthForVector(mlir::Type type,
                                                          llvm::StringRef op) {
   auto intType = mlir::dyn_cast<mlir::IntegerType>(type);
   if (!intType || !intType.isSignless()) {
-    state.diagnostics.push_back((op + " requires signless integer lanes").str());
+    state.diagnostics.push_back(
+        (op + " requires signless integer lanes").str());
     return std::nullopt;
   }
   return intType.getWidth();
@@ -1600,6 +1601,11 @@ bool executeStructuredFor(mlir::scf::ForOp op, SimulatorState &state,
                           llvm::ArrayRef<Token> operands, unsigned captureIndex,
                           llvm::SmallVectorImpl<Token> &results,
                           const LocalValueMap *captures = nullptr);
+bool executeStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state,
+                            llvm::ArrayRef<Token> operands,
+                            unsigned captureIndex,
+                            llvm::SmallVectorImpl<Token> &results,
+                            const LocalValueMap *captures = nullptr);
 bool executeStructuredForall(mlir::scf::ForallOp op, SimulatorState &state,
                              LocalValueMap &captures,
                              unsigned captureIndex = 0);
@@ -1733,6 +1739,26 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
       locals[result] = token;
     return true;
   }
+  if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(op)) {
+    llvm::SmallVector<Token> operands;
+    operands.reserve(whileOp->getNumOperands());
+    for (mlir::Value operand : whileOp->getOperands()) {
+      std::optional<Token> token =
+          lookupToken(operand, state, locals, captureIndex);
+      if (!token)
+        return false;
+      operands.push_back(*token);
+    }
+    llvm::SmallVector<Token> results;
+    if (!executeStructuredWhile(whileOp, state, operands, captureIndex, results,
+                                &locals))
+      return false;
+    if (results.size() != whileOp->getNumResults())
+      return false;
+    for (auto [result, token] : llvm::zip(whileOp->getResults(), results))
+      locals[result] = token;
+    return true;
+  }
   if (auto forallOp = mlir::dyn_cast<mlir::scf::ForallOp>(op))
     return executeStructuredForall(forallOp, state, locals, captureIndex);
   if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(op)) {
@@ -1777,6 +1803,9 @@ std::optional<std::string>
 unsupportedStructuredForOperation(mlir::scf::ForOp op);
 
 std::optional<std::string>
+unsupportedStructuredWhileOperation(mlir::scf::WhileOp op);
+
+std::optional<std::string>
 unsupportedStructuredForallOperation(mlir::scf::ForallOp op);
 
 std::optional<std::string>
@@ -1804,6 +1833,11 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     }
     if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(bodyOp)) {
       if (auto name = unsupportedStructuredForOperation(forOp))
+        return name;
+      continue;
+    }
+    if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredWhileOperation(whileOp))
         return name;
       continue;
     }
@@ -1887,6 +1921,11 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
         return name;
       continue;
     }
+    if (auto nestedWhile = mlir::dyn_cast<mlir::scf::WhileOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredWhileOperation(nestedWhile))
+        return name;
+      continue;
+    }
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
       if (isSupportedStructuredCast(cast))
         continue;
@@ -1904,12 +1943,79 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
 }
 
 std::optional<std::string>
+unsupportedStructuredWhileBody(mlir::Block *block,
+                               llvm::StringRef terminatorName) {
+  if (!block)
+    return "scf.while";
+  mlir::Operation *terminator = block->getTerminator();
+  if (!terminator || terminator->getName().getStringRef() != terminatorName)
+    return terminatorName.str();
+  for (mlir::Operation &bodyOp : block->without_terminator()) {
+    if (mlir::isa<mlir::arith::ConstantOp>(bodyOp))
+      continue;
+    if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredIfOperation(ifOp))
+        return name;
+      continue;
+    }
+    if (auto switchOp = mlir::dyn_cast<mlir::scf::IndexSwitchOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredIndexSwitchOperation(switchOp))
+        return name;
+      continue;
+    }
+    if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredForOperation(forOp))
+        return name;
+      continue;
+    }
+    if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredWhileOperation(whileOp))
+        return name;
+      continue;
+    }
+    if (auto forallOp = mlir::dyn_cast<mlir::scf::ForallOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredForallOperation(forallOp))
+        return name;
+      continue;
+    }
+    if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
+      if (isSupportedStructuredCast(cast))
+        continue;
+      return cast->getName().getStringRef().str();
+    }
+    if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
+                  dataflow::GateOp, mlir::LLVM::GEPOp>(bodyOp))
+      continue;
+    if (bodyOp.getNumResults() == 1 &&
+        isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
+      continue;
+    return bodyOp.getName().getStringRef().str();
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+unsupportedStructuredWhileOperation(mlir::scf::WhileOp op) {
+  if (!op.getBeforeBody() || !op.getAfterBody())
+    return "scf.while";
+  auto condition = op.getConditionOp();
+  if (!condition || condition.getArgs().size() != op->getNumResults())
+    return "scf.condition";
+  auto yield = op.getYieldOp();
+  if (!yield || yield.getResults().size() != op->getNumOperands())
+    return "scf.yield";
+  if (auto name =
+          unsupportedStructuredWhileBody(op.getBeforeBody(), "scf.condition"))
+    return name;
+  return unsupportedStructuredWhileBody(op.getAfterBody(), "scf.yield");
+}
+
+std::optional<std::string>
 unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
   if (!op.getOutputs().empty() || op->getNumResults() != 0)
     return "scf.forall";
   auto inParallel = op.getTerminator();
-  if (inParallel.getRegion().empty() ||
-      !inParallel.getRegion().front().empty())
+  if (inParallel.getRegion().empty() || !inParallel.getRegion().front().empty())
     return "scf.forall.in_parallel";
   for (mlir::Operation &bodyOp : op.getBody()->without_terminator()) {
     if (mlir::isa<mlir::arith::ConstantOp>(bodyOp))
@@ -1926,6 +2032,11 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     }
     if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(bodyOp)) {
       if (auto name = unsupportedStructuredForOperation(forOp))
+        return name;
+      continue;
+    }
+    if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(bodyOp)) {
+      if (auto name = unsupportedStructuredWhileOperation(whileOp))
         return name;
       continue;
     }
@@ -2128,10 +2239,162 @@ bool fireStructuredFor(mlir::scf::ForOp op, SimulatorState &state) {
   return true;
 }
 
-std::optional<std::int64_t>
-resolveStructuredBound(mlir::OpFoldResult bound, SimulatorState &state,
-                       LocalValueMap &locals, unsigned captureIndex,
-                       llvm::StringRef opName) {
+unsigned structuredWhileFireIndex(mlir::scf::WhileOp op,
+                                  const SimulatorState &state) {
+  if (op->getNumResults() == 0)
+    return 0;
+  return observedTokenCount(op->getResult(0), state);
+}
+
+bool executeStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state,
+                            llvm::ArrayRef<Token> operands,
+                            unsigned captureIndex,
+                            llvm::SmallVectorImpl<Token> &results,
+                            const LocalValueMap *captures) {
+  llvm::SmallVector<Token> carried(operands.begin(), operands.end());
+  if (carried.size() != op.getBeforeBody()->getNumArguments()) {
+    state.diagnostics.push_back("scf.while init/before-arg count mismatch");
+    return false;
+  }
+
+  std::uint64_t beforeExecutions = 0;
+  while (true) {
+    if (state.maxStructuredLoopIterations != 0 &&
+        beforeExecutions >= state.maxStructuredLoopIterations) {
+      state.diagnostics.push_back(
+          "maximum structured scf.while iterations reached");
+      return false;
+    }
+
+    LocalValueMap beforeLocals;
+    if (captures)
+      beforeLocals = *captures;
+    for (auto [arg, token] :
+         llvm::zip(op.getBeforeBody()->getArguments(), carried))
+      beforeLocals[arg] = token;
+    ++beforeExecutions;
+
+    llvm::SmallVector<Token> conditionArgs;
+    bool sawCondition = false;
+    bool keepRunning = false;
+    for (mlir::Operation &bodyOp : op.getBeforeBody()->getOperations()) {
+      if (auto condition = mlir::dyn_cast<mlir::scf::ConditionOp>(bodyOp)) {
+        std::optional<Token> conditionToken = lookupToken(
+            condition.getCondition(), state, beforeLocals, captureIndex);
+        if (!conditionToken)
+          return false;
+        keepRunning = boolToken(*conditionToken);
+        for (mlir::Value value : condition.getArgs()) {
+          std::optional<Token> token =
+              lookupToken(value, state, beforeLocals, captureIndex);
+          if (!token)
+            return false;
+          conditionArgs.push_back(*token);
+        }
+        sawCondition = true;
+        break;
+      }
+      if (!executeStructuredForBodyOp(&bodyOp, state, beforeLocals,
+                                      captureIndex)) {
+        state.diagnostics.push_back(("structured scf.while failed to execute " +
+                                     bodyOp.getName().getStringRef())
+                                        .str());
+        return false;
+      }
+    }
+    if (!sawCondition)
+      return false;
+    if (!keepRunning) {
+      if (conditionArgs.size() != op->getNumResults()) {
+        state.diagnostics.push_back("scf.condition/result count mismatch");
+        return false;
+      }
+      state.structuredLoopIterations =
+          std::max(state.structuredLoopIterations, beforeExecutions);
+      results.append(conditionArgs.begin(), conditionArgs.end());
+      return true;
+    }
+    if (conditionArgs.size() != op.getAfterBody()->getNumArguments()) {
+      state.diagnostics.push_back("scf.condition/after-arg count mismatch");
+      return false;
+    }
+
+    LocalValueMap afterLocals;
+    if (captures)
+      afterLocals = *captures;
+    for (auto [arg, token] :
+         llvm::zip(op.getAfterBody()->getArguments(), conditionArgs))
+      afterLocals[arg] = token;
+
+    llvm::SmallVector<Token> yielded;
+    bool sawYield = false;
+    for (mlir::Operation &bodyOp : op.getAfterBody()->getOperations()) {
+      if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(bodyOp)) {
+        for (mlir::Value value : yield.getResults()) {
+          std::optional<Token> token =
+              lookupToken(value, state, afterLocals, captureIndex);
+          if (!token)
+            return false;
+          yielded.push_back(*token);
+        }
+        sawYield = true;
+        break;
+      }
+      if (!executeStructuredForBodyOp(&bodyOp, state, afterLocals,
+                                      captureIndex)) {
+        state.diagnostics.push_back(("structured scf.while failed to execute " +
+                                     bodyOp.getName().getStringRef())
+                                        .str());
+        return false;
+      }
+    }
+    if (!sawYield)
+      return false;
+    if (yielded.size() != op->getNumOperands()) {
+      state.diagnostics.push_back("scf.yield/init count mismatch");
+      return false;
+    }
+    carried = std::move(yielded);
+  }
+}
+
+bool fireStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state) {
+  const unsigned operandCount = op->getNumOperands();
+  for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex) {
+    if (!hasToken(state.channels, op->getOpOperand(operandIndex)))
+      return false;
+  }
+  const unsigned captureIndex = structuredWhileFireIndex(op, state);
+  llvm::SmallVector<Token> operands;
+  operands.reserve(operandCount);
+  for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
+    operands.push_back(
+        peekToken(state.channels, op->getOpOperand(operandIndex)));
+
+  llvm::SmallVector<Token> probeResults;
+  SimulatorState probeState = state;
+  MemoryCloneMap probeClones = isolateProbeStateMemory(probeState);
+  llvm::SmallVector<Token> probeOperands(operands.begin(), operands.end());
+  retargetTokenVector(probeOperands, probeClones);
+  if (!executeStructuredWhile(op, probeState, probeOperands, captureIndex,
+                              probeResults))
+    return false;
+
+  for (unsigned operandIndex = 0; operandIndex < operandCount; ++operandIndex)
+    (void)popToken(state.channels, op->getOpOperand(operandIndex));
+  llvm::SmallVector<Token> results;
+  if (!executeStructuredWhile(op, state, operands, captureIndex, results))
+    return false;
+  for (auto [result, token] : llvm::zip(op->getResults(), results))
+    emitToken(state, result, token);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+std::optional<std::int64_t> resolveStructuredBound(mlir::OpFoldResult bound,
+                                                   SimulatorState &state,
+                                                   LocalValueMap &locals,
+                                                   unsigned captureIndex,
+                                                   llvm::StringRef opName) {
   if (auto attr = llvm::dyn_cast<mlir::Attribute>(bound)) {
     auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr);
     if (!intAttr) {
@@ -2152,8 +2415,7 @@ resolveStructuredBound(mlir::OpFoldResult bound, SimulatorState &state,
 }
 
 bool executeStructuredForall(mlir::scf::ForallOp op, SimulatorState &state,
-                             LocalValueMap &captures,
-                             unsigned captureIndex) {
+                             LocalValueMap &captures, unsigned captureIndex) {
   if (!op.getOutputs().empty() || op->getNumResults() != 0) {
     state.diagnostics.push_back(
         "scf.forall shared_out/result form is unsupported");
@@ -2374,6 +2636,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
       })
       .Case<mlir::scf::ForOp>(
           [&](auto typedOp) { return fireStructuredFor(typedOp, state); })
+      .Case<mlir::scf::WhileOp>(
+          [&](auto typedOp) { return fireStructuredWhile(typedOp, state); })
       .Case<mlir::scf::ForallOp>(
           [&](auto typedOp) { return fireStructuredForall(typedOp, state); })
       .Default([&](mlir::Operation *genericOp) {
@@ -2393,16 +2657,18 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
     return unsupportedStructuredIndexSwitchOperation(switchOp);
   if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op))
     return unsupportedStructuredForOperation(forOp);
+  if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(op))
+    return unsupportedStructuredWhileOperation(whileOp);
   if (auto forallOp = mlir::dyn_cast<mlir::scf::ForallOp>(op))
     return unsupportedStructuredForallOperation(forallOp);
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
-                dataflow::MuxOp, dataflow::DemuxOp,
-                dataflow::ParallelizeOp, dataflow::PackOp,
-                dataflow::UnpackOp, dataflow::SerializeOp, dataflow::LoadOp,
-                dataflow::StoreOp, mlir::UnrealizedConversionCastOp,
-                mlir::LLVM::GEPOp, mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
-                mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp>(op))
+                dataflow::MuxOp, dataflow::DemuxOp, dataflow::ParallelizeOp,
+                dataflow::PackOp, dataflow::UnpackOp, dataflow::SerializeOp,
+                dataflow::LoadOp, dataflow::StoreOp,
+                mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
+                mlir::LLVM::LoadOp, mlir::LLVM::StoreOp, mlir::LLVM::MemcpyOp,
+                mlir::arith::ConstantOp>(op))
     return std::nullopt;
   return op->getName().getStringRef().str();
 }

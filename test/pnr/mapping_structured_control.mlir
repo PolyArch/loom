@@ -128,6 +128,19 @@
 // FORALL-STORE-JSON-NOT: ".out"
 // FORALL-STORE-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph structured_while_condition_forward_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_while_condition_forward_map --output %t.while-condition-forward.mapping.csv --artifact %t.while-condition-forward.mapping.json
+// RUN: FileCheck %s --check-prefix=WHILE-CONDITION-CSV < %t.while-condition-forward.mapping.csv
+// RUN: FileCheck %s --check-prefix=WHILE-CONDITION-JSON < %t.while-condition-forward.mapping.json
+
+// WHILE-CONDITION-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// WHILE-CONDITION-CSV-NEXT: structured_while_condition_forward_map,shared_reduction_adg,structured_while_condition_forward_map__structured_while_condition_forward_map__shared_reduction_adg,4,2,0,0,pass
+
+// WHILE-CONDITION-JSON-DAG: "status": "pass"
+// WHILE-CONDITION-JSON-DAG: "edge_ref": "arith.addi#0.result0->dataflow.store#0.operand2"
+// WHILE-CONDITION-JSON-NOT: "edge_ref": "arith.subi#0.result0->dataflow.store#0.operand2"
+// WHILE-CONDITION-JSON-NOT: ".out"
+// WHILE-CONDITION-JSON-NOT: ".in"
+
 // RUN: not loom-pnr-map --dfg-mlir %s --graph structured_forall_shared_out_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload structured_forall_shared_out_map --output %t.forall-shared-out.mapping.csv --artifact %t.forall-shared-out.mapping.json 2>&1 | FileCheck %s --check-prefix=FORALL-SHARED-OUT-ERR
 
 // FORALL-SHARED-OUT-ERR: graph contains unsupported operation for PnR mapping: scf.forall
@@ -225,6 +238,23 @@ module {
       %stored = arith.addi %value, %addend : i32
       %store_done = dataflow.store %mem[%i] %stored %ctrl : memref<?xi32>
     }
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @structured_while_condition_forward_map(
+      %ctrl: none, %iv0: i32, %ub: i32, %step: i32, %out: memref<?xi32>)
+      -> none {
+    %result = scf.while (%iv = %iv0) : (i32) -> i32 {
+      %next = arith.addi %iv, %step : i32
+      %cont = arith.cmpi slt, %next, %ub : i32
+      scf.condition(%cont) %next : i32
+    } do {
+    ^bb0(%carried: i32):
+      %decoy = arith.subi %carried, %step : i32
+      scf.yield %decoy : i32
+    }
+    %idx = arith.index_cast %iv0 : i32 to index
+    %done = dataflow.store %out[%idx] %result %ctrl : memref<?xi32>
     dataflow.graph.return %ctrl : none
   }
 
