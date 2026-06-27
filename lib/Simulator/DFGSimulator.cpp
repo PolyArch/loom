@@ -106,13 +106,18 @@ struct MemoryValue {
   llvm::SmallVector<Token> elements;
 };
 
+struct MemoryFixture {
+  std::string values;
+  std::int64_t byteOffset = 0;
+};
+
 struct SimulatorState {
   ChannelMap channels;
   ChannelMap pendingChannels;
   OutputMap observedOutputs;
   OutputMap pendingObservedOutputs;
   llvm::DenseMap<mlir::Value, std::shared_ptr<MemoryValue>> memories;
-  llvm::DenseMap<mlir::Value, std::string> rawMemoryFixtures;
+  llvm::DenseMap<mlir::Value, MemoryFixture> rawMemoryFixtures;
   llvm::DenseMap<mlir::Operation *, StreamState> streamStates;
   llvm::DenseMap<mlir::Operation *, LoopState> carryStates;
   llvm::DenseMap<mlir::Operation *, LoopState> invariantStates;
@@ -413,8 +418,8 @@ llvm::Expected<Token> ensurePointerMemory(SimulatorState &state, Token token,
   if (rawIt == state.rawMemoryFixtures.end())
     return llvm::createStringError(std::errc::invalid_argument,
                                    "pointer memory fixture is missing");
-  auto memoryOrErr =
-      materializeMemory(state, token.pointer.root, rawIt->second, elementType);
+  auto memoryOrErr = materializeMemory(state, token.pointer.root,
+                                       rawIt->second.values, elementType);
   if (!memoryOrErr)
     return memoryOrErr.takeError();
   token.pointer.memory = *memoryOrErr;
@@ -580,8 +585,7 @@ bool isSupportedPointerICmp(mlir::LLVM::ICmpOp op) {
 }
 
 llvm::Expected<Token> evaluatePointerICmp(mlir::LLVM::ICmpOp op,
-                                          const Token &lhs,
-                                          const Token &rhs) {
+                                          const Token &lhs, const Token &rhs) {
   if (!isSupportedPointerICmp(op))
     return llvm::createStringError(
         std::errc::invalid_argument,
@@ -1741,9 +1745,8 @@ bool assignLocalMux(dataflow::MuxOp op, SimulatorState &state,
     state.diagnostics.push_back("dataflow.mux selector is out of range");
     return false;
   }
-  std::optional<Token> selected =
-      lookupToken(op.getInputs()[static_cast<unsigned>(lane)], state, locals,
-                  captureIndex);
+  std::optional<Token> selected = lookupToken(
+      op.getInputs()[static_cast<unsigned>(lane)], state, locals, captureIndex);
   if (!selected)
     return false;
   locals[op.getOutput()] = *selected;
@@ -2042,8 +2045,8 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
-                  mlir::LLVM::MemcpyOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2129,8 +2132,8 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
-                  mlir::LLVM::MemcpyOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2188,8 +2191,8 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
-                  mlir::LLVM::MemcpyOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2262,8 +2265,8 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp,
-                  mlir::LLVM::MemcpyOp>(bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
+            bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2929,9 +2932,9 @@ indexRuntimeArgs(llvm::ArrayRef<DFGRuntimeArg> args, unsigned argCount) {
   return byIndex;
 }
 
-llvm::Expected<llvm::StringMap<std::string>>
+llvm::Expected<llvm::StringMap<MemoryFixture>>
 indexMemoryArgs(llvm::ArrayRef<DFGMemoryArg> args, unsigned argCount) {
-  llvm::StringMap<std::string> byIndex;
+  llvm::StringMap<MemoryFixture> byIndex;
   for (const DFGMemoryArg &arg : args) {
     if (arg.index >= argCount)
       return llvm::createStringError(std::errc::invalid_argument,
@@ -2941,7 +2944,7 @@ indexMemoryArgs(llvm::ArrayRef<DFGMemoryArg> args, unsigned argCount) {
     if (byIndex.contains(key))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "memref index %u is repeated", arg.index);
-    byIndex.try_emplace(key, arg.values);
+    byIndex.try_emplace(key, MemoryFixture{arg.values, arg.byteOffset});
   }
   return byIndex;
 }
@@ -2989,7 +2992,9 @@ void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state) {
       continue;
     std::uint64_t current = state.seededTokenCounts[arg];
     while (current < targetCount) {
-      seedBlockArgument(state, arg, pointerToken(arg));
+      seedBlockArgument(
+          state, arg,
+          pointerToken(arg, {}, state.rawMemoryFixtures[arg].byteOffset));
       ++current;
     }
   }
@@ -3017,7 +3022,7 @@ llvm::Error propagateMemoryAliases(mlir::Block &entry, SimulatorState &state) {
       auto targetMemref = mlir::dyn_cast<mlir::MemRefType>(target.getType());
       if (rawIt == state.rawMemoryFixtures.end() || !targetMemref)
         continue;
-      auto memoryOrErr = materializeMemory(state, source, rawIt->second,
+      auto memoryOrErr = materializeMemory(state, source, rawIt->second.values,
                                            targetMemref.getElementType());
       if (!memoryOrErr)
         return memoryOrErr.takeError();
@@ -3120,7 +3125,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       indexMemoryArgs(options.memories, entry.getNumArguments());
   if (!memoriesOrErr)
     return memoriesOrErr.takeError();
-  llvm::StringMap<std::string> memories = std::move(*memoriesOrErr);
+  llvm::StringMap<MemoryFixture> memories = std::move(*memoriesOrErr);
 
   SimulatorState state;
   state.maxStructuredLoopIterations = options.maxEventSteps;
@@ -3138,8 +3143,13 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
         return llvm::createStringError(std::errc::invalid_argument,
                                        "memref argument %u must use --memref",
                                        unsigned(index));
-      auto tokensOrErr =
-          parseMemoryTokens(memories.lookup(key), memrefType.getElementType());
+      if (memories.lookup(key).byteOffset != 0)
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "memref argument %u cannot use a "
+                                       "nonzero memory fixture byte offset",
+                                       unsigned(index));
+      auto tokensOrErr = parseMemoryTokens(memories.lookup(key).values,
+                                           memrefType.getElementType());
       if (!tokensOrErr)
         return llvm::joinErrors(
             llvm::createStringError(std::errc::invalid_argument,
@@ -3163,7 +3173,8 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
             "memory fixture argument %u must be memref or !llvm.ptr",
             unsigned(index));
       state.rawMemoryFixtures[arg] = memories.lookup(key);
-      seedBlockArgument(state, arg, pointerToken(arg));
+      seedBlockArgument(state, arg,
+                        pointerToken(arg, {}, memories.lookup(key).byteOffset));
       continue;
     }
     auto argIt = args.find(key);

@@ -23,6 +23,7 @@ struct DFGRuntimeArg {
 
 struct DFGMemoryArg {
   unsigned index = 0;
+  std::int64_t byteOffset = 0;
   std::string values;
 };
 

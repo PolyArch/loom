@@ -806,9 +806,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 2,
             "missing_status": 0,
         },
@@ -1211,23 +1211,20 @@ def assert_cmsis_cfft_component_evidence(
     if set(row["graph_ids"].split(",")) != expected_graphs:
         raise AssertionError(f"arm_cfft_f32 row should keep all component graph ids: {row}")
     if (
-        row["status"] != "blocked"
-        or row["diagnostic_class"] != "component_cgra_status_blocked"
-        or row["blocking_prerequisite"] != "component_graph_evidence"
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
         or row["owner"] != "sim_report"
         or row["dfg_status"] != "pass"
-        or row["mapping_status"] != "fail"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "not_run"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
         or row["required_slice_count"] != "4"
-        or row["hardware_system"] != "shared_reduction_adg"
-        or "arm_cfft_f32.red1.mapping.json (fail): missing hardware resource for software op llvm.load"
-        not in row["diagnostic"]
-        or "arm_cfft_f32.red1.cgra.report.json (blocked): mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op llvm.load"
-        not in row["diagnostic"]
+        or row["hardware_system"] != "shared_signal_window_adg"
+        or row["diagnostic"] != "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
     ):
-        raise AssertionError(f"arm_cfft_f32 should expose component evidence before row aggregate evidence: {row}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report"):
+        raise AssertionError(f"arm_cfft_f32 should be row-complete CGRA-sim pass evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
     required_artifacts = (
@@ -1237,17 +1234,20 @@ def assert_cmsis_cfft_component_evidence(
         "arm_cfft_f32.red1.dfg.report.json",
         "arm_cfft_f32.red1.mapping.json",
         "arm_cfft_f32.red1.cgra.report.json",
+        "arm_cfft_f32.red2.dfg.report.json",
+        "arm_cfft_f32.red2.mapping.json",
+        "arm_cfft_f32.red2.cgra.report.json",
         "arm_cfft_f32.red3.dfg.report.json",
         "arm_cfft_f32.red3.mapping.json",
         "arm_cfft_f32.red3.cgra.report.json",
+        "arm_cfft_f32.dfg.report.json",
+        "arm_cfft_f32.mapping.json",
+        "arm_cfft_f32.cgra.report.json",
     )
     for artifact_name in required_artifacts:
         artifact = sim_evidence / artifact_name
         if not artifact.is_file():
             raise AssertionError(f"arm_cfft_f32 component evidence should emit {artifact}")
-    if (sim_evidence / "arm_cfft_f32.dfg.report.json").exists():
-        raise AssertionError("arm_cfft_f32 must not emit row aggregate evidence before all component graphs pass")
-
     red0_memory = {"arg4": ["f32:-1", "f32:2", "f32:-3", "f32:4", "f32:5", "f32:6", "f32:7", "f32:8"]}
     red0_dfg = json.loads((sim_evidence / "arm_cfft_f32.red0.dfg.report.json").read_text())
     if (
@@ -1264,7 +1264,9 @@ def assert_cmsis_cfft_component_evidence(
     red0_mapping = json.loads((sim_evidence / "arm_cfft_f32.red0.mapping.json").read_text())
     if (
         red0_mapping.get("status") != "pass"
-        or red0_mapping.get("hardware") != "shared_reduction_adg"
+        or red0_mapping.get("hardware") != "shared_signal_window_adg"
+        or red0_mapping.get("placed_records") != 6
+        or red0_mapping.get("routed_edges") != 6
         or red0_mapping.get("unrouted_edges") != 0
         or red0_mapping.get("unplaced_records") != 0
     ):
@@ -1272,6 +1274,8 @@ def assert_cmsis_cfft_component_evidence(
     red0_cgra = json.loads((sim_evidence / "arm_cfft_f32.red0.cgra.report.json").read_text())
     if (
         red0_cgra.get("status") != "pass"
+        or red0_cgra.get("dfg_cycles") != 49
+        or red0_cgra.get("hardware_aware_cycles") != 94
         or red0_cgra.get("final_outputs") != ["none"]
         or red0_cgra.get("final_memory_state") != red0_memory
     ):
@@ -1301,74 +1305,72 @@ def assert_cmsis_cfft_component_evidence(
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 red1 DFG evidence: {red1_dfg}")
     red1_mapping = json.loads((sim_evidence / "arm_cfft_f32.red1.mapping.json").read_text())
-    red1_mapping_diagnostics = red1_mapping.get("diagnostics")
-    red1_pressure_snippets = (
-        "resource pressure: resource_kind=fabric.mem.load operation=llvm.load required=15 available=6 placed=1 missing=14",
-        "resource pressure: resource_kind=fabric.mem.store operation=llvm.store required=12 available=2 placed=0 missing=12",
-    )
     if (
-        red1_mapping.get("status") != "fail"
-        or red1_mapping.get("hardware") != "shared_reduction_adg"
-        or red1_mapping.get("placed_records") != 17
-        or red1_mapping.get("unplaced_records") != 62
-        or red1_mapping.get("routed_edges") != 15
-        or red1_mapping.get("unrouted_edges") != 9
-        or not isinstance(red1_mapping_diagnostics, list)
-        or not red1_mapping_diagnostics
-        or not str(red1_mapping_diagnostics[0]).startswith("missing hardware resource for software op llvm.load")
+        red1_mapping.get("status") != "pass"
+        or red1_mapping.get("hardware") != "shared_signal_window_adg"
+        or red1_mapping.get("placed_records") != 79
+        or red1_mapping.get("unplaced_records") != 0
+        or red1_mapping.get("routed_edges") != 114
+        or red1_mapping.get("unrouted_edges") != 0
     ):
-        raise AssertionError(f"unexpected arm_cfft_f32 red1 mapping blocker evidence: {red1_mapping}")
-    for record in red1_mapping.get("resource_pressure", []):
-        if (
-            isinstance(record, dict)
-            and record.get("resource_kind") == "fabric.op"
-            and record.get("operation") == "dataflow.sync"
-        ):
-            raise AssertionError(f"arm_cfft_f32 red1 should not retain the old sync resource blocker: {red1_mapping}")
-    red1_mapping_diagnostic = str(red1_mapping_diagnostics[0])
-    for snippet in red1_pressure_snippets:
-        if snippet not in red1_mapping_diagnostic:
-            raise AssertionError(f"arm_cfft_f32 red1 mapping diagnostic missed {snippet}: {red1_mapping}")
-    assert_resource_pressure_record(
-        red1_mapping,
-        resource_kind="fabric.mem.load",
-        operation="llvm.load",
-        required=15,
-        available=6,
-        placed=1,
-        missing=14,
-        label="arm_cfft_f32 red1",
-    )
-    assert_resource_pressure_record(
-        red1_mapping,
-        resource_kind="fabric.mem.store",
-        operation="llvm.store",
-        required=12,
-        available=2,
-        placed=0,
-        missing=12,
-        label="arm_cfft_f32 red1",
-    )
+        raise AssertionError(f"unexpected arm_cfft_f32 red1 mapping evidence: {red1_mapping}")
     red1_cgra = json.loads((sim_evidence / "arm_cfft_f32.red1.cgra.report.json").read_text())
-    red1_cgra_diagnostics = red1_cgra.get("diagnostics")
     if (
-        red1_cgra.get("status") != "blocked"
+        red1_cgra.get("status") != "pass"
         or red1_cgra.get("dfg_cycles") != 503
-        or red1_cgra.get("hardware_aware_cycles") != 503
+        or red1_cgra.get("hardware_aware_cycles") != 1209
         or red1_cgra.get("final_outputs") != ["none"]
         or red1_cgra.get("final_memory_state") != red1_memory
         or red1_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
-        or not isinstance(red1_cgra_diagnostics, list)
-        or not red1_cgra_diagnostics
-        or not str(red1_cgra_diagnostics[0]).startswith(
-            "mapping artifact status fail blocks CGRA-sim: missing hardware resource for software op llvm.load"
-        )
     ):
-        raise AssertionError(f"unexpected arm_cfft_f32 red1 CGRA blocker evidence: {red1_cgra}")
-    red1_cgra_diagnostic = str(red1_cgra_diagnostics[0])
-    for snippet in red1_pressure_snippets:
-        if snippet not in red1_cgra_diagnostic:
-            raise AssertionError(f"arm_cfft_f32 red1 CGRA diagnostic missed {snippet}: {red1_cgra}")
+        raise AssertionError(f"unexpected arm_cfft_f32 red1 CGRA evidence: {red1_cgra}")
+
+    red2_dfg = json.loads((sim_evidence / "arm_cfft_f32.red2.dfg.report.json").read_text())
+    red2_memory = red2_dfg.get("final_memory_state", {})
+    red2_expected_prefixes = {
+        "arg4": ["f32:400", "f32:401", "f32:402", "f32:403", "f32:404", "f32:405", "f32:406", "f32:407", "f32:2832", "f32:409", "f32:410", "f32:2844"],
+        "arg6": ["f32:600", "f32:601", "f32:602", "f32:603", "f32:604", "f32:605", "f32:606", "f32:607", "f32:-907100", "f32:609", "f32:610", "f32:611"],
+        "arg12": ["f32:1200", "f32:1201", "f32:1202", "f32:1203", "f32:1204", "f32:5420", "f32:1206", "f32:5428", "f32:5432", "f32:1209", "f32:1210", "f32:1211"],
+        "arg13": ["f32:1300", "f32:1301", "f32:1302", "f32:1303", "f32:1304", "f32:1305", "f32:1306", "f32:-644400", "f32:203200", "f32:1309", "f32:1310", "f32:1311"],
+        "arg21": ["f32:2100", "f32:2101", "f32:2102", "f32:2103", "f32:2104", "f32:2105", "f32:2106", "f32:2107", "f32:2108", "f32:2109", "f32:2110", "f32:68200"],
+    }
+    if (
+        red2_dfg.get("workload") != "TransformFunctions/arm_cfft_f32.c"
+        or red2_dfg.get("graph") != "g_t_arm_cfft_f32_red_2_0"
+        or red2_dfg.get("status") != "pass"
+        or red2_dfg.get("dynamic_work_items") != 2
+        or red2_dfg.get("optimistic_cycles") != 641
+        or red2_dfg.get("operation_fire_counts", {}).get("llvm.load") != 30
+        or red2_dfg.get("operation_fire_counts", {}).get("llvm.store") != 10
+        or red2_dfg.get("operation_fire_counts", {}).get("arith.addf") != 29
+        or red2_dfg.get("operation_fire_counts", {}).get("arith.subf") != 35
+        or red2_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 26
+        or red2_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 8
+        or red2_dfg.get("final_outputs") != ["none"]
+        or red2_dfg.get("diagnostics") != []
+        or any(red2_memory.get(arg, [])[:12] != expected for arg, expected in red2_expected_prefixes.items())
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red2 DFG evidence: {red2_dfg}")
+    red2_mapping = json.loads((sim_evidence / "arm_cfft_f32.red2.mapping.json").read_text())
+    if (
+        red2_mapping.get("status") != "pass"
+        or red2_mapping.get("hardware") != "shared_signal_window_adg"
+        or red2_mapping.get("placed_records") != 128
+        or red2_mapping.get("unplaced_records") != 0
+        or red2_mapping.get("routed_edges") != 212
+        or red2_mapping.get("unrouted_edges") != 0
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red2 mapping evidence: {red2_mapping}")
+    red2_cgra = json.loads((sim_evidence / "arm_cfft_f32.red2.cgra.report.json").read_text())
+    if (
+        red2_cgra.get("status") != "pass"
+        or red2_cgra.get("dfg_cycles") != 641
+        or red2_cgra.get("hardware_aware_cycles") != 1839
+        or red2_cgra.get("final_outputs") != ["none"]
+        or any(red2_cgra.get("final_memory_state", {}).get(arg, [])[:12] != expected for arg, expected in red2_expected_prefixes.items())
+        or red2_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 red2 CGRA evidence: {red2_cgra}")
 
     red3_memory = {"arg5": ["f32:0.500000", "f32:-1", "f32:1.500000", "f32:-2", "f32:5", "f32:6", "f32:7", "f32:8"]}
     red3_dfg = json.loads((sim_evidence / "arm_cfft_f32.red3.dfg.report.json").read_text())
@@ -1387,7 +1389,9 @@ def assert_cmsis_cfft_component_evidence(
     red3_mapping = json.loads((sim_evidence / "arm_cfft_f32.red3.mapping.json").read_text())
     if (
         red3_mapping.get("status") != "pass"
-        or red3_mapping.get("hardware") != "shared_reduction_adg"
+        or red3_mapping.get("hardware") != "shared_signal_window_adg"
+        or red3_mapping.get("placed_records") != 11
+        or red3_mapping.get("routed_edges") != 12
         or red3_mapping.get("unplaced_records") != 0
         or red3_mapping.get("unrouted_edges") != 0
     ):
@@ -1400,6 +1404,8 @@ def assert_cmsis_cfft_component_evidence(
     red3_cgra_cycles = red3_cgra.get("hardware_aware_cycles")
     if (
         red3_cgra.get("status") != "pass"
+        or red3_cgra.get("dfg_cycles") != 87
+        or red3_cgra.get("hardware_aware_cycles") != 178
         or red3_cgra.get("final_outputs") != ["none"]
         or red3_cgra.get("final_memory_state") != red3_memory
         or not isinstance(red3_dfg_cycles, int)
@@ -1407,6 +1413,46 @@ def assert_cmsis_cfft_component_evidence(
         or red3_cgra_cycles < red3_dfg_cycles
     ):
         raise AssertionError(f"unexpected arm_cfft_f32 red3 CGRA evidence: {red3_cgra}")
+
+    aggregate_dfg = json.loads((sim_evidence / "arm_cfft_f32.dfg.report.json").read_text())
+    if (
+        aggregate_dfg.get("status") != "pass"
+        or aggregate_dfg.get("graph") != "workload_graph_set"
+        or set(aggregate_dfg.get("component_graphs", [])) != expected_graphs
+        or aggregate_dfg.get("dynamic_work_items") != 10
+        or aggregate_dfg.get("optimistic_cycles") != 1280
+        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.addf") != 49
+        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.subf") != 55
+        or aggregate_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 56
+        or aggregate_dfg.get("operation_fire_counts", {}).get("llvm.load") != 62
+        or aggregate_dfg.get("operation_fire_counts", {}).get("llvm.store") != 34
+        or aggregate_dfg.get("final_outputs") != ["none", "none", "none", "none"]
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 aggregate DFG evidence: {aggregate_dfg}")
+    aggregate_mapping = json.loads((sim_evidence / "arm_cfft_f32.mapping.json").read_text())
+    if (
+        aggregate_mapping.get("status") != "pass"
+        or aggregate_mapping.get("hardware") != "shared_signal_window_adg"
+        or aggregate_mapping.get("graph") != "workload_graph_set"
+        or set(aggregate_mapping.get("component_graphs", [])) != expected_graphs
+        or aggregate_mapping.get("placed_records") != 224
+        or aggregate_mapping.get("routed_edges") != 344
+        or aggregate_mapping.get("unplaced_records") != 0
+        or aggregate_mapping.get("unrouted_edges") != 0
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 aggregate mapping evidence: {aggregate_mapping}")
+    aggregate_cgra = json.loads((sim_evidence / "arm_cfft_f32.cgra.report.json").read_text())
+    if (
+        aggregate_cgra.get("status") != "pass"
+        or aggregate_cgra.get("hardware") != "shared_signal_window_adg"
+        or aggregate_cgra.get("graph") != "workload_graph_set"
+        or set(aggregate_cgra.get("component_graphs", [])) != expected_graphs
+        or aggregate_cgra.get("dfg_cycles") != 1280
+        or aggregate_cgra.get("hardware_aware_cycles") != 3320
+        or aggregate_cgra.get("final_outputs") != ["none", "none", "none", "none"]
+        or aggregate_cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"unexpected arm_cfft_f32 aggregate CGRA evidence: {aggregate_cgra}")
 
 
 def assert_cmsis_fir_component_pass_evidence(
@@ -3415,9 +3461,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-dsp",
         {
             "total": 16,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 2,
             "missing_status": 0,
         },

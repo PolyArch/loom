@@ -39,10 +39,10 @@ static llvm::cl::list<std::string>
     runtimeArgs("arg", llvm::cl::desc("runtime argument as index=value"),
                 llvm::cl::ZeroOrMore);
 
-static llvm::cl::list<std::string>
-    memrefArgs("memref",
-               llvm::cl::desc("memref fixture as index=value0,value1,..."),
-               llvm::cl::ZeroOrMore);
+static llvm::cl::list<std::string> memrefArgs(
+    "memref",
+    llvm::cl::desc("memref fixture as index[:byte_offset]=value0,value1,..."),
+    llvm::cl::ZeroOrMore);
 
 static llvm::cl::opt<std::string>
     outputPath("output", llvm::cl::desc("DFG simulation report JSON"),
@@ -78,11 +78,26 @@ parseMemoryArgs() {
     if (split.second.empty())
       return llvm::createStringError(std::errc::invalid_argument,
                                      "--memref expects index=values");
+    std::int64_t byteOffset = 0;
+    llvm::StringRef indexPart = split.first;
+    if (split.first.contains(':')) {
+      std::pair<llvm::StringRef, llvm::StringRef> offsetSplit =
+          split.first.split(':');
+      indexPart = offsetSplit.first;
+      if (offsetSplit.second.empty())
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "--memref byte offset must be a non-negative integer");
+      if (offsetSplit.second.getAsInteger(10, byteOffset) || byteOffset < 0)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "--memref byte offset must be a non-negative integer");
+    }
     unsigned index = 0;
-    if (split.first.getAsInteger(10, index))
+    if (indexPart.getAsInteger(10, index))
       return llvm::createStringError(std::errc::invalid_argument,
                                      "--memref index must be unsigned");
-    parsed.push_back({index, split.second.str()});
+    parsed.push_back({index, byteOffset, split.second.str()});
   }
   return parsed;
 }
