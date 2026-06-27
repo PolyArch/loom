@@ -9,12 +9,12 @@
 //     freestanding cf.cond_br / cf.switch, no inline assembly.
 //   * No volatile or atomic / monotonic memory ops.
 //   * No memory-effect intrinsic other than `llvm.intr.lifetime.{start,end}`.
-//   * Reads and writes inside the body must touch DISJOINT base pointers
-//     (i.e. no syntactic RAW / WAR / WAW on the same base). The base is
+//   * Reads and writes inside the body must touch disjoint base pointers,
+//     except for narrow in-place elementwise loops where every same-base
+//     read/write uses the exact same iv-derived address. The base is
 //     recovered by walking back through llvm.getelementptr chains and
 //     memref.subview chains until a non-pointer-derived value is reached;
-//     that value is the base we compare. If a read and a write both reach
-//     the same SSA base, we refuse to lift.
+//     that value is the base we compare.
 //   * Each store's address expression must depend on the iv (or on iv +
 //     loop-invariant operands), with NO rem / mod / div, no nonlinear
 //     operators, and no pointer-table indirection (no load-of-pointer fed
@@ -111,8 +111,7 @@ bool dependsOnIV(::mlir::Value v, ::mlir::Value iv) {
 // loop-invariant value, a constant, or a block arg of a nested SCF
 // region; the dependsOnIV check the caller runs separately verifies
 // that the iv actually appears in the expression.
-bool isAffineStyle(::mlir::Value v, ::mlir::Value iv,
-                   ::mlir::scf::ForOp loop,
+bool isAffineStyle(::mlir::Value v, ::mlir::Value iv, ::mlir::scf::ForOp loop,
                    ::llvm::DenseSet<::mlir::Value> &visited) {
   if (v == iv)
     return true;
@@ -127,10 +126,8 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv,
     // and produces parallel-safe addresses). Reject when it is an
     // iter_arg of a nested scf.for (recurrence) or an scf.while arg
     // (irreducible control).
-    ::mlir::Operation *parentOp =
-        blockArg.getOwner()->getParentOp();
-    if (auto nestedFor =
-            ::mlir::dyn_cast<::mlir::scf::ForOp>(parentOp)) {
+    ::mlir::Operation *parentOp = blockArg.getOwner()->getParentOp();
+    if (auto nestedFor = ::mlir::dyn_cast<::mlir::scf::ForOp>(parentOp)) {
       // Only accept the iv (argument 0); iter_args (args 1..) carry
       // recurrences and we cannot prove they are independent across
       // outer iterations without a proper dependence analysis.
@@ -155,8 +152,8 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv,
   // Allow add / sub / mul / shl with constant shift amount.
   if (::mlir::isa<::mlir::arith::AddIOp, ::mlir::arith::SubIOp,
                   ::mlir::arith::MulIOp, ::mlir::arith::ShLIOp,
-                  ::mlir::LLVM::AddOp, ::mlir::LLVM::SubOp,
-                  ::mlir::LLVM::MulOp, ::mlir::LLVM::ShlOp>(def)) {
+                  ::mlir::LLVM::AddOp, ::mlir::LLVM::SubOp, ::mlir::LLVM::MulOp,
+                  ::mlir::LLVM::ShlOp>(def)) {
     for (::mlir::Value op : def->getOperands()) {
       if (!isAffineStyle(op, iv, loop, visited))
         return false;
@@ -181,8 +178,7 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv,
   return false;
 }
 
-bool isAffineStyle(::mlir::Value v, ::mlir::Value iv,
-                   ::mlir::scf::ForOp loop) {
+bool isAffineStyle(::mlir::Value v, ::mlir::Value iv, ::mlir::scf::ForOp loop) {
   ::llvm::DenseSet<::mlir::Value> visited;
   return isAffineStyle(v, iv, loop, visited);
 }
@@ -210,8 +206,7 @@ bool isAffineStyle(::mlir::Value v, ::mlir::Value iv,
       v = bitcast.getOperand();
       continue;
     }
-    if (auto addrSpace =
-            ::mlir::dyn_cast<::mlir::LLVM::AddrSpaceCastOp>(def)) {
+    if (auto addrSpace = ::mlir::dyn_cast<::mlir::LLVM::AddrSpaceCastOp>(def)) {
       v = addrSpace.getOperand();
       continue;
     }
@@ -304,9 +299,9 @@ std::optional<LinearExpr> scaleLinear(LinearExpr expr, int64_t scale) {
   return LinearExpr{expr.ivCoeff * scale, expr.constant * scale};
 }
 
-std::optional<LinearExpr>
-linearExpr(::mlir::Value value, ::mlir::Value iv, ::mlir::scf::ForOp loop,
-           ::llvm::DenseSet<::mlir::Value> &visited) {
+std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
+                                     ::mlir::scf::ForOp loop,
+                                     ::llvm::DenseSet<::mlir::Value> &visited) {
   if (value == iv)
     return LinearExpr{1, 0};
   if (auto constant = getConstantInt(value))
@@ -375,15 +370,15 @@ linearExpr(::mlir::Value value, ::mlir::Value iv, ::mlir::scf::ForOp loop,
   return std::nullopt;
 }
 
-std::optional<LinearExpr>
-linearExpr(::mlir::Value value, ::mlir::Value iv, ::mlir::scf::ForOp loop) {
+std::optional<LinearExpr> linearExpr(::mlir::Value value, ::mlir::Value iv,
+                                     ::mlir::scf::ForOp loop) {
   ::llvm::DenseSet<::mlir::Value> visited;
   return linearExpr(value, iv, loop, visited);
 }
 
-std::optional<LinearExpr>
-linearGepOffset(::mlir::LLVM::GEPOp gep, ::mlir::Value iv,
-                ::mlir::scf::ForOp loop) {
+std::optional<LinearExpr> linearGepOffset(::mlir::LLVM::GEPOp gep,
+                                          ::mlir::Value iv,
+                                          ::mlir::scf::ForOp loop) {
   LinearExpr total;
   bool sawIndex = false;
   for (::mlir::Value operand : gep->getOperands()) {
@@ -415,6 +410,59 @@ std::optional<LinearExpr> storeLinearAddress(::mlir::Operation *store,
     return std::nullopt;
   }
   return std::nullopt;
+}
+
+std::optional<LinearExpr> memoryLinearAddress(::mlir::Operation *op,
+                                              ::mlir::scf::ForOp loop) {
+  if (auto memrefLoad = ::mlir::dyn_cast<::mlir::memref::LoadOp>(op)) {
+    if (memrefLoad.getIndices().size() != 1)
+      return std::nullopt;
+    return linearExpr(memrefLoad.getIndices().front(), loop.getInductionVar(),
+                      loop);
+  }
+  if (auto memrefStore = ::mlir::dyn_cast<::mlir::memref::StoreOp>(op)) {
+    if (memrefStore.getIndices().size() != 1)
+      return std::nullopt;
+    return linearExpr(memrefStore.getIndices().front(), loop.getInductionVar(),
+                      loop);
+  }
+  if (auto llvmLoad = ::mlir::dyn_cast<::mlir::LLVM::LoadOp>(op)) {
+    if (auto gep = llvmLoad.getAddr().getDefiningOp<::mlir::LLVM::GEPOp>())
+      return linearGepOffset(gep, loop.getInductionVar(), loop);
+    return std::nullopt;
+  }
+  if (auto llvmStore = ::mlir::dyn_cast<::mlir::LLVM::StoreOp>(op)) {
+    if (auto gep = llvmStore.getAddr().getDefiningOp<::mlir::LLVM::GEPOp>())
+      return linearGepOffset(gep, loop.getInductionVar(), loop);
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+bool sameLinearExpr(LinearExpr lhs, LinearExpr rhs) {
+  return lhs.ivCoeff == rhs.ivCoeff && lhs.constant == rhs.constant;
+}
+
+bool sameBaseReadWriteAccessesAreIterationLocal(
+    ::llvm::ArrayRef<::mlir::Operation *> loads,
+    ::llvm::ArrayRef<::mlir::Operation *> stores, ::mlir::scf::ForOp loop) {
+  if (loads.empty() || stores.empty())
+    return true;
+
+  std::optional<LinearExpr> first;
+  for (::mlir::Operation *op :
+       ::llvm::concat<::mlir::Operation *const>(loads, stores)) {
+    auto expr = memoryLinearAddress(op, loop);
+    if (!expr || expr->ivCoeff == 0)
+      return false;
+    if (!first) {
+      first = *expr;
+      continue;
+    }
+    if (!sameLinearExpr(*first, *expr))
+      return false;
+  }
+  return true;
 }
 
 bool sameBaseStoresAreLaneDisjoint(::llvm::ArrayRef<::mlir::Operation *> stores,
@@ -459,8 +507,7 @@ bool isUnmodelledCall(::mlir::Operation *op) {
   // Pure call: the op declares no memory effects via the
   // MemoryEffectOpInterface. (LLVM intrinsics that are pure typically
   // model this; arbitrary calls do not.)
-  if (auto memOp =
-          ::mlir::dyn_cast<::mlir::MemoryEffectOpInterface>(op)) {
+  if (auto memOp = ::mlir::dyn_cast<::mlir::MemoryEffectOpInterface>(op)) {
     if (memOp.hasNoEffect())
       return false;
   }
@@ -475,8 +522,7 @@ bool isUnmodelledCall(::mlir::Operation *op) {
 bool isTransparentScfOp(::mlir::Operation *op) {
   return ::mlir::isa<::mlir::scf::ForOp, ::mlir::scf::IfOp,
                      ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
-                     ::mlir::scf::InParallelOp,
-                     ::mlir::scf::ConditionOp>(op);
+                     ::mlir::scf::InParallelOp, ::mlir::scf::ConditionOp>(op);
 }
 
 // True when the loop body contains any block with more than one
@@ -505,7 +551,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
 //   1) No bail-out op (call to non-pure callee, while, execute_region,
 //      inline asm, llvm.invoke).
 //   2) No volatile / atomic memory op.
-//   3) Reads and writes use disjoint base pointers.
+//   3) Reads and writes use disjoint base pointers, or a narrow
+//      same-element in-place form.
 //   4) Each store's address expression is "syntactic affine style"
 //      (depends on iv + loop-invariants only, no rem/mod/load).
 //   5) No memory-effect intrinsic except llvm.intr.lifetime.{start,end}.
@@ -514,6 +561,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   ::mlir::Value iv = loop.getInductionVar();
   ::llvm::DenseSet<::mlir::Value> readBases;
   ::llvm::DenseSet<::mlir::Value> writeBases;
+  ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
+      loadsByBase;
   ::llvm::SmallVector<::mlir::Operation *, 8> stores;
   ::llvm::DenseMap<::mlir::Value, ::llvm::SmallVector<::mlir::Operation *, 4>>
       storesByBase;
@@ -525,17 +574,15 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
     if (op == loop.getBody()->getTerminator())
       return ::mlir::WalkResult::advance();
     // Reject scf.while / scf.execute_region inside the body.
-    if (::mlir::isa<::mlir::scf::WhileOp,
-                    ::mlir::scf::ExecuteRegionOp>(op))
+    if (::mlir::isa<::mlir::scf::WhileOp, ::mlir::scf::ExecuteRegionOp>(op))
       return ::mlir::WalkResult::interrupt();
     // Reject calls to non-pure callees and inline asm / invoke.
     if (isUnmodelledCall(op))
       return ::mlir::WalkResult::interrupt();
     // Atomic ops are conservative bail-outs.
-    if (::mlir::isa<::mlir::LLVM::AtomicRMWOp,
-                    ::mlir::LLVM::AtomicCmpXchgOp,
-                    ::mlir::memref::AtomicRMWOp,
-                    ::mlir::memref::AtomicYieldOp>(op))
+    if (::mlir::isa<::mlir::LLVM::AtomicRMWOp, ::mlir::LLVM::AtomicCmpXchgOp,
+                    ::mlir::memref::AtomicRMWOp, ::mlir::memref::AtomicYieldOp>(
+            op))
       return ::mlir::WalkResult::interrupt();
 
     if (isTransparentScfOp(op))
@@ -551,7 +598,9 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
     if (::mlir::Value loadPtr = getLoadPointer(op, isVol)) {
       if (isVol)
         return ::mlir::WalkResult::interrupt();
-      readBases.insert(getMemoryBase(loadPtr));
+      ::mlir::Value base = getMemoryBase(loadPtr);
+      readBases.insert(base);
+      loadsByBase[base].push_back(op);
       return ::mlir::WalkResult::advance();
     }
 
@@ -569,8 +618,7 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
 
     // Lifetime markers are explicitly fine.
     if (auto name = op->getName().getStringRef();
-        name == "llvm.intr.lifetime.start" ||
-        name == "llvm.intr.lifetime.end")
+        name == "llvm.intr.lifetime.start" || name == "llvm.intr.lifetime.end")
       return ::mlir::WalkResult::advance();
 
     // Unknown side-effecting op (including other LLVM memory-effect
@@ -580,12 +628,13 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   if (walkResult.wasInterrupted())
     return ::mlir::failure();
 
-  // No store-side address may share a base with a read. (Two writes to
-  // disjoint bases is also fine; two writes to the same base is a WAW
-  // race, so refuse.) Symmetrically, a read base seen as a write base
-  // means RAW or WAR; refuse.
+  // A store-side address may share a base with reads only for the
+  // same-element in-place form. Shifted read/write forms keep the loop
+  // serial because they carry a cross-iteration dependence.
   for (::mlir::Value w : writeBases) {
-    if (readBases.count(w))
+    if (readBases.count(w) &&
+        !sameBaseReadWriteAccessesAreIterationLocal(
+            loadsByBase.lookup(w), storesByBase.lookup(w), loop))
       return ::mlir::failure();
   }
   // WAW: same-base stores are allowed only for fixed-width lane groups,
@@ -625,8 +674,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
                       ::mlir::Value v) {
   if (::mlir::isa<::mlir::IndexType>(v.getType()))
     return v;
-  return ::mlir::arith::IndexCastOp::create(
-      builder, loc, builder.getIndexType(), v);
+  return ::mlir::arith::IndexCastOp::create(builder, loc,
+                                            builder.getIndexType(), v);
 }
 
 // Rewrite a parallel scf.for into scf.forall.
@@ -687,8 +736,8 @@ struct ForToForall : public ::mlir::OpRewritePattern<::mlir::scf::ForOp> {
     rewriter.setInsertionPointToStart(forallBody);
     ::mlir::Value ivAsOriginal = forallIv;
     if (forallIv.getType() != ivType) {
-      ivAsOriginal = ::mlir::arith::IndexCastOp::create(
-          rewriter, loc, ivType, forallIv);
+      ivAsOriginal =
+          ::mlir::arith::IndexCastOp::create(rewriter, loc, ivType, forallIv);
     }
 
     // Map the original loop's iv to the recovered integer iv. Other

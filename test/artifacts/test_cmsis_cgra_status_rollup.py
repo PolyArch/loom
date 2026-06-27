@@ -73,8 +73,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 10,
-            "unsupported": 8,
+            "blocked": 11,
+            "unsupported": 7,
             "missing_status": 0,
         },
     )
@@ -327,16 +327,19 @@ def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -
     for artifact in (
         out_dir / "cmsis-dsp-dfg" / "arm_add_q15.dfg.mlir",
         out_dir / "cmsis-nn-dfg" / "arm_relu_q15.dfg.mlir",
+        out_dir / "cmsis-nn-dfg" / "arm_relu6_s8.dfg.mlir",
     ):
         if not artifact.is_file():
             raise AssertionError(f"direct CMSIS DFG mode should emit {artifact}")
     dsp_add = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
     nn_relu = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
-    for row in (dsp_add, nn_relu):
+    nn_relu6 = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
+    for row in (dsp_add, nn_relu, nn_relu6):
         if (
             row["status"] != "blocked"
             or row["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
             or row["blocking_prerequisite"] != "dfg_sim_report"
+            or row["required_slice_count"] != "1"
             or not row["graph_ids"]
         ):
             raise AssertionError(f"direct CMSIS DFG mode should publish exact DFG blockers: {row}")
@@ -818,10 +821,10 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 9,
+            "pass": 10,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 8,
+            "unsupported": 7,
             "missing_status": 0,
         },
     )
@@ -840,6 +843,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
@@ -875,6 +879,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_no_cmsis_pass(dfg_only_rows)
     assert_no_sim_stage_evidence(one_row(dfg_only_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c"))
     assert_no_sim_stage_evidence(one_row(dfg_only_rows, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c"))
+    assert_no_sim_stage_evidence(one_row(dfg_only_rows, "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c"))
 
 
 def assert_cmsis_dfg_report(
@@ -2793,6 +2798,123 @@ def assert_cmsis_relu_q7_cgra_evidence(
         raise AssertionError(f"arm_relu_q7 comparison should pass: {comparison}")
 
 
+def assert_cmsis_relu6_s8_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "ActivationFunctions/arm_relu6_s8.c"
+    stem = "arm_relu6_s8"
+    graph = "g_t_arm_relu6_s8_0_0"
+    hardware = "shared_quantized_window_adg"
+    expected_memory = {"arg1": ["i8:0", "i8:2", "i8:6"]}
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-nn", case, stem, expected_hardware=hardware)
+    row = one_row(rows, "cmsis-nn", case)
+    if row["graph_ids"] != graph or row["required_slice_count"] != "1":
+        raise AssertionError(f"arm_relu6_s8 row should name its single dataflow graph: {row}")
+    if Path(row["comparison_report"]).name != "arm_relu6_s8.c.sim-comparison-report.json":
+        raise AssertionError(f"arm_relu6_s8 row should reference its comparison artifact: {row}")
+    if not (sim_evidence / "arm_relu6_s8.mapping.csv").is_file():
+        raise AssertionError(f"arm_relu6_s8 evidence should emit mapping CSV under {sim_evidence}")
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("optimistic_cycles") != 16
+        or dfg_report.get("dynamic_work_items") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.smax") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.umin") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 1
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.sync") != 1
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_relu6_s8 DFG evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    expected_mapping = {
+        "kind": "pnr_mapping",
+        "workload": case,
+        "graph": graph,
+        "hardware": hardware,
+        "status": "pass",
+        "placed_records": 5,
+        "routed_edges": 5,
+        "unrouted_edges": 0,
+        "unplaced_records": 0,
+        "config_records": 112,
+    }
+    for key, value in expected_mapping.items():
+        if mapping_artifact.get(key) != value:
+            raise AssertionError(f"arm_relu6_s8 mapping {key}={mapping_artifact.get(key)!r}, expected {value!r}")
+    routes = mapping_artifact.get("routes", [])
+    if not isinstance(routes, list) or len(routes) != 5:
+        raise AssertionError(f"arm_relu6_s8 mapping should expose every routed edge: {mapping_artifact}")
+    routes_by_edge = {route.get("edge_ref"): route for route in routes if isinstance(route, dict)}
+    required_routes = {
+        "dataflow.load#0.result0->llvm.intr.smax#0.operand0": (
+            "shared_quantized_window_adg::mem.load#0.result0",
+            r"re:shared_quantized_window_adg::fabric\.op#[0-9]+\.operand0",
+        ),
+        "llvm.intr.smax#0.result0->llvm.intr.umin#0.operand0": (
+            r"re:shared_quantized_window_adg::fabric\.op#[0-9]+\.result0",
+            r"re:shared_quantized_window_adg::fabric\.op#[0-9]+\.operand0",
+        ),
+        "llvm.intr.umin#0.result0->dataflow.store#0.operand2": (
+            r"re:shared_quantized_window_adg::fabric\.op#[0-9]+\.result0",
+            "shared_quantized_window_adg::mem.store#0.operand1",
+        ),
+    }
+    for edge_ref, (source_endpoint, sink_endpoint) in required_routes.items():
+        route = routes_by_edge.get(edge_ref)
+        if route is None:
+            raise AssertionError(f"arm_relu6_s8 mapping missed route {edge_ref}: {mapping_artifact}")
+        assert_routed_endpoint_shape(
+            route,
+            edge_ref,
+            source_endpoint=source_endpoint,
+            sink_endpoint=sink_endpoint,
+            label="arm_relu6_s8",
+        )
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    if (
+        cgra_report.get("kind") != "cgra_sim_report"
+        or cgra_report.get("workload") != case
+        or cgra_report.get("hardware") != hardware
+        or cgra_report.get("status") != "pass"
+        or cgra_report.get("fidelity_level") != "mapping_constraint_estimate"
+        or cgra_report.get("dfg_cycles") != 16
+        or cgra_report.get("hardware_aware_cycles") != 51
+        or cgra_report.get("performance_delta_cycles") != 35
+        or cgra_report.get("placed_records") != 5
+        or cgra_report.get("routed_edges") != 5
+        or cgra_report.get("config_records") != 112
+        or cgra_report.get("route_segments") != 19
+        or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra_report.get("final_outputs") != ["none"]
+        or cgra_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected arm_relu6_s8 CGRA evidence: {cgra_report}")
+
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        comparison_report.get("kind") != "sim_comparison_report"
+        or comparison_report.get("workload") != case
+        or comparison_report.get("status") != "pass"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+        or comparison_report.get("performance_comparison_status") != "pass"
+        or comparison_report.get("dfg_sim_cycles") != 16
+        or comparison_report.get("cgra_sim_cycles") != 51
+    ):
+        raise AssertionError(f"unexpected arm_relu6_s8 comparison evidence: {comparison_report}")
+
+
 def assert_cgra_status_audit_rejects_bad_relu_q7_mapping(
     repo: Path,
     out_dir: Path,
@@ -3473,10 +3595,10 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 9,
+            "pass": 10,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 8,
+            "unsupported": 7,
             "missing_status": 0,
         },
     )
@@ -3524,6 +3646,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         repo, rows, sim_evidence, "cmsis-nn", "ActivationFunctions/arm_relu_q15.c", "arm_relu_q15"
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
@@ -3704,12 +3827,13 @@ def main() -> int:
 
         nn_relu6 = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
         if (
-            nn_relu6["status"] != "unsupported"
-            or nn_relu6["diagnostic_class"] != "cmsis_no_dataflow_graph"
-            or nn_relu6["blocking_prerequisite"] != "dataflow_graph"
-            or nn_relu6["required_slice_count"] != "0"
+            nn_relu6["status"] != "blocked"
+            or nn_relu6["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or nn_relu6["blocking_prerequisite"] != "dfg_sim_report"
+            or nn_relu6["required_slice_count"] != "1"
+            or "g_t_arm_relu6_s8_0_0" not in nn_relu6["graph_ids"]
         ):
-            raise AssertionError(f"CMSIS-NN no-graph row should be structured unsupported: {nn_relu6}")
+            raise AssertionError(f"CMSIS-NN relu6 row should be an exact DFG-sim blocker: {nn_relu6}")
         assert_sha256_file(nn_relu6["dfg_mlir"], nn_relu6["dfg_mlir_fingerprint"], repo)
 
         loombench_vecadd = one_row(rows, "loombench", "vecadd")

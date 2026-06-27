@@ -38,6 +38,45 @@ func.func @disjoint_init(%dst: memref<?xf32>, %src: memref<?xf32>,
     return
 }
 
+// In-place elementwise loops are safe when every access to the shared
+// base uses the same iv-derived address. The read and write are ordered
+// within one iteration, while different iterations touch different
+// elements.
+
+// CHECK-LABEL: func.func @inplace_same_element_update
+// CHECK: scf.forall
+// CHECK: memref.load
+// CHECK: memref.store
+// CHECK-NOT: scf.for
+func.func @inplace_same_element_update(%buf: memref<?xf32>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %scale = arith.constant 2.0 : f32
+    scf.for %i = %c0 to %n step %c1 {
+      %v = memref.load %buf[%i] : memref<?xf32>
+      %scaled = arith.mulf %v, %scale : f32
+      memref.store %scaled, %buf[%i] : memref<?xf32>
+    }
+    return
+}
+
+// Same-base read/write loops are not safe when the addresses differ:
+// reading buf[i + 1] and writing buf[i] has a cross-iteration overlap.
+
+// CHECK-LABEL: func.func @same_base_read_write_shifted
+// CHECK: scf.for
+// CHECK-NOT: scf.forall
+func.func @same_base_read_write_shifted(%buf: memref<?xf32>, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %next = arith.addi %i, %c1 : index
+      %v = memref.load %buf[%next] : memref<?xf32>
+      memref.store %v, %buf[%i] : memref<?xf32>
+    }
+    return
+}
+
 // Same-base writes are still parallel when every iteration writes a
 // fixed-width lane group and the lane offsets are distinct modulo the
 // per-iteration stride.

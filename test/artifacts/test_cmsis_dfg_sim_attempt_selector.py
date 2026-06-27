@@ -132,8 +132,8 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 "total": 18,
                 "pass": 1,
                 "fail": 0,
-                "blocked": 9,
-                "unsupported": 8,
+                "blocked": 10,
+                "unsupported": 7,
                 "missing_status": 0,
             },
         }
@@ -146,11 +146,19 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         abs_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
+        relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
         for row in (add, abs_f32, relu_q15):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"seed-batch row should expose CGRA-sim pass evidence: {row}")
         if relu_q7["status"] == "pass" or relu_q7["cgra_status"] != "not_run":
             raise AssertionError(f"seed-batch rollup should not consume unselected relu_q7 evidence: {relu_q7}")
+        if (
+            relu6["status"] != "blocked"
+            or relu6["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or relu6["blocking_prerequisite"] != "dfg_sim_report"
+            or relu6["cgra_status"] != "not_run"
+        ):
+            raise AssertionError(f"seed-batch rollup should keep unselected relu6 as a DFG-sim blocker: {relu6}")
 
         evidence_dir = out_dir / "current-sim-cycle"
         for artifact in (

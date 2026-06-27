@@ -541,8 +541,8 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 10,
-                "unsupported": 8,
+                "blocked": 11,
+                "unsupported": 7,
                 "missing_status": 0,
             }
             if suite_counts != expected:
@@ -654,6 +654,16 @@ def main() -> int:
             or not cmsis_nn["graph_ids"]
         ):
             raise AssertionError(f"CMSIS-NN baseline row should consume DFG MLIR evidence: {cmsis_nn}")
+        cmsis_relu6 = one_row(rows, "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
+        if (
+            cmsis_relu6["status"] != "blocked"
+            or cmsis_relu6["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
+            or cmsis_relu6["blocking_prerequisite"] != "dfg_sim_report"
+            or cmsis_relu6["owner"] != "compiler_pipeline"
+            or cmsis_relu6["required_slice_count"] != "1"
+            or "g_t_arm_relu6_s8_0_0" not in cmsis_relu6["graph_ids"]
+        ):
+            raise AssertionError(f"CMSIS-NN relu6 baseline row should consume DFG MLIR evidence: {cmsis_relu6}")
         cmsis_dsp_no_graph = one_row(rows, "cmsis-dsp", "FastMathFunctions/arm_sin_f32.c")
         if (
             cmsis_dsp_no_graph["status"] != "unsupported"
