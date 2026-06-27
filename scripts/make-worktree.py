@@ -581,7 +581,7 @@ def heavy_lit_workers(total_jobs: int, extra: str, env: dict[str, str]) -> int:
     configured = positive_env_int(env, "LOOM_HEAVY_LIT_WORKERS")
     if configured is not None:
         return max(1, min(total_jobs, configured))
-    return max(1, min(total_jobs, 2))
+    return max(1, min(total_jobs, max(2, min(4, total_jobs // 6))))
 
 
 def heavy_nested_jobs(total_jobs: int, workers: int, extra: str, env: dict[str, str]) -> int:
@@ -591,7 +591,11 @@ def heavy_nested_jobs(total_jobs: int, workers: int, extra: str, env: dict[str, 
     configured = positive_env_int(env, "LOOM_HEAVY_TEST_JOBS")
     if configured is not None:
         return configured
-    return max(1, (total_jobs + workers - 1) // workers)
+    return max(1, (total_jobs * 2) // (3 * workers))
+
+
+def broad_artifact_jobs(total_jobs: int, heavy_workers: int, heavy_nested: int) -> int:
+    return max(1, total_jobs - (heavy_workers * heavy_nested))
 
 
 def broad_filter_out_pattern() -> str:
@@ -677,8 +681,11 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
     ]
 
     heavy_workers = heavy_lit_workers(args.jobs, extra, base_env)
+    heavy_nested = heavy_nested_jobs(args.jobs, heavy_workers, extra, base_env)
+    broad_env.setdefault("LOOM_ARTIFACT_TEST_JOBS", str(broad_artifact_jobs(args.jobs, heavy_workers, heavy_nested)))
     heavy_env = base_env.copy()
-    heavy_env.setdefault("LOOM_TEST_JOBS", str(heavy_nested_jobs(args.jobs, heavy_workers, extra, base_env)))
+    heavy_env.setdefault("LOOM_TEST_JOBS", str(heavy_nested))
+    heavy_env.setdefault("LOOM_ARTIFACT_TEST_JOBS", str(heavy_nested))
     heavy_env["LIT_OPTS"] = lit_opts(extra)
     heavy_cmd = [
         str(paths.llvm_lit),

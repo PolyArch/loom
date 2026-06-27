@@ -195,8 +195,10 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertIn("artifacts/cmsis_cgra_status_rollup\\.mlir", broad_filter)
         self.assertIn("-j7", broad_call.cmd)
         self.assertEqual(broad_call.kwargs["env"]["LOOM_TEST_JOBS"], "7")
+        self.assertEqual(broad_call.kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "3")
         self.assertIn("-j2", heavy_call.cmd)
-        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "4")
+        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "2")
+        self.assertEqual(heavy_call.kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "2")
         self.assertIn(str(self.paths.loom_build / "test" / "artifacts" / "cmsis_cgra_status_rollup.mlir"), heavy_call.cmd)
         self.assertIn("-j1", perf_call.cmd)
         self.assertEqual(perf_call.cmd[-1], str(self.paths.loom_build / "test" / "techmap" / "perf"))
@@ -237,6 +239,40 @@ class MakeWorktreeTest(unittest.TestCase):
         self.assertEqual(broad_call.kwargs["env"]["LOOM_TEST_JOBS"], "1")
         self.assertIn("-j1", heavy_call.cmd)
         self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "1")
+
+    def test_cmd_test_scales_heavy_artifact_lanes_for_large_budget(self):
+        popen_calls = []
+        self.args.jobs = 24
+
+        class FakePipe:
+            def close(self):
+                pass
+
+        class FakeProcess:
+            def __init__(self, cmd, **kwargs):
+                self.cmd = cmd
+                self.kwargs = kwargs
+                self.stdout = FakePipe()
+                popen_calls.append(self)
+
+            def wait(self):
+                return 0
+
+        with (
+            patch.object(self.module, "check_git_version"),
+            patch.object(self.module, "check_loom_compilers"),
+            patch.object(self.module, "build_loom"),
+            patch.object(subprocess, "Popen", side_effect=lambda cmd, **kwargs: FakeProcess(cmd, **kwargs)),
+        ):
+            self.module.cmd_test(self.paths, self.args)
+
+        lit_calls = [call for call in popen_calls if call.cmd[0] == str(self.paths.llvm_lit)]
+        self.assertEqual(len(lit_calls), 3)
+        heavy_call = lit_calls[1]
+        self.assertIn("-j4", heavy_call.cmd)
+        self.assertEqual(lit_calls[0].kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "8")
+        self.assertEqual(heavy_call.kwargs["env"]["LOOM_TEST_JOBS"], "4")
+        self.assertEqual(heavy_call.kwargs["env"]["LOOM_ARTIFACT_TEST_JOBS"], "4")
 
 
 if __name__ == "__main__":

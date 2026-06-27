@@ -21,6 +21,7 @@ config.substitutions.append(("%python", sys.executable))
 llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",
      "LOOM_BIN", "LOOM_PERF", "LOOM_PERF_CACHE", "LOOM_PERF_TIMEOUT_S",
+     "LOOM_RTL_EDA_JOBS", "LOOM_RTL_EDA_RETRIES",
      "JOBS", "LOOM_TEST_JOBS", "LOOM_ARTIFACT_TEST_JOBS",
      "LOOM_ARTIFACT_GATES_JOBS", "LOOM_CHAIN_BREADTH_JOBS",
      "LOOM_APP_BUILD_DIR_JOBS", "LOOM_SOURCE_COMPAT_JOBS",
@@ -87,7 +88,7 @@ def _artifact_parallelism_limit():
         or _positive_env_int("JOBS")
         or _default_cpu_budget()
     )
-    return max(1, min(4, test_budget))
+    return max(1, min(16, test_budget))
 
 
 lit_config.parallelism_groups["perf"] = _perf_parallelism_limit()

@@ -29,6 +29,8 @@ REQUIRED_KEYS = {
     "input_artifact_fingerprints",
     "source_file_fingerprints",
     "returncode",
+    "eda_retry_count",
+    "eda_parallel_jobs",
     "diagnostic_records",
     "diagnostics",
     "status",
@@ -619,6 +621,157 @@ def main() -> int:
             "profile-selected RTL EDA environment report audit",
         )
 
+        retry_state = out_dir / "retry-state"
+        retry_tool = out_dir / "retry-verilator"
+        retry_tool.write_text(
+            "#!/bin/sh\n"
+            f"state={shlex.quote(str(retry_state))}\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test retry'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if [ ! -f \"$state\" ]; then\n"
+            "  echo first > \"$state\"\n"
+            "  echo 'Unable to checkout license feature VCSRuntime_Net' >&2\n"
+            "  exit 17\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        retry_tool.chmod(retry_tool.stat().st_mode | 0o111)
+        retry_report = out_dir / "retry-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            rtl_eda_env(
+                f"LOOM_RTL_EDA_RETRIES=1",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                str(retry_tool),
+                "--output",
+                str(retry_report),
+            ),
+            "retrying RTL lint tool report",
+        )
+        retry_data = json.loads(retry_report.read_text())
+        if retry_data.get("status") != "pass":
+            raise AssertionError(f"retrying license checkout should pass: {retry_data}")
+        if retry_data.get("tool_version") != "Verilator 5.test retry":
+            raise AssertionError(f"retrying tool version should be preserved: {retry_data}")
+        if retry_data.get("eda_retry_count", 0) < 1:
+            raise AssertionError(f"retrying report should record retry count: {retry_data}")
+        require_audit_pass(
+            repo,
+            retry_report,
+            out_dir / "retry-rtl-eda-audit-summary.json",
+            "retrying RTL EDA report audit",
+        )
+
+        persistent_license_tool = out_dir / "persistent-license-verilator"
+        persistent_license_tool.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test persistent license'\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'Unable to checkout license feature VCSRuntime_Net' >&2\n"
+            "exit 17\n"
+        )
+        persistent_license_tool.chmod(persistent_license_tool.stat().st_mode | 0o111)
+        persistent_license_report = out_dir / "persistent-license-rtl-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            rtl_eda_env(
+                "LOOM_RTL_EDA_RETRIES=1",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                str(persistent_license_tool),
+                "--output",
+                str(persistent_license_report),
+            ),
+            "persistent-license RTL lint tool report",
+        )
+        persistent_license_data = json.loads(persistent_license_report.read_text())
+        if persistent_license_data.get("status") != "blocked":
+            raise AssertionError(
+                f"persistent license checkout failure should be blocked: {persistent_license_data}"
+            )
+        if persistent_license_data.get("returncode") is not None:
+            raise AssertionError(
+                f"persistent license checkout should not claim RTL returncode: {persistent_license_data}"
+            )
+        persistent_records = persistent_license_data.get("diagnostic_records", [])
+        if not any(
+            isinstance(record, dict)
+            and record.get("diagnostic_class") == "tool_license_unavailable"
+            for record in persistent_records
+        ):
+            raise AssertionError(
+                f"persistent license checkout should produce license diagnostic: {persistent_license_data}"
+            )
+        if persistent_license_data.get("eda_retry_count") != 1:
+            raise AssertionError(
+                f"persistent license checkout should record retry count: {persistent_license_data}"
+            )
+        require_audit_pass(
+            repo,
+            persistent_license_report,
+            out_dir / "persistent-license-rtl-eda-audit-summary.json",
+            "persistent-license RTL EDA report audit",
+        )
+
+        non_license_counter = out_dir / "non-license-counter"
+        non_license_tool = out_dir / "non-license-verilator"
+        non_license_tool.write_text(
+            "#!/bin/sh\n"
+            f"counter={shlex.quote(str(non_license_counter))}\n"
+            "if [ \"$1\" = \"--version\" ]; then\n"
+            "  echo 'Verilator 5.test non-license'\n"
+            "  exit 0\n"
+            "fi\n"
+            "count=0\n"
+            "if [ -f \"$counter\" ]; then count=$(cat \"$counter\"); fi\n"
+            "count=$((count + 1))\n"
+            "echo \"$count\" > \"$counter\"\n"
+            "echo 'unsupported design feature in test fixture' >&2\n"
+            "exit 19\n"
+        )
+        non_license_tool.chmod(non_license_tool.stat().st_mode | 0o111)
+        non_license_report = out_dir / "non-license-rtl-eda-report.json"
+        non_license_result = artifact_test_common.run_command(
+            repo,
+            rtl_eda_env(
+                "LOOM_RTL_EDA_RETRIES=2",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(manifest),
+                "--tool",
+                str(non_license_tool),
+                "--output",
+                str(non_license_report),
+            ),
+        )
+        if non_license_result.returncode == 0:
+            raise AssertionError("non-license lint failure unexpectedly passed")
+        non_license_data = json.loads(non_license_report.read_text())
+        if non_license_data.get("status") != "fail":
+            raise AssertionError(f"non-license lint failure should remain fail: {non_license_data}")
+        if non_license_data.get("eda_retry_count") != 0:
+            raise AssertionError(f"non-license lint failure should not retry: {non_license_data}")
+        if non_license_counter.read_text().strip() != "1":
+            raise AssertionError("non-license lint failure was retried")
+        require_audit_pass(
+            repo,
+            non_license_report,
+            out_dir / "non-license-rtl-eda-audit-summary.json",
+            "non-license RTL EDA report audit",
+        )
+
         equals_tool = out_dir / "equals-verilator"
         equals_tool.write_text(
             "#!/bin/sh\n"
@@ -872,6 +1025,64 @@ def main() -> int:
         multi_sim_report = json.loads(multi_sim.read_text())
         if multi_sim_report.get("status") != "pass":
             raise AssertionError(f"multi-top RTL sim should not reuse unscoped interface: {multi_sim_report}")
+
+        parallel_marker = out_dir / "parallel-sim-seen"
+        parallel_lock = out_dir / "parallel-sim-lock"
+        parallel_sim_tool = out_dir / "parallel-sim-tool"
+        parallel_sim_tool.write_text(
+            "#!/bin/sh\n"
+            f"marker={shlex.quote(str(parallel_marker))}\n"
+            f"lockdir={shlex.quote(str(parallel_lock))}\n"
+            "if [ \"$1\" = \"--version\" ] || [ \"$1\" = \"-ID\" ]; then\n"
+            "  echo 'VCS X.test parallel sim'\n"
+            "  exit 0\n"
+            "fi\n"
+            "out=''\n"
+            "while [ \"$#\" -gt 0 ]; do\n"
+            "  if [ \"$1\" = \"-o\" ]; then\n"
+            "    shift\n"
+            "    out=\"$1\"\n"
+            "  fi\n"
+            "  shift || break\n"
+            "done\n"
+            "if mkdir \"$lockdir\" 2>/dev/null; then\n"
+            "  sleep 1\n"
+            "  rmdir \"$lockdir\"\n"
+            "else\n"
+            "  echo parallel > \"$marker\"\n"
+            "fi\n"
+            "if [ -n \"$out\" ]; then\n"
+            "  printf '%s\\n' '#!/bin/sh' 'echo RTL sim smoke passed' 'exit 0' > \"$out\"\n"
+            "  chmod +x \"$out\"\n"
+            "fi\n"
+            "exit 0\n"
+        )
+        parallel_sim_tool.chmod(parallel_sim_tool.stat().st_mode | 0o111)
+        parallel_sim = out_dir / "parallel-sim-eda-report.json"
+        artifact_test_common.require_success(
+            repo,
+            rtl_eda_env(
+                "LOOM_RTL_EDA_JOBS=2",
+                "bash",
+                "test/rtl/run_rtl_eda_report.sh",
+                "--manifest",
+                str(multi_sim_manifest),
+                "--capability-class",
+                "rtl_sim",
+                "--tool",
+                str(parallel_sim_tool),
+                "--output",
+                str(parallel_sim),
+            ),
+            "parallel multi-top RTL sim EDA report",
+        )
+        parallel_sim_report = json.loads(parallel_sim.read_text())
+        if parallel_sim_report.get("status") != "pass":
+            raise AssertionError(f"parallel multi-top RTL sim should pass: {parallel_sim_report}")
+        if not parallel_marker.is_file():
+            raise AssertionError("multi-top RTL sim did not run independent top simulations concurrently")
+        if parallel_sim_report.get("eda_parallel_jobs") != 2:
+            raise AssertionError(f"parallel RTL sim report should record worker budget: {parallel_sim_report}")
 
         verilator = shutil.which("verilator")
         if verilator is None:

@@ -6,11 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -34,6 +38,34 @@ class CapabilityConfig:
     command_role: str
     default_tool: str
     tool_env_var: str
+
+
+@dataclass
+class EdaRunContext:
+    retries: int
+    retry_count: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def note_retry(self) -> None:
+        with self.lock:
+            self.retry_count += 1
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int | None
+    detail: str
+    diagnostic_class: str
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass(frozen=True)
+class SimTargetResult:
+    top_module: str
+    returncodes: tuple[int, ...]
+    failures: tuple[tuple[str, str, str], ...]
+    blocked: tuple[str, str] | None = None
 
 
 CAPABILITIES = {
@@ -67,6 +99,16 @@ def positive_int(raw: str) -> int:
     return value
 
 
+def nonnegative_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a non-negative integer") from exc
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return value
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
@@ -79,7 +121,53 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=positive_int(os.environ.get("LOOM_RTL_EDA_TIMEOUT_SECONDS", "7200")),
         help="timeout for each EDA tool invocation",
     )
+    parser.add_argument(
+        "--retries",
+        type=nonnegative_int,
+        default=nonnegative_int(os.environ.get("LOOM_RTL_EDA_RETRIES", "2")),
+        help="retry count for transient EDA tool failures",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=positive_int,
+        default=None,
+        help="independent top-level EDA jobs to run in parallel",
+    )
     return parser.parse_args(argv)
+
+
+def positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if not value:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise SystemExit(f"{name} must be a positive integer")
+    if parsed < 1:
+        raise SystemExit(f"{name} must be a positive integer")
+    return parsed
+
+
+def default_cpu_budget() -> int:
+    try:
+        affinity = os.sched_getaffinity(0)
+    except AttributeError:
+        affinity = set()
+    if affinity:
+        return max(1, len(affinity))
+    return max(1, os.cpu_count() or 1)
+
+
+def eda_job_budget(args: argparse.Namespace) -> int:
+    if args.jobs is not None:
+        return args.jobs
+    return (
+        positive_env_int("LOOM_RTL_EDA_JOBS")
+        or positive_env_int("LOOM_TEST_JOBS")
+        or positive_env_int("JOBS")
+        or min(4, default_cpu_budget())
+    )
 
 
 def artifact_id(path: Path | None) -> str:
@@ -126,6 +214,83 @@ def diagnostic_detail(stdout: str, stderr: str, fallback: str) -> str:
             continue
         return line
     return fallback
+
+
+def retryable_eda_text(stdout: str, stderr: str, detail: str) -> bool:
+    combined = f"{stdout}\n{stderr}\n{detail}".lower()
+    explicit_fragments = (
+        "unable to checkout",
+        "failed to checkout",
+        "checkout failed",
+        "license checkout",
+        "checkout license",
+        "license feature",
+        "license server",
+        "lm_license_file",
+        "snpslmd_license_file",
+        "lmgrd",
+        "flexnet",
+        "licensing error",
+    )
+    if any(fragment in combined for fragment in explicit_fragments):
+        return True
+    return "license" in combined and any(
+        fragment in combined
+        for fragment in (
+            "checkout",
+            "feature",
+            "server",
+            "lmgrd",
+            "flexnet",
+            "snpslmd",
+        )
+    )
+
+
+def run_subprocess_with_retry(
+    command: list[str],
+    timeout_seconds: int,
+    context: EdaRunContext,
+    *,
+    timeout_detail: str,
+    execution_detail: str,
+    cwd: Path | None = None,
+) -> CommandResult:
+    attempts = context.retries + 1
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return CommandResult(None, timeout_detail, "tool_timeout")
+        except OSError as exc:
+            return CommandResult(None, f"{execution_detail}: {exc}", "tool_execution_failed")
+        detail = diagnostic_detail(result.stdout, result.stderr, execution_detail)
+        if (
+            result.returncode != 0
+            and attempt + 1 < attempts
+            and retryable_eda_text(result.stdout, result.stderr, detail)
+        ):
+            context.note_retry()
+            time.sleep(min(1.0, 0.1 * (attempt + 1)))
+            continue
+        if result.returncode != 0 and retryable_eda_text(result.stdout, result.stderr, detail):
+            return CommandResult(
+                None,
+                f"{execution_detail} blocked by EDA license checkout: {detail}",
+                "tool_license_unavailable",
+                result.stdout,
+                result.stderr,
+            )
+        return CommandResult(result.returncode, detail, "", result.stdout, result.stderr)
+    return CommandResult(None, execution_detail, "tool_execution_failed")
 
 
 def capability_config(capability_class: str) -> CapabilityConfig:
@@ -183,26 +348,44 @@ def resolve_tool(raw_tool: str, config: CapabilityConfig) -> ToolResolution:
     return ToolResolution(requested, resolved, "", "")
 
 
-def run_version_probe(command: list[str], timeout_seconds: int) -> subprocess.CompletedProcess[str] | None:
-    try:
-        return subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return None
-    except OSError as exc:
-        raise exc
+def run_version_probe(
+    command: list[str],
+    timeout_seconds: int,
+    context: EdaRunContext,
+) -> subprocess.CompletedProcess[str] | None:
+    attempts = context.retries + 1
+    for attempt in range(attempts):
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        except OSError as exc:
+            raise exc
+        detail = diagnostic_detail(result.stdout, result.stderr, f"exit code {result.returncode}")
+        if (
+            result.returncode != 0
+            and attempt + 1 < attempts
+            and retryable_eda_text(result.stdout, result.stderr, detail)
+        ):
+            context.note_retry()
+            time.sleep(min(1.0, 0.1 * (attempt + 1)))
+            continue
+        return result
+    return result
 
 
 def tool_version(
     tool_path: str,
     timeout_seconds: int,
     config: CapabilityConfig,
+    context: EdaRunContext,
 ) -> tuple[str, str, str]:
     probes = [[tool_path, "--version"]]
     if config.capability_class == "rtl_sim":
@@ -211,7 +394,7 @@ def tool_version(
     last_detail = ""
     try:
         for command in probes:
-            result = run_version_probe(command, timeout_seconds)
+            result = run_version_probe(command, timeout_seconds, context)
             if result is None:
                 timeout_seen = True
                 continue
@@ -223,6 +406,12 @@ def tool_version(
                 result.stderr,
                 f"exit code {result.returncode}",
             )
+            if retryable_eda_text(result.stdout, result.stderr, last_detail):
+                return (
+                    "",
+                    f"RTL EDA tool version probe blocked by EDA license checkout: {last_detail}",
+                    "tool_license_unavailable",
+                )
     except OSError as exc:
         return "", f"RTL EDA tool version probe failed: {exc}", "tool_activation_failed"
     if timeout_seen and not last_detail:
@@ -263,6 +452,8 @@ def base_report(
             if path.is_file()
         },
         "returncode": None,
+        "eda_retry_count": 0,
+        "eda_parallel_jobs": 1,
         "diagnostic_records": [],
         "diagnostics": [],
         "status": "blocked",
@@ -293,33 +484,36 @@ def restrict_source_claims(report: dict[str, object], sources: list[tuple[str, P
     }
 
 
+def safe_top_work_dir(work_dir: Path, index: int, top_module: str) -> Path:
+    label = top_module or "top"
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._") or "top"
+    return work_dir / f"{index:03d}_{safe[:80]}"
+
+
 def lint_once(
     tool_path: str,
     top_module: str,
     sources: list[tuple[str, Path]],
     timeout_seconds: int,
+    context: EdaRunContext,
+    cwd: Path,
 ) -> tuple[int | None, str, str]:
     command = [tool_path, "--lint-only", "--sv"]
     if top_module:
         command.extend(["--top-module", top_module])
     command.extend(str(path) for _, path in sources)
-    try:
-        result = subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return None, f"RTL lint timed out after {timeout_seconds}s", "tool_timeout"
-    except OSError as exc:
-        return None, f"RTL lint execution failed: {exc}", "tool_execution_failed"
-    detail = diagnostic_detail(result.stdout, result.stderr, "RTL lint failed")
+    result = run_subprocess_with_retry(
+        command,
+        timeout_seconds,
+        context,
+        timeout_detail=f"RTL lint timed out after {timeout_seconds}s",
+        execution_detail="RTL lint failed",
+        cwd=cwd,
+    )
+    detail = result.detail
     if top_module and result.returncode != 0:
         detail = f"{top_module}: {detail}"
-    return result.returncode, detail, ""
+    return result.returncode, detail, result.diagnostic_class
 
 
 def run_lint(
@@ -327,20 +521,38 @@ def run_lint(
     tool_path: str,
     source_paths: list[tuple[str, Path]],
     timeout_seconds: int,
+    context: EdaRunContext,
+    job_budget: int,
 ) -> None:
     tops = report.get("checked_top_modules")
     lint_targets = [top for top in tops if isinstance(top, str) and top] if isinstance(tops, list) else []
     if not lint_targets:
         lint_targets = [""]
+    workers = max(1, min(job_budget, len(lint_targets)))
+    report["eda_parallel_jobs"] = workers
     failures: list[tuple[str, str, str]] = []
     returncodes: list[int] = []
-    for top_module in lint_targets:
+
+    def run_target(item: tuple[int, str]) -> tuple[str, int | None, str, str]:
+        index, top_module = item
+        top_dir = safe_top_work_dir(work_dir, index, top_module)
+        top_dir.mkdir()
         returncode, detail, diagnostic_class = lint_once(
             tool_path,
             top_module,
             source_paths,
             timeout_seconds,
+            context,
+            top_dir,
         )
+        return top_module, returncode, detail, diagnostic_class
+
+    with tempfile.TemporaryDirectory(prefix="loom-rtl-lint-") as tmp:
+        work_dir = Path(tmp)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(run_target, enumerate(lint_targets)))
+
+    for _, returncode, detail, diagnostic_class in results:
         if returncode is None:
             report["returncode"] = None
             report["status"] = "blocked"
@@ -434,25 +646,79 @@ def sim_testbench_source(top_module: str, ports: list[dict[str, str]]) -> str:
 def run_command(
     command: list[str],
     timeout_seconds: int,
+    context: EdaRunContext,
     *,
     cwd: Path | None = None,
 ) -> tuple[int | None, str, str]:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=timeout_seconds,
+    result = run_subprocess_with_retry(
+        command,
+        timeout_seconds,
+        context,
+        timeout_detail=f"RTL sim timed out after {timeout_seconds}s",
+        execution_detail="RTL sim failed",
+        cwd=cwd,
+    )
+    return result.returncode, result.detail, result.diagnostic_class
+
+
+def run_sim_target(
+    index: int,
+    top_module: str,
+    manifest: dict[str, object],
+    tool_path: str,
+    source_paths: list[tuple[str, Path]],
+    work_dir: Path,
+    timeout_seconds: int,
+    context: EdaRunContext,
+) -> SimTargetResult:
+    top_dir = safe_top_work_dir(work_dir, index, top_module)
+    top_dir.mkdir()
+    tb_path = top_dir / f"{top_module}_smoke_tb.sv"
+    tb_path.write_text(sim_testbench_source(top_module, interface_ports(manifest, top_module)))
+    simv = top_dir / f"{top_module}_simv"
+    compile_command = [
+        tool_path,
+        "-full64",
+        "-sverilog",
+        "-timescale=1ns/1ps",
+        "-top",
+        "loom_rtl_smoke_tb",
+        "-o",
+        str(simv),
+        *(str(path) for _, path in source_paths),
+        str(tb_path),
+    ]
+    returncode, detail, diagnostic_class = run_command(
+        compile_command,
+        timeout_seconds,
+        context,
+        cwd=top_dir,
+    )
+    if returncode is None:
+        return SimTargetResult(top_module, (), (), (diagnostic_class or "tool_execution_failed", detail))
+    returncodes = [returncode]
+    if returncode != 0:
+        return SimTargetResult(
+            top_module,
+            tuple(returncodes),
+            (("rtl_sim_compile_failed", "error", f"{top_module}: {detail}"),),
         )
-    except subprocess.TimeoutExpired:
-        return None, f"RTL sim timed out after {timeout_seconds}s", "tool_timeout"
-    except OSError as exc:
-        return None, f"RTL sim execution failed: {exc}", "tool_execution_failed"
-    detail = diagnostic_detail(result.stdout, result.stderr, "RTL sim failed")
-    return result.returncode, detail, ""
+    run_code, run_detail, run_class = run_command(
+        [str(simv)],
+        timeout_seconds,
+        context,
+        cwd=top_dir,
+    )
+    if run_code is None:
+        return SimTargetResult(top_module, tuple(returncodes), (), (run_class or "tool_execution_failed", run_detail))
+    returncodes.append(run_code)
+    if run_code != 0:
+        return SimTargetResult(
+            top_module,
+            tuple(returncodes),
+            (("rtl_sim_run_failed", "error", f"{top_module}: {run_detail}"),),
+        )
+    return SimTargetResult(top_module, tuple(returncodes), ())
 
 
 def run_sim(
@@ -462,6 +728,8 @@ def run_sim(
     source_paths: list[tuple[str, Path]],
     output_path: Path,
     timeout_seconds: int,
+    context: EdaRunContext,
+    job_budget: int,
 ) -> None:
     tops = report.get("checked_top_modules")
     sim_targets = [top for top in tops if isinstance(top, str) and top] if isinstance(tops, list) else []
@@ -476,28 +744,27 @@ def run_sim(
     returncodes: list[int] = []
     with tempfile.TemporaryDirectory(prefix=f"{output_path.stem}-", dir=output_path.parent) as tmp:
         work_dir = Path(tmp)
-        for top_module in sim_targets:
-            tb_path = work_dir / f"{top_module}_smoke_tb.sv"
-            tb_path.write_text(sim_testbench_source(top_module, interface_ports(manifest, top_module)))
-            simv = work_dir / f"{top_module}_simv"
-            compile_command = [
-                tool_path,
-                "-full64",
-                "-sverilog",
-                "-timescale=1ns/1ps",
-                "-top",
-                "loom_rtl_smoke_tb",
-                "-o",
-                str(simv),
-                *(str(path) for _, path in source_paths),
-                str(tb_path),
-            ]
-            returncode, detail, diagnostic_class = run_command(
-                compile_command,
-                timeout_seconds,
-                cwd=work_dir,
+        workers = max(1, min(job_budget, len(sim_targets)))
+        report["eda_parallel_jobs"] = workers
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(
+                executor.map(
+                    lambda item: run_sim_target(
+                        item[0],
+                        item[1],
+                        manifest,
+                        tool_path,
+                        source_paths,
+                        work_dir,
+                        timeout_seconds,
+                        context,
+                    ),
+                    enumerate(sim_targets),
+                )
             )
-            if returncode is None:
+        for result in results:
+            if result.blocked is not None:
+                diagnostic_class, detail = result.blocked
                 report["returncode"] = None
                 report["status"] = "blocked"
                 report["diagnostic_records"] = diagnostic_records(
@@ -505,26 +772,8 @@ def run_sim(
                 )
                 report["diagnostics"] = [detail]
                 return
-            returncodes.append(returncode)
-            if returncode != 0:
-                failures.append(("rtl_sim_compile_failed", "error", f"{top_module}: {detail}"))
-                continue
-            run_code, run_detail, run_class = run_command(
-                [str(simv)],
-                timeout_seconds,
-                cwd=work_dir,
-            )
-            if run_code is None:
-                report["returncode"] = None
-                report["status"] = "blocked"
-                report["diagnostic_records"] = diagnostic_records(
-                    [(run_class or "tool_execution_failed", "error", run_detail)]
-                )
-                report["diagnostics"] = [run_detail]
-                return
-            returncodes.append(run_code)
-            if run_code != 0:
-                failures.append(("rtl_sim_run_failed", "error", f"{top_module}: {run_detail}"))
+            returncodes.extend(result.returncodes)
+            failures.extend(result.failures)
     report["returncode"] = next((code for code in returncodes if code != 0), 0)
     if failures:
         report["status"] = "fail"
@@ -548,6 +797,8 @@ def build_report(
     manifest_path: Path,
     raw_tool: str,
     timeout_seconds: int,
+    retries: int,
+    job_budget: int,
     config: CapabilityConfig,
     output_path: Path,
 ) -> dict[str, object]:
@@ -620,12 +871,15 @@ def build_report(
         )
 
     report = base_report(manifest_path, manifest, tool.name, timeout_seconds, config)
+    context = EdaRunContext(retries)
     version, version_error, version_error_class = tool_version(
         tool.executable,
         timeout_seconds,
         config,
+        context,
     )
     if version_error:
+        report["eda_retry_count"] = context.retry_count
         report["status"] = "blocked"
         report["diagnostic_records"] = diagnostic_records(
             [(version_error_class or "tool_activation_failed", "error", version_error)]
@@ -634,9 +888,10 @@ def build_report(
         return report
     report["tool_version"] = version
     if config.capability_class == "rtl_lint":
-        run_lint(report, tool.executable, sources, timeout_seconds)
+        run_lint(report, tool.executable, sources, timeout_seconds, context, job_budget)
     else:
-        run_sim(report, manifest, tool.executable, sources, output_path, timeout_seconds)
+        run_sim(report, manifest, tool.executable, sources, output_path, timeout_seconds, context, job_budget)
+    report["eda_retry_count"] = context.retry_count
     return report
 
 
@@ -649,6 +904,8 @@ def main(argv: list[str]) -> int:
         Path(args.manifest),
         selected_tool(args, config),
         args.timeout_seconds,
+        args.retries,
+        eda_job_budget(args),
         config,
         output,
     )

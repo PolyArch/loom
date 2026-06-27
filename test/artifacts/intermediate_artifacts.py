@@ -7060,6 +7060,12 @@ def audit_json(path: Path, kind: str) -> dict[str, object]:
         timeout_seconds = data.get("command_timeout_seconds")
         if not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
             diagnostics.append("EDA report command_timeout_seconds must be a positive integer")
+        retry_count = data.get("eda_retry_count")
+        if not isinstance(retry_count, int) or retry_count < 0:
+            diagnostics.append("EDA report eda_retry_count must be a non-negative integer")
+        parallel_jobs = data.get("eda_parallel_jobs")
+        if not isinstance(parallel_jobs, int) or parallel_jobs <= 0:
+            diagnostics.append("EDA report eda_parallel_jobs must be a positive integer")
         if not isinstance(data.get("tool_version"), str):
             diagnostics.append("EDA report tool_version must be a string")
         for key in ("checked_top_modules", "checked_source_files", "diagnostics"):
