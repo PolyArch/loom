@@ -753,8 +753,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         {
             "total": 18,
             "pass": 4,
-            "fail": 1,
-            "blocked": 5,
+            "fail": 2,
+            "blocked": 4,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -777,6 +777,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -1738,43 +1739,49 @@ def assert_cmsis_vector_sum_cgra_evidence(
         )
 
 
-def assert_cmsis_minimum_s8_mapping_blocker_evidence(
+def assert_cmsis_minmax_s8_mapping_blocker_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
+    *,
+    case: str,
+    stem: str,
+    graph: str,
+    intrinsic: str,
+    expected_output: list[str],
 ) -> None:
     assert_cmsis_mapping_blocker_row(
         repo,
         rows,
         "cmsis-nn",
-        "BasicMathFunctions/arm_minimum_s8.c",
-        diagnostic_substring="resource_kind=fabric.op operation=llvm.intr.smin",
+        case,
+        diagnostic_substring=f"resource_kind=fabric.op operation={intrinsic}",
     )
-    row = one_row(rows, "cmsis-nn", "BasicMathFunctions/arm_minimum_s8.c")
+    row = one_row(rows, "cmsis-nn", case)
     for key in ("dfg_report", "mapping_artifact", "cgra_report"):
         artifact = sim_evidence / Path(row[key]).name
         if not artifact.is_file():
             raise AssertionError(f"attempt manifest should emit {artifact}")
     expected_memory = {
         "arg40": ["i8:3", "i8:-4", "i8:7"],
-        "arg41": ["i8:2", "i8:-5", "i8:9"],
-        "arg42": ["i8:2", "i8:-5", "i8:7"],
+        "arg41": ["i8:2", "i8:5", "i8:-9"],
+        "arg42": expected_output,
     }
 
     dfg_report = json.loads((repo / row["dfg_report"]).read_text())
     if (
         dfg_report.get("kind") != "dfg_sim_report"
-        or dfg_report.get("workload") != "BasicMathFunctions/arm_minimum_s8.c"
-        or dfg_report.get("graph") != "g_t_arm_minimum_s8_red_0_0"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
         or dfg_report.get("status") != "pass"
         or dfg_report.get("dynamic_work_items") != 3
         or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 6
-        or dfg_report.get("operation_fire_counts", {}).get("llvm.intr.smin") != 3
+        or dfg_report.get("operation_fire_counts", {}).get(intrinsic) != 3
         or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 3
         or dfg_report.get("final_outputs") != ["none"]
         or dfg_report.get("final_memory_state") != expected_memory
     ):
-        raise AssertionError(f"unexpected arm_minimum_s8 DFG evidence: {dfg_report}")
+        raise AssertionError(f"unexpected {stem} DFG evidence: {dfg_report}")
 
     mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
     resource_pressure = {
@@ -1782,25 +1789,25 @@ def assert_cmsis_minimum_s8_mapping_blocker_evidence(
         for record in mapping_artifact.get("resource_pressure", [])
         if isinstance(record, dict)
     }
-    smin_pressure = resource_pressure.get(("fabric.op", "llvm.intr.smin"))
+    intrinsic_pressure = resource_pressure.get(("fabric.op", intrinsic))
     if (
         mapping_artifact.get("kind") != "pnr_mapping"
-        or mapping_artifact.get("workload") != "BasicMathFunctions/arm_minimum_s8.c"
-        or mapping_artifact.get("graph") != "g_t_arm_minimum_s8_red_0_0"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("graph") != graph
         or mapping_artifact.get("hardware") != "shared_reduction_adg"
         or mapping_artifact.get("status") != "fail"
         or mapping_artifact.get("unplaced_records", 0) <= 0
-        or not smin_pressure
-        or smin_pressure.get("missing", 0) <= 0
-        or smin_pressure.get("required", 0) <= smin_pressure.get("available", 0)
+        or not intrinsic_pressure
+        or intrinsic_pressure.get("missing", 0) <= 0
+        or intrinsic_pressure.get("required", 0) <= intrinsic_pressure.get("available", 0)
     ):
-        raise AssertionError(f"unexpected arm_minimum_s8 mapping evidence: {mapping_artifact}")
+        raise AssertionError(f"unexpected {stem} mapping evidence: {mapping_artifact}")
 
     cgra_report = json.loads((repo / row["cgra_report"]).read_text())
     comparison_report = json.loads((repo / row["comparison_report"]).read_text())
     if (
         cgra_report.get("kind") != "cgra_sim_report"
-        or cgra_report.get("workload") != "BasicMathFunctions/arm_minimum_s8.c"
+        or cgra_report.get("workload") != case
         or cgra_report.get("hardware") != "shared_reduction_adg"
         or cgra_report.get("status") != "blocked"
         or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -1812,8 +1819,42 @@ def assert_cmsis_minimum_s8_mapping_blocker_evidence(
         or comparison_report.get("performance_comparison_status") != "blocked"
     ):
         raise AssertionError(
-            f"unexpected arm_minimum_s8 CGRA comparison evidence: {cgra_report} {comparison_report}"
+            f"unexpected {stem} CGRA comparison evidence: {cgra_report} {comparison_report}"
         )
+
+
+def assert_cmsis_minimum_s8_mapping_blocker_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    assert_cmsis_minmax_s8_mapping_blocker_evidence(
+        repo,
+        rows,
+        sim_evidence,
+        case="BasicMathFunctions/arm_minimum_s8.c",
+        stem="arm_minimum_s8",
+        graph="g_t_arm_minimum_s8_red_0_0",
+        intrinsic="llvm.intr.smin",
+        expected_output=["i8:2", "i8:-4", "i8:-9"],
+    )
+
+
+def assert_cmsis_maximum_s8_mapping_blocker_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    assert_cmsis_minmax_s8_mapping_blocker_evidence(
+        repo,
+        rows,
+        sim_evidence,
+        case="BasicMathFunctions/arm_maximum_s8.c",
+        stem="arm_maximum_s8",
+        graph="g_t_arm_maximum_s8_red_0_0",
+        intrinsic="llvm.intr.smax",
+        expected_output=["i8:3", "i8:5", "i8:7"],
+    )
 
 
 def assert_cmsis_relu_q7_cgra_evidence(
@@ -2702,8 +2743,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         {
             "total": 18,
             "pass": 4,
-            "fail": 1,
-            "blocked": 5,
+            "fail": 2,
+            "blocked": 4,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -2755,6 +2796,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
+    assert_cmsis_maximum_s8_mapping_blocker_evidence(repo, rows, sim_evidence)
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"
