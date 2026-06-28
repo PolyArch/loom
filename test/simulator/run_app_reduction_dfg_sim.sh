@@ -634,6 +634,23 @@ configure_axpy_args() {
     )
 }
 
+configure_binary_search_args() {
+    append_ctrl_tokens 5
+    append_raw_memref 1 "7.000000e+00,2.000000e+00,1.500000e+01,2.000000e+01,1.000000e+00"
+    append_repeated_arg 2 5 0
+    append_repeated_arg 3 5 0
+    append_repeated_arg 4 5 1
+    append_raw_memref 5 "1.000000e+00,3.000000e+00,5.000000e+00,7.000000e+00,9.000000e+00,1.100000e+01,1.300000e+01,1.500000e+01,1.700000e+01,1.900000e+01"
+    append_repeated_arg 6 5 -1
+    append_repeated_arg 7 5 9
+    append_constant_memref 8 5 "0"
+    append_index_tokens 9 5
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_123binary_search_candidateEPKfS1_Pjjj_0_0
+        --workload binary_search
+    )
+}
+
 append_bound_search_memrefs() {
     append_ctrl_tokens 8
     append_raw_memref 1 "3.000000e+00,0.000000e+00,8.000000e+00,2.000000e+01,5.000000e+00,1.100000e+01,1.700000e+01,1.800000e+01"
@@ -999,6 +1016,9 @@ configure_downsample_avg_init_args() {
 }
 
 case "${CASE}" in
+    binary_search)
+        configure_binary_search_args
+        ;;
     autocorrelation)
         sim_args+=(
             --graph g_t_autocorrelation_kernel_red_0_0

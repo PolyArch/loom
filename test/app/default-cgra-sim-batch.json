@@ -42,6 +42,10 @@
       "hardware": "shared_vector_alu_adg"
     },
     {
+      "case": "binary_search",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "bit_reverse",
       "hardware": "shared_reduction_adg"
     },

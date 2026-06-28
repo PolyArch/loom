@@ -982,8 +982,8 @@ void addWideExtensionPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
-void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
-                    llvm::StringRef input) {
+void addWideNarrowingPe(ModuleBuilder &module, llvm::StringRef result,
+                        llvm::StringRef input, llvm::StringRef opName) {
   module.addExactBodyLine(valueName(result) + " =");
   module.addExactBodyLine("    fabric.pe [spatial] (%value = " +
                           valueName(input) + " : !fabric.bits<64>)");
@@ -991,13 +991,19 @@ void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine(
       "      fabric.fu(%input = %value : !fabric.bits<64>) -> "
       "!fabric.bits<64> {");
-  module.addExactBodyLine("        %result = fabric.op [@llvm.trunc] (%input)");
+  module.addExactBodyLine("        %result = fabric.op [@" + opName.str() +
+                          "] (%input)");
   module.addExactBodyLine(
       "                 : (!fabric.bits<64>) -> !fabric.bits<32>");
   module.addExactBodyLine(
       "        fabric.yield %result : !fabric.bits<32> to !fabric.bits<64>");
   module.addExactBodyLine("      }");
   module.addExactBodyLine("    }");
+}
+
+void addWideTruncPe(ModuleBuilder &module, llvm::StringRef result,
+                    llvm::StringRef input) {
+  addWideNarrowingPe(module, result, input, "llvm.trunc");
 }
 
 void addTernaryPe(ModuleBuilder &module, llvm::StringRef result,
@@ -2386,12 +2392,24 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   };
   addWideTruncPe("wide_truncated_wide", "wide_trunc_input");
   addWideTruncPe("wide_truncated_aux_wide", "wide_trunc_aux_input");
+  addWideNarrowingPe(module, "wide_index_cast0", "wide_index_cast0_input",
+                     "arith.index_cast");
+  addWideNarrowingPe(module, "wide_index_cast1", "wide_index_cast1_input",
+                     "arith.index_cast");
   module.addExactBodyLine(
       "%wide_truncated = fabric.fifo %wide_truncated_wide "
       "[max_depth = 1, bypassable = true] {bypassed = true}");
   module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
   module.addExactBodyLine(
       "%wide_truncated_aux = fabric.fifo %wide_truncated_aux_wide "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%wide_index_cast0_narrow = fabric.fifo %wide_index_cast0 "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
+  module.addExactBodyLine(
+      "%wide_index_cast1_narrow = fabric.fifo %wide_index_cast1 "
       "[max_depth = 1, bypassable = true] {bypassed = true}");
   module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
 
@@ -3034,7 +3052,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                              "addr_aux_const",
                                              "addr_bias_const",
                                              "addr_extra_const0",
-                                             "addr_extra_const1"});
+                                             "addr_extra_const1",
+                                             "wide_index_cast0_narrow",
+                                             "wide_index_cast1_narrow"});
   addSingleResultBits32Switch(
       "cast0_input", {"i32a", "data0", "data1", "logic_masked", "packed_sat",
                       "idx", "running", "int_sum", "addr_sum", "uint_rem"});
@@ -3101,6 +3121,16 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                "wide_remainder", "wide_product",
                                "wide_signed_quotient", "wide_zext0",
                                "wide_zext1", "wide_pred_extui"});
+  addSingleResultBits64Switch("wide_index_cast0_input",
+                              {"i64a", "i64b", "i64c", "wide_zext0",
+                               "wide_zext1", "wide_product", "wide_sum",
+                               "wide_sum_aux", "wide_shifted",
+                               "wide_signed_quotient", "wide_remainder"});
+  addSingleResultBits64Switch("wide_index_cast1_input",
+                              {"i64a", "i64b", "i64c", "wide_zext0",
+                               "wide_zext1", "wide_product", "wide_sum",
+                               "wide_sum_aux", "wide_shifted",
+                               "wide_signed_quotient", "wide_remainder"});
   addSingleResultBits64Switch(
       "cmp64_lhs",
       {"i64a", "i64b", "i64c", "wide_zext0", "wide_zext1", "wide_product",
@@ -3132,7 +3162,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                              "addr_aux_const",
                                              "addr_bias_const",
                                              "addr_extra_const0",
-                                             "addr_extra_const1"});
+                                             "addr_extra_const1",
+                                             "wide_index_cast0_narrow",
+                                             "wide_index_cast1_narrow"});
   addSingleResultBits32Switch("store0_value", {"scan_store_value",
                                                "fp_running",
                                                "fp_running_aux",
@@ -3307,32 +3339,38 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                              "addr_shift_const",
                                              "addr_aux_const",
                                              "addr_bias_const",
-                                             "int_extui"});
-  addSingleResultBits32Switch("load3_addr",
-                              {"i32d", "carried_scan", "idx", "squared_data",
-                               "running", "addr_sum", "int_sum", "aux_idx",
-                               "aux_active_idx", "int_extui"});
+                                             "int_extui",
+                                             "wide_index_cast0_narrow",
+                                             "wide_index_cast1_narrow"});
   addSingleResultBits32Switch(
-      "load4_addr", {"idx", "squared_data", "running", "addr_sum",
-                     "int_product", "int_sum", "addr_unscaled", "addr_shifted",
-                     "aux_idx", "aux_active_idx", "int_extui"});
+      "load3_addr",
+      {"i32d", "carried_scan", "idx", "squared_data", "running", "addr_sum",
+       "int_sum", "aux_idx", "aux_active_idx", "int_extui",
+       "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
   addSingleResultBits32Switch(
-      "load5_addr", {"idx", "squared_data", "running", "addr_sum",
-                     "int_product", "int_sum", "addr_unscaled", "addr_shifted",
-                     "aux_idx", "aux_active_idx", "int_extui"});
+      "load4_addr",
+      {"idx", "squared_data", "running", "addr_sum", "int_product", "int_sum",
+       "addr_unscaled", "addr_shifted", "aux_idx", "aux_active_idx",
+       "int_extui", "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
+  addSingleResultBits32Switch(
+      "load5_addr",
+      {"idx", "squared_data", "running", "addr_sum", "int_product", "int_sum",
+       "addr_unscaled", "addr_shifted", "aux_idx", "aux_active_idx",
+       "int_extui", "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
   addSingleResultBits32Switch(
       "store0_addr",
       {"idx", "addr_unscaled", "carried_scan", "addr_shift_const",
        "state_carry", "addr_aux_const", "addr_bias_const", "addr_extra_const0",
        "addr_extra_const1", "int_sum", "addr_sum", "aux_idx", "running",
        "aux_active_idx", "control_demux_false", "control_demux_true",
-       "int_extui"});
+       "int_extui", "wide_index_cast0_narrow", "wide_index_cast1_narrow"});
   addSingleResultBits32Switch(
       "store1_addr",
       {"i32c", "idx", "addr_unscaled", "carried_scan", "addr_shift_const",
        "addr_aux_const", "addr_bias_const", "addr_extra_const0",
        "addr_extra_const1", "int_sum", "addr_sum", "aux_idx", "running",
-       "aux_active_idx", "int_extui"});
+       "aux_active_idx", "int_extui", "wide_index_cast0_narrow",
+       "wide_index_cast1_narrow"});
   addSingleResultBits32Switch(
       "aux_stream_lb",
       {"addr_shift_const", "addr_aux_const", "addr_bias_const"});
@@ -3625,7 +3663,10 @@ struct SharedMemoryAdgConfig {
   unsigned logicCount = 8;
   unsigned shiftCount = 8;
   unsigned castCount = 8;
+  unsigned trunciCount = 0;
   unsigned wideCastCount = 4;
+  unsigned wideIndexCastCount = 0;
+  unsigned wideIndexCastUiCount = 0;
   unsigned wideSextCount = 0;
   unsigned wideDivCount = 0;
   unsigned ctlzCount = 0;
@@ -3697,6 +3738,22 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       std::string wideResult = result + "_wide";
       std::string input = result + "_input";
       addWideTruncPe(module, wideResult, input);
+      module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
+                              valueName(wideResult) +
+                              " [max_depth = 1, bypassable = true] "
+                              "{bypassed = true}");
+      module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
+      sources32.push_back(result);
+      sinks64.push_back(input);
+    }
+  };
+  auto addWideNarrowingBank = [&](llvm::StringRef prefix, unsigned count,
+                                  llvm::StringRef opName) {
+    for (unsigned index = 0; index < count; ++index) {
+      std::string result = numbered(prefix, index);
+      std::string wideResult = result + "_wide";
+      std::string input = result + "_input";
+      addWideNarrowingPe(module, wideResult, input, opName);
       module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
                               valueName(wideResult) +
                               " [max_depth = 1, bypassable = true] "
@@ -3940,11 +3997,16 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addUnaryBank("cast", config.castCount, "llvm.trunc");
   addUnaryBank("sext", config.castCount, "llvm.sext");
   addUnaryBank("zext", config.castCount, "llvm.zext");
+  addUnaryBank("trunci", config.trunciCount, "arith.trunci");
   addUnaryBank("ctlz", config.ctlzCount, "llvm.intr.ctlz");
   addWideExtensionBank("wide_zext", config.wideCastCount, "llvm.zext");
   addWideExtensionBank("wide_sext", config.wideSextCount, "llvm.sext");
   addWideBinaryBank("wide_div", config.wideDivCount, {"arith.divsi"});
   addWideTruncBank("wide_trunc", config.wideCastCount);
+  addWideNarrowingBank("wide_index_cast", config.wideIndexCastCount,
+                       "arith.index_cast");
+  addWideNarrowingBank("wide_index_castui", config.wideIndexCastUiCount,
+                       "arith.index_castui");
   addUnaryBank("extui", config.extuiCount, "arith.extui");
 
   for (unsigned index = 0; index < config.syncCount; ++index) {
@@ -3978,7 +4040,14 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
 }
 
 ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
-  return buildSharedMemoryLikeAdg({"shared_memory_reduction_adg"});
+  SharedMemoryAdgConfig config;
+  config.moduleName = "shared_memory_reduction_adg";
+  config.muxCount = 4;
+  config.trunciCount = 4;
+  config.wideIndexCastCount = 4;
+  config.wideIndexCastUiCount = 2;
+  config.wideSextCount = 4;
+  return buildSharedMemoryLikeAdg(config);
 }
 
 ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {

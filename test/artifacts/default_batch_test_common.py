@@ -10,6 +10,7 @@ from pathlib import Path
 EXPECTED_DEFAULT_BATCH_CASES = {
     "autocorrelation",
     "axpy",
+    "binary_search",
     "bisection_step",
     "bit_reverse",
     "byte_swap",

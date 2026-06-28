@@ -317,7 +317,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -996,17 +996,9 @@ PY
     --mapping-output "${mapping_artifact}" \
     --cgra-output "${cgra_report}" \
     --mapping-summary-output "${mapping}"
-elif [[ "${CASE}" == "binary_search" || "${CASE}" == "moving_avg" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "moving_avg" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
-    binary_search)
-      expected_primary_graph_token="binary_search_candidate"
-      graph_absence_args=(
-        --expected-graph-presence present
-        --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
-        --evidence "unwired primary graph"
-      )
-      ;;
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"
       ;;

@@ -202,6 +202,51 @@ bool isLlvmPointerType(mlir::Type type) {
   return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
 }
 
+std::optional<unsigned> adapterBitWidth(mlir::Type type) {
+  if (auto intType = mlir::dyn_cast<mlir::IntegerType>(type))
+    return intType.getWidth();
+  if (mlir::isa<mlir::IndexType>(type))
+    return loom::getIndexWidth();
+  return std::nullopt;
+}
+
+bool isDataflowMemoryAddressUse(mlir::OpOperand &use) {
+  mlir::Operation *owner = use.getOwner();
+  llvm::StringRef name = owner->getName().getStringRef();
+  return (name == "dataflow.load" || name == "dataflow.store") &&
+         use.getOperandNumber() == 1;
+}
+
+bool valueFeedsOnlyDirectMemoryAddress(mlir::Value value) {
+  if (value.use_empty())
+    return false;
+  for (mlir::OpOperand &use : value.getUses())
+    if (!isDataflowMemoryAddressUse(use))
+      return false;
+  return true;
+}
+
+bool isDataflowStreamIndex(mlir::Value value) {
+  auto stream = value.getDefiningOp<::dataflow::StreamOp>();
+  return stream && stream.getIndex() == value;
+}
+
+bool shouldMaterializeAdapterOp(mlir::Operation *op) {
+  llvm::StringRef name = op->getName().getStringRef();
+  if ((name != "arith.index_cast" && name != "arith.index_castui") ||
+      op->getNumOperands() != 1 || op->getNumResults() != 1)
+    return false;
+  if (!valueFeedsOnlyDirectMemoryAddress(op->getResult(0)))
+    return false;
+  if (isDataflowStreamIndex(op->getOperand(0)))
+    return false;
+  std::optional<unsigned> inputWidth =
+      adapterBitWidth(op->getOperand(0).getType());
+  std::optional<unsigned> resultWidth =
+      adapterBitWidth(op->getResult(0).getType());
+  return inputWidth && resultWidth && *inputWidth > *resultWidth;
+}
+
 bool isPointerCarryOp(mlir::Operation *op) {
   if (op->getName().getStringRef() != "dataflow.carry" ||
       op->getNumResults() != 1)
@@ -456,7 +501,9 @@ collectSoftwareNodesInBlock(mlir::Block &block,
     }
     if (isStructuredTerminatorOp(&op))
       continue;
-    if (isIgnoredOp(&op) || isAdapterOp(&op) || isPointerBookkeepingOp(&op))
+    if (isIgnoredOp(&op) ||
+        (isAdapterOp(&op) && !shouldMaterializeAdapterOp(&op)) ||
+        isPointerBookkeepingOp(&op))
       continue;
     std::optional<ResourceKind> kind = resourceKindForSoftwareOp(&op);
     if (!kind) {
@@ -1161,13 +1208,6 @@ std::optional<unsigned> fabricBitWidth(mlir::Type type) {
   return std::nullopt;
 }
 
-bool isDataflowMemoryAddressUse(mlir::OpOperand &use) {
-  mlir::Operation *owner = use.getOwner();
-  llvm::StringRef name = owner->getName().getStringRef();
-  return (name == "dataflow.load" || name == "dataflow.store") &&
-         use.getOperandNumber() == 1;
-}
-
 bool valueFeedsOnlyMemoryAddressThroughIndexCast(mlir::Value value) {
   bool sawAddressUse = false;
   for (mlir::OpOperand &use : value.getUses()) {
@@ -1833,7 +1873,8 @@ void collectValueProducers(
     }
     if (isPointerBookkeepingOp(&op))
       continue;
-    if (!isAdapterOp(&op) || op.getNumOperands() == 0)
+    if (!isAdapterOp(&op) || shouldMaterializeAdapterOp(&op) ||
+        op.getNumOperands() == 0)
       continue;
     mlir::Value source = op.getOperand(0);
     for (mlir::Value result : op.getResults())

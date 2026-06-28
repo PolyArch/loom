@@ -366,9 +366,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 73,
+            "pass": 74,
             "fail": 0,
-            "blocked": 36,
+            "blocked": 35,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -512,7 +512,6 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "binary_search": "primary workload graph is present but app simulator fixture is not wired for search-style control flow",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
     "sort_insertion": (
@@ -717,9 +716,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
-            "blocked": 36,
+            "blocked": 35,
             "unsupported": 0,
             "missing_status": 60,
         },
@@ -732,6 +731,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "transpose", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "clz", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "ctz", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "binary_search", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "lower_bound", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "upper_bound", expected_hardware="shared_memory_reduction_adg")

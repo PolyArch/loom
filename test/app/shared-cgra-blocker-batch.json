@@ -7,7 +7,7 @@
     },
     {
       "case": "binary_search",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "clz",

@@ -51,7 +51,7 @@ def assert_shared_reduction_adg(rows: list[dict[str, str]]) -> None:
     row = matches[0]
     expected = {
         "topology_class": "fabric_module_template",
-        "node_count": "239",
+        "node_count": "245",
         "link_count": "0",
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",
@@ -72,7 +72,7 @@ def assert_shared_memory_reduction_adg(rows: list[dict[str, str]]) -> None:
     row = matches[0]
     expected = {
         "topology_class": "fabric_module_template",
-        "node_count": "192",
+        "node_count": "216",
         "link_count": "0",
         "verify_status": "pass",
         "tile_kinds": "mem;pe;switch",

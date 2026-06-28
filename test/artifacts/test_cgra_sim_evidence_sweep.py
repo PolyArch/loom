@@ -99,7 +99,6 @@ MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
-    "binary_search",
     "moving_avg",
     "scatter_add",
     "sort_insertion",
@@ -109,7 +108,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("scatter_add", "scatter_add"),
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
-    "binary_search": "binary_search_candidate",
 }
 GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
     "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
@@ -667,13 +665,20 @@ def assert_pack_bits_evidence(evidence_dir: Path) -> None:
     }
     expected_outputs = ["none", "i64:32"]
     expected_counts = {
+        "arith.addi": 2,
+        "arith.andi": 32,
+        "arith.cmpi": 33,
+        "arith.index_cast": 33,
         "dataflow.load": 32,
         "dataflow.store": 1,
         "arith.ori": 32,
         "arith.select": 32,
+        "arith.shli": 33,
         "arith.subi": 32,
         "llvm.intr.umin": 1,
         "llvm.trunc": 33,
+        "llvm.zext": 1,
+        "scf.if": 1,
     }
     dfg = json.loads((evidence_dir / "pack_bits.dfg.report.json").read_text())
     if (
@@ -685,15 +690,78 @@ def assert_pack_bits_evidence(evidence_dir: Path) -> None:
     ):
         raise AssertionError(f"pack_bits should preserve real packed-bit DFG evidence: {dfg}")
     assert_operation_fire_counts("pack_bits", dfg, expected_counts)
+
+    mapping = json.loads((evidence_dir / "pack_bits.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("placed_records") != 18
+        or mapping.get("routed_edges") != 16
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 471
+    ):
+        raise AssertionError(f"pack_bits should map computed address casts on shared ADG: {mapping}")
+    index_cast_sites = {
+        str(placement.get("hardware"))
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
+    }
+    if index_cast_sites != {
+        "shared_reduction_adg::fabric.op#97",
+        "shared_reduction_adg::fabric.op#98",
+    }:
+        raise AssertionError(f"pack_bits should place both computed address casts on shared ADG: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    expected_route_edges = {
+        "arith.addi#0.result0->llvm.intr.umin#0.operand0",
+        "arith.andi#0.result0->arith.cmpi#1.operand0",
+        "arith.cmpi#1.result0->arith.select#0.operand0",
+        "arith.index_cast#0.result0->dataflow.load#0.operand1",
+        "arith.index_cast#1.result0->dataflow.store#0.operand1",
+        "arith.ori#0.result0->dataflow.store#0.operand2",
+        "arith.select#0.result0->arith.ori#0.operand0",
+        "arith.shli#0.result0->arith.cmpi#0.operand0",
+        "arith.shli#0.result0->arith.subi#0.operand1",
+        "arith.shli#0.result0->llvm.trunc#0.operand0",
+        "arith.shli#1.result0->arith.select#0.operand2",
+        "arith.subi#0.result0->llvm.trunc#1.operand0",
+        "dataflow.load#0.result0->arith.andi#0.operand0",
+        "llvm.intr.umin#0.result0->llvm.zext#0.operand0",
+        "llvm.trunc#0.result0->arith.addi#0.operand0",
+        "llvm.trunc#1.result0->arith.shli#1.operand1",
+    }
+    if route_edges != expected_route_edges:
+        raise AssertionError(f"pack_bits should expose all packed-bit route edges: {mapping}")
+
     cgra = json.loads((evidence_dir / "pack_bits.cgra.report.json").read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("hardware_aware_cycles") != 546
+        or cgra.get("dfg_cycles") != 445
+        or cgra.get("hardware_aware_cycles") != 564
+        or cgra.get("placed_records") != 18
+        or cgra.get("routed_edges") != 16
+        or cgra.get("route_segments") != 86
+        or cgra.get("config_records") != 471
         or cgra.get("width_adapter_latency_cycles") != 3
         or cgra.get("final_outputs") != expected_outputs
         or cgra.get("final_memory_state") != expected_memory
     ):
         raise AssertionError(f"pack_bits should preserve real CGRA evidence: {cgra}")
+
+    comparison = json.loads((evidence_dir / "pack_bits.sim-comparison-report.json").read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 445
+        or comparison.get("cgra_sim_cycles") != 564
+    ):
+        raise AssertionError(f"pack_bits comparison should pass with real final-state checks: {comparison}")
 
 
 def signed_i32(value: int) -> int:
@@ -970,6 +1038,137 @@ def assert_bound_search_evidence(
         or comparison.get("performance_comparison_status") != "pass"
         or comparison.get("dfg_sim_cycles") != 651
         or comparison.get("cgra_sim_cycles") != 756
+    ):
+        raise AssertionError(f"{case} comparison should pass with real final-state checks: {comparison_path}: {comparison}")
+
+
+def assert_binary_search_evidence(evidence_dir: Path) -> None:
+    case = "binary_search"
+    graph = "g_t__ZN12_GLOBAL__N_123binary_search_candidateEPKfS1_Pjjj_0_0"
+    expected_output = [
+        "i32:3",
+        "i32:-1",
+        "i32:7",
+        "i32:-1",
+        "i32:0",
+    ]
+
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != graph
+        or dfg.get("dynamic_work_items") != 5
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state", {}).get("arg8") != expected_output
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG should execute real binary-search inputs: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        case,
+        dfg,
+        {
+            "arith.addi": 48,
+            "arith.cmpf": 32,
+            "arith.cmpi": 18,
+            "arith.extui": 16,
+            "arith.index_cast": 16,
+            "arith.select": 48,
+            "arith.shrui": 16,
+            "arith.subi": 16,
+            "arith.trunci": 18,
+            "dataflow.load": 21,
+            "dataflow.mux": 32,
+            "dataflow.store": 5,
+            "dataflow.sync": 5,
+            "llvm.intr.smax": 5,
+            "llvm.sext": 16,
+            "scf.if": 18,
+            "scf.while": 5,
+        },
+    )
+
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 22
+        or mapping.get("routed_edges") != 27
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 679
+    ):
+        raise AssertionError(f"{case} should route on shared memory ADG: {mapping_path}: {mapping}")
+    index_cast_sites = {
+        str(placement.get("hardware"))
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
+    }
+    if index_cast_sites != {"shared_memory_reduction_adg::fabric.op#192"}:
+        raise AssertionError(f"{case} should place its computed load address cast on shared memory ADG: {mapping_path}: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    expected_route_edges = {
+        "arith.addi#0.result0->arith.addi#1.operand0",
+        "arith.addi#0.result0->arith.addi#2.operand0",
+        "arith.addi#0.result0->arith.select#0.operand2",
+        "arith.addi#0.result0->llvm.sext#0.operand0",
+        "arith.addi#1.result0->arith.select#1.operand1",
+        "arith.addi#2.result0->arith.select#2.operand2",
+        "arith.cmpf#0.result0->arith.extui#0.operand0",
+        "arith.cmpf#0.result0->arith.select#0.operand0",
+        "arith.cmpf#0.result0->dataflow.mux#0.operand0",
+        "arith.cmpf#0.result0->dataflow.mux#1.operand0",
+        "arith.cmpf#1.result0->arith.select#1.operand0",
+        "arith.cmpf#1.result0->arith.select#2.operand0",
+        "arith.extui#0.result0->arith.trunci#0.operand0",
+        "arith.index_cast#0.result0->dataflow.load#1.operand1",
+        "arith.select#0.result0->llvm.intr.smax#0.operand0",
+        "arith.select#1.result0->dataflow.mux#0.operand2",
+        "arith.select#2.result0->dataflow.mux#1.operand2",
+        "arith.shrui#0.result0->arith.addi#0.operand0",
+        "arith.subi#0.result0->arith.shrui#0.operand0",
+        "dataflow.load#0.result0->arith.cmpf#0.operand1",
+        "dataflow.load#0.result0->arith.cmpf#1.operand1",
+        "dataflow.load#0.result1->dataflow.sync#0.operand0",
+        "dataflow.load#1.result0->arith.cmpf#0.operand0",
+        "dataflow.load#1.result0->arith.cmpf#1.operand0",
+        "dataflow.store#0.result0->dataflow.sync#0.operand1",
+        "llvm.intr.smax#0.result0->dataflow.store#0.operand2",
+        "llvm.sext#0.result0->arith.index_cast#0.operand0",
+    }
+    if route_edges != expected_route_edges:
+        raise AssertionError(f"{case} should expose all binary-search route edges: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / f"{case}.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 510
+        or cgra.get("hardware_aware_cycles") != 671
+        or cgra.get("placed_records") != 22
+        or cgra.get("routed_edges") != 27
+        or cgra.get("route_segments") != 125
+        or cgra.get("config_records") != 679
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state", {}).get("arg8") != expected_output
+    ):
+        raise AssertionError(f"{case} CGRA evidence should preserve real binary-search state: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / f"{case}.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 510
+        or comparison.get("cgra_sim_cycles") != 671
     ):
         raise AssertionError(f"{case} comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
@@ -2010,13 +2209,30 @@ def assert_rle_decode_evidence(evidence_dir: Path) -> None:
 
     mapping_path = evidence_dir / "rle_decode.mapping.json"
     mapping = json.loads(mapping_path.read_text())
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    index_cast_placements = [
+        placement
+        for placement in mapping.get("placements", [])
+        if placement.get("operation") == "arith.index_cast"
+    ]
     if (
         mapping.get("status") != "pass"
         or mapping.get("hardware") != "shared_memory_reduction_adg"
-        or mapping.get("placed_records") != 6
-        or mapping.get("routed_edges") != 4
+        or mapping.get("placed_records") != 8
+        or mapping.get("routed_edges") != 6
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 158
+        or len(index_cast_placements) != 2
+        or route_edges
+        != {
+            "arith.index_cast#0.result0->dataflow.load#0.operand1",
+            "arith.index_cast#1.result0->dataflow.load#1.operand1",
+            "dataflow.load#0.result0->dataflow.store#0.operand2",
+            "dataflow.load#1.result0->arith.addi#0.operand1",
+            "dataflow.load#1.result0->arith.addi#1.operand1",
+            "dataflow.load#1.result0->arith.cmpi#0.operand0",
+        }
     ):
         raise AssertionError(f"rle_decode should route on shared memory reduction hardware: {mapping_path}: {mapping}")
 
@@ -2026,9 +2242,11 @@ def assert_rle_decode_evidence(evidence_dir: Path) -> None:
         cgra.get("status") != "pass"
         or cgra.get("hardware") != "shared_memory_reduction_adg"
         or cgra.get("dfg_cycles") != 227
-        or cgra.get("hardware_aware_cycles") != 258
-        or cgra.get("routed_edges") != 4
-        or cgra.get("route_segments") != 12
+        or cgra.get("hardware_aware_cycles") != 276
+        or cgra.get("placed_records") != 8
+        or cgra.get("routed_edges") != 6
+        or cgra.get("route_segments") != 26
+        or cgra.get("config_records") != 158
         or cgra.get("final_outputs") != ["none", "i32:20"]
         or cgra.get("final_memory_state") != expected_memory
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
@@ -2600,6 +2818,8 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
     mapping = json.loads(mapping_path.read_text())
     expected_edges = {
         "arith.cmpf#0.result0->arith.xori#0.operand0",
+        "arith.index_cast#0.result0->dataflow.store#0.operand1",
+        "arith.index_cast#1.result0->dataflow.store#1.operand1",
         "arith.xori#0.result0->arith.extui#0.operand0",
         "dataflow.load#0.result0->arith.cmpf#0.operand0",
         "dataflow.load#1.result0->arith.cmpf#0.operand1",
@@ -2610,13 +2830,24 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
     if (
         mapping.get("status") != "pass"
         or mapping.get("hardware") != "shared_reduction_adg"
-        or mapping.get("placed_records") != 13
-        or mapping.get("routed_edges") != 6
+        or mapping.get("placed_records") != 15
+        or mapping.get("routed_edges") != 8
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 234
         or actual_edges != expected_edges
     ):
         raise AssertionError(f"merge mapping should route compare, xor, and load-store edges: {mapping_path}: {mapping}")
+    index_cast_sites = {
+        str(placement.get("hardware"))
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
+    }
+    if index_cast_sites != {
+        "shared_reduction_adg::fabric.op#97",
+        "shared_reduction_adg::fabric.op#98",
+    }:
+        raise AssertionError(f"merge should place both store address casts on shared ADG: {mapping_path}: {mapping}")
 
     cgra_path = evidence_dir / "merge.cgra.report.json"
     cgra = json.loads(cgra_path.read_text())
@@ -2624,9 +2855,11 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
         cgra.get("status") != "pass"
         or cgra.get("hardware") != "shared_reduction_adg"
         or cgra.get("dfg_cycles") != 413
-        or cgra.get("hardware_aware_cycles") != 473
-        or cgra.get("placed_records") != 13
-        or cgra.get("routed_edges") != 6
+        or cgra.get("hardware_aware_cycles") != 492
+        or cgra.get("placed_records") != 15
+        or cgra.get("routed_edges") != 8
+        or cgra.get("route_segments") != 36
+        or cgra.get("config_records") != 234
         or cgra.get("final_outputs") != ["none", "i32:5", "i32:6"]
         or cgra.get("final_memory_state") != expected_memory
     ):
@@ -2640,7 +2873,7 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
         or comparison.get("memory_comparison_status") != "pass"
         or comparison.get("performance_comparison_status") != "pass"
         or comparison.get("dfg_sim_cycles") != 413
-        or comparison.get("cgra_sim_cycles") != 473
+        or comparison.get("cgra_sim_cycles") != 492
     ):
         raise AssertionError(f"merge comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
@@ -2694,18 +2927,27 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
     assert_operation_fire_counts("autocorrelation", dfg, expected_counts)
     mapping_path = evidence_dir / "autocorrelation.mapping.json"
     mapping = json.loads(mapping_path.read_text())
+    index_cast_placements = [
+        placement
+        for placement in mapping.get("placements", [])
+        if placement.get("operation") == "arith.index_cast"
+    ]
     if (
         mapping.get("status") != "pass"
         or mapping.get("hardware") != "shared_reduction_adg"
-        or mapping.get("placed_records") != 10
-        or mapping.get("routed_edges") != 6
+        or mapping.get("placed_records") != 12
+        or mapping.get("routed_edges") != 8
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 235
+        or len(index_cast_placements) != 2
     ):
         raise AssertionError(f"autocorrelation mapping should route on shared reduction ADG: {mapping_path}: {mapping}")
     expected_edges = {
         "arith.addi#0.result0->arith.andi#0.operand0",
         "arith.andi#0.result0->dataflow.load#1.operand1",
+        "arith.index_cast#0.result0->dataflow.load#0.operand1",
+        "arith.index_cast#1.result0->dataflow.store#0.operand1",
         "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand0",
         "dataflow.load#1.result0->llvm.intr.fmuladd#0.operand1",
         "llvm.intr.fmuladd#0.result0->dataflow.store#0.operand2",
@@ -2718,9 +2960,11 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("placed_records") != 10
-        or cgra.get("routed_edges") != 6
-        or cgra.get("hardware_aware_cycles") != 1501
+        or cgra.get("placed_records") != 12
+        or cgra.get("routed_edges") != 8
+        or cgra.get("route_segments") != 40
+        or cgra.get("config_records") != 235
+        or cgra.get("hardware_aware_cycles") != 1519
         or cgra.get("width_adapter_latency_cycles") != 1
         or cgra.get("dfg_cycles") != 1448
         or cgra.get("final_outputs") != ["none", "i32:0"]
@@ -2735,7 +2979,7 @@ def assert_autocorrelation_dfg_evidence(evidence_dir: Path) -> None:
         or comparison.get("memory_comparison_status") != "pass"
         or comparison.get("performance_comparison_status") != "pass"
         or comparison.get("dfg_sim_cycles") != 1448
-        or comparison.get("cgra_sim_cycles") != 1501
+        or comparison.get("cgra_sim_cycles") != 1519
     ):
         raise AssertionError(f"autocorrelation comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
@@ -2774,13 +3018,20 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
     mapping = json.loads(mapping_path.read_text())
     if (
         mapping.get("status") != "pass"
-        or mapping.get("placed_records") != 8
-        or mapping.get("routed_edges") != 7
+        or mapping.get("placed_records") != 9
+        or mapping.get("routed_edges") != 8
         or mapping.get("unrouted_edges") != 0
         or mapping.get("unplaced_records") != 0
-        or mapping.get("config_records") != 179
+        or mapping.get("config_records") != 214
     ):
         raise AssertionError(f"crc32 should map the two-shift CRC slice on shared ADG: {mapping_path}: {mapping}")
+    index_cast_sites = {
+        str(placement.get("hardware"))
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
+    }
+    if index_cast_sites != {"shared_reduction_adg::fabric.op#97"}:
+        raise AssertionError(f"crc32 should place its computed address cast on shared ADG: {mapping_path}: {mapping}")
     route_edges = {
         str(route.get("edge_ref"))
         for route in mapping.get("routes", [])
@@ -2788,6 +3039,7 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
     }
     expected_route_edges = {
         "arith.andi#0.result0->dataflow.load#1.operand1",
+        "arith.index_cast#0.result0->dataflow.load#0.operand1",
         "arith.shli#0.result0->arith.shrui#1.operand1",
         "arith.shrui#0.result0->arith.xori#1.operand0",
         "arith.shrui#1.result0->arith.xori#0.operand0",
@@ -2803,14 +3055,28 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
     if (
         cgra.get("status") != "pass"
         or cgra.get("dfg_cycles") != 934
-        or cgra.get("hardware_aware_cycles") != 980
-        or cgra.get("routed_edges") != 7
-        or cgra.get("route_segments") != 31
+        or cgra.get("hardware_aware_cycles") != 989
+        or cgra.get("placed_records") != 9
+        or cgra.get("routed_edges") != 8
+        or cgra.get("route_segments") != 38
+        or cgra.get("config_records") != 214
         or cgra.get("final_outputs") != ["none", "i32:-1307787247"]
         or cgra.get("final_memory_state") != memory
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"crc32 CGRA evidence should carry the real CRC result state: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "crc32.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 934
+        or comparison.get("cgra_sim_cycles") != 989
+    ):
+        raise AssertionError(f"crc32 comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
 
 def assert_gather_evidence(evidence_dir: Path) -> None:
@@ -3549,6 +3815,7 @@ def main(argv: list[str]) -> int:
             },
         )
         assert_popcount_evidence(evidence_dir)
+        assert_binary_search_evidence(evidence_dir)
         assert_bound_search_evidence(
             evidence_dir,
             "lower_bound",
@@ -3628,7 +3895,7 @@ def main(argv: list[str]) -> int:
         )
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
-        assert_mapping_hardware(evidence_dir, "binary_search", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "binary_search", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "clz", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "ctz", "shared_memory_reduction_adg")
@@ -3964,6 +4231,7 @@ def main(argv: list[str]) -> int:
             "convolve_1d",
             "convolve_1d_same",
             "crc32",
+            "binary_search",
             "fir_filter_stateful",
             "compare_swap",
             "compact",
@@ -4069,9 +4337,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 73,
+            "pass": 74,
             "fail": 0,
-            "blocked": 36,
+            "blocked": 35,
             "unsupported": 0,
             "missing_status": 0,
         }
