@@ -100,11 +100,9 @@ MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "binary_search",
-    "lower_bound",
     "moving_avg",
     "scatter_add",
     "sort_insertion",
-    "upper_bound",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("moving_avg", "moving_avg_kernel"),
@@ -112,8 +110,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
     "binary_search": "binary_search_candidate",
-    "lower_bound": "lower_bound_candidate",
-    "upper_bound": "upper_bound_candidate",
 }
 GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
     "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
@@ -872,6 +868,110 @@ def assert_bit_scan_evidence(
         or cgra.get("final_memory_state") != expected_memory
     ):
         raise AssertionError(f"{case} CGRA evidence should preserve real final memory: {cgra_path}: {cgra}")
+
+
+BOUND_SEARCH_FIRE_COUNTS = {
+    "arith.addi": 84,
+    "arith.cmpf": 28,
+    "arith.cmpi": 28,
+    "arith.index_cast": 84,
+    "arith.select": 56,
+    "arith.shrui": 56,
+    "arith.subi": 56,
+    "dataflow.load": 36,
+    "dataflow.store": 8,
+    "dataflow.sync": 8,
+    "scf.while": 8,
+}
+
+
+BOUND_SEARCH_COMMON_ROUTE_EDGES = {
+    "arith.addi#0.result0->arith.addi#2.operand0",
+    "arith.addi#1.result0->dataflow.load#1.operand1",
+    "arith.cmpf#0.result0->arith.select#0.operand0",
+    "arith.cmpf#0.result0->arith.select#1.operand0",
+    "arith.select#0.result0->arith.cmpi#0.operand0",
+    "arith.select#0.result0->dataflow.store#0.operand2",
+    "arith.select#1.result0->arith.cmpi#0.operand1",
+    "arith.shrui#0.result0->arith.addi#0.operand0",
+    "arith.shrui#1.result0->arith.addi#1.operand0",
+    "arith.subi#0.result0->arith.shrui#0.operand0",
+    "arith.subi#1.result0->arith.shrui#1.operand0",
+    "dataflow.load#0.result0->arith.cmpf#0.operand1",
+    "dataflow.load#0.result1->dataflow.sync#0.operand0",
+    "dataflow.load#1.result0->arith.cmpf#0.operand0",
+    "dataflow.store#0.result0->dataflow.sync#0.operand1",
+}
+
+
+def assert_bound_search_evidence(
+    evidence_dir: Path,
+    case: str,
+    *,
+    graph: str,
+    expected_output: list[str],
+    case_route_edges: set[str],
+) -> None:
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != graph
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("event_count") != 452
+        or dfg.get("optimistic_cycles") != 651
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state", {}).get("arg6") != expected_output
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG should execute real bound-search inputs: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(case, dfg, BOUND_SEARCH_FIRE_COUNTS)
+
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    routes = mapping.get("routes", [])
+    route_edges = {route.get("edge_ref") for route in routes if isinstance(route, dict)}
+    route_segments = sum(len(route.get("segments", [])) for route in routes if isinstance(route, dict))
+    expected_edges = BOUND_SEARCH_COMMON_ROUTE_EDGES | case_route_edges
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 15
+        or mapping.get("routed_edges") != 17
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("config_records") != 430
+        or route_segments != 77
+        or route_edges != expected_edges
+    ):
+        raise AssertionError(f"{case} should route real bound-search dataflow on shared memory ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / f"{case}.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 651
+        or cgra.get("hardware_aware_cycles") != 756
+        or cgra.get("route_segments") != 77
+        or cgra.get("placed_records") != 15
+        or cgra.get("routed_edges") != 17
+        or cgra.get("config_records") != 430
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state", {}).get("arg6") != expected_output
+    ):
+        raise AssertionError(f"{case} CGRA evidence should preserve real bound-search state: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / f"{case}.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 651
+        or comparison.get("cgra_sim_cycles") != 756
+    ):
+        raise AssertionError(f"{case} comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
 
 def popcount_input_values() -> list[int]:
@@ -3449,6 +3549,44 @@ def main(argv: list[str]) -> int:
             },
         )
         assert_popcount_evidence(evidence_dir)
+        assert_bound_search_evidence(
+            evidence_dir,
+            "lower_bound",
+            graph="g_t__ZN12_GLOBAL__N_121lower_bound_candidateEPKfS1_Pjjj_0_0",
+            expected_output=[
+                "i32:1",
+                "i32:0",
+                "i32:5",
+                "i32:10",
+                "i32:3",
+                "i32:6",
+                "i32:9",
+                "i32:10",
+            ],
+            case_route_edges={
+                "arith.addi#0.result0->arith.select#1.operand2",
+                "arith.addi#2.result0->arith.select#0.operand1",
+            },
+        )
+        assert_bound_search_evidence(
+            evidence_dir,
+            "upper_bound",
+            graph="g_t__ZN12_GLOBAL__N_121upper_bound_candidateEPKfS1_Pjjj_0_0",
+            expected_output=[
+                "i32:3",
+                "i32:0",
+                "i32:5",
+                "i32:10",
+                "i32:4",
+                "i32:7",
+                "i32:10",
+                "i32:10",
+            ],
+            case_route_edges={
+                "arith.addi#0.result0->arith.select#1.operand1",
+                "arith.addi#2.result0->arith.select#0.operand2",
+            },
+        )
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -3557,7 +3695,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "fir_filter", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "fir_filter_stateful", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gather", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "lower_bound", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
@@ -3587,7 +3725,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "upper_bound", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "upper_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upsample", "shared_reduction_adg")
         for case in MAPPING_FAILED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
@@ -3833,6 +3971,7 @@ def main(argv: list[str]) -> int:
             "hash_mix",
             "string_hash",
             "merge",
+            "lower_bound",
             "modmul",
             "relu",
             "upsample",
@@ -3841,6 +3980,7 @@ def main(argv: list[str]) -> int:
             "rle_decode",
             "runge_kutta_step",
             "autocorrelation",
+            "upper_bound",
         ):
             assert_promoted_row(repo, rows, case)
         for case in MAPPING_FAILED_SWEEP_CASES:
@@ -3929,9 +4069,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 71,
+            "pass": 73,
             "fail": 0,
-            "blocked": 38,
+            "blocked": 36,
             "unsupported": 0,
             "missing_status": 0,
         }

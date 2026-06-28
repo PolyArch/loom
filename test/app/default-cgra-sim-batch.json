@@ -194,6 +194,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "lower_bound",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "correlation",
       "hardware": "shared_reduction_adg"
     },
@@ -279,6 +283,10 @@
     },
     {
       "case": "transform_point",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "upper_bound",
       "hardware": "shared_memory_reduction_adg"
     },
     {

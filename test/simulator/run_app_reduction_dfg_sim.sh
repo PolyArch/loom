@@ -634,6 +634,33 @@ configure_axpy_args() {
     )
 }
 
+append_bound_search_memrefs() {
+    append_ctrl_tokens 8
+    append_raw_memref 1 "3.000000e+00,0.000000e+00,8.000000e+00,2.000000e+01,5.000000e+00,1.100000e+01,1.700000e+01,1.800000e+01"
+    append_repeated_arg 2 8 1
+    append_raw_memref 3 "1.000000e+00,3.000000e+00,3.000000e+00,5.000000e+00,7.000000e+00,9.000000e+00,1.100000e+01,1.300000e+01,1.500000e+01,1.700000e+01"
+    append_repeated_arg 4 8 10
+    append_repeated_arg 5 8 0
+    append_constant_memref 6 8 "0"
+    append_index_tokens 7 8
+}
+
+configure_lower_bound_args() {
+    append_bound_search_memrefs
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_121lower_bound_candidateEPKfS1_Pjjj_0_0
+        --workload lower_bound
+    )
+}
+
+configure_upper_bound_args() {
+    append_bound_search_memrefs
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_121upper_bound_candidateEPKfS1_Pjjj_0_0
+        --workload upper_bound
+    )
+}
+
 dot_product_3d_lhs_values() {
     local values=""
     local value=""
@@ -1194,6 +1221,9 @@ case "${CASE}" in
     find_first_set)
         configure_find_first_set_args
         ;;
+    lower_bound)
+        configure_lower_bound_args
+        ;;
     vecadd)
         append_ctrl_tokens 64
         append_linear_memref 1 64 1 "%.6e"
@@ -1724,6 +1754,9 @@ case "${CASE}" in
             --arg 17=3.000000e+00
             --arg 18=2
         )
+        ;;
+    upper_bound)
+        configure_upper_bound_args
         ;;
     rle_decode)
         sim_args+=(

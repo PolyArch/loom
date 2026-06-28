@@ -317,7 +317,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" ]]; then
+    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -996,19 +996,11 @@ PY
     --mapping-output "${mapping_artifact}" \
     --cgra-output "${cgra_report}" \
     --mapping-summary-output "${mapping}"
-elif [[ "${CASE}" == "binary_search" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" || "${CASE}" == "upper_bound" ]]; then
+elif [[ "${CASE}" == "binary_search" || "${CASE}" == "moving_avg" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     binary_search)
       expected_primary_graph_token="binary_search_candidate"
-      graph_absence_args=(
-        --expected-graph-presence present
-        --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
-        --evidence "unwired primary graph"
-      )
-      ;;
-    lower_bound)
-      expected_primary_graph_token="lower_bound_candidate"
       graph_absence_args=(
         --expected-graph-presence present
         --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
@@ -1027,14 +1019,6 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "lower_bound" || "${CASE}" 
         --expected-graph-presence present
         --diagnostic "primary workload graph is partial: sort_insertion lowering covers the copy loop while the insertion-sort compare-and-shift loop remains outside dataflow"
         --evidence "partial dataflow lowering boundary"
-      )
-      ;;
-    upper_bound)
-      expected_primary_graph_token="upper_bound_candidate"
-      graph_absence_args=(
-        --expected-graph-presence present
-        --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
-        --evidence "unwired primary graph"
       )
       ;;
   esac
