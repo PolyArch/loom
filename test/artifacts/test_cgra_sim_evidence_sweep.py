@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 32
+APP_NO_DFG_TIER_COUNT = 31
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -24,6 +24,7 @@ DEFAULT_SWEEP_CASES = (
     "dot_product_3d",
     "axpy",
     "binary_search",
+    "bitonic_stage",
     "bit_reverse",
     "bisection_step",
     "clz",
@@ -601,6 +602,119 @@ def assert_scatter_add_evidence(evidence_dir: Path) -> None:
         or comparison.get("memory_comparison_status") != "pass"
     ):
         raise AssertionError(f"scatter_add should preserve CGRA/comparison memory evidence: {cgra} {comparison}")
+
+
+def assert_bitonic_stage_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": [
+            "f32:1",
+            "f32:3",
+            "f32:2",
+            "f32:4",
+            "f32:8",
+            "f32:6",
+            "f32:7",
+            "f32:5",
+        ]
+    }
+    expected_counts = {
+        "arith.cmpf": 8,
+        "arith.cmpi": 4,
+        "arith.index_cast": 16,
+        "arith.select": 12,
+        "arith.shli": 12,
+        "arith.shrui": 8,
+        "dataflow.constant": 21,
+        "dataflow.load": 8,
+        "dataflow.store": 8,
+        "llvm.getelementptr": 8,
+    }
+
+    dfg = json.loads((evidence_dir / "bitonic_stage.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_bitonic_stage_0"
+        or dfg.get("dynamic_work_items") != 4
+        or dfg.get("optimistic_cycles") != 195
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"bitonic_stage should preserve true DFG compare-swap evidence: {dfg}")
+    assert_operation_fire_counts("bitonic_stage", dfg, expected_counts)
+
+    mapping = json.loads((evidence_dir / "bitonic_stage.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 23
+        or mapping.get("routed_edges") != 29
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 734
+    ):
+        raise AssertionError(f"bitonic_stage should route on shared memory reduction hardware: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.cmpi#0.result0->arith.select#0.operand0",
+        "dataflow.constant#1.result0->arith.index_cast#0.operand0",
+        "dataflow.constant#1.result0->arith.index_cast#1.operand0",
+        "arith.index_cast#0.result0->arith.shli#1.operand1",
+        "arith.index_cast#1.result0->arith.shli#2.operand1",
+        "arith.shrui#0.result0->dataflow.load#0.operand1",
+        "arith.shrui#1.result0->dataflow.store#0.operand1",
+        "arith.select#1.result0->dataflow.store#0.operand2",
+        "arith.select#2.result0->dataflow.store#1.operand2",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"bitonic_stage mapping should expose predicate and address routes: {mapping}")
+    placeholder_segments = [
+        segment
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+        for segment in route.get("segments", [])
+        if isinstance(segment, dict)
+        and any(
+            isinstance(endpoint, str)
+            and (endpoint.endswith(".out") or endpoint.endswith(".in"))
+            for endpoint in (segment.get("from"), segment.get("to"))
+        )
+    ]
+    if placeholder_segments:
+        raise AssertionError(f"bitonic_stage routes should use real fabric endpoints: {mapping}")
+    index_cast_sites = [
+        placement.get("hardware")
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
+    ]
+    if len(index_cast_sites) != 2 or not all(
+        isinstance(site, str) and site.startswith("shared_memory_reduction_adg::fabric.op#")
+        for site in index_cast_sites
+    ):
+        raise AssertionError(
+            f"bitonic_stage should place both shifted-address index casts: {mapping}"
+        )
+
+    cgra = json.loads((evidence_dir / "bitonic_stage.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "bitonic_stage.sim-comparison-report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 195
+        or cgra.get("hardware_aware_cycles") != 372
+        or cgra.get("routed_edges") != 29
+        or cgra.get("route_segments") != 135
+        or cgra.get("config_records") != 734
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra.get("fidelity_level") != "mapping_constraint_estimate"
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"bitonic_stage should preserve CGRA/comparison evidence: {cgra} {comparison}")
 
 
 def assert_structured_blocker_row(
@@ -1197,12 +1311,15 @@ def assert_binary_search_evidence(evidence_dir: Path) -> None:
         or mapping.get("config_records") != 679
     ):
         raise AssertionError(f"{case} should route on shared memory ADG: {mapping_path}: {mapping}")
-    index_cast_sites = {
+    index_cast_sites = [
         str(placement.get("hardware"))
         for placement in mapping.get("placements", [])
         if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
-    }
-    if index_cast_sites != {"shared_memory_reduction_adg::fabric.op#192"}:
+    ]
+    if (
+        len(index_cast_sites) != 1
+        or not index_cast_sites[0].startswith("shared_memory_reduction_adg::fabric.op#")
+    ):
         raise AssertionError(f"{case} should place its computed load address cast on shared memory ADG: {mapping_path}: {mapping}")
     route_edges = {
         str(route.get("edge_ref"))
@@ -3614,6 +3731,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "matmul",
                 "--case",
+                "bitonic_stage",
+                "--case",
                 "mmtile",
                 "--case",
                 "mat3x3_mult",
@@ -3659,6 +3778,7 @@ def main(argv: list[str]) -> int:
             "bit_reverse",
             "bisection_step",
             "byte_swap",
+            "bitonic_stage",
             "clz",
             "ctz",
             "downsample",
@@ -3744,6 +3864,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
+        assert_dfg_dynamic_work_items(evidence_dir, "bitonic_stage", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "bisection_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
@@ -3913,6 +4034,7 @@ def main(argv: list[str]) -> int:
         )
         assert_popcount_evidence(evidence_dir)
         assert_binary_search_evidence(evidence_dir)
+        assert_bitonic_stage_evidence(evidence_dir)
         assert_bound_search_evidence(
             evidence_dir,
             "lower_bound",
@@ -3993,6 +4115,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecsum-while", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "binary_search", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "bitonic_stage", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "clz", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "ctz", "shared_memory_reduction_adg")
@@ -4330,6 +4453,7 @@ def main(argv: list[str]) -> int:
             "convolve_1d_same",
             "crc32",
             "binary_search",
+            "bitonic_stage",
             "fir_filter_stateful",
             "compare_swap",
             "compact",
@@ -4436,9 +4560,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 75,
+            "pass": 76,
             "fail": 0,
-            "blocked": 34,
+            "blocked": 33,
             "unsupported": 0,
             "missing_status": 0,
         }

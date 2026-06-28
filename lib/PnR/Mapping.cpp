@@ -236,6 +236,25 @@ bool isDataflowMemoryAddressUse(mlir::OpOperand &use) {
          use.getOperandNumber() == 1;
 }
 
+bool isAddressArithmeticOp(mlir::Operation *op) {
+  if (!op || op->getNumResults() != 1)
+    return false;
+  llvm::StringRef name = op->getName().getStringRef();
+  return name == "arith.addi" || name == "arith.subi" ||
+         name == "arith.muli" || name == "arith.shli" ||
+         name == "arith.shrsi" || name == "arith.shrui" ||
+         name == "arith.andi" || name == "arith.ori" ||
+         name == "arith.xori";
+}
+
+bool isAddressShiftOp(mlir::Operation *op) {
+  if (!op)
+    return false;
+  llvm::StringRef name = op->getName().getStringRef();
+  return name == "arith.shli" || name == "arith.shrsi" ||
+         name == "arith.shrui";
+}
+
 bool valueFeedsOnlyDirectMemoryAddress(mlir::Value value) {
   if (value.use_empty())
     return false;
@@ -243,6 +262,41 @@ bool valueFeedsOnlyDirectMemoryAddress(mlir::Value value) {
     if (!isDataflowMemoryAddressUse(use))
       return false;
   return true;
+}
+
+bool valueFeedsOnlyShiftedMemoryAddress(
+    mlir::Value value, llvm::DenseSet<mlir::Value> &active, bool &sawShift) {
+  if (value.use_empty())
+    return false;
+  if (!active.insert(value).second)
+    return false;
+
+  bool sawAddressPath = false;
+  for (mlir::OpOperand &use : value.getUses()) {
+    if (isDataflowMemoryAddressUse(use)) {
+      sawAddressPath = true;
+      continue;
+    }
+    mlir::Operation *owner = use.getOwner();
+    if (!isAddressArithmeticOp(owner) ||
+        !valueFeedsOnlyShiftedMemoryAddress(owner->getResult(0), active,
+                                            sawShift)) {
+      active.erase(value);
+      return false;
+    }
+    sawShift |= isAddressShiftOp(owner);
+    sawAddressPath = true;
+  }
+
+  active.erase(value);
+  return sawAddressPath;
+}
+
+bool valueFeedsOnlyShiftedMemoryAddress(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> active;
+  bool sawShift = false;
+  return valueFeedsOnlyShiftedMemoryAddress(value, active, sawShift) &&
+         sawShift;
 }
 
 bool isDataflowStreamIndex(mlir::Value value) {
@@ -255,7 +309,11 @@ bool shouldMaterializeAdapterOp(mlir::Operation *op) {
   if ((name != "arith.index_cast" && name != "arith.index_castui") ||
       op->getNumOperands() != 1 || op->getNumResults() != 1)
     return false;
-  if (!valueFeedsOnlyDirectMemoryAddress(op->getResult(0)))
+  bool directAddress = valueFeedsOnlyDirectMemoryAddress(op->getResult(0));
+  bool shiftedAddress = valueFeedsOnlyShiftedMemoryAddress(op->getResult(0));
+  if (!directAddress && !shiftedAddress)
+    return false;
+  if (shiftedAddress && !directAddress && !op->getOperand(0).getDefiningOp())
     return false;
   if (isDataflowStreamIndex(op->getOperand(0)))
     return false;

@@ -12,6 +12,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "axpy",
     "binary_search",
     "bisection_step",
+    "bitonic_stage",
     "bit_reverse",
     "byte_swap",
     "clz",

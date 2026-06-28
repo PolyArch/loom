@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 109
-APP_NO_DFG_TIER_COUNT = 32
+APP_NO_DFG_TIER_COUNT = 31
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -2281,7 +2281,11 @@ def main() -> int:
             "unsupported": 0,
             "missing_status": APP_CASE_COUNT - len(CURRENT_SIM_CYCLE_CASES) - APP_NO_DFG_TIER_COUNT,
         }:
-            raise AssertionError(f"current-like evidence should produce 29 blocked app rows: {current_like_counts}")
+            raise AssertionError(
+                f"current-like evidence should produce "
+                f"{len(CURRENT_SIM_CYCLE_CASES) + APP_NO_DFG_TIER_COUNT} "
+                f"blocked app rows: {current_like_counts}"
+            )
         vecadd_like = one_row(current_like_rows, "app", "vecadd")
         if vecadd_like["diagnostic_class"] != "missing_aggregate_cgra_status_evidence":
             raise AssertionError(f"component-only vecadd should require aggregate artifacts: {vecadd_like}")

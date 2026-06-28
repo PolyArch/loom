@@ -105,7 +105,7 @@
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
       "expected_stdout": "expected.txt",
-      "tiers": ["run", "raise"],
+      "tiers": ["run", "raise", "dfg"],
       "feature_tags": ["sort", "control", "float"],
       "compiler_flags": [],
       "link_flags": [],

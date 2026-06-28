@@ -1058,6 +1058,29 @@ void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addConfigurableWideConstantPe(ModuleBuilder &module,
+                                   llvm::StringRef result,
+                                   llvm::StringRef control) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine(
+      "    fabric.pe [spatial] (%pa = " + valueName(control) +
+      " : !fabric.bits<0> to !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  module.addExactBodyLine("      fabric.fu(%token = %pa : !fabric.bits<64> to "
+                          "!fabric.bits<0>) -> !fabric.bits<64> {");
+  module.addExactBodyLine(
+      "        %value = fabric.op [@dataflow.constant] (%token)");
+  module.addExactBodyLine(
+      "            {hw_params = [{const_hex_value = [\"0x00000000\", "
+      "\"0x00000001\", \"0x00000002\", \"0x00000003\", "
+      "\"0x00000004\", \"0x00000008\"]}]}");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<0>) -> !fabric.bits<64>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
 void addConfigurableBinaryPe(ModuleBuilder &module, llvm::StringRef result,
                              llvm::StringRef lhs, llvm::StringRef rhs,
                              llvm::ArrayRef<llvm::StringRef> opNames) {
@@ -1123,6 +1146,31 @@ void addCmpPe(ModuleBuilder &module, llvm::StringRef result,
       "!fabric.bits<1>");
   module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
                           "!fabric.bits<32>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
+void addWideCmpPe(ModuleBuilder &module, llvm::StringRef result,
+                  llvm::StringRef lhs, llvm::StringRef rhs) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%lhs = " + valueName(lhs) +
+                          " : !fabric.bits<64>,");
+  module.addExactBodyLine("                         %rhs = " + valueName(rhs) +
+                          " : !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  module.addExactBodyLine("      fabric.fu(%a = %lhs : !fabric.bits<64>,");
+  module.addExactBodyLine("                %b = %rhs : !fabric.bits<64>) "
+                          "-> !fabric.bits<64> {");
+  module.addExactBodyLine(
+      "        %pred = fabric.op [@arith.cmpi, @llvm.icmp] (%a, %b)");
+  module.addExactBodyLine(
+      "            {hw_params = [{predicate = [\"eq\", \"ne\", \"slt\", "
+      "\"sle\", \"sgt\", \"sge\", \"ult\", \"ule\", \"ugt\", \"uge\"]}]}");
+  module.addExactBodyLine(
+      "            : (!fabric.bits<64>, !fabric.bits<64>) -> "
+      "!fabric.bits<1>");
+  module.addExactBodyLine("        fabric.yield %pred : !fabric.bits<1> to "
+                          "!fabric.bits<64>");
   module.addExactBodyLine("      }");
   module.addExactBodyLine("    }");
 }
@@ -3665,6 +3713,9 @@ struct SharedMemoryAdgConfig {
   unsigned shiftCount = 8;
   unsigned castCount = 8;
   unsigned trunciCount = 0;
+  unsigned wideConstantCount = 0;
+  unsigned wideShiftCount = 0;
+  unsigned wideCmpCount = 0;
   unsigned wideCastCount = 4;
   unsigned wideIndexCastCount = 0;
   unsigned wideIndexCastUiCount = 0;
@@ -3929,6 +3980,13 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sources32.push_back(result);
     sinks0.push_back(control);
   }
+  for (unsigned index = 0; index < config.wideConstantCount; ++index) {
+    std::string result = numbered("wide_const", index);
+    std::string control = result + "_ctrl";
+    addConfigurableWideConstantPe(module, result, control);
+    sources64.push_back(result);
+    sinks0.push_back(control);
+  }
 
   addStreamBank("stream", config.streamCount);
   addCarryBank("carry", config.carryCount);
@@ -3947,6 +4005,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("xor", config.logicCount, {"arith.xori"});
   addBinaryBank("shift", config.shiftCount,
                 {"arith.shli", "arith.shrsi", "arith.shrui"});
+  addWideBinaryBank("wide_shift", config.wideShiftCount,
+                    {"arith.shli", "arith.shrsi", "arith.shrui"});
   addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
   addBinaryBank("umax", config.unsignedMaxCount, {"llvm.intr.umax"});
   addBinaryBank("smin", config.minCount, {"llvm.intr.smin"});
@@ -3960,6 +4020,21 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sources32.push_back(result);
     sinks32.push_back(lhs);
     sinks32.push_back(rhs);
+  }
+  for (unsigned index = 0; index < config.wideCmpCount; ++index) {
+    std::string result = numbered("wide_cmp", index);
+    std::string pred = result + "_pred";
+    std::string lhs = result + "_lhs";
+    std::string rhs = result + "_rhs";
+    addWideCmpPe(module, result, lhs, rhs);
+    module.addExactBodyLine(valueName(pred) + " = fabric.fifo " +
+                            valueName(result) +
+                            " [max_depth = 1, bypassable = true] "
+                            "{bypassed = true}");
+    module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
+    sources32.push_back(pred);
+    sinks64.push_back(lhs);
+    sinks64.push_back(rhs);
   }
 
   for (unsigned index = 0; index < config.fpCmpCount; ++index) {
@@ -4045,6 +4120,9 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.moduleName = "shared_memory_reduction_adg";
   config.muxCount = 4;
   config.trunciCount = 4;
+  config.wideConstantCount = 2;
+  config.wideShiftCount = 1;
+  config.wideCmpCount = 1;
   config.wideIndexCastCount = 4;
   config.wideIndexCastUiCount = 2;
   config.wideSextCount = 4;

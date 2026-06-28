@@ -46,6 +46,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "bitonic_stage",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "bit_reverse",
       "hardware": "shared_reduction_adg"
     },

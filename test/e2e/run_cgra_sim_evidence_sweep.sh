@@ -65,6 +65,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     dot_product_3d
     axpy
     binary_search
+    bitonic_stage
     bit_reverse
     bisection_step
     clz
