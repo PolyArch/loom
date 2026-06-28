@@ -356,7 +356,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             str(out_dir),
             "--legacy-loombench-root",
             str(legacy_root),
-            "--app-sim-default-batch",
+            "--full-sim-default-batch",
         ],
     )
     rows = read_rows(out_dir / "cgra-status-summary.csv")
@@ -385,6 +385,30 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "missing_status": 0,
         },
     )
+    assert_counts(
+        data,
+        "cmsis-dsp",
+        {
+            "total": 16,
+            "pass": 14,
+            "fail": 0,
+            "blocked": 0,
+            "unsupported": 2,
+            "missing_status": 0,
+        },
+    )
+    assert_counts(
+        data,
+        "cmsis-nn",
+        {
+            "total": 18,
+            "pass": 11,
+            "fail": 0,
+            "blocked": 1,
+            "unsupported": 6,
+            "missing_status": 0,
+        },
+    )
     expected_hardware = default_batch_hardware(repo)
     for case, hardware in expected_hardware.items():
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
@@ -394,6 +418,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
                 raise AssertionError(f"app CGRA sweep mode should emit {artifact}")
     assert_loombench_cgra_pass_row(repo, rows, "rle_decode", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
+    sim_evidence = out_dir / "current-sim-cycle"
+    assert_cmsis_cgra_pass_row(
+        repo, rows, sim_evidence, "cmsis-dsp", "SupportFunctions/arm_copy_f32.c", "arm_copy_f32"
+    )
+    assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
     run(

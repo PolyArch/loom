@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-default-batch] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--full-sim-default-batch] [--cmsis-sim-default] [--cmsis-sim-default-batch] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
@@ -25,6 +25,8 @@ evidence directory. Each --app-sim-attempt-manifest declares app rows that
 should be attempted on shared ADGs and recorded honestly even when the resulting
 evidence is blocked or unsupported. Each --app-sim-case runs the app CGRA
 evidence sweep for that app row into the status evidence directory.
+--full-sim-default-batch runs both tracked default app and CMSIS CGRA-sim
+batches into the same default status evidence directory.
 When a legacy LoomBench root is supplied, the rollup also generates and
 consumes the dedicated LoomBench manifest so legacy rows are structured status
 records rather than manifest omissions.
@@ -85,6 +87,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --app-sim-default-batch)
             APP_SIM_DEFAULT_BATCH=1
+            shift
+            ;;
+        --full-sim-default-batch)
+            APP_SIM_DEFAULT_BATCH=1
+            CMSIS_SIM_DEFAULT_BATCH=1
+            CMSIS_SIM_DEFAULT=1
             shift
             ;;
         --app-sim-seed-batch)
