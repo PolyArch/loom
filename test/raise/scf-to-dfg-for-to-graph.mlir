@@ -37,9 +37,6 @@ dataflow.thread private @t_existing(%buf: memref<?xf32>, %n: index) ctrl (%c: no
 // CHECK-NOT: scf.forall
 // CHECK-LABEL: func.func @host_reduction
 // CHECK: dataflow.thread.launch @t_host_reduction_red_0
-// CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
-// CHECK-SAME: -> none
-// CHECK: dataflow.graph.return %{{.*}} : none
 dataflow.thread private @t_unused_ptr_walk(%src: !llvm.ptr, %dst: !llvm.ptr,
                                            %n: index) ctrl (%c: none) {
   %c0 = arith.constant 0 : index
@@ -80,11 +77,50 @@ func.func @host_reduction(%buf: memref<?xf32>, %n: index) -> f32 {
   return %r : f32
 }
 
+// Structured lane-local control in a thread is still a valid graph body
+// when it contains no nested launch boundary. The graph keeps the
+// scf.if/scf.while structure so simulator and mapper handle the actual
+// control flow instead of flattening it in the front end.
+// CHECK-LABEL: dataflow.thread private @t_structured_while
+// CHECK: dataflow.graph.launch @g_t_structured_while_0
+dataflow.thread private @t_structured_while(%src: memref<?xi32>, %dst: memref<?xi32>,
+                                            %n: index) ctrl (%c: none) iv (%lane: index) {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %value = memref.load %src[%lane] : memref<?xi32>
+  %is_zero = arith.cmpi eq, %value, %zero : i32
+  %count = scf.if %is_zero -> (i32) {
+    scf.yield %zero : i32
+  } else {
+    %result:2 = scf.while (%v = %value, %acc = %zero) : (i32, i32) -> (i32, i32) {
+      %more = arith.cmpi ne, %v, %zero : i32
+      scf.condition(%more) %v, %acc : i32, i32
+    } do {
+    ^bb0(%v_next: i32, %acc_next: i32):
+      %bit = arith.andi %v_next, %one : i32
+      %updated = arith.addi %acc_next, %bit : i32
+      %shifted = arith.shrui %v_next, %one : i32
+      scf.yield %shifted, %updated : i32, i32
+    }
+    scf.yield %result#1 : i32
+  }
+  memref.store %count, %dst[%lane] : memref<?xi32>
+  dataflow.thread.yield
+}
+
+// CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
+// CHECK-SAME: -> none
+// CHECK: dataflow.graph.return %{{.*}} : none
 // CHECK: dataflow.graph.func private @g_t_host_reduction_red_0_0
 // CHECK-SAME: -> (none, f32)
 // CHECK: dataflow.graph.return %{{.*}}, %{{.*}} : none, f32
 // CHECK-LABEL: dataflow.graph.func private @g_t_forall_store_0
 // CHECK: scf.forall
 // CHECK: memref.load
+// CHECK: memref.store
+// CHECK: dataflow.graph.return
+// CHECK-LABEL: dataflow.graph.func private @g_t_structured_while_0
+// CHECK: scf.if
+// CHECK: scf.while
 // CHECK: memref.store
 // CHECK: dataflow.graph.return

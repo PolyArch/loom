@@ -4,8 +4,8 @@
 // because false positives change semantics:
 //   * Zero iter_args (lifting would break a loop-carried recurrence).
 //   * Loop-invariant lb/ub/step.
-//   * No unsupported control flow inside the body: no nested scf.while /
-//     execute_region, no func.call / llvm.call to non-pure callees, no
+//   * No unsupported control flow inside the body: no execute_region,
+//     no func.call / llvm.call to non-pure callees, no
 //     freestanding cf.cond_br / cf.switch, no inline assembly.
 //   * No volatile or atomic / monotonic memory ops.
 //   * No memory-effect intrinsic other than `llvm.intr.lifetime.{start,end}`.
@@ -517,10 +517,11 @@ bool isUnmodelledCall(::mlir::Operation *op) {
 // True if `op` is a structural scf op (or an scf terminator we treat
 // transparently). Such ops are themselves neither a memory write nor a
 // bail-out; the walk descends into their bodies and any meaningful
-// effects are picked up there. scf.while / scf.execute_region are
-// rejected separately by the body checker.
+// effects are picked up there. scf.execute_region is rejected separately
+// by the body checker because it can hide arbitrary control flow.
 bool isTransparentScfOp(::mlir::Operation *op) {
   return ::mlir::isa<::mlir::scf::ForOp, ::mlir::scf::IfOp,
+                     ::mlir::scf::WhileOp,
                      ::mlir::scf::ForallOp, ::mlir::scf::YieldOp,
                      ::mlir::scf::InParallelOp, ::mlir::scf::ConditionOp>(op);
 }
@@ -548,7 +549,7 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
 }
 
 // Walk the body of `loop` (recursively into nested regions) and verify:
-//   1) No bail-out op (call to non-pure callee, while, execute_region,
+//   1) No bail-out op (call to non-pure callee, execute_region,
 //      inline asm, llvm.invoke).
 //   2) No volatile / atomic memory op.
 //   3) Reads and writes use disjoint base pointers, or a narrow
@@ -573,8 +574,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   auto walkResult = loop.getBody()->walk([&](::mlir::Operation *op) {
     if (op == loop.getBody()->getTerminator())
       return ::mlir::WalkResult::advance();
-    // Reject scf.while / scf.execute_region inside the body.
-    if (::mlir::isa<::mlir::scf::WhileOp, ::mlir::scf::ExecuteRegionOp>(op))
+    // Reject scf.execute_region inside the body.
+    if (::mlir::isa<::mlir::scf::ExecuteRegionOp>(op))
       return ::mlir::WalkResult::interrupt();
     // Reject calls to non-pure callees and inline asm / invoke.
     if (isUnmodelledCall(op))

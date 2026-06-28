@@ -50,6 +50,14 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "clz",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "ctz",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "byte_swap",
       "hardware": "shared_vector_alu_adg"
     },
@@ -100,6 +108,14 @@
     {
       "case": "partition",
       "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "parity",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "popcount",
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "mean",
@@ -208,6 +224,10 @@
     {
       "case": "fir_filter_stateful",
       "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "find_first_set",
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "gather",

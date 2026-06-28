@@ -84,3 +84,35 @@ llvm.func @parallel_i64(%base: !llvm.ptr) {
     }
     llvm.return
 }
+
+// Lane-local structured control is still parallel when the only shared
+// side effect is the iv-addressed store. This shape models kernels such
+// as popcount: the outer loop distributes elements, while an inner
+// scalar while loop computes each element locally.
+
+// CHECK-LABEL: func.func @parallel_lane_local_while
+// CHECK: scf.forall
+// CHECK: scf.while
+// CHECK: memref.store
+func.func @parallel_lane_local_while(%input: memref<?xi32>, %output: memref<?xi32>,
+                                     %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %i32_zero = arith.constant 0 : i32
+    %i32_one = arith.constant 1 : i32
+    scf.for %i = %c0 to %n step %c1 {
+      %value = memref.load %input[%i] : memref<?xi32>
+      %result:2 = scf.while (%v = %value, %count = %i32_zero) : (i32, i32) -> (i32, i32) {
+        %more = arith.cmpi ne, %v, %i32_zero : i32
+        scf.condition(%more) %v, %count : i32, i32
+      } do {
+      ^bb0(%v_next: i32, %count_next: i32):
+        %bit = arith.andi %v_next, %i32_one : i32
+        %updated = arith.addi %count_next, %bit : i32
+        %shifted = arith.shrui %v_next, %i32_one : i32
+        scf.yield %shifted, %updated : i32, i32
+      }
+      memref.store %result#1, %output[%i] : memref<?xi32>
+    }
+    return
+}

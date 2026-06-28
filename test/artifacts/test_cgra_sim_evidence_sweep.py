@@ -100,28 +100,23 @@ MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "binary_search",
-    "clz",
-    "ctz",
-    "find_first_set",
     "lower_bound",
     "moving_avg",
-    "parity",
-    "popcount",
     "scatter_add",
     "sort_insertion",
     "upper_bound",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
-    ("binary_search", "binary_search_candidate"),
-    ("clz", "clz_candidate"),
-    ("ctz", "ctz_candidate"),
-    ("find_first_set", "find_first_set_candidate"),
-    ("lower_bound", "lower_bound_candidate"),
     ("moving_avg", "moving_avg_kernel"),
-    ("parity", "parity"),
-    ("popcount", "popcount_candidate"),
     ("scatter_add", "scatter_add"),
-    ("upper_bound", "upper_bound_candidate"),
+)
+GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
+    "binary_search": "binary_search_candidate",
+    "lower_bound": "lower_bound_candidate",
+    "upper_bound": "upper_bound_candidate",
+}
+GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
+    "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
 )
 PARTIAL_LOWERING_SWEEP_CASES = {
     "sort_insertion": (
@@ -755,6 +750,220 @@ def assert_unpack_bits_evidence(evidence_dir: Path) -> None:
         or comparison.get("memory_comparison_status") != "pass"
     ):
         raise AssertionError(f"unpack_bits comparison should pass on real final state: {comparison}")
+
+
+def bit_scan_input_values(case: str) -> list[int]:
+    values = []
+    for i in range(32):
+        if case == "clz":
+            seeds = [0, 0x80000000, 0x40000000, 0x20000000, 1, 0xFFFFFFFF, 0x00FF00FF, 0x01000000]
+            raw = seeds[i] if i < len(seeds) else i * 0x0012345
+        elif case == "ctz":
+            seeds = [0, 1, 2, 0x80000000, 0xFFFFFFFF, 0x00010000, 0x01000000, 8]
+            raw = seeds[i] if i < len(seeds) else i * 0x00005678
+        elif case == "find_first_set":
+            seeds = [0, 1, 2, 4, 0x80000000, 0xFFFFFFFF, 0xFFFFFFF0, 0x00000100]
+            raw = seeds[i] if i < len(seeds) else i * 0x00008765
+        elif case == "parity":
+            if i == 0:
+                raw = 0
+            elif i == 1:
+                raw = 1
+            elif i == 2:
+                raw = 3
+            elif i == 3:
+                raw = 7
+            else:
+                raw = 0x9ABCDEF0 * i
+        else:
+            raise AssertionError(f"unknown bit-scan case: {case}")
+        values.append(signed_i32(raw))
+    return values
+
+
+def clz32(value: int) -> int:
+    raw = value & 0xFFFFFFFF
+    if raw == 0:
+        return 32
+    return 32 - raw.bit_length()
+
+
+def ctz32(value: int) -> int:
+    raw = value & 0xFFFFFFFF
+    if raw == 0:
+        return 32
+    return (raw & -raw).bit_length() - 1
+
+
+def bit_scan_expected_output(case: str, values: list[int]) -> list[int]:
+    if case == "clz":
+        return [clz32(value) for value in values]
+    if case == "ctz":
+        return [ctz32(value) for value in values]
+    if case == "find_first_set":
+        return [0 if (value & 0xFFFFFFFF) == 0 else ctz32(value) + 1 for value in values]
+    if case == "parity":
+        return [int.bit_count(value & 0xFFFFFFFF) & 1 for value in values]
+    raise AssertionError(f"unknown bit-scan case: {case}")
+
+
+def assert_bit_scan_evidence(
+    evidence_dir: Path,
+    case: str,
+    *,
+    graph: str,
+    output_arg: str,
+    event_count: int,
+    dfg_cycles: int,
+    cgra_cycles: int,
+    placed_records: int,
+    routed_edges: int,
+    config_records: int,
+    route_segments: int,
+    operation_fire_counts: dict[str, int],
+    expected_route_edges: set[str],
+) -> None:
+    values = bit_scan_input_values(case)
+    expected_memory = {
+        "arg1": [f"i32:{value}" for value in values],
+        output_arg: [f"i32:{value}" for value in bit_scan_expected_output(case, values)],
+    }
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != graph
+        or dfg.get("dynamic_work_items") != 32
+        or dfg.get("event_count") != event_count
+        or dfg.get("optimistic_cycles") != dfg_cycles
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG should execute the real bit-scan loop: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(case, dfg, operation_fire_counts)
+
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != placed_records
+        or mapping.get("routed_edges") != routed_edges
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("config_records") != config_records
+        or route_edges != expected_route_edges
+    ):
+        raise AssertionError(f"{case} should route real bit-scan dataflow on a shared ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / f"{case}.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != dfg_cycles
+        or cgra.get("hardware_aware_cycles") != cgra_cycles
+        or cgra.get("route_segments") != route_segments
+        or cgra.get("placed_records") != placed_records
+        or cgra.get("routed_edges") != routed_edges
+        or cgra.get("config_records") != config_records
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"{case} CGRA evidence should preserve real final memory: {cgra_path}: {cgra}")
+
+
+def popcount_input_values() -> list[int]:
+    seeds = [0, 1, 2, 3, 7, 15, 0xFFFFFFFF, 0x80000000]
+    values = []
+    for i in range(32):
+        raw = seeds[i] if i < len(seeds) else (i * 0x12345678 + (i << 16))
+        values.append(signed_i32(raw))
+    return values
+
+
+def assert_popcount_evidence(evidence_dir: Path) -> None:
+    expected_output = [f"i32:{int.bit_count(value & 0xFFFFFFFF)}" for value in popcount_input_values()]
+    expected_memory = {
+        "arg1": [f"i32:{value}" for value in popcount_input_values()],
+        "arg4": expected_output,
+    }
+    expected_counts = {
+        "arith.addi": 826,
+        "arith.andi": 826,
+        "arith.cmpi": 858,
+        "arith.shrui": 826,
+        "dataflow.load": 32,
+        "dataflow.store": 32,
+        "dataflow.sync": 32,
+        "scf.if": 32,
+    }
+    dfg_path = evidence_dir / "popcount.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t__ZN12_GLOBAL__N_118popcount_candidateEPKjPjj_0_0"
+        or dfg.get("dynamic_work_items") != 32
+        or dfg.get("event_count") != 3464
+        or dfg.get("optimistic_cycles") != 3664
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"popcount DFG should execute the real candidate loop: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("popcount", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "popcount.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    expected_edges = {
+        "arith.addi#0.result0->dataflow.store#0.operand2",
+        "arith.andi#0.result0->arith.addi#0.operand0",
+        "arith.shrui#0.result0->arith.cmpi#1.operand0",
+        "dataflow.load#0.result0->arith.cmpi#0.operand0",
+        "dataflow.load#0.result1->dataflow.sync#0.operand0",
+        "dataflow.store#0.result0->dataflow.sync#0.operand1",
+    }
+    actual_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 8
+        or mapping.get("routed_edges") != 6
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("config_records") != 153
+        or actual_edges != expected_edges
+    ):
+        raise AssertionError(f"popcount should route real bitcount dataflow on a shared ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "popcount.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 3664
+        or cgra.get("hardware_aware_cycles") != 3707
+        or cgra.get("route_segments") != 24
+        or cgra.get("placed_records") != 8
+        or cgra.get("routed_edges") != 6
+        or cgra.get("config_records") != 153
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"popcount CGRA evidence should preserve real final memory: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "popcount.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 3664
+        or comparison.get("cgra_sim_cycles") != 3707
+    ):
+        raise AssertionError(f"popcount comparison should pass with real final-state checks: {comparison_path}: {comparison}")
 
 
 def f32_token(value: float) -> str:
@@ -2664,6 +2873,30 @@ def assert_partial_lowering_blocker(evidence_dir: Path, case: str, expected_diag
         raise AssertionError(f"{case} should preserve the partial graph identity: {dfg_path}: {dfg}")
 
 
+def assert_graph_present_unwired_blocker(evidence_dir: Path, case: str, expected_token: str) -> None:
+    dfg_path = evidence_dir / f"{case}.dfg.report.json"
+    mapping_path = evidence_dir / f"{case}.mapping.json"
+    cgra_path = evidence_dir / f"{case}.cgra.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    mapping = json.loads(mapping_path.read_text())
+    cgra = json.loads(cgra_path.read_text())
+    graph_ids = dfg.get("discovered_graph_ids")
+    if (
+        dfg.get("status") != "unsupported"
+        or not isinstance(graph_ids, list)
+        or not any(expected_token in str(graph_id) for graph_id in graph_ids)
+        or GRAPH_PRESENT_UNWIRED_DIAGNOSTIC not in dfg.get("diagnostics", [])
+    ):
+        raise AssertionError(f"{case} should expose a present-but-unwired primary graph: {dfg_path}: {dfg}")
+    if (
+        mapping.get("status") != "unsupported"
+        or GRAPH_PRESENT_UNWIRED_DIAGNOSTIC not in mapping.get("diagnostics", [])
+    ):
+        raise AssertionError(f"{case} mapping should preserve the unwired graph blocker: {mapping_path}: {mapping}")
+    if cgra.get("status") != "blocked":
+        raise AssertionError(f"{case} CGRA report should remain blocked behind the DFG fixture: {cgra_path}: {cgra}")
+
+
 def assert_component_mapping_status(
     evidence_dir: Path,
     case: str,
@@ -2963,6 +3196,8 @@ def main(argv: list[str]) -> int:
             "bit_reverse",
             "bisection_step",
             "byte_swap",
+            "clz",
+            "ctz",
             "downsample",
             "xor_block",
             "vecmul",
@@ -2974,6 +3209,7 @@ def main(argv: list[str]) -> int:
             "pack_bits",
             "unpack_bits",
             "partition",
+            "popcount",
             "mean",
             "newton_iter",
             "outer",
@@ -3000,6 +3236,7 @@ def main(argv: list[str]) -> int:
             "crc32",
             "fir_filter",
             "fir_filter_stateful",
+            "find_first_set",
             "gf_mul",
             "compare_swap",
             "compact",
@@ -3054,6 +3291,9 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "string_hash", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "covariance", 2048)
+        assert_dfg_dynamic_work_items(evidence_dir, "popcount", 32)
+        for case in ("clz", "ctz", "find_first_set", "parity"):
+            assert_dfg_dynamic_work_items(evidence_dir, case, 32)
         assert_prefix_sum_exclusive_evidence(evidence_dir)
         assert_delta_decode_evidence(evidence_dir)
         assert_dot_product_3d_evidence(evidence_dir)
@@ -3080,6 +3320,135 @@ def main(argv: list[str]) -> int:
         assert_gather_evidence(evidence_dir)
         assert_pack_bits_evidence(evidence_dir)
         assert_unpack_bits_evidence(evidence_dir)
+        assert_bit_scan_evidence(
+            evidence_dir,
+            "clz",
+            graph="g_t__ZN12_GLOBAL__N_113clz_candidateEPKjPjj_0_0",
+            output_arg="arg7",
+            event_count=1490,
+            dfg_cycles=1690,
+            cgra_cycles=1739,
+            placed_records=9,
+            routed_edges=8,
+            config_records=189,
+            route_segments=30,
+            operation_fire_counts={
+                "arith.addi": 317,
+                "arith.andi": 317,
+                "arith.cmpi": 380,
+                "arith.shrui": 317,
+                "dataflow.load": 32,
+                "dataflow.store": 32,
+                "dataflow.sync": 32,
+                "scf.if": 63,
+            },
+            expected_route_edges={
+                "arith.addi#0.result0->dataflow.store#0.operand2",
+                "arith.andi#0.result0->arith.cmpi#2.operand0",
+                "arith.shrui#0.result0->arith.andi#0.operand0",
+                "dataflow.load#0.result0->arith.andi#0.operand1",
+                "dataflow.load#0.result0->arith.cmpi#0.operand0",
+                "dataflow.load#0.result0->arith.cmpi#1.operand0",
+                "dataflow.load#0.result1->dataflow.sync#0.operand0",
+                "dataflow.store#0.result0->dataflow.sync#0.operand1",
+            },
+        )
+        assert_bit_scan_evidence(
+            evidence_dir,
+            "ctz",
+            graph="g_t__ZN12_GLOBAL__N_113ctz_candidateEPKjPjj_0_0",
+            output_arg="arg6",
+            event_count=929,
+            dfg_cycles=1129,
+            cgra_cycles=1175,
+            placed_records=10,
+            routed_edges=7,
+            config_records=178,
+            route_segments=27,
+            operation_fire_counts={
+                "arith.addi": 169,
+                "arith.andi": 200,
+                "arith.cmpi": 232,
+                "arith.shrui": 169,
+                "dataflow.load": 32,
+                "dataflow.store": 32,
+                "dataflow.sync": 32,
+                "scf.if": 63,
+            },
+            expected_route_edges={
+                "arith.addi#0.result0->dataflow.store#0.operand2",
+                "arith.andi#0.result0->arith.cmpi#1.operand0",
+                "arith.andi#1.result0->arith.cmpi#2.operand0",
+                "dataflow.load#0.result0->arith.andi#0.operand0",
+                "dataflow.load#0.result0->arith.cmpi#0.operand0",
+                "dataflow.load#0.result1->dataflow.sync#0.operand0",
+                "dataflow.store#0.result0->dataflow.sync#0.operand1",
+            },
+        )
+        assert_bit_scan_evidence(
+            evidence_dir,
+            "find_first_set",
+            graph="g_t__ZN12_GLOBAL__N_124find_first_set_candidateEPKjPjj_0_0",
+            output_arg="arg5",
+            event_count=525,
+            dfg_cycles=725,
+            cgra_cycles=771,
+            placed_records=10,
+            routed_edges=7,
+            config_records=178,
+            route_segments=27,
+            operation_fire_counts={
+                "arith.addi": 68,
+                "arith.andi": 99,
+                "arith.cmpi": 131,
+                "arith.shrui": 68,
+                "dataflow.load": 32,
+                "dataflow.store": 32,
+                "dataflow.sync": 32,
+                "scf.if": 63,
+            },
+            expected_route_edges={
+                "arith.addi#0.result0->dataflow.store#0.operand2",
+                "arith.andi#0.result0->arith.cmpi#1.operand0",
+                "arith.andi#1.result0->arith.cmpi#2.operand0",
+                "dataflow.load#0.result0->arith.andi#0.operand0",
+                "dataflow.load#0.result0->arith.cmpi#0.operand0",
+                "dataflow.load#0.result1->dataflow.sync#0.operand0",
+                "dataflow.store#0.result0->dataflow.sync#0.operand1",
+            },
+        )
+        assert_bit_scan_evidence(
+            evidence_dir,
+            "parity",
+            graph="g_t_parity_0_0",
+            output_arg="arg4",
+            event_count=3648,
+            dfg_cycles=3848,
+            cgra_cycles=3891,
+            placed_records=8,
+            routed_edges=6,
+            config_records=152,
+            route_segments=24,
+            operation_fire_counts={
+                "arith.andi": 872,
+                "arith.cmpi": 904,
+                "arith.shrui": 872,
+                "arith.xori": 872,
+                "dataflow.load": 32,
+                "dataflow.store": 32,
+                "dataflow.sync": 32,
+                "scf.if": 32,
+            },
+            expected_route_edges={
+                "arith.andi#0.result0->arith.xori#0.operand1",
+                "arith.shrui#0.result0->arith.cmpi#1.operand0",
+                "arith.xori#0.result0->dataflow.store#0.operand2",
+                "dataflow.load#0.result0->arith.cmpi#0.operand0",
+                "dataflow.load#0.result1->dataflow.sync#0.operand0",
+                "dataflow.store#0.result0->dataflow.sync#0.operand1",
+            },
+        )
+        assert_popcount_evidence(evidence_dir)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
             assert_sweep_artifact_status(evidence_dir, case, "dfg.report.json", "unsupported")
             assert_sweep_artifact_status(evidence_dir, case, "mapping.json", "unsupported")
@@ -3088,6 +3457,8 @@ def main(argv: list[str]) -> int:
         assert_merge_dfg_evidence(evidence_dir)
         for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
+        for case, expected_token in GRAPH_PRESENT_UNWIRED_SWEEP_CASES.items():
+            assert_graph_present_unwired_blocker(evidence_dir, case, expected_token)
         for case, expected_diagnostic in PARTIAL_LOWERING_SWEEP_CASES.items():
             assert_partial_lowering_blocker(evidence_dir, case, expected_diagnostic)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
@@ -3121,8 +3492,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "binary_search", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "clz", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "ctz", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "clz", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "ctz", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "downsample", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_decode", "shared_reduction_adg")
@@ -3137,7 +3508,7 @@ def main(argv: list[str]) -> int:
                 "llvm.load#0.result0->arith.subi#0.operand1",
             },
         )
-        assert_mapping_hardware(evidence_dir, "find_first_set", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "find_first_set", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmspv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
@@ -3160,9 +3531,9 @@ def main(argv: list[str]) -> int:
                 "llvm.trunc#1.result0->arith.shli#1.operand1",
             },
         )
-        assert_mapping_hardware(evidence_dir, "parity", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "parity", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "unpack_bits", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "popcount", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "popcount", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mean", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "newton_iter", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "runge_kutta_step", "shared_reduction_adg")
@@ -3429,6 +3800,7 @@ def main(argv: list[str]) -> int:
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
             "pack_bits",
+            "parity",
             "unpack_bits",
             "partition",
             "mean",
@@ -3557,9 +3929,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 66,
+            "pass": 71,
             "fail": 0,
-            "blocked": 43,
+            "blocked": 38,
             "unsupported": 0,
             "missing_status": 0,
         }

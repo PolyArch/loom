@@ -11,7 +11,7 @@
     },
     {
       "case": "clz",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "crc32",
@@ -19,11 +19,11 @@
     },
     {
       "case": "ctz",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "find_first_set",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "lower_bound",
@@ -43,11 +43,11 @@
     },
     {
       "case": "parity",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "popcount",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "scatter_add",

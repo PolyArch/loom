@@ -72,7 +72,7 @@ case "${CASE}" in
     case_graph="g_t__ZN12_GLOBAL__N_114axpy_candidateEPKjS1_Pjjj_0_0"
     ;;
   binary_search)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_123binary_search_candidateEPKfS1_Pjjj_0_0"
     ;;
   bit_reverse)
     case_graph="g_t_bit_reverse_kernel_0_0"
@@ -81,10 +81,10 @@ case "${CASE}" in
     case_graph="g_t_main_1_0"
     ;;
   clz)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_113clz_candidateEPKjPjj_0_0"
     ;;
   ctz)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_113ctz_candidateEPKjPjj_0_0"
     ;;
   downsample)
     case_graph="g_t_downsample_0_0"
@@ -99,7 +99,7 @@ case "${CASE}" in
     case_graph="g_t_delta_decode_kernel_red_0_0"
     ;;
   find_first_set)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_124find_first_set_candidateEPKjPjj_0_0"
     ;;
   prefix_sum)
     case_graph="g_t_prefix_sum_red_0_0"
@@ -117,13 +117,13 @@ case "${CASE}" in
     case_graph="g_t_pack_bits_kernel_red_0_0"
     ;;
   parity)
-    case_graph="missing_primary_graph"
+    case_graph="g_t_parity_0_0"
     ;;
   partition)
     case_graph="g_t_partition_red_0_0"
     ;;
   popcount)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_118popcount_candidateEPKjPjj_0_0"
     ;;
   unpack_bits)
     case_graph="g_t_unpack_bits_kernel_red_0_0"
@@ -213,7 +213,7 @@ case "${CASE}" in
     case_graph="g_t_mat3x3_mult_kernel_red_0_0"
     ;;
   lower_bound)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_121lower_bound_candidateEPKfS1_Pjjj_0_0"
     ;;
   matvec)
     case_graph="g_t_matvec_kernel_0_0"
@@ -264,7 +264,7 @@ case "${CASE}" in
     case_graph="g_t_transform_point_kernel_0_0"
     ;;
   upper_bound)
-    case_graph="missing_primary_graph"
+    case_graph="g_t__ZN12_GLOBAL__N_121upper_bound_candidateEPKfS1_Pjjj_0_0"
     ;;
   upsample)
     case_graph="g_t_upsample_0_0"
@@ -317,7 +317,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "mmtile" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" ]]; then
+    elif [[ "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -996,32 +996,27 @@ PY
     --mapping-output "${mapping_artifact}" \
     --cgra-output "${cgra_report}" \
     --mapping-summary-output "${mapping}"
-elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" || "${CASE}" == "upper_bound" ]]; then
+elif [[ "${CASE}" == "binary_search" || "${CASE}" == "lower_bound" || "${CASE}" == "moving_avg" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" || "${CASE}" == "upper_bound" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     binary_search)
       expected_primary_graph_token="binary_search_candidate"
-      ;;
-    clz)
-      expected_primary_graph_token="clz_candidate"
-      ;;
-    ctz)
-      expected_primary_graph_token="ctz_candidate"
-      ;;
-    find_first_set)
-      expected_primary_graph_token="find_first_set_candidate"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
+        --evidence "unwired primary graph"
+      )
       ;;
     lower_bound)
       expected_primary_graph_token="lower_bound_candidate"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
+        --evidence "unwired primary graph"
+      )
       ;;
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"
-      ;;
-    parity)
-      expected_primary_graph_token="parity"
-      ;;
-    popcount)
-      expected_primary_graph_token="popcount_candidate"
       ;;
     scatter_add)
       expected_primary_graph_token="scatter_add"
@@ -1036,6 +1031,11 @@ elif [[ "${CASE}" == "binary_search" || "${CASE}" == "clz" || "${CASE}" == "ctz"
       ;;
     upper_bound)
       expected_primary_graph_token="upper_bound_candidate"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
+        --evidence "unwired primary graph"
+      )
       ;;
   esac
   python3 "${ROOT}/test/e2e/emit_primary_graph_absence_artifacts.py" \

@@ -42,8 +42,9 @@ std::unique_ptr<::mlir::Pass> createLLVMArithToArithPass();
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
 // Lift trivially parallel scf.for loops (no iter_args, iv-dependent
-// stores only, no nested calls or while) into scf.forall. Loops that do
-// not match the conservative parallel criterion are left as scf.for.
+// stores only, no nested calls; lane-local structured scf.while is
+// allowed) into scf.forall. Loops that do not match the conservative
+// parallel criterion are left as scf.for.
 // The produced scf.forall carries no shared_outs and no mapping
 // attribute -- downstream device-mapping passes can attach one later.
 std::unique_ptr<::mlir::Pass> createSCFForToForallPass();

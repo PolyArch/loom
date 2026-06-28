@@ -339,6 +339,192 @@ append_crc32_input_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+popcount_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        case "${i}" in
+        0) value=0 ;;
+        1) value=1 ;;
+        2) value=2 ;;
+        3) value=3 ;;
+        4) value=7 ;;
+        5) value=15 ;;
+        6) value="$(to_i32_literal 0xffffffff)" ;;
+        7) value="$(to_i32_literal 0x80000000)" ;;
+        *) value="$(to_i32_literal $((i * 0x12345678 + (i << 16))))" ;;
+        esac
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+configure_popcount_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 1 "$(popcount_input_values)"
+    append_repeated_arg 2 32 0
+    append_repeated_arg 3 32 1
+    append_constant_memref 4 32 "0"
+    append_index_tokens 5 32
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_118popcount_candidateEPKjPjj_0_0
+        --workload popcount
+    )
+}
+
+clz_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        case "${i}" in
+        0) value=0 ;;
+        1) value="$(to_i32_literal 0x80000000)" ;;
+        2) value="$(to_i32_literal 0x40000000)" ;;
+        3) value="$(to_i32_literal 0x20000000)" ;;
+        4) value=1 ;;
+        5) value="$(to_i32_literal 0xffffffff)" ;;
+        6) value="$(to_i32_literal 0x00ff00ff)" ;;
+        7) value="$(to_i32_literal 0x01000000)" ;;
+        *) value="$(to_i32_literal $((i * 0x0012345)))" ;;
+        esac
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+ctz_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        case "${i}" in
+        0) value=0 ;;
+        1) value=1 ;;
+        2) value=2 ;;
+        3) value="$(to_i32_literal 0x80000000)" ;;
+        4) value="$(to_i32_literal 0xffffffff)" ;;
+        5) value="$(to_i32_literal 0x00010000)" ;;
+        6) value="$(to_i32_literal 0x01000000)" ;;
+        7) value=8 ;;
+        *) value="$(to_i32_literal $((i * 0x00005678)))" ;;
+        esac
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+find_first_set_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        case "${i}" in
+        0) value=0 ;;
+        1) value=1 ;;
+        2) value=2 ;;
+        3) value=4 ;;
+        4) value="$(to_i32_literal 0x80000000)" ;;
+        5) value="$(to_i32_literal 0xffffffff)" ;;
+        6) value="$(to_i32_literal 0xfffffff0)" ;;
+        7) value="$(to_i32_literal 0x00000100)" ;;
+        *) value="$(to_i32_literal $((i * 0x00008765)))" ;;
+        esac
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+parity_input_values() {
+    local values=""
+    local value=""
+    for i in $(seq 0 31); do
+        if (( i == 0 )); then
+            value=0
+        elif (( i == 1 )); then
+            value=1
+        elif (( i == 2 )); then
+            value=3
+        elif (( i == 3 )); then
+            value=7
+        else
+            value="$(to_i32_literal $((0x9abcdef0 * i)))"
+        fi
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    printf "%s" "${values}"
+}
+
+configure_clz_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 1 "$(clz_input_values)"
+    append_repeated_arg 2 32 0
+    append_repeated_arg 3 32 32
+    append_repeated_arg 4 32 -1
+    append_repeated_arg 5 32 1
+    append_repeated_arg 6 32 -2147483648
+    append_constant_memref 7 32 "0"
+    append_index_tokens 8 32
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_113clz_candidateEPKjPjj_0_0
+        --workload clz
+    )
+}
+
+configure_ctz_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 1 "$(ctz_input_values)"
+    append_repeated_arg 2 32 0
+    append_repeated_arg 3 32 32
+    append_repeated_arg 4 32 1
+    append_repeated_arg 5 32 2
+    append_constant_memref 6 32 "0"
+    append_index_tokens 7 32
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_113ctz_candidateEPKjPjj_0_0
+        --workload ctz
+    )
+}
+
+configure_find_first_set_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 1 "$(find_first_set_input_values)"
+    append_repeated_arg 2 32 0
+    append_repeated_arg 3 32 1
+    append_repeated_arg 4 32 2
+    append_constant_memref 5 32 "0"
+    append_index_tokens 6 32
+    sim_args+=(
+        --graph g_t__ZN12_GLOBAL__N_124find_first_set_candidateEPKjPjj_0_0
+        --workload find_first_set
+    )
+}
+
+configure_parity_args() {
+    append_ctrl_tokens 32
+    append_raw_memref 1 "$(parity_input_values)"
+    append_repeated_arg 2 32 0
+    append_repeated_arg 3 32 1
+    append_constant_memref 4 32 "0"
+    append_index_tokens 5 32
+    sim_args+=(
+        --graph g_t_parity_0_0
+        --workload parity
+    )
+}
+
 append_crc32_table_memref() {
     local index="$1"
     local values
@@ -909,6 +1095,9 @@ case "${CASE}" in
     covariance)
         configure_covariance_sums_args
         ;;
+    clz)
+        configure_clz_args
+        ;;
     cumsum)
         append_ctrl_tokens 1024
         append_mod_shift_memref 4 1024 10 1
@@ -924,6 +1113,9 @@ case "${CASE}" in
         ;;
     downsample_avg)
         configure_downsample_avg_args 0
+        ;;
+    ctz)
+        configure_ctz_args
         ;;
     gather)
         append_ctrl_tokens 16
@@ -998,6 +1190,9 @@ case "${CASE}" in
             --memref 6=4.000000e+00,3.000000e+00,2.000000e+00,1.000000e+00
             --arg 7=2.500000e-01
         )
+        ;;
+    find_first_set)
+        configure_find_first_set_args
         ;;
     vecadd)
         append_ctrl_tokens 64
@@ -1547,6 +1742,12 @@ case "${CASE}" in
         ;;
     partition)
         configure_partition_lower_args
+        ;;
+    parity)
+        configure_parity_args
+        ;;
+    popcount)
+        configure_popcount_args
         ;;
     variance)
         configure_variance_mean_args

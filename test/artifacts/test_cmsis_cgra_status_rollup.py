@@ -366,9 +366,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 66,
+            "pass": 71,
             "fail": 0,
-            "blocked": 43,
+            "blocked": 38,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -512,20 +512,15 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "binary_search": "primary workload graph absent: expected token binary_search_candidate",
-    "clz": "primary workload graph absent: expected token clz_candidate",
-    "ctz": "primary workload graph absent: expected token ctz_candidate",
-    "find_first_set": "primary workload graph absent: expected token find_first_set_candidate",
-    "lower_bound": "primary workload graph absent: expected token lower_bound_candidate",
+    "binary_search": "primary workload graph is present but app simulator fixture is not wired for search-style control flow",
+    "lower_bound": "primary workload graph is present but app simulator fixture is not wired for search-style control flow",
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
-    "parity": "primary workload graph absent: expected token parity",
-    "popcount": "primary workload graph absent: expected token popcount_candidate",
     "scatter_add": "primary workload graph absent: expected token scatter_add",
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
     ),
-    "upper_bound": "primary workload graph absent: expected token upper_bound_candidate",
+    "upper_bound": "primary workload graph is present but app simulator fixture is not wired for search-style control flow",
 }
 
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
@@ -724,9 +719,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 109,
-            "pass": 6,
+            "pass": 11,
             "fail": 0,
-            "blocked": 43,
+            "blocked": 38,
             "unsupported": 0,
             "missing_status": 60,
         },
@@ -737,6 +732,11 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "mmtile", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "outer", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "transpose", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "clz", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "ctz", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "parity", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "popcount", expected_hardware="shared_memory_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 

@@ -105,7 +105,7 @@ def assert_default_batch_manifest_validation(repo: Path, out_dir: Path) -> None:
         json.dumps(
             {
                 "schema_version": 1,
-                "cases": [{"case": "binary_search", "hardware": "shared_reduction_adg"}],
+                "cases": [{"case": "moving_avg", "hardware": "shared_reduction_adg"}],
             },
             indent=2,
             sort_keys=True,
