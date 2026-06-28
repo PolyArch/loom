@@ -300,6 +300,47 @@ def annotate_cycle_equivalence(output: Path, groups_path: Path) -> None:
         writer.writerows(rows)
 
 
+def annotate_final_state_fingerprints(
+    output: Path,
+    dfg_reports: list[Path],
+    cgra_reports: list[Path],
+) -> None:
+    if not output.is_file():
+        return
+    json_grouped = intermediate_artifacts.json_objects_by_kind([*dfg_reports, *cgra_reports])
+    dfg_by_workload = intermediate_artifacts.build_pass_dfg_reports_by_workload(json_grouped)
+    cgra_by_workload = intermediate_artifacts.build_pass_cgra_reports_by_workload(json_grouped)
+    with output.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    if not rows:
+        return
+    annotated = False
+    for row in rows:
+        if row.get("status") != "pass":
+            continue
+        workload = row.get("kernel", "")
+        fingerprint = intermediate_artifacts.matching_final_state_fingerprint(
+            dfg_by_workload.get(workload, []),
+            cgra_by_workload.get(workload, []),
+        )
+        if fingerprint is None:
+            continue
+        row["final_state_fingerprint"] = fingerprint
+        row["final_state_evidence"] = "final_outputs+final_memory_state from DFG and CGRA reports"
+        annotated = True
+    if not annotated:
+        return
+    for column in ("final_state_fingerprint", "final_state_evidence"):
+        if column not in fieldnames:
+            fieldnames.append(column)
+    with output.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def audit_discovered_report_inputs(output: Path, dfg_reports: list[Path], cgra_reports: list[Path]) -> bool:
     audit = intermediate_artifacts.audit([*dfg_reports, *cgra_reports])
     if audit.get("verdict") == "pass":
@@ -388,6 +429,7 @@ def summarize_reports(
     command.extend(["--output", str(output)])
     result = run_command(command)
     if result.returncode == 0:
+        annotate_final_state_fingerprints(output, dfg_reports, cgra_reports)
         annotate_cycle_equivalence(output, equivalence_groups)
     return result.returncode
 

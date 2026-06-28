@@ -332,6 +332,8 @@ Required first columns:
 
 Optional equivalence columns:
 
+* `final_state_fingerprint`;
+* `final_state_evidence`;
 * `cycle_equivalence_group`;
 * `cycle_equivalence_members`;
 * `cycle_equivalence_evidence`.
@@ -359,14 +361,14 @@ Rules:
   two workloads have similar operation families.
 * Distinct `pass` rows with identical DFG-sim or CGRA-sim cycle values
   are invalid by default because they often indicate artifact reuse,
-  missing graph coverage, or an over-flat cost model. The only valid
-  exception is an explicitly documented equivalence group whose members
-  have the same operation family, same modeled input size, same relevant
-  graph shape, and matching first-principles audit evidence. For
-  example, same-length integer sum-reduction kernels may share a cycle
-  value; unrelated kernels such as elementwise arithmetic, mean, and
-  norm reductions must not be accepted as equivalent without evidence.
-  In the compact CSV projection, that exception is recorded by filling
+  missing graph coverage, or an over-flat cost model. One valid exception
+  is an explicitly documented equivalence group whose members have the
+  same operation family, same modeled input size, same relevant graph
+  shape, and matching first-principles audit evidence. For example,
+  same-length integer sum-reduction kernels may share a cycle value;
+  unrelated kernels such as elementwise arithmetic, mean, and norm
+  reductions must not be accepted as equivalent without evidence. In the
+  compact CSV projection, that exception is recorded by filling
   `cycle_equivalence_group`, `cycle_equivalence_members`, and
   `cycle_equivalence_evidence` on every duplicated `pass` row. Audit must
   reject duplicate cycle values when those fields are absent, disagree
@@ -374,6 +376,17 @@ Rules:
   explanatory text only: the audit must validate the equivalence facts from
   DFG-sim reports (`dynamic_work_items` and `operation_fire_counts`) and
   CGRA-sim reports (`route_segments` and `memory_latency_cycles`).
+* A second valid exception is a set of duplicated-cycle `pass` rows whose
+  final program states are provably distinct. Each duplicated row must
+  carry a SHA-256 `final_state_fingerprint` plus `final_state_evidence`
+  naming `final_outputs` and `final_memory_state`. Audit must recompute
+  the fingerprint from the matching pass DFG-sim and CGRA-sim JSON reports
+  and must first prove that those reports agree on final outputs and final
+  memory state. Missing reports, stale fingerprints, mismatched DFG/CGRA
+  final states, identical fingerprints within the duplicated cycle set, or
+  evidence text that does not name both final-state fields must fail. This
+  exception does not declare kernels equivalent; it only proves that equal
+  cycle counts did not come from reused final-state evidence.
 
 ### CGRA Status Summary
 

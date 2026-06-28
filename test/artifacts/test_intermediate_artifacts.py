@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -395,6 +396,7 @@ def write_dfg_report(
     graph: str,
     cycles: int,
     final_outputs: list[str] | None = None,
+    final_memory_state: dict[str, list[str]] | None = None,
     dynamic_work_items: int = 1,
 ) -> None:
     path.write_text(
@@ -437,7 +439,7 @@ def write_dfg_report(
                 "dynamic_work_items": dynamic_work_items,
                 "operation_fire_counts": {"dataflow.stream": dynamic_work_items},
                 "final_outputs": final_outputs if final_outputs is not None else ["none"],
-                "final_memory_state": {},
+                "final_memory_state": final_memory_state if final_memory_state is not None else {},
                 "diagnostics": [],
             }
         )
@@ -502,6 +504,8 @@ def write_cgra_report(
     mapping_id: str,
     dfg_cycles: int,
     cgra_cycles: int,
+    final_outputs: list[str] | None = None,
+    final_memory_state: dict[str, list[str]] | None = None,
 ) -> None:
     delta = cgra_cycles - dfg_cycles
     route_cycles = 1 if delta > 0 else 0
@@ -562,13 +566,30 @@ def write_cgra_report(
                         "evidence": "performance_delta_cycles = modeled penalties",
                     },
                 ],
-                "final_outputs": ["none"],
-                "final_memory_state": {},
+                "final_outputs": final_outputs if final_outputs is not None else ["none"],
+                "final_memory_state": final_memory_state if final_memory_state is not None else {},
                 "functional_state_source": "carried_from_dfg_sim_report",
                 "diagnostics": ["synthetic checked CGRA report"],
             }
         )
     )
+
+
+def final_state_fingerprint(
+    final_outputs: list[str],
+    final_memory_state: dict[str, list[str]],
+) -> str:
+    signature = {
+        "schema": "loom.sim.final_state.v1",
+        "final_states": [
+            {
+                "final_outputs": final_outputs,
+                "final_memory_state": final_memory_state,
+            }
+        ],
+    }
+    payload = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def write_blocked_sim_comparison_report(path: Path) -> None:
@@ -1176,6 +1197,166 @@ def main() -> int:
         messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
         if "cycle equivalence group" not in messages or "dynamic_work_items" not in messages:
             raise AssertionError(f"mismatched cycle equivalence diagnostics missing: {audit_data}")
+
+        lower_final_memory = {
+            "arg6": [
+                "i32:1",
+                "i32:0",
+                "i32:5",
+                "i32:10",
+                "i32:3",
+                "i32:6",
+                "i32:9",
+                "i32:10",
+            ]
+        }
+        upper_final_memory = {
+            "arg6": [
+                "i32:3",
+                "i32:0",
+                "i32:5",
+                "i32:10",
+                "i32:4",
+                "i32:7",
+                "i32:10",
+                "i32:10",
+            ]
+        }
+        lower_state_fingerprint = final_state_fingerprint(["none"], lower_final_memory)
+        upper_state_fingerprint = final_state_fingerprint(["none"], upper_final_memory)
+        distinct_final_state_sim = out_dir / "distinct-final-state-sim-cycle-summary.csv"
+        distinct_final_state_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic,"
+            "final_state_fingerprint,final_state_evidence\n"
+            "lower_bound,651,756,pass,,"
+            f"{lower_state_fingerprint},final_outputs+final_memory_state from DFG and CGRA reports\n"
+            "upper_bound,651,756,pass,,"
+            f"{upper_state_fingerprint},final_outputs+final_memory_state from DFG and CGRA reports\n"
+        )
+        write_dfg_report(
+            out_dir / "lower-bound-dfg-sim-report.json",
+            "lower_bound",
+            "g_lower_bound",
+            651,
+            final_memory_state=lower_final_memory,
+            dynamic_work_items=8,
+        )
+        write_dfg_report(
+            out_dir / "upper-bound-dfg-sim-report.json",
+            "upper_bound",
+            "g_upper_bound",
+            651,
+            final_memory_state=upper_final_memory,
+            dynamic_work_items=8,
+        )
+        write_mapping_artifact(
+            out_dir / "lower-bound-pnr-mapping.json",
+            "lower_bound",
+            "g_lower_bound",
+            "map_lower_bound",
+        )
+        write_mapping_artifact(
+            out_dir / "upper-bound-pnr-mapping.json",
+            "upper_bound",
+            "g_upper_bound",
+            "map_upper_bound",
+        )
+        write_cgra_report(
+            out_dir / "lower-bound-cgra-sim-report.json",
+            "lower_bound",
+            "map_lower_bound",
+            651,
+            756,
+            final_memory_state=lower_final_memory,
+        )
+        write_cgra_report(
+            out_dir / "upper-bound-cgra-sim-report.json",
+            "upper_bound",
+            "map_upper_bound",
+            651,
+            756,
+            final_memory_state=upper_final_memory,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-distinct-final-state-sim.json"),
+                str(distinct_final_state_sim),
+                str(out_dir / "lower-bound-dfg-sim-report.json"),
+                str(out_dir / "upper-bound-dfg-sim-report.json"),
+                str(out_dir / "lower-bound-pnr-mapping.json"),
+                str(out_dir / "upper-bound-pnr-mapping.json"),
+                str(out_dir / "lower-bound-cgra-sim-report.json"),
+                str(out_dir / "upper-bound-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode != 0:
+            raise AssertionError("sim-cycle rows with distinct final states failed audit")
+
+        stale_final_state_sim = out_dir / "stale-final-state-sim-cycle-summary.csv"
+        stale_final_state_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic,"
+            "final_state_fingerprint,final_state_evidence\n"
+            "lower_bound,651,756,pass,,"
+            f"{'deadbeef' * 8},final_outputs+final_memory_state from DFG and CGRA reports\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-stale-final-state-sim.json"),
+                str(stale_final_state_sim),
+                str(out_dir / "lower-bound-dfg-sim-report.json"),
+                str(out_dir / "lower-bound-pnr-mapping.json"),
+                str(out_dir / "lower-bound-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("stale final_state_fingerprint unexpectedly passed audit")
+        audit_data = json.loads((out_dir / "artifact-audit-summary-stale-final-state-sim.json").read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "final_state_fingerprint" not in messages:
+            raise AssertionError(f"stale final-state diagnostics missing: {audit_data}")
+
+        mismatched_final_state_sim = out_dir / "mismatched-final-state-sim-cycle-summary.csv"
+        mismatched_final_state_sim.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic,"
+            "final_state_fingerprint,final_state_evidence\n"
+            "lower_bound,651,756,pass,,"
+            f"{lower_state_fingerprint},final_outputs+final_memory_state from DFG and CGRA reports\n"
+        )
+        write_cgra_report(
+            out_dir / "mismatched-lower-bound-cgra-sim-report.json",
+            "lower_bound",
+            "map_lower_bound",
+            651,
+            756,
+            final_memory_state=upper_final_memory,
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-mismatched-final-state-sim.json"),
+                str(mismatched_final_state_sim),
+                str(out_dir / "lower-bound-dfg-sim-report.json"),
+                str(out_dir / "lower-bound-pnr-mapping.json"),
+                str(out_dir / "mismatched-lower-bound-cgra-sim-report.json"),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("DFG/CGRA final-state mismatch unexpectedly passed audit")
+        audit_data = json.loads((out_dir / "artifact-audit-summary-mismatched-final-state-sim.json").read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "final_state_fingerprint" not in messages or "mismatched" not in messages:
+            raise AssertionError(f"mismatched final-state diagnostics missing: {audit_data}")
 
         unequal_extent_reduction_sim = out_dir / "unequal-extent-reduction-sim-cycle-summary.csv"
         unequal_extent_reduction_sim.write_text(

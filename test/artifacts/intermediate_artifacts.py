@@ -309,6 +309,8 @@ CSV_SCHEMAS: dict[str, CsvSchema] = {
         extra_columns=(
             "status",
             "diagnostic",
+            "final_state_fingerprint",
+            "final_state_evidence",
             "cycle_equivalence_group",
             "cycle_equivalence_members",
             "cycle_equivalence_evidence",
@@ -1324,6 +1326,60 @@ def valid_memory_state(value: object) -> bool:
     return all(isinstance(key, str) and valid_string_list(item) for key, item in value.items())
 
 
+def final_state_entry(report: dict[str, object]) -> dict[str, object] | None:
+    final_outputs = report.get("final_outputs")
+    final_memory_state = report.get("final_memory_state")
+    if not valid_string_list(final_outputs) or not valid_memory_state(final_memory_state):
+        return None
+    return {
+        "final_outputs": final_outputs,
+        "final_memory_state": final_memory_state,
+    }
+
+
+def aggregate_final_state_signature(reports: list[dict[str, object]]) -> dict[str, object] | None:
+    if not reports:
+        return None
+    entries: list[dict[str, object]] = []
+    for report in reports:
+        entry = final_state_entry(report)
+        if entry is None:
+            return None
+        entries.append(entry)
+    entries = sorted(
+        entries,
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+    return {
+        "schema": "loom.sim.final_state.v1",
+        "final_states": entries,
+    }
+
+
+def final_state_fingerprint_from_signature(signature: dict[str, object]) -> str:
+    payload = json.dumps(signature, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def matching_final_state_fingerprint(
+    dfg_reports: list[dict[str, object]],
+    cgra_reports: list[dict[str, object]],
+) -> str | None:
+    dfg_signature = aggregate_final_state_signature(dfg_reports)
+    cgra_signature = aggregate_final_state_signature(cgra_reports)
+    if dfg_signature is None or cgra_signature is None or dfg_signature != cgra_signature:
+        return None
+    return final_state_fingerprint_from_signature(dfg_signature)
+
+
+def valid_final_state_fingerprint(value: str) -> bool:
+    return is_sha256(value)
+
+
+def valid_final_state_evidence(value: str) -> bool:
+    return "final_outputs" in value and "final_memory_state" in value
+
+
 def cgra_status_row_graph_ids(row: dict[str, str]) -> list[str]:
     return [item for item in row.get("graph_ids", "").split(",") if item]
 
@@ -1831,6 +1887,15 @@ def validate_kind_invariants(
             diagnostics.append(
                 f"row {row_index}: CGRA-sim cycles are more optimistic than DFG-sim cycles"
             )
+        final_state_fingerprint = row.get("final_state_fingerprint", "").strip()
+        final_state_evidence = row.get("final_state_evidence", "").strip()
+        if final_state_fingerprint or final_state_evidence:
+            if not valid_final_state_fingerprint(final_state_fingerprint):
+                diagnostics.append(f"row {row_index}: final_state_fingerprint must be a SHA-256 hex digest")
+            if not valid_final_state_evidence(final_state_evidence):
+                diagnostics.append(
+                    f"row {row_index}: final_state_evidence must reference final_outputs and final_memory_state"
+                )
     if schema.kind == "rtl_fpa" and statuses.get("status") == "pass":
         fidelity = row.get("fidelity_level", "")
         if fidelity not in FPA_FIDELITY_LEVELS:
@@ -2068,6 +2133,23 @@ def sim_cycle_equivalence_group_covers(
     return len(groups) == 1 and len(evidences) == 1
 
 
+def sim_cycle_distinct_final_state_covers(
+    kernels: list[str],
+    rows_by_kernel: dict[str, dict[str, str]],
+) -> bool:
+    fingerprints: list[str] = []
+    for kernel in sorted(set(kernels)):
+        row = rows_by_kernel.get(kernel, {})
+        fingerprint = row.get("final_state_fingerprint", "").strip()
+        evidence = row.get("final_state_evidence", "").strip()
+        if not valid_final_state_fingerprint(fingerprint):
+            return False
+        if not valid_final_state_evidence(evidence):
+            return False
+        fingerprints.append(fingerprint)
+    return len(fingerprints) == len(set(fingerprints))
+
+
 def validate_unique_sim_cycles(
     label: str,
     cycles_by_value: dict[int, list[str]],
@@ -2078,6 +2160,8 @@ def validate_unique_sim_cycles(
         unique_kernels = sorted(set(kernels))
         if len(unique_kernels) > 1:
             if sim_cycle_equivalence_group_covers(label, unique_kernels, rows_by_kernel):
+                continue
+            if sim_cycle_distinct_final_state_covers(unique_kernels, rows_by_kernel):
                 continue
             diagnostics.append(
                 f"{label} cycles {cycle} are shared by multiple kernels "
@@ -8397,6 +8481,44 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
         if valid_identity(kernel):
             assert kernel is not None
             sim_rows_by_kernel.setdefault(kernel, []).append(row)
+
+    for row in grouped.get("sim_cycle", []):
+        if row.get("status") != "pass":
+            continue
+        fingerprint = row.get("final_state_fingerprint", "").strip()
+        if not fingerprint:
+            continue
+        kernel = row.get("kernel")
+        if not valid_identity(kernel):
+            continue
+        assert kernel is not None
+        if not valid_final_state_fingerprint(fingerprint):
+            continue
+        dfg_reports = dfg_reports_by_workload.get(kernel, [])
+        cgra_reports = cgra_reports_by_workload.get(kernel, [])
+        expected = matching_final_state_fingerprint(dfg_reports, cgra_reports)
+        if expected is None:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_final_state_reports_match",
+                    (
+                        f"sim kernel {kernel!r} final_state_fingerprint cannot be "
+                        "validated because DFG and CGRA final_outputs/final_memory_state evidence is missing or mismatched"
+                    ),
+                    row,
+                )
+            )
+        elif expected != fingerprint:
+            findings.append(
+                cross_finding(
+                    "sim_cycle_final_state_fingerprint_matches_reports",
+                    (
+                        f"sim kernel {kernel!r} final_state_fingerprint does not "
+                        "match DFG/CGRA final_outputs and final_memory_state reports"
+                    ),
+                    row,
+                )
+            )
 
     checked_cycle_equivalence_groups: set[tuple[str, tuple[str, ...]]] = set()
     for row in grouped.get("sim_cycle", []):
