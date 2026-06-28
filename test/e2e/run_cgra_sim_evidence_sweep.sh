@@ -99,6 +99,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     modexp
     modmul
     spmv
+    sort_bubble
     convolve_1d
     conv1d
     conv2d

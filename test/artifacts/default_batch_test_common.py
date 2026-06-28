@@ -71,6 +71,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "scatter_add",
     "spmv",
     "spmspv",
+    "sort_bubble",
     "stream_update",
     "string_hash",
     "transform_point",

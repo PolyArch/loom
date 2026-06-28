@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 28
+APP_NO_DFG_TIER_COUNT = 27
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -58,6 +58,7 @@ DEFAULT_SWEEP_CASES = (
     "modexp",
     "modmul",
     "spmv",
+    "sort_bubble",
     "convolve_1d",
     "conv1d",
     "conv2d",
@@ -3829,6 +3830,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "spmv",
                 "--case",
+                "sort_bubble",
+                "--case",
                 "spmspv",
                 "--case",
                 "stream_update",
@@ -3967,6 +3970,7 @@ def main(argv: list[str]) -> int:
             "dotprod",
             "dot_product_3d",
             "spmv",
+            "sort_bubble",
             "spmspv",
             "stream_update",
             "axpy",
@@ -4393,6 +4397,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "string_hash", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "sort_bubble", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "scatter_add", "shared_memory_reduction_adg")
         assert_scatter_add_evidence(evidence_dir)
         assert_component_references_resolve(evidence_dir, "partition")
@@ -4546,6 +4551,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_mapping_uses_switch_multihop(evidence_dir, "sbox_lookup")
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
+        assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
         assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -4586,6 +4592,8 @@ def main(argv: list[str]) -> int:
         )
         assert_component_references_resolve(evidence_dir, "vecadd")
         assert_component_references_resolve(evidence_dir, "conv2d")
+        assert_component_references_resolve(evidence_dir, "sort_bubble")
+        run(repo, ["python3", "test/artifacts/assert_sort_bubble_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
         assert_component_references_resolve(evidence_dir, "variance")
         assert_component_references_resolve(evidence_dir, "covariance")
@@ -4619,6 +4627,7 @@ def main(argv: list[str]) -> int:
             "dotprod",
             "dot_product_3d",
             "spmv",
+            "sort_bubble",
             "stream_update",
             "axpy",
             "bit_reverse",
@@ -4767,9 +4776,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 79,
+            "pass": 80,
             "fail": 0,
-            "blocked": 30,
+            "blocked": 29,
             "unsupported": 0,
             "missing_status": 0,
         }

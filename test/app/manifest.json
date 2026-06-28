@@ -941,7 +941,7 @@
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
-      "tiers": ["run", "raise"],
+      "tiers": ["run", "raise", "dfg"],
       "feature_tags": ["sort", "float", "nested-loop", "swap"],
       "compiler_flags": [],
       "link_flags": [],

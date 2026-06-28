@@ -3741,6 +3741,7 @@ struct SharedMemoryAdgConfig {
   unsigned castCount = 8;
   unsigned trunciCount = 0;
   unsigned wideConstantCount = 0;
+  unsigned wideAddCount = 0;
   unsigned wideShiftCount = 0;
   unsigned wideCmpCount = 0;
   unsigned wideCastCount = 4;
@@ -4038,6 +4039,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("xor", config.logicCount, {"arith.xori"});
   addBinaryBank("shift", config.shiftCount,
                 {"arith.shli", "arith.shrsi", "arith.shrui"});
+  addWideBinaryBank("wide_add", config.wideAddCount,
+                    {"arith.addi", "arith.subi"});
   addWideBinaryBank("wide_mul", config.wideMulCount, {"arith.muli"});
   addWideBinaryBank("wide_udiv", config.wideUnsignedDivCount,
                     {"arith.divui", "arith.remui"});
@@ -4188,6 +4191,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.muxCount = 4;
   config.trunciCount = 4;
   config.wideConstantCount = 2;
+  config.wideAddCount = 2;
   config.wideShiftCount = 1;
   config.wideCmpCount = 1;
   config.wideIndexCastCount = 4;
