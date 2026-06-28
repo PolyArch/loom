@@ -187,9 +187,28 @@ mlir::Operation *findSymbolOp(mlir::ModuleOp module, llvm::StringRef opName,
   return found;
 }
 
+bool isForControlOperandUse(mlir::OpOperand &use) {
+  return mlir::isa<mlir::scf::ForOp>(use.getOwner()) &&
+         use.getOperandNumber() <= 2;
+}
+
+bool isStructuredControlConstant(mlir::Operation *op) {
+  llvm::StringRef name = op->getName().getStringRef();
+  if (name != "dataflow.constant" && name != "arith.constant")
+    return false;
+  if (op->getNumResults() != 1)
+    return false;
+  mlir::Value result = op->getResult(0);
+  if (result.use_empty())
+    return false;
+  return llvm::all_of(result.getUses(), isForControlOperandUse);
+}
+
 bool isIgnoredOp(mlir::Operation *op) {
   llvm::StringRef name = op->getName().getStringRef();
-  return name == "dataflow.graph.return";
+  if (name == "dataflow.graph.return")
+    return true;
+  return isStructuredControlConstant(op);
 }
 
 bool isAdapterOp(mlir::Operation *op) {

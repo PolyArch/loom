@@ -100,12 +100,10 @@ MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "moving_avg",
-    "scatter_add",
     "sort_insertion",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
     ("moving_avg", "moving_avg_kernel"),
-    ("scatter_add", "scatter_add"),
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
 }
@@ -504,6 +502,105 @@ def assert_promoted_row(repo: Path, rows: list[dict[str, str]], case: str) -> No
         actual = artifact_test_common.fingerprint(path)
         if actual != row[fingerprint_column]:
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
+
+
+def assert_scatter_add_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": [
+            "i32:1",
+            "i32:2",
+            "i32:3",
+            "i32:4",
+            "i32:5",
+            "i32:1",
+            "i32:2",
+            "i32:3",
+            "i32:4",
+            "i32:5",
+            "i32:1",
+            "i32:2",
+            "i32:3",
+            "i32:4",
+            "i32:5",
+            "i32:1",
+        ],
+        "arg2": [
+            "i32:0",
+            "i32:3",
+            "i32:1",
+            "i32:3",
+            "i32:7",
+            "i32:8",
+            "i32:1",
+            "i32:4",
+            "i32:7",
+            "i32:2",
+            "i32:5",
+            "i32:3",
+            "i32:12",
+            "i32:6",
+            "i32:0",
+            "i32:7",
+        ],
+        "arg3": ["i32:6", "i32:6", "i32:7", "i32:11", "i32:7", "i32:6", "i32:10", "i32:17"],
+    }
+    dfg = json.loads((evidence_dir / "scatter_add.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_scatter_add_0"
+        or dfg.get("dynamic_work_items") != 16
+        or dfg.get("operation_fire_counts", {}).get("dataflow.load") != 44
+        or dfg.get("operation_fire_counts", {}).get("dataflow.store") != 14
+        or dfg.get("operation_fire_counts", {}).get("arith.cmpi") != 16
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"scatter_add should preserve true DFG memory evidence: {dfg}")
+
+    mapping = json.loads((evidence_dir / "scatter_add.mapping.json").read_text())
+    constant_placements = [
+        placement
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict) and placement.get("operation") == "dataflow.constant"
+    ]
+    constant_configs = [
+        entry
+        for entry in mapping.get("config_bitstream", [])
+        if isinstance(entry, dict)
+        and entry.get("register") == "sw_configs.const_hex_value"
+    ]
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 9
+        or mapping.get("routed_edges") != 9
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("resource_pressure", []) != []
+        or len(constant_placements) != 1
+    ):
+        raise AssertionError(f"scatter_add should route through one real shared constant: {mapping}")
+    constant_placement = constant_placements[0]
+    expected_constant_config = {
+        "source": f"placement:{constant_placement.get('software')}",
+        "target": constant_placement.get("hardware"),
+        "register": "sw_configs.const_hex_value",
+        "value": "0x00000008",
+    }
+    if constant_configs != [expected_constant_config]:
+        raise AssertionError(
+            f"scatter_add constant config should follow the mapped placement: {mapping}"
+        )
+
+    cgra = json.loads((evidence_dir / "scatter_add.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "scatter_add.sim-comparison-report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("final_memory_state") != expected_memory
+        or comparison.get("status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"scatter_add should preserve CGRA/comparison memory evidence: {cgra} {comparison}")
 
 
 def assert_structured_blocker_row(
@@ -3971,7 +4068,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "string_hash", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "scatter_add", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "scatter_add", "shared_memory_reduction_adg")
+        assert_scatter_add_evidence(evidence_dir)
         assert_component_references_resolve(evidence_dir, "partition")
         assert_component_mapping_status(
             evidence_dir,
@@ -4249,6 +4347,7 @@ def main(argv: list[str]) -> int:
             "runge_kutta_step",
             "autocorrelation",
             "upper_bound",
+            "scatter_add",
         ):
             assert_promoted_row(repo, rows, case)
         for case in MAPPING_FAILED_SWEEP_CASES:
@@ -4337,9 +4436,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 74,
+            "pass": 75,
             "fail": 0,
-            "blocked": 35,
+            "blocked": 34,
             "unsupported": 0,
             "missing_status": 0,
         }

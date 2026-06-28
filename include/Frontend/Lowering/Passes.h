@@ -58,11 +58,11 @@ std::unique_ptr<::mlir::Pass> createLowerGraphMemoryPass();
 // stream are left unchanged.
 std::unique_ptr<::mlir::Pass> createLowerGraphInvariantPass();
 
-// Module-scope pass that promotes `arith.constant` ops feeding any
-// streaming primitive (stream / carry / invariant / load / store)
-// inside a dataflow.graph.func body into `dataflow.constant` ops
-// driven by the body's leading `thread_ctrl` block argument. Graphs
-// without a `dataflow.stream` are left unchanged.
+// Module-scope pass that promotes each used `arith.constant` op inside a
+// dataflow.graph.func body into a `dataflow.constant` op driven by the body's
+// leading `thread_ctrl` block argument. Graph-local scalar literals therefore
+// remain visible to PnR as configurable hardware constants, including literals
+// feeding scalar arithmetic, structured loop bounds, or streaming primitives.
 std::unique_ptr<::mlir::Pass> createLowerGraphConstantsPass();
 
 // Module-scope pass that walks every dataflow.graph.func body,

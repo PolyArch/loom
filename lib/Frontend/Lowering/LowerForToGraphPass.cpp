@@ -228,6 +228,7 @@ struct LowerForToGraphPass
     ::mlir::OpBuilder builder(ctx);
 
     promoteStandaloneMemcpyFunctions(module, builder);
+    promoteStandaloneStructuredFunctions(module, builder);
 
     // First, for any host-scope scf.for with iter_args (i.e., a
     // reduction that survived the forall-to-thread pass because it
@@ -296,6 +297,45 @@ struct LowerForToGraphPass
     return memcpy && !memcpy.getIsVolatile();
   }
 
+  void promoteGraphOnlyFunction(::mlir::ModuleOp module,
+                                ::mlir::func::FuncOp func,
+                                ::mlir::OpBuilder &builder) {
+    ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
+    ::mlir::Location loc = func.getLoc();
+    std::string stem = "g_" + sanitizeSymbol(func.getSymName()) + "_0";
+    if (::mlir::SymbolTable(module).lookup(stem))
+      return;
+    std::string graphName = uniqueSymbol(module, stem);
+
+    ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
+    inputTypes.push_back(noneType);
+    for (::mlir::Type ty : func.getFunctionType().getInputs())
+      inputTypes.push_back(ty);
+    ::mlir::FunctionType graphType =
+        builder.getFunctionType(inputTypes, {noneType});
+
+    builder.setInsertionPointToEnd(module.getBody());
+    auto graph = ::dataflow::GraphFuncOp::create(
+        builder, loc, graphName, graphType,
+        ::llvm::ArrayRef<::mlir::NamedAttribute>{});
+    graph.setSymVisibilityAttr(builder.getStringAttr("private"));
+
+    ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
+    for (::mlir::Type ty : inputTypes)
+      graphEntry->addArgument(ty, loc);
+
+    ::mlir::IRMapping mapping;
+    ::mlir::Block &funcEntry = func.getBody().front();
+    for (auto [i, arg] : ::llvm::enumerate(funcEntry.getArguments()))
+      mapping.map(arg, graphEntry->getArgument(i + 1));
+
+    builder.setInsertionPointToEnd(graphEntry);
+    for (::mlir::Operation &op : funcEntry.without_terminator())
+      builder.clone(op, mapping);
+    ::dataflow::GraphReturnOp::create(
+        builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
+  }
+
   void promoteStandaloneMemcpyFunctions(::mlir::ModuleOp module,
                                         ::mlir::OpBuilder &builder) {
     ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
@@ -304,42 +344,76 @@ struct LowerForToGraphPass
         funcs.push_back(func);
     });
 
-    ::mlir::Type noneType = builder.getType<::mlir::NoneType>();
-    for (::mlir::func::FuncOp func : funcs) {
-      ::mlir::Location loc = func.getLoc();
-      std::string stem = "g_" + sanitizeSymbol(func.getSymName()) + "_0";
-      if (::mlir::SymbolTable(module).lookup(stem))
+    for (::mlir::func::FuncOp func : funcs)
+      promoteGraphOnlyFunction(module, func, builder);
+  }
+
+  bool isStandaloneStructuredFunctionCandidate(::mlir::func::FuncOp func) {
+    if (func.isExternal())
+      return false;
+    if (func.getSymName() == "main")
+      return false;
+    if (!func.getFunctionType().getResults().empty())
+      return false;
+    ::mlir::Region &body = func.getBody();
+    if (!body.hasOneBlock())
+      return false;
+    ::mlir::Block &entry = body.front();
+
+    ::mlir::scf::ForOp topLevelLoop;
+    for (::mlir::Operation &op : entry.without_terminator()) {
+      if (auto loop = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
+        if (topLevelLoop)
+          return false;
+        topLevelLoop = loop;
         continue;
-      std::string graphName = uniqueSymbol(module, stem);
-
-      ::llvm::SmallVector<::mlir::Type, 8> inputTypes;
-      inputTypes.push_back(noneType);
-      for (::mlir::Type ty : func.getFunctionType().getInputs())
-        inputTypes.push_back(ty);
-      ::mlir::FunctionType graphType =
-          builder.getFunctionType(inputTypes, {noneType});
-
-      builder.setInsertionPointToEnd(module.getBody());
-      auto graph = ::dataflow::GraphFuncOp::create(
-          builder, loc, graphName, graphType,
-          ::llvm::ArrayRef<::mlir::NamedAttribute>{});
-      graph.setSymVisibilityAttr(builder.getStringAttr("private"));
-
-      ::mlir::Block *graphEntry = builder.createBlock(&graph.getBody());
-      for (::mlir::Type ty : inputTypes)
-        graphEntry->addArgument(ty, loc);
-
-      ::mlir::IRMapping mapping;
-      ::mlir::Block &funcEntry = func.getBody().front();
-      for (auto [i, arg] : ::llvm::enumerate(funcEntry.getArguments()))
-        mapping.map(arg, graphEntry->getArgument(i + 1));
-
-      builder.setInsertionPointToEnd(graphEntry);
-      for (::mlir::Operation &op : funcEntry.without_terminator())
-        builder.clone(op, mapping);
-      ::dataflow::GraphReturnOp::create(
-          builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
+      }
+      if (::llvm::isa<::mlir::arith::ConstantOp>(op))
+        continue;
+      return false;
     }
+    if (!topLevelLoop)
+      return false;
+
+    bool unsupported = false;
+    topLevelLoop->walk([&](::mlir::Operation *nested)
+                           -> ::mlir::WalkResult {
+      if (nested == topLevelLoop.getOperation())
+        return ::mlir::WalkResult::advance();
+      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                      ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                      ::mlir::func::FuncOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::llvm::isa<::mlir::CallOpInterface>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::llvm::isa<::mlir::scf::ForOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (nested->getNumRegions() != 0 &&
+          !::llvm::isa<::mlir::scf::IfOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      return ::mlir::WalkResult::advance();
+    });
+    return !unsupported;
+  }
+
+  void promoteStandaloneStructuredFunctions(::mlir::ModuleOp module,
+                                            ::mlir::OpBuilder &builder) {
+    ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
+    module.walk([&](::mlir::func::FuncOp func) {
+      if (isStandaloneStructuredFunctionCandidate(func))
+        funcs.push_back(func);
+    });
+
+    for (::mlir::func::FuncOp func : funcs)
+      promoteGraphOnlyFunction(module, func, builder);
   }
 
   // ====================================================================

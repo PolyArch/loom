@@ -234,7 +234,7 @@ case "${CASE}" in
     case_graph="g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
     ;;
   scatter_add)
-    case_graph="missing_primary_graph"
+    case_graph="g_scatter_add_0"
     ;;
   xor_block)
     case_graph="g_t_xor_block_0_0"
@@ -317,7 +317,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -996,14 +996,11 @@ PY
     --mapping-output "${mapping_artifact}" \
     --cgra-output "${cgra_report}" \
     --mapping-summary-output "${mapping}"
-elif [[ "${CASE}" == "moving_avg" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"
-      ;;
-    scatter_add)
-      expected_primary_graph_token="scatter_add"
       ;;
     sort_insertion)
       expected_primary_graph_token="sort_insertion_kernel"

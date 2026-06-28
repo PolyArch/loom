@@ -65,6 +65,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "rle_decode",
     "runge_kutta_step",
     "sbox_lookup",
+    "scatter_add",
     "spmv",
     "spmspv",
     "string_hash",

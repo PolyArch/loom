@@ -1049,6 +1049,7 @@ void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine(
       "            {hw_params = [{const_hex_value = [\"0x00000000\", "
       "\"0x00000001\", \"0x00000002\", \"0x00000003\", "
+      "\"0x00000004\", \"0x00000008\", \"0x00000010\", "
       "\"0xffffffff\"]}]}");
   module.addExactBodyLine(
       "            : (!fabric.bits<0>) -> !fabric.bits<32>");

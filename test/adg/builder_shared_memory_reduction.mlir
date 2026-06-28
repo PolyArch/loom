@@ -9,6 +9,7 @@
 // HARDWARE-DAG: load_group_size = 18 : i32
 // HARDWARE-DAG: store_group_size = 9 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
+// HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
 // HARDWARE-DAG: fabric.op [@arith.addf, @arith.subf]
 // HARDWARE-DAG: fabric.op [@arith.mulf]

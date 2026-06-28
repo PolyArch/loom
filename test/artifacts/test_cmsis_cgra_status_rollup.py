@@ -366,9 +366,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 74,
+            "pass": 75,
             "fail": 0,
-            "blocked": 35,
+            "blocked": 34,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -513,7 +513,6 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
-    "scatter_add": "primary workload graph absent: expected token scatter_add",
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -718,9 +717,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 14,
             "fail": 0,
-            "blocked": 35,
+            "blocked": 34,
             "unsupported": 0,
-            "missing_status": 60,
+            "missing_status": 61,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
@@ -2511,8 +2510,8 @@ def assert_cmsis_max_pool_s8_cgra_evidence(
         or mapping_artifact.get("routed_edges") != 121
         or mapping_artifact.get("unrouted_edges") != 0
         or mapping_artifact.get("unplaced_records") != 0
-        or mapping_artifact.get("placed_records") != 122
-        or mapping_artifact.get("config_records") != 3174
+        or mapping_artifact.get("placed_records") != 120
+        or mapping_artifact.get("config_records") != 3164
         or mapping_artifact.get("resource_pressure") not in (None, [])
         or mapping_artifact.get("unrouted_edge_details") not in (None, [])
         or not isinstance(routes, list)
@@ -2558,7 +2557,7 @@ def assert_cmsis_max_pool_s8_cgra_evidence(
         or cgra_report.get("hardware_aware_cycles") != 715
         or cgra_report.get("performance_delta_cycles") != 680
         or cgra_report.get("route_segments") != 559
-        or cgra_report.get("config_records") != 3174
+        or cgra_report.get("config_records") != 3164
         or cgra_report.get("final_outputs") != ["none"]
         or cgra_report.get("final_memory_state") != expected_memory
     ):

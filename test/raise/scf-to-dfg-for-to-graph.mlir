@@ -114,16 +114,56 @@ dataflow.thread private @t_structured_while(%src: memref<?xi32>, %dst: memref<?x
 // graph-only extraction; there is no synthetic host graph.launch.
 // CHECK-LABEL: func.func @standalone_memcpy
 // CHECK: llvm.intr.memcpy
-// CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
-// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
-// CHECK: llvm.intr.memcpy
-// CHECK: dataflow.graph.return %arg0 : none
 func.func @standalone_memcpy(%src: !llvm.ptr, %dst: !llvm.ptr, %n: i32) {
   "llvm.intr.memcpy"(%dst, %src, %n)
     <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
        isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
   return
 }
+
+// A standalone private structured kernel with no results is also an
+// accelerator candidate. The compiler exposes a graph-only surface while
+// leaving the original callable function intact for host semantics.
+// CHECK-LABEL: func.func private @scatter_add_candidate
+// CHECK: scf.for
+// CHECK: scf.if
+func.func private @scatter_add_candidate(%src: !llvm.ptr, %idx: !llvm.ptr,
+                                         %dst: !llvm.ptr) {
+  %c0 = arith.constant 0 : i64
+  %c1 = arith.constant 1 : i64
+  %c4 = arith.constant 4 : i64
+  %limit = arith.constant 8 : i32
+  scf.for %i = %c0 to %c4 step %c1 : i64 {
+    %idx_ptr = llvm.getelementptr %idx[%i]
+        : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+    %slot = llvm.load %idx_ptr : !llvm.ptr -> i32
+    %ok = arith.cmpi ult, %slot, %limit : i32
+    scf.if %ok {
+      %src_ptr = llvm.getelementptr %src[%i]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %value = llvm.load %src_ptr : !llvm.ptr -> i32
+      %slot64 = llvm.zext %slot : i32 to i64
+      %dst_ptr = llvm.getelementptr %dst[%slot64]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %old = llvm.load %dst_ptr : !llvm.ptr -> i32
+      %sum = arith.addi %old, %value : i32
+      llvm.store %sum, %dst_ptr : i32, !llvm.ptr
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
+// CHECK: llvm.intr.memcpy
+// CHECK: dataflow.graph.return %arg0 : none
+// CHECK-LABEL: dataflow.graph.func private @g_scatter_add_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
+// CHECK: scf.for
+// CHECK: scf.if
+// CHECK: llvm.load
+// CHECK: llvm.store
+// CHECK: dataflow.graph.return %arg0 : none
 
 // CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
 // CHECK-SAME: -> none

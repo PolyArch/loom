@@ -1175,6 +1175,16 @@ case "${CASE}" in
             --workload gather
         )
         ;;
+    scatter_add)
+        append_ctrl_tokens 1
+        append_raw_memref 1 "1,2,3,4,5,1,2,3,4,5,1,2,3,4,5,1"
+        append_raw_memref 2 "0,3,1,3,7,8,1,4,7,2,5,3,12,6,0,7"
+        append_raw_memref 3 "0,1,2,3,4,5,6,7"
+        sim_args+=(
+            --graph g_scatter_add_0
+            --workload scatter_add
+        )
+        ;;
     downsample)
         append_ctrl_tokens 4
         append_repeated_arg 1 4 4

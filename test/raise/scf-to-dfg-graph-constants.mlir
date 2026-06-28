@@ -24,14 +24,15 @@ dataflow.graph.func private @g_constant_promoted(%arg0: none, %arg1: i64,
   dataflow.graph.return %arg0, %1 : none, f32
 }
 
-// Negative-bail #1: a graph.func body whose arith.constant has no
-// streaming-primitive users (only consumed by another arith op that
-// feeds a non-streaming sink) is left untouched -- the per-constant
-// "feeds streaming primitive" check rejects pure scalar plumbing.
+// Scalar constants inside a graph are also hardware-visible sources even when
+// they only feed scalar arithmetic. They must lower to dataflow.constant so
+// PnR sees a real configurable constant resource instead of a residual
+// arith.constant op.
 
 // CHECK-LABEL: dataflow.graph.func private @g_no_streaming_user
-// CHECK: arith.constant 2.000000e+00 : f32
-// CHECK-NOT: dataflow.constant
+// CHECK-NOT: arith.constant 2.000000e+00 : f32
+// CHECK: %[[SCALAR_CONST:.*]] = dataflow.constant %arg0 {const_value = 2.000000e+00 : f32} : f32
+// CHECK: arith.addf %arg1, %[[SCALAR_CONST]]
 dataflow.graph.func private @g_no_streaming_user(%arg0: none,
                                                  %arg1: f32) -> (none, f32) {
   %cst = arith.constant 2.000000e+00 : f32

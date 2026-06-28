@@ -18,6 +18,8 @@ LOOM_RAISE_OPT="${LOOM_RAISE_OPT:-${REPO}/build/bin/loom-raise-opt}"
 . "${SHARED}"
 
 dfg_one "main_func" "c"
+require_graph_body_op "main_func" "g_scatter_add_0" "dataflow.load" "dataflow.load"
+require_graph_body_op "main_func" "g_scatter_add_0" "dataflow.store" "dataflow.store"
 dfg_one "main_inline" "c"
 
 echo "[${KERNEL}] PASS"

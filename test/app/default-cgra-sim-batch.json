@@ -282,6 +282,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "scatter_add",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "rle_decode",
       "hardware": "shared_memory_reduction_adg"
     },
