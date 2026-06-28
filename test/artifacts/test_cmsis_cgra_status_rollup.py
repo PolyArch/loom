@@ -73,8 +73,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 11,
-            "unsupported": 7,
+            "blocked": 12,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -821,10 +821,10 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 10,
+            "pass": 11,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 7,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -845,6 +845,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
@@ -1161,6 +1162,99 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
     ):
         raise AssertionError(
             f"unexpected CMSIS concat CGRA comparison evidence: {cgra_report} {comparison_report}"
+        )
+
+
+def assert_cmsis_reshape_memcpy_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    row = one_row(rows, "cmsis-nn", "ReshapeFunctions/arm_reshape_s8.c")
+    if (
+        row["status"] != "pass"
+        or row["diagnostic_class"] != "cgra_sim_pass"
+        or row["blocking_prerequisite"] != ""
+        or row["owner"] != "sim_report"
+        or row["dfg_status"] != "pass"
+        or row["mapping_status"] != "pass"
+        or row["cgra_status"] != "pass"
+        or row["comparison_status"] != "pass"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["graph_ids"] != "g_arm_reshape_s8_0"
+        or row["final_outputs_present"] != "true"
+        or row["final_memory_state_present"] != "true"
+        or row["diagnostic"] != "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
+    ):
+        raise AssertionError(f"CMSIS reshape row should expose real CGRA-sim evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+    if not (sim_evidence / "arm_reshape_s8.dfg.report.json").is_file():
+        raise AssertionError("CMSIS evidence mode should emit arm_reshape_s8 DFG report")
+    if not (sim_evidence / "arm_reshape_s8.mapping.json").is_file():
+        raise AssertionError("CMSIS evidence mode should emit arm_reshape_s8 mapping artifact")
+    if not (sim_evidence / "arm_reshape_s8.cgra.report.json").is_file():
+        raise AssertionError("CMSIS evidence mode should emit arm_reshape_s8 CGRA report")
+
+    expected_memory = {
+        "arg1": ["i8:1", "i8:2", "i8:3", "i8:4"],
+        "arg2": ["i8:1", "i8:2", "i8:3", "i8:4"],
+    }
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != "ReshapeFunctions/arm_reshape_s8.c"
+        or dfg_report.get("graph") != "g_arm_reshape_s8_0"
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 4
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 4
+        or dfg_report.get("operation_fire_counts", {}).get("dataflow.store") != 4
+        or "llvm.intr.memcpy" in dfg_report.get("operation_fire_counts", {})
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected CMSIS reshape DFG stream evidence: {dfg_report}")
+
+    mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
+    if (
+        mapping_artifact.get("kind") != "pnr_mapping"
+        or mapping_artifact.get("workload") != "ReshapeFunctions/arm_reshape_s8.c"
+        or mapping_artifact.get("graph") != "g_arm_reshape_s8_0"
+        or mapping_artifact.get("status") != "pass"
+        or mapping_artifact.get("unrouted_edges") != 0
+    ):
+        raise AssertionError(f"unexpected CMSIS reshape PnR evidence: {mapping_artifact}")
+    placements = mapping_artifact.get("placements", [])
+    if not any(
+        placement.get("operation") == "dataflow.load"
+        and placement.get("resource_kind") == "fabric.mem.load"
+        for placement in placements
+    ):
+        raise AssertionError(f"CMSIS reshape mapping should place a real dataflow.load: {mapping_artifact}")
+    if not any(
+        placement.get("operation") == "dataflow.store"
+        and placement.get("resource_kind") == "fabric.mem.store"
+        for placement in placements
+    ):
+        raise AssertionError(f"CMSIS reshape mapping should place a real dataflow.store: {mapping_artifact}")
+    if (
+        any(placement.get("resource_kind") == "fabric.mem.copy" for placement in placements)
+        or "fabric.mem.copy" in json.dumps(mapping_artifact, sort_keys=True)
+        or "memory_copy_binding" in json.dumps(mapping_artifact, sort_keys=True)
+    ):
+        raise AssertionError(f"CMSIS reshape mapping must not use copy resources: {mapping_artifact}")
+
+    cgra_report = json.loads((repo / row["cgra_report"]).read_text())
+    comparison_report = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        cgra_report.get("status") != "pass"
+        or cgra_report.get("final_memory_state") != expected_memory
+        or comparison_report.get("status") != "pass"
+        or comparison_report.get("functional_comparison_status") != "pass"
+        or comparison_report.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(
+            f"unexpected CMSIS reshape CGRA comparison evidence: {cgra_report} {comparison_report}"
         )
 
 
@@ -3595,10 +3689,10 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 10,
+            "pass": 11,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 7,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -3649,6 +3743,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)

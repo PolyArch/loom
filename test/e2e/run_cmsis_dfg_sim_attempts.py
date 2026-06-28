@@ -726,6 +726,30 @@ ATTEMPTS = (
     ),
     Attempt(
         suite="cmsis-nn",
+        case="ReshapeFunctions/arm_reshape_s8.c",
+        stem="arm_reshape_s8",
+        graph="g_arm_reshape_s8_0",
+        dfg_dir_arg="cmsis_nn_dfg_dir",
+        args=("0=none", "0=none", "0=none", "0=none", "3=4"),
+        memrefs=(
+            "1=1,2,3,4",
+            "2=0,0,0,0",
+        ),
+        hardware_mlir="test/pnr/shared_reduction_adg.mlir",
+        hardware="shared_reduction_adg",
+        expected_dynamic_work_items=4,
+        expected_operation_fire_counts=(
+            ("dataflow.load", 4),
+            ("dataflow.store", 4),
+        ),
+        expected_final_outputs=("none",),
+        expected_final_memory_state=(
+            ("arg1", ("i8:1", "i8:2", "i8:3", "i8:4")),
+            ("arg2", ("i8:1", "i8:2", "i8:3", "i8:4")),
+        ),
+    ),
+    Attempt(
+        suite="cmsis-nn",
         case="FullyConnectedFunctions/arm_vector_sum_s8.c",
         stem="arm_vector_sum_s8",
         graph="g_t_arm_vector_sum_s8_red_0_0",

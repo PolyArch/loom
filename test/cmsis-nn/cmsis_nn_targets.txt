@@ -79,6 +79,6 @@ FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv
 NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset||0|0|0|0|0|0|0|0|0|0|10
 PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8||0|0|0|0|0|0|0|0|0|0|52
 PoolingFunctions/arm_max_pool_s8.c|thumbv8m.main-none-eabi|cortex-m33|thumbv8m.main-unknown-none-eabi|arm_max_pool_s8||1|1|0|7|5|12|0|0|0|0|85
-ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8||0|0|0|0|0|0|0|0|0|0|0
+ReshapeFunctions/arm_reshape_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_reshape_s8||0|1|1|1|1|2|1|0|0|0|0
 SoftmaxFunctions/arm_softmax_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_s8||0|0|0|0|0|0|0|0|0|0|0
 SoftmaxFunctions/arm_softmax_u8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_softmax_u8||1|1|0|4|1|1|0|0|2|0|35

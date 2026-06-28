@@ -2,6 +2,10 @@
 // RUN: FileCheck %s < %t.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_direct --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0 --arg 3=2 --arg 3=2 --output %t.direct.json
 // RUN: FileCheck %s --check-prefix=DIRECT < %t.direct.json
+// RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered-direct.mlir
+// RUN: FileCheck %s --check-prefix=DIRECT-LOWERED-IR < %t.lowered-direct.mlir
+// RUN: loom-dfg-sim %t.lowered-direct.mlir --graph pointer_memcpy_direct --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0 --arg 3=2 --output %t.direct-lowered.json
+// RUN: FileCheck %s --check-prefix=DIRECT-LOWERED < %t.direct-lowered.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_structured_if --arg 0=none --memref 1=5,6,7 --memref 2=0,0,0 --arg 3=2 --arg 4=true --output %t.structured-if.json
 // RUN: FileCheck %s --check-prefix=STRUCTURED-IF < %t.structured-if.json
 // RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
@@ -47,6 +51,25 @@
 // DIRECT-NEXT: "i8:0"
 // DIRECT: "llvm.intr.memcpy": 2
 // DIRECT: "status": "pass"
+
+// DIRECT-LOWERED-IR-LABEL: dataflow.graph.func private @pointer_memcpy_direct
+// DIRECT-LOWERED-IR: dataflow.stream
+// DIRECT-LOWERED-IR: dataflow.load
+// DIRECT-LOWERED-IR: dataflow.store
+// DIRECT-LOWERED-IR-NOT: llvm.intr.memcpy
+// DIRECT-LOWERED-IR: dataflow.graph.return
+
+// DIRECT-LOWERED: "dynamic_work_items": 2
+// DIRECT-LOWERED: "final_memory_state": {
+// DIRECT-LOWERED: "arg2": [
+// DIRECT-LOWERED-NEXT: "i8:1",
+// DIRECT-LOWERED-NEXT: "i8:2",
+// DIRECT-LOWERED-NEXT: "i8:0",
+// DIRECT-LOWERED-NEXT: "i8:0"
+// DIRECT-LOWERED: "dataflow.load": 2
+// DIRECT-LOWERED: "dataflow.store": 2
+// DIRECT-LOWERED-NOT: "llvm.intr.memcpy"
+// DIRECT-LOWERED: "status": "pass"
 
 // STRUCTURED-IF: "dynamic_work_items": 1
 // STRUCTURED-IF: "final_memory_state": {

@@ -130,10 +130,10 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 10,
+                "pass": 11,
                 "fail": 0,
                 "blocked": 1,
-                "unsupported": 7,
+                "unsupported": 6,
                 "missing_status": 0,
             },
         }
@@ -148,6 +148,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
         relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
+        reshape = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ReshapeFunctions/arm_reshape_s8.c")
         vector_sum = row_by_case(
             out_dir / "cgra-status-summary.csv",
             "cmsis-nn",
@@ -158,7 +159,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn",
             "FullyConnectedFunctions/arm_fully_connected_s8.c",
         )
-        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, vector_sum):
+        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, vector_sum):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (

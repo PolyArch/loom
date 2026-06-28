@@ -614,6 +614,54 @@ bool tryRewriteNestedMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   return true;
 }
 
+bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
+                            ::mlir::OpBuilder &builder, RewriteCtx &ctx) {
+  if (memcpy.getIsVolatile())
+    return false;
+  ::mlir::Type lenType = memcpy.getLen().getType();
+  if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
+    return false;
+  if (!isGraphPtrBlockArg(memcpy.getSrc(), ctx.graph) ||
+      !isGraphPtrBlockArg(memcpy.getDst(), ctx.graph))
+    return false;
+
+  ::mlir::Location loc = memcpy.getLoc();
+  ::mlir::OpBuilder::InsertionGuard g(builder);
+  builder.setInsertionPoint(memcpy);
+
+  ::mlir::Value zero = getDataflowConstant(builder, lenType, ctx.ctrl, 0, loc);
+  ::mlir::Value one = getDataflowConstant(builder, lenType, ctx.ctrl, 1, loc);
+  if (!zero || !one)
+    return false;
+
+  auto copyStream = ::dataflow::StreamOp::create(
+      builder, loc, lenType, builder.getI1Type(), /*lb=*/zero,
+      /*ub=*/memcpy.getLen(), /*step=*/one, builder.getStringAttr("+="),
+      builder.getStringAttr("<"));
+
+  ::mlir::Type byteTy = builder.getI8Type();
+  ::mlir::Value srcMem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getSrc(),
+                      byteTy, loc, /*topLevel=*/true, memcpy);
+  ::mlir::Value dstMem =
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getDst(),
+                      byteTy, loc, /*topLevel=*/true, memcpy);
+  ::mlir::Value index = getIndexFromInt(builder, ctx.indexCastCache,
+                                        copyStream.getIndex(), loc, memcpy);
+  if (!srcMem || !dstMem || !index)
+    return false;
+
+  auto load = ::dataflow::LoadOp::create(
+      builder, loc, /*data=*/byteTy, /*done=*/builder.getNoneType(),
+      /*mem=*/srcMem, /*addr=*/index, /*ctrl=*/ctx.ctrl);
+  ::dataflow::StoreOp::create(builder, loc, /*done=*/builder.getNoneType(),
+                              /*mem=*/dstMem, /*addr=*/index,
+                              /*data=*/load.getData(),
+                              /*ctrl=*/load.getDone());
+  memcpy->erase();
+  return true;
+}
+
 // Attempt to rewrite a single load or store. Returns true if a
 // rewrite happened.
 bool tryRewriteOne(::mlir::Operation *op, bool topLevel,
@@ -691,6 +739,12 @@ bool tryRewriteMemcpy(::mlir::Operation *op, bool topLevel,
     return tryRewriteNestedMemcpy(memcpy, builder, ctx);
 
   ::mlir::Type lenType = memcpy.getLen().getType();
+  if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
+    return false;
+
+  if (tryRewriteDirectMemcpy(memcpy, builder, ctx))
+    return true;
+
   if (!::llvm::isa<::mlir::IntegerType>(lenType))
     return false;
 

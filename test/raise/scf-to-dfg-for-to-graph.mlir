@@ -108,6 +108,23 @@ dataflow.thread private @t_structured_while(%src: memref<?xi32>, %dst: memref<?x
   dataflow.thread.yield
 }
 
+// A host-scope memcpy-only function is still an accelerator candidate:
+// the compiler must expose a graph.func surface so graph-memory lowering can
+// turn the copy into real stream load/store ops. This is intentionally a
+// graph-only extraction; there is no synthetic host graph.launch.
+// CHECK-LABEL: func.func @standalone_memcpy
+// CHECK: llvm.intr.memcpy
+// CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
+// CHECK: llvm.intr.memcpy
+// CHECK: dataflow.graph.return %arg0 : none
+func.func @standalone_memcpy(%src: !llvm.ptr, %dst: !llvm.ptr, %n: i32) {
+  "llvm.intr.memcpy"(%dst, %src, %n)
+    <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
+       isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+  return
+}
+
 // CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
 // CHECK-SAME: -> none
 // CHECK: dataflow.graph.return %{{.*}} : none
