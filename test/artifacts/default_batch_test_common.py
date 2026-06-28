@@ -19,6 +19,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "compare_swap",
     "compact",
     "conv1d",
+    "conv2d",
     "convolve_1d",
     "convolve_1d_same",
     "correlation",

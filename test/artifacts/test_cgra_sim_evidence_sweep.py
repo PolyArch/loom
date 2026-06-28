@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 31
+APP_NO_DFG_TIER_COUNT = 30
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -59,6 +59,7 @@ DEFAULT_SWEEP_CASES = (
     "spmv",
     "convolve_1d",
     "conv1d",
+    "conv2d",
     "convolve_1d_same",
     "crc32",
     "cross_product",
@@ -463,6 +464,8 @@ def assert_component_references_resolve(evidence_dir: Path, case: str) -> None:
             identities = aggregate.get(field)
             if not isinstance(identities, list):
                 continue
+            if len(set(identities)) != len(identities):
+                raise AssertionError(f"aggregate has duplicate component identities: {aggregate_path}: {field}: {identities}")
             for identity in identities:
                 if not isinstance(identity, str) or not identity:
                     raise AssertionError(f"aggregate has invalid component identity: {aggregate_path}: {aggregate}")
@@ -476,6 +479,13 @@ def assert_component_references_resolve(evidence_dir: Path, case: str) -> None:
                 saw_component = True
     if not saw_component:
         raise AssertionError(f"expected aggregate component references for {case}")
+
+
+def raw_component_identity(case: str, identity: str) -> str:
+    prefix = f"{case}."
+    if identity.startswith(prefix):
+        return identity[len(prefix):]
+    return identity
 
 
 def assert_promoted_row(repo: Path, rows: list[dict[str, str]], case: str) -> None:
@@ -2804,11 +2814,37 @@ def assert_outer_evidence(evidence_dir: Path) -> None:
         "i32:15",
         "i32:21",
     ]
-    expected_memory = {
-        f"{graph}:arg1": expected_lhs,
-        f"{graph}:arg3": expected_output,
-        f"{graph}:arg4": expected_rhs,
-    }
+    expected_output_rows = [
+        [
+            "i32:1",
+            "i32:3",
+            "i32:5",
+            "i32:7",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+        ],
+        [
+            "i32:1",
+            "i32:3",
+            "i32:5",
+            "i32:7",
+            "i32:2",
+            "i32:6",
+            "i32:10",
+            "i32:14",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+            "i32:0",
+        ],
+        expected_output,
+    ]
     expected_counts = {
         "arith.index_cast": 3,
         "arith.muli": 12,
@@ -2821,6 +2857,15 @@ def assert_outer_evidence(evidence_dir: Path) -> None:
 
     dfg_path = evidence_dir / "outer.dfg.report.json"
     dfg = json.loads(dfg_path.read_text())
+    component_identities = dfg.get("component_dfg_sim_report_identities", [])
+    if not isinstance(component_identities, list) or len(component_identities) != 3:
+        raise AssertionError(f"outer should cite three row component reports: {dfg}")
+    component_labels = [raw_component_identity("outer", str(identity)) for identity in component_identities]
+    expected_memory = {}
+    for label, row_output in zip(component_labels, expected_output_rows):
+        expected_memory[f"{label}:arg1"] = expected_lhs
+        expected_memory[f"{label}:arg3"] = row_output
+        expected_memory[f"{label}:arg4"] = expected_rhs
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 12
@@ -2832,7 +2877,6 @@ def assert_outer_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"outer DFG aggregate should carry full 3x4 outer product state: {dfg_path}: {dfg}")
     assert_operation_fire_counts("outer", dfg, expected_counts)
 
-    component_identities = dfg.get("component_dfg_sim_report_identities", [])
     components = [json.loads((evidence_dir / f"{identity}.json").read_text()) for identity in component_identities]
     if len(components) != 3 or any(component.get("graph") != graph for component in components):
         raise AssertionError(f"outer should cite three row component reports: {dfg}")
@@ -2906,10 +2950,43 @@ def assert_transpose_evidence(evidence_dir: Path) -> None:
         "i32:19",
         "i32:29",
     ]
-    expected_memory = {
-        f"{graph}:arg2": expected_input,
-        f"{graph}:arg3": expected_output,
-    }
+    expected_output_rows = [
+        [
+            "i32:1",
+            "i32:0",
+            "i32:0",
+            "i32:3",
+            "i32:0",
+            "i32:0",
+            "i32:5",
+            "i32:0",
+            "i32:0",
+            "i32:7",
+            "i32:0",
+            "i32:0",
+            "i32:9",
+            "i32:0",
+            "i32:0",
+        ],
+        [
+            "i32:1",
+            "i32:11",
+            "i32:0",
+            "i32:3",
+            "i32:13",
+            "i32:0",
+            "i32:5",
+            "i32:15",
+            "i32:0",
+            "i32:7",
+            "i32:17",
+            "i32:0",
+            "i32:9",
+            "i32:19",
+            "i32:0",
+        ],
+        expected_output,
+    ]
     expected_counts = {
         "arith.index_cast": 18,
         "arith.muli": 18,
@@ -2923,6 +3000,14 @@ def assert_transpose_evidence(evidence_dir: Path) -> None:
 
     dfg_path = evidence_dir / "transpose.dfg.report.json"
     dfg = json.loads(dfg_path.read_text())
+    component_identities = dfg.get("component_dfg_sim_report_identities", [])
+    if not isinstance(component_identities, list) or len(component_identities) != 3:
+        raise AssertionError(f"transpose should cite three row component reports: {dfg}")
+    component_labels = [raw_component_identity("transpose", str(identity)) for identity in component_identities]
+    expected_memory = {}
+    for label, row_output in zip(component_labels, expected_output_rows):
+        expected_memory[f"{label}:arg2"] = expected_input
+        expected_memory[f"{label}:arg3"] = row_output
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 15
@@ -2933,7 +3018,6 @@ def assert_transpose_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"transpose DFG aggregate should carry full 3x5 transpose state: {dfg_path}: {dfg}")
     assert_operation_fire_counts("transpose", dfg, expected_counts)
 
-    component_identities = dfg.get("component_dfg_sim_report_identities", [])
     components = [json.loads((evidence_dir / f"{identity}.json").read_text()) for identity in component_identities]
     if len(components) != 3 or any(component.get("graph") != graph for component in components):
         raise AssertionError(f"transpose should cite three row component reports: {dfg}")
@@ -3713,6 +3797,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "conv1d",
                 "--case",
+                "conv2d",
+                "--case",
                 "convolve_1d_same",
                 "--case",
                 "crc32",
@@ -3807,6 +3893,7 @@ def main(argv: list[str]) -> int:
             "downsample_avg",
             "vecadd",
             "conv1d",
+            "conv2d",
             "variance",
             "covariance",
             "cross_product",
@@ -4169,6 +4256,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "downsample_avg", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "conv2d", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d_same", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "crc32", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
@@ -4383,6 +4471,8 @@ def main(argv: list[str]) -> int:
             },
         )
         assert_component_references_resolve(evidence_dir, "vecadd")
+        assert_component_references_resolve(evidence_dir, "conv2d")
+        run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
         assert_component_references_resolve(evidence_dir, "variance")
         assert_component_references_resolve(evidence_dir, "covariance")
         assert_component_references_resolve(evidence_dir, "outer")
@@ -4442,6 +4532,7 @@ def main(argv: list[str]) -> int:
             "vecadd",
             "vecscale",
             "conv1d",
+            "conv2d",
             "variance",
             "covariance",
             "cross_product",
@@ -4560,9 +4651,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 76,
+            "pass": 77,
             "fail": 0,
-            "blocked": 33,
+            "blocked": 32,
             "unsupported": 0,
             "missing_status": 0,
         }

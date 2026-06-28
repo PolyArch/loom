@@ -179,6 +179,9 @@ case "${CASE}" in
   conv1d)
     case_graph="g_t__ZN12_GLOBAL__N_16conv1dEPKfS1_Pfii_0_0"
     ;;
+  conv2d)
+    case_graph="g_t_conv2d_kernel_0_0"
+    ;;
   convolve_1d_same)
     case_graph="g_t_convolve_1d_same_kernel_0_0"
     ;;
@@ -320,7 +323,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "clz" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -983,6 +986,83 @@ PY
       "${row_mapping_artifact}"
       "${row_cgra_report}"
     )
+  done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+elif [[ "${CASE}" == "conv2d" ]]; then
+  conv2d_input_values="1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00,5.000000e+00,6.000000e+00,7.000000e+00,8.000000e+00,9.000000e+00,1.000000e+01,1.100000e+01,1.200000e+01,1.300000e+01,1.400000e+01,1.500000e+01,1.600000e+01"
+  conv2d_kernel_values="1.000000e+00,0.000000e+00,5.000000e-01,-1.000000e+00,-5.000000e-01,1.000000e+00,2.500000e-01,7.500000e-01"
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for ((co = 0; co < 2; co++)); do
+    for ((oh = 0; oh < 3; oh++)); do
+      for ((ow = 0; ow < 3; ow++)); do
+        component="co${co}-oh${oh}-ow${ow}"
+        component_dfg_report="${OUT_DIR}/conv2d-dfg-sim-${component}.report.json"
+        component_mapping_artifact="${OUT_DIR}/pnr-mapping-${component}.json"
+        component_mapping_summary="${OUT_DIR}/pnr-mapping-${component}-summary.csv"
+        component_cgra_report="${OUT_DIR}/conv2d-cgra-sim-${component}-report.json"
+        ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+          "${case_dfg_dir}/main_func.dfg.mlir" \
+          --graph "${case_graph}" \
+          --workload "${CASE}" \
+          --arg 0=none \
+          --arg 1=0 \
+          --arg 2=1 \
+          --arg 3=1 \
+          --arg 4=4 \
+          --arg "5=${oh}" \
+          --arg "6=${co}" \
+          --arg 7=2 \
+          --arg 8=4 \
+          --arg "9=${ow}" \
+          --arg 10=2 \
+          --memref "11=${conv2d_input_values}" \
+          --memref "12=${conv2d_kernel_values}" \
+          --arg 13=0 \
+          --arg 14=2 \
+          --arg 15=1 \
+          --arg 16=false \
+          --arg 17=false \
+          --arg 18=0.000000e+00 \
+          --output "${component_dfg_report}"
+        bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+          --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+          --graph "${case_graph}" \
+          --hardware-mlir "${hardware_mlir}" \
+          --hardware "${hardware_name}" \
+          --workload "${CASE}" \
+          --artifact "${component_mapping_artifact}" \
+          --output "${component_mapping_summary}"
+        ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+          --dfg-report "${component_dfg_report}" \
+          --mapping-artifact "${component_mapping_artifact}" \
+          --hardware-mlir "${hardware_mlir}" \
+          --output "${component_cgra_report}"
+        dfg_component_args+=(--dfg-report "${component_dfg_report}")
+        mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+        cgra_component_args+=(--cgra-report "${component_cgra_report}")
+        component_artifacts+=(
+          "${component_dfg_report}"
+          "${component_mapping_artifact}"
+          "${component_cgra_report}"
+        )
+      done
+    done
   done
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     "${dfg_component_args[@]}" \

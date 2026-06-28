@@ -64,6 +64,21 @@ def component_identity_list(paths: list[Path]) -> list[str]:
     return [artifact_id(path) for path in paths]
 
 
+def component_memory_labels(component_names: list[str], paths: list[Path]) -> list[str]:
+    require(
+        len(component_names) == len(paths),
+        "component memory-state labels must match component paths",
+    )
+    if len(set(component_names)) == len(component_names):
+        return component_names
+    identities = component_identity_list(paths)
+    require(
+        len(set(identities)) == len(identities),
+        "duplicate component graphs require unique component artifact identities",
+    )
+    return identities
+
+
 def component_fingerprint_map(paths: list[Path]) -> dict[str, str]:
     return {artifact_id(path): artifact_fingerprint(path) for path in paths}
 
@@ -192,7 +207,10 @@ def aggregate_dfg(
 ) -> dict[str, Any]:
     graphs = [str(report["graph"]) for report in dfg_reports]
     final_outputs = merge_final_outputs(dfg_reports)
-    final_memory_state = merge_final_memory_state(dfg_reports, graphs)
+    final_memory_state = merge_final_memory_state(
+        dfg_reports,
+        component_memory_labels(graphs, dfg_paths),
+    )
     status = aggregate_component_status(dfg_reports)
     diagnostics = ["derived workload graph-set DFG report from component DFG simulator reports"]
     if status != "pass":
@@ -412,7 +430,10 @@ def aggregate_cgra(
         "operation_cost_model_source": same_string(cgra_reports, "operation_cost_model_source"),
         "functional_state_source": "component_cgra_sim_reports_carried_from_dfg_sim_reports",
         "final_outputs": merge_final_outputs(cgra_reports),
-        "final_memory_state": merge_final_memory_state(cgra_reports, graphs),
+        "final_memory_state": merge_final_memory_state(
+            cgra_reports,
+            component_memory_labels(graphs, dfg_paths),
+        ),
         "difference_classification": (
             "unsupported_scope"
             if aggregate_status != "pass"

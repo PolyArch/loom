@@ -100,6 +100,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     spmv
     convolve_1d
     conv1d
+    conv2d
     convolve_1d_same
     crc32
     cross_product
