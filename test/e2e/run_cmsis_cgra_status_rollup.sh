@@ -5,15 +5,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--cmsis-sim-default] [--cmsis-sim-default-batch] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
 attempts into that directory before consuming the reports. --cmsis-sim-default
-runs those bounded CMSIS attempts into the default status evidence directory.
---cmsis-sim-seed-batch runs the tracked default CMSIS seed attempts into the
-default status evidence directory.
+runs all bounded CMSIS attempts into the default status evidence directory.
+--cmsis-sim-default-batch runs the tracked default CMSIS attempt manifest into
+the default status evidence directory. --cmsis-sim-seed-batch is accepted as a
+compatibility alias for the same tracked default CMSIS batch.
 Each --cmsis-sim-attempt-stem or --cmsis-sim-case restricts those CMSIS
 attempts to the selected row evidence.
 --app-sim-default-batch runs the shared-ADG app CGRA evidence batch used by the
@@ -35,12 +36,12 @@ LEGACY_LOOMBENCH_ROOT=""
 SIM_EVIDENCE_DIR=""
 DEFAULT_APP_BLOCKER_MANIFEST="${ROOT}/test/app/shared-cgra-blocker-batch.json"
 DEFAULT_APP_SIM_SEED_BATCH="${ROOT}/test/app/cgra-sim-seed-batch.json"
-DEFAULT_CMSIS_SIM_SEED_BATCH="${ROOT}/test/e2e/cmsis-cgra-sim-seed-batch.json"
+DEFAULT_CMSIS_SIM_DEFAULT_BATCH="${ROOT}/test/e2e/cmsis-cgra-sim-default-batch.json"
 LEGACY_ROOT_SUPPLIED=0
 APP_SIM_DEFAULT_BATCH=0
 APP_SIM_SEED_BATCH=0
 CMSIS_SIM_DEFAULT=0
-CMSIS_SIM_SEED_BATCH=0
+CMSIS_SIM_DEFAULT_BATCH=0
 JOBS_ARG=""
 declare -a APP_SIM_CASES=()
 declare -a APP_SIM_ATTEMPT_MANIFESTS=()
@@ -102,8 +103,13 @@ while [[ $# -gt 0 ]]; do
             CMSIS_SIM_DEFAULT=1
             shift
             ;;
+        --cmsis-sim-default-batch)
+            CMSIS_SIM_DEFAULT_BATCH=1
+            CMSIS_SIM_DEFAULT=1
+            shift
+            ;;
         --cmsis-sim-seed-batch)
-            CMSIS_SIM_SEED_BATCH=1
+            CMSIS_SIM_DEFAULT_BATCH=1
             CMSIS_SIM_DEFAULT=1
             shift
             ;;
@@ -158,8 +164,8 @@ load_app_sim_attempt_manifest_cases() {
         --emit-cases
 }
 
-load_cmsis_sim_seed_stems() {
-    python3 - "${ROOT}" "${DEFAULT_CMSIS_SIM_SEED_BATCH}" <<'PY'
+load_cmsis_sim_default_batch_stems() {
+    python3 - "${ROOT}" "${DEFAULT_CMSIS_SIM_DEFAULT_BATCH}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -234,16 +240,16 @@ for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do
     done <<< "${attempt_case_output}"
 done
 
-if [[ "${CMSIS_SIM_SEED_BATCH}" -eq 1 ]]; then
-    if ! seed_stems_output="$(load_cmsis_sim_seed_stems)"; then
+if [[ "${CMSIS_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
+    if ! default_batch_stems_output="$(load_cmsis_sim_default_batch_stems)"; then
         exit 1
     fi
-    while IFS= read -r seed_stem; do
-        if [[ -z "${seed_stem}" ]]; then
+    while IFS= read -r default_batch_stem; do
+        if [[ -z "${default_batch_stem}" ]]; then
             continue
         fi
-        CMSIS_SIM_ATTEMPT_STEMS+=("${seed_stem}")
-    done <<< "${seed_stems_output}"
+        CMSIS_SIM_ATTEMPT_STEMS+=("${default_batch_stem}")
+    done <<< "${default_batch_stems_output}"
 fi
 
 if [[ ${#APP_SIM_CASES[@]} -gt 0 ]]; then

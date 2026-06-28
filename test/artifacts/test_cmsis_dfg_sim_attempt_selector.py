@@ -93,8 +93,8 @@ def assert_selected_rollup_drops_stale_cmsis_evidence(repo: Path) -> None:
             raise AssertionError(f"stale relu comparison survived selected rerun: {relu_second}")
 
 
-def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
-    with artifact_test_common.repo_temp_dir(repo, "cmsis-seed-batch-") as tmp:
+def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
+    with artifact_test_common.repo_temp_dir(repo, "cmsis-default-batch-") as tmp:
         out_dir = Path(tmp) / "rollup"
         result = subprocess.run(
             [
@@ -102,7 +102,7 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 "test/e2e/run_cmsis_cgra_status_rollup.sh",
                 "--output-dir",
                 str(out_dir),
-                "--cmsis-sim-seed-batch",
+                "--cmsis-sim-default-batch",
                 "--jobs",
                 "8",
             ],
@@ -114,7 +114,7 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         )
         if result.returncode != 0:
             raise AssertionError(
-                f"CMSIS seed-batch rollup failed with {result.returncode}\n"
+                f"CMSIS default-batch rollup failed with {result.returncode}\n"
                 f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
 
@@ -122,17 +122,17 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         expected_counts = {
             "cmsis-dsp": {
                 "total": 16,
-                "pass": 2,
+                "pass": 14,
                 "fail": 0,
-                "blocked": 12,
+                "blocked": 0,
                 "unsupported": 2,
                 "missing_status": 0,
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 1,
+                "pass": 10,
                 "fail": 0,
-                "blocked": 10,
+                "blocked": 1,
                 "unsupported": 7,
                 "missing_status": 0,
             },
@@ -140,25 +140,38 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         for suite, expected in expected_counts.items():
             actual = data.get("counts", {}).get(suite)
             if actual != expected:
-                raise AssertionError(f"{suite} seed-batch counts {actual}, expected {expected}")
+                raise AssertionError(f"{suite} default-batch counts {actual}, expected {expected}")
 
         add = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         abs_f32 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "BasicMathFunctions/arm_abs_f32.c")
+        fill = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-dsp", "SupportFunctions/arm_fill_f32.c")
         relu_q15 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q15.c")
         relu_q7 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu_q7.c")
         relu6 = row_by_case(out_dir / "cgra-status-summary.csv", "cmsis-nn", "ActivationFunctions/arm_relu6_s8.c")
-        for row in (add, abs_f32, relu_q15):
+        vector_sum = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-nn",
+            "FullyConnectedFunctions/arm_vector_sum_s8.c",
+        )
+        fully_connected = row_by_case(
+            out_dir / "cgra-status-summary.csv",
+            "cmsis-nn",
+            "FullyConnectedFunctions/arm_fully_connected_s8.c",
+        )
+        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, vector_sum):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
-                raise AssertionError(f"seed-batch row should expose CGRA-sim pass evidence: {row}")
-        if relu_q7["status"] == "pass" or relu_q7["cgra_status"] != "not_run":
-            raise AssertionError(f"seed-batch rollup should not consume unselected relu_q7 evidence: {relu_q7}")
+                raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (
-            relu6["status"] != "blocked"
-            or relu6["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
-            or relu6["blocking_prerequisite"] != "dfg_sim_report"
-            or relu6["cgra_status"] != "not_run"
+            fully_connected["status"] != "blocked"
+            or fully_connected["diagnostic_class"] != "dfg_report_unsupported"
+            or fully_connected["blocking_prerequisite"] != "dfg_report"
+            or fully_connected["dfg_status"] != "unsupported"
+            or "unsupported op: llvm.call" not in fully_connected["diagnostic"]
         ):
-            raise AssertionError(f"seed-batch rollup should keep unselected relu6 as a DFG-sim blocker: {relu6}")
+            raise AssertionError(
+                "default-batch rollup should record the fully connected row's exact DFG blocker: "
+                f"{fully_connected}"
+            )
 
         evidence_dir = out_dir / "current-sim-cycle"
         for artifact in (
@@ -171,9 +184,16 @@ def assert_seed_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_relu_q15.dfg.report.json",
             evidence_dir / "arm_relu_q15.mapping.json",
             evidence_dir / "arm_relu_q15.cgra.report.json",
+            evidence_dir / "arm_fill_f32.dfg.report.json",
+            evidence_dir / "arm_fill_f32.mapping.json",
+            evidence_dir / "arm_fill_f32.cgra.report.json",
+            evidence_dir / "arm_relu6_s8.dfg.report.json",
+            evidence_dir / "arm_relu6_s8.mapping.json",
+            evidence_dir / "arm_relu6_s8.cgra.report.json",
+            evidence_dir / "arm_fully_connected_s8.dfg.report.json",
         ):
             if not artifact.is_file():
-                raise AssertionError(f"seed-batch rollup did not emit {artifact}")
+                raise AssertionError(f"default-batch rollup did not emit {artifact}")
         abs_dfg = json.loads((evidence_dir / "arm_abs_f32.dfg.report.json").read_text())
         abs_cgra = json.loads((evidence_dir / "arm_abs_f32.cgra.report.json").read_text())
         expected_abs_memory = {
@@ -357,8 +377,25 @@ def main() -> int:
     if "require --cmsis-sim-default or --sim-evidence-dir" not in no_mode.stderr:
         raise AssertionError(f"CMSIS sim selector mode diagnostic is not actionable: {no_mode.stderr}")
 
+    legacy_alias = subprocess.run(
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--cmsis-sim-seed-batch",
+        ],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if legacy_alias.returncode == 0:
+        raise AssertionError("legacy CMSIS batch alias without output dir unexpectedly passed")
+    if "--output-dir is required" not in legacy_alias.stderr or "unknown argument" in legacy_alias.stderr:
+        raise AssertionError(f"legacy CMSIS batch alias should remain accepted: {legacy_alias.stderr}")
+
     assert_selected_rollup_drops_stale_cmsis_evidence(repo)
-    assert_seed_batch_rollup_promotes_bounded_rows(repo)
+    assert_default_batch_rollup_promotes_bounded_rows(repo)
 
     return 0
 

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "attempt_stems": [
+    "arm_add_q15",
+    "arm_abs_f32",
+    "arm_mult_f32",
+    "arm_offset_f32",
+    "arm_biquad_cascade_df1_f32",
+    "arm_fir_f32",
+    "arm_cfft_f32",
+    "arm_mat_add_f32",
+    "arm_mat_mult_f32",
+    "arm_max_f32",
+    "arm_mean_f32",
+    "arm_var_f32",
+    "arm_copy_f32",
+    "arm_fill_f32",
+    "arm_relu_q15",
+    "arm_relu_q7",
+    "arm_relu6_s8",
+    "arm_concatenation_s8_x",
+    "arm_depthwise_conv_s8",
+    "arm_minimum_s8",
+    "arm_maximum_s8",
+    "arm_max_pool_s8",
+    "arm_softmax_u8",
+    "arm_vector_sum_s8",
+    "arm_fully_connected_s8"
+  ]
+}
