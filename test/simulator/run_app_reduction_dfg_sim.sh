@@ -1015,6 +1015,21 @@ configure_downsample_avg_init_args() {
     )
 }
 
+append_stream_update_input_memref() {
+    local index="$1"
+    local count=32
+    local values=""
+    local value=""
+    for i in $(seq 0 $((count - 1))); do
+        value=$(((i + 1) * 2))
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    sim_args+=(--memref "${index}=${values}")
+}
+
 case "${CASE}" in
     binary_search)
         configure_binary_search_args
@@ -1622,6 +1637,21 @@ case "${CASE}" in
             --arg 4=8
             --arg 6=101
             --arg 7=0
+        )
+        ;;
+    stream_update)
+        append_ctrl_tokens 1
+        append_stream_update_input_memref 4
+        sim_args+=(
+            --graph g_t_stream_update_kernel_red_0_0
+            --workload stream_update
+            --arg 1=3
+            --arg 2=32
+            --arg 3=3
+            --arg 5=1
+            --arg 6=0
+            --arg 7=0
+            --arg 8=0
         )
         ;;
     merge)

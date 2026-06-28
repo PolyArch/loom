@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 30
+APP_NO_DFG_TIER_COUNT = 29
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -73,6 +73,7 @@ DEFAULT_SWEEP_CASES = (
     "mmtile",
     "mat3x3_mult",
     "spmspv",
+    "stream_update",
     "lower_bound",
     "matvec",
     "moving_avg",
@@ -3727,6 +3728,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "spmspv",
                 "--case",
+                "stream_update",
+                "--case",
                 "gather",
                 "--case",
                 "gf_mul",
@@ -3860,6 +3863,7 @@ def main(argv: list[str]) -> int:
             "dot_product_3d",
             "spmv",
             "spmspv",
+            "stream_update",
             "axpy",
             "bit_reverse",
             "bisection_step",
@@ -4223,6 +4227,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "find_first_set", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmspv", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "stream_update", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "xor_block", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "vecmul", "shared_vector_alu_adg")
@@ -4505,6 +4510,7 @@ def main(argv: list[str]) -> int:
             "dotprod",
             "dot_product_3d",
             "spmv",
+            "stream_update",
             "axpy",
             "bit_reverse",
             "byte_swap",
@@ -4651,9 +4657,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 77,
+            "pass": 78,
             "fail": 0,
-            "blocked": 32,
+            "blocked": 31,
             "unsupported": 0,
             "missing_status": 0,
         }

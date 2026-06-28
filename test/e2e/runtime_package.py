@@ -116,6 +116,11 @@ WORKLOAD_MEMORY_LAYOUTS: dict[str, dict[str, object]] = {
         "element_layout": "u32[64];u32[256];u32[64]",
         "alignment_bytes": 4,
     },
+    "stream_update": {
+        "byte_size": 132,
+        "element_layout": "u32[32];u32[1]",
+        "alignment_bytes": 4,
+    },
     "delta_encode": {
         "byte_size": 80,
         "element_layout": "u32[10];u32[10]",

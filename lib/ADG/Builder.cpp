@@ -3708,6 +3708,7 @@ struct SharedMemoryAdgConfig {
   unsigned selectCount = 8;
   unsigned mulCount = 8;
   unsigned divCount = 0;
+  unsigned unsignedDivCount = 0;
   unsigned muxCount = 0;
   unsigned logicCount = 8;
   unsigned shiftCount = 8;
@@ -3996,6 +3997,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("add", config.addCount, {"arith.addi", "arith.subi"});
   addBinaryBank("mul", config.mulCount, {"arith.muli"});
   addBinaryBank("div", config.divCount, {"arith.divsi"});
+  addBinaryBank("udiv", config.unsignedDivCount,
+                {"arith.divui", "arith.remui"});
   addBinaryBank("fp_add", config.fpAddCount, {"arith.addf", "arith.subf"});
   addBinaryBank("fp_mul", config.fpMulCount, {"arith.mulf"});
   addUnaryBank("fneg", config.fnegCount, "llvm.fneg");
@@ -4118,6 +4121,7 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
 ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   SharedMemoryAdgConfig config;
   config.moduleName = "shared_memory_reduction_adg";
+  config.unsignedDivCount = 2;
   config.muxCount = 4;
   config.trunciCount = 4;
   config.wideConstantCount = 2;

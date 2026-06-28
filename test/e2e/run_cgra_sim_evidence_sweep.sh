@@ -114,6 +114,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     mmtile
     mat3x3_mult
     spmspv
+    stream_update
     lower_bound
     matvec
     moving_avg
