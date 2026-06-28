@@ -18,6 +18,7 @@
 // HARDWARE-DAG: fabric.op [@dataflow.constant]
 // HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff"]
 // HARDWARE-DAG: fabric.op [@arith.addi, @arith.subi]
+// HARDWARE-DAG: fabric.op [@arith.muli]
 // HARDWARE-DAG: fabric.op [@arith.divui, @arith.remui]
 // HARDWARE-DAG: fabric.op [@arith.addf, @arith.subf]
 // HARDWARE-DAG: fabric.op [@arith.mulf]
@@ -37,9 +38,13 @@
 // BUILDER-DAG: %wide_const0 =
 // BUILDER-DAG: %wide_const1 =
 // BUILDER-DAG: %udiv0 =
+// BUILDER-DAG: %wide_mul0 =
+// BUILDER-DAG: %wide_udiv0 =
 // BUILDER-DAG: %wide_shift0 =
 // BUILDER-DAG: %wide_cmp0 =
 // BUILDER-DAG: %wide_cmp0_pred = fabric.fifo %wide_cmp0
+// BUILDER-DAG: %wide_mux0 =
+// BUILDER-DAG: %wide_route_bridge0 = fabric.fifo %wide_route_bridge0_input
 
 // MAPPING-DAG: "workload": "minmax_pressure"
 // MAPPING-DAG: "hardware": "shared_memory_reduction_adg"

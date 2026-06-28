@@ -1286,6 +1286,32 @@ void addDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
+void addWideDataMuxPe(ModuleBuilder &module, llvm::StringRef result,
+                      llvm::StringRef pred, llvm::StringRef falseValue,
+                      llvm::StringRef trueValue) {
+  module.addExactBodyLine(valueName(result) + " =");
+  module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
+                          valueName(pred) + " : !fabric.bits<64>,");
+  module.addExactBodyLine("                         %false_value = " +
+                          valueName(falseValue) + " : !fabric.bits<64>,");
+  module.addExactBodyLine("                         %true_value = " +
+                          valueName(trueValue) + " : !fabric.bits<64>)");
+  module.addExactBodyLine("        -> !fabric.bits<64> {");
+  module.addExactBodyLine(
+      "      fabric.fu(%sel = %pred : !fabric.bits<64> to !fabric.bits<1>,");
+  module.addExactBodyLine(
+      "                %a = %false_value : !fabric.bits<64>,");
+  module.addExactBodyLine("                %b = %true_value : "
+                          "!fabric.bits<64>) -> !fabric.bits<64> {");
+  module.addExactBodyLine("        %value = fabric.op [@dataflow.mux] "
+                          "(%sel, %a, %b)");
+  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<64>, "
+                          "!fabric.bits<64>) -> !fabric.bits<64>");
+  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
+  module.addExactBodyLine("      }");
+  module.addExactBodyLine("    }");
+}
+
 void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
                            unsigned storeCount) {
   std::vector<std::string> resultNames;
@@ -3721,7 +3747,11 @@ struct SharedMemoryAdgConfig {
   unsigned wideIndexCastCount = 0;
   unsigned wideIndexCastUiCount = 0;
   unsigned wideSextCount = 0;
+  unsigned wideMulCount = 0;
+  unsigned wideUnsignedDivCount = 0;
   unsigned wideDivCount = 0;
+  unsigned wideMuxCount = 0;
+  unsigned wideRouteBridgeCount = 0;
   unsigned ctlzCount = 0;
   unsigned extuiCount = 4;
   unsigned fpAddCount = 4;
@@ -4008,6 +4038,9 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("xor", config.logicCount, {"arith.xori"});
   addBinaryBank("shift", config.shiftCount,
                 {"arith.shli", "arith.shrsi", "arith.shrui"});
+  addWideBinaryBank("wide_mul", config.wideMulCount, {"arith.muli"});
+  addWideBinaryBank("wide_udiv", config.wideUnsignedDivCount,
+                    {"arith.divui", "arith.remui"});
   addWideBinaryBank("wide_shift", config.wideShiftCount,
                     {"arith.shli", "arith.shrsi", "arith.shrui"});
   addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
@@ -4072,6 +4105,17 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks32.push_back(falseValue);
     sinks32.push_back(trueValue);
   }
+  for (unsigned index = 0; index < config.wideMuxCount; ++index) {
+    std::string result = numbered("wide_mux", index);
+    std::string pred = result + "_pred";
+    std::string falseValue = result + "_false";
+    std::string trueValue = result + "_true";
+    addWideDataMuxPe(module, result, pred, falseValue, trueValue);
+    sources64.push_back(result);
+    sinks64.push_back(pred);
+    sinks64.push_back(falseValue);
+    sinks64.push_back(trueValue);
+  }
 
   addUnaryBank("cast", config.castCount, "llvm.trunc");
   addUnaryBank("sext", config.castCount, "llvm.sext");
@@ -4111,7 +4155,26 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
     sinks0.push_back(numbered("store_ctrl", index));
   }
 
+  llvm::SmallVector<std::string, 4> wideRouteBridgeInputs;
+  llvm::SmallVector<std::string, 4> wideRouteBridgeResults;
+  for (unsigned index = 0; index < config.wideRouteBridgeCount; ++index) {
+    std::string stem = numbered("wide_route_bridge", index);
+    std::string input = stem + "_input";
+    wideRouteBridgeInputs.push_back(input);
+    wideRouteBridgeResults.push_back(stem);
+    sinks32.push_back(input);
+  }
+
   addUniformSwitch(module, sinks32, sources32, "!fabric.bits<32>");
+  for (auto [input, result] :
+       llvm::zip(wideRouteBridgeInputs, wideRouteBridgeResults)) {
+    module.addExactBodyLine(valueName(result) + " = fabric.fifo " +
+                            valueName(input) +
+                            " [max_depth = 1, bypassable = true] "
+                            "{bypassed = true}");
+    module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<64>");
+    sources64.push_back(result);
+  }
   addUniformSwitch(module, sinks64, sources64, "!fabric.bits<64>");
   addUniformSwitch(module, sinks0, sources0, "!fabric.bits<0>");
   addMemoryReductionMem(module, config.loadCount, config.storeCount);
@@ -4130,6 +4193,10 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.wideIndexCastCount = 4;
   config.wideIndexCastUiCount = 2;
   config.wideSextCount = 4;
+  config.wideMulCount = 2;
+  config.wideUnsignedDivCount = 2;
+  config.wideMuxCount = 1;
+  config.wideRouteBridgeCount = 2;
   return buildSharedMemoryLikeAdg(config);
 }
 

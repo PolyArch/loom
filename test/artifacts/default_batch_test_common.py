@@ -51,6 +51,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "mean",
     "merge",
     "mmtile",
+    "modexp",
     "modmul",
     "newton_iter",
     "outer",

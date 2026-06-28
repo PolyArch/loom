@@ -96,6 +96,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     hash_mix
     string_hash
     merge
+    modexp
     modmul
     spmv
     convolve_1d

@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 29
+APP_NO_DFG_TIER_COUNT = 28
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -55,6 +55,7 @@ DEFAULT_SWEEP_CASES = (
     "hash_mix",
     "string_hash",
     "merge",
+    "modexp",
     "modmul",
     "spmv",
     "convolve_1d",
@@ -2154,6 +2155,108 @@ def assert_modmul_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"modmul CGRA-sim should carry the first real modular product state: {cgra_path}: {cgra}")
 
 
+def assert_modexp_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": [
+            "i32:3",
+            "i32:4",
+            "i32:2",
+            "i32:7",
+            "i32:11",
+            "i32:5",
+            "i32:13",
+            "i32:17",
+        ],
+        "arg4": [
+            "i32:2",
+            "i32:3",
+            "i32:5",
+            "i32:123",
+            "i32:65535",
+            "i32:1000000006",
+            "i32:314159",
+            "i32:271828",
+        ],
+        "arg9": [
+            "i32:8",
+            "i32:81",
+            "i32:25",
+            "i32:593996258",
+            "i32:586778098",
+            "i32:1000000006",
+            "i32:154996558",
+            "i32:89848317",
+        ],
+    }
+    expected_counts = {
+        "arith.andi": 26,
+        "arith.cmpi": 60,
+        "arith.muli": 52,
+        "arith.remui": 60,
+        "arith.shrui": 26,
+        "dataflow.load": 16,
+        "dataflow.mux": 26,
+        "dataflow.store": 8,
+        "dataflow.sync": 8,
+        "llvm.trunc": 8,
+        "llvm.zext": 8,
+        "scf.if": 8,
+    }
+
+    dfg_path = evidence_dir / "modexp.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("optimistic_cycles") != 940
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"modexp DFG evidence should match real modular exponent rows: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("modexp", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "modexp.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 17
+        or mapping.get("routed_edges") != 13
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 370
+        or mapping.get("diagnostics") != ["mapped software graph to fabric resources"]
+    ):
+        raise AssertionError(f"modexp mapping should route wide modular exponentiation on the shared ADG: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.cmpi#1.result0->dataflow.mux#0.operand0",
+        "arith.muli#0.result0->arith.remui#1.operand0",
+        "arith.muli#1.result0->arith.remui#2.operand0",
+        "dataflow.mux#0.result0->llvm.trunc#0.operand0",
+        "llvm.trunc#0.result0->dataflow.store#0.operand2",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"modexp mapping should expose compare/mul/rem/mux/store route edges: {mapping}")
+
+    cgra_path = evidence_dir / "modexp.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 940
+        or cgra.get("hardware_aware_cycles") != 1038
+        or cgra.get("width_adapter_latency_cycles") != 2
+        or cgra.get("routed_edges") != 13
+        or cgra.get("route_segments") != 63
+        or cgra.get("config_records") != 370
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"modexp CGRA-sim should carry real modular exponentiation state: {cgra_path}: {cgra}")
+
+
 def assert_newton_iter_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:1", "f32:2", "f32:3", "f32:4"],
@@ -3736,6 +3839,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "modmul",
                 "--case",
+                "modexp",
+                "--case",
                 "byte_swap",
                 "--case",
                 "xor_block",
@@ -3918,6 +4023,7 @@ def main(argv: list[str]) -> int:
             "string_hash",
             "merge",
             "modmul",
+            "modexp",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -3958,6 +4064,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "bitonic_stage", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "bisection_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
+        assert_dfg_dynamic_work_items(evidence_dir, "modexp", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "transform_point", 1)
@@ -3979,6 +4086,7 @@ def main(argv: list[str]) -> int:
         assert_fir_filter_stateful_evidence(evidence_dir)
         assert_covariance_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
+        assert_modexp_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
         assert_transform_point_evidence(evidence_dir)
@@ -4268,6 +4376,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "matmul", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mat3x3_mult", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "modmul", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "modexp", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "variance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "covariance", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "correlation", "shared_reduction_adg")
@@ -4560,6 +4669,7 @@ def main(argv: list[str]) -> int:
             "merge",
             "lower_bound",
             "modmul",
+            "modexp",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -4657,9 +4767,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 78,
+            "pass": 79,
             "fail": 0,
-            "blocked": 31,
+            "blocked": 30,
             "unsupported": 0,
             "missing_status": 0,
         }

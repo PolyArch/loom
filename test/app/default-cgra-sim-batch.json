@@ -274,6 +274,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "modexp",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "relu",
       "hardware": "shared_reduction_adg"
     },

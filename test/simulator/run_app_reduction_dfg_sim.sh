@@ -1030,6 +1030,12 @@ append_stream_update_input_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+append_modexp_memrefs() {
+    append_raw_memref 1 "3,4,2,7,11,5,13,17"
+    append_raw_memref 4 "2,3,5,123,65535,1000000006,314159,271828"
+    append_constant_memref 9 8 "0"
+}
+
 case "${CASE}" in
     binary_search)
         configure_binary_search_args
@@ -1670,6 +1676,21 @@ case "${CASE}" in
             --arg 11=1
             --arg 12=0
             --arg 13=0
+        )
+        ;;
+    modexp)
+        append_ctrl_tokens 8
+        append_modexp_memrefs
+        append_repeated_arg 2 8 0
+        append_repeated_arg 3 8 1
+        append_repeated_arg 5 8 1000000007
+        append_repeated_arg 6 8 1000000007
+        append_repeated_arg 7 8 1000000007
+        append_repeated_arg 8 8 1
+        append_index_tokens 10 8
+        sim_args+=(
+            --graph g_t_modexp_kernel_0_0
+            --workload modexp
         )
         ;;
     xor_block)

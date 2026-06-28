@@ -644,7 +644,7 @@
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],
       "expected_stdout": "expected.txt",
-      "tiers": ["run", "raise"],
+      "tiers": ["run", "raise", "dfg"],
       "feature_tags": ["modular-arithmetic", "integer", "bit", "while-loop"],
       "compiler_flags": [],
       "link_flags": [],
