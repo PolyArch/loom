@@ -310,6 +310,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "rle_encode",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "transform_point",
       "hardware": "shared_memory_reduction_adg"
     },

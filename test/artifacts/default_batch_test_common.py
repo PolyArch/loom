@@ -66,6 +66,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "relu",
     "rotate_bits",
     "rle_decode",
+    "rle_encode",
     "runge_kutta_step",
     "sbox_lookup",
     "scatter_add",

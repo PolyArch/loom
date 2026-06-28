@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 27
+APP_NO_DFG_TIER_COUNT = 26
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -88,6 +88,7 @@ DEFAULT_SWEEP_CASES = (
     "relu",
     "rotate_bits",
     "rle_decode",
+    "rle_encode",
     "runge_kutta_step",
     "sbox_lookup",
     "transpose",
@@ -3946,6 +3947,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "rle_decode",
                 "--case",
+                "rle_encode",
+                "--case",
                 "runge_kutta_step",
                 "--case",
                 "sbox_lookup",
@@ -4033,6 +4036,7 @@ def main(argv: list[str]) -> int:
             "sbox_lookup",
             "rotate_bits",
             "rle_decode",
+            "rle_encode",
             "runge_kutta_step",
             "transpose",
             "transform_point",
@@ -4095,6 +4099,7 @@ def main(argv: list[str]) -> int:
         assert_bisection_step_evidence(evidence_dir)
         assert_transform_point_evidence(evidence_dir)
         assert_rle_decode_evidence(evidence_dir)
+        run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
         assert_runge_kutta_step_evidence(evidence_dir)
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
@@ -4417,6 +4422,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "relu", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rotate_bits", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rle_decode", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "rle_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
@@ -4595,6 +4601,7 @@ def main(argv: list[str]) -> int:
         assert_component_references_resolve(evidence_dir, "sort_bubble")
         run(repo, ["python3", "test/artifacts/assert_sort_bubble_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
         assert_component_references_resolve(evidence_dir, "variance")
         assert_component_references_resolve(evidence_dir, "covariance")
         assert_component_references_resolve(evidence_dir, "outer")
@@ -4684,6 +4691,7 @@ def main(argv: list[str]) -> int:
             "sbox_lookup",
             "rotate_bits",
             "rle_decode",
+            "rle_encode",
             "runge_kutta_step",
             "autocorrelation",
             "upper_bound",
@@ -4776,9 +4784,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 80,
+            "pass": 81,
             "fail": 0,
-            "blocked": 29,
+            "blocked": 28,
             "unsupported": 0,
             "missing_status": 0,
         }

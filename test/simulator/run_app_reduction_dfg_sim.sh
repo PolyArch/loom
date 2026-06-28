@@ -114,6 +114,31 @@ append_raw_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+extract_cpp_uint32_array_csv() {
+    local source="$1"
+    local name="$2"
+    python3 - "${source}" "${name}" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+name = sys.argv[2]
+text = source.read_text()
+match = re.search(
+    rf"(?:const\s+)?std::array<uint32_t,\s*kSize>\s+{re.escape(name)}\s*=\s*\{{(?P<body>.*?)\}};",
+    text,
+    re.S,
+)
+if match is None:
+    raise SystemExit(f"missing {name} initializer in {source}")
+values = re.findall(r"\b\d+\b", match.group("body"))
+if not values:
+    raise SystemExit(f"{name} initializer is empty in {source}")
+print(",".join(values))
+PY
+}
+
 append_mod_shift_memref() {
     local index="$1"
     local count="$2"
@@ -1860,6 +1885,24 @@ case "${CASE}" in
             --arg 6=0
             --memref 7=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
             --arg 8=0
+        )
+        ;;
+    rle_encode)
+        rle_encode_input="$(extract_cpp_uint32_array_csv "${REPO}/test/app/rle_encode/main_func.cpp" input)"
+        append_constant_memref 6 20 "0"
+        append_constant_memref 7 20 "0"
+        sim_args+=(
+            --graph g_t_rle_encode_kernel_red_0_0
+            --workload rle_encode
+            --arg 0=none
+            --arg 1=1
+            --arg 2=20
+            --arg 3=1
+            --memref "4=${rle_encode_input}"
+            --arg 5=1
+            --arg 8=1
+            --arg 9=1
+            --arg 10=0
         )
         ;;
     partition)

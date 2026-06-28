@@ -285,6 +285,9 @@ case "${CASE}" in
   rle_decode)
     case_graph="g_t_rle_decode_kernel_red_0_0"
     ;;
+  rle_encode)
+    case_graph="g_t_rle_encode_kernel_red_0_0"
+    ;;
   runge_kutta_step)
     case_graph="g_t_runge_kutta_step_kernel_0_0"
     ;;
