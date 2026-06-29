@@ -15,6 +15,7 @@ import artifact_test_common
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from default_batch_test_common import default_batch_hardware  # noqa: E402
+import test_cgra_sim_evidence_sweep as cgra_sweep  # noqa: E402
 from test_cgra_status_summary import assert_sha256_file, one_row, read_rows  # noqa: E402
 
 
@@ -511,11 +512,11 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 109,
-            "pass": 4,
+            "pass": 18,
             "fail": 0,
             "blocked": 17,
             "unsupported": 0,
-            "missing_status": 88,
+            "missing_status": 74,
         },
     )
     assert_counts(
@@ -530,16 +531,212 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "missing_status": 0,
         },
     )
-    assert_app_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
-    assert_app_cgra_pass_row(repo, rows, "vecsum", expected_hardware="shared_reduction_adg")
-    assert_app_cgra_pass_row(repo, rows, "axpy", expected_hardware="shared_vector_alu_adg")
-    assert_app_cgra_pass_row(repo, rows, "dotproduct", expected_hardware="shared_reduction_adg")
+    seed_rows = (
+        ("byte_swap", "shared_vector_alu_adg"),
+        ("vecsum", "shared_reduction_adg"),
+        ("axpy", "shared_vector_alu_adg"),
+        ("dotproduct", "shared_reduction_adg"),
+        ("crc32", "shared_reduction_adg"),
+        ("autocorrelation", "shared_reduction_adg"),
+        ("unpack_bits", "shared_reduction_adg"),
+        ("mmtile", "shared_memory_reduction_adg"),
+        ("outer", "shared_reduction_adg"),
+        ("transpose", "shared_reduction_adg"),
+        ("clz", "shared_memory_reduction_adg"),
+        ("ctz", "shared_memory_reduction_adg"),
+        ("binary_search", "shared_memory_reduction_adg"),
+        ("find_first_set", "shared_memory_reduction_adg"),
+        ("lower_bound", "shared_memory_reduction_adg"),
+        ("upper_bound", "shared_memory_reduction_adg"),
+        ("parity", "shared_memory_reduction_adg"),
+        ("popcount", "shared_memory_reduction_adg"),
+    )
+    for case, hardware in seed_rows:
+        assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
     assert_loombench_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
-    for case in ("byte_swap", "vecsum", "axpy", "dotproduct"):
+    for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
             if not artifact.is_file():
                 raise AssertionError(f"app seed batch should emit {artifact}")
+    assert_seed_batch_candidate_evidence(out_dir / "current-sim-cycle")
+
+
+def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
+    cgra_sweep.assert_autocorrelation_dfg_evidence(evidence_dir)
+    cgra_sweep.assert_crc32_evidence(evidence_dir)
+    cgra_sweep.assert_unpack_bits_evidence(evidence_dir)
+    cgra_sweep.assert_mmtile_evidence(evidence_dir)
+    cgra_sweep.assert_outer_evidence(evidence_dir)
+    cgra_sweep.assert_transpose_evidence(evidence_dir)
+    cgra_sweep.assert_binary_search_evidence(evidence_dir)
+    cgra_sweep.assert_popcount_evidence(evidence_dir)
+    cgra_sweep.assert_bound_search_evidence(
+        evidence_dir,
+        "lower_bound",
+        graph="g_t__ZN12_GLOBAL__N_121lower_bound_candidateEPKfS1_Pjjj_0_0",
+        expected_output=[
+            "i32:1",
+            "i32:0",
+            "i32:5",
+            "i32:10",
+            "i32:3",
+            "i32:6",
+            "i32:9",
+            "i32:10",
+        ],
+        case_route_edges={
+            "arith.addi#0.result0->arith.select#1.operand2",
+            "arith.addi#2.result0->arith.select#0.operand1",
+        },
+    )
+    cgra_sweep.assert_bound_search_evidence(
+        evidence_dir,
+        "upper_bound",
+        graph="g_t__ZN12_GLOBAL__N_121upper_bound_candidateEPKfS1_Pjjj_0_0",
+        expected_output=[
+            "i32:3",
+            "i32:0",
+            "i32:5",
+            "i32:10",
+            "i32:4",
+            "i32:7",
+            "i32:10",
+            "i32:10",
+        ],
+        case_route_edges={
+            "arith.addi#0.result0->arith.select#1.operand1",
+            "arith.addi#2.result0->arith.select#0.operand2",
+        },
+    )
+    cgra_sweep.assert_bit_scan_evidence(
+        evidence_dir,
+        "clz",
+        graph="g_t__ZN12_GLOBAL__N_113clz_candidateEPKjPjj_0_0",
+        output_arg="arg7",
+        event_count=1490,
+        dfg_cycles=1690,
+        cgra_cycles=1739,
+        placed_records=9,
+        routed_edges=8,
+        config_records=189,
+        route_segments=30,
+        operation_fire_counts={
+            "arith.addi": 317,
+            "arith.andi": 317,
+            "arith.cmpi": 380,
+            "arith.shrui": 317,
+            "dataflow.load": 32,
+            "dataflow.store": 32,
+            "dataflow.sync": 32,
+            "scf.if": 63,
+        },
+        expected_route_edges={
+            "arith.addi#0.result0->dataflow.store#0.operand2",
+            "arith.andi#0.result0->arith.cmpi#2.operand0",
+            "arith.shrui#0.result0->arith.andi#0.operand0",
+            "dataflow.load#0.result0->arith.andi#0.operand1",
+            "dataflow.load#0.result0->arith.cmpi#0.operand0",
+            "dataflow.load#0.result0->arith.cmpi#1.operand0",
+            "dataflow.load#0.result1->dataflow.sync#0.operand0",
+            "dataflow.store#0.result0->dataflow.sync#0.operand1",
+        },
+    )
+    cgra_sweep.assert_bit_scan_evidence(
+        evidence_dir,
+        "ctz",
+        graph="g_t__ZN12_GLOBAL__N_113ctz_candidateEPKjPjj_0_0",
+        output_arg="arg6",
+        event_count=929,
+        dfg_cycles=1129,
+        cgra_cycles=1175,
+        placed_records=10,
+        routed_edges=7,
+        config_records=178,
+        route_segments=27,
+        operation_fire_counts={
+            "arith.addi": 169,
+            "arith.andi": 200,
+            "arith.cmpi": 232,
+            "arith.shrui": 169,
+            "dataflow.load": 32,
+            "dataflow.store": 32,
+            "dataflow.sync": 32,
+            "scf.if": 63,
+        },
+        expected_route_edges={
+            "arith.addi#0.result0->dataflow.store#0.operand2",
+            "arith.andi#0.result0->arith.cmpi#1.operand0",
+            "arith.andi#1.result0->arith.cmpi#2.operand0",
+            "dataflow.load#0.result0->arith.andi#0.operand0",
+            "dataflow.load#0.result0->arith.cmpi#0.operand0",
+            "dataflow.load#0.result1->dataflow.sync#0.operand0",
+            "dataflow.store#0.result0->dataflow.sync#0.operand1",
+        },
+    )
+    cgra_sweep.assert_bit_scan_evidence(
+        evidence_dir,
+        "find_first_set",
+        graph="g_t__ZN12_GLOBAL__N_124find_first_set_candidateEPKjPjj_0_0",
+        output_arg="arg5",
+        event_count=525,
+        dfg_cycles=725,
+        cgra_cycles=771,
+        placed_records=10,
+        routed_edges=7,
+        config_records=178,
+        route_segments=27,
+        operation_fire_counts={
+            "arith.addi": 68,
+            "arith.andi": 99,
+            "arith.cmpi": 131,
+            "arith.shrui": 68,
+            "dataflow.load": 32,
+            "dataflow.store": 32,
+            "dataflow.sync": 32,
+            "scf.if": 63,
+        },
+        expected_route_edges={
+            "arith.addi#0.result0->dataflow.store#0.operand2",
+            "arith.andi#0.result0->arith.cmpi#1.operand0",
+            "arith.andi#1.result0->arith.cmpi#2.operand0",
+            "dataflow.load#0.result0->arith.andi#0.operand0",
+            "dataflow.load#0.result0->arith.cmpi#0.operand0",
+            "dataflow.load#0.result1->dataflow.sync#0.operand0",
+            "dataflow.store#0.result0->dataflow.sync#0.operand1",
+        },
+    )
+    cgra_sweep.assert_bit_scan_evidence(
+        evidence_dir,
+        "parity",
+        graph="g_t_parity_0_0",
+        output_arg="arg4",
+        event_count=3648,
+        dfg_cycles=3848,
+        cgra_cycles=3891,
+        placed_records=8,
+        routed_edges=6,
+        config_records=152,
+        route_segments=24,
+        operation_fire_counts={
+            "arith.andi": 872,
+            "arith.cmpi": 904,
+            "arith.shrui": 872,
+            "arith.xori": 872,
+            "dataflow.load": 32,
+            "dataflow.store": 32,
+            "dataflow.sync": 32,
+            "scf.if": 32,
+        },
+        expected_route_edges={
+            "arith.andi#0.result0->arith.xori#0.operand1",
+            "arith.shrui#0.result0->arith.cmpi#1.operand0",
+            "arith.xori#0.result0->dataflow.store#0.operand2",
+            "dataflow.load#0.result0->arith.cmpi#0.operand0",
+            "dataflow.load#0.result1->dataflow.sync#0.operand0",
+            "dataflow.store#0.result0->dataflow.sync#0.operand1",
+        },
+    )
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {

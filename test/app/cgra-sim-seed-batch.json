@@ -16,6 +16,62 @@
     {
       "case": "dotproduct",
       "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "crc32",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "autocorrelation",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "unpack_bits",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "mmtile",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "outer",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "transpose",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "clz",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "ctz",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "binary_search",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "find_first_set",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "lower_bound",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "upper_bound",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "parity",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "popcount",
+      "hardware": "shared_memory_reduction_adg"
     }
   ]
 }
