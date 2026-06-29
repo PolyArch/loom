@@ -121,6 +121,29 @@ func.func @standalone_memcpy(%src: !llvm.ptr, %dst: !llvm.ptr, %n: i32) {
   return
 }
 
+// Straight-line address arithmetic feeding a single memcpy is also a
+// graph-only accelerator candidate. The extracted graph keeps the scalar
+// address math so graph-memory lowering can turn the copy into real stream
+// load/store ops with an offset destination.
+// CHECK-LABEL: func.func @standalone_offset_memcpy
+// CHECK: llvm.intr.memcpy
+func.func @standalone_offset_memcpy(%src: !llvm.ptr, %channels: i16,
+                                    %height: i16, %width: i16,
+                                    %dst: !llvm.ptr, %offset: i32) {
+  %0 = llvm.zext %channels : i16 to i32
+  %1 = llvm.zext %height : i16 to i32
+  %2 = arith.muli %1, %0 : i32
+  %3 = llvm.zext %width : i16 to i32
+  %copy_bytes = arith.muli %2, %3 : i32
+  %dst_offset = arith.muli %offset, %2 : i32
+  %dst_at = llvm.getelementptr inbounds|nuw %dst[%dst_offset]
+      : (!llvm.ptr, i32) -> !llvm.ptr, i8
+  "llvm.intr.memcpy"(%dst_at, %src, %copy_bytes)
+    <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
+       isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+  return
+}
+
 // A standalone private structured kernel with no results is also an
 // accelerator candidate. The compiler exposes a graph-only surface while
 // leaving the original callable function intact for host semantics.
@@ -155,6 +178,13 @@ func.func private @scatter_add_candidate(%src: !llvm.ptr, %idx: !llvm.ptr,
 
 // CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
+// CHECK: llvm.intr.memcpy
+// CHECK: dataflow.graph.return %arg0 : none
+// CHECK-LABEL: dataflow.graph.func private @g_standalone_offset_memcpy_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: i16, %arg3: i16, %arg4: i16, %arg5: !llvm.ptr, %arg6: i32) -> none
+// CHECK: llvm.zext
+// CHECK: arith.muli
+// CHECK: llvm.getelementptr
 // CHECK: llvm.intr.memcpy
 // CHECK: dataflow.graph.return %arg0 : none
 // CHECK-LABEL: dataflow.graph.func private @g_scatter_add_candidate_0

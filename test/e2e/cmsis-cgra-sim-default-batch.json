@@ -18,6 +18,7 @@
     "arm_relu_q15",
     "arm_relu_q7",
     "arm_relu6_s8",
+    "arm_concatenation_s8_w",
     "arm_concatenation_s8_x",
     "arm_reshape_s8",
     "arm_depthwise_conv_s8",

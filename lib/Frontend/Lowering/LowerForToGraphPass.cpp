@@ -276,6 +276,21 @@ struct LowerForToGraphPass
       return signalPassFailure();
   }
 
+  bool isPureMemcpySetupOp(::mlir::Operation &op) {
+    if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0)
+      return false;
+    if (op.hasTrait<::mlir::OpTrait::IsTerminator>())
+      return false;
+    if (op.hasTrait<::mlir::OpTrait::SymbolTable>())
+      return false;
+    if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(op))
+      return false;
+    if (auto effects =
+            ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(&op))
+      return effects.hasNoEffect();
+    return ::mlir::isPure(&op);
+  }
+
   bool isStandaloneMemcpyFunctionCandidate(::mlir::func::FuncOp func) {
     if (func.isExternal())
       return false;
@@ -285,16 +300,18 @@ struct LowerForToGraphPass
     if (!body.hasOneBlock())
       return false;
     ::mlir::Block &entry = body.front();
-    ::mlir::Operation *candidate = nullptr;
+    ::mlir::LLVM::MemcpyOp candidate;
     for (::mlir::Operation &op : entry.without_terminator()) {
-      if (candidate)
+      if (auto memcpy = ::llvm::dyn_cast<::mlir::LLVM::MemcpyOp>(&op)) {
+        if (candidate || memcpy.getIsVolatile())
+          return false;
+        candidate = memcpy;
+        continue;
+      }
+      if (!isPureMemcpySetupOp(op))
         return false;
-      candidate = &op;
     }
-    if (!candidate)
-      return false;
-    auto memcpy = ::llvm::dyn_cast<::mlir::LLVM::MemcpyOp>(candidate);
-    return memcpy && !memcpy.getIsVolatile();
+    return static_cast<bool>(candidate);
   }
 
   void promoteGraphOnlyFunction(::mlir::ModuleOp module,

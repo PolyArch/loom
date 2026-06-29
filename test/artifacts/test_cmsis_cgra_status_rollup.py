@@ -73,8 +73,8 @@ def assert_cmsis_dfg_only_counts(data: dict[str, object]) -> None:
             "total": 18,
             "pass": 0,
             "fail": 0,
-            "blocked": 12,
-            "unsupported": 6,
+            "blocked": 13,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -402,10 +402,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 11,
+            "pass": 12,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -850,10 +850,10 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 11,
+            "pass": 12,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -873,6 +873,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     )
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
+    assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)
@@ -1106,8 +1107,19 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
+    *,
+    case: str = "ConcatenationFunctions/arm_concatenation_s8_x.c",
+    stem: str = "arm_concatenation_s8_x",
+    graph: str = "g_t_arm_concatenation_s8_x_red_0_0",
+    expected_hardware: str = "shared_reduction_adg",
+    expected_memory: dict[str, list[str]] | None = None,
 ) -> None:
-    row = one_row(rows, "cmsis-nn", "ConcatenationFunctions/arm_concatenation_s8_x.c")
+    if expected_memory is None:
+        expected_memory = {
+            "arg6": ["i8:1", "i8:2", "i8:3", "i8:4"],
+            "arg7": ["i8:1", "i8:2", "i8:3", "i8:4", "i8:0", "i8:0"],
+        }
+    row = one_row(rows, "cmsis-nn", case)
     if (
         row["status"] != "pass"
         or row["diagnostic_class"] != "cgra_sim_pass"
@@ -1117,7 +1129,7 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
         or row["mapping_status"] != "pass"
         or row["cgra_status"] != "pass"
         or row["comparison_status"] != "pass"
-        or row["hardware_system"] != "shared_reduction_adg"
+        or row["hardware_system"] != expected_hardware
         or row["final_outputs_present"] != "true"
         or row["final_memory_state_present"] != "true"
         or row["diagnostic"] != "DFG-sim, mapping, CGRA-sim, and simulation comparison evidence passed"
@@ -1125,22 +1137,18 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
         raise AssertionError(f"CMSIS concat row should expose real CGRA-sim evidence: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
-    if not (sim_evidence / "arm_concatenation_s8_x.dfg.report.json").is_file():
-        raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x DFG report")
-    if not (sim_evidence / "arm_concatenation_s8_x.mapping.json").is_file():
-        raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x mapping artifact")
-    if not (sim_evidence / "arm_concatenation_s8_x.cgra.report.json").is_file():
-        raise AssertionError("CMSIS evidence mode should emit arm_concatenation_s8_x CGRA report")
+    if not (sim_evidence / f"{stem}.dfg.report.json").is_file():
+        raise AssertionError(f"CMSIS evidence mode should emit {stem} DFG report")
+    if not (sim_evidence / f"{stem}.mapping.json").is_file():
+        raise AssertionError(f"CMSIS evidence mode should emit {stem} mapping artifact")
+    if not (sim_evidence / f"{stem}.cgra.report.json").is_file():
+        raise AssertionError(f"CMSIS evidence mode should emit {stem} CGRA report")
 
     dfg_report = json.loads((repo / row["dfg_report"]).read_text())
-    expected_memory = {
-        "arg6": ["i8:1", "i8:2", "i8:3", "i8:4"],
-        "arg7": ["i8:1", "i8:2", "i8:3", "i8:4", "i8:0", "i8:0"],
-    }
     if (
         dfg_report.get("kind") != "dfg_sim_report"
-        or dfg_report.get("workload") != "ConcatenationFunctions/arm_concatenation_s8_x.c"
-        or dfg_report.get("graph") != "g_t_arm_concatenation_s8_x_red_0_0"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
         or dfg_report.get("status") != "pass"
         or dfg_report.get("dynamic_work_items") != 4
         or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 4
@@ -1154,8 +1162,9 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
     mapping_artifact = json.loads((repo / row["mapping_artifact"]).read_text())
     if (
         mapping_artifact.get("kind") != "pnr_mapping"
-        or mapping_artifact.get("workload") != "ConcatenationFunctions/arm_concatenation_s8_x.c"
-        or mapping_artifact.get("graph") != "g_t_arm_concatenation_s8_x_red_0_0"
+        or mapping_artifact.get("workload") != case
+        or mapping_artifact.get("hardware") != expected_hardware
+        or mapping_artifact.get("graph") != graph
         or mapping_artifact.get("status") != "pass"
         or mapping_artifact.get("unrouted_edges") != 0
     ):
@@ -1184,6 +1193,7 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
     comparison_report = json.loads((repo / row["comparison_report"]).read_text())
     if (
         cgra_report.get("status") != "pass"
+        or cgra_report.get("hardware") != expected_hardware
         or cgra_report.get("final_memory_state") != expected_memory
         or comparison_report.get("status") != "pass"
         or comparison_report.get("functional_comparison_status") != "pass"
@@ -1192,6 +1202,26 @@ def assert_cmsis_concat_memcpy_cgra_evidence(
         raise AssertionError(
             f"unexpected CMSIS concat CGRA comparison evidence: {cgra_report} {comparison_report}"
         )
+
+
+def assert_cmsis_concat_w_memcpy_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    assert_cmsis_concat_memcpy_cgra_evidence(
+        repo,
+        rows,
+        sim_evidence,
+        case="ConcatenationFunctions/arm_concatenation_s8_w.c",
+        stem="arm_concatenation_s8_w",
+        graph="g_arm_concatenation_s8_w_0",
+        expected_hardware="shared_signal_window_adg",
+        expected_memory={
+            "arg1": ["i8:1", "i8:2", "i8:3", "i8:4"],
+            "arg6": ["i8:0", "i8:0", "i8:1", "i8:2", "i8:3", "i8:4"],
+        },
+    )
 
 
 def assert_cmsis_reshape_memcpy_cgra_evidence(
@@ -3718,10 +3748,10 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 11,
+            "pass": 12,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 6,
+            "unsupported": 5,
             "missing_status": 0,
         },
     )
@@ -3771,6 +3801,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_relu_q7_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_relu6_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cgra_status_audit_rejects_bad_relu_q7_mapping(repo, out_dir, legacy_root)
+    assert_cmsis_concat_w_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_concat_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_vector_sum_cgra_evidence(repo, rows, sim_evidence)

@@ -6,6 +6,9 @@
 // RUN: FileCheck %s --check-prefix=DIRECT-LOWERED-IR < %t.lowered-direct.mlir
 // RUN: loom-dfg-sim %t.lowered-direct.mlir --graph pointer_memcpy_direct --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0 --arg 3=2 --output %t.direct-lowered.json
 // RUN: FileCheck %s --check-prefix=DIRECT-LOWERED < %t.direct-lowered.json
+// RUN: FileCheck %s --check-prefix=DIRECT-OFFSET-LOWERED-IR < %t.lowered-direct.mlir
+// RUN: loom-dfg-sim %t.lowered-direct.mlir --graph pointer_memcpy_direct_offset --arg 0=none --arg 0=none --memref 1=1,2,3,4 --memref 2=0,0,0,0,0,0 --arg 3=2 --arg 4=2 --output %t.direct-offset-lowered.json
+// RUN: FileCheck %s --check-prefix=DIRECT-OFFSET-LOWERED < %t.direct-offset-lowered.json
 // RUN: loom-dfg-sim %s --graph pointer_memcpy_structured_if --arg 0=none --memref 1=5,6,7 --memref 2=0,0,0 --arg 3=2 --arg 4=true --output %t.structured-if.json
 // RUN: FileCheck %s --check-prefix=STRUCTURED-IF < %t.structured-if.json
 // RUN: loom-raise-opt --loom-lower-graph-memory %s -o %t.lowered.mlir
@@ -70,6 +73,29 @@
 // DIRECT-LOWERED: "dataflow.store": 2
 // DIRECT-LOWERED-NOT: "llvm.intr.memcpy"
 // DIRECT-LOWERED: "status": "pass"
+
+// DIRECT-OFFSET-LOWERED-IR-LABEL: dataflow.graph.func private @pointer_memcpy_direct_offset
+// DIRECT-OFFSET-LOWERED-IR: dataflow.stream
+// DIRECT-OFFSET-LOWERED-IR: dataflow.invariant
+// DIRECT-OFFSET-LOWERED-IR: arith.addi
+// DIRECT-OFFSET-LOWERED-IR: dataflow.load
+// DIRECT-OFFSET-LOWERED-IR: dataflow.store
+// DIRECT-OFFSET-LOWERED-IR-NOT: llvm.intr.memcpy
+// DIRECT-OFFSET-LOWERED-IR: dataflow.graph.return
+
+// DIRECT-OFFSET-LOWERED: "dynamic_work_items": 2
+// DIRECT-OFFSET-LOWERED: "final_memory_state": {
+// DIRECT-OFFSET-LOWERED: "arg2": [
+// DIRECT-OFFSET-LOWERED-NEXT: "i8:0",
+// DIRECT-OFFSET-LOWERED-NEXT: "i8:0",
+// DIRECT-OFFSET-LOWERED-NEXT: "i8:1",
+// DIRECT-OFFSET-LOWERED-NEXT: "i8:2",
+// DIRECT-OFFSET-LOWERED-NEXT: "i8:0",
+// DIRECT-OFFSET-LOWERED-NEXT: "i8:0"
+// DIRECT-OFFSET-LOWERED: "dataflow.load": 2
+// DIRECT-OFFSET-LOWERED: "dataflow.store": 2
+// DIRECT-OFFSET-LOWERED-NOT: "llvm.intr.memcpy"
+// DIRECT-OFFSET-LOWERED: "status": "pass"
 
 // STRUCTURED-IF: "dynamic_work_items": 1
 // STRUCTURED-IF: "final_memory_state": {
@@ -143,6 +169,17 @@ module {
       %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr, %copy_bytes: i32)
       -> none {
     "llvm.intr.memcpy"(%dst, %src, %copy_bytes)
+      <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
+         isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    dataflow.graph.return %ctrl : none
+  }
+
+  dataflow.graph.func private @pointer_memcpy_direct_offset(
+      %ctrl: none, %src: !llvm.ptr, %dst: !llvm.ptr, %copy_bytes: i32,
+      %dst_offset: i32) -> none {
+    %dst_at = llvm.getelementptr inbounds|nuw %dst[%dst_offset]
+        : (!llvm.ptr, i32) -> !llvm.ptr, i8
+    "llvm.intr.memcpy"(%dst_at, %src, %copy_bytes)
       <{arg_attrs = [{llvm.align = 1 : i64}, {llvm.align = 1 : i64}, {}],
          isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i32) -> ()
     dataflow.graph.return %ctrl : none

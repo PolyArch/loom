@@ -541,8 +541,8 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 12,
-                "unsupported": 6,
+                "blocked": 13,
+                "unsupported": 5,
                 "missing_status": 0,
             }
             if suite_counts != expected:

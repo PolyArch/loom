@@ -107,6 +107,12 @@ struct MemcpyPtrResolution {
   ::dataflow::StreamOp outerStream;
 };
 
+struct DirectMemcpyPtrResolution {
+  ::mlir::Value basePtr;
+  ::mlir::Value offset;
+  ::mlir::Operation *gepToErase = nullptr;
+};
+
 unsigned getElementByteWidth(::mlir::Type elemTy) {
   unsigned bitWidth = 0;
   if (auto intTy = ::llvm::dyn_cast<::mlir::IntegerType>(elemTy))
@@ -256,6 +262,23 @@ resolveMemcpyPointer(::mlir::Value ptr, ::dataflow::GraphFuncOp graph) {
     return std::nullopt;
 
   return MemcpyPtrResolution{carry->getInit(), *stride, stream};
+}
+
+std::optional<DirectMemcpyPtrResolution>
+resolveDirectMemcpyPointer(::mlir::Value ptr, ::dataflow::GraphFuncOp graph) {
+  if (isGraphPtrBlockArg(ptr, graph))
+    return DirectMemcpyPtrResolution{ptr, {}, nullptr};
+
+  auto gep = ptr.getDefiningOp<::mlir::LLVM::GEPOp>();
+  if (!gep)
+    return std::nullopt;
+  if (!isGraphPtrBlockArg(gep.getBase(), graph))
+    return std::nullopt;
+  std::optional<::mlir::Value> offset = getSingleDynamicIndex(gep);
+  if (!offset)
+    return std::nullopt;
+  return DirectMemcpyPtrResolution{gep.getBase(), *offset,
+                                   gep.getOperation()};
 }
 
 std::optional<AddrResolution>
@@ -621,8 +644,12 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
   ::mlir::Type lenType = memcpy.getLen().getType();
   if (!::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(lenType))
     return false;
-  if (!isGraphPtrBlockArg(memcpy.getSrc(), ctx.graph) ||
-      !isGraphPtrBlockArg(memcpy.getDst(), ctx.graph))
+
+  std::optional<DirectMemcpyPtrResolution> src =
+      resolveDirectMemcpyPointer(memcpy.getSrc(), ctx.graph);
+  std::optional<DirectMemcpyPtrResolution> dst =
+      resolveDirectMemcpyPointer(memcpy.getDst(), ctx.graph);
+  if (!src || !dst)
     return false;
 
   ::mlir::Location loc = memcpy.getLoc();
@@ -641,24 +668,46 @@ bool tryRewriteDirectMemcpy(::mlir::LLVM::MemcpyOp memcpy,
 
   ::mlir::Type byteTy = builder.getI8Type();
   ::mlir::Value srcMem =
-      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getSrc(),
-                      byteTy, loc, /*topLevel=*/true, memcpy);
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, src->basePtr, byteTy,
+                      loc, /*topLevel=*/true, memcpy);
   ::mlir::Value dstMem =
-      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, memcpy.getDst(),
-                      byteTy, loc, /*topLevel=*/true, memcpy);
+      getMemrefBridge(builder, ctx.graph, ctx.bridgeCache, dst->basePtr, byteTy,
+                      loc, /*topLevel=*/true, memcpy);
   ::mlir::Value index = getIndexFromInt(builder, ctx.indexCastCache,
                                         copyStream.getIndex(), loc, memcpy);
   if (!srcMem || !dstMem || !index)
     return false;
+  auto addOffset = [&](::mlir::Value baseIndex,
+                       ::mlir::Value offset) -> ::mlir::Value {
+    if (!offset)
+      return baseIndex;
+    offset = ::dataflow::InvariantOp::create(builder, loc, copyStream.getRwc(),
+                                             offset)
+                 .getOutput();
+    ::mlir::Value offsetIndex =
+        getIndexFromInt(builder, ctx.indexCastCache, offset, loc, memcpy);
+    if (!offsetIndex)
+      return {};
+    return ::mlir::arith::AddIOp::create(builder, loc, baseIndex, offsetIndex)
+        .getResult();
+  };
+  ::mlir::Value srcIndex = addOffset(index, src->offset);
+  ::mlir::Value dstIndex = addOffset(index, dst->offset);
+  if (!srcIndex || !dstIndex)
+    return false;
 
   auto load = ::dataflow::LoadOp::create(
       builder, loc, /*data=*/byteTy, /*done=*/builder.getNoneType(),
-      /*mem=*/srcMem, /*addr=*/index, /*ctrl=*/ctx.ctrl);
+      /*mem=*/srcMem, /*addr=*/srcIndex, /*ctrl=*/ctx.ctrl);
   ::dataflow::StoreOp::create(builder, loc, /*done=*/builder.getNoneType(),
-                              /*mem=*/dstMem, /*addr=*/index,
+                              /*mem=*/dstMem, /*addr=*/dstIndex,
                               /*data=*/load.getData(),
                               /*ctrl=*/load.getDone());
   memcpy->erase();
+  if (src->gepToErase && src->gepToErase->use_empty())
+    src->gepToErase->erase();
+  if (dst->gepToErase && dst->gepToErase->use_empty())
+    dst->gepToErase->erase();
   return true;
 }
 
