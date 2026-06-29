@@ -367,9 +367,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 90,
+            "pass": 91,
             "fail": 0,
-            "blocked": 19,
+            "blocked": 18,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -448,9 +448,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 17,
+            "blocked": 16,
             "unsupported": 0,
-            "missing_status": 91,
+            "missing_status": 92,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -514,9 +514,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 109,
             "pass": 18,
             "fail": 0,
-            "blocked": 17,
+            "blocked": 16,
             "unsupported": 0,
-            "missing_status": 74,
+            "missing_status": 75,
         },
     )
     assert_counts(
@@ -945,9 +945,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 14,
             "fail": 0,
-            "blocked": 19,
+            "blocked": 18,
             "unsupported": 0,
-            "missing_status": 76,
+            "missing_status": 77,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
@@ -1038,27 +1038,53 @@ def assert_no_dfg_app_direct_attempt_mode(
     )
     rows = read_rows(out_dir / "cgra-status-summary.csv")
     row = one_row(rows, "app", case)
-    expected_diagnostic = f"primary workload graph absent: expected token {expected_primary_graph_token}"
+    artifact_keys = ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report")
+    if any(row[key] for key in artifact_keys):
+        expected_diagnostic = f"primary workload graph absent: expected token {expected_primary_graph_token}"
+        if (
+            row["status"] != "blocked"
+            or row["diagnostic_class"] != "dfg_report_unsupported"
+            or row["owner"] != "sim_report"
+            or row["blocking_prerequisite"] != "dfg_report"
+            or row["dfg_status"] != "unsupported"
+            or row["mapping_status"] != "unsupported"
+            or row["cgra_status"] != "blocked"
+            or row["comparison_status"] != "blocked"
+            or row["hardware_system"] != "shared_reduction_adg"
+            or row["final_outputs_present"] != "false"
+            or row["final_memory_state_present"] != "false"
+            or expected_diagnostic not in row["diagnostic"]
+        ):
+            raise AssertionError(f"no-DFG app attempt should publish structured probe blocker: {row}")
+        for key in artifact_keys:
+            assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+            artifact = out_dir / "current-sim-cycle" / Path(row[key]).name
+            if key == "comparison_report":
+                artifact = out_dir / "cgra-status-comparisons" / Path(row[key]).name
+            if not artifact.is_file():
+                raise AssertionError(f"no-DFG app attempt should emit {artifact}")
+        return
+
     if (
         row["status"] != "blocked"
-        or row["diagnostic_class"] != "dfg_report_unsupported"
-        or row["owner"] != "sim_report"
-        or row["blocking_prerequisite"] != "dfg_report"
-        or row["dfg_status"] != "unsupported"
-        or row["mapping_status"] != "unsupported"
-        or row["cgra_status"] != "blocked"
-        or row["comparison_status"] != "blocked"
-        or row["hardware_system"] != "shared_reduction_adg"
+        or row["diagnostic_class"] != "app_dataflow_tier_missing"
+        or row["owner"] != "compiler_pipeline"
+        or row["blocking_prerequisite"] != "dataflow"
+        or row["required_slice_count"] != "0"
+        or row["graph_ids"] != ""
+        or row["dfg_status"] != "not_run"
+        or row["mapping_status"] != "not_run"
+        or row["cgra_status"] != "not_run"
+        or row["comparison_status"] != "not_run"
+        or row["hardware_system"] != ""
         or row["final_outputs_present"] != "false"
         or row["final_memory_state_present"] != "false"
-        or expected_diagnostic not in row["diagnostic"]
+        or f"app manifest has no dfg tier for {case}" not in row["diagnostic"]
     ):
         raise AssertionError(f"no-DFG app attempt should publish structured lowering-boundary evidence: {row}")
-    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
-        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
-        artifact = out_dir / "current-sim-cycle" / Path(row[key]).name
-        if not artifact.is_file():
-            raise AssertionError(f"no-DFG app attempt should emit {artifact}")
+    for key in artifact_keys:
+        if row[key] or row[f"{key}_fingerprint"]:
+            raise AssertionError(f"no-DFG app attempt must not carry {key} evidence: {row}")
 
 
 def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
@@ -4156,13 +4182,6 @@ def main() -> int:
             legacy_root,
             case="batchnorm",
             expected_primary_graph_token="batchnorm_kernel",
-        )
-        assert_no_dfg_app_direct_attempt_mode(
-            repo,
-            out_dir / "no-dfg-app-attempt-im2col",
-            legacy_root,
-            case="im2col",
-            expected_primary_graph_token="im2col_kernel",
         )
         assert_no_dfg_app_direct_attempt_mode(
             repo,

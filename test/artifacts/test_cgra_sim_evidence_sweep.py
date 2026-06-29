@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 17
+APP_NO_DFG_TIER_COUNT = 16
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -63,6 +63,7 @@ DEFAULT_SWEEP_CASES = (
     "convolve_1d",
     "conv1d",
     "conv2d",
+    "im2col",
     "convolve_1d_same",
     "crc32",
     "cross_product",
@@ -2076,6 +2077,58 @@ def assert_float_tokens_close(values: list[str], expected: list[float], *, label
             raise AssertionError(
                 f"{label}[{index}] should be close to {expected_value}, got {actual_token}"
             )
+
+
+def assert_im2col_evidence(evidence_dir: Path) -> None:
+    expected = [
+        1.0, 2.0, 3.0, 5.0, 6.0, 7.0, 9.0, 10.0, 11.0,
+        2.0, 3.0, 4.0, 6.0, 7.0, 8.0, 10.0, 11.0, 12.0,
+        5.0, 6.0, 7.0, 9.0, 10.0, 11.0, 13.0, 14.0, 15.0,
+        6.0, 7.0, 8.0, 10.0, 11.0, 12.0, 14.0, 15.0, 16.0,
+    ]
+    dfg = json.loads((evidence_dir / "im2col.dfg.report.json").read_text())
+    mapping = json.loads((evidence_dir / "im2col.mapping.json").read_text())
+    cgra = json.loads((evidence_dir / "im2col.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "im2col.sim-comparison-report.json").read_text())
+    if dfg.get("graph") != "g_t_im2col_kernel_0_0" or dfg.get("status") != "pass":
+        raise AssertionError(f"im2col DFG report should pass the kernel graph: {dfg}")
+    if dfg.get("dynamic_work_items") != 3:
+        raise AssertionError(f"im2col should expose three dynamic outer work items: {dfg}")
+    assert_operation_fire_counts(
+        "im2col",
+        dfg,
+        {
+            "dataflow.load": 36,
+            "dataflow.store": 36,
+        },
+    )
+    assert_float_tokens_close(
+        dfg.get("final_memory_state", {}).get("arg11", []),
+        expected,
+        label="im2col DFG output",
+    )
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("routed_edges") != 19
+        or mapping.get("unrouted_edges") != 0
+    ):
+        raise AssertionError(f"im2col mapping should be fully routed on shared memory hardware: {mapping}")
+    if cgra.get("status") != "pass" or cgra.get("hardware") != "shared_memory_reduction_adg":
+        raise AssertionError(f"im2col CGRA report should pass on shared memory hardware: {cgra}")
+    assert_float_tokens_close(
+        cgra.get("final_memory_state", {}).get("arg11", []),
+        expected,
+        label="im2col CGRA output",
+    )
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
+    ):
+        raise AssertionError(f"im2col comparison should pass final-state checks: {comparison}")
 
 
 def assert_softmax_evidence(evidence_dir: Path) -> None:
@@ -4300,6 +4353,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "conv2d",
                 "--case",
+                "im2col",
+                "--case",
                 "convolve_1d_same",
                 "--case",
                 "crc32",
@@ -4418,6 +4473,7 @@ def main(argv: list[str]) -> int:
             "vecadd",
             "conv1d",
             "conv2d",
+            "im2col",
             "variance",
             "covariance",
             "cross_product",
@@ -4808,6 +4864,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecadd", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv1d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "conv2d", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "im2col", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "convolve_1d_same", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "crc32", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gemm", "shared_reduction_adg")
@@ -5042,6 +5099,7 @@ def main(argv: list[str]) -> int:
         assert_component_references_resolve(evidence_dir, "sort_bubble")
         run(repo, ["python3", "test/artifacts/assert_sort_bubble_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
+        assert_im2col_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
         assert_component_references_resolve(evidence_dir, "variance")
         assert_component_references_resolve(evidence_dir, "covariance")
@@ -5244,9 +5302,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 90,
+            "pass": 91,
             "fail": 0,
-            "blocked": 19,
+            "blocked": 18,
             "unsupported": 0,
             "missing_status": 0,
         }

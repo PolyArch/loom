@@ -206,6 +206,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "im2col",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "variance",
       "hardware": "shared_reduction_adg"
     },

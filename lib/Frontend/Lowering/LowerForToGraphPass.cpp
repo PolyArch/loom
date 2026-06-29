@@ -827,6 +827,14 @@ struct LowerForToGraphPass
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
+      if (auto inParallel = ::llvm::dyn_cast<::mlir::scf::InParallelOp>(
+              nested)) {
+        if (!inParallel.getRegion().empty() &&
+            inParallel.getRegion().front().empty())
+          return ::mlir::WalkResult::advance();
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
       if (nested->getNumRegions() != 0 &&
           !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::WhileOp>(nested)) {
         unsupported = true;
@@ -874,22 +882,52 @@ struct LowerForToGraphPass
     if (!forall.getOutputs().empty() || forall.getNumResults() != 0)
       return false;
     auto inParallel = forall.getTerminator();
-    if (!inParallel.getRegion().front().empty())
+    if (inParallel.getRegion().empty() ||
+        !inParallel.getRegion().front().empty())
       return false;
 
-    bool hasNestedBoundary = false;
-    forall.walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
-      if (nested == forall.getOperation())
-        return ::mlir::WalkResult::advance();
+    return isEffectFormStructuredBodyCandidate(forall.getBody());
+  }
+
+  bool isEffectFormStructuredRegionCandidate(::mlir::Region &region) {
+    if (region.empty())
+      return true;
+    if (!region.hasOneBlock())
+      return false;
+    return isEffectFormStructuredBodyCandidate(&region.front());
+  }
+
+  bool isEffectFormStructuredBodyCandidate(::mlir::Block *body) {
+    if (!body)
+      return true;
+    for (::mlir::Operation &nested : body->without_terminator()) {
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                      ::mlir::scf::ForOp, ::mlir::scf::ForallOp,
-                      ::mlir::scf::WhileOp>(nested)) {
-        hasNestedBoundary = true;
-        return ::mlir::WalkResult::interrupt();
+                      ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                      ::mlir::scf::ForOp, ::mlir::scf::WhileOp>(&nested))
+        return false;
+      if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(
+              &nested))
+        return false;
+      if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(&nested)) {
+        if (!isEffectFormForallGraphCandidate(forall))
+          return false;
+        continue;
       }
-      return ::mlir::WalkResult::advance();
-    });
-    return !hasNestedBoundary;
+      if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(&nested)) {
+        if (ifOp.getNumResults() != 0)
+          return false;
+        if (!isEffectFormStructuredRegionCandidate(ifOp.getThenRegion()))
+          return false;
+        if (!isEffectFormStructuredRegionCandidate(ifOp.getElseRegion()))
+          return false;
+        continue;
+      }
+      if (nested.getNumRegions() != 0)
+        return false;
+      if (nested.hasTrait<::mlir::OpTrait::SymbolTable>())
+        return false;
+    }
+    return true;
   }
 
   ::mlir::LogicalResult promoteStraightLineThreads(::mlir::ModuleOp module,

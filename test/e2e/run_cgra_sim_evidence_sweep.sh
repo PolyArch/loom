@@ -104,6 +104,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     convolve_1d
     conv1d
     conv2d
+    im2col
     convolve_1d_same
     crc32
     cross_product

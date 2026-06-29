@@ -61,7 +61,7 @@ source = Path(sys.argv[1])
 name = sys.argv[2]
 text = source.read_text()
 match = re.search(
-    rf"constexpr\s+std::array<float,\s*kSize>\s+{re.escape(name)}\s*=\s*\{{(?P<body>.*?)\}};",
+    rf"constexpr\s+std::array<float,\s*[^>]+>\s+{re.escape(name)}\s*=\s*\{{(?P<body>.*?)\}};",
     text,
     re.S,
 )
@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    batchnorm|bitrev|col2im|histogram|im2col|moving_avg|sort_insertion)
+    batchnorm|bitrev|col2im|histogram|moving_avg|sort_insertion)
       return 0
       ;;
     *)
@@ -124,7 +124,7 @@ case "${CASE}" in
     case_graph="missing_primary_graph"
     ;;
   im2col)
-    case_graph="missing_primary_graph"
+    case_graph="g_t_im2col_kernel_0_0"
     ;;
   autocorrelation)
     case_graph="g_t_autocorrelation_kernel_red_0_0"
@@ -451,7 +451,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -1748,7 +1748,86 @@ PY
     "${copy_cgra_report}"
     "${sort_cgra_report}"
   )
-elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "bitrev" || "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "im2col" || "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "im2col" ]]; then
+  im2col_source="${ROOT}/test/app/im2col/main_func.cpp"
+  im2col_input_values="$(extract_cpp_float_array_csv "${im2col_source}" kInput)"
+  im2col_expected_values="$(extract_cpp_float_array_csv "${im2col_source}" kExpected)"
+  im2col_zero_values="$(
+    python3 - "${im2col_expected_values}" <<'PY'
+import sys
+
+values = [value for value in sys.argv[1].split(",") if value]
+print(",".join("0.000000e+00" for _ in values))
+PY
+  )"
+  im2col_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --arg 0=none
+    --arg 1=2
+    --arg 2=4
+    --arg 3=2
+    --arg 4=3
+    --arg 5=1
+    --arg 6=4
+    --arg 7=3
+    --arg 8=3
+    --arg 9=1
+    --memref "10=${im2col_input_values}"
+    --memref "11=${im2col_zero_values}"
+    --arg 12=false
+    --arg 13=false
+    --arg 14=false
+    --arg 15=false
+    --arg 16=0
+    --output "${dfg_report}"
+  )
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${im2col_args[@]}"
+  python3 - "${dfg_report}" "arg11" "${im2col_expected_values}" <<'PY'
+import json
+import math
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+memory_key = sys.argv[2]
+expected = [float(value) for value in sys.argv[3].split(",") if value]
+actual_tokens = report.get("final_memory_state", {}).get(memory_key)
+if not isinstance(actual_tokens, list):
+    raise SystemExit(f"im2col report lacks final_memory_state.{memory_key}")
+if len(actual_tokens) != len(expected):
+    raise SystemExit(
+        f"im2col output length mismatch: got {len(actual_tokens)}, expected {len(expected)}"
+    )
+actual = []
+for token in actual_tokens:
+    if not isinstance(token, str) or not token.startswith("f32:"):
+        raise SystemExit(f"unexpected im2col memory token {token!r}")
+    actual.append(float(token.split(":", 1)[1]))
+for index, (got, want) in enumerate(zip(actual, expected)):
+    if not math.isclose(got, want, rel_tol=1.0e-6, abs_tol=1.0e-6):
+        raise SystemExit(f"im2col output[{index}] got {got}, expected {want}")
+if len({round(value, 6) for value in actual}) < 8:
+    raise SystemExit("im2col output is not distinct enough for evidence")
+PY
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "bitrev" || "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     batchnorm)
@@ -1762,9 +1841,6 @@ elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "bitrev" || "${CASE}" == "col2i
       ;;
     histogram)
       expected_primary_graph_token="histogram_kernel"
-      ;;
-    im2col)
-      expected_primary_graph_token="im2col_kernel"
       ;;
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"

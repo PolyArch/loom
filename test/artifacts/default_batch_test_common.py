@@ -46,6 +46,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "fir_filter_stateful",
     "gather",
     "hash_mix",
+    "im2col",
     "integrate_trapz",
     "lower_bound",
     "mat3x3_mult",
