@@ -276,7 +276,7 @@ struct LowerForToGraphPass
       return signalPassFailure();
   }
 
-  bool isPureMemcpySetupOp(::mlir::Operation &op) {
+  bool isSideEffectFreeSetupOp(::mlir::Operation &op) {
     if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0)
       return false;
     if (op.hasTrait<::mlir::OpTrait::IsTerminator>())
@@ -308,25 +308,10 @@ struct LowerForToGraphPass
         candidate = memcpy;
         continue;
       }
-      if (!isPureMemcpySetupOp(op))
+      if (!isSideEffectFreeSetupOp(op))
         return false;
     }
     return static_cast<bool>(candidate);
-  }
-
-  bool isStandaloneStructuredSetupOp(::mlir::Operation &op) {
-    if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0)
-      return false;
-    if (op.hasTrait<::mlir::OpTrait::IsTerminator>())
-      return false;
-    if (op.hasTrait<::mlir::OpTrait::SymbolTable>())
-      return false;
-    if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(&op))
-      return false;
-    if (auto effects =
-            ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(&op))
-      return effects.hasNoEffect();
-    return ::mlir::isPure(&op);
   }
 
   bool findSingleTopLevelStructuredLoop(::mlir::Region &region,
@@ -340,7 +325,7 @@ struct LowerForToGraphPass
         selectedLoop = loop;
         continue;
       }
-      if (!isStandaloneStructuredSetupOp(op))
+      if (!isSideEffectFreeSetupOp(op))
         return false;
     }
     return true;
@@ -369,7 +354,7 @@ struct LowerForToGraphPass
         sawRoot = true;
         continue;
       }
-      if (!isStandaloneStructuredSetupOp(op))
+      if (!isSideEffectFreeSetupOp(op))
         return {};
     }
     return selectedLoop;
