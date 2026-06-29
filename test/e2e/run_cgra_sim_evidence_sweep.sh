@@ -107,6 +107,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     convolve_1d_same
     crc32
     cross_product
+    quat_mult
     fir_filter
     fir_filter_stateful
     gather

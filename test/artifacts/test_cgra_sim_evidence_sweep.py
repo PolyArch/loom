@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 25
+APP_NO_DFG_TIER_COUNT = 24
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -66,6 +66,7 @@ DEFAULT_SWEEP_CASES = (
     "convolve_1d_same",
     "crc32",
     "cross_product",
+    "quat_mult",
     "fir_filter",
     "fir_filter_stateful",
     "gather",
@@ -1688,6 +1689,56 @@ def cross_product_output_values() -> list[str]:
     return values
 
 
+def quat_mult_lhs_values() -> list[str]:
+    values = []
+    for i in range(16):
+        values.extend(
+            (
+                f32_token(1.0 + i * 0.01),
+                f32_token(0.1 + i * 0.03),
+                f32_token(-0.2 + i * 0.02),
+                f32_token(0.05 + i * 0.025),
+            )
+        )
+    return values
+
+
+def quat_mult_rhs_values() -> list[str]:
+    values = []
+    for i in range(16):
+        values.extend(
+            (
+                f32_token(0.8 - i * 0.005),
+                f32_token(-0.1 + i * 0.01),
+                f32_token(0.2 + i * 0.015),
+                f32_token(-0.3 + i * 0.02),
+            )
+        )
+    return values
+
+
+def quat_mult_output_values() -> list[str]:
+    values = []
+    for i in range(16):
+        w1 = 1.0 + i * 0.01
+        x1 = 0.1 + i * 0.03
+        y1 = -0.2 + i * 0.02
+        z1 = 0.05 + i * 0.025
+        w2 = 0.8 - i * 0.005
+        x2 = -0.1 + i * 0.01
+        y2 = 0.2 + i * 0.015
+        z2 = -0.3 + i * 0.02
+        values.extend(
+            (
+                f32_token(w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2),
+                f32_token(w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2),
+                f32_token(w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2),
+                f32_token(w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2),
+            )
+        )
+    return values
+
+
 def assert_cross_product_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg2": cross_product_lhs_values(),
@@ -1748,6 +1799,68 @@ def assert_cross_product_evidence(evidence_dir: Path) -> None:
         or comparison.get("memory_comparison_status") != "pass"
     ):
         raise AssertionError(f"cross_product comparison should pass with real final state: {comparison_path}: {comparison}")
+
+
+def assert_quat_mult_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": quat_mult_lhs_values(),
+        "arg2": quat_mult_rhs_values(),
+        "arg3": quat_mult_output_values(),
+    }
+    dfg_path = evidence_dir / "quat_mult.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 16
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"quat_mult DFG evidence should write all real output lanes: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        "quat_mult",
+        dfg,
+        {
+            "dataflow.load": 128,
+            "dataflow.store": 64,
+            "llvm.fneg": 64,
+            "arith.mulf": 64,
+            "llvm.intr.fmuladd": 192,
+            "arith.shli": 64,
+            "arith.ori": 48,
+        },
+    )
+
+    mapping_path = evidence_dir / "quat_mult.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_vector_math_adg"
+        or mapping.get("routed_edges", 0) <= 0
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"quat_mult should map onto the shared vector math ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "quat_mult.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_vector_math_adg"
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"quat_mult CGRA evidence should preserve the DFG final state: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "quat_mult.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"quat_mult comparison should pass with real final state: {comparison_path}: {comparison}")
 
 
 def assert_prefix_sum_exclusive_evidence(evidence_dir: Path) -> None:
@@ -4017,6 +4130,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "cross_product",
                 "--case",
+                "quat_mult",
+                "--case",
                 "variance",
                 "--case",
                 "integrate_trapz",
@@ -4116,6 +4231,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "covariance",
             "cross_product",
+            "quat_mult",
             "integrate_trapz",
             "delta_encode",
             "delta_decode",
@@ -4192,6 +4308,7 @@ def main(argv: list[str]) -> int:
         assert_delta_decode_evidence(evidence_dir)
         assert_dot_product_3d_evidence(evidence_dir)
         assert_cross_product_evidence(evidence_dir)
+        assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_mmtile_evidence(evidence_dir)
@@ -4437,6 +4554,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "delta_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "delta_decode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "cross_product", "shared_vector_math_adg")
+        assert_mapping_hardware(evidence_dir, "quat_mult", "shared_vector_math_adg")
         assert_mapping_uses_switch_multihop(evidence_dir, "delta_decode")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -4773,6 +4891,7 @@ def main(argv: list[str]) -> int:
             "variance",
             "covariance",
             "cross_product",
+            "quat_mult",
             "integrate_trapz",
             "delta_encode",
             "delta_decode",
@@ -4803,6 +4922,7 @@ def main(argv: list[str]) -> int:
             "autocorrelation",
             "upper_bound",
             "scatter_add",
+            "quat_mult",
         ):
             assert_promoted_row(repo, rows, case)
         for case in MAPPING_FAILED_SWEEP_CASES:
@@ -4885,15 +5005,18 @@ def main(argv: list[str]) -> int:
         cross_product_row = one_row(rows, "cross_product")
         if cross_product_row["hardware_system"] != "shared_vector_math_adg":
             raise AssertionError(f"cross_product should use shared vector math hardware: {cross_product_row}")
+        quat_mult_row = one_row(rows, "quat_mult")
+        if quat_mult_row["hardware_system"] != "shared_vector_math_adg":
+            raise AssertionError(f"quat_mult should use shared vector math hardware: {quat_mult_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 82,
+            "pass": 83,
             "fail": 0,
-            "blocked": 27,
+            "blocked": 26,
             "unsupported": 0,
             "missing_status": 0,
         }

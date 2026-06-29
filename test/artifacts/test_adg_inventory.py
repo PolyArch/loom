@@ -66,7 +66,7 @@ EXPECTED_TOPOLOGY_SIGNATURES = {
     "vector_math_network": {
         "layout_class": "irregular",
         "fabric_root": "shared_vector_math_adg",
-        "tile_counts": {"mem": 1, "pe": 16, "switch": 2},
+        "tile_counts": {"mem": 1, "pe": 50, "switch": 3},
         "schedule_kinds": {"spatial"},
     },
     "vector_mesh": {

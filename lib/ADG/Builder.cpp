@@ -4438,183 +4438,53 @@ ModuleBuilder loom::adg::buildSharedVectorAluAdg() {
 }
 
 ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
-  ModuleBuilder module("shared_vector_math_adg");
-  module.addInput("mgr", "memref<?x!fabric.bits<32>>");
-  for (unsigned index = 0; index < 8; ++index)
-    module.addInput(("idx" + llvm::Twine(index)).str(), "!fabric.bits<32>");
-  for (unsigned index = 0; index < 4; ++index)
-    module.addInput(("store_idx" + llvm::Twine(index)).str(),
-                    "!fabric.bits<32>");
-  module.addInput("ctrl", "!fabric.bits<0>")
-      .addInput("i32a", "!fabric.bits<32>")
-      .addInput("i32b", "!fabric.bits<32>")
-      .addInput("i32c", "!fabric.bits<32>")
-      .addInput("i32d", "!fabric.bits<32>");
-
-  std::vector<std::string> dataInputs;
-  for (unsigned index = 0; index < 8; ++index)
-    dataInputs.push_back(("data" + llvm::Twine(index)).str());
-  dataInputs.push_back("trunc0");
-  for (unsigned index = 0; index < 3; ++index)
-    dataInputs.push_back(("addr_mul" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 2; ++index)
-    dataInputs.push_back(("addr_add" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 3; ++index)
-    dataInputs.push_back(("neg" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 3; ++index)
-    dataInputs.push_back(("product" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 3; ++index)
-    dataInputs.push_back(("mac" + llvm::Twine(index)).str());
-  dataInputs.push_back("i32a");
-  dataInputs.push_back("i32b");
-  dataInputs.push_back("i32c");
-  dataInputs.push_back("i32d");
-
-  std::vector<std::string> dataOutputs;
-  for (unsigned index = 0; index < 8; ++index)
-    dataOutputs.push_back(("load_addr" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 4; ++index)
-    dataOutputs.push_back(("store_addr" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 4; ++index)
-    dataOutputs.push_back(("store_value" + llvm::Twine(index)).str());
-  dataOutputs.push_back("trunc_in");
-  for (unsigned index = 0; index < 3; ++index) {
-    dataOutputs.push_back(("addr_mul" + llvm::Twine(index) + "_lhs").str());
-    dataOutputs.push_back(("addr_mul" + llvm::Twine(index) + "_rhs").str());
-  }
-  for (unsigned index = 0; index < 2; ++index) {
-    dataOutputs.push_back(("addr_add" + llvm::Twine(index) + "_lhs").str());
-    dataOutputs.push_back(("addr_add" + llvm::Twine(index) + "_rhs").str());
-  }
-  for (unsigned index = 0; index < 3; ++index)
-    dataOutputs.push_back(("neg" + llvm::Twine(index) + "_in").str());
-  for (unsigned index = 0; index < 3; ++index) {
-    dataOutputs.push_back(("mul" + llvm::Twine(index) + "_lhs").str());
-    dataOutputs.push_back(("mul" + llvm::Twine(index) + "_rhs").str());
-  }
-  for (unsigned index = 0; index < 3; ++index) {
-    dataOutputs.push_back(("mac" + llvm::Twine(index) + "_lhs").str());
-    dataOutputs.push_back(("mac" + llvm::Twine(index) + "_rhs").str());
-    dataOutputs.push_back(("mac" + llvm::Twine(index) + "_acc").str());
-  }
-  addUniformSwitch(module, dataOutputs, dataInputs, "!fabric.bits<32>");
-
-  std::vector<std::string> controlInputs;
-  for (unsigned index = 0; index < 8; ++index)
-    controlInputs.push_back(("done" + llvm::Twine(index)).str());
-  for (unsigned index = 0; index < 4; ++index)
-    controlInputs.push_back(("store_done" + llvm::Twine(index)).str());
-  controlInputs.push_back("ctrl");
-
-  std::vector<std::string> controlOutputs;
-  for (unsigned index = 0; index < 16; ++index)
-    controlOutputs.push_back(("sync_in" + llvm::Twine(index)).str());
-  addUniformSwitch(module, controlOutputs, controlInputs, "!fabric.bits<0>");
-
-  addUnaryPe(module, "trunc0", "trunc_in", "llvm.trunc");
-  for (unsigned index = 0; index < 3; ++index)
-    addSpatialAddPe(module, ("addr_mul" + llvm::Twine(index)).str(),
-                    ("addr_mul" + llvm::Twine(index) + "_lhs").str(),
-                    ("addr_mul" + llvm::Twine(index) + "_rhs").str(),
-                    "arith.muli");
-  for (unsigned index = 0; index < 2; ++index)
-    addSpatialAddPe(module, ("addr_add" + llvm::Twine(index)).str(),
-                    ("addr_add" + llvm::Twine(index) + "_lhs").str(),
-                    ("addr_add" + llvm::Twine(index) + "_rhs").str(),
-                    "arith.addi");
-  for (unsigned index = 0; index < 3; ++index)
-    addUnaryPe(module, ("neg" + llvm::Twine(index)).str(),
-               ("neg" + llvm::Twine(index) + "_in").str(), "llvm.fneg");
-  for (unsigned index = 0; index < 3; ++index)
-    addSpatialAddPe(module, ("product" + llvm::Twine(index)).str(),
-                    ("mul" + llvm::Twine(index) + "_lhs").str(),
-                    ("mul" + llvm::Twine(index) + "_rhs").str(), "arith.mulf");
-  for (unsigned index = 0; index < 3; ++index)
-    addTernaryPe(module, ("mac" + llvm::Twine(index)).str(),
-                 ("mac" + llvm::Twine(index) + "_lhs").str(),
-                 ("mac" + llvm::Twine(index) + "_rhs").str(),
-                 ("mac" + llvm::Twine(index) + "_acc").str(),
-                 "llvm.intr.fmuladd");
-
-  module.addExactBodyLine("%sync_done =");
-  module.addExactBodyLine(
-      "    fabric.pe [spatial] (%p0 = %sync_in0 : !fabric.bits<0>,");
-  for (unsigned index = 1; index < 16; ++index) {
-    std::string suffix = index == 15 ? ")" : ",";
-    module.addExactBodyLine(
-        "                         %p" + std::to_string(index) + " = %sync_in" +
-        std::to_string(index) + " : !fabric.bits<0>" + suffix);
-  }
-  module.addExactBodyLine("        -> !fabric.bits<0> {");
-  module.addExactBodyLine("      fabric.fu(%f0 = %p0 : !fabric.bits<0>,");
-  for (unsigned index = 1; index < 16; ++index) {
-    std::string suffix = index == 15 ? ")" : ",";
-    module.addExactBodyLine("                %f" + std::to_string(index) +
-                            " = %p" + std::to_string(index) +
-                            " : !fabric.bits<0>" + suffix);
-  }
-  module.addExactBodyLine("        -> !fabric.bits<0> {");
-  module.addExactBodyLine(
-      "        %s0, %s1, %s2, %s3, %s4, %s5, %s6, %s7, %s8, %s9, %s10, "
-      "%s11, %s12, %s13, %s14, %s15 =");
-  module.addExactBodyLine(
-      "            fabric.op [@dataflow.sync] (%f0, %f1, %f2, %f3, %f4, "
-      "%f5, %f6, %f7, %f8, %f9, %f10, %f11, %f12, %f13, %f14, %f15)");
-  module.addExactBodyLine(
-      "            {sw_configs = {bitmask = \"1111111111111111\"}}");
-  module.addExactBodyLine(
-      "            : (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>)");
-  module.addExactBodyLine(
-      "            -> (!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>)");
-  module.addExactBodyLine("        fabric.yield %s0 : !fabric.bits<0>");
-  module.addExactBodyLine("      }");
-  module.addExactBodyLine("    }");
-
-  module.addExactBodyLine(
-      "%data0, %done0, %data1, %done1, %data2, %done2, %data3, %done3, "
-      "%data4, %done4, %data5, %done5, %data6, %done6, %data7, %done7, "
-      "%store_done0, %store_done1, %store_done2, %store_done3 =");
-  module.addExactBodyLine("    fabric.mem [spatial] mgr(%mgr)");
-  module.addExactBodyLine(
-      "      load(%load_addr0, %ctrl, %load_addr1, %ctrl, %load_addr2, "
-      "%ctrl, %load_addr3, %ctrl, %load_addr4, %ctrl, %load_addr5, "
-      "%ctrl, %load_addr6, %ctrl, %load_addr7, %ctrl)");
-  module.addExactBodyLine(
-      "      store(%store_addr0, %store_value0, %ctrl, %store_addr1, "
-      "%store_value1, %ctrl, %store_addr2, %store_value2, %ctrl, "
-      "%store_addr3, %store_value3, %ctrl)");
-  module.addExactBodyLine(
-      "      [{load_group_size = 8 : i32, store_group_size = 4 : i32}]");
-  module.addExactBodyLine(
-      "      : (memref<?x!fabric.bits<32>>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<32>, !fabric.bits<0>)");
-  module.addExactBodyLine(
-      "      -> (!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<32>, !fabric.bits<0>, "
-      "!fabric.bits<32>, !fabric.bits<0>, !fabric.bits<32>, "
-      "!fabric.bits<0>, !fabric.bits<0>, !fabric.bits<0>, "
-      "!fabric.bits<0>, !fabric.bits<0>)");
-  return module;
+  SharedMemoryAdgConfig config;
+  config.moduleName = "shared_vector_math_adg";
+  config.loadCount = 8;
+  config.storeCount = 4;
+  config.constantCount = 6;
+  config.addCount = 2;
+  config.cmpCount = 1;
+  config.minCount = 0;
+  config.maxCount = 0;
+  config.unsignedMinCount = 0;
+  config.unsignedMaxCount = 0;
+  config.selectCount = 0;
+  config.mulCount = 3;
+  config.divCount = 0;
+  config.unsignedDivCount = 0;
+  config.muxCount = 0;
+  config.logicCount = 3;
+  config.shiftCount = 4;
+  config.castCount = 0;
+  config.trunciCount = 0;
+  config.wideConstantCount = 2;
+  config.wideAddCount = 0;
+  config.wideShiftCount = 0;
+  config.wideCmpCount = 0;
+  config.wideCastCount = 1;
+  config.wideIndexCastCount = 0;
+  config.wideIndexCastUiCount = 0;
+  config.wideSextCount = 0;
+  config.wideMulCount = 0;
+  config.wideUnsignedDivCount = 0;
+  config.wideDivCount = 0;
+  config.wideMuxCount = 0;
+  config.wideRouteBridgeCount = 0;
+  config.ctlzCount = 0;
+  config.extuiCount = 0;
+  config.fpAddCount = 0;
+  config.fpMulCount = 4;
+  config.fnegCount = 4;
+  config.fmaCount = 12;
+  config.fpCmpCount = 0;
+  config.syncCount = 1;
+  config.syncArity = 16;
+  config.streamCount = 0;
+  config.carryCount = 0;
+  config.gateCount = 0;
+  config.invariantCount = 0;
+  return buildSharedMemoryLikeAdg(config);
 }
 
 ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {

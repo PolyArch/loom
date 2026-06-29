@@ -225,6 +225,9 @@ case "${CASE}" in
   cross_product)
     case_graph="g_t_cross_product_kernel_0_0"
     ;;
+  quat_mult)
+    case_graph="g_quat_mult_kernel_0"
+    ;;
   fir_filter)
     case_graph="g_t__ZN12_GLOBAL__N_120fir_filter_candidateEPKfS1_Pfjj_0_0"
     ;;
@@ -350,7 +353,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "cross_product" ]]; then
+    if [[ "${CASE}" == "cross_product" || "${CASE}" == "quat_mult" ]]; then
       hardware_mlir="${OUT_DIR}/shared-vector-math-adg.mlir"
       hardware_name="shared_vector_math_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"

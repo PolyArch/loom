@@ -27,6 +27,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "covariance",
     "crc32",
     "cross_product",
+    "quat_mult",
     "ctz",
     "cumsum",
     "delta_decode",

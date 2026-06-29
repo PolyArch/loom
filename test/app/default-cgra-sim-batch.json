@@ -234,6 +234,10 @@
       "hardware": "shared_vector_math_adg"
     },
     {
+      "case": "quat_mult",
+      "hardware": "shared_vector_math_adg"
+    },
+    {
       "case": "convolve_1d",
       "hardware": "shared_reduction_adg"
     },

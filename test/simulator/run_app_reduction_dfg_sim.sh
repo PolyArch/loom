@@ -768,6 +768,44 @@ cross_product_rhs_values() {
     printf "%s" "${values}"
 }
 
+quat_mult_lhs_values() {
+    local values=""
+    local w=""
+    local x=""
+    local y=""
+    local z=""
+    for i in $(seq 0 15); do
+        w="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 1.0 + i * 0.01 }')"
+        x="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 0.1 + i * 0.03 }')"
+        y="$(awk -v i="${i}" 'BEGIN { printf "%.6e", -0.2 + i * 0.02 }')"
+        z="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 0.05 + i * 0.025 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${w},${x},${y},${z}"
+    done
+    printf "%s" "${values}"
+}
+
+quat_mult_rhs_values() {
+    local values=""
+    local w=""
+    local x=""
+    local y=""
+    local z=""
+    for i in $(seq 0 15); do
+        w="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 0.8 - i * 0.005 }')"
+        x="$(awk -v i="${i}" 'BEGIN { printf "%.6e", -0.1 + i * 0.01 }')"
+        y="$(awk -v i="${i}" 'BEGIN { printf "%.6e", 0.2 + i * 0.015 }')"
+        z="$(awk -v i="${i}" 'BEGIN { printf "%.6e", -0.3 + i * 0.02 }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${w},${x},${y},${z}"
+    done
+    printf "%s" "${values}"
+}
+
 configure_cross_product_args() {
     append_ctrl_tokens 64
     append_raw_memref 2 "$(cross_product_lhs_values)"
@@ -780,6 +818,18 @@ configure_cross_product_args() {
     sim_args+=(
         --graph g_t_cross_product_kernel_0_0
         --workload cross_product
+    )
+}
+
+configure_quat_mult_args() {
+    sim_args+=(--arg 0=none)
+    append_raw_memref 1 "$(quat_mult_lhs_values)"
+    append_raw_memref 2 "$(quat_mult_rhs_values)"
+    append_constant_memref 3 64 "0.000000e+00"
+    sim_args+=(
+        --graph g_quat_mult_kernel_0
+        --workload quat_mult
+        --arg 4=16
     )
 }
 
@@ -1496,6 +1546,9 @@ case "${CASE}" in
         ;;
     cross_product)
         configure_cross_product_args
+        ;;
+    quat_mult)
+        configure_quat_mult_args
         ;;
     vecnorm_l2)
         append_ctrl_tokens 64
