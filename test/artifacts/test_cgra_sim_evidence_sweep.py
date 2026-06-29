@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 18
+APP_NO_DFG_TIER_COUNT = 17
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -99,6 +99,7 @@ DEFAULT_SWEEP_CASES = (
     "window_hamming",
     "window_hanning",
     "distance_point",
+    "normalize_vec3",
     "transpose",
     "transform_point",
     "upper_bound",
@@ -4357,6 +4358,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "distance_point",
                 "--case",
+                "normalize_vec3",
+                "--case",
                 "transpose",
                 "--case",
                 "transform_point",
@@ -4446,6 +4449,7 @@ def main(argv: list[str]) -> int:
             "window_hamming",
             "window_hanning",
             "distance_point",
+            "normalize_vec3",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -4489,6 +4493,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "distance_point", 16)
+        assert_dfg_dynamic_work_items(evidence_dir, "normalize_vec3", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "transform_point", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
@@ -4510,6 +4515,7 @@ def main(argv: list[str]) -> int:
         for case in ("window_blackman", "window_hamming", "window_hanning"):
             run(repo, ["python3", "test/artifacts/assert_signal_window_cgra_evidence.py", "--case", case, str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_distance_point_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_normalize_vec3_cgra_evidence.py", str(evidence_dir)])
         assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
         assert_covariance_evidence(evidence_dir)
@@ -4853,6 +4859,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "window_hamming", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "window_hanning", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "distance_point", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "normalize_vec3", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_memory_reduction_adg")
@@ -5131,6 +5138,7 @@ def main(argv: list[str]) -> int:
             "window_hamming",
             "window_hanning",
             "distance_point",
+            "normalize_vec3",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -5227,15 +5235,18 @@ def main(argv: list[str]) -> int:
         distance_point_row = one_row(rows, "distance_point")
         if distance_point_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"distance_point should use shared signal-window hardware: {distance_point_row}")
+        normalize_vec3_row = one_row(rows, "normalize_vec3")
+        if normalize_vec3_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"normalize_vec3 should use shared signal-window hardware: {normalize_vec3_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 89,
+            "pass": 90,
             "fail": 0,
-            "blocked": 20,
+            "blocked": 19,
             "unsupported": 0,
             "missing_status": 0,
         }

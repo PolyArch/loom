@@ -57,6 +57,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "modexp",
     "modmul",
     "newton_iter",
+    "normalize_vec3",
     "outer",
     "pack_bits",
     "parity",

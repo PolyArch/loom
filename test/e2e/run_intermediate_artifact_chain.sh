@@ -183,6 +183,9 @@ case "${CASE}" in
   distance_point)
     case_graph="g_t_distance_point_kernel_0_0"
     ;;
+  normalize_vec3)
+    case_graph="g_normalize_vec3_kernel_0"
+    ;;
   compare_swap)
     case_graph="g_t_main_0_0"
     ;;
@@ -371,7 +374,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" ]]; then
+    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "normalize_vec3" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -610,6 +613,48 @@ elif [[ "${CASE}" == "distance_point" ]]; then
   done
   distance_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${distance_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "normalize_vec3" ]]; then
+  mapfile -t normalize_fixture < <(
+    python3 "${ROOT}/test/artifacts/normalize_vec3_fixtures.py" \
+      --source "${ROOT}/test/app/normalize_vec3/main_func.cpp" \
+      --emit dfg-args
+  )
+  normalize_input_arg="${normalize_fixture[0]}"
+  normalize_output_arg="${normalize_fixture[1]}"
+  normalize_size_arg="${normalize_fixture[2]}"
+  normalize_size="${normalize_fixture[3]}"
+  normalize_input_values="${normalize_fixture[4]}"
+  normalize_zero_values="${normalize_fixture[5]}"
+  normalize_scalar_args=("${normalize_fixture[@]:6}")
+  normalize_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --memref "${normalize_input_arg}=${normalize_input_values}"
+    --memref "${normalize_output_arg}=${normalize_zero_values}"
+  )
+  for scalar_arg in "${normalize_scalar_args[@]}"; do
+    normalize_args+=(--arg "${scalar_arg}")
+  done
+  normalize_args+=(--arg "${normalize_size_arg}=${normalize_size}")
+  normalize_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${normalize_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"

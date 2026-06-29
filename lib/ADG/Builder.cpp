@@ -1035,8 +1035,20 @@ std::string numbered(llvm::StringRef prefix, unsigned index) {
   return (prefix + llvm::Twine(index)).str();
 }
 
+std::string quotedList(llvm::ArrayRef<llvm::StringRef> values) {
+  std::string result;
+  llvm::raw_string_ostream os(result);
+  for (auto [index, value] : llvm::enumerate(values)) {
+    if (index != 0)
+      os << ", ";
+    os << "\"" << value << "\"";
+  }
+  return os.str();
+}
+
 void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
-                               llvm::StringRef control) {
+                               llvm::StringRef control,
+                               llvm::ArrayRef<llvm::StringRef> constHexValues) {
   module.addExactBodyLine(valueName(result) + " =");
   module.addExactBodyLine(
       "    fabric.pe [spatial] (%pa = " + valueName(control) +
@@ -1047,10 +1059,8 @@ void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine(
       "        %value = fabric.op [@dataflow.constant] (%token)");
   module.addExactBodyLine(
-      "            {hw_params = [{const_hex_value = [\"0x00000000\", "
-      "\"0x00000001\", \"0x00000002\", \"0x00000003\", "
-      "\"0x00000004\", \"0x00000008\", \"0x00000010\", "
-      "\"0xffffffff\"]}]}");
+      "            {hw_params = [{const_hex_value = [" +
+      quotedList(constHexValues) + "]}]}");
   module.addExactBodyLine(
       "            : (!fabric.bits<0>) -> !fabric.bits<32>");
   module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
@@ -3771,6 +3781,9 @@ struct SharedMemoryAdgConfig {
   unsigned carryCount = 0;
   unsigned gateCount = 0;
   unsigned invariantCount = 0;
+  std::vector<llvm::StringRef> constantHexValues = {
+      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
+      "0x00000004", "0x00000008", "0x00000010", "0xffffffff"};
 };
 
 ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
@@ -4013,7 +4026,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   for (unsigned index = 0; index < config.constantCount; ++index) {
     std::string result = numbered("const", index);
     std::string control = result + "_ctrl";
-    addConfigurableConstantPe(module, result, control);
+    addConfigurableConstantPe(module, result, control,
+                              config.constantHexValues);
     sources32.push_back(result);
     sinks0.push_back(control);
   }
@@ -4257,6 +4271,10 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.expCount = 4;
   config.cosCount = 4;
   config.toFpCount = 4;
+  config.constantHexValues = {
+      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
+      "0x00000004", "0x00000008", "0x00000010", "0xffffffff",
+      "0x3f800000", "0xbf800000", "0x322bcc77", "0x3727c5ac"};
   config.fmaCount = 8;
   config.fpCmpCount = 8;
   config.syncCount = 4;

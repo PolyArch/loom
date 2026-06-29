@@ -140,6 +140,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     window_hamming
     window_hanning
     distance_point
+    normalize_vec3
     transpose
     transform_point
     upper_bound

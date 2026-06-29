@@ -326,6 +326,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "normalize_vec3",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "transpose",
       "hardware": "shared_reduction_adg"
     },
