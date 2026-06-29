@@ -180,6 +180,9 @@ case "${CASE}" in
   covariance)
     case_graph="g_t_covariance_kernel_red_0_0"
     ;;
+  distance_point)
+    case_graph="g_t_distance_point_kernel_0_0"
+    ;;
   compare_swap)
     case_graph="g_t_main_0_0"
     ;;
@@ -368,7 +371,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* ]]; then
+    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -560,6 +563,53 @@ PY
   done
   sigmoid_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${sigmoid_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "distance_point" ]]; then
+  mapfile -t distance_fixture < <(
+    python3 "${ROOT}/test/artifacts/distance_point_fixtures.py" \
+      --source "${ROOT}/test/app/distance_point/main_func.cpp" \
+      --emit dfg-args
+  )
+  distance_a_arg="${distance_fixture[0]}"
+  distance_b_arg="${distance_fixture[1]}"
+  distance_output_arg="${distance_fixture[2]}"
+  distance_index_arg="${distance_fixture[3]}"
+  distance_size="${distance_fixture[4]}"
+  distance_a_values="${distance_fixture[5]}"
+  distance_b_values="${distance_fixture[6]}"
+  distance_zero_values="${distance_fixture[7]}"
+  distance_scalar_args=("${distance_fixture[@]:8}")
+  distance_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --memref "${distance_a_arg}=${distance_a_values}"
+    --memref "${distance_b_arg}=${distance_b_values}"
+    --memref "${distance_output_arg}=${distance_zero_values}"
+  )
+  for ((index = 0; index < distance_size; index++)); do
+    for scalar_arg in "${distance_scalar_args[@]}"; do
+      distance_args+=(--arg "${scalar_arg}")
+    done
+    distance_args+=(--arg "${distance_index_arg}=${index}")
+  done
+  distance_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${distance_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"

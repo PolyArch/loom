@@ -139,6 +139,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     window_blackman
     window_hamming
     window_hanning
+    distance_point
     transpose
     transform_point
     upper_bound

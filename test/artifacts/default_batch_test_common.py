@@ -32,6 +32,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "cumsum",
     "delta_decode",
     "delta_encode",
+    "distance_point",
     "dot_product_3d",
     "dotprod",
     "dotproduct",

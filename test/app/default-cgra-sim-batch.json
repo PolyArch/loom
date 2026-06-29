@@ -322,6 +322,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "distance_point",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "transpose",
       "hardware": "shared_reduction_adg"
     },

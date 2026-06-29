@@ -16,6 +16,7 @@
 // HARDWARE-DAG: fabric.op [@arith.mulf]
 // HARDWARE-DAG: fabric.op [@arith.divf]
 // HARDWARE-DAG: fabric.op [@llvm.fneg]
+// HARDWARE-DAG: fabric.op [@math.sqrt]
 // HARDWARE-DAG: fabric.op [@math.exp]
 // HARDWARE-DAG: fabric.op [@math.cos]
 // HARDWARE-DAG: fabric.op [@llvm.uitofp]

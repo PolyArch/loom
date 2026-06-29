@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 19
+APP_NO_DFG_TIER_COUNT = 18
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -98,6 +98,7 @@ DEFAULT_SWEEP_CASES = (
     "window_blackman",
     "window_hamming",
     "window_hanning",
+    "distance_point",
     "transpose",
     "transform_point",
     "upper_bound",
@@ -4354,6 +4355,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "window_hanning",
                 "--case",
+                "distance_point",
+                "--case",
                 "transpose",
                 "--case",
                 "transform_point",
@@ -4442,6 +4445,7 @@ def main(argv: list[str]) -> int:
             "window_blackman",
             "window_hamming",
             "window_hanning",
+            "distance_point",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -4484,6 +4488,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "modexp", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
+        assert_dfg_dynamic_work_items(evidence_dir, "distance_point", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "transform_point", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
@@ -4504,6 +4509,7 @@ def main(argv: list[str]) -> int:
         assert_softmax_evidence(evidence_dir)
         for case in ("window_blackman", "window_hamming", "window_hanning"):
             run(repo, ["python3", "test/artifacts/assert_signal_window_cgra_evidence.py", "--case", case, str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_distance_point_cgra_evidence.py", str(evidence_dir)])
         assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
         assert_covariance_evidence(evidence_dir)
@@ -4846,6 +4852,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "window_blackman", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "window_hamming", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "window_hanning", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "distance_point", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_memory_reduction_adg")
@@ -5123,6 +5130,7 @@ def main(argv: list[str]) -> int:
             "window_blackman",
             "window_hamming",
             "window_hanning",
+            "distance_point",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -5216,15 +5224,18 @@ def main(argv: list[str]) -> int:
         quat_mult_row = one_row(rows, "quat_mult")
         if quat_mult_row["hardware_system"] != "shared_vector_math_adg":
             raise AssertionError(f"quat_mult should use shared vector math hardware: {quat_mult_row}")
+        distance_point_row = one_row(rows, "distance_point")
+        if distance_point_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"distance_point should use shared signal-window hardware: {distance_point_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 88,
+            "pass": 89,
             "fail": 0,
-            "blocked": 21,
+            "blocked": 20,
             "unsupported": 0,
             "missing_status": 0,
         }
