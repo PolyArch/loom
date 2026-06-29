@@ -511,11 +511,11 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 109,
-            "pass": 1,
+            "pass": 4,
             "fail": 0,
             "blocked": 17,
             "unsupported": 0,
-            "missing_status": 91,
+            "missing_status": 88,
         },
     )
     assert_counts(
@@ -531,14 +531,15 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         },
     )
     assert_app_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
+    assert_app_cgra_pass_row(repo, rows, "vecsum", expected_hardware="shared_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "axpy", expected_hardware="shared_vector_alu_adg")
+    assert_app_cgra_pass_row(repo, rows, "dotproduct", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
-    vecsum = one_row(rows, "app", "vecsum")
-    if vecsum["status"] == "pass" or vecsum["dfg_report"]:
-        raise AssertionError(f"app seed batch should not consume unselected vecsum evidence: {vecsum}")
-    for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
-        artifact = out_dir / "current-sim-cycle" / f"byte_swap.{suffix}"
-        if not artifact.is_file():
-            raise AssertionError(f"app seed batch should emit {artifact}")
+    for case in ("byte_swap", "vecsum", "axpy", "dotproduct"):
+        for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
+            artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
+            if not artifact.is_file():
+                raise AssertionError(f"app seed batch should emit {artifact}")
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {

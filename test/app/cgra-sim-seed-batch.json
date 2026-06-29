@@ -4,6 +4,18 @@
     {
       "case": "byte_swap",
       "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "vecsum",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "axpy",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "dotproduct",
+      "hardware": "shared_reduction_adg"
     }
   ]
 }
