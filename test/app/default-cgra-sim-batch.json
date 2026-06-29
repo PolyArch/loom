@@ -310,6 +310,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "window_hamming",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "transpose",
       "hardware": "shared_reduction_adg"
     },

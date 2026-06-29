@@ -3760,6 +3760,8 @@ struct SharedMemoryAdgConfig {
   unsigned fpDivCount = 0;
   unsigned fnegCount = 0;
   unsigned expCount = 0;
+  unsigned cosCount = 0;
+  unsigned toFpCount = 0;
   unsigned fmaCount = 6;
   unsigned fpCmpCount = 4;
   unsigned syncCount = 4;
@@ -4037,6 +4039,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addBinaryBank("fp_div", config.fpDivCount, {"arith.divf"});
   addUnaryBank("fneg", config.fnegCount, "llvm.fneg");
   addUnaryBank("exp", config.expCount, "math.exp");
+  addUnaryBank("cos", config.cosCount, "math.cos");
+  addUnaryBank("uitofp", config.toFpCount, "llvm.uitofp");
   addTernaryBank("fma", config.fmaCount, "llvm.intr.fmuladd");
   addBinaryBank("and", config.logicCount, {"arith.andi"});
   addBinaryBank("or", config.logicCount, {"arith.ori"});
@@ -4248,6 +4252,8 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.fpDivCount = 4;
   config.fnegCount = 4;
   config.expCount = 4;
+  config.cosCount = 4;
+  config.toFpCount = 4;
   config.fmaCount = 8;
   config.fpCmpCount = 8;
   config.syncCount = 4;

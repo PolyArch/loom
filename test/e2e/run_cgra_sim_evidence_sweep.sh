@@ -140,6 +140,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     transform_point
     upper_bound
     upsample
+    window_hamming
     vecadd
     vecmul
     vecscale

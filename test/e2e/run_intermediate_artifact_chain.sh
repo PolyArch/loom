@@ -324,6 +324,9 @@ case "${CASE}" in
   upsample)
     case_graph="g_t_upsample_0_0"
     ;;
+  window_hamming)
+    case_graph="g_t_window_hamming_kernel_0_0"
+    ;;
   vecadd)
     case_graph="g_t_vecadd_0_0"
     ;;
@@ -359,7 +362,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" ]]; then
+    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == "window_hamming" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -551,6 +554,101 @@ PY
   done
   sigmoid_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${sigmoid_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "window_hamming" ]]; then
+  mapfile -t window_fixture < <(
+    python3 - "${ROOT}/test/app/window_hamming/main_func.cpp" <<'PY'
+import math
+import re
+import struct
+import sys
+
+source = open(sys.argv[1], encoding="utf-8").read()
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+def parse_float(value):
+    return float(value.strip().rstrip("fFuU"))
+
+def f32(value):
+    return struct.unpack("!f", struct.pack("!f", value))[0]
+
+def const(name):
+    match = re.search(rf"constexpr\s+(?:float|uint32_t)\s+{name}\s*=\s*([^;]+);", source)
+    require(match is not None, f"missing constexpr {name}")
+    return parse_float(match.group(1))
+
+size = int(const("kSize"))
+input_pi = const("kInputPi")
+window_pi = const("kWindowPi")
+input_denominator_match = re.search(
+    r"std::sin\(\s*2\.0f\s*\*\s*kInputPi\s*\*\s*static_cast<float>\(i\)\s*/\s*([0-9.]+)f?\s*\)",
+    source,
+    re.S,
+)
+require(input_denominator_match is not None, "missing window_hamming input denominator")
+window_match = re.search(
+    r"const\s+float\s+window\s*=\s*([0-9.]+)f?\s*-\s*([0-9.]+)f?\s*\*\s*std::cos",
+    source,
+)
+require(window_match is not None, "missing Hamming window coefficients")
+
+input_denominator = parse_float(input_denominator_match.group(1))
+base = parse_float(window_match.group(1))
+amplitude = parse_float(window_match.group(2))
+twopi = f32(2.0 * f32(window_pi))
+print(",".join(f"{math.sin(2.0 * input_pi * float(index) / input_denominator):.9e}" for index in range(size)))
+print(",".join("0.000000000e+00" for _ in range(size)))
+print(f"{twopi:.9e}")
+print(f"{float(size - 1):.9e}")
+print(f"{-amplitude:.9e}")
+print(f"{base:.9e}")
+print(size)
+PY
+  )
+  window_input_values="${window_fixture[0]}"
+  window_zero_values="${window_fixture[1]}"
+  window_twopi="${window_fixture[2]}"
+  window_size_minus_one="${window_fixture[3]}"
+  window_negative_amplitude="${window_fixture[4]}"
+  window_base="${window_fixture[5]}"
+  window_size="${window_fixture[6]}"
+  window_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_window_hamming_kernel_0_0"
+    --workload "${CASE}"
+    --memref "5=${window_input_values}"
+    --memref "6=${window_zero_values}"
+  )
+  for ((index = 0; index < window_size; index++)); do
+    window_args+=(
+      --arg 0=none
+      --arg "1=${window_twopi}"
+      --arg "2=${window_size_minus_one}"
+      --arg "3=${window_negative_amplitude}"
+      --arg "4=${window_base}"
+      --arg "7=${index}"
+    )
+  done
+  window_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${window_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
