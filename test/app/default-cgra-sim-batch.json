@@ -302,6 +302,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "sigmoid",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "softmax",
       "hardware": "shared_signal_window_adg"
     },

@@ -300,6 +300,9 @@ case "${CASE}" in
   sbox_lookup)
     case_graph="g_t_main_2_0"
     ;;
+  sigmoid)
+    case_graph="g_t_sigmoid_kernel_0_0"
+    ;;
   softmax)
     case_graph="workload_graph_set"
     ;;
@@ -356,7 +359,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "softmax" ]]; then
+    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -521,7 +524,50 @@ env BUILD_DIR="${case_dfg_dir}" \
   LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
   LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
   bash "${ROOT}/test/app/${CASE}/dfg_check.sh"
-if [[ "${CASE}" == "softmax" ]]; then
+if [[ "${CASE}" == "sigmoid" ]]; then
+  sigmoid_input_values="$(
+    python3 - <<'PY'
+print(",".join(f"{(float(index) / 1024.0 - 0.5) * 10.0:.9e}" for index in range(1024)))
+PY
+  )"
+  sigmoid_zero_values="$(
+    python3 - <<'PY'
+print(",".join("0.000000000e+00" for _ in range(1024)))
+PY
+  )"
+  sigmoid_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_sigmoid_kernel_0_0"
+    --workload "${CASE}"
+    --memref "1=${sigmoid_input_values}"
+    --memref "3=${sigmoid_zero_values}"
+  )
+  for ((index = 0; index < 1024; index++)); do
+    sigmoid_args+=(
+      --arg 0=none
+      --arg "2=1.000000000e+00"
+      --arg "4=${index}"
+    )
+  done
+  sigmoid_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${sigmoid_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "softmax" ]]; then
   softmax_input_values="$(
     python3 - <<'PY'
 print(",".join(f"{float(index % 20) - 10.0:.9e}" for index in range(128)))

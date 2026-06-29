@@ -134,6 +134,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     rle_encode
     runge_kutta_step
     sbox_lookup
+    sigmoid
     softmax
     transpose
     transform_point

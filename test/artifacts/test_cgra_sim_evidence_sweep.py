@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 23
+APP_NO_DFG_TIER_COUNT = 22
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -93,6 +93,7 @@ DEFAULT_SWEEP_CASES = (
     "rle_encode",
     "runge_kutta_step",
     "sbox_lookup",
+    "sigmoid",
     "softmax",
     "transpose",
     "transform_point",
@@ -2148,6 +2149,74 @@ def assert_softmax_evidence(evidence_dir: Path) -> None:
         cgra.get("final_memory_state", {}).get("g_t_softmax_kernel_0_0:arg1", []),
         normalized,
         label="softmax CGRA normalized output",
+    )
+
+
+def sigmoid_input_values() -> list[float]:
+    return [(float(index) / 1024.0 - 0.5) * 10.0 for index in range(1024)]
+
+
+def assert_sigmoid_evidence(evidence_dir: Path) -> None:
+    source = sigmoid_input_values()
+    expected = [1.0 / (1.0 + math.exp(-value)) for value in source]
+
+    dfg_path = evidence_dir / "sigmoid.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_sigmoid_kernel_0_0"
+        or dfg.get("dynamic_work_items") != 1024
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"sigmoid DFG evidence should cover the real kernel loop: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        "sigmoid",
+        dfg,
+        {
+            "dataflow.load": 1024,
+            "math.exp": 1024,
+            "arith.addf": 1024,
+            "arith.divf": 1024,
+            "dataflow.store": 1024,
+        },
+    )
+    memory = dfg.get("final_memory_state", {})
+    assert_float_tokens_close(memory.get("arg1", []), source, label="sigmoid input")
+    output_tokens = memory.get("arg3", [])
+    assert_float_tokens_close(output_tokens, expected, label="sigmoid output")
+    if not (
+        parse_float_token(output_tokens[0]) < 0.01
+        and 0.49 < parse_float_token(output_tokens[512]) < 0.51
+        and parse_float_token(output_tokens[-1]) > 0.99
+    ):
+        raise AssertionError(f"sigmoid output should expose nontrivial activation shape: {output_tokens[:3]} ...")
+
+    mapping_path = evidence_dir / "sigmoid.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("placed_records", 0) < 6
+        or mapping.get("routed_edges", 0) < 5
+    ):
+        raise AssertionError(f"sigmoid should map to the shared signal-window ADG: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "sigmoid.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("dfg_cycles", 0) < dfg.get("optimistic_cycles", 0)
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"sigmoid CGRA evidence should carry DFG final state: {cgra_path}: {cgra}")
+    assert_float_tokens_close(
+        cgra.get("final_memory_state", {}).get("arg3", []),
+        expected,
+        label="sigmoid CGRA output",
     )
 
 
@@ -4272,6 +4341,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "sbox_lookup",
                 "--case",
+                "sigmoid",
+                "--case",
                 "softmax",
                 "--case",
                 "transpose",
@@ -4357,6 +4428,7 @@ def main(argv: list[str]) -> int:
             "relu",
             "upsample",
             "sbox_lookup",
+            "sigmoid",
             "softmax",
             "rotate_bits",
             "rle_decode",
@@ -4416,6 +4488,7 @@ def main(argv: list[str]) -> int:
         assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
+        assert_sigmoid_evidence(evidence_dir)
         assert_softmax_evidence(evidence_dir)
         assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
@@ -4754,6 +4827,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "rle_decode", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rle_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "sigmoid", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "softmax", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
@@ -4887,6 +4961,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_mapping_uses_switch_multihop(evidence_dir, "sbox_lookup")
+        assert_mapping_uses_switch_multihop(evidence_dir, "sigmoid")
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
         assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
         assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
@@ -5023,6 +5098,7 @@ def main(argv: list[str]) -> int:
             "relu",
             "upsample",
             "sbox_lookup",
+            "sigmoid",
             "softmax",
             "rotate_bits",
             "rle_decode",
@@ -5123,9 +5199,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 84,
+            "pass": 85,
             "fail": 0,
-            "blocked": 25,
+            "blocked": 24,
             "unsupported": 0,
             "missing_status": 0,
         }
