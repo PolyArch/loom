@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    batchnorm|moving_avg|sort_insertion)
+    batchnorm|bitrev|col2im|histogram|im2col|moving_avg|sort_insertion)
       return 0
       ;;
     *)
@@ -112,6 +112,18 @@ lower_app_main_func_to_dfg_probe() {
 
 case "${CASE}" in
   batchnorm)
+    case_graph="missing_primary_graph"
+    ;;
+  bitrev)
+    case_graph="missing_primary_graph"
+    ;;
+  col2im)
+    case_graph="missing_primary_graph"
+    ;;
+  histogram)
+    case_graph="missing_primary_graph"
+    ;;
+  im2col)
     case_graph="missing_primary_graph"
     ;;
   autocorrelation)
@@ -1736,11 +1748,23 @@ PY
     "${copy_cgra_report}"
     "${sort_cgra_report}"
   )
-elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "bitrev" || "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "im2col" || "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     batchnorm)
       expected_primary_graph_token="batchnorm_kernel"
+      ;;
+    bitrev)
+      expected_primary_graph_token="bitrev_kernel"
+      ;;
+    col2im)
+      expected_primary_graph_token="col2im_kernel"
+      ;;
+    histogram)
+      expected_primary_graph_token="histogram_kernel"
+      ;;
+    im2col)
+      expected_primary_graph_token="im2col_kernel"
       ;;
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"
