@@ -19,6 +19,32 @@ import cgra_status_summary  # noqa: E402
 import intermediate_artifacts  # noqa: E402
 
 
+APP_NO_DFG_EVIDENCE_DIAGNOSTIC_CLASSES = {
+    "missing_dfg_report",
+    "dfg_report_failed",
+    "dfg_report_blocked",
+    "dfg_report_unsupported",
+    "dfg_report_skipped",
+    "dfg_report_not_run",
+    "missing_mapping_artifact",
+    "mapping_artifact_failed",
+    "mapping_artifact_blocked",
+    "mapping_artifact_unsupported",
+    "mapping_artifact_skipped",
+    "mapping_artifact_not_run",
+    "missing_cgra_report",
+    "cgra_report_failed",
+    "cgra_report_blocked",
+    "cgra_report_unsupported",
+    "cgra_report_skipped",
+    "cgra_report_not_run",
+    "missing_sim_comparison_report",
+    "sim_comparison_failed",
+    "sim_comparison_blocked",
+    "evidence_identity_mismatch",
+}
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True)
@@ -511,6 +537,52 @@ def validate_app_no_dfg_row(
     row: dict[str, str],
     diagnostics: list[str],
 ) -> None:
+    if row_has_sim_artifacts(row):
+        stage_statuses = [
+            row.get(column, "")
+            for column in ("dfg_status", "mapping_status", "cgra_status", "comparison_status")
+        ]
+        if row.get("status", "") == "pass":
+            diagnostics.append(f"row {row_index}: app row without dfg tier must not pass with probe evidence")
+        elif any(status == "fail" for status in stage_statuses) or row.get("diagnostic_class", "") == "evidence_identity_mismatch":
+            if row.get("status", "") != "fail":
+                diagnostics.append(
+                    f"row {row_index}: evidenced app row without dfg tier failed stage requires status=fail"
+                )
+        elif row.get("status", "") != "blocked":
+            diagnostics.append(f"row {row_index}: evidenced app row without dfg tier requires status=blocked")
+        if row.get("diagnostic_class", "") not in APP_NO_DFG_EVIDENCE_DIAGNOSTIC_CLASSES:
+            diagnostics.append(
+                f"row {row_index}: evidenced app row without dfg tier has wrong diagnostic_class"
+            )
+        if row.get("owner", "") != "sim_report":
+            diagnostics.append(f"row {row_index}: evidenced app row without dfg tier has wrong owner")
+        if row.get("blocking_prerequisite", "") not in {
+            "dfg_report",
+            "mapping_artifact",
+            "cgra_report",
+            "sim_comparison_report",
+            "dataflow_graph_identity",
+        }:
+            diagnostics.append(
+                f"row {row_index}: evidenced app row without dfg tier has wrong blocking_prerequisite"
+            )
+        if row.get("graph_ids", "") and row.get("required_slice_count", "") == "0":
+            diagnostics.append(
+                f"row {row_index}: evidenced app row without dfg tier graph_ids contradict required_slice_count"
+            )
+        if all(status == "pass" for status in stage_statuses):
+            diagnostics.append(f"row {row_index}: evidenced app row without dfg tier must not carry all-pass stages")
+        if row.get("final_outputs_present", "") != "false":
+            diagnostics.append(
+                f"row {row_index}: evidenced app row without dfg tier requires final_outputs_present=false"
+            )
+        if row.get("final_memory_state_present", "") != "false":
+            diagnostics.append(
+                f"row {row_index}: evidenced app row without dfg tier requires final_memory_state_present=false"
+            )
+        return
+
     if row.get("status", "") != "blocked":
         diagnostics.append(f"row {row_index}: app row without dfg tier requires status=blocked")
     if row.get("diagnostic_class", "") != "app_dataflow_tier_missing":

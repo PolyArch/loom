@@ -815,9 +815,10 @@ def first_sim_evidence_path(evidence_dir: Path, stems: list[str], suffix: str) -
 
 def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comparison_dir: Path) -> None:
     suite = row_data.get("suite")
+    no_dfg_app_row = suite == "app" and row_data.get("diagnostic_class") == "app_dataflow_tier_missing"
+    original_no_dfg_app_row = dict(row_data) if no_dfg_app_row else {}
     if suite == "app":
-        if row_data.get("diagnostic_class") == "app_dataflow_tier_missing":
-            return
+        pass
     elif suite in {"cmsis-dsp", "cmsis-nn"}:
         if row_data.get("diagnostic_class") != "cmsis_dfg_mlir_ready_for_dfg_sim":
             return
@@ -940,6 +941,10 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
 
     stage_values = (dfg_status, mapping_status, cgra_status, comparison_status)
     if all(value == "pass" for value in stage_values) and (final_outputs_present or final_memory_present):
+        if no_dfg_app_row:
+            row_data.clear()
+            row_data.update(original_no_dfg_app_row)
+            return
         row_data["status"] = "pass"
         row_data["diagnostic_class"] = "cgra_sim_pass"
         row_data["owner"] = "sim_report"

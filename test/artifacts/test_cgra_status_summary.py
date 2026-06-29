@@ -1962,6 +1962,7 @@ def main() -> int:
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
         write_sim_evidence_case(sim_evidence, "batchnorm", cgra_final_state=True)
+        write_sim_evidence_case(sim_evidence, "bitrev", cgra_final_state=False)
         write_json(
             sim_evidence / "mean.dfg.report.json",
             {
@@ -2035,6 +2036,16 @@ def main() -> int:
         ):
             if promoted_batchnorm[column]:
                 raise AssertionError(f"no-DFG batchnorm should not reference sim evidence in {column}: {promoted_batchnorm}")
+        promoted_bitrev = one_row(promoted_rows, "app", "bitrev")
+        if promoted_bitrev["status"] != "blocked" or promoted_bitrev["diagnostic_class"] != "sim_comparison_blocked":
+            raise AssertionError(f"no-DFG bitrev should consume non-pass comparison evidence: {promoted_bitrev}")
+        if promoted_bitrev["blocking_prerequisite"] != "sim_comparison_report":
+            raise AssertionError(f"no-DFG bitrev should block on comparison evidence: {promoted_bitrev}")
+        for column in ("dfg_status", "mapping_status", "cgra_status"):
+            if promoted_bitrev[column] != "pass":
+                raise AssertionError(f"no-DFG bitrev should preserve earlier pass stage evidence: {promoted_bitrev}")
+        if promoted_bitrev["comparison_status"] != "blocked":
+            raise AssertionError(f"no-DFG bitrev should preserve blocked comparison status: {promoted_bitrev}")
         for artifact_column, fingerprint_column in (
             ("dfg_report", "dfg_report_fingerprint"),
             ("mapping_artifact", "mapping_artifact_fingerprint"),
@@ -2095,6 +2106,60 @@ def main() -> int:
         )
         if "referenced comparison_report JSON status is not pass" not in failed_tampered.stderr:
             raise AssertionError(f"tampered pass should fail on referenced JSON content: {failed_tampered.stderr}")
+
+        forged_no_dfg_failure_rows = [dict(row) for row in promoted_rows]
+        forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", "batchnorm")
+        forged_no_dfg_dfg = out_dir / "forged-batchnorm-failed-dfg.report.json"
+        write_json(
+            forged_no_dfg_dfg,
+            {
+                "schema_version": 1,
+                "kind": "dfg_sim_report",
+                "workload": "batchnorm",
+                "status": "fail",
+                "optimistic_cycles": 0,
+                **dfg_cycle_fixture_fields(0),
+                "final_outputs": [],
+                "final_memory_state": {},
+                "diagnostics": ["fixture DFG-sim failure"],
+                "metric_definition": "fixture",
+            },
+        )
+        forged_no_dfg_failure.update(
+            {
+                "dfg_report": str(forged_no_dfg_dfg),
+                "dfg_report_fingerprint": hashlib.sha256(forged_no_dfg_dfg.read_bytes()).hexdigest(),
+                "dfg_status": "fail",
+                "status": "blocked",
+                "diagnostic_class": "dfg_report_failed",
+                "owner": "sim_report",
+                "blocking_prerequisite": "dfg_report",
+                "diagnostic": "fixture DFG-sim failure",
+            }
+        )
+        forged_no_dfg_failure_csv = out_dir / "forged-no-dfg-failure-downgrade-cgra-status-summary.csv"
+        forged_no_dfg_failure_json = out_dir / "forged-no-dfg-failure-downgrade-cgra-status-summary.json"
+        write_rows(forged_no_dfg_failure_csv, forged_no_dfg_failure_rows)
+        write_json_projection(forged_no_dfg_failure_json, forged_no_dfg_failure_csv, forged_no_dfg_failure_rows)
+        failed_no_dfg_failure = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_no_dfg_failure_csv),
+                "--json-input",
+                str(forged_no_dfg_failure_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "evidenced app row without dfg tier failed stage requires status=fail" not in failed_no_dfg_failure.stderr:
+            raise AssertionError(
+                "forged no-DFG failure downgrade should fail CGRA status audit: "
+                f"{failed_no_dfg_failure.stderr}"
+            )
 
         run(
             repo,

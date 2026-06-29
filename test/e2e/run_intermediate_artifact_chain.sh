@@ -74,7 +74,46 @@ print(",".join(f"{float(value.rstrip('f')):.6e}" for value in values))
 PY
 }
 
+uses_primary_graph_absence_path() {
+  case "$1" in
+    batchnorm|moving_avg|sort_insertion)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+lower_app_main_func_to_dfg_probe() {
+  local app_root="${ROOT}/test/app/${CASE}"
+  local src=""
+  local compiler="${ROOT}/build/bin/loom-c++"
+  if [[ -f "${app_root}/main_func.cpp" ]]; then
+    src="${app_root}/main_func.cpp"
+    compiler="${LOOM_CXX:-${ROOT}/build/bin/loom-c++}"
+  elif [[ -f "${app_root}/main_func.c" ]]; then
+    src="${app_root}/main_func.c"
+    compiler="${LOOM_CC:-${ROOT}/build/bin/loom-cc}"
+  else
+    echo "[${CASE}] missing main_func source under ${app_root}" >&2
+    return 1
+  fi
+
+  mkdir -p "${case_dfg_dir}"
+  local ll="${case_dfg_dir}/main_func.ll"
+  local scf="${case_dfg_dir}/main_func.scf.mlir"
+  local dfg="${case_dfg_dir}/main_func.dfg.mlir"
+  "${compiler}" -emit-llvm -O1 -S "${src}" -o "${ll}"
+  "${ROOT}/build/bin/loom-raise" "${ll}" -o "${scf}"
+  "${ROOT}/build/bin/loom-lower" "${scf}" -o "${dfg}"
+  "${ROOT}/build/bin/loom-raise-opt" "${dfg}" -o /dev/null >/dev/null 2>&1
+}
+
 case "${CASE}" in
+  batchnorm)
+    case_graph="missing_primary_graph"
+    ;;
   autocorrelation)
     case_graph="g_t_autocorrelation_kernel_red_0_0"
     ;;
@@ -520,25 +559,40 @@ python3 "${ROOT}/test/app/app_import_status.py" \
 bash "${ROOT}/test/app/run_source_compat_summary.sh" \
   --case "${CASE}" \
   --output "${source_compat}"
-bash "${ROOT}/test/app/run_compiler_pipeline_summary.sh" \
-  --case "${CASE}" \
-  --output "${compiler_pipeline}"
+if ! bash "${ROOT}/test/app/run_compiler_pipeline_summary.sh" \
+    --case "${CASE}" \
+    --output "${compiler_pipeline}"; then
+  if ! uses_primary_graph_absence_path "${CASE}"; then
+    exit 1
+  fi
+fi
 bash "${ROOT}/test/cmsis/run_compiler_pipeline_summary.sh" \
   --output "${cmsis_compiler_pipeline}"
-bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
-  --case "${CASE}" \
-  --output "${primitive}"
+if ! bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
+    --case "${CASE}" \
+    --output "${primitive}"; then
+  if ! uses_primary_graph_absence_path "${CASE}"; then
+    exit 1
+  fi
+fi
 bash "${ROOT}/test/fabric/run_adg_hardware_summary.sh" \
   --input "${hardware_mlir}" \
   "${hardware_summary_recipe_args[@]}" \
   --output "${hardware}"
 case_dfg_dir="${OUT_DIR}/${CASE}-dfg"
-env BUILD_DIR="${case_dfg_dir}" \
-  LOOM_CC="${ROOT}/build/bin/loom-cc" \
-  LOOM_RAISE="${ROOT}/build/bin/loom-raise" \
-  LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
-  LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
-  bash "${ROOT}/test/app/${CASE}/dfg_check.sh"
+if [[ -x "${ROOT}/test/app/${CASE}/dfg_check.sh" ]]; then
+  env BUILD_DIR="${case_dfg_dir}" \
+    LOOM_CC="${ROOT}/build/bin/loom-cc" \
+    LOOM_RAISE="${ROOT}/build/bin/loom-raise" \
+    LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
+    LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
+    bash "${ROOT}/test/app/${CASE}/dfg_check.sh"
+elif uses_primary_graph_absence_path "${CASE}"; then
+  lower_app_main_func_to_dfg_probe
+else
+  echo "[${CASE}] missing dfg_check.sh" >&2
+  exit 1
+fi
 if [[ "${CASE}" == "sigmoid" ]]; then
   sigmoid_input_values="$(
     python3 - <<'PY'
@@ -1682,9 +1736,12 @@ PY
     "${copy_cgra_report}"
     "${sort_cgra_report}"
   )
-elif [[ "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "moving_avg" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
+    batchnorm)
+      expected_primary_graph_token="batchnorm_kernel"
+      ;;
     moving_avg)
       expected_primary_graph_token="moving_avg_kernel"
       ;;
