@@ -136,11 +136,13 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     sbox_lookup
     sigmoid
     softmax
+    window_blackman
+    window_hamming
+    window_hanning
     transpose
     transform_point
     upper_bound
     upsample
-    window_hamming
     vecadd
     vecmul
     vecscale

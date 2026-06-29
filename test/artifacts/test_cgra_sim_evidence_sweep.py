@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 21
+APP_NO_DFG_TIER_COUNT = 19
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -95,11 +95,13 @@ DEFAULT_SWEEP_CASES = (
     "sbox_lookup",
     "sigmoid",
     "softmax",
+    "window_blackman",
+    "window_hamming",
+    "window_hanning",
     "transpose",
     "transform_point",
     "upper_bound",
     "upsample",
-    "window_hamming",
     "vecadd",
     "vecmul",
     "vecscale",
@@ -4346,7 +4348,11 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "softmax",
                 "--case",
+                "window_blackman",
+                "--case",
                 "window_hamming",
+                "--case",
+                "window_hanning",
                 "--case",
                 "transpose",
                 "--case",
@@ -4433,7 +4439,9 @@ def main(argv: list[str]) -> int:
             "sbox_lookup",
             "sigmoid",
             "softmax",
+            "window_blackman",
             "window_hamming",
+            "window_hanning",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -4494,7 +4502,8 @@ def main(argv: list[str]) -> int:
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_sigmoid_evidence(evidence_dir)
         assert_softmax_evidence(evidence_dir)
-        run(repo, ["python3", "test/artifacts/assert_window_hamming_cgra_evidence.py", str(evidence_dir)])
+        for case in ("window_blackman", "window_hamming", "window_hanning"):
+            run(repo, ["python3", "test/artifacts/assert_signal_window_cgra_evidence.py", "--case", case, str(evidence_dir)])
         assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
         assert_covariance_evidence(evidence_dir)
@@ -4834,7 +4843,9 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sigmoid", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "softmax", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "window_blackman", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "window_hamming", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "window_hanning", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_memory_reduction_adg")
@@ -4968,7 +4979,9 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_mapping_uses_switch_multihop(evidence_dir, "sbox_lookup")
         assert_mapping_uses_switch_multihop(evidence_dir, "sigmoid")
+        assert_mapping_uses_switch_multihop(evidence_dir, "window_blackman")
         assert_mapping_uses_switch_multihop(evidence_dir, "window_hamming")
+        assert_mapping_uses_switch_multihop(evidence_dir, "window_hanning")
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
         assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
         assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
@@ -5107,7 +5120,9 @@ def main(argv: list[str]) -> int:
             "sbox_lookup",
             "sigmoid",
             "softmax",
+            "window_blackman",
             "window_hamming",
+            "window_hanning",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -5207,9 +5222,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 86,
+            "pass": 88,
             "fail": 0,
-            "blocked": 23,
+            "blocked": 21,
             "unsupported": 0,
             "missing_status": 0,
         }

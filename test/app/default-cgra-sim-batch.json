@@ -310,7 +310,15 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "window_blackman",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "window_hamming",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "window_hanning",
       "hardware": "shared_signal_window_adg"
     },
     {
