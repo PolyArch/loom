@@ -88,6 +88,20 @@ struct PlacementInfo {
   std::string operation;
 };
 
+struct HardwareSelection {
+  mlir::Operation *module = nullptr;
+  std::string moduleName;
+};
+
+llvm::Expected<std::string>
+requireObjectString(const llvm::json::Object &object, llvm::StringRef key,
+                    llvm::StringRef diagnosticContext);
+
+std::string systemCoreHardwareIdentity(llvm::StringRef systemName,
+                                       llvm::StringRef accCoreName) {
+  return (systemName + "::" + accCoreName).str();
+}
+
 llvm::Error createParentDirectories(llvm::StringRef outputPath) {
   llvm::SmallString<256> parent(outputPath);
   llvm::sys::path::remove_filename(parent);
@@ -115,6 +129,96 @@ mlir::Operation *findFabricModule(mlir::ModuleOp module,
       found = op;
   });
   return found;
+}
+
+mlir::Operation *findSymbolOp(mlir::ModuleOp module, llvm::StringRef opName,
+                              llvm::StringRef symbol) {
+  mlir::Operation *found = nullptr;
+  module.walk([&](mlir::Operation *op) {
+    if (found || op->getName().getStringRef() != opName)
+      return;
+    std::optional<std::string> name = symbolName(op);
+    if (name && *name == symbol)
+      found = op;
+  });
+  return found;
+}
+
+llvm::Expected<HardwareSelection>
+selectHardwareForMapping(mlir::ModuleOp module, llvm::StringRef hardwareName,
+                         const llvm::json::Object &mapping) {
+  std::optional<llvm::StringRef> rootKind =
+      mapping.getString("hardware_root_kind");
+  if (!rootKind || rootKind->empty() || *rootKind == "fabric.module") {
+    mlir::Operation *hardware = findFabricModule(module, hardwareName);
+    if (!hardware)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "hardware artifact does not contain fabric.module %s",
+          hardwareName.str().c_str());
+    return HardwareSelection{hardware, hardwareName.str()};
+  }
+
+  if (*rootKind != "fabric.system")
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping artifact has unsupported hardware_root_kind %s",
+        rootKind->str().c_str());
+
+  auto systemOrErr =
+      requireObjectString(mapping, "hardware_system", "mapping artifact");
+  if (!systemOrErr)
+    return systemOrErr.takeError();
+  auto accCoreOrErr =
+      requireObjectString(mapping, "selected_acc_core", "mapping artifact");
+  if (!accCoreOrErr)
+    return accCoreOrErr.takeError();
+  auto spatialOrErr =
+      requireObjectString(mapping, "spatialcore_template", "mapping artifact");
+  if (!spatialOrErr)
+    return spatialOrErr.takeError();
+  std::string expectedHardware =
+      systemCoreHardwareIdentity(*systemOrErr, *accCoreOrErr);
+  if (expectedHardware != hardwareName)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "mapping hardware %s does not match selected system core %s",
+        hardwareName.str().c_str(), expectedHardware.c_str());
+
+  mlir::Operation *system =
+      findSymbolOp(module, "fabric.system", *systemOrErr);
+  if (!system)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "hardware artifact does not contain fabric.system %s",
+        systemOrErr->c_str());
+
+  fabric::NodeOp selectedNode;
+  system->walk([&](fabric::NodeOp node) {
+    if (selectedNode)
+      return;
+    if (node.getSymName() == *accCoreOrErr)
+      selectedNode = node;
+  });
+  if (!selectedNode || selectedNode.getKind() != "acc_core")
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "system hardware %s does not contain acc_core %s",
+        systemOrErr->c_str(), accCoreOrErr->c_str());
+  mlir::FlatSymbolRefAttr spatial = selectedNode.getSpatialAttr();
+  if (!spatial || spatial.getValue() != *spatialOrErr)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "system hardware %s acc_core %s does not reference spatialcore %s",
+        systemOrErr->c_str(), accCoreOrErr->c_str(), spatialOrErr->c_str());
+
+  mlir::Operation *hardware = findFabricModule(module, *spatialOrErr);
+  if (!hardware)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "hardware artifact does not contain fabric.module %s",
+        spatialOrErr->c_str());
+  return HardwareSelection{hardware, *spatialOrErr};
 }
 
 std::uint64_t integerAttrValue(mlir::Attribute attr) {
@@ -748,16 +852,16 @@ llvm::Error validateHardwareArtifact(llvm::StringRef hardwareMlirPath,
     return llvm::createStringError(std::errc::invalid_argument,
                                    "could not parse hardware artifact %s",
                                    hardwareMlirPath.str().c_str());
-  mlir::Operation *hardware = findFabricModule(*module, hardwareName);
-  if (!hardware)
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "hardware artifact does not contain fabric.module %s",
-        hardwareName.str().c_str());
+  auto selectionOrErr =
+      selectHardwareForMapping(*module, hardwareName, mapping);
+  if (!selectionOrErr)
+    return selectionOrErr.takeError();
   llvm::StringMap<HardwareArtifactResource> resources =
-      collectHardwareArtifactResources(hardware, hardwareName);
+      collectHardwareArtifactResources(selectionOrErr->module,
+                                       selectionOrErr->moduleName);
   HardwareTopology topology =
-      buildHardwareTopology(hardware, hardwareName, resources);
+      buildHardwareTopology(selectionOrErr->module, selectionOrErr->moduleName,
+                            resources);
   const llvm::json::Array *placements = mapping.getArray("placements");
   if (!placements)
     return llvm::createStringError(std::errc::invalid_argument,

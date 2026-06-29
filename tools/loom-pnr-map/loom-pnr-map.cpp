@@ -19,8 +19,19 @@ static llvm::cl::opt<std::string>
                      llvm::cl::Required);
 
 static llvm::cl::opt<std::string>
-    hardwareName("hardware", llvm::cl::desc("fabric.module symbol"),
+    hardwareName("hardware",
+                 llvm::cl::desc("fabric.module or fabric.system symbol"),
                  llvm::cl::Required);
+
+static llvm::cl::opt<std::string> hardwareRootKind(
+    "hardware-root-kind",
+    llvm::cl::desc("hardware root kind: module or system"),
+    llvm::cl::init("module"));
+
+static llvm::cl::opt<std::string>
+    accCoreName("acc-core",
+                llvm::cl::desc("fabric.system acc_core node to map onto"),
+                llvm::cl::init(""));
 
 static llvm::cl::opt<std::string>
     workloadName("workload", llvm::cl::desc("workload name"),
@@ -44,6 +55,8 @@ int main(int argc, char **argv) {
   options.graphName = graphName;
   options.hardwareMlirPath = hardwareMlirPath;
   options.hardwareName = hardwareName;
+  options.hardwareRootKind = hardwareRootKind;
+  options.accCoreName = accCoreName;
   options.workload = workloadName;
 
   llvm::Expected<loom::pnr::MappingSummary> summaryOrErr =

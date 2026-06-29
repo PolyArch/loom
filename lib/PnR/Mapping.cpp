@@ -97,6 +97,15 @@ struct HardwareModel {
   HardwareTopology topology;
 };
 
+struct HardwareSelection {
+  mlir::Operation *module = nullptr;
+  std::string moduleName;
+  std::string rootKind;
+  std::string systemName;
+  std::string accCoreName;
+  std::string summaryHardware;
+};
+
 struct RouteCollection {
   llvm::SmallVector<RouteRecord, 0> routes;
   llvm::SmallVector<UnroutedEdgeRecord, 0> unroutedEdgeDetails;
@@ -154,6 +163,11 @@ std::string mappingId(llvm::StringRef workload, llvm::StringRef graph,
   return id;
 }
 
+std::string systemCoreHardwareIdentity(llvm::StringRef systemName,
+                                       llvm::StringRef accCoreName) {
+  return (systemName + "::" + accCoreName).str();
+}
+
 mlir::DialectRegistry makeRegistry() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, fabric::FabricDialect,
@@ -185,6 +199,87 @@ mlir::Operation *findSymbolOp(mlir::ModuleOp module, llvm::StringRef opName,
       found = op;
   });
   return found;
+}
+
+llvm::Expected<std::string> normalizeHardwareRootKind(llvm::StringRef kind) {
+  if (kind.empty() || kind == "module" || kind == "fabric.module")
+    return std::string("fabric.module");
+  if (kind == "system" || kind == "fabric.system")
+    return std::string("fabric.system");
+  return llvm::createStringError(
+      std::errc::invalid_argument,
+      "hardware root kind must be module or system, got %s",
+      kind.str().c_str());
+}
+
+llvm::Expected<HardwareSelection>
+selectFabricHardware(mlir::ModuleOp module, const MappingOptions &options) {
+  auto rootKindOrErr = normalizeHardwareRootKind(options.hardwareRootKind);
+  if (!rootKindOrErr)
+    return rootKindOrErr.takeError();
+
+  if (*rootKindOrErr == "fabric.module") {
+    if (!options.accCoreName.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "--acc-core requires --hardware-root-kind system");
+    mlir::Operation *hardwareOp =
+        findSymbolOp(module, "fabric.module", options.hardwareName);
+    if (!hardwareOp)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "could not find fabric hardware %s",
+                                     options.hardwareName.c_str());
+    return HardwareSelection{hardwareOp, options.hardwareName, *rootKindOrErr,
+                             "", "", options.hardwareName};
+  }
+
+  if (options.accCoreName.empty())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "system hardware %s requires --acc-core",
+        options.hardwareName.c_str());
+
+  mlir::Operation *systemOp =
+      findSymbolOp(module, "fabric.system", options.hardwareName);
+  if (!systemOp)
+    return llvm::createStringError(std::errc::invalid_argument,
+                                   "could not find fabric system %s",
+                                   options.hardwareName.c_str());
+
+  fabric::NodeOp selectedNode;
+  systemOp->walk([&](fabric::NodeOp node) {
+    if (selectedNode)
+      return;
+    if (node.getSymName() == options.accCoreName)
+      selectedNode = node;
+  });
+  if (!selectedNode || selectedNode.getKind() != "acc_core")
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "system hardware %s does not contain acc_core %s",
+        options.hardwareName.c_str(), options.accCoreName.c_str());
+
+  mlir::FlatSymbolRefAttr spatial = selectedNode.getSpatialAttr();
+  if (!spatial)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "system hardware %s acc_core %s lacks spatial fabric.module reference",
+        options.hardwareName.c_str(), options.accCoreName.c_str());
+
+  std::string spatialName = spatial.getValue().str();
+  mlir::Operation *moduleOp =
+      findSymbolOp(module, "fabric.module", spatialName);
+  if (!moduleOp)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "system hardware %s acc_core %s references missing fabric.module %s",
+        options.hardwareName.c_str(), options.accCoreName.c_str(),
+        spatialName.c_str());
+
+  return HardwareSelection{
+      moduleOp, spatialName, *rootKindOrErr, options.hardwareName,
+      options.accCoreName,
+      systemCoreHardwareIdentity(options.hardwareName, options.accCoreName)};
 }
 
 bool isForControlOperandUse(mlir::OpOperand &use) {
@@ -2548,25 +2643,26 @@ loom::pnr::createMapping(const MappingOptions &options) {
     return llvm::createStringError(std::errc::invalid_argument,
                                    "could not find dataflow graph %s",
                                    options.graphName.c_str());
-  mlir::Operation *hardwareOp =
-      findSymbolOp(*hardware, "fabric.module", options.hardwareName);
-  if (!hardwareOp)
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "could not find fabric hardware %s",
-                                   options.hardwareName.c_str());
+  auto selectionOrErr = selectFabricHardware(*hardware, options);
+  if (!selectionOrErr)
+    return selectionOrErr.takeError();
 
   auto nodesOrErr = collectSoftwareNodes(graph);
   if (!nodesOrErr)
     return nodesOrErr.takeError();
   auto hardwareModelOrErr =
-      collectHardwareModel(hardwareOp, options.hardwareName);
+      collectHardwareModel(selectionOrErr->module, selectionOrErr->moduleName);
   if (!hardwareModelOrErr)
     return hardwareModelOrErr.takeError();
 
   MappingSummary summary;
   summary.workload =
       options.workload.empty() ? options.graphName : options.workload;
-  summary.hardware = options.hardwareName;
+  summary.hardware = selectionOrErr->summaryHardware;
+  summary.hardwareRootKind = selectionOrErr->rootKind;
+  summary.hardwareSystem = selectionOrErr->systemName;
+  summary.selectedAccCore = selectionOrErr->accCoreName;
+  summary.spatialcoreTemplate = selectionOrErr->moduleName;
   summary.graph = options.graphName;
   summary.mappingId =
       mappingId(summary.workload, summary.graph, summary.hardware);
@@ -2710,6 +2806,12 @@ llvm::Error loom::pnr::writeMappingJson(llvm::StringRef outputPath,
       {"unrouted_edge_details", std::move(unroutedEdgeDetails)},
       {"config_bitstream", std::move(configEntries)},
   };
+  if (summary.hardwareRootKind == "fabric.system") {
+    root.try_emplace("hardware_root_kind", summary.hardwareRootKind);
+    root.try_emplace("hardware_system", summary.hardwareSystem);
+    root.try_emplace("selected_acc_core", summary.selectedAccCore);
+    root.try_emplace("spatialcore_template", summary.spatialcoreTemplate);
+  }
   if (!summary.resourcePressure.empty())
     root.try_emplace("resource_pressure", std::move(resourcePressure));
 

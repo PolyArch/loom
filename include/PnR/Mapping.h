@@ -17,6 +17,8 @@ struct MappingOptions {
   std::string graphName;
   std::string hardwareMlirPath;
   std::string hardwareName;
+  std::string hardwareRootKind;
+  std::string accCoreName;
   std::string workload;
 };
 
@@ -78,6 +80,10 @@ struct ResourcePressureRecord {
 struct MappingSummary {
   std::string workload;
   std::string hardware;
+  std::string hardwareRootKind;
+  std::string hardwareSystem;
+  std::string selectedAccCore;
+  std::string spatialcoreTemplate;
   std::string graph;
   std::string mappingId;
   std::string configId;

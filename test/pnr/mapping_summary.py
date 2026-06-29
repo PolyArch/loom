@@ -28,6 +28,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--graph")
     parser.add_argument("--hardware-mlir")
     parser.add_argument("--hardware")
+    parser.add_argument("--hardware-root-kind")
+    parser.add_argument("--acc-core")
     parser.add_argument("--workload")
     parser.add_argument("--artifact")
     return parser.parse_args(argv)
@@ -127,6 +129,65 @@ def mapping_id(workload: str, graph: str, hardware: str) -> str:
     )
 
 
+def is_system_root(args: argparse.Namespace) -> bool:
+    return args.hardware_root_kind in {"system", "fabric.system"}
+
+
+def hardware_identity(args: argparse.Namespace) -> str:
+    if is_system_root(args):
+        return f"{args.hardware}::{args.acc_core}"
+    return args.hardware
+
+
+def find_matching_brace(text: str, open_brace: int) -> int:
+    depth = 0
+    for index in range(open_brace, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def system_region(text: str, system: str) -> str:
+    match = re.search(rf"fabric\.system\s+@{re.escape(system)}\b", text)
+    if match is None:
+        raise RuntimeError(f"hardware MLIR lacks fabric.system @{system}")
+    open_brace = text.find("{", match.end())
+    if open_brace < 0:
+        raise RuntimeError(f"fabric.system @{system} lacks a body")
+    close_brace = find_matching_brace(text, open_brace)
+    if close_brace < 0:
+        raise RuntimeError(f"fabric.system @{system} has an unterminated body")
+    return text[open_brace + 1 : close_brace]
+
+
+def resolve_spatialcore_template(args: argparse.Namespace) -> str:
+    if not args.hardware_mlir:
+        raise RuntimeError("system-root unsupported mapping requires --hardware-mlir")
+    if not args.acc_core:
+        raise RuntimeError("system-root unsupported mapping requires --acc-core")
+    text = Path(args.hardware_mlir).read_text()
+    region = system_region(text, args.hardware)
+    node_match = re.search(
+        rf"fabric\.node\s+@{re.escape(args.acc_core)}\b(?P<body>.*?)(?=\n\s*fabric\.(?:node|link)\b|\Z)",
+        region,
+        flags=re.S,
+    )
+    if node_match is None:
+        raise RuntimeError(f"fabric.system @{args.hardware} lacks acc_core @{args.acc_core}")
+    body = node_match.group("body")
+    if 'kind = "acc_core"' not in body:
+        raise RuntimeError(f"fabric.node @{args.acc_core} is not an acc_core")
+    spatial_match = re.search(r"\bspatial\s*=\s*@([A-Za-z_.$][A-Za-z0-9_.$-]*)", body)
+    if spatial_match is None:
+        raise RuntimeError(f"fabric.node @{args.acc_core} lacks spatial template metadata")
+    return spatial_match.group(1)
+
+
 def unsupported_graph_operation(output: str) -> str | None:
     match = re.search(
         r"graph contains unsupported operation for PnR mapping:\s*([^\r\n]+)",
@@ -151,10 +212,11 @@ def unsupported_mapping_diagnostic(output: str) -> str | None:
 
 
 def write_unsupported_mapping(args: argparse.Namespace, diagnostic: str) -> None:
-    map_id = mapping_id(args.workload, args.graph, args.hardware)
+    hardware = hardware_identity(args)
+    map_id = mapping_id(args.workload, args.graph, hardware)
     row = {
         "workload": args.workload,
-        "hardware": args.hardware,
+        "hardware": hardware,
         "mapping_id": map_id,
         "placed_records": "",
         "routed_edges": "",
@@ -176,7 +238,7 @@ def write_unsupported_mapping(args: argparse.Namespace, diagnostic: str) -> None
         "schema_version": 1,
         "kind": "pnr_mapping",
         "workload": args.workload,
-        "hardware": args.hardware,
+        "hardware": hardware,
         "graph": args.graph,
         "mapping_id": map_id,
         "config_id": "loom.default",
@@ -199,6 +261,16 @@ def write_unsupported_mapping(args: argparse.Namespace, diagnostic: str) -> None
         "config_bitstream": [],
         "diagnostics": [diagnostic],
     }
+    if is_system_root(args):
+        spatialcore_template = resolve_spatialcore_template(args)
+        artifact.update(
+            {
+                "hardware_root_kind": "fabric.system",
+                "hardware_system": args.hardware,
+                "selected_acc_core": args.acc_core or "",
+                "spatialcore_template": spatialcore_template,
+            }
+        )
     artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
 
 
@@ -210,7 +282,8 @@ def explicit_mapper_args(args: argparse.Namespace) -> bool:
         args.hardware,
         args.workload,
     ]
-    if any(explicit) and not all(explicit):
+    optional_explicit = [args.hardware_root_kind, args.acc_core]
+    if (any(explicit) or any(optional_explicit)) and not all(explicit):
         missing = [
             name
             for name, value in (
@@ -223,6 +296,8 @@ def explicit_mapper_args(args: argparse.Namespace) -> bool:
             if not value
         ]
         raise SystemExit(f"explicit mapper mode is missing {', '.join(missing)}")
+    if args.acc_core and args.hardware_root_kind not in {"system", "fabric.system"}:
+        raise SystemExit("--acc-core requires --hardware-root-kind system")
     return all(explicit)
 
 
@@ -248,6 +323,10 @@ def run_explicit_mapper(args: argparse.Namespace) -> int:
     ]
     if args.artifact:
         command.extend(["--artifact", args.artifact])
+    if args.hardware_root_kind:
+        command.extend(["--hardware-root-kind", args.hardware_root_kind])
+    if args.acc_core:
+        command.extend(["--acc-core", args.acc_core])
     result = subprocess.run(
         command,
         cwd=ROOT,
