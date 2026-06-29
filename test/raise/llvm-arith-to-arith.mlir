@@ -70,3 +70,18 @@ llvm.func @ptr_select_stays_llvm(%cond: i1, %a: !llvm.ptr, %b: !llvm.ptr) -> !ll
     %0 = llvm.select %cond, %a, %b : i1, !llvm.ptr
     llvm.return %0 : !llvm.ptr
 }
+
+llvm.func @expf(f32) -> f32
+llvm.func @sqrtf(f32) -> f32
+llvm.func @opaque_math(f32) -> f32
+
+// CHECK-LABEL: func.func @libm_numeric_calls
+llvm.func @libm_numeric_calls(%x: f32) -> f32 {
+    // CHECK: %{{.*}} = math.exp %arg0 : f32
+    %0 = llvm.call @expf(%x) : (f32) -> f32
+    // CHECK: %{{.*}} = math.sqrt %{{.*}} : f32
+    %1 = llvm.call @sqrtf(%0) : (f32) -> f32
+    // CHECK: %{{.*}} = llvm.call @opaque_math
+    %2 = llvm.call @opaque_math(%1) : (f32) -> f32
+    llvm.return %2 : f32
+}

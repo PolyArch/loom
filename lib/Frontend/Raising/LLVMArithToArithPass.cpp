@@ -1,6 +1,6 @@
 // Convert llvm.* arith / compare / constant ops with builtin numeric
-// types into the matching arith dialect ops. Operations whose operand or
-// result types are not builtin integer/float types are intentionally left
+// types into the matching arith/math dialect ops. Operations whose operand
+// or result types are not builtin integer/float types are intentionally left
 // alone so they can continue through the pipeline unchanged.
 //
 // Pointer arithmetic (llvm.getelementptr), pointer ops (llvm.alloca,
@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -145,6 +146,77 @@ struct ConstantRewrite
   }
 };
 
+template <typename MathOp>
+::mlir::LogicalResult rewriteUnaryMathCall(::mlir::LLVM::CallOp op,
+                                           ::mlir::PatternRewriter &rewriter) {
+  if (op.getNumOperands() != 1 || op->getNumResults() != 1)
+    return ::mlir::failure();
+  ::mlir::Type resultType = op->getResult(0).getType();
+  if (!::mlir::isa<::mlir::FloatType>(resultType))
+    return ::mlir::failure();
+  if (op.getOperand(0).getType() != resultType)
+    return ::mlir::failure();
+  rewriter.replaceOpWithNewOp<MathOp>(op, resultType, op.getOperand(0));
+  return ::mlir::success();
+}
+
+struct LibmCallRewrite : public ::mlir::OpRewritePattern<::mlir::LLVM::CallOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::LLVM::CallOp op,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    auto callee = op.getCallee();
+    if (!callee)
+      return ::mlir::failure();
+    ::llvm::StringRef name = *callee;
+    if (name == "fabsf" || name == "fabs")
+      return rewriteUnaryMathCall<::mlir::math::AbsFOp>(op, rewriter);
+    if (name == "sinf" || name == "sin")
+      return rewriteUnaryMathCall<::mlir::math::SinOp>(op, rewriter);
+    if (name == "cosf" || name == "cos")
+      return rewriteUnaryMathCall<::mlir::math::CosOp>(op, rewriter);
+    if (name == "tanf" || name == "tan")
+      return rewriteUnaryMathCall<::mlir::math::TanOp>(op, rewriter);
+    if (name == "sinhf" || name == "sinh")
+      return rewriteUnaryMathCall<::mlir::math::SinhOp>(op, rewriter);
+    if (name == "coshf" || name == "cosh")
+      return rewriteUnaryMathCall<::mlir::math::CoshOp>(op, rewriter);
+    if (name == "tanhf" || name == "tanh")
+      return rewriteUnaryMathCall<::mlir::math::TanhOp>(op, rewriter);
+    if (name == "expf" || name == "exp")
+      return rewriteUnaryMathCall<::mlir::math::ExpOp>(op, rewriter);
+    if (name == "exp2f" || name == "exp2")
+      return rewriteUnaryMathCall<::mlir::math::Exp2Op>(op, rewriter);
+    if (name == "expm1f" || name == "expm1")
+      return rewriteUnaryMathCall<::mlir::math::ExpM1Op>(op, rewriter);
+    if (name == "logf" || name == "log")
+      return rewriteUnaryMathCall<::mlir::math::LogOp>(op, rewriter);
+    if (name == "log2f" || name == "log2")
+      return rewriteUnaryMathCall<::mlir::math::Log2Op>(op, rewriter);
+    if (name == "log10f" || name == "log10")
+      return rewriteUnaryMathCall<::mlir::math::Log10Op>(op, rewriter);
+    if (name == "log1pf" || name == "log1p")
+      return rewriteUnaryMathCall<::mlir::math::Log1pOp>(op, rewriter);
+    if (name == "floorf" || name == "floor")
+      return rewriteUnaryMathCall<::mlir::math::FloorOp>(op, rewriter);
+    if (name == "ceilf" || name == "ceil")
+      return rewriteUnaryMathCall<::mlir::math::CeilOp>(op, rewriter);
+    if (name == "roundf" || name == "round")
+      return rewriteUnaryMathCall<::mlir::math::RoundOp>(op, rewriter);
+    if (name == "truncf" || name == "trunc")
+      return rewriteUnaryMathCall<::mlir::math::TruncOp>(op, rewriter);
+    if (name == "rintf" || name == "rint" || name == "nearbyintf" ||
+        name == "nearbyint")
+      return rewriteUnaryMathCall<::mlir::math::RoundEvenOp>(op, rewriter);
+    if (name == "sqrtf" || name == "sqrt")
+      return rewriteUnaryMathCall<::mlir::math::SqrtOp>(op, rewriter);
+    if (name == "erff" || name == "erf")
+      return rewriteUnaryMathCall<::mlir::math::ErfOp>(op, rewriter);
+    return ::mlir::failure();
+  }
+};
+
 struct LLVMArithToArithPass
     : public ::mlir::PassWrapper<
           LLVMArithToArithPass,
@@ -155,14 +227,15 @@ struct LLVMArithToArithPass
     return "loom-llvm-arith-to-arith";
   }
   ::llvm::StringRef getDescription() const final {
-    return "Rewrite llvm.* arithmetic / compare / constant ops with builtin "
-           "numeric types into the matching arith dialect ops, scoped to "
-           "func.func bodies. Skipped (aggregate-signature) llvm.func ops "
-           "are left untouched.";
+    return "Rewrite llvm.* arithmetic / compare / constant ops and direct "
+           "unary libm calls with builtin numeric types into the matching "
+           "arith/math dialect ops, scoped to func.func bodies. Skipped "
+           "(aggregate-signature) llvm.func ops are left untouched.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
-    registry.insert<::mlir::arith::ArithDialect, ::mlir::LLVM::LLVMDialect>();
+    registry.insert<::mlir::arith::ArithDialect, ::mlir::LLVM::LLVMDialect,
+                    ::mlir::math::MathDialect>();
   }
 
   void runOnOperation() final {
@@ -195,8 +268,9 @@ struct LLVMArithToArithPass
         BinaryRewrite<::mlir::LLVM::FDivOp, ::mlir::arith::DivFOp>,
         BinaryRewrite<::mlir::LLVM::FRemOp, ::mlir::arith::RemFOp>,
 
-        // compares + constants
-        ICmpRewrite, FCmpRewrite, SelectRewrite, ConstantRewrite>(ctx);
+        // compares, constants, and direct libm numeric calls
+        ICmpRewrite, FCmpRewrite, SelectRewrite, ConstantRewrite,
+        LibmCallRewrite>(ctx);
 
     if (failed(::mlir::applyPatternsGreedily(funcOp.getBody(),
                                              std::move(patterns))))

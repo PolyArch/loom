@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 24
+APP_NO_DFG_TIER_COUNT = 23
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -93,6 +93,7 @@ DEFAULT_SWEEP_CASES = (
     "rle_encode",
     "runge_kutta_step",
     "sbox_lookup",
+    "softmax",
     "transpose",
     "transform_point",
     "upper_bound",
@@ -2047,6 +2048,107 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"mat3x3_mult CGRA evidence should carry the first real matrix dot state: {cgra_path}: {cgra}")
+
+
+def softmax_input_values() -> list[float]:
+    return [float(index % 20) - 10.0 for index in range(128)]
+
+
+def parse_float_token(value: str) -> float:
+    prefix, raw = value.split(":", 1)
+    if prefix != "f32":
+        raise AssertionError(f"expected f32 token, got {value!r}")
+    return float(raw)
+
+
+def assert_float_tokens_close(values: list[str], expected: list[float], *, label: str) -> None:
+    if len(values) != len(expected):
+        raise AssertionError(f"{label} length mismatch: expected {len(expected)}, got {len(values)}")
+    for index, (actual_token, expected_value) in enumerate(zip(values, expected)):
+        actual = parse_float_token(actual_token)
+        if not math.isclose(actual, expected_value, rel_tol=1.0e-5, abs_tol=1.0e-6):
+            raise AssertionError(
+                f"{label}[{index}] should be close to {expected_value}, got {actual_token}"
+            )
+
+
+def assert_softmax_evidence(evidence_dir: Path) -> None:
+    expected_graphs = [
+        "g_t_softmax_kernel_red_0_0",
+        "g_t_softmax_kernel_red_1_0",
+        "g_t_softmax_kernel_0_0",
+    ]
+    source = softmax_input_values()
+    max_value = max(source)
+    exp_values = [math.exp(value - max_value) for value in source]
+    exp_sum = sum(exp_values)
+    normalized = [value / exp_sum for value in exp_values]
+
+    dfg_path = evidence_dir / "softmax.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("component_graphs") != expected_graphs
+        or dfg.get("dynamic_work_items") != 383
+        or dfg.get("diagnostics")
+        != ["derived workload graph-set DFG report from component DFG simulator reports"]
+    ):
+        raise AssertionError(f"softmax DFG aggregate should carry three source-derived components: {dfg_path}: {dfg}")
+    assert_operation_fire_counts(
+        "softmax",
+        dfg,
+        {
+            "arith.divf": 128,
+            "dataflow.store": 256,
+            "math.exp": 128,
+        },
+    )
+    memory = dfg.get("final_memory_state", {})
+    assert_float_tokens_close(
+        memory.get("g_t_softmax_kernel_red_1_0:arg6", []),
+        exp_values,
+        label="softmax exp buffer",
+    )
+    normalized_tokens = memory.get("g_t_softmax_kernel_0_0:arg1", [])
+    assert_float_tokens_close(normalized_tokens, normalized, label="softmax normalized output")
+    if not math.isclose(
+        sum(parse_float_token(value) for value in normalized_tokens),
+        1.0,
+        rel_tol=1.0e-5,
+        abs_tol=1.0e-5,
+    ):
+        raise AssertionError(f"softmax normalized output should sum to one: {normalized_tokens}")
+
+    mapping_path = evidence_dir / "softmax.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("component_graphs") != expected_graphs
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("placed_records", 0) < 19
+        or mapping.get("routed_edges", 0) < 26
+    ):
+        raise AssertionError(f"softmax should aggregate three passing shared-signal mappings: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "softmax.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("component_graphs") != expected_graphs
+        or cgra.get("dfg_cycles", 0) < dfg.get("optimistic_cycles", 0)
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+        or cgra.get("functional_state_source")
+        != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"softmax CGRA aggregate should carry source-derived normalized state: {cgra_path}: {cgra}")
+    assert_float_tokens_close(
+        cgra.get("final_memory_state", {}).get("g_t_softmax_kernel_0_0:arg1", []),
+        normalized,
+        label="softmax CGRA normalized output",
+    )
 
 
 def assert_mmtile_evidence(evidence_dir: Path) -> None:
@@ -4170,6 +4272,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "sbox_lookup",
                 "--case",
+                "softmax",
+                "--case",
                 "transpose",
                 "--case",
                 "transform_point",
@@ -4253,6 +4357,7 @@ def main(argv: list[str]) -> int:
             "relu",
             "upsample",
             "sbox_lookup",
+            "softmax",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -4311,6 +4416,7 @@ def main(argv: list[str]) -> int:
         assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_mat3x3_mult_evidence(evidence_dir)
+        assert_softmax_evidence(evidence_dir)
         assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
         assert_covariance_evidence(evidence_dir)
@@ -4648,6 +4754,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "rle_decode", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "rle_encode", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sbox_lookup", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "softmax", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "transpose", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "transform_point", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "upper_bound", "shared_memory_reduction_adg")
@@ -4793,6 +4900,7 @@ def main(argv: list[str]) -> int:
             },
         )
         assert_mapping_uses_switch_multihop(evidence_dir, "rotate_bits")
+        assert_mapping_uses_switch_multihop(evidence_dir, "softmax")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
             "runge_kutta_step",
@@ -4915,6 +5023,7 @@ def main(argv: list[str]) -> int:
             "relu",
             "upsample",
             "sbox_lookup",
+            "softmax",
             "rotate_bits",
             "rle_decode",
             "rle_encode",
@@ -5014,9 +5123,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 83,
+            "pass": 84,
             "fail": 0,
-            "blocked": 26,
+            "blocked": 25,
             "unsupported": 0,
             "missing_status": 0,
         }

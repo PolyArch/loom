@@ -71,6 +71,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "rle_encode",
     "runge_kutta_step",
     "sbox_lookup",
+    "softmax",
     "scatter_add",
     "spmv",
     "spmspv",

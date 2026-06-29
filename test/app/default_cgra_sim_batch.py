@@ -23,6 +23,7 @@ ALLOWED_HARDWARE = frozenset(
         "shared_vector_alu_adg",
         "shared_vector_math_adg",
         "shared_memory_reduction_adg",
+        "shared_signal_window_adg",
     }
 )
 CASE_LABEL_RE = re.compile(r"^\s*([A-Za-z0-9_.+-]+)\)\s*$")

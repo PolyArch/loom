@@ -13,6 +13,7 @@ add_mlir_library(LoomPnR
   MLIRFuncDialect
   MLIRIR
   MLIRLLVMDialect
+  MLIRMathDialect
   MLIRParser
   MLIRSCFDialect
   MLIRSupport

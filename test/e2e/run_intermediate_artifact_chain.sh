@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-memory-reduction|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-memory-reduction|shared-signal-window|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -300,6 +300,9 @@ case "${CASE}" in
   sbox_lookup)
     case_graph="g_t_main_2_0"
     ;;
+  softmax)
+    case_graph="workload_graph_set"
+    ;;
   sort_insertion)
     case_graph="g_t_sort_insertion_kernel_0_0"
     ;;
@@ -353,7 +356,20 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "cross_product" || "${CASE}" == "quat_mult" ]]; then
+    if [[ "${CASE}" == "softmax" ]]; then
+      hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
+      hardware_name="shared_signal_window_adg"
+      adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+      if [[ ! -x "${adg_builder_tool}" ]]; then
+        echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+        exit 1
+      fi
+      "${adg_builder_tool}" --shared-signal-window --output "${hardware_mlir}"
+      hardware_summary_recipe_args=(
+        --input-recipe-identity
+        "${hardware_mlir}=adg-builder::shared-signal-window"
+      )
+    elif [[ "${CASE}" == "cross_product" || "${CASE}" == "quat_mult" ]]; then
       hardware_mlir="${OUT_DIR}/shared-vector-math-adg.mlir"
       hardware_name="shared_vector_math_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -410,6 +426,20 @@ case "${HARDWARE_SOURCE}" in
     hardware_summary_recipe_args=(
       --input-recipe-identity
       "${hardware_mlir}=adg-builder::shared-memory-reduction"
+    )
+    ;;
+  shared-signal-window)
+    hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
+    hardware_name="shared_signal_window_adg"
+    adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+    if [[ ! -x "${adg_builder_tool}" ]]; then
+      echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+      exit 1
+    fi
+    "${adg_builder_tool}" --shared-signal-window --output "${hardware_mlir}"
+    hardware_summary_recipe_args=(
+      --input-recipe-identity
+      "${hardware_mlir}=adg-builder::shared-signal-window"
     )
     ;;
   adg-builder)
@@ -491,7 +521,198 @@ env BUILD_DIR="${case_dfg_dir}" \
   LOOM_LOWER="${ROOT}/build/bin/loom-lower" \
   LOOM_RAISE_OPT="${ROOT}/build/bin/loom-raise-opt" \
   bash "${ROOT}/test/app/${CASE}/dfg_check.sh"
-if [[ "${CASE}" == "vecadd" ]]; then
+if [[ "${CASE}" == "softmax" ]]; then
+  softmax_input_values="$(
+    python3 - <<'PY'
+print(",".join(f"{float(index % 20) - 10.0:.9e}" for index in range(128)))
+PY
+  )"
+  softmax_zero_values="$(
+    python3 - <<'PY'
+print(",".join("0.000000000e+00" for _ in range(128)))
+PY
+  )"
+  dfg_max_report="${OUT_DIR}/softmax-dfg-sim-max.report.json"
+  dfg_exp_report="${OUT_DIR}/softmax-dfg-sim-exp.report.json"
+  dfg_norm_report="${OUT_DIR}/softmax-dfg-sim-normalize.report.json"
+  mapping_max_artifact="${OUT_DIR}/pnr-mapping-max.json"
+  mapping_exp_artifact="${OUT_DIR}/pnr-mapping-exp.json"
+  mapping_norm_artifact="${OUT_DIR}/pnr-mapping-normalize.json"
+  mapping_max_summary="${OUT_DIR}/pnr-mapping-max-summary.csv"
+  mapping_exp_summary="${OUT_DIR}/pnr-mapping-exp-summary.csv"
+  mapping_norm_summary="${OUT_DIR}/pnr-mapping-normalize-summary.csv"
+  cgra_max_report="${OUT_DIR}/softmax-cgra-sim-max-report.json"
+  cgra_exp_report="${OUT_DIR}/softmax-cgra-sim-exp-report.json"
+  cgra_norm_report="${OUT_DIR}/softmax-cgra-sim-normalize-report.json"
+
+  softmax_max_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_softmax_kernel_red_0_0"
+    --workload "${CASE}"
+  )
+  for ((index = 1; index < 128; index++)); do
+    softmax_max_args+=(--arg 0=none)
+  done
+  softmax_max_args+=(
+    --arg 1=1
+    --arg 2=128
+    --arg 3=1
+    --memref "4=${softmax_input_values}"
+    --arg "5=-1.000000000e+01"
+    --output "${dfg_max_report}"
+  )
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${softmax_max_args[@]}"
+  softmax_max="$(
+    python3 - "${dfg_max_report}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+values = [
+    value.split(":", 1)[1]
+    for value in report.get("final_outputs", [])
+    if isinstance(value, str) and value.startswith("f32:")
+]
+if not values:
+    raise SystemExit("softmax max graph did not emit an f32 max")
+print(values[-1])
+PY
+  )"
+
+  softmax_exp_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_softmax_kernel_red_1_0"
+    --workload "${CASE}"
+  )
+  for ((index = 0; index < 128; index++)); do
+    softmax_exp_args+=(--arg 0=none)
+  done
+  softmax_exp_args+=(
+    --arg 1=0
+    --arg 2=128
+    --arg 3=1
+    --memref "4=${softmax_input_values}"
+    --arg "5=${softmax_max}"
+    --memref "6=${softmax_zero_values}"
+    --arg "7=0.000000000e+00"
+    --output "${dfg_exp_report}"
+  )
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${softmax_exp_args[@]}"
+  softmax_exp_values="$(
+    python3 - "${dfg_exp_report}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+values = report.get("final_memory_state", {}).get("arg6")
+if not isinstance(values, list) or len(values) != 128:
+    raise SystemExit("softmax exp graph did not emit 128 exp buffer values")
+print(",".join(value.split(":", 1)[1] for value in values))
+PY
+  )"
+  softmax_sum="$(
+    python3 - "${dfg_exp_report}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+values = [
+    value.split(":", 1)[1]
+    for value in report.get("final_outputs", [])
+    if isinstance(value, str) and value.startswith("f32:")
+]
+if not values:
+    raise SystemExit("softmax exp graph did not emit an f32 sum")
+print(values[-1])
+PY
+  )"
+
+  softmax_norm_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_softmax_kernel_0_0"
+    --workload "${CASE}"
+    --memref "1=${softmax_exp_values}"
+  )
+  for ((index = 0; index < 128; index++)); do
+    softmax_norm_args+=(
+      --arg 0=none
+      --arg "2=${softmax_sum}"
+      --arg "3=${index}"
+    )
+  done
+  softmax_norm_args+=(--output "${dfg_norm_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${softmax_norm_args[@]}"
+
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_max_report}" \
+    --dfg-report "${dfg_exp_report}" \
+    --dfg-report "${dfg_norm_report}" \
+    --output "${dfg_cycle}"
+
+  softmax_graphs=(
+    "g_t_softmax_kernel_red_0_0"
+    "g_t_softmax_kernel_red_1_0"
+    "g_t_softmax_kernel_0_0"
+  )
+  softmax_dfg_reports=(
+    "${dfg_max_report}"
+    "${dfg_exp_report}"
+    "${dfg_norm_report}"
+  )
+  softmax_mapping_artifacts=(
+    "${mapping_max_artifact}"
+    "${mapping_exp_artifact}"
+    "${mapping_norm_artifact}"
+  )
+  softmax_mapping_summaries=(
+    "${mapping_max_summary}"
+    "${mapping_exp_summary}"
+    "${mapping_norm_summary}"
+  )
+  softmax_cgra_reports=(
+    "${cgra_max_report}"
+    "${cgra_exp_report}"
+    "${cgra_norm_report}"
+  )
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for index in "${!softmax_graphs[@]}"; do
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${softmax_graphs[${index}]}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${softmax_mapping_artifacts[${index}]}" \
+      --output "${softmax_mapping_summaries[${index}]}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${softmax_dfg_reports[${index}]}" \
+      --mapping-artifact "${softmax_mapping_artifacts[${index}]}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${softmax_cgra_reports[${index}]}"
+    dfg_component_args+=(--dfg-report "${softmax_dfg_reports[${index}]}")
+    mapping_component_args+=(--mapping-artifact "${softmax_mapping_artifacts[${index}]}")
+    cgra_component_args+=(--cgra-report "${softmax_cgra_reports[${index}]}")
+    component_artifacts+=(
+      "${softmax_dfg_reports[${index}]}"
+      "${softmax_mapping_artifacts[${index}]}"
+      "${softmax_cgra_reports[${index}]}"
+    )
+  done
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+elif [[ "${CASE}" == "vecadd" ]]; then
   dfg_main_report="${OUT_DIR}/vecadd-dfg-sim-main.report.json"
   dfg_reduction_report="${OUT_DIR}/vecadd-dfg-sim-main.reduction.report.json"
   mapping_main_artifact="${OUT_DIR}/pnr-mapping-main.json"

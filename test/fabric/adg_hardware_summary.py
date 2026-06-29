@@ -35,6 +35,11 @@ DEFAULT_BUILDER_INPUTS = (
         ("--shared-vector-math",),
         "shared-vector-math.mlir",
     ),
+    (
+        "adg-builder::shared-signal-window",
+        ("--shared-signal-window",),
+        "shared-signal-window.mlir",
+    ),
 )
 ADG_BUILDER_RECIPES = {
     "test/pnr/minimal_spatial_adg.mlir.inc": "adg-builder::minimal-spatial",
