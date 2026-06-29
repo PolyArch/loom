@@ -13,6 +13,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "binary_search",
     "bisection_step",
     "bitonic_stage",
+    "bitonic_stage-tweak",
     "bit_reverse",
     "byte_swap",
     "clz",

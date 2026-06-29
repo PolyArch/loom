@@ -102,6 +102,9 @@ case "${CASE}" in
   bitonic_stage)
     case_graph="g_bitonic_stage_0"
     ;;
+  bitonic_stage-tweak)
+    case_graph="g_bitonic_stage_tweak_kernel_0"
+    ;;
   bit_reverse)
     case_graph="g_t_bit_reverse_kernel_0_0"
     ;;
@@ -360,7 +363,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "find_first_set" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(

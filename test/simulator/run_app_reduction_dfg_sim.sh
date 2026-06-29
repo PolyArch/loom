@@ -1239,6 +1239,17 @@ case "${CASE}" in
             --memref 1=3.000000e+00,1.000000e+00,4.000000e+00,2.000000e+00,8.000000e+00,6.000000e+00,7.000000e+00,5.000000e+00
         )
         ;;
+    bitonic_stage-tweak)
+        sim_args+=(
+            --graph g_bitonic_stage_tweak_kernel_0
+            --workload bitonic_stage-tweak
+            --arg 0=none
+            --memref 1=3.000000e+00,1.000000e+00,4.000000e+00,2.000000e+00,8.000000e+00,6.000000e+00,7.000000e+00,5.000000e+00
+            --arg 2=8
+            --arg 3=1
+            --arg 4=0
+        )
+        ;;
     downsample)
         append_ctrl_tokens 4
         append_repeated_arg 1 4 4

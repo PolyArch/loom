@@ -314,6 +314,96 @@ struct LowerForToGraphPass
     return static_cast<bool>(candidate);
   }
 
+  bool isStandaloneStructuredSetupOp(::mlir::Operation &op) {
+    if (op.getNumRegions() != 0 || op.getNumSuccessors() != 0)
+      return false;
+    if (op.hasTrait<::mlir::OpTrait::IsTerminator>())
+      return false;
+    if (op.hasTrait<::mlir::OpTrait::SymbolTable>())
+      return false;
+    if (::llvm::isa<::mlir::FunctionOpInterface, ::mlir::CallOpInterface>(&op))
+      return false;
+    if (auto effects =
+            ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(&op))
+      return effects.hasNoEffect();
+    return ::mlir::isPure(&op);
+  }
+
+  bool findSingleTopLevelStructuredLoop(::mlir::Region &region,
+                                        ::mlir::scf::ForOp &selectedLoop) {
+    if (!region.hasOneBlock())
+      return false;
+    for (::mlir::Operation &op : region.front().without_terminator()) {
+      if (auto loop = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
+        if (selectedLoop)
+          return false;
+        selectedLoop = loop;
+        continue;
+      }
+      if (!isStandaloneStructuredSetupOp(op))
+        return false;
+    }
+    return true;
+  }
+
+  ::mlir::scf::ForOp findStandaloneStructuredLoopRoot(::mlir::Block &entry) {
+    ::mlir::scf::ForOp selectedLoop;
+    bool sawRoot = false;
+    for (::mlir::Operation &op : entry.without_terminator()) {
+      if (auto loop = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
+        if (sawRoot)
+          return {};
+        selectedLoop = loop;
+        sawRoot = true;
+        continue;
+      }
+      if (auto guard = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
+        if (sawRoot || guard.getNumResults() != 0)
+          return {};
+        if (!findSingleTopLevelStructuredLoop(guard.getThenRegion(),
+                                             selectedLoop))
+          return {};
+        if (!findSingleTopLevelStructuredLoop(guard.getElseRegion(),
+                                             selectedLoop))
+          return {};
+        sawRoot = true;
+        continue;
+      }
+      if (!isStandaloneStructuredSetupOp(op))
+        return {};
+    }
+    return selectedLoop;
+  }
+
+  bool hasUnsupportedStandaloneStructuredLoopBody(::mlir::scf::ForOp loop) {
+    bool unsupported = false;
+    loop->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+      if (nested == loop.getOperation())
+        return ::mlir::WalkResult::advance();
+      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
+                      ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
+                      ::mlir::func::FuncOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::llvm::isa<::mlir::CallOpInterface>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (::llvm::isa<::mlir::scf::ForOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (nested->getNumRegions() != 0 &&
+          !::llvm::isa<::mlir::scf::IfOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      return ::mlir::WalkResult::advance();
+    });
+    return unsupported;
+  }
+
   void promoteGraphOnlyFunction(::mlir::ModuleOp module,
                                 ::mlir::func::FuncOp func,
                                 ::mlir::OpBuilder &builder) {
@@ -377,48 +467,14 @@ struct LowerForToGraphPass
       return false;
     ::mlir::Block &entry = body.front();
 
-    ::mlir::scf::ForOp topLevelLoop;
-    for (::mlir::Operation &op : entry.without_terminator()) {
-      if (auto loop = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
-        if (topLevelLoop)
-          return false;
-        topLevelLoop = loop;
-        continue;
-      }
-      if (::llvm::isa<::mlir::arith::ConstantOp>(op))
-        continue;
-      return false;
-    }
+    ::mlir::scf::ForOp topLevelLoop =
+        findStandaloneStructuredLoopRoot(entry);
     if (!topLevelLoop)
       return false;
+    if (!topLevelLoop.getInitArgs().empty())
+      return false;
 
-    bool unsupported = false;
-    topLevelLoop->walk([&](::mlir::Operation *nested)
-                           -> ::mlir::WalkResult {
-      if (nested == topLevelLoop.getOperation())
-        return ::mlir::WalkResult::advance();
-      if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
-                      ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
-                      ::mlir::func::FuncOp>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::llvm::isa<::mlir::CallOpInterface>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::llvm::isa<::mlir::scf::ForOp>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (nested->getNumRegions() != 0 &&
-          !::llvm::isa<::mlir::scf::IfOp>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      return ::mlir::WalkResult::advance();
-    });
-    return !unsupported;
+    return !hasUnsupportedStandaloneStructuredLoopBody(topLevelLoop);
   }
 
   void promoteStandaloneStructuredFunctions(::mlir::ModuleOp module,

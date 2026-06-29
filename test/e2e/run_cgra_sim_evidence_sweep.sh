@@ -66,6 +66,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     axpy
     binary_search
     bitonic_stage
+    bitonic_stage-tweak
     bit_reverse
     bisection_step
     clz

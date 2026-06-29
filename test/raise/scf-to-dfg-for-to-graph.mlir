@@ -1,4 +1,5 @@
 // RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s
+// RUN: loom-raise-opt --loom-lower-for-to-graph %s | FileCheck %s --check-prefix=NO-CARRIED
 
 // scf.for with iter_args inside a dataflow.thread body lowers to a
 // sibling dataflow.graph.func definition + a dataflow.graph.launch
@@ -176,6 +177,64 @@ func.func private @scatter_add_candidate(%src: !llvm.ptr, %idx: !llvm.ptr,
   return
 }
 
+// Some kernels lower a no-op trip-count guard around the actual structured
+// loop. The guard is still part of the SpatialCore graph boundary when its
+// non-empty branch contains one top-level loop and no nested launch.
+// CHECK-LABEL: func.func private @guarded_loop_candidate
+// CHECK: scf.if
+func.func private @guarded_loop_candidate(%src: !llvm.ptr, %dst: !llvm.ptr,
+                                          %n: i32, %pass: i32) {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c0_i64 = arith.constant 0 : i64
+  %c1_i64 = arith.constant 1 : i64
+  %distance = arith.shli %c1_i32, %pass : i32
+  %empty = arith.cmpi eq, %n, %c0_i32 : i32
+  scf.if %empty {
+  } else {
+    %limit = llvm.zext %n : i32 to i64
+    scf.for %i = %c0_i64 to %limit step %c1_i64 : i64 {
+      %idx = llvm.trunc %i : i64 to i32
+      %partner = arith.addi %idx, %distance : i32
+      %in_bounds = arith.cmpi ult, %partner, %n : i32
+      scf.if %in_bounds {
+        %src_ptr = llvm.getelementptr %src[%i]
+            : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+        %value = llvm.load %src_ptr : !llvm.ptr -> f32
+        %dst_idx = llvm.zext %partner : i32 to i64
+        %dst_ptr = llvm.getelementptr %dst[%dst_idx]
+            : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+        llvm.store %value, %dst_ptr : f32, !llvm.ptr
+      }
+    }
+  }
+  return
+}
+
+// Loop-carried state belongs to the thread/reduction path. A guarded
+// iter_args loop must not also receive a standalone graph-only clone.
+// NO-CARRIED: module
+// NO-CARRIED-NOT: dataflow.graph.func private @g_guarded_carried_loop_candidate_0
+func.func private @guarded_carried_loop_candidate(%src: !llvm.ptr,
+                                                  %dst: !llvm.ptr,
+                                                  %n: i32) {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %empty = arith.cmpi eq, %n, %c0_i32 : i32
+  scf.if %empty {
+  } else {
+    %next:2 = scf.for %i = %n to %c0_i32 step %c1_i32
+        iter_args(%s = %src, %d = %dst) -> (!llvm.ptr, !llvm.ptr) : i32 {
+      %value = llvm.load %s : !llvm.ptr -> f32
+      llvm.store %value, %d : f32, !llvm.ptr
+      %s_next = llvm.getelementptr %s[4] : (!llvm.ptr) -> !llvm.ptr, i8
+      %d_next = llvm.getelementptr %d[4] : (!llvm.ptr) -> !llvm.ptr, i8
+      scf.yield %s_next, %d_next : !llvm.ptr, !llvm.ptr
+    }
+  }
+  return
+}
+
 // CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
 // CHECK: llvm.intr.memcpy
@@ -191,6 +250,13 @@ func.func private @scatter_add_candidate(%src: !llvm.ptr, %idx: !llvm.ptr,
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
 // CHECK: scf.for
 // CHECK: scf.if
+// CHECK: llvm.load
+// CHECK: llvm.store
+// CHECK: dataflow.graph.return %arg0 : none
+// CHECK-LABEL: dataflow.graph.func private @g_guarded_loop_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32, %arg4: i32) -> none
+// CHECK: scf.if
+// CHECK: scf.for
 // CHECK: llvm.load
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
