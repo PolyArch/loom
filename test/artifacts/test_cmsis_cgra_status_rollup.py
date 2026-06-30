@@ -1358,7 +1358,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "FullyConnectedFunctions/arm_fully_connected_s8.c",
         "arm_fully_connected_s8",
         "g_t_arm_fully_connected_s8_red_0_0",
-        "unsupported op: llvm.call",
+        "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
     )
     assert_cmsis_unsupported_row(
@@ -1366,7 +1366,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         rows,
         "cmsis-nn",
         "FullyConnectedFunctions/arm_fully_connected_s8.c",
-        "unsupported op: llvm.call",
+        "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8",
     )
     run(
         repo,
@@ -4293,7 +4293,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "FullyConnectedFunctions/arm_fully_connected_s8.c",
         "arm_fully_connected_s8",
         "g_t_arm_fully_connected_s8_red_0_0",
-        "unsupported op: llvm.call",
+        "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
     )
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"

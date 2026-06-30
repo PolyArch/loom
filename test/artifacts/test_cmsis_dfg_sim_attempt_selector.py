@@ -159,6 +159,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn",
             "FullyConnectedFunctions/arm_fully_connected_s8.c",
         )
+        fully_connected_call_blocker = "unsupported op: llvm.call @arm_nn_vec_mat_mult_t_s8"
         for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, vector_sum):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
@@ -167,7 +168,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             or fully_connected["diagnostic_class"] != "dfg_report_unsupported"
             or fully_connected["blocking_prerequisite"] != "dfg_report"
             or fully_connected["dfg_status"] != "unsupported"
-            or "unsupported op: llvm.call" not in fully_connected["diagnostic"]
+            or fully_connected_call_blocker not in fully_connected["diagnostic"]
         ):
             raise AssertionError(
                 "default-batch rollup should record the fully connected row's exact DFG blocker: "

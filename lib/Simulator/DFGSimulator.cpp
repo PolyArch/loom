@@ -2039,6 +2039,8 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
   return false;
 }
 
+std::string unsupportedOperationLabel(mlir::Operation *op);
+
 std::optional<std::string> unsupportedStructuredIfOperation(mlir::scf::IfOp op);
 
 std::optional<std::string>
@@ -2094,12 +2096,12 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
       if (isSupportedStructuredCast(cast))
         continue;
-      return cast->getName().getStringRef().str();
+      return unsupportedOperationLabel(cast.getOperation());
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
         continue;
-      return bodyOp.getName().getStringRef().str();
+      return unsupportedOperationLabel(&bodyOp);
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
@@ -2109,7 +2111,7 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
       continue;
-    return bodyOp.getName().getStringRef().str();
+    return unsupportedOperationLabel(&bodyOp);
   }
   return std::nullopt;
 }
@@ -2181,12 +2183,12 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
       if (isSupportedStructuredCast(cast))
         continue;
-      return cast->getName().getStringRef().str();
+      return unsupportedOperationLabel(cast.getOperation());
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
         continue;
-      return bodyOp.getName().getStringRef().str();
+      return unsupportedOperationLabel(&bodyOp);
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
@@ -2196,7 +2198,7 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
       continue;
-    return bodyOp.getName().getStringRef().str();
+    return unsupportedOperationLabel(&bodyOp);
   }
   return std::nullopt;
 }
@@ -2240,12 +2242,12 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
       if (isSupportedStructuredCast(cast))
         continue;
-      return cast->getName().getStringRef().str();
+      return unsupportedOperationLabel(cast.getOperation());
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
         continue;
-      return bodyOp.getName().getStringRef().str();
+      return unsupportedOperationLabel(&bodyOp);
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
@@ -2255,7 +2257,7 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
       continue;
-    return bodyOp.getName().getStringRef().str();
+    return unsupportedOperationLabel(&bodyOp);
   }
   return std::nullopt;
 }
@@ -2314,12 +2316,12 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     if (auto cast = mlir::dyn_cast<mlir::UnrealizedConversionCastOp>(bodyOp)) {
       if (isSupportedStructuredCast(cast))
         continue;
-      return cast->getName().getStringRef().str();
+      return unsupportedOperationLabel(cast.getOperation());
     }
     if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(bodyOp)) {
       if (isSupportedPointerICmp(icmp))
         continue;
-      return bodyOp.getName().getStringRef().str();
+      return unsupportedOperationLabel(&bodyOp);
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
@@ -2329,7 +2331,7 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
       continue;
-    return bodyOp.getName().getStringRef().str();
+    return unsupportedOperationLabel(&bodyOp);
   }
   return std::nullopt;
 }
@@ -2922,6 +2924,16 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
       });
 }
 
+std::string unsupportedOperationLabel(mlir::Operation *op) {
+  if (auto call = mlir::dyn_cast<mlir::LLVM::CallOp>(op)) {
+    auto callee = call.getCallee();
+    if (callee.has_value() && !callee->empty())
+      return llvm::formatv("{0} @{1}", op->getName().getStringRef(), *callee)
+          .str();
+  }
+  return op->getName().getStringRef().str();
+}
+
 std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (isSupportedNonEvent(op))
     return std::nullopt;
@@ -2941,7 +2953,7 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
     if (isSupportedPointerICmp(icmp))
       return std::nullopt;
-    return op->getName().getStringRef().str();
+    return unsupportedOperationLabel(op);
   }
   if (mlir::isa<dataflow::StreamOp, dataflow::ConstantOp, dataflow::CarryOp,
                 dataflow::InvariantOp, dataflow::GateOp, dataflow::SyncOp,
@@ -2952,7 +2964,7 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
                 mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
                 mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp>(op))
     return std::nullopt;
-  return op->getName().getStringRef().str();
+  return unsupportedOperationLabel(op);
 }
 
 dataflow::GraphFuncOp findGraph(mlir::ModuleOp module, llvm::StringRef name) {
