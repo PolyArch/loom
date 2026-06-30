@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    batchnorm|col2im|histogram|sort_insertion)
+    col2im|histogram|sort_insertion)
       return 0
       ;;
     *)
@@ -112,7 +112,7 @@ lower_app_main_func_to_dfg_probe() {
 
 case "${CASE}" in
   batchnorm)
-    case_graph="missing_primary_graph"
+    case_graph="g_t_batchnorm_kernel_0_0"
     ;;
   bitrev)
     case_graph="g_bitrev_kernel_0"
@@ -431,7 +431,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -1883,12 +1883,9 @@ PY
     --mapping-artifact "${mapping_artifact}" \
     --hardware-mlir "${hardware_mlir}" \
     --output "${cgra_report}"
-elif [[ "${CASE}" == "batchnorm" || "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
-    batchnorm)
-      expected_primary_graph_token="batchnorm_kernel"
-      ;;
     col2im)
       expected_primary_graph_token="col2im_kernel"
       ;;

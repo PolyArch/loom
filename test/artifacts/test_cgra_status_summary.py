@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 109
-APP_NO_DFG_TIER_COUNT = 13
+APP_NO_DFG_TIER_COUNT = 12
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -593,10 +593,12 @@ def main() -> int:
             raise AssertionError(f"vecsum should be blocked on mapping artifact: {app_vecsum}")
 
         app_batchnorm = one_row(rows, "app", "batchnorm")
-        if app_batchnorm["blocking_prerequisite"] != "dataflow":
-            raise AssertionError(f"batchnorm should be blocked before CGRA mapping: {app_batchnorm}")
-        if app_batchnorm["status"] != "blocked" or app_batchnorm["diagnostic_class"] != "app_dataflow_tier_missing":
-            raise AssertionError(f"batchnorm should be structured blocked until a dataflow tier exists: {app_batchnorm}")
+        if app_batchnorm["blocking_prerequisite"] != "mapping_artifact":
+            raise AssertionError(f"batchnorm should block on mapping evidence before simulation artifacts: {app_batchnorm}")
+        if app_batchnorm["status"] != "not_run" or app_batchnorm["diagnostic_class"] != "missing_status":
+            raise AssertionError(f"batchnorm should expose DFG-tier row status before mapping evidence: {app_batchnorm}")
+        if app_batchnorm["required_slice_count"] != "1":
+            raise AssertionError(f"batchnorm should require one DFG slice after adding dfg_check.sh: {app_batchnorm}")
         app_interpolate = one_row(rows, "app", "interpolate_linear")
         if app_interpolate["blocking_prerequisite"] != "mapping_artifact":
             raise AssertionError(f"interpolate_linear should be blocked after DFG tier on mapping evidence: {app_interpolate}")
@@ -605,8 +607,8 @@ def main() -> int:
         if app_interpolate["required_slice_count"] != "1":
             raise AssertionError(f"interpolate_linear should require one DFG slice after adding dfg_check.sh: {app_interpolate}")
         tampered_no_dfg_rows = [dict(row) for row in rows]
-        tampered_batchnorm = one_row(tampered_no_dfg_rows, "app", "batchnorm")
-        tampered_batchnorm.update(
+        tampered_col2im = one_row(tampered_no_dfg_rows, "app", "col2im")
+        tampered_col2im.update(
             {
                 "status": "not_run",
                 "diagnostic_class": "missing_status",
@@ -782,8 +784,7 @@ def main() -> int:
         }:
             raise AssertionError(f"default legacy root should produce row-specific LoomBench counts: {default_legacy_counts}")
         expected_default_classes = {
-            "loombench_workload_identity_bridge_ready": 1,
-            "loombench_app_dataflow_tier_missing": 1,
+            "loombench_workload_identity_bridge_ready": 2,
             "loombench_import_deferred": 1,
             "loombench_import_excluded": 1,
         }
@@ -808,11 +809,11 @@ def main() -> int:
         default_batchnorm = one_row(default_legacy_rows, "loombench", "batchnorm")
         if (
             default_batchnorm["status"] != "blocked"
-            or default_batchnorm["diagnostic_class"] != "loombench_app_dataflow_tier_missing"
-            or default_batchnorm["blocking_prerequisite"] != "dataflow"
+            or default_batchnorm["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+            or default_batchnorm["blocking_prerequisite"] != "sim_evidence"
             or default_batchnorm["manifest_case"] != "batchnorm"
         ):
-            raise AssertionError(f"default legacy batchnorm should expose app dataflow blocker: {default_batchnorm}")
+            raise AssertionError(f"default legacy batchnorm should expose bridge-ready status: {default_batchnorm}")
         default_deferred = one_row(default_legacy_rows, "loombench", "breadth_first_search")
         if (
             default_deferred["status"] != "blocked"
@@ -2027,7 +2028,7 @@ def main() -> int:
             functional_state_source="component_cgra_sim_reports_carried_from_dfg_sim_reports",
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
-        write_sim_evidence_case(sim_evidence, "batchnorm", cgra_final_state=True)
+        write_sim_evidence_case(sim_evidence, "col2im", cgra_final_state=True)
         write_sim_evidence_case(sim_evidence, "string_compare", cgra_final_state=False)
         write_json(
             sim_evidence / "mean.dfg.report.json",
@@ -2085,11 +2086,11 @@ def main() -> int:
                 raise AssertionError(f"vecsum pass row should have {column}=pass: {vecsum}")
         if vecsum["final_outputs_present"] != "true" or vecsum["final_memory_state_present"] != "true":
             raise AssertionError(f"vecsum pass row should preserve final-state evidence: {vecsum}")
-        promoted_batchnorm = one_row(promoted_rows, "app", "batchnorm")
-        if promoted_batchnorm["status"] != "blocked":
-            raise AssertionError(f"no-DFG batchnorm must not consume simulator evidence: {promoted_batchnorm}")
-        if promoted_batchnorm["diagnostic_class"] != "app_dataflow_tier_missing":
-            raise AssertionError(f"no-DFG batchnorm should preserve app no-DFG blocker: {promoted_batchnorm}")
+        promoted_col2im = one_row(promoted_rows, "app", "col2im")
+        if promoted_col2im["status"] != "blocked":
+            raise AssertionError(f"no-DFG col2im must not consume simulator evidence: {promoted_col2im}")
+        if promoted_col2im["diagnostic_class"] != "app_dataflow_tier_missing":
+            raise AssertionError(f"no-DFG col2im should preserve app no-DFG blocker: {promoted_col2im}")
         for column in (
             "dfg_report",
             "dfg_report_fingerprint",
@@ -2100,8 +2101,8 @@ def main() -> int:
             "comparison_report",
             "comparison_report_fingerprint",
         ):
-            if promoted_batchnorm[column]:
-                raise AssertionError(f"no-DFG batchnorm should not reference sim evidence in {column}: {promoted_batchnorm}")
+            if promoted_col2im[column]:
+                raise AssertionError(f"no-DFG col2im should not reference sim evidence in {column}: {promoted_col2im}")
         promoted_string_compare = one_row(promoted_rows, "app", "string_compare")
         if (
             promoted_string_compare["status"] != "blocked"
@@ -2183,14 +2184,14 @@ def main() -> int:
             raise AssertionError(f"tampered pass should fail on referenced JSON content: {failed_tampered.stderr}")
 
         forged_no_dfg_failure_rows = [dict(row) for row in promoted_rows]
-        forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", "batchnorm")
-        forged_no_dfg_dfg = out_dir / "forged-batchnorm-failed-dfg.report.json"
+        forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", "col2im")
+        forged_no_dfg_dfg = out_dir / "forged-col2im-failed-dfg.report.json"
         write_json(
             forged_no_dfg_dfg,
             {
                 "schema_version": 1,
                 "kind": "dfg_sim_report",
-                "workload": "batchnorm",
+                "workload": "col2im",
                 "status": "fail",
                 "optimistic_cycles": 0,
                 **dfg_cycle_fixture_fields(0),

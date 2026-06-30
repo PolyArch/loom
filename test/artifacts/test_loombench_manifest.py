@@ -204,14 +204,21 @@ def main() -> int:
             raise AssertionError(f"deferred LoomBench row should be structured blocked: {legacy_missing}")
         loombench_batchnorm = one_row(rows, "loombench", "batchnorm")
         if (
-            loombench_batchnorm["status"] != "blocked"
-            or loombench_batchnorm["diagnostic_class"] != "loombench_app_dataflow_tier_missing"
-            or loombench_batchnorm["blocking_prerequisite"] != "dataflow"
-            or loombench_batchnorm["dfg_report"]
+            loombench_batchnorm["status"] != "pass"
+            or loombench_batchnorm["diagnostic_class"] != "cgra_sim_pass"
+            or loombench_batchnorm["manifest_case"] != "batchnorm"
         ):
-            raise AssertionError(
-                f"LoomBench row mapped to an app row without a DFG tier must not consume evidence: "
-                f"{loombench_batchnorm}"
+            raise AssertionError(f"accepted LoomBench batchnorm should consume explicit app evidence: {loombench_batchnorm}")
+        for artifact_column, fingerprint_column in (
+            ("dfg_report", "dfg_report_fingerprint"),
+            ("mapping_artifact", "mapping_artifact_fingerprint"),
+            ("cgra_report", "cgra_report_fingerprint"),
+            ("comparison_report", "comparison_report_fingerprint"),
+        ):
+            test_cgra_status_summary.assert_sha256_file(
+                loombench_batchnorm[artifact_column],
+                loombench_batchnorm[fingerprint_column],
+                repo,
             )
         blocked_case = one_row(rows, "loombench", "blocked_case")
         if blocked_case["status"] != "unsupported" or blocked_case["diagnostic_class"] != "loombench_import_excluded":

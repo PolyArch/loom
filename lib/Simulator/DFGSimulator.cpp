@@ -127,6 +127,7 @@ struct SimulatorState {
   llvm::DenseSet<mlir::Operation *> gateContinueStates;
   llvm::DenseMap<mlir::Operation *, std::uint64_t> loadFireCounts;
   llvm::DenseSet<mlir::Operation *> oneShotOps;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> structuredEffectFireCounts;
   llvm::DenseMap<mlir::Value, std::uint64_t> seededTokenCounts;
   llvm::SmallVector<std::string> diagnostics;
   std::map<std::string, std::uint64_t> operationFireCounts;
@@ -1454,6 +1455,22 @@ unsigned observedTokenCount(mlir::Value value, const SimulatorState &state) {
     count += pendingIt->second.size();
   return count;
 }
+
+unsigned structuredOpFireIndex(mlir::Operation *op,
+                               const SimulatorState &state) {
+  if (op->getNumResults() != 0)
+    return observedTokenCount(op->getResult(0), state);
+  auto effectIt = state.structuredEffectFireCounts.find(op);
+  return effectIt == state.structuredEffectFireCounts.end()
+             ? 0
+             : static_cast<unsigned>(effectIt->second);
+}
+
+void recordStructuredEffectFire(SimulatorState &state, mlir::Operation *op) {
+  if (op->getNumResults() == 0)
+    ++state.structuredEffectFireCounts[op];
+}
+
 bool hasMemRefValue(mlir::ValueRange values) {
   return llvm::any_of(values, [](mlir::Value value) {
     return mlir::isa<mlir::MemRefType>(value.getType());
@@ -1520,17 +1537,31 @@ bool structuredRegionCapturesAvailable(mlir::Region &region,
   }
   return true;
 }
+
+mlir::Region *selectedIfRegion(mlir::scf::IfOp op, const Token &cond) {
+  if (boolToken(cond))
+    return &op.getThenRegion();
+  if (op.getElseRegion().empty())
+    return nullptr;
+  return &op.getElseRegion();
+}
+
+bool selectedIfCapturesAvailable(mlir::scf::IfOp op, SimulatorState &state,
+                                 const LocalValueMap &locals,
+                                 unsigned captureIndex) {
+  std::optional<Token> cond =
+      lookupToken(op.getCondition(), state, locals, captureIndex);
+  if (!cond)
+    return false;
+  mlir::Region *selected = selectedIfRegion(op, *cond);
+  return !selected ||
+         structuredRegionCapturesAvailable(*selected, state, locals,
+                                           captureIndex);
+}
+
 unsigned structuredForFireIndex(mlir::scf::ForOp op,
                                 const SimulatorState &state) {
-  if (op->getNumResults() == 0)
-    return 0;
-  auto observedIt = state.observedOutputs.find(op->getResult(0));
-  unsigned count =
-      observedIt == state.observedOutputs.end() ? 0 : observedIt->second.size();
-  auto pendingIt = state.pendingObservedOutputs.find(op->getResult(0));
-  if (pendingIt != state.pendingObservedOutputs.end())
-    count += pendingIt->second.size();
-  return count;
+  return structuredOpFireIndex(op.getOperation(), state);
 }
 bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
                                 SimulatorState &state, LocalValueMap &locals,
@@ -1862,6 +1893,8 @@ bool evaluateStructuredIf(mlir::scf::IfOp op, SimulatorState &state,
 
 bool executeStructuredIfLocally(mlir::scf::IfOp op, SimulatorState &state,
                                 LocalValueMap &locals, unsigned captureIndex) {
+  if (!selectedIfCapturesAvailable(op, state, locals, captureIndex))
+    return false;
   llvm::SmallVector<Token> yielded;
   if (!evaluateStructuredIf(op, state, locals, captureIndex, yielded))
     return false;
@@ -2303,15 +2336,7 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
 
 unsigned structuredIfFireIndex(mlir::scf::IfOp op,
                                const SimulatorState &state) {
-  if (op->getNumResults() == 0)
-    return 0;
-  auto observedIt = state.observedOutputs.find(op->getResult(0));
-  unsigned count =
-      observedIt == state.observedOutputs.end() ? 0 : observedIt->second.size();
-  auto pendingIt = state.pendingObservedOutputs.find(op->getResult(0));
-  if (pendingIt != state.pendingObservedOutputs.end())
-    count += pendingIt->second.size();
-  return count;
+  return structuredOpFireIndex(op.getOperation(), state);
 }
 
 bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
@@ -2321,6 +2346,8 @@ bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
   Token cond = peekToken(state.channels, op->getOpOperand(0));
   LocalValueMap probeLocals;
   probeLocals[op.getCondition()] = cond;
+  if (!selectedIfCapturesAvailable(op, state, probeLocals, captureIndex))
+    return false;
   llvm::SmallVector<Token> probeYielded;
   SimulatorState probeState = state;
   (void)isolateProbeStateMemory(probeState);
@@ -2339,20 +2366,13 @@ bool fireStructuredIf(mlir::scf::IfOp op, SimulatorState &state) {
     return false;
   for (auto [result, token] : llvm::zip(op->getResults(), yielded))
     emitToken(state, result, token);
+  recordStructuredEffectFire(state, op.getOperation());
   return recordEvent(state, op->getName().getStringRef());
 }
 
 unsigned structuredIndexSwitchFireIndex(mlir::scf::IndexSwitchOp op,
                                         const SimulatorState &state) {
-  if (op->getNumResults() == 0)
-    return 0;
-  auto observedIt = state.observedOutputs.find(op->getResult(0));
-  unsigned count =
-      observedIt == state.observedOutputs.end() ? 0 : observedIt->second.size();
-  auto pendingIt = state.pendingObservedOutputs.find(op->getResult(0));
-  if (pendingIt != state.pendingObservedOutputs.end())
-    count += pendingIt->second.size();
-  return count;
+  return structuredOpFireIndex(op.getOperation(), state);
 }
 
 bool fireStructuredIndexSwitch(mlir::scf::IndexSwitchOp op,
@@ -2381,6 +2401,7 @@ bool fireStructuredIndexSwitch(mlir::scf::IndexSwitchOp op,
     return false;
   for (auto [result, token] : llvm::zip(op->getResults(), yielded))
     emitToken(state, result, token);
+  recordStructuredEffectFire(state, op.getOperation());
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -2482,14 +2503,13 @@ bool fireStructuredFor(mlir::scf::ForOp op, SimulatorState &state) {
     return false;
   for (auto [result, token] : llvm::zip(op->getResults(), results))
     emitToken(state, result, token);
+  recordStructuredEffectFire(state, op.getOperation());
   return true;
 }
 
 unsigned structuredWhileFireIndex(mlir::scf::WhileOp op,
                                   const SimulatorState &state) {
-  if (op->getNumResults() == 0)
-    return 0;
-  return observedTokenCount(op->getResult(0), state);
+  return structuredOpFireIndex(op.getOperation(), state);
 }
 
 bool executeStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state,
@@ -2635,6 +2655,7 @@ bool fireStructuredWhile(mlir::scf::WhileOp op, SimulatorState &state) {
     return false;
   for (auto [result, token] : llvm::zip(op->getResults(), results))
     emitToken(state, result, token);
+  recordStructuredEffectFire(state, op.getOperation());
   return recordEvent(state, op->getName().getStringRef());
 }
 

@@ -4,6 +4,8 @@
 // RUN: FileCheck %s --check-prefix=IF < %t.if.json
 // RUN: loom-dfg-sim %s --graph structured_if_waits_for_delayed_capture --arg 0=none --arg 1=true --arg 2=7 --output %t.if_wait.json
 // RUN: FileCheck %s --check-prefix=IF-WAIT < %t.if_wait.json
+// RUN: loom-dfg-sim %s --graph structured_if_effect_batched --arg 0=none --arg 0=none --arg 1=true --arg 1=true --arg 2=0 --arg 2=1 --memref 3=0,0 --arg 4=10 --arg 4=20 --output %t.if_effect_batched.json
+// RUN: FileCheck %s --check-prefix=IF-EFFECT-BATCHED < %t.if_effect_batched.json
 // RUN: loom-dfg-sim %s --graph structured_for_nested_if --arg 0=none --arg 1=0 --arg 2=4 --arg 3=1 --arg 4=10 --arg 5=3 --arg 6=true --output %t.nested_if.json
 // RUN: FileCheck %s --check-prefix=NESTED-IF < %t.nested_if.json
 // RUN: loom-dfg-sim %s --graph structured_for_scalar_with_parallel_stream --arg 0=none --arg 1=0 --arg 2=4 --arg 3=1 --arg 4=10 --arg 5=3 --output %t.parallel.json
@@ -57,6 +59,14 @@
 // IF-WAIT-DAG: "final_outputs": [
 // IF-WAIT-DAG: "none"
 // IF-WAIT-DAG: "i32:8"
+
+// IF-EFFECT-BATCHED-DAG: "graph": "structured_if_effect_batched"
+// IF-EFFECT-BATCHED-DAG: "status": "pass"
+// IF-EFFECT-BATCHED-DAG: "scf.if": 2
+// IF-EFFECT-BATCHED-DAG: "dataflow.store": 2
+// IF-EFFECT-BATCHED-DAG: "arg3": [
+// IF-EFFECT-BATCHED-DAG: "i32:10"
+// IF-EFFECT-BATCHED-DAG: "i32:20"
 
 // NESTED-IF-DAG: "graph": "structured_for_nested_if"
 // NESTED-IF-DAG: "status": "pass"
@@ -211,6 +221,15 @@ module {
       scf.yield %lhs : i32
     }
     dataflow.graph.return %ctrl, %value : none, i32
+  }
+
+  dataflow.graph.func private @structured_if_effect_batched(
+      %ctrl: none, %cond: i1, %slot: index, %mem: memref<?xi32>,
+      %value: i32) -> none {
+    scf.if %cond {
+      %stored = dataflow.store %mem[%slot] %value %ctrl : memref<?xi32>
+    }
+    dataflow.graph.return %ctrl : none
   }
 
   dataflow.graph.func private @structured_for_sum(

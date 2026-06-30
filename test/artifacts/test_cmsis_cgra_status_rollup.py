@@ -485,9 +485,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 95,
+            "pass": 96,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 1,
             "missing_status": 0,
         },
@@ -566,9 +566,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 0,
-            "missing_status": 95,
+            "missing_status": 96,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -632,9 +632,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 109,
             "pass": 18,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 0,
-            "missing_status": 78,
+            "missing_status": 79,
         },
     )
     assert_counts(
@@ -1062,9 +1062,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 14,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 1,
-            "missing_status": 81,
+            "missing_status": 82,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
@@ -4304,10 +4304,10 @@ def main() -> int:
         assert_sort_insertion_attempt_manifest_mode(repo, out_dir / "sort-insertion-attempt", legacy_root)
         assert_no_dfg_app_direct_attempt_mode(
             repo,
-            out_dir / "no-dfg-app-attempt-batchnorm",
+            out_dir / "no-dfg-app-attempt-hist-bin",
             legacy_root,
-            case="batchnorm",
-            expected_primary_graph_token="batchnorm_kernel",
+            case="hist_bin",
+            expected_primary_graph_token="hist_bin_kernel",
         )
         assert_no_dfg_app_direct_attempt_mode(
             repo,

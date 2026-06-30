@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 13
+APP_NO_DFG_TIER_COUNT = 12
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -23,6 +23,7 @@ DEFAULT_SWEEP_CASES = (
     "dotprod",
     "dot_product_3d",
     "axpy",
+    "batchnorm",
     "binary_search",
     "bitonic_stage",
     "bitonic_stage-tweak",
@@ -4362,6 +4363,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "axpy",
                 "--case",
+                "batchnorm",
+                "--case",
                 "binary_search",
                 "--case",
                 "bit_reverse",
@@ -4556,6 +4559,7 @@ def main(argv: list[str]) -> int:
             "spmspv",
             "stream_update",
             "axpy",
+            "batchnorm",
             "bit_reverse",
             "bisection_step",
             "byte_swap",
@@ -4658,6 +4662,7 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_dfg_dynamic_work_items(evidence_dir, "gemm", 8)
+        assert_dfg_dynamic_work_items(evidence_dir, "batchnorm", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "bitonic_stage", 4)
@@ -4686,6 +4691,7 @@ def main(argv: list[str]) -> int:
         assert_cross_product_evidence(evidence_dir)
         assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
+        run(repo, ["python3", "test/artifacts/assert_batchnorm_cgra_evidence.py", str(evidence_dir)])
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_sigmoid_evidence(evidence_dir)
         assert_softmax_evidence(evidence_dir)
@@ -5004,6 +5010,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "gather", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "batchnorm", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
@@ -5437,15 +5444,18 @@ def main(argv: list[str]) -> int:
         moving_avg_row = one_row(rows, "moving_avg")
         if moving_avg_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"moving_avg should use shared signal-window hardware: {moving_avg_row}")
+        batchnorm_row = one_row(rows, "batchnorm")
+        if batchnorm_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"batchnorm should use shared signal-window hardware: {batchnorm_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 95,
+            "pass": 96,
             "fail": 0,
-            "blocked": 13,
+            "blocked": 12,
             "unsupported": 1,
             "missing_status": 0,
         }

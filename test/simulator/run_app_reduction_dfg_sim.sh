@@ -1150,6 +1150,13 @@ case "${CASE}" in
     axpy)
         configure_axpy_args
         ;;
+    batchnorm)
+        mapfile -t sim_args < <(
+            python3 "${REPO}/test/artifacts/batchnorm_fixtures.py" \
+                --source "${REPO}/test/app/batchnorm/main_func.cpp" \
+                --emit dfg-args
+        )
+        ;;
     bit_reverse)
         append_ctrl_tokens 32
         sim_args+=(

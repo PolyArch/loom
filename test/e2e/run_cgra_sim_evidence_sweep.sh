@@ -64,6 +64,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     dotprod
     dot_product_3d
     axpy
+    batchnorm
     binary_search
     bitonic_stage
     bitonic_stage-tweak

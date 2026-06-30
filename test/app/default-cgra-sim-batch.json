@@ -54,6 +54,10 @@
       "hardware": "shared_vector_alu_adg"
     },
     {
+      "case": "batchnorm",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "binary_search",
       "hardware": "shared_memory_reduction_adg"
     },
