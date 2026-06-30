@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|histogram|sort_insertion)
+    col2im|histogram|quantile|sort_insertion)
       return 0
       ;;
     *)
@@ -124,6 +124,9 @@ case "${CASE}" in
     case_graph="missing_primary_graph"
     ;;
   histogram)
+    case_graph="missing_primary_graph"
+    ;;
+  quantile)
     case_graph="missing_primary_graph"
     ;;
   im2col)
@@ -1886,7 +1889,7 @@ PY
     --mapping-artifact "${mapping_artifact}" \
     --hardware-mlir "${hardware_mlir}" \
     --output "${cgra_report}"
-elif [[ "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "sort_insertion" ]]; then
+elif [[ "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "quantile" || "${CASE}" == "sort_insertion" ]]; then
   graph_absence_args=()
   case "${CASE}" in
     col2im)
@@ -1894,6 +1897,9 @@ elif [[ "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "sort_
       ;;
     histogram)
       expected_primary_graph_token="histogram_kernel"
+      ;;
+    quantile)
+      expected_primary_graph_token="quantile_kernel"
       ;;
     sort_insertion)
       expected_primary_graph_token="sort_insertion_kernel"

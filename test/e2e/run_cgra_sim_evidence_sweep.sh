@@ -130,6 +130,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     outer
     byte_swap
     scatter_add
+    quantile
     sort_insertion
     xor_block
     relu

@@ -46,6 +46,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "quantile",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "sort_insertion",
       "hardware": "shared_reduction_adg"
     },

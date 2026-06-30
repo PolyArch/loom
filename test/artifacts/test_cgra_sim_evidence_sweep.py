@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 12
+APP_NO_DFG_TIER_COUNT = 11
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -89,6 +89,7 @@ DEFAULT_SWEEP_CASES = (
     "outer",
     "byte_swap",
     "scatter_add",
+    "quantile",
     "sort_insertion",
     "xor_block",
     "relu",
@@ -120,9 +121,12 @@ MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
+    "quantile",
     "sort_insertion",
 )
-PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str], ...] = ()
+PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str], ...] = (
+    ("quantile", "quantile_kernel"),
+)
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
 }
 GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
@@ -4533,6 +4537,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "scatter_add",
                 "--case",
+                "quantile",
+                "--case",
                 "sort_insertion",
                 "--case",
                 "unpack_bits",
@@ -5548,8 +5554,8 @@ def main(argv: list[str]) -> int:
             "total": 110,
             "pass": 97,
             "fail": 0,
-            "blocked": 12,
-            "unsupported": 1,
+            "blocked": 11,
+            "unsupported": 2,
             "missing_status": 0,
         }
         if counts != expected_counts:

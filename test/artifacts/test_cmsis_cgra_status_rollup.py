@@ -487,8 +487,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 97,
             "fail": 0,
-            "blocked": 12,
-            "unsupported": 1,
+            "blocked": 11,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )
@@ -566,9 +566,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 1,
             "fail": 0,
-            "blocked": 12,
+            "blocked": 11,
             "unsupported": 0,
-            "missing_status": 97,
+            "missing_status": 98,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -632,9 +632,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 110,
             "pass": 18,
             "fail": 0,
-            "blocked": 12,
+            "blocked": 11,
             "unsupported": 0,
-            "missing_status": 80,
+            "missing_status": 81,
         },
     )
     assert_counts(
@@ -858,6 +858,7 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
+    "quantile": "primary workload graph absent: expected token quantile_kernel",
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -1062,8 +1063,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 110,
             "pass": 14,
             "fail": 0,
-            "blocked": 12,
-            "unsupported": 1,
+            "blocked": 11,
+            "unsupported": 2,
             "missing_status": 83,
         },
     )
