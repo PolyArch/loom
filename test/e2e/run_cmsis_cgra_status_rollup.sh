@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
     cat >&2 <<'EOF'
-usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--sim-evidence-dir DIR] [--full-sim-default-batch] [--cmsis-sim-default] [--cmsis-sim-default-batch] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
+usage: run_cmsis_cgra_status_rollup.sh --output-dir DIR [--legacy-loombench-root DIR] [--no-legacy-loombench] [--sim-evidence-dir DIR] [--full-sim-default-batch] [--cmsis-sim-default] [--cmsis-sim-default-batch] [--cmsis-sim-seed-batch] [--cmsis-sim-attempt-stem STEM]... [--cmsis-sim-case ROW]... [--app-sim-seed-batch] [--app-sim-default-batch] [--app-sim-attempt-manifest PATH]... [--app-sim-case NAME]... [--jobs N]
 
 Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
@@ -27,19 +27,26 @@ evidence is blocked or unsupported. Each --app-sim-case runs the app CGRA
 evidence sweep for that app row into the status evidence directory.
 --full-sim-default-batch runs both tracked default app and CMSIS CGRA-sim
 batches into the same default status evidence directory.
-When a legacy LoomBench root is supplied, the rollup also generates and
-consumes the dedicated LoomBench manifest so legacy rows are structured status
-records rather than manifest omissions.
+When a legacy LoomBench root is supplied or the default legacy root exists,
+the rollup also generates and consumes the dedicated LoomBench manifest so
+legacy rows are structured status records rather than manifest omissions.
+Use --no-legacy-loombench to disable that default legacy-root discovery.
 EOF
 }
 
 OUT_DIR=""
-LEGACY_LOOMBENCH_ROOT=""
+DEFAULT_LEGACY_LOOMBENCH_ROOT="${ROOT}/temp/old_implementation_loom/loom/tests/app"
+LEGACY_LOOMBENCH_ROOT="${LOOM_LEGACY_LOOMBENCH_ROOT:-${DEFAULT_LEGACY_LOOMBENCH_ROOT}}"
 SIM_EVIDENCE_DIR=""
 DEFAULT_APP_BLOCKER_MANIFEST="${ROOT}/test/app/shared-cgra-blocker-batch.json"
 DEFAULT_APP_SIM_SEED_BATCH="${ROOT}/test/app/cgra-sim-seed-batch.json"
 DEFAULT_CMSIS_SIM_DEFAULT_BATCH="${ROOT}/test/e2e/cmsis-cgra-sim-default-batch.json"
 LEGACY_ROOT_SUPPLIED=0
+LEGACY_ROOT_ENV_SUPPLIED=0
+if [[ -n "${LOOM_LEGACY_LOOMBENCH_ROOT:-}" ]]; then
+    LEGACY_ROOT_ENV_SUPPLIED=1
+fi
+NO_LEGACY_LOOMBENCH=0
 APP_SIM_DEFAULT_BATCH=0
 APP_SIM_SEED_BATCH=0
 CMSIS_SIM_DEFAULT=0
@@ -68,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             LEGACY_LOOMBENCH_ROOT="$2"
             LEGACY_ROOT_SUPPLIED=1
             shift 2
+            ;;
+        --no-legacy-loombench)
+            NO_LEGACY_LOOMBENCH=1
+            shift
             ;;
         --sim-evidence-dir)
             if [[ $# -lt 2 ]]; then
@@ -283,6 +294,17 @@ if [[ -z "${OUT_DIR}" ]]; then
     exit 2
 fi
 
+if [[ "${NO_LEGACY_LOOMBENCH}" -eq 1 && "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then
+    echo "--no-legacy-loombench cannot be combined with --legacy-loombench-root" >&2
+    usage
+    exit 2
+fi
+
+if [[ "${NO_LEGACY_LOOMBENCH}" -eq 0 && ( "${LEGACY_ROOT_SUPPLIED}" -eq 1 || "${LEGACY_ROOT_ENV_SUPPLIED}" -eq 1 ) && ! -d "${LEGACY_LOOMBENCH_ROOT}" ]]; then
+    echo "legacy LoomBench root does not exist: ${LEGACY_LOOMBENCH_ROOT}" >&2
+    exit 2
+fi
+
 if [[ "${CMSIS_SIM_DEFAULT}" -eq 0 && -z "${SIM_EVIDENCE_DIR}" && ( ${#CMSIS_SIM_ATTEMPT_STEMS[@]} -gt 0 || ${#CMSIS_SIM_CASES[@]} -gt 0 ) ]]; then
     echo "CMSIS sim selectors require --cmsis-sim-default or --sim-evidence-dir" >&2
     usage
@@ -299,6 +321,17 @@ LOOMBENCH_INVENTORY="${OUT_DIR}/loombench-old-app-inventory.csv"
 LOOMBENCH_IMPORT_STATUS="${OUT_DIR}/loombench-app-import-status.csv"
 LOOMBENCH_MANIFEST_JSON="${OUT_DIR}/loombench-manifest.json"
 LOOMBENCH_MANIFEST_CSV="${OUT_DIR}/loombench-manifest.csv"
+INCLUDE_LEGACY_LOOMBENCH=0
+if [[ "${NO_LEGACY_LOOMBENCH}" -eq 0 && -n "${LEGACY_LOOMBENCH_ROOT}" && -d "${LEGACY_LOOMBENCH_ROOT}" ]]; then
+    INCLUDE_LEGACY_LOOMBENCH=1
+fi
+if [[ "${INCLUDE_LEGACY_LOOMBENCH}" -eq 0 ]]; then
+    rm -f \
+        "${LOOMBENCH_INVENTORY}" \
+        "${LOOMBENCH_IMPORT_STATUS}" \
+        "${LOOMBENCH_MANIFEST_JSON}" \
+        "${LOOMBENCH_MANIFEST_CSV}"
+fi
 STATUS_SIM_EVIDENCE_DIR="${SIM_EVIDENCE_DIR}"
 if [[ (${#APP_SIM_CASES[@]} -gt 0 || "${CMSIS_SIM_DEFAULT}" -eq 1) && -z "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
     STATUS_SIM_EVIDENCE_DIR="${OUT_DIR}/current-sim-cycle"
@@ -539,7 +572,7 @@ if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then
         "${cmsis_sim_args[@]}"
 fi
 
-if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then
+if [[ "${INCLUDE_LEGACY_LOOMBENCH}" -eq 1 ]]; then
     python3 "${ROOT}/test/app/old_app_corpus_inventory.py" \
         --source-root "${LEGACY_LOOMBENCH_ROOT}" \
         --output "${LOOMBENCH_INVENTORY}"
@@ -566,7 +599,7 @@ audit_args=(
     --json-input "${STATUS_JSON}"
 )
 
-if [[ "${LEGACY_ROOT_SUPPLIED}" -eq 1 ]]; then
+if [[ "${INCLUDE_LEGACY_LOOMBENCH}" -eq 1 ]]; then
     summary_args+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
     audit_args+=(--legacy-loombench-root "${LEGACY_LOOMBENCH_ROOT}")
     summary_args+=(--loombench-manifest "${LOOMBENCH_MANIFEST_JSON}")

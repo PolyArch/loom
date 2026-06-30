@@ -255,6 +255,18 @@ def assert_no_legacy_mode(repo: Path, out_dir: Path) -> None:
     stale_synthetic_root.mkdir()
     (stale_synthetic_root / "stale_case").mkdir()
     stale_manifest = out_dir / "loombench-manifest.json"
+    (out_dir / "loombench-old-app-inventory.csv").write_text(
+        "case,source_path,source_fingerprint\n"
+        "stale_legacy_case,stale/main.cpp,0000000000000000000000000000000000000000000000000000000000000000\n"
+    )
+    (out_dir / "loombench-app-import-status.csv").write_text(
+        "case,import_state,manifest_case,reason\n"
+        "stale_legacy_case,deferred,,stale sidecar should not survive no-legacy mode\n"
+    )
+    (out_dir / "loombench-manifest.csv").write_text(
+        "case,source_row,software_root,source_fingerprint,import_state,manifest_case,owner,reason\n"
+        "stale_legacy_case,stale_legacy_case,stale,0000000000000000000000000000000000000000000000000000000000000000,deferred,,test,stale sidecar should not survive no-legacy mode\n"
+    )
     stale_manifest.write_text(
         json.dumps(
             {
@@ -299,6 +311,7 @@ def assert_no_legacy_mode(repo: Path, out_dir: Path) -> None:
             "test/e2e/run_cmsis_cgra_status_rollup.sh",
             "--output-dir",
             str(out_dir),
+            "--no-legacy-loombench",
         ],
     )
     rows = read_rows(out_dir / "cgra-status-summary.csv")
@@ -307,9 +320,93 @@ def assert_no_legacy_mode(repo: Path, out_dir: Path) -> None:
         raise AssertionError(f"no-legacy rollup should not emit LoomBench rows: {loombench_rows[:3]}")
     if (out_dir / "loombench-manifest.csv").exists():
         raise AssertionError("no-legacy rollup should not emit LoomBench manifest CSV artifacts")
-    stale_data = json.loads(stale_manifest.read_text())
-    if stale_data.get("cases", [{}])[0].get("case") != "stale_legacy_case":
-        raise AssertionError("no-legacy rollup should not overwrite stale LoomBench manifest sidecar")
+    stale_sidecars = [
+        path
+        for path in (
+            out_dir / "loombench-old-app-inventory.csv",
+            out_dir / "loombench-app-import-status.csv",
+            stale_manifest,
+            out_dir / "loombench-manifest.csv",
+        )
+        if path.exists()
+    ]
+    if stale_sidecars:
+        raise AssertionError(f"no-legacy rollup should remove stale LoomBench sidecars: {stale_sidecars}")
+
+
+def assert_explicit_legacy_root_must_exist(repo: Path, out_dir: Path) -> None:
+    missing_root = out_dir / "does-not-exist"
+    proc = subprocess.run(
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir / "rollup"),
+            "--legacy-loombench-root",
+            str(missing_root),
+        ],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode == 0:
+        raise AssertionError("explicit missing legacy LoomBench root should fail")
+    if str(missing_root) not in proc.stderr:
+        raise AssertionError(f"missing legacy root diagnostic should name the path: {proc.stderr}")
+
+
+def assert_default_legacy_root_mode(repo: Path, out_dir: Path) -> None:
+    legacy_root = out_dir / "auto-legacy-loombench-root"
+    write_legacy_case(legacy_root, "legacy_missing")
+    write_legacy_case(legacy_root, "vecsum")
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir / "rollup"),
+        ],
+        env={**os.environ, "LOOM_LEGACY_LOOMBENCH_ROOT": str(legacy_root)},
+    )
+    rows = read_rows(out_dir / "rollup" / "cgra-status-summary.csv")
+    data = json.loads((out_dir / "rollup" / "cgra-status-summary.json").read_text())
+    assert_counts(
+        data,
+        "loombench",
+        {
+            "total": 2,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 2,
+            "unsupported": 0,
+            "missing_status": 0,
+        },
+    )
+    legacy_missing = one_row(rows, "loombench", "legacy_missing")
+    if (
+        legacy_missing["status"] != "blocked"
+        or legacy_missing["diagnostic_class"] != "loombench_import_deferred"
+        or legacy_missing["blocking_prerequisite"] != "app_import"
+    ):
+        raise AssertionError(f"default legacy root should publish deferred LoomBench row: {legacy_missing}")
+    vecsum = one_row(rows, "loombench", "vecsum")
+    if (
+        vecsum["status"] != "blocked"
+        or vecsum["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+        or vecsum["blocking_prerequisite"] != "sim_evidence"
+        or vecsum["manifest_case"] != "vecsum"
+    ):
+        raise AssertionError(f"default legacy root should publish bridge-ready LoomBench row: {vecsum}")
+    for artifact in (
+        out_dir / "rollup" / "loombench-old-app-inventory.csv",
+        out_dir / "rollup" / "loombench-app-import-status.csv",
+        out_dir / "rollup" / "loombench-manifest.json",
+        out_dir / "rollup" / "loombench-manifest.csv",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"default legacy root mode should emit {artifact}")
 
 
 def assert_direct_cmsis_dfg_mode(repo: Path, out_dir: Path, legacy_root: Path) -> None:
@@ -4199,6 +4296,8 @@ def main() -> int:
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "rle_decode")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
+        assert_default_legacy_root_mode(repo, out_dir / "default-legacy")
+        assert_explicit_legacy_root_must_exist(repo, out_dir / "missing-explicit-legacy")
         assert_app_default_batch_manifest_fail_fast(repo, out_dir / "manifest-fail-fast", legacy_root)
         assert_app_seed_batch_mode(repo, out_dir / "app-seed-batch")
         assert_app_attempt_manifest_mode(repo, out_dir / "app-attempt-manifest", legacy_root)
