@@ -1952,6 +1952,12 @@ elif uses_primary_graph_absence_path "${CASE}"; then
       ;;
     quantile)
       expected_primary_graph_token="quantile_kernel"
+      graph_absence_args=(
+        --required-discovered-graph "g_t_main_0_0"
+        --required-residual-call "quantile_kernel"
+        --diagnostic "primary workload graph absent: quantile_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind a residual call target"
+      )
       ;;
     sort_insertion)
       expected_primary_graph_token="sort_insertion_kernel"

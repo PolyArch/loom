@@ -146,14 +146,34 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "spmspm",
     "string_compare",
 )
-PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str], ...] = (
-    ("bitonic_stage-modified", "bitonic_stage_modified_kernel"),
-    ("col2im", "col2im_kernel"),
-    ("hist_bin", "hist_bin_kernel"),
-    ("histogram", "histogram_kernel"),
-    ("histogram_strided", "histogram_strided_kernel"),
-    ("quantile", "quantile_kernel"),
-    ("string_compare", "string_compare_kernel"),
+PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "bitonic_stage-modified",
+        "bitonic_stage_modified_kernel",
+        "primary workload graph absent: expected token bitonic_stage_modified_kernel",
+        "",
+        "",
+    ),
+    ("col2im", "col2im_kernel", "primary workload graph absent: expected token col2im_kernel", "", ""),
+    ("hist_bin", "hist_bin_kernel", "primary workload graph absent: expected token hist_bin_kernel", "", ""),
+    ("histogram", "histogram_kernel", "primary workload graph absent: expected token histogram_kernel", "", ""),
+    (
+        "histogram_strided",
+        "histogram_strided_kernel",
+        "primary workload graph absent: expected token histogram_strided_kernel",
+        "",
+        "",
+    ),
+    (
+        "quantile",
+        "quantile_kernel",
+        "primary workload graph absent: quantile_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim "
+        "cannot observe the kernel return value",
+        "g_t_main_0_0",
+        "quantile_kernel",
+    ),
+    ("string_compare", "string_compare_kernel", "primary workload graph absent: expected token string_compare_kernel", "", ""),
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
 }
@@ -4310,19 +4330,32 @@ def assert_mapping_unsupported_operation(evidence_dir: Path, case: str, operatio
         )
 
 
-def assert_primary_graph_missing(evidence_dir: Path, case: str, expected_token: str) -> None:
+def assert_primary_graph_missing(
+    evidence_dir: Path,
+    case: str,
+    expected_token: str,
+    expected_diagnostic: str,
+    expected_discovered_graph: str,
+    expected_residual_call: str,
+) -> None:
     dfg_path = evidence_dir / f"{case}.dfg.report.json"
     mapping_path = evidence_dir / f"{case}.mapping.json"
     dfg = json.loads(dfg_path.read_text())
     mapping = json.loads(mapping_path.read_text())
-    expected = f"primary workload graph absent: expected token {expected_token}"
     for artifact_path, artifact in ((dfg_path, dfg), (mapping_path, mapping)):
         diagnostics = artifact.get("diagnostics")
-        if not isinstance(diagnostics, list) or expected not in diagnostics:
+        if not isinstance(diagnostics, list) or expected_diagnostic not in diagnostics:
             raise AssertionError(f"{case} should report primary graph absence: {artifact_path}: {artifact}")
     graph_ids = dfg.get("discovered_graph_ids")
     if not isinstance(graph_ids, list) or any(expected_token in str(graph_id) for graph_id in graph_ids):
         raise AssertionError(f"{case} should not expose its primary graph token yet: {dfg_path}: {dfg}")
+    if expected_discovered_graph and expected_discovered_graph not in graph_ids:
+        raise AssertionError(f"{case} should prove supporting graph {expected_discovered_graph}: {dfg_path}: {dfg}")
+    residual_calls = dfg.get("residual_call_targets")
+    if expected_residual_call and (
+        not isinstance(residual_calls, list) or expected_residual_call not in residual_calls
+    ):
+        raise AssertionError(f"{case} should prove residual call {expected_residual_call}: {dfg_path}: {dfg}")
 
 
 def assert_partial_lowering_blocker(
@@ -5077,8 +5110,21 @@ def main(argv: list[str]) -> int:
             assert_sweep_artifact_status(evidence_dir, case, "cgra.report.json", "blocked")
             assert_comparison_artifact(evidence_dir, case, "blocked")
         assert_merge_dfg_evidence(evidence_dir)
-        for case, expected_token in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
-            assert_primary_graph_missing(evidence_dir, case, expected_token)
+        for (
+            case,
+            expected_token,
+            expected_diagnostic,
+            expected_discovered_graph,
+            expected_residual_call,
+        ) in PRIMARY_GRAPH_MISSING_SWEEP_CASES:
+            assert_primary_graph_missing(
+                evidence_dir,
+                case,
+                expected_token,
+                expected_diagnostic,
+                expected_discovered_graph,
+                expected_residual_call,
+            )
         for case, expected_token in GRAPH_PRESENT_UNWIRED_SWEEP_CASES.items():
             assert_graph_present_unwired_blocker(evidence_dir, case, expected_token)
         for case, (expected_diagnostic, expected_graph_token) in PARTIAL_LOWERING_SWEEP_CASES.items():

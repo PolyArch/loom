@@ -873,7 +873,11 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "hist_bin": "primary workload graph absent: expected token hist_bin_kernel",
     "histogram": "primary workload graph absent: expected token histogram_kernel",
     "histogram_strided": "primary workload graph absent: expected token histogram_strided_kernel",
-    "quantile": "primary workload graph absent: expected token quantile_kernel",
+    "quantile": (
+        "primary workload graph absent: quantile_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim "
+        "cannot observe the kernel return value"
+    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"

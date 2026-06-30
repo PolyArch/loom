@@ -162,6 +162,7 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
         raise AssertionError(f"inventory should contain a reusable ADG matrix: {data}")
 
     ids: set[str] = set()
+    candidates_by_id: dict[str, dict[str, object]] = {}
     root_kinds: set[str] = set()
     layout_classes: set[str] = set()
     families_by_layout = {"regular": set(), "irregular": set()}
@@ -176,6 +177,7 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
         if candidate_id in ids:
             raise AssertionError(f"duplicate candidate_id {candidate_id}")
         ids.add(candidate_id)
+        candidates_by_id[candidate_id] = candidate
         root_kind = require_candidate_field(candidate, "root_kind")
         layout_class = require_candidate_field(candidate, "layout_class")
         topology_family = require_candidate_field(candidate, "topology_family")
@@ -261,6 +263,18 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
     shared_vector_mesh_id = "adg-builder::shared-vector-mesh::shared_vector_mesh_adg"
     if shared_vector_mesh_id not in ids:
         raise AssertionError(f"inventory missed reusable shared-vector mesh ADG: {ids}")
+    required_shared_windows = {
+        "adg-builder::shared-signal-window::shared_signal_window_adg": "signal_window_network",
+        "adg-builder::shared-quantized-window::shared_quantized_window_adg": "quantized_window_network",
+    }
+    for candidate_id, topology_family in required_shared_windows.items():
+        candidate = candidates_by_id.get(candidate_id)
+        if candidate is None:
+            raise AssertionError(f"inventory missed reusable shared-window ADG {candidate_id}: {ids}")
+        if candidate.get("layout_class") != "irregular":
+            raise AssertionError(f"{candidate_id} should be an irregular shared fabric: {candidate}")
+        if candidate.get("topology_family") != topology_family:
+            raise AssertionError(f"{candidate_id} should use topology family {topology_family}: {candidate}")
     duplicate_fingerprints = len(set(topology_fingerprints.values())) != len(
         topology_fingerprints
     )

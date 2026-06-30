@@ -23,6 +23,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--workload", required=True)
     parser.add_argument("--dfg-mlir", required=True)
     parser.add_argument("--expected-graph-token", required=True)
+    parser.add_argument("--required-discovered-graph", action="append", default=[])
+    parser.add_argument("--required-residual-call", action="append", default=[])
     parser.add_argument(
         "--expected-graph-presence",
         choices=("absent", "present"),
@@ -59,6 +61,11 @@ def graph_ids_from_text(text: str) -> list[str]:
     return ordered_unique([*definitions, *launches])
 
 
+def residual_call_targets_from_text(text: str) -> list[str]:
+    calls = re.findall(r"\b(?:func\.call|call)\s+@([A-Za-z_.$][\w.$-]*)", text)
+    return ordered_unique(calls)
+
+
 def write_json(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
@@ -74,6 +81,7 @@ def emit_artifacts(args: argparse.Namespace) -> None:
     dfg_mlir = Path(args.dfg_mlir)
     text = dfg_mlir.read_text(errors="replace")
     graph_ids = graph_ids_from_text(text)
+    residual_calls = residual_call_targets_from_text(text)
     token_present = any(args.expected_graph_token in graph_id for graph_id in graph_ids)
     if args.expected_graph_presence == "absent" and token_present:
         raise SystemExit(
@@ -84,6 +92,22 @@ def emit_artifacts(args: argparse.Namespace) -> None:
         raise SystemExit(
             "expected workload graph is absent; use the primary-graph absence path instead: "
             f"{args.expected_graph_token}"
+        )
+    missing_required_graphs = [
+        graph for graph in args.required_discovered_graph if graph not in graph_ids
+    ]
+    if missing_required_graphs:
+        raise SystemExit(
+            "required discovered graph is absent: "
+            + ",".join(missing_required_graphs)
+        )
+    missing_required_calls = [
+        call for call in args.required_residual_call if call not in residual_calls
+    ]
+    if missing_required_calls:
+        raise SystemExit(
+            "required residual call is absent: "
+            + ",".join(missing_required_calls)
         )
 
     map_id = mapping_summary.mapping_id(args.workload, args.graph, args.hardware)
@@ -130,6 +154,7 @@ def emit_artifacts(args: argparse.Namespace) -> None:
         "dfg_mlir_identity": intermediate_artifacts.artifact_id_for_path(dfg_mlir),
         "dfg_mlir_fingerprint": intermediate_artifacts.artifact_fingerprint(dfg_mlir),
         "discovered_graph_ids": graph_ids,
+        "residual_call_targets": residual_calls,
         "diagnostics": [diagnostic],
     }
     mapping_artifact = {

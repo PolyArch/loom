@@ -102,6 +102,16 @@ BUILDER_RECIPES = (
         "filename": "shared-vector-mesh.mlir",
     },
     {
+        "recipe_id": "adg-builder::shared-signal-window",
+        "arguments": ["--shared-signal-window"],
+        "filename": "shared-signal-window.mlir",
+    },
+    {
+        "recipe_id": "adg-builder::shared-quantized-window",
+        "arguments": ["--shared-quantized-window"],
+        "filename": "shared-quantized-window.mlir",
+    },
+    {
         "recipe_id": "adg-builder::full-spatialcore",
         "arguments": ["--full-spatialcore"],
         "filename": "full-spatialcore.mlir",
@@ -251,6 +261,10 @@ def classify_layout(recipe_id: str, root_kind: str, root_symbol: str) -> tuple[s
         return "irregular", "vector_math_network"
     if "shared-vector-mesh" in recipe_id:
         return "regular", "vector_mesh"
+    if "shared-signal-window" in recipe_id:
+        return "irregular", "signal_window_network"
+    if "shared-quantized-window" in recipe_id:
+        return "irregular", "quantized_window_network"
     if "full-spatialcore" in recipe_id:
         return "irregular", "mixed_spatial_temporal"
     if "pe_" in root_symbol:
