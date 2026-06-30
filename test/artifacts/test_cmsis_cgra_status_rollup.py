@@ -485,9 +485,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 93,
+            "pass": 94,
             "fail": 0,
-            "blocked": 15,
+            "blocked": 14,
             "unsupported": 1,
             "missing_status": 0,
         },
@@ -566,9 +566,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 1,
             "fail": 0,
-            "blocked": 15,
+            "blocked": 14,
             "unsupported": 0,
-            "missing_status": 93,
+            "missing_status": 94,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -632,9 +632,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 109,
             "pass": 18,
             "fail": 0,
-            "blocked": 15,
+            "blocked": 14,
             "unsupported": 0,
-            "missing_status": 76,
+            "missing_status": 77,
         },
     )
     assert_counts(
@@ -1062,9 +1062,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 14,
             "fail": 0,
-            "blocked": 15,
+            "blocked": 14,
             "unsupported": 1,
-            "missing_status": 79,
+            "missing_status": 80,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
@@ -4318,10 +4318,10 @@ def main() -> int:
         )
         assert_no_dfg_app_direct_attempt_mode(
             repo,
-            out_dir / "no-dfg-app-attempt-bitrev",
+            out_dir / "no-dfg-app-attempt-string-compare",
             legacy_root,
-            case="bitrev",
-            expected_primary_graph_token="bitrev_kernel",
+            case="string_compare",
+            expected_primary_graph_token="string_compare_kernel",
         )
         assert_no_dfg_app_direct_attempt_mode(
             repo,

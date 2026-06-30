@@ -1148,6 +1148,16 @@ case "${CASE}" in
             --arg 5=305419896
         )
         ;;
+    bitrev)
+        append_linear_memref 1 128 1 "%.6e"
+        append_constant_memref 2 128 "0.000000e+00"
+        sim_args+=(
+            --graph g_bitrev_kernel_0
+            --workload bitrev
+            --arg 0=none
+            --arg 3=128
+        )
+        ;;
     byte_swap)
         append_ctrl_tokens 32
         append_byte_swap_memrefs 1 2

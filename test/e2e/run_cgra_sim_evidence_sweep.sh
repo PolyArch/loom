@@ -101,6 +101,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     modmul
     spmv
     sort_bubble
+    bitrev
     convolve_1d
     conv1d
     conv2d

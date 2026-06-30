@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 109
-APP_NO_DFG_TIER_COUNT = 15
+APP_NO_DFG_TIER_COUNT = 14
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -2028,7 +2028,7 @@ def main() -> int:
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
         write_sim_evidence_case(sim_evidence, "batchnorm", cgra_final_state=True)
-        write_sim_evidence_case(sim_evidence, "bitrev", cgra_final_state=False)
+        write_sim_evidence_case(sim_evidence, "string_compare", cgra_final_state=False)
         write_json(
             sim_evidence / "mean.dfg.report.json",
             {
@@ -2102,16 +2102,25 @@ def main() -> int:
         ):
             if promoted_batchnorm[column]:
                 raise AssertionError(f"no-DFG batchnorm should not reference sim evidence in {column}: {promoted_batchnorm}")
-        promoted_bitrev = one_row(promoted_rows, "app", "bitrev")
-        if promoted_bitrev["status"] != "blocked" or promoted_bitrev["diagnostic_class"] != "sim_comparison_blocked":
-            raise AssertionError(f"no-DFG bitrev should consume non-pass comparison evidence: {promoted_bitrev}")
-        if promoted_bitrev["blocking_prerequisite"] != "sim_comparison_report":
-            raise AssertionError(f"no-DFG bitrev should block on comparison evidence: {promoted_bitrev}")
+        promoted_string_compare = one_row(promoted_rows, "app", "string_compare")
+        if (
+            promoted_string_compare["status"] != "blocked"
+            or promoted_string_compare["diagnostic_class"] != "sim_comparison_blocked"
+        ):
+            raise AssertionError(
+                f"no-DFG string_compare should consume non-pass comparison evidence: {promoted_string_compare}"
+            )
+        if promoted_string_compare["blocking_prerequisite"] != "sim_comparison_report":
+            raise AssertionError(f"no-DFG string_compare should block on comparison evidence: {promoted_string_compare}")
         for column in ("dfg_status", "mapping_status", "cgra_status"):
-            if promoted_bitrev[column] != "pass":
-                raise AssertionError(f"no-DFG bitrev should preserve earlier pass stage evidence: {promoted_bitrev}")
-        if promoted_bitrev["comparison_status"] != "blocked":
-            raise AssertionError(f"no-DFG bitrev should preserve blocked comparison status: {promoted_bitrev}")
+            if promoted_string_compare[column] != "pass":
+                raise AssertionError(
+                    f"no-DFG string_compare should preserve earlier pass stage evidence: {promoted_string_compare}"
+                )
+        if promoted_string_compare["comparison_status"] != "blocked":
+            raise AssertionError(
+                f"no-DFG string_compare should preserve blocked comparison status: {promoted_string_compare}"
+            )
         for artifact_column, fingerprint_column in (
             ("dfg_report", "dfg_report_fingerprint"),
             ("mapping_artifact", "mapping_artifact_fingerprint"),
