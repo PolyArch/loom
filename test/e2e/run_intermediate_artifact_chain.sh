@@ -1943,12 +1943,30 @@ elif uses_primary_graph_absence_path "${CASE}"; then
       ;;
     hist_bin)
       expected_primary_graph_token="hist_bin_kernel"
+      graph_absence_args=(
+        --required-discovered-graph "g_t_main_red_0_0"
+        --required-residual-call "hist_bin_kernel"
+        --diagnostic "primary workload graph absent: hist_bin_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind a residual call target"
+      )
       ;;
     histogram)
       expected_primary_graph_token="histogram_kernel"
+      graph_absence_args=(
+        --required-discovered-graph "g_t_main_red_0_0"
+        --required-residual-call "histogram_kernel"
+        --diagnostic "primary workload graph absent: histogram_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind a residual call target"
+      )
       ;;
     histogram_strided)
       expected_primary_graph_token="histogram_strided_kernel"
+      graph_absence_args=(
+        --required-discovered-graph "g_t_main_red_0_0"
+        --required-residual-call "histogram_strided_kernel"
+        --diagnostic "primary workload graph absent: histogram_strided_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind a residual call target"
+      )
       ;;
     quantile)
       expected_primary_graph_token="quantile_kernel"
@@ -1993,6 +2011,14 @@ elif uses_primary_graph_absence_path "${CASE}"; then
       ;;
     string_compare)
       expected_primary_graph_token="string_compare_kernel"
+      graph_absence_args=(
+        --required-discovered-graph "g_t_main_0_0"
+        --required-discovered-graph "g_t_main_1_0"
+        --required-discovered-graph "g_t_main_2_0"
+        --required-residual-call "string_compare_kernel"
+        --diagnostic "primary workload graph absent: string_compare_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_0_0,g_t_main_1_0,g_t_main_2_0, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind residual call targets"
+      )
       ;;
   esac
   python3 "${ROOT}/test/e2e/emit_primary_graph_absence_artifacts.py" \

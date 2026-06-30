@@ -870,9 +870,21 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph absent: expected token bitonic_stage_modified_kernel"
     ),
     "col2im": "primary workload graph absent: expected token col2im_kernel",
-    "hist_bin": "primary workload graph absent: expected token hist_bin_kernel",
-    "histogram": "primary workload graph absent: expected token histogram_kernel",
-    "histogram_strided": "primary workload graph absent: expected token histogram_strided_kernel",
+    "hist_bin": (
+        "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
+        "cannot observe the kernel return value"
+    ),
+    "histogram": (
+        "primary workload graph absent: histogram_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
+        "cannot observe the kernel return value"
+    ),
+    "histogram_strided": (
+        "primary workload graph absent: histogram_strided_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
+        "cannot observe the kernel return value"
+    ),
     "quantile": (
         "primary workload graph absent: quantile_kernel remains a residual call target outside "
         "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim "
@@ -894,7 +906,11 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph is partial: spmspm lowering covers final nonzero compression "
         "while sparse multiply-accumulate loops remain outside dataflow"
     ),
-    "string_compare": "primary workload graph absent: expected token string_compare_kernel",
+    "string_compare": (
+        "primary workload graph absent: string_compare_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0,g_t_main_1_0,"
+        "g_t_main_2_0, so DFG-sim cannot observe the kernel return value"
+    ),
 }
 
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
@@ -1172,6 +1188,8 @@ def assert_primary_graph_absence_attempt_mode(
     *,
     case: str,
     expected_primary_graph_token: str,
+    expected_discovered_graph: str = "",
+    expected_residual_call: str = "",
 ) -> None:
     run(
         repo,
@@ -1188,7 +1206,10 @@ def assert_primary_graph_absence_attempt_mode(
     )
     rows = read_rows(out_dir / "cgra-status-summary.csv")
     row = one_row(rows, "app", case)
-    expected_diagnostic = f"primary workload graph absent: expected token {expected_primary_graph_token}"
+    expected_diagnostic = SHARED_APP_BLOCKER_DIAGNOSTICS.get(
+        case,
+        f"primary workload graph absent: expected token {expected_primary_graph_token}",
+    )
     if (
         row["status"] != "unsupported"
         or row["diagnostic_class"] != "dfg_report_unsupported"
@@ -1211,6 +1232,24 @@ def assert_primary_graph_absence_attempt_mode(
             artifact = out_dir / "cgra-status-comparisons" / Path(row[key]).name
         if not artifact.is_file():
             raise AssertionError(f"primary graph absence attempt should emit {artifact}")
+    dfg_report = out_dir / "current-sim-cycle" / Path(row["dfg_report"]).name
+    dfg_data = json.loads(dfg_report.read_text())
+    graph_ids = dfg_data.get("discovered_graph_ids")
+    if not isinstance(graph_ids, list) or any(
+        expected_primary_graph_token in str(graph_id) for graph_id in graph_ids
+    ):
+        raise AssertionError(f"primary graph absence attempt should not expose primary graph: {dfg_data}")
+    if expected_discovered_graph and expected_discovered_graph not in graph_ids:
+        raise AssertionError(
+            f"primary graph absence attempt should prove graph {expected_discovered_graph}: {dfg_data}"
+        )
+    residual_calls = dfg_data.get("residual_call_targets")
+    if expected_residual_call and (
+        not isinstance(residual_calls, list) or expected_residual_call not in residual_calls
+    ):
+        raise AssertionError(
+            f"primary graph absence attempt should prove residual call {expected_residual_call}: {dfg_data}"
+        )
 
 
 def assert_no_dfg_app_direct_attempt_mode(
@@ -4389,6 +4428,8 @@ def main() -> int:
             legacy_root,
             case="hist_bin",
             expected_primary_graph_token="hist_bin_kernel",
+            expected_discovered_graph="g_t_main_red_0_0",
+            expected_residual_call="hist_bin_kernel",
         )
         assert_primary_graph_absence_attempt_mode(
             repo,
@@ -4403,6 +4444,8 @@ def main() -> int:
             legacy_root,
             case="string_compare",
             expected_primary_graph_token="string_compare_kernel",
+            expected_discovered_graph="g_t_main_0_0",
+            expected_residual_call="string_compare_kernel",
         )
         assert_primary_graph_absence_attempt_mode(
             repo,
@@ -4410,6 +4453,8 @@ def main() -> int:
             legacy_root,
             case="histogram",
             expected_primary_graph_token="histogram_kernel",
+            expected_discovered_graph="g_t_main_red_0_0",
+            expected_residual_call="histogram_kernel",
         )
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)

@@ -155,14 +155,32 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = 
         "",
     ),
     ("col2im", "col2im_kernel", "primary workload graph absent: expected token col2im_kernel", "", ""),
-    ("hist_bin", "hist_bin_kernel", "primary workload graph absent: expected token hist_bin_kernel", "", ""),
-    ("histogram", "histogram_kernel", "primary workload graph absent: expected token histogram_kernel", "", ""),
+    (
+        "hist_bin",
+        "hist_bin_kernel",
+        "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
+        "cannot observe the kernel return value",
+        "g_t_main_red_0_0",
+        "hist_bin_kernel",
+    ),
+    (
+        "histogram",
+        "histogram_kernel",
+        "primary workload graph absent: histogram_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
+        "cannot observe the kernel return value",
+        "g_t_main_red_0_0",
+        "histogram_kernel",
+    ),
     (
         "histogram_strided",
         "histogram_strided_kernel",
-        "primary workload graph absent: expected token histogram_strided_kernel",
-        "",
-        "",
+        "primary workload graph absent: histogram_strided_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
+        "cannot observe the kernel return value",
+        "g_t_main_red_0_0",
+        "histogram_strided_kernel",
     ),
     (
         "quantile",
@@ -173,7 +191,15 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = 
         "g_t_main_0_0",
         "quantile_kernel",
     ),
-    ("string_compare", "string_compare_kernel", "primary workload graph absent: expected token string_compare_kernel", "", ""),
+    (
+        "string_compare",
+        "string_compare_kernel",
+        "primary workload graph absent: string_compare_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0,g_t_main_1_0,"
+        "g_t_main_2_0, so DFG-sim cannot observe the kernel return value",
+        "g_t_main_0_0",
+        "string_compare_kernel",
+    ),
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
 }
