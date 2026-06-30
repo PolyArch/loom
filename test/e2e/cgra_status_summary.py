@@ -953,6 +953,8 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
         return
     if any(value == "fail" for value in stage_values):
         row_data["status"] = "fail"
+    elif dfg_status == "unsupported" and not no_dfg_app_row:
+        row_data["status"] = "unsupported"
     else:
         row_data["status"] = "blocked"
     diagnostic_class, prerequisite = first_problem(

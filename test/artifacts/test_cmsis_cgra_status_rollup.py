@@ -87,6 +87,27 @@ def assert_no_cmsis_pass(rows: list[dict[str, str]]) -> None:
         raise AssertionError(f"CMSIS DFG-only rollup must not claim CGRA pass rows: {passed[:3]}")
 
 
+def assert_cmsis_unsupported_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    suite: str,
+    case: str,
+    expected_diagnostic: str,
+) -> None:
+    row = one_row(rows, suite, case)
+    if (
+        row["status"] != "unsupported"
+        or row["diagnostic_class"] != "dfg_report_unsupported"
+        or row["owner"] != "sim_report"
+        or row["blocking_prerequisite"] != "dfg_report"
+        or row["dfg_status"] != "unsupported"
+        or expected_diagnostic not in row["diagnostic"]
+    ):
+        raise AssertionError(f"{suite}/{case} should expose exact DFG unsupported evidence: {row}")
+    assert_sha256_file(row["dfg_mlir"], row["dfg_mlir_fingerprint"], repo)
+    assert_sha256_file(row["dfg_report"], row["dfg_report_fingerprint"], repo)
+
+
 def assert_no_sim_stage_evidence(row: dict[str, str]) -> None:
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         if row[key]:
@@ -369,8 +390,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 109,
             "pass": 93,
             "fail": 0,
-            "blocked": 16,
-            "unsupported": 0,
+            "blocked": 15,
+            "unsupported": 1,
             "missing_status": 0,
         },
     )
@@ -405,8 +426,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 18,
             "pass": 12,
             "fail": 0,
-            "blocked": 1,
-            "unsupported": 5,
+            "blocked": 0,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -763,7 +784,7 @@ def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_e
     for case, diagnostic in SHARED_APP_BLOCKER_DIAGNOSTICS.items():
         row = one_row(rows, "app", case)
         if (
-            row["status"] != "blocked"
+            row["status"] != "unsupported"
             or row["diagnostic_class"] != "dfg_report_unsupported"
             or row["owner"] != "sim_report"
             or row["blocking_prerequisite"] != "dfg_report"
@@ -944,8 +965,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 14,
             "fail": 0,
-            "blocked": 16,
-            "unsupported": 0,
+            "blocked": 15,
+            "unsupported": 1,
             "missing_status": 79,
         },
     )
@@ -996,7 +1017,7 @@ def assert_sort_insertion_attempt_manifest_mode(repo: Path, out_dir: Path, legac
     rows = read_rows(out_dir / "rollup" / "cgra-status-summary.csv")
     row = one_row(rows, "app", "sort_insertion")
     if (
-        row["status"] != "blocked"
+        row["status"] != "unsupported"
         or row["diagnostic_class"] != "dfg_report_unsupported"
         or row["owner"] != "sim_report"
         or row["blocking_prerequisite"] != "dfg_report"
@@ -1121,8 +1142,8 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
             "total": 18,
             "pass": 12,
             "fail": 0,
-            "blocked": 1,
-            "unsupported": 5,
+            "blocked": 0,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )
@@ -1161,6 +1182,13 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "g_t_arm_fully_connected_s8_red_0_0",
         "unsupported op: llvm.call",
         expected_callee="@arm_nn_vec_mat_mult_t_s8",
+    )
+    assert_cmsis_unsupported_row(
+        repo,
+        rows,
+        "cmsis-nn",
+        "FullyConnectedFunctions/arm_fully_connected_s8.c",
+        "unsupported op: llvm.call",
     )
     run(
         repo,
@@ -1257,7 +1285,7 @@ def assert_cmsis_dfg_unsupported_row(
 ) -> None:
     row = one_row(rows, suite, case)
     if (
-        row["status"] != "blocked"
+        row["status"] != "unsupported"
         or row["diagnostic_class"] != "dfg_report_unsupported"
         or row["blocking_prerequisite"] != "dfg_report"
         or row["owner"] != "sim_report"
@@ -4019,8 +4047,8 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
             "total": 18,
             "pass": 12,
             "fail": 0,
-            "blocked": 1,
-            "unsupported": 5,
+            "blocked": 0,
+            "unsupported": 6,
             "missing_status": 0,
         },
     )

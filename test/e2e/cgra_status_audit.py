@@ -622,6 +622,22 @@ def validate_app_no_dfg_row(
         diagnostics.append(f"row {row_index}: app row without dfg tier diagnostic must cite the app manifest")
 
 
+def validate_dfg_report_unsupported_status(
+    row_index: int,
+    row: dict[str, str],
+    no_dfg_app_cases: set[str],
+    diagnostics: list[str],
+) -> None:
+    if row.get("diagnostic_class", "") != "dfg_report_unsupported":
+        return
+    if row.get("dfg_status", "") != "unsupported":
+        return
+    if row.get("suite", "") == "app" and row.get("case", "") in no_dfg_app_cases:
+        return
+    if row.get("status", "") != "unsupported":
+        diagnostics.append(f"row {row_index}: DFG unsupported report row requires status=unsupported")
+
+
 def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list[str]) -> None:
     allowed = intermediate_artifacts.BASE_STATUSES
     seen: set[tuple[str, str, str]] = set()
@@ -685,6 +701,7 @@ def validate_rows(csv_input: Path, rows: list[dict[str, str]], diagnostics: list
                 )
             validate_non_pass_row_referenced_jsons(csv_input, index, row, diagnostics)
             validate_cmsis_dfg_mlir_evidence(csv_input, index, row, diagnostics)
+        validate_dfg_report_unsupported_status(index, row, no_dfg_app_cases, diagnostics)
         validate_cmsis_no_missing_status(index, row, diagnostics)
         validate_cmsis_dfg_mlir_reference(csv_input, index, row, diagnostics)
         validate_cmsis_dfg_mlir_requirement(index, row, diagnostics)

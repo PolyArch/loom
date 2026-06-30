@@ -132,8 +132,8 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
                 "total": 18,
                 "pass": 12,
                 "fail": 0,
-                "blocked": 1,
-                "unsupported": 5,
+                "blocked": 0,
+                "unsupported": 6,
                 "missing_status": 0,
             },
         }
@@ -163,7 +163,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (
-            fully_connected["status"] != "blocked"
+            fully_connected["status"] != "unsupported"
             or fully_connected["diagnostic_class"] != "dfg_report_unsupported"
             or fully_connected["blocking_prerequisite"] != "dfg_report"
             or fully_connected["dfg_status"] != "unsupported"

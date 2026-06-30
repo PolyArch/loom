@@ -1229,8 +1229,8 @@ def main() -> int:
             "total": 16,
             "pass": 0,
             "fail": 1,
-            "blocked": 14,
-            "unsupported": 1,
+            "blocked": 13,
+            "unsupported": 2,
             "missing_status": 0,
         }:
             raise AssertionError(f"unexpected CMSIS-DSP evidence counts: {cmsis_counts.get('cmsis-dsp')}")
@@ -1245,7 +1245,7 @@ def main() -> int:
             raise AssertionError(f"unexpected CMSIS-NN evidence counts: {cmsis_counts.get('cmsis-nn')}")
         cmsis_add = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         if (
-            cmsis_add["status"] != "blocked"
+            cmsis_add["status"] != "unsupported"
             or cmsis_add["diagnostic_class"] != "dfg_report_unsupported"
             or cmsis_add["blocking_prerequisite"] != "dfg_report"
             or cmsis_add["owner"] != "sim_report"
@@ -1256,6 +1256,65 @@ def main() -> int:
             raise AssertionError(f"CMSIS-DSP DFG-sim evidence should become an exact report blocker: {cmsis_add}")
         assert_sha256_file(cmsis_add["dfg_mlir"], cmsis_add["dfg_mlir_fingerprint"], repo)
         assert_sha256_file(cmsis_add["dfg_report"], cmsis_add["dfg_report_fingerprint"], repo)
+        forged_cmsis_unsupported_status_rows = [dict(row) for row in cmsis_evidence_rows]
+        forged_cmsis_unsupported_status = one_row(
+            forged_cmsis_unsupported_status_rows,
+            "cmsis-dsp",
+            "BasicMathFunctions/arm_add_q15.c",
+        )
+        forged_cmsis_unsupported_status["status"] = "blocked"
+        forged_cmsis_unsupported_status_csv = out_dir / "forged-cmsis-unsupported-status-cgra-status-summary.csv"
+        forged_cmsis_unsupported_status_json = out_dir / "forged-cmsis-unsupported-status-cgra-status-summary.json"
+        write_rows(forged_cmsis_unsupported_status_csv, forged_cmsis_unsupported_status_rows)
+        write_json_projection(
+            forged_cmsis_unsupported_status_json,
+            forged_cmsis_unsupported_status_csv,
+            forged_cmsis_unsupported_status_rows,
+        )
+        failed_forged_cmsis_unsupported_status = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(forged_cmsis_unsupported_status_csv),
+                "--json-input",
+                str(forged_cmsis_unsupported_status_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "DFG unsupported report row requires status=unsupported" not in failed_forged_cmsis_unsupported_status.stderr:
+            raise AssertionError(
+                "forged CMSIS unsupported DFG row status should fail CGRA status audit: "
+                f"{failed_forged_cmsis_unsupported_status.stderr}"
+            )
+        forged_cmsis_unsupported_status_generic = out_dir / "forged-cmsis-unsupported-status-generic-audit.json"
+        failed_forged_cmsis_unsupported_status_generic = run(
+            repo,
+            [
+                "python3",
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_cmsis_unsupported_status_generic),
+                str(forged_cmsis_unsupported_status_csv),
+            ],
+            expect_success=False,
+        )
+        forged_cmsis_unsupported_status_generic_data = json.loads(
+            forged_cmsis_unsupported_status_generic.read_text()
+        )
+        forged_cmsis_unsupported_status_generic_diagnostics = "\n".join(
+            str(item) for item in forged_cmsis_unsupported_status_generic_data.get("diagnostics", [])
+        )
+        if "DFG unsupported report row requires status=unsupported" not in forged_cmsis_unsupported_status_generic_diagnostics:
+            raise AssertionError(
+                "generic artifact audit should reject forged CMSIS unsupported DFG row status: "
+                f"stdout={failed_forged_cmsis_unsupported_status_generic.stdout} "
+                f"stderr={failed_forged_cmsis_unsupported_status_generic.stderr} "
+                f"audit={forged_cmsis_unsupported_status_generic_data}"
+            )
         forged_cmsis_report_rows = [dict(row) for row in cmsis_evidence_rows]
         forged_cmsis_report = one_row(
             forged_cmsis_report_rows,

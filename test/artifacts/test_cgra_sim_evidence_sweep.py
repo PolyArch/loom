@@ -4258,8 +4258,8 @@ def assert_dfg_unsupported_operation(evidence_dir: Path, case: str, operation: s
 
 def assert_dfg_unsupported_row(repo: Path, rows: list[dict[str, str]], case: str) -> None:
     row = one_row(rows, case)
-    if row["status"] != "blocked":
-        raise AssertionError(f"{case} should stay blocked while DFG-sim is unsupported: {row}")
+    if row["status"] != "unsupported":
+        raise AssertionError(f"{case} should surface DFG-sim unsupported evidence at row level: {row}")
     if row["dfg_status"] != "unsupported":
         raise AssertionError(f"{case} should have dfg_status=unsupported: {row}")
     if row["mapping_status"] != "unsupported":
@@ -5429,8 +5429,8 @@ def main(argv: list[str]) -> int:
             "total": 109,
             "pass": 93,
             "fail": 0,
-            "blocked": 16,
-            "unsupported": 0,
+            "blocked": 15,
+            "unsupported": 1,
             "missing_status": 0,
         }
         if counts != expected_counts:
