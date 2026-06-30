@@ -535,6 +535,48 @@ zero-backlog constraint selects the **smallest** exposures and therefore the
 reported as a pressure diagnostic only and read together with `E_sat`: backlog
 that appears only beyond `E_sat` signals oversubscription, not infeasibility.
 
+### Steady-state resource utilization (preferred pressure diagnostic)
+
+Because `peak_ready_backlog` is a transient cycle-1 release artifact (above), the
+**preferred** steady-state pressure diagnostic is **per-class utilization**: the
+fraction of a wave's makespan during which a class would be busy if its work were
+spread evenly across the wave. For an exposed chunk with the Metric-1 class terms
+`compute = ceil(A/P)`, `load = ceil(LD/L)`, `store = ceil(ST/S)` and aggregate
+`agg = max(CP, compute, load, store)`:
+
+```
+util_P = compute / agg
+util_L = load    / agg
+util_S = store   / agg
+```
+
+Each `util_c` lies in `(0, 1]`. Properties an implementation **MUST** preserve:
+
+- The binding class reads `util = 1.0` **exactly when** the wave is
+  **resource-bound** (`agg` is set by a resource term, i.e. `exposed >= E_sat`).
+- When the wave is **latency-bound** (`agg = CP`, `exposed < E_sat`), **every**
+  `util_c < 1.0` — correctly showing the resource classes idle while the critical
+  path drains.
+
+This is the honest backpressure proxy: it reports *which* class saturates and
+*how much headroom* the others have, in a way that does not depend on the cycle-1
+release. A pipelined dataflow execution that sustains the binding-class rate would
+exhibit ~100% utilization on that class with no growing queue — which is what
+`util` reports and what `peak_ready_backlog` misrepresents as a spike.
+
+Reports **SHOULD** present `util` as the primary pressure signal.
+`peak_ready_backlog` **MAY** still be reported, but **MUST** be labeled a
+transient list-schedule artifact and **MUST NOT** be presented as a steady-state
+quantity or a hardware queue depth.
+
+Like the rest of this section, `util` is computed from the exposed chunk's
+**global** class counts and therefore depends only on the product `P · U`; it
+does **not** distinguish `LOOM_PARALLEL(P)` from `LOOM_UNROLL(U)`. Those are
+orthogonal dimensions (see [`docs/spec-pragma.md`](./spec-pragma.md): `P` maps to
+separate worker groups over data partitions, `U` enlarges one worker's dataflow
+graph). Separating them in the pressure model would require a per-worker
+memory-port / banking model, which this section deliberately does not attempt.
+
 This exploratory estimate is **not** the aggregate CGRA lower bound, **not** the
 fully-unrolled ASAP metric, **not** cycle-accurate RTL, and **not** a
 place-and-route or memory-bank-conflict model. It **MUST NOT** replace or rename

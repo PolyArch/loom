@@ -76,16 +76,18 @@ python3 tests/scripts/loom_dse.py axpy --config 6x6 --trip-count 256 --max-paral
 Rows are grouped when multiple `P,U` pairs expose the same chunk. `wave_pen` is
 `pragma_exposure_aggregate / absolute_cgra_lb` (the wave-serialization penalty of
 that exposure, **not** a hardware cost — it vanishes as `E -> trip_count`).
+`util%` is steady-state per-class utilization (`term / aggregate`): the binding
+class reads `100%` exactly when the exposure is resource-bound.
 
-| candidates | exposed | waves | pragma_agg | sched_est | wave_pen | class | backlog P/L/S |
-|------------|--------:|------:|-----------:|----------:|---------:|-------|---------------|
-| `P=8,U=8` *(oversub)* | 64 | 4 | 68 | 76 | 1.05 | resource-bound | 28/**182**/0 |
-| `P=4,U=8`, `P=8,U=4` *(oversub)* | 32 | 8 | 72 | 88 | 1.11 | resource-bound | 0/86/0 |
-| **`P=2,U=8`, `P=4,U=4`, `P=8,U=2` ◄ knee** | 16 | 16 | 80 | 112 | 1.23 | resource-bound | 0/38/0 |
-| `P=1,U=8`, `P=2,U=4`, `P=4,U=2`, `P=8,U=1` | 8 | 32 | 128 | 160 | 1.97 | latency-bound | 0/14/2 |
-| `P=1,U=4`, `P=2,U=2`, `P=4,U=1`* | 4 | 64 | 256 | 256 | 3.94 | latency-bound | 0/2/0 |
-| `P=1,U=2`, `P=2,U=1` | 2 | 128 | 512 | 512 | 7.88 | latency-bound | 0/0/0 |
-| `P=1,U=1` | 1 | 256 | 1024 | 1024 | 15.75 | latency-bound | 0/0/0 |
+| candidates | exposed | waves | pragma_agg | sched_est | wave_pen | class | util% P/L/S |
+|------------|--------:|------:|-----------:|----------:|---------:|-------|-------------|
+| `P=8,U=8` *(oversub)* | 64 | 4 | 68 | 76 | 1.05 | resource-bound | 47/**100**/65 |
+| `P=4,U=8`, `P=8,U=4` *(oversub)* | 32 | 8 | 72 | 88 | 1.11 | resource-bound | 44/**100**/67 |
+| **`P=2,U=8`, `P=4,U=4`, `P=8,U=2` ◄ knee** | 16 | 16 | 80 | 112 | 1.23 | resource-bound | 40/**100**/60 |
+| `P=1,U=8`, `P=2,U=4`, `P=4,U=2`, `P=8,U=1` | 8 | 32 | 128 | 160 | 1.97 | latency-bound | 25/75/50 |
+| `P=1,U=4`, `P=2,U=2`, `P=4,U=1`* | 4 | 64 | 256 | 256 | 3.94 | latency-bound | 25/50/25 |
+| `P=1,U=2`, `P=2,U=1` | 2 | 128 | 512 | 512 | 7.88 | latency-bound | 25/25/25 |
+| `P=1,U=1` | 1 | 256 | 1024 | 1024 | 15.75 | latency-bound | 25/25/25 |
 
 `*` marks the pragma currently written in `axpy.cpp`. `◄ knee` marks the
 recommended exposure.
@@ -114,18 +116,28 @@ above `E_sat` each wave is `resource-bound`. The smallest enumerated exposure
 `P=8,U=2`.
 
 - The current source pragma `P=4,U=1` (`exposed = 4`) is **below** the knee:
-  latency-bound, `64` waves, `pragma_exposure_aggregate = 256` (3.94× the floor).
+  latency-bound, `64` waves, `pragma_exposure_aggregate = 256` (3.94× the floor);
+  its load lane sits at only `50%` utilization.
 - The knee `exposed = 16` reaches `pragma_exposure_aggregate = 80` (1.23× the
-  floor) with peak load backlog `38`.
+  floor) and is the first exposure whose load lane is fully utilized (`100%`),
+  with compute and store still holding headroom (`40%`/`60%`).
 - The largest candidate `P=8,U=8` (`exposed = 64`) only improves the aggregate to
-  `68` (1.05×) but pays peak load backlog `182`. Past the knee, extra exposure is
+  `68` (1.05×) and its load lane is **still** at `100%` — exactly the same
+  binding-class saturation as the knee. Past the knee, extra exposure is
   **oversubscription**: the steady-state throughput floor is unchanged, so the
   shrinking aggregate is just per-wave ceiling rounding and invariant-reload
-  amortization, bought with linearly growing transient backlog and hardware area.
+  amortization, bought with more hardware and routing for no throughput gain.
 
-Backlog is reported as a diagnostic, not a constraint: it is a transient artifact
-of releasing a fully-unrolled chunk's loads at cycle 1, not a steady-state
-hardware property.
+Pressure is reported as steady-state per-class **utilization**, not as a
+constraint. `util%` measures `term / aggregate` for each class, so the binding
+class reads `100%` exactly when the exposure is resource-bound and all classes
+read `<100%` when latency-bound (resources idle while the critical path drains).
+This supersedes the scheduler's `peak_ready_backlog`, which is a transient
+artifact of releasing a fully-unrolled chunk's loads at cycle 1 and overstates
+instantaneous pressure. Note that `util%` (like the rest of this model) depends
+only on the product `P · U`; it does **not** distinguish `LOOM_PARALLEL(P)` from
+`LOOM_UNROLL(U)` — those are orthogonal dimensions, and separating them in the
+pressure model would require a per-worker memory-port / banking model.
 
 ## Comparing against measured DFG simulator cycles
 

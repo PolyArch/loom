@@ -116,7 +116,8 @@ class CandidateResult:
     wave_serialization_penalty: float  # pragma_exposure_aggregate / absolute
     schedule_gap: float           # schedule_estimate / pragma_exposure_aggregate
     saturated: tuple[int, int, int]
-    peak_backlog: tuple[int, int, int]
+    peak_backlog: tuple[int, int, int]   # transient cycle-1 release artifact
+    utilization: tuple[float, float, float]  # steady-state per-class util (P/L/S)
     sim_exec_cycles: int | None = None
     sim_vs_absolute: float | None = None
     sim_vs_pragma: float | None = None
@@ -263,6 +264,12 @@ def evaluate_axpy_candidate(candidate: LoopCandidate, trip_count: int,
     pressure = full.pressure
     saturated = tuple(pressure[c].saturated_cycles for c in CLASSES)
     peak_backlog = tuple(pressure[c].peak_ready_backlog for c in CLASSES)
+    # Steady-state per-class utilization: term / aggregate. The binding class
+    # reads 1.0 exactly when the chunk is resource-bound; all read < 1.0 when
+    # latency-bound (agg == CP). Depends only on P*U (global class counts).
+    terms = {"P": agg.compute, "L": agg.load, "S": agg.store}
+    denom = agg.aggregate if agg.aggregate > 0 else 1
+    utilization = tuple(terms[c] / denom for c in CLASSES)
 
     pragma_exposure_aggregate = full_waves * full.aggregate_cycles
     schedule_estimate = full_waves * full.scheduled_cycles
@@ -300,6 +307,7 @@ def evaluate_axpy_candidate(candidate: LoopCandidate, trip_count: int,
         schedule_gap=sched_gap if sched_gap is not None else 0.0,
         saturated=saturated,
         peak_backlog=peak_backlog,
+        utilization=utilization,
     )
 
 
@@ -505,12 +513,13 @@ def render_axpy_report(results: list[CandidateResult], cfg, sat: SaturationInfo,
         "NOT overlap; they are NOT lower bounds (real dataflow pipelines waves "
         "and can fall below them toward absolute_cgra_lb).")
     lines.append(
-        "note: peak backlog is a diagnostic, NOT a constraint -- a zero-backlog "
-        "rule would select the smallest exposure and the worst throughput.")
+        "note: pressure is reported as steady-state util%(P/L/S), NOT a "
+        "constraint -- the binding class reads 100% at and beyond the knee, so "
+        "extra exposure past the knee adds no steady-state throughput.")
     lines.append("")
 
     header = ("mark  candidates" + " " * 28 + "exposed waves pragma_agg "
-              "sched_est wave_pen class           backlog(P/L/S)")
+              "sched_est wave_pen class           util%(P/L/S)")
     if has_sim:
         header += "  sim_exec sim/abs sim/pragma sim/sched"
     lines.append(header)
@@ -529,13 +538,13 @@ def render_axpy_report(results: list[CandidateResult], cfg, sat: SaturationInfo,
             tag = "*" if r.candidate == current else ""
             names.append(f"P={r.candidate.parallel},U={r.candidate.unroll}{tag}")
         names_str = " ".join(names)
-        backlog = "/".join(str(v) for v in rep.peak_backlog)
+        util = "/".join(f"{round(u * 100)}" for u in rep.utilization)
         row = (
             f"{marks:<4}  {names_str:<37} {rep.exposed_iters:>7} "
             f"{rep.waves:>5} {rep.pragma_exposure_aggregate:>10} "
             f"{rep.schedule_estimate:>9} "
             f"{_fmt_ratio(rep.wave_serialization_penalty):>8} "
-            f"{rep.saturation:<15} {backlog:>14}")
+            f"{rep.saturation:<15} {util:>12}")
         if has_sim:
             sim_val = _group_sim_value(group)
             if sim_val is None:
@@ -553,6 +562,13 @@ def render_axpy_report(results: list[CandidateResult], cfg, sat: SaturationInfo,
     lines.append("")
     lines.append("marks: K = recommended (saturation knee), "
                  "* = current source pragma, o = oversubscribed (past the knee).")
+    lines.append(
+        "util%(P/L/S): steady-state per-class utilization (term/aggregate). The "
+        "binding class reads 100% exactly when resource-bound; all read <100% "
+        "when latency-bound. This is the preferred pressure signal; the old "
+        "peak-ready-backlog is a transient cycle-1 release artifact and is not "
+        "shown. Note: util depends only on P*U -- it does not distinguish P from "
+        "U (that needs a per-worker memory/banking model).")
     if any(r.tail_iters for r in results):
         lines.append(
             "Tail note: partial final waves are modeled as a separate smaller "
@@ -715,6 +731,22 @@ def _run_self_tests() -> int:
             f"exposed=16 saturation = {r16.saturation}, want resource-bound")
     if not r16.recommended:
         errors.append("exposed=16 must be the recommended (knee) exposure")
+    # Steady-state utilization: binding class (L) saturates at/after the knee,
+    # all classes idle below it. util order is (P, L, S).
+    if abs(r16.utilization[1] - 1.0) > 1e-9:
+        errors.append(f"exposed=16 util_L = {r16.utilization[1]}, want 1.0")
+    if not all(0.0 < u <= 1.0 + 1e-9 for u in r16.utilization):
+        errors.append(f"exposed=16 util out of (0,1]: {r16.utilization}")
+    if max(r16.utilization) < 1.0 - 1e-9:
+        errors.append("resource-bound exposed=16 must have a class at util 1.0")
+    if max(r8.utilization) >= 1.0 - 1e-9:
+        errors.append(
+            f"latency-bound exposed=8 must have all util < 1.0: {r8.utilization}")
+    r64 = _find(res, 8, 8)   # oversubscribed; binding class still 100%
+    if abs(r64.utilization[1] - 1.0) > 1e-9:
+        errors.append(
+            f"oversubscribed exposed=64 util_L = {r64.utilization[1]}, want 1.0 "
+            "(no steady-state gain past the knee)")
     for parallel, unroll in ((1, 1), (1, 2), (2, 1)):
         zr = _find(res, parallel, unroll)  # zero-backlog small exposures
         if zr is not None and zr.recommended:
