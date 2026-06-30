@@ -314,15 +314,19 @@ struct LowerForToGraphPass
     return static_cast<bool>(candidate);
   }
 
-  bool findSingleTopLevelStructuredLoop(::mlir::Region &region,
-                                        ::mlir::scf::ForOp &selectedLoop) {
+  bool isStandaloneStructuredRoot(::mlir::Operation *op) {
+    return ::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::WhileOp>(op);
+  }
+
+  bool findSingleTopLevelStructuredRoot(::mlir::Region &region,
+                                        ::mlir::Operation *&selectedRoot) {
     if (!region.hasOneBlock())
       return false;
     for (::mlir::Operation &op : region.front().without_terminator()) {
-      if (auto loop = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
-        if (selectedLoop)
+      if (isStandaloneStructuredRoot(&op)) {
+        if (selectedRoot)
           return false;
-        selectedLoop = loop;
+        selectedRoot = &op;
         continue;
       }
       if (!isSideEffectFreeSetupOp(op))
@@ -331,39 +335,39 @@ struct LowerForToGraphPass
     return true;
   }
 
-  ::mlir::scf::ForOp findStandaloneStructuredLoopRoot(::mlir::Block &entry) {
-    ::mlir::scf::ForOp selectedLoop;
+  ::mlir::Operation *findStandaloneStructuredRoot(::mlir::Block &entry) {
+    ::mlir::Operation *selectedRoot = nullptr;
     bool sawRoot = false;
     for (::mlir::Operation &op : entry.without_terminator()) {
-      if (auto loop = ::llvm::dyn_cast<::mlir::scf::ForOp>(op)) {
+      if (isStandaloneStructuredRoot(&op)) {
         if (sawRoot)
-          return {};
-        selectedLoop = loop;
+          return nullptr;
+        selectedRoot = &op;
         sawRoot = true;
         continue;
       }
       if (auto guard = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
         if (sawRoot || guard.getNumResults() != 0)
-          return {};
-        if (!findSingleTopLevelStructuredLoop(guard.getThenRegion(),
-                                             selectedLoop))
-          return {};
-        if (!findSingleTopLevelStructuredLoop(guard.getElseRegion(),
-                                             selectedLoop))
-          return {};
+          return nullptr;
+        if (!findSingleTopLevelStructuredRoot(guard.getThenRegion(),
+                                             selectedRoot))
+          return nullptr;
+        if (!findSingleTopLevelStructuredRoot(guard.getElseRegion(),
+                                             selectedRoot))
+          return nullptr;
         sawRoot = true;
         continue;
       }
       if (!isSideEffectFreeSetupOp(op))
-        return {};
+        return nullptr;
     }
-    return selectedLoop;
+    return selectedRoot;
   }
 
-  bool hasUnsupportedStandaloneStructuredLoopBody(::mlir::scf::ForOp loop) {
+  bool hasUnsupportedStandaloneStructuredBody(::mlir::Operation *root) {
     bool unsupported = false;
-    loop->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
-      if (nested == loop.getOperation())
+    root->walk([&](::mlir::Operation *nested) -> ::mlir::WalkResult {
+      if (nested == root)
         return ::mlir::WalkResult::advance();
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
                       ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
@@ -371,16 +375,15 @@ struct LowerForToGraphPass
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
-      if (::llvm::isa<::mlir::CallOpInterface>(nested)) {
-        unsupported = true;
-        return ::mlir::WalkResult::interrupt();
-      }
-      if (::llvm::isa<::mlir::scf::ForOp>(nested)) {
+      if (::llvm::isa<::mlir::CallOpInterface>(nested) &&
+          !::llvm::isa<::mlir::LLVM::CallIntrinsicOp>(nested)) {
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
       if (nested->getNumRegions() != 0 &&
-          !::llvm::isa<::mlir::scf::IfOp>(nested)) {
+          !::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::WhileOp,
+                       ::mlir::scf::IfOp, ::mlir::scf::IndexSwitchOp>(
+              nested)) {
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
@@ -452,14 +455,17 @@ struct LowerForToGraphPass
       return false;
     ::mlir::Block &entry = body.front();
 
-    ::mlir::scf::ForOp topLevelLoop =
-        findStandaloneStructuredLoopRoot(entry);
-    if (!topLevelLoop)
+    ::mlir::Operation *topLevelRoot = findStandaloneStructuredRoot(entry);
+    if (!topLevelRoot)
       return false;
-    if (!topLevelLoop.getInitArgs().empty())
-      return false;
+    if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(topLevelRoot))
+      if (!forOp.getInitArgs().empty())
+        return false;
+    if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(topLevelRoot))
+      if (whileOp->getNumOperands() != whileOp->getNumResults())
+        return false;
 
-    return !hasUnsupportedStandaloneStructuredLoopBody(topLevelLoop);
+    return !hasUnsupportedStandaloneStructuredBody(topLevelRoot);
   }
 
   void promoteStandaloneStructuredFunctions(::mlir::ModuleOp module,

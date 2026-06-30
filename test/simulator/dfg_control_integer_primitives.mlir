@@ -10,6 +10,8 @@
 // RUN: FileCheck %s --check-prefix=UITOFP < %t.uitofp.json
 // RUN: loom-dfg-sim %s --graph unsigned_extend_and_minmax --arg 0=none --output %t.unsigned.json
 // RUN: FileCheck %s --check-prefix=UNSIGNED < %t.unsigned.json
+// RUN: loom-dfg-sim %s --graph unsigned_saturating_sub --arg 0=none --output %t.usub_sat.json
+// RUN: FileCheck %s --check-prefix=USUB-SAT < %t.usub_sat.json
 // RUN: loom-dfg-sim %s --graph signed_minmax --arg 0=none --output %t.signed-minmax.json
 // RUN: FileCheck %s --check-prefix=SIGNED-MINMAX < %t.signed-minmax.json
 // RUN: loom-dfg-sim %s --graph count_leading_zeros --arg 0=none --output %t.ctlz.json
@@ -63,6 +65,13 @@
 // UNSIGNED-DAG: "i32:-1"
 // UNSIGNED-DAG: "index:255"
 // UNSIGNED-DAG: "i32:1"
+
+// USUB-SAT-DAG: "workload": "unsigned_saturating_sub"
+// USUB-SAT-DAG: "graph": "unsigned_saturating_sub"
+// USUB-SAT-DAG: "status": "pass"
+// USUB-SAT-DAG: "llvm.intr.usub.sat": 2
+// USUB-SAT-DAG: "i32:0"
+// USUB-SAT-DAG: "i32:5"
 
 // SIGNED-MINMAX-DAG: "workload": "signed_minmax"
 // SIGNED-MINMAX-DAG: "graph": "signed_minmax"
@@ -136,6 +145,17 @@ module {
     %max = llvm.intr.umax(%minus_one, %seven) : (i32, i32) -> i32
     dataflow.graph.return %ctrl, %wide, %min, %max, %idx, %narrow_idx
         : none, i32, i32, i32, index, i32
+  }
+
+  dataflow.graph.func private @unsigned_saturating_sub(%ctrl: none)
+      -> (none, i32, i32) {
+    %small = dataflow.constant %ctrl {const_value = 3 : i32} : i32
+    %large = dataflow.constant %ctrl {const_value = 5 : i32} : i32
+    %underflow = llvm.intr.usub.sat(%small, %large) : (i32, i32) -> i32
+    %nine = dataflow.constant %ctrl {const_value = 9 : i32} : i32
+    %four = dataflow.constant %ctrl {const_value = 4 : i32} : i32
+    %difference = llvm.intr.usub.sat(%nine, %four) : (i32, i32) -> i32
+    dataflow.graph.return %ctrl, %underflow, %difference : none, i32, i32
   }
 
   dataflow.graph.func private @signed_minmax(%ctrl: none)

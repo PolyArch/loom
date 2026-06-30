@@ -100,33 +100,6 @@ def assert_default_batch_manifest_validation(repo: Path, out_dir: Path) -> None:
     if "unknown default batch case" not in result.stderr:
         raise AssertionError(f"default batch manifest diagnostic should name unknown cases: {result.stderr}")
 
-    missing_graph_manifest = out_dir / "invalid-default-cgra-sim-batch-missing-graph.json"
-    missing_graph_manifest.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "cases": [{"case": "moving_avg", "hardware": "shared_reduction_adg"}],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n"
-    )
-    result = artifact_test_common.run_command(
-        repo,
-        [
-            "python3",
-            "test/app/default_cgra_sim_batch.py",
-            "--manifest",
-            str(missing_graph_manifest),
-            "--emit-cases",
-        ],
-    )
-    if result.returncode == 0:
-        raise AssertionError(f"default batch manifest validation should reject cases without primary graphs: {result.stdout}")
-    if "missing primary graph" not in result.stderr:
-        raise AssertionError(f"default batch manifest diagnostic should name missing primary graphs: {result.stderr}")
-
     mismatch_manifest = out_dir / "invalid-default-cgra-sim-batch-evidence-hardware.json"
     mismatch_manifest.write_text(
         json.dumps(

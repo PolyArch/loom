@@ -1068,9 +1068,9 @@ void addConfigurableConstantPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("    }");
 }
 
-void addConfigurableWideConstantPe(ModuleBuilder &module,
-                                   llvm::StringRef result,
-                                   llvm::StringRef control) {
+void addConfigurableWideConstantPe(
+    ModuleBuilder &module, llvm::StringRef result, llvm::StringRef control,
+    llvm::ArrayRef<llvm::StringRef> constHexValues) {
   module.addExactBodyLine(valueName(result) + " =");
   module.addExactBodyLine(
       "    fabric.pe [spatial] (%pa = " + valueName(control) +
@@ -1081,9 +1081,8 @@ void addConfigurableWideConstantPe(ModuleBuilder &module,
   module.addExactBodyLine(
       "        %value = fabric.op [@dataflow.constant] (%token)");
   module.addExactBodyLine(
-      "            {hw_params = [{const_hex_value = [\"0x00000000\", "
-      "\"0x00000001\", \"0x00000002\", \"0x00000003\", "
-      "\"0x00000004\", \"0x00000008\"]}]}");
+      "            {hw_params = [{const_hex_value = [" +
+      quotedList(constHexValues) + "]}]}");
   module.addExactBodyLine(
       "            : (!fabric.bits<0>) -> !fabric.bits<64>");
   module.addExactBodyLine("        fabric.yield %value : !fabric.bits<64>");
@@ -3742,6 +3741,7 @@ struct SharedMemoryAdgConfig {
   unsigned maxCount = 10;
   unsigned unsignedMinCount = 4;
   unsigned unsignedMaxCount = 0;
+  unsigned unsignedSaturatingSubCount = 0;
   unsigned selectCount = 8;
   unsigned mulCount = 8;
   unsigned divCount = 0;
@@ -3786,6 +3786,9 @@ struct SharedMemoryAdgConfig {
   std::vector<llvm::StringRef> constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x00000010", "0xffffffff"};
+  std::vector<llvm::StringRef> wideConstantHexValues = {
+      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
+      "0x00000004", "0x00000008"};
 };
 
 ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
@@ -4045,7 +4048,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   for (unsigned index = 0; index < config.wideConstantCount; ++index) {
     std::string result = numbered("wide_const", index);
     std::string control = result + "_ctrl";
-    addConfigurableWideConstantPe(module, result, control);
+    addConfigurableWideConstantPe(module, result, control,
+                                  config.wideConstantHexValues);
     sources64.push_back(result);
     sinks0.push_back(control);
   }
@@ -4083,6 +4087,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
                     {"arith.shli", "arith.shrsi", "arith.shrui"});
   addBinaryBank("umin", config.unsignedMinCount, {"llvm.intr.umin"});
   addBinaryBank("umax", config.unsignedMaxCount, {"llvm.intr.umax"});
+  addBinaryBank("usub_sat", config.unsignedSaturatingSubCount,
+                {"llvm.intr.usub.sat"});
   addBinaryBank("smin", config.minCount, {"llvm.intr.smin"});
   addBinaryBank("smax", config.maxCount, {"llvm.intr.smax"});
 
@@ -4277,7 +4283,7 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.logicCount = 16;
   config.shiftCount = 16;
   config.castCount = 16;
-  config.wideConstantCount = 2;
+  config.wideConstantCount = 3;
   config.wideAddCount = 2;
   config.wideCmpCount = 2;
   config.wideTrunciCount = 2;
@@ -4292,10 +4298,16 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.expCount = 4;
   config.cosCount = 4;
   config.toFpCount = 4;
+  config.unsignedSaturatingSubCount = 2;
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x00000010", "0xffffffff",
       "0x3f800000", "0xbf800000", "0x322bcc77", "0x3727c5ac"};
+  config.wideConstantHexValues = {
+      "0x0000000000000000", "0x0000000000000001",
+      "0x0000000000000002", "0x0000000000000003",
+      "0x0000000000000004", "0x0000000000000008",
+      "0x0000000000000010"};
   config.fmaCount = 8;
   config.fpCmpCount = 8;
   config.syncCount = 4;

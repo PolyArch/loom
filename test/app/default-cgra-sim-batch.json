@@ -186,6 +186,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "moving_avg",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "downsample_avg",
       "hardware": "shared_reduction_adg"
     },

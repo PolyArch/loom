@@ -116,12 +116,9 @@ MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
-    "moving_avg",
     "sort_insertion",
 )
-PRIMARY_GRAPH_MISSING_SWEEP_CASES = (
-    ("moving_avg", "moving_avg_kernel"),
-)
+PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str], ...] = ()
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
 }
 GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
@@ -2763,6 +2760,115 @@ def assert_newton_iter_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"newton_iter CGRA evidence should carry x - f/df final state: {cgra_path}: {cgra}")
 
 
+def assert_moving_avg_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": [
+            "f32:0",
+            "f32:1",
+            "f32:2",
+            "f32:3",
+            "f32:4",
+            "f32:5",
+            "f32:6",
+            "f32:7",
+            "f32:8",
+            "f32:9",
+            "f32:0",
+            "f32:1",
+            "f32:2",
+            "f32:3",
+            "f32:4",
+            "f32:5",
+        ],
+        "arg2": [
+            "f32:0",
+            "f32:0.500000",
+            "f32:1",
+            "f32:1.500000",
+            "f32:2",
+            "f32:3",
+            "f32:4",
+            "f32:5",
+            "f32:6",
+            "f32:7",
+            "f32:6",
+            "f32:5",
+            "f32:4",
+            "f32:3",
+            "f32:2",
+            "f32:3",
+        ],
+    }
+    expected_counts = {
+        "arith.divf": 16,
+        "dataflow.constant": 5,
+        "dataflow.load": 70,
+        "dataflow.store": 16,
+        "llvm.intr.umin": 16,
+        "llvm.intr.usub.sat": 16,
+        "llvm.uitofp": 16,
+    }
+
+    dfg_path = evidence_dir / "moving_avg.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_moving_avg_kernel_0"
+        or dfg.get("dynamic_work_items") != 16
+        or dfg.get("optimistic_cycles") != 1249
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"moving_avg DFG evidence should match the real window-average fixture: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("moving_avg", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "moving_avg.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("placed_records") != 25
+        or mapping.get("routed_edges") != 21
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 637
+    ):
+        raise AssertionError(f"moving_avg should route on shared signal-window hardware: {mapping_path}: {mapping}")
+    placements = {
+        (placement.get("software"), placement.get("hardware"))
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict)
+    }
+    if ("dataflow.constant#4", "shared_signal_window_adg::fabric.op#126") not in placements:
+        raise AssertionError(f"moving_avg should place the i64 bound constant on a wide constant PE: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_route_edges = {
+        "llvm.intr.usub.sat#0.result0->arith.subi#1.operand1",
+        "llvm.intr.umin#0.result0->arith.subi#0.operand1",
+        "arith.divf#0.result0->dataflow.store#0.operand2",
+    }
+    if not expected_route_edges.issubset(route_edges):
+        raise AssertionError(f"moving_avg mapping should expose usub/min/div/store route edges: {mapping}")
+
+    cgra_path = evidence_dir / "moving_avg.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("dfg_cycles") != 1249
+        or cgra.get("hardware_aware_cycles") != 1402
+        or cgra.get("placed_records") != 25
+        or cgra.get("routed_edges") != 21
+        or cgra.get("route_segments") != 115
+        or cgra.get("config_records") != 637
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"moving_avg CGRA evidence should carry the real window-average state: {cgra_path}: {cgra}")
+
+
 def assert_bisection_step_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:0", "f32:1", "f32:2"],
@@ -4499,6 +4605,7 @@ def main(argv: list[str]) -> int:
             "merge",
             "modmul",
             "modexp",
+            "moving_avg",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -4550,6 +4657,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "bisection_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modexp", 8)
+        assert_dfg_dynamic_work_items(evidence_dir, "moving_avg", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "interpolate_linear", 63)
@@ -4583,6 +4691,7 @@ def main(argv: list[str]) -> int:
         assert_covariance_evidence(evidence_dir)
         assert_modmul_evidence(evidence_dir)
         assert_modexp_evidence(evidence_dir)
+        assert_moving_avg_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
         assert_transform_point_evidence(evidence_dir)
@@ -4886,7 +4995,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "fir_filter_stateful", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "gather", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
-        assert_mapping_hardware(evidence_dir, "moving_avg", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
@@ -5061,6 +5170,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "window_hamming")
         assert_mapping_uses_switch_multihop(evidence_dir, "window_hanning")
         assert_mapping_uses_switch_multihop(evidence_dir, "interpolate_linear")
+        assert_mapping_uses_switch_multihop(evidence_dir, "moving_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
         assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
         assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
@@ -5308,15 +5418,18 @@ def main(argv: list[str]) -> int:
         normalize_vec3_row = one_row(rows, "normalize_vec3")
         if normalize_vec3_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"normalize_vec3 should use shared signal-window hardware: {normalize_vec3_row}")
+        moving_avg_row = one_row(rows, "moving_avg")
+        if moving_avg_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"moving_avg should use shared signal-window hardware: {moving_avg_row}")
         downsample_row = one_row(rows, "downsample_avg")
         if downsample_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 92,
+            "pass": 93,
             "fail": 0,
-            "blocked": 17,
+            "blocked": 16,
             "unsupported": 0,
             "missing_status": 0,
         }

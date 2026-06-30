@@ -367,9 +367,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 109,
-            "pass": 92,
+            "pass": 93,
             "fail": 0,
-            "blocked": 17,
+            "blocked": 16,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -740,7 +740,6 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
-    "moving_avg": "primary workload graph absent: expected token moving_avg_kernel",
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -945,9 +944,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 109,
             "pass": 14,
             "fail": 0,
-            "blocked": 17,
+            "blocked": 16,
             "unsupported": 0,
-            "missing_status": 78,
+            "missing_status": 79,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
