@@ -16,6 +16,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "bitonic_stage-tweak",
     "bit_reverse",
     "bitrev",
+    "bitrev_complex",
     "byte_swap",
     "clz",
     "compare_swap",

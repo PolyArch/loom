@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 14
+APP_NO_DFG_TIER_COUNT = 13
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -61,6 +61,7 @@ DEFAULT_SWEEP_CASES = (
     "spmv",
     "sort_bubble",
     "bitrev",
+    "bitrev_complex",
     "convolve_1d",
     "conv1d",
     "conv2d",
@@ -4385,6 +4386,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "bitrev",
                 "--case",
+                "bitrev_complex",
+                "--case",
                 "spmspv",
                 "--case",
                 "stream_update",
@@ -4549,6 +4552,7 @@ def main(argv: list[str]) -> int:
             "spmv",
             "sort_bubble",
             "bitrev",
+            "bitrev_complex",
             "spmspv",
             "stream_update",
             "axpy",
@@ -5009,6 +5013,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "partition", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "sort_bubble", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bitrev", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "bitrev_complex", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "scatter_add", "shared_memory_reduction_adg")
         assert_scatter_add_evidence(evidence_dir)
         assert_component_references_resolve(evidence_dir, "partition")
@@ -5179,6 +5184,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
         assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
         assert_mapping_uses_switch_multihop(evidence_dir, "bitrev")
+        assert_mapping_uses_switch_multihop(evidence_dir, "bitrev_complex")
         assert_mapping_uses_switch_multihop(evidence_dir, "transpose")
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
@@ -5223,6 +5229,7 @@ def main(argv: list[str]) -> int:
         assert_component_references_resolve(evidence_dir, "sort_bubble")
         run(repo, ["python3", "test/artifacts/assert_sort_bubble_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_bitrev_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_bitrev_complex_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
         assert_im2col_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
@@ -5260,6 +5267,7 @@ def main(argv: list[str]) -> int:
             "spmv",
             "sort_bubble",
             "bitrev",
+            "bitrev_complex",
             "stream_update",
             "axpy",
             "bit_reverse",
@@ -5435,9 +5443,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 109,
-            "pass": 94,
+            "pass": 95,
             "fail": 0,
-            "blocked": 14,
+            "blocked": 13,
             "unsupported": 1,
             "missing_status": 0,
         }

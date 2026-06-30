@@ -108,6 +108,20 @@ append_constant_memref() {
     sim_args+=(--memref "${index}=${values}")
 }
 
+append_descending_float_memref() {
+    local index="$1"
+    local count="$2"
+    local values=""
+    for i in $(seq 0 $((count - 1))); do
+        value="$(awk -v i="${i}" -v count="${count}" 'BEGIN { printf "%.6e", count - i }')"
+        if [[ -n "${values}" ]]; then
+            values+=","
+        fi
+        values+="${value}"
+    done
+    sim_args+=(--memref "${index}=${values}")
+}
+
 append_raw_memref() {
     local index="$1"
     local values="$2"
@@ -1156,6 +1170,18 @@ case "${CASE}" in
             --workload bitrev
             --arg 0=none
             --arg 3=128
+        )
+        ;;
+    bitrev_complex)
+        append_linear_memref 1 128 1 "%.6e"
+        append_descending_float_memref 2 128
+        append_constant_memref 3 128 "0.000000e+00"
+        append_constant_memref 4 128 "0.000000e+00"
+        sim_args+=(
+            --graph g_bitrev_complex_kernel_0
+            --workload bitrev_complex
+            --arg 0=none
+            --arg 5=128
         )
         ;;
     byte_swap)

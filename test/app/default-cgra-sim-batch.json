@@ -42,6 +42,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "bitrev_complex",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "autocorrelation",
       "hardware": "shared_reduction_adg"
     },
