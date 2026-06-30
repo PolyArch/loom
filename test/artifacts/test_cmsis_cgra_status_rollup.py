@@ -487,8 +487,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 97,
             "fail": 0,
-            "blocked": 11,
-            "unsupported": 2,
+            "blocked": 5,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
@@ -566,9 +566,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 1,
             "fail": 0,
-            "blocked": 11,
+            "blocked": 5,
             "unsupported": 0,
-            "missing_status": 98,
+            "missing_status": 104,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -632,9 +632,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 110,
             "pass": 18,
             "fail": 0,
-            "blocked": 11,
+            "blocked": 5,
             "unsupported": 0,
-            "missing_status": 81,
+            "missing_status": 87,
         },
     )
     assert_counts(
@@ -858,11 +858,19 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
+    "bitonic_stage-modified": (
+        "primary workload graph absent: expected token bitonic_stage_modified_kernel"
+    ),
+    "col2im": "primary workload graph absent: expected token col2im_kernel",
+    "hist_bin": "primary workload graph absent: expected token hist_bin_kernel",
+    "histogram": "primary workload graph absent: expected token histogram_kernel",
+    "histogram_strided": "primary workload graph absent: expected token histogram_strided_kernel",
     "quantile": "primary workload graph absent: expected token quantile_kernel",
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
     ),
+    "string_compare": "primary workload graph absent: expected token string_compare_kernel",
 }
 
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
@@ -1063,8 +1071,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 110,
             "pass": 14,
             "fail": 0,
-            "blocked": 11,
-            "unsupported": 2,
+            "blocked": 5,
+            "unsupported": 8,
             "missing_status": 83,
         },
     )
@@ -1131,6 +1139,54 @@ def assert_sort_insertion_attempt_manifest_mode(repo: Path, out_dir: Path, legac
         raise AssertionError(f"sort_insertion attempt should publish structured lowering-boundary evidence: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+
+
+def assert_primary_graph_absence_attempt_mode(
+    repo: Path,
+    out_dir: Path,
+    legacy_root: Path,
+    *,
+    case: str,
+    expected_primary_graph_token: str,
+) -> None:
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(out_dir),
+            "--legacy-loombench-root",
+            str(legacy_root),
+            "--app-sim-case",
+            case,
+        ],
+    )
+    rows = read_rows(out_dir / "cgra-status-summary.csv")
+    row = one_row(rows, "app", case)
+    expected_diagnostic = f"primary workload graph absent: expected token {expected_primary_graph_token}"
+    if (
+        row["status"] != "unsupported"
+        or row["diagnostic_class"] != "dfg_report_unsupported"
+        or row["owner"] != "sim_report"
+        or row["blocking_prerequisite"] != "dfg_report"
+        or row["dfg_status"] != "unsupported"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["final_outputs_present"] != "false"
+        or row["final_memory_state_present"] != "false"
+        or expected_diagnostic not in row["diagnostic"]
+    ):
+        raise AssertionError(f"primary graph absence attempt should publish structured evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+        artifact = out_dir / "current-sim-cycle" / Path(row[key]).name
+        if key == "comparison_report":
+            artifact = out_dir / "cgra-status-comparisons" / Path(row[key]).name
+        if not artifact.is_file():
+            raise AssertionError(f"primary graph absence attempt should emit {artifact}")
 
 
 def assert_no_dfg_app_direct_attempt_mode(
@@ -4303,28 +4359,28 @@ def main() -> int:
         assert_app_seed_batch_mode(repo, out_dir / "app-seed-batch")
         assert_app_attempt_manifest_mode(repo, out_dir / "app-attempt-manifest", legacy_root)
         assert_sort_insertion_attempt_manifest_mode(repo, out_dir / "sort-insertion-attempt", legacy_root)
-        assert_no_dfg_app_direct_attempt_mode(
+        assert_primary_graph_absence_attempt_mode(
             repo,
             out_dir / "no-dfg-app-attempt-hist-bin",
             legacy_root,
             case="hist_bin",
             expected_primary_graph_token="hist_bin_kernel",
         )
-        assert_no_dfg_app_direct_attempt_mode(
+        assert_primary_graph_absence_attempt_mode(
             repo,
             out_dir / "no-dfg-app-attempt-col2im",
             legacy_root,
             case="col2im",
             expected_primary_graph_token="col2im_kernel",
         )
-        assert_no_dfg_app_direct_attempt_mode(
+        assert_primary_graph_absence_attempt_mode(
             repo,
             out_dir / "no-dfg-app-attempt-string-compare",
             legacy_root,
             case="string_compare",
             expected_primary_graph_token="string_compare_kernel",
         )
-        assert_no_dfg_app_direct_attempt_mode(
+        assert_primary_graph_absence_attempt_mode(
             repo,
             out_dir / "no-dfg-app-attempt-histogram",
             legacy_root,

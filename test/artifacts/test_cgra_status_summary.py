@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 110
-APP_NO_DFG_TIER_COUNT = 11
+APP_NO_DFG_TIER_COUNT = 5
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -607,8 +607,8 @@ def main() -> int:
         if app_interpolate["required_slice_count"] != "1":
             raise AssertionError(f"interpolate_linear should require one DFG slice after adding dfg_check.sh: {app_interpolate}")
         tampered_no_dfg_rows = [dict(row) for row in rows]
-        tampered_col2im = one_row(tampered_no_dfg_rows, "app", "col2im")
-        tampered_col2im.update(
+        tampered_edge_update = one_row(tampered_no_dfg_rows, "app", "edge_update")
+        tampered_edge_update.update(
             {
                 "status": "not_run",
                 "diagnostic_class": "missing_status",
@@ -2028,7 +2028,7 @@ def main() -> int:
             functional_state_source="component_cgra_sim_reports_carried_from_dfg_sim_reports",
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
-        write_sim_evidence_case(sim_evidence, "col2im", cgra_final_state=True)
+        write_sim_evidence_case(sim_evidence, "edge_update", cgra_final_state=True)
         write_sim_evidence_case(sim_evidence, "string_compare", cgra_final_state=False)
         write_json(
             sim_evidence / "mean.dfg.report.json",
@@ -2073,9 +2073,9 @@ def main() -> int:
             "total": APP_CASE_COUNT,
             "pass": 2,
             "fail": 1,
-            "blocked": 1 + APP_NO_DFG_TIER_COUNT,
+            "blocked": 2 + APP_NO_DFG_TIER_COUNT,
             "unsupported": 0,
-            "missing_status": APP_CASE_COUNT - 2 - 1 - (1 + APP_NO_DFG_TIER_COUNT),
+            "missing_status": APP_CASE_COUNT - 2 - 1 - (2 + APP_NO_DFG_TIER_COUNT),
         }:
             raise AssertionError(f"unexpected promoted app counts: {app_counts}")
         vecsum = one_row(promoted_rows, "app", "vecsum")
@@ -2086,11 +2086,11 @@ def main() -> int:
                 raise AssertionError(f"vecsum pass row should have {column}=pass: {vecsum}")
         if vecsum["final_outputs_present"] != "true" or vecsum["final_memory_state_present"] != "true":
             raise AssertionError(f"vecsum pass row should preserve final-state evidence: {vecsum}")
-        promoted_col2im = one_row(promoted_rows, "app", "col2im")
-        if promoted_col2im["status"] != "blocked":
-            raise AssertionError(f"no-DFG col2im must not consume simulator evidence: {promoted_col2im}")
-        if promoted_col2im["diagnostic_class"] != "app_dataflow_tier_missing":
-            raise AssertionError(f"no-DFG col2im should preserve app no-DFG blocker: {promoted_col2im}")
+        promoted_edge_update = one_row(promoted_rows, "app", "edge_update")
+        if promoted_edge_update["status"] != "blocked":
+            raise AssertionError(f"no-DFG edge_update must not consume simulator evidence: {promoted_edge_update}")
+        if promoted_edge_update["diagnostic_class"] != "app_dataflow_tier_missing":
+            raise AssertionError(f"no-DFG edge_update should preserve app no-DFG blocker: {promoted_edge_update}")
         for column in (
             "dfg_report",
             "dfg_report_fingerprint",
@@ -2101,26 +2101,28 @@ def main() -> int:
             "comparison_report",
             "comparison_report_fingerprint",
         ):
-            if promoted_col2im[column]:
-                raise AssertionError(f"no-DFG col2im should not reference sim evidence in {column}: {promoted_col2im}")
+            if promoted_edge_update[column]:
+                raise AssertionError(
+                    f"no-DFG edge_update should not reference sim evidence in {column}: {promoted_edge_update}"
+                )
         promoted_string_compare = one_row(promoted_rows, "app", "string_compare")
         if (
             promoted_string_compare["status"] != "blocked"
             or promoted_string_compare["diagnostic_class"] != "sim_comparison_blocked"
         ):
             raise AssertionError(
-                f"no-DFG string_compare should consume non-pass comparison evidence: {promoted_string_compare}"
+                f"string_compare should consume non-pass comparison evidence: {promoted_string_compare}"
             )
         if promoted_string_compare["blocking_prerequisite"] != "sim_comparison_report":
-            raise AssertionError(f"no-DFG string_compare should block on comparison evidence: {promoted_string_compare}")
+            raise AssertionError(f"string_compare should block on comparison evidence: {promoted_string_compare}")
         for column in ("dfg_status", "mapping_status", "cgra_status"):
             if promoted_string_compare[column] != "pass":
                 raise AssertionError(
-                    f"no-DFG string_compare should preserve earlier pass stage evidence: {promoted_string_compare}"
+                    f"string_compare should preserve earlier pass stage evidence: {promoted_string_compare}"
                 )
         if promoted_string_compare["comparison_status"] != "blocked":
             raise AssertionError(
-                f"no-DFG string_compare should preserve blocked comparison status: {promoted_string_compare}"
+                f"string_compare should preserve blocked comparison status: {promoted_string_compare}"
             )
         for artifact_column, fingerprint_column in (
             ("dfg_report", "dfg_report_fingerprint"),
@@ -2184,14 +2186,14 @@ def main() -> int:
             raise AssertionError(f"tampered pass should fail on referenced JSON content: {failed_tampered.stderr}")
 
         forged_no_dfg_failure_rows = [dict(row) for row in promoted_rows]
-        forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", "col2im")
-        forged_no_dfg_dfg = out_dir / "forged-col2im-failed-dfg.report.json"
+        forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", "edge_update")
+        forged_no_dfg_dfg = out_dir / "forged-edge-update-failed-dfg.report.json"
         write_json(
             forged_no_dfg_dfg,
             {
                 "schema_version": 1,
                 "kind": "dfg_sim_report",
-                "workload": "col2im",
+                "workload": "edge_update",
                 "status": "fail",
                 "optimistic_cycles": 0,
                 **dfg_cycle_fixture_fields(0),

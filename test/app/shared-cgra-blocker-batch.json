@@ -46,11 +46,35 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "bitonic_stage-modified",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "col2im",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "hist_bin",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "histogram",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "histogram_strided",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "quantile",
       "hardware": "shared_reduction_adg"
     },
     {
       "case": "sort_insertion",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "string_compare",
       "hardware": "shared_reduction_adg"
     },
     {

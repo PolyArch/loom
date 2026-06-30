@@ -130,8 +130,14 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     outer
     byte_swap
     scatter_add
+    bitonic_stage-modified
+    col2im
+    hist_bin
+    histogram
+    histogram_strided
     quantile
     sort_insertion
+    string_compare
     xor_block
     relu
     rotate_bits

@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 11
+APP_NO_DFG_TIER_COUNT = 5
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -89,8 +89,14 @@ DEFAULT_SWEEP_CASES = (
     "outer",
     "byte_swap",
     "scatter_add",
+    "bitonic_stage-modified",
+    "col2im",
+    "hist_bin",
+    "histogram",
+    "histogram_strided",
     "quantile",
     "sort_insertion",
+    "string_compare",
     "xor_block",
     "relu",
     "rotate_bits",
@@ -121,11 +127,23 @@ MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
+    "bitonic_stage-modified",
+    "col2im",
+    "hist_bin",
+    "histogram",
+    "histogram_strided",
     "quantile",
     "sort_insertion",
+    "string_compare",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str], ...] = (
+    ("bitonic_stage-modified", "bitonic_stage_modified_kernel"),
+    ("col2im", "col2im_kernel"),
+    ("hist_bin", "hist_bin_kernel"),
+    ("histogram", "histogram_kernel"),
+    ("histogram_strided", "histogram_strided_kernel"),
     ("quantile", "quantile_kernel"),
+    ("string_compare", "string_compare_kernel"),
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
 }
@@ -4537,9 +4555,21 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "scatter_add",
                 "--case",
+                "bitonic_stage-modified",
+                "--case",
+                "col2im",
+                "--case",
+                "hist_bin",
+                "--case",
+                "histogram",
+                "--case",
+                "histogram_strided",
+                "--case",
                 "quantile",
                 "--case",
                 "sort_insertion",
+                "--case",
+                "string_compare",
                 "--case",
                 "unpack_bits",
                 "--case",
@@ -5554,8 +5584,8 @@ def main(argv: list[str]) -> int:
             "total": 110,
             "pass": 97,
             "fail": 0,
-            "blocked": 11,
-            "unsupported": 2,
+            "blocked": 5,
+            "unsupported": 8,
             "missing_status": 0,
         }
         if counts != expected_counts:

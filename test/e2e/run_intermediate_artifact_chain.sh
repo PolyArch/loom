@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|histogram|quantile|sort_insertion)
+    bitonic_stage-modified|col2im|hist_bin|histogram|histogram_strided|quantile|sort_insertion|string_compare)
       return 0
       ;;
     *)
@@ -120,10 +120,19 @@ case "${CASE}" in
   bitrev_complex)
     case_graph="g_bitrev_complex_kernel_0"
     ;;
+  bitonic_stage-modified)
+    case_graph="missing_primary_graph"
+    ;;
   col2im)
     case_graph="missing_primary_graph"
     ;;
+  hist_bin)
+    case_graph="missing_primary_graph"
+    ;;
   histogram)
+    case_graph="missing_primary_graph"
+    ;;
+  histogram_strided)
     case_graph="missing_primary_graph"
     ;;
   quantile)
@@ -371,6 +380,9 @@ case "${CASE}" in
     ;;
   sigmoid)
     case_graph="g_t_sigmoid_kernel_0_0"
+    ;;
+  string_compare)
+    case_graph="missing_primary_graph"
     ;;
   softmax)
     case_graph="workload_graph_set"
@@ -1889,14 +1901,23 @@ PY
     --mapping-artifact "${mapping_artifact}" \
     --hardware-mlir "${hardware_mlir}" \
     --output "${cgra_report}"
-elif [[ "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "quantile" || "${CASE}" == "sort_insertion" ]]; then
+elif uses_primary_graph_absence_path "${CASE}"; then
   graph_absence_args=()
   case "${CASE}" in
+    bitonic_stage-modified)
+      expected_primary_graph_token="bitonic_stage_modified_kernel"
+      ;;
     col2im)
       expected_primary_graph_token="col2im_kernel"
       ;;
+    hist_bin)
+      expected_primary_graph_token="hist_bin_kernel"
+      ;;
     histogram)
       expected_primary_graph_token="histogram_kernel"
+      ;;
+    histogram_strided)
+      expected_primary_graph_token="histogram_strided_kernel"
       ;;
     quantile)
       expected_primary_graph_token="quantile_kernel"
@@ -1908,6 +1929,9 @@ elif [[ "${CASE}" == "col2im" || "${CASE}" == "histogram" || "${CASE}" == "quant
         --diagnostic "primary workload graph is partial: sort_insertion lowering covers the copy loop while the insertion-sort compare-and-shift loop remains outside dataflow"
         --evidence "partial dataflow lowering boundary"
       )
+      ;;
+    string_compare)
+      expected_primary_graph_token="string_compare_kernel"
       ;;
   esac
   python3 "${ROOT}/test/e2e/emit_primary_graph_absence_artifacts.py" \
