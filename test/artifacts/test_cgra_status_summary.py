@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 109
-APP_NO_DFG_TIER_COUNT = 16
+APP_NO_DFG_TIER_COUNT = 15
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -597,6 +597,13 @@ def main() -> int:
             raise AssertionError(f"batchnorm should be blocked before CGRA mapping: {app_batchnorm}")
         if app_batchnorm["status"] != "blocked" or app_batchnorm["diagnostic_class"] != "app_dataflow_tier_missing":
             raise AssertionError(f"batchnorm should be structured blocked until a dataflow tier exists: {app_batchnorm}")
+        app_interpolate = one_row(rows, "app", "interpolate_linear")
+        if app_interpolate["blocking_prerequisite"] != "mapping_artifact":
+            raise AssertionError(f"interpolate_linear should be blocked after DFG tier on mapping evidence: {app_interpolate}")
+        if app_interpolate["status"] != "not_run" or app_interpolate["diagnostic_class"] != "missing_status":
+            raise AssertionError(f"interpolate_linear should expose DFG-tier row status before mapping evidence: {app_interpolate}")
+        if app_interpolate["required_slice_count"] != "1":
+            raise AssertionError(f"interpolate_linear should require one DFG slice after adding dfg_check.sh: {app_interpolate}")
         tampered_no_dfg_rows = [dict(row) for row in rows]
         tampered_batchnorm = one_row(tampered_no_dfg_rows, "app", "batchnorm")
         tampered_batchnorm.update(

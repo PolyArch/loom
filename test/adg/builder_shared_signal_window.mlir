@@ -6,6 +6,7 @@
 // RUN: FileCheck %s --check-prefix=MAPPING < %t.dir/mapping.json
 
 // HARDWARE-LABEL: fabric.module @shared_signal_window_adg
+// HARDWARE-DAG: %arg{{[0-9]+}} : !fabric.bits<64>
 // HARDWARE-DAG: load_group_size = 40 : i32
 // HARDWARE-DAG: store_group_size = 40 : i32
 // HARDWARE-DAG: fabric.op [@dataflow.stream]
@@ -20,6 +21,8 @@
 // HARDWARE-DAG: fabric.op [@math.exp]
 // HARDWARE-DAG: fabric.op [@math.cos]
 // HARDWARE-DAG: fabric.op [@llvm.uitofp]
+// HARDWARE-DAG: fabric.op [@arith.trunci]
+// HARDWARE-DAG: fabric.op [@arith.index_cast]
 // HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff", "0x3f800000", "0xbf800000", "0x322bcc77", "0x3727c5ac"]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]

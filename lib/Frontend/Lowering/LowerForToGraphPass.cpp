@@ -836,7 +836,8 @@ struct LowerForToGraphPass
         return ::mlir::WalkResult::interrupt();
       }
       if (nested->getNumRegions() != 0 &&
-          !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::WhileOp>(nested)) {
+          !::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::WhileOp,
+                       ::mlir::scf::IndexSwitchOp>(nested)) {
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
@@ -864,6 +865,11 @@ struct LowerForToGraphPass
         continue;
       }
       if (::llvm::isa<::mlir::scf::IfOp, ::mlir::scf::WhileOp>(op)) {
+        if (hasUnsupportedStructuredGraphNestedOp(&op))
+          return false;
+        continue;
+      }
+      if (::llvm::isa<::mlir::scf::IndexSwitchOp>(op)) {
         if (hasUnsupportedStructuredGraphNestedOp(&op))
           return false;
         continue;

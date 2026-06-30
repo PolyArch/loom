@@ -140,6 +140,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     window_blackman
     window_hamming
     window_hanning
+    interpolate_linear
     distance_point
     normalize_vec3
     transpose

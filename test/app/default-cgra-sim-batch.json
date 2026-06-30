@@ -326,6 +326,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "interpolate_linear",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "distance_point",
       "hardware": "shared_signal_window_adg"
     },

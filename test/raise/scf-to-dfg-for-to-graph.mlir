@@ -109,6 +109,28 @@ dataflow.thread private @t_structured_while(%src: memref<?xi32>, %dst: memref<?x
   dataflow.thread.yield
 }
 
+// Structured lane-local switch control is also part of the graph body. Search
+// kernels use this shape to choose between the next scan state and the selected
+// interval for the current lane.
+// CHECK-LABEL: dataflow.thread private @t_structured_index_switch
+// CHECK: dataflow.graph.launch @g_t_structured_index_switch_0
+dataflow.thread private @t_structured_index_switch(%src: memref<?xi32>, %dst: memref<?xi32>,
+                                                   %n: index) ctrl (%c: none) iv (%lane: index) {
+  %zero = arith.constant 0 : i32
+  %one = arith.constant 1 : i32
+  %tag = memref.load %src[%lane] : memref<?xi32>
+  %selector = arith.index_castui %tag : i32 to index
+  %selected = scf.index_switch %selector -> i32
+  case 0 {
+    scf.yield %zero : i32
+  }
+  default {
+    scf.yield %one : i32
+  }
+  memref.store %selected, %dst[%lane] : memref<?xi32>
+  dataflow.thread.yield
+}
+
 // A host-scope memcpy-only function is still an accelerator candidate:
 // the compiler must expose a graph.func surface so graph-memory lowering can
 // turn the copy into real stream load/store ops. This is intentionally a
@@ -275,5 +297,9 @@ func.func private @guarded_carried_loop_candidate(%src: !llvm.ptr,
 // CHECK-LABEL: dataflow.graph.func private @g_t_structured_while_0
 // CHECK: scf.if
 // CHECK: scf.while
+// CHECK: memref.store
+// CHECK: dataflow.graph.return
+// CHECK-LABEL: dataflow.graph.func private @g_t_structured_index_switch_0
+// CHECK: scf.index_switch
 // CHECK: memref.store
 // CHECK: dataflow.graph.return

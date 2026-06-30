@@ -48,6 +48,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "hash_mix",
     "im2col",
     "integrate_trapz",
+    "interpolate_linear",
     "lower_bound",
     "mat3x3_mult",
     "matmul",

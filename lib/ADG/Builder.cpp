@@ -3732,6 +3732,7 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
 
 struct SharedMemoryAdgConfig {
   llvm::StringRef moduleName;
+  unsigned wideInputCount = 0;
   unsigned loadCount = 18;
   unsigned storeCount = 9;
   unsigned constantCount = 30;
@@ -3755,6 +3756,7 @@ struct SharedMemoryAdgConfig {
   unsigned wideShiftCount = 0;
   unsigned wideCmpCount = 0;
   unsigned wideCastCount = 4;
+  unsigned wideTrunciCount = 0;
   unsigned wideIndexCastCount = 0;
   unsigned wideIndexCastUiCount = 0;
   unsigned wideSextCount = 0;
@@ -3795,9 +3797,18 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
       .addInput("i32d", "!fabric.bits<32>")
       .addInput("ctrl", "!fabric.bits<0>");
 
+  std::vector<std::string> wideInputs;
+  for (unsigned index = 0; index < config.wideInputCount; ++index) {
+    std::string name =
+        index < 4 ? ("i64" + std::string(1, static_cast<char>('a' + index)))
+                  : numbered("i64", index);
+    module.addInput(name, "!fabric.bits<64>");
+    wideInputs.push_back(std::move(name));
+  }
+
   std::vector<std::string> sources32 = {"i32a", "i32b", "i32c", "i32d"};
   std::vector<std::string> sinks32;
-  std::vector<std::string> sources64;
+  std::vector<std::string> sources64 = wideInputs;
   std::vector<std::string> sinks64;
   std::vector<std::string> sources0 = {"ctrl"};
   std::vector<std::string> sinks0;
@@ -4153,6 +4164,8 @@ ModuleBuilder buildSharedMemoryLikeAdg(const SharedMemoryAdgConfig &config) {
   addWideExtensionBank("wide_sext", config.wideSextCount, "llvm.sext");
   addWideBinaryBank("wide_div", config.wideDivCount, {"arith.divsi"});
   addWideTruncBank("wide_trunc", config.wideCastCount);
+  addWideNarrowingBank("wide_trunci", config.wideTrunciCount,
+                       "arith.trunci");
   addWideNarrowingBank("wide_index_cast", config.wideIndexCastCount,
                        "arith.index_cast");
   addWideNarrowingBank("wide_index_castui", config.wideIndexCastUiCount,
@@ -4252,6 +4265,7 @@ ModuleBuilder loom::adg::buildSharedQuantizedWindowAdg() {
 ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   SharedMemoryAdgConfig config;
   config.moduleName = "shared_signal_window_adg";
+  config.wideInputCount = 4;
   config.loadCount = 40;
   config.storeCount = 40;
   config.constantCount = 48;
@@ -4263,6 +4277,13 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.logicCount = 16;
   config.shiftCount = 16;
   config.castCount = 16;
+  config.wideConstantCount = 2;
+  config.wideAddCount = 2;
+  config.wideCmpCount = 2;
+  config.wideTrunciCount = 2;
+  config.wideIndexCastCount = 4;
+  config.wideIndexCastUiCount = 2;
+  config.wideRouteBridgeCount = 2;
   config.fpAddCount = 72;
   config.fpMulCount = 24;
   config.fpDivCount = 4;

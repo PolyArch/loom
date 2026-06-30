@@ -213,6 +213,9 @@ case "${CASE}" in
   integrate_trapz)
     case_graph="g_t_integrate_trapz_red_0_0"
     ;;
+  interpolate_linear)
+    case_graph="g_t_interpolate_linear_kernel_0_0"
+    ;;
   reduction)
     case_graph="g_t_reduce_sum_red_0_0"
     ;;
@@ -425,7 +428,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "normalize_vec3" ]]; then
+    if [[ "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "normalize_vec3" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -721,6 +724,56 @@ elif [[ "${CASE}" == "normalize_vec3" ]]; then
   normalize_args+=(--arg "${normalize_size_arg}=${normalize_size}")
   normalize_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${normalize_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "interpolate_linear" ]]; then
+  mapfile -t interpolate_fixture < <(
+    python3 "${ROOT}/test/artifacts/interpolate_linear_fixtures.py" \
+      --source "${ROOT}/test/app/interpolate_linear/main_func.cpp" \
+      --emit dfg-args
+  )
+  interpolate_xq_arg="${interpolate_fixture[0]}"
+  interpolate_x_arg="${interpolate_fixture[1]}"
+  interpolate_y_arg="${interpolate_fixture[2]}"
+  interpolate_output_arg="${interpolate_fixture[3]}"
+  interpolate_index_arg="${interpolate_fixture[4]}"
+  interpolate_query_count="${interpolate_fixture[5]}"
+  interpolate_xq_values="${interpolate_fixture[6]}"
+  interpolate_x_values="${interpolate_fixture[7]}"
+  interpolate_y_values="${interpolate_fixture[8]}"
+  interpolate_zero_values="${interpolate_fixture[9]}"
+  interpolate_scalar_args=("${interpolate_fixture[@]:10}")
+  interpolate_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --memref "${interpolate_xq_arg}=${interpolate_xq_values}"
+    --memref "${interpolate_x_arg}=${interpolate_x_values}"
+    --memref "${interpolate_y_arg}=${interpolate_y_values}"
+    --memref "${interpolate_output_arg}=${interpolate_zero_values}"
+  )
+  for ((index = 0; index < interpolate_query_count; index++)); do
+    for scalar_arg in "${interpolate_scalar_args[@]}"; do
+      interpolate_args+=(--arg "${scalar_arg}")
+    done
+    interpolate_args+=(--arg "${interpolate_index_arg}=${index}")
+  done
+  interpolate_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${interpolate_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
