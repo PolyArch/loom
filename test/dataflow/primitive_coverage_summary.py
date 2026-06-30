@@ -60,6 +60,10 @@ def prepare_temp_app(source_dir: Path, tmp: str) -> Path:
     app_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "test" / "app" / "dfg_common.sh", app_root / "dfg_common.sh")
     shutil.copy2(
+        ROOT / "test" / "app" / "dfg_partial_lowering_common.sh",
+        app_root / "dfg_partial_lowering_common.sh",
+    )
+    shutil.copy2(
         ROOT / "test" / "app" / "dfg_primary_absence_common.sh",
         app_root / "dfg_primary_absence_common.sh",
     )

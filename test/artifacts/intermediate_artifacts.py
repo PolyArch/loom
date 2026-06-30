@@ -1680,13 +1680,11 @@ def validate_cgra_status_cmsis_no_missing_status(
         diagnostics.append(f"row {row_index}: CMSIS row must not use missing_status")
 
 
-def validate_cgra_status_cmsis_dfg_report_unsupported_status(
+def validate_cgra_status_dfg_report_unsupported_status(
     row: dict[str, str],
     diagnostics: list[str],
     row_index: int,
 ) -> None:
-    if row.get("suite", "") not in {"cmsis-dsp", "cmsis-nn"}:
-        return
     if row.get("diagnostic_class", "") != "dfg_report_unsupported":
         return
     if row.get("dfg_status", "") != "unsupported":
@@ -1882,7 +1880,7 @@ def validate_kind_invariants(
             validate_cgra_status_non_pass_referenced_json(anchor, row, diagnostics, row_index)
             validate_cgra_status_cmsis_dfg_mlir_row(anchor, row, diagnostics, row_index)
         validate_cgra_status_cmsis_no_missing_status(row, diagnostics, row_index)
-        validate_cgra_status_cmsis_dfg_report_unsupported_status(row, diagnostics, row_index)
+        validate_cgra_status_dfg_report_unsupported_status(row, diagnostics, row_index)
         validate_cgra_status_cmsis_dfg_mlir_reference(anchor, row, diagnostics, row_index)
         validate_cgra_status_cmsis_dfg_mlir_requirement(row, diagnostics, row_index)
         validate_cgra_status_loombench_no_manifest_row(row, diagnostics, row_index)

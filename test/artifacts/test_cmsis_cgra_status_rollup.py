@@ -487,8 +487,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 97,
             "fail": 0,
-            "blocked": 5,
-            "unsupported": 8,
+            "blocked": 0,
+            "unsupported": 13,
             "missing_status": 0,
         },
     )
@@ -566,9 +566,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 1,
             "fail": 0,
-            "blocked": 5,
+            "blocked": 0,
             "unsupported": 0,
-            "missing_status": 104,
+            "missing_status": 109,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -632,9 +632,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 110,
             "pass": 18,
             "fail": 0,
-            "blocked": 5,
+            "blocked": 0,
             "unsupported": 0,
-            "missing_status": 87,
+            "missing_status": 92,
         },
     )
     assert_counts(
@@ -858,6 +858,14 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
+    "edge_update": (
+        "primary workload graph is partial: edge_update lowering covers the input-to-output copy loop "
+        "while the CSR lookup and update loop remains outside dataflow"
+    ),
+    "edge_update_batch": (
+        "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
+        "while the batched CSR lookup and update loops remain outside dataflow"
+    ),
     "bitonic_stage-modified": (
         "primary workload graph absent: expected token bitonic_stage_modified_kernel"
     ),
@@ -869,6 +877,18 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
+    ),
+    "sort_merge": (
+        "primary workload graph is partial: sort_merge lowering covers copy and remainder-copy slices "
+        "while the merge compare loop remains outside dataflow"
+    ),
+    "sort_quick": (
+        "primary workload graph is partial: sort_quick lowering covers copy and partition slices "
+        "while iterative stack control remains outside dataflow"
+    ),
+    "spmspm": (
+        "primary workload graph is partial: spmspm lowering covers final nonzero compression "
+        "while sparse multiply-accumulate loops remain outside dataflow"
     ),
     "string_compare": "primary workload graph absent: expected token string_compare_kernel",
 }
@@ -1071,8 +1091,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 110,
             "pass": 14,
             "fail": 0,
-            "blocked": 5,
-            "unsupported": 8,
+            "blocked": 0,
+            "unsupported": 13,
             "missing_status": 83,
         },
     )

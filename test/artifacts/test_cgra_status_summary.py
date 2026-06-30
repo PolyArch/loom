@@ -49,7 +49,7 @@ HEADER = [
 ]
 LEGACY_CASE_COUNT = 127
 APP_CASE_COUNT = 110
-APP_NO_DFG_TIER_COUNT = 5
+APP_NO_DFG_TIER_COUNT = 0
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
     "axpy",
@@ -606,37 +606,44 @@ def main() -> int:
             raise AssertionError(f"interpolate_linear should expose DFG-tier row status before mapping evidence: {app_interpolate}")
         if app_interpolate["required_slice_count"] != "1":
             raise AssertionError(f"interpolate_linear should require one DFG slice after adding dfg_check.sh: {app_interpolate}")
-        tampered_no_dfg_rows = [dict(row) for row in rows]
-        tampered_edge_update = one_row(tampered_no_dfg_rows, "app", "edge_update")
-        tampered_edge_update.update(
-            {
-                "status": "not_run",
-                "diagnostic_class": "missing_status",
-                "owner": "implementation",
-                "blocking_prerequisite": "dataflow",
-                "diagnostic": "CGRA status missing because app row has no dataflow tier yet",
-            }
-        )
-        tampered_no_dfg_csv = out_dir / "tampered-no-dfg-cgra-status-summary.csv"
-        tampered_no_dfg_json = out_dir / "tampered-no-dfg-cgra-status-summary.json"
-        write_rows(tampered_no_dfg_csv, tampered_no_dfg_rows)
-        write_json_projection(tampered_no_dfg_json, tampered_no_dfg_csv, tampered_no_dfg_rows)
-        failed_no_dfg_audit = run(
-            repo,
-            [
-                "bash",
-                "test/e2e/run_cgra_status_audit.sh",
-                "--input",
-                str(tampered_no_dfg_csv),
-                "--json-input",
-                str(tampered_no_dfg_json),
-                "--legacy-loombench-root",
-                str(legacy_root),
-            ],
-            expect_success=False,
-        )
-        if "app row without dfg tier" not in failed_no_dfg_audit.stderr:
-            raise AssertionError(f"tampered app no-DFG row should fail status audit: {failed_no_dfg_audit.stderr}")
+        no_dfg_rows = [
+            row for row in rows
+            if row["suite"] == "app" and row["diagnostic_class"] == "app_dataflow_tier_missing"
+        ]
+        if len(no_dfg_rows) != APP_NO_DFG_TIER_COUNT:
+            raise AssertionError(f"unexpected app no-DFG rows: {no_dfg_rows}")
+        if no_dfg_rows:
+            tampered_no_dfg_rows = [dict(row) for row in rows]
+            tampered_no_dfg = one_row(tampered_no_dfg_rows, "app", no_dfg_rows[0]["case"])
+            tampered_no_dfg.update(
+                {
+                    "status": "not_run",
+                    "diagnostic_class": "missing_status",
+                    "owner": "implementation",
+                    "blocking_prerequisite": "dataflow",
+                    "diagnostic": "CGRA status missing because app row has no dataflow tier yet",
+                }
+            )
+            tampered_no_dfg_csv = out_dir / "tampered-no-dfg-cgra-status-summary.csv"
+            tampered_no_dfg_json = out_dir / "tampered-no-dfg-cgra-status-summary.json"
+            write_rows(tampered_no_dfg_csv, tampered_no_dfg_rows)
+            write_json_projection(tampered_no_dfg_json, tampered_no_dfg_csv, tampered_no_dfg_rows)
+            failed_no_dfg_audit = run(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_cgra_status_audit.sh",
+                    "--input",
+                    str(tampered_no_dfg_csv),
+                    "--json-input",
+                    str(tampered_no_dfg_json),
+                    "--legacy-loombench-root",
+                    str(legacy_root),
+                ],
+                expect_success=False,
+            )
+            if "app row without dfg tier" not in failed_no_dfg_audit.stderr:
+                raise AssertionError(f"tampered app no-DFG row should fail status audit: {failed_no_dfg_audit.stderr}")
 
         cmsis_dsp = one_row(rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         if cmsis_dsp["software_root"] != "externals/cmsis-dsp/Source":
@@ -2028,7 +2035,6 @@ def main() -> int:
             functional_state_source="component_cgra_sim_reports_carried_from_dfg_sim_reports",
         )
         write_sim_evidence_case(sim_evidence, "mean", cgra_final_state=True)
-        write_sim_evidence_case(sim_evidence, "edge_update", cgra_final_state=True)
         write_sim_evidence_case(sim_evidence, "string_compare", cgra_final_state=False)
         write_json(
             sim_evidence / "mean.dfg.report.json",
@@ -2086,25 +2092,6 @@ def main() -> int:
                 raise AssertionError(f"vecsum pass row should have {column}=pass: {vecsum}")
         if vecsum["final_outputs_present"] != "true" or vecsum["final_memory_state_present"] != "true":
             raise AssertionError(f"vecsum pass row should preserve final-state evidence: {vecsum}")
-        promoted_edge_update = one_row(promoted_rows, "app", "edge_update")
-        if promoted_edge_update["status"] != "blocked":
-            raise AssertionError(f"no-DFG edge_update must not consume simulator evidence: {promoted_edge_update}")
-        if promoted_edge_update["diagnostic_class"] != "app_dataflow_tier_missing":
-            raise AssertionError(f"no-DFG edge_update should preserve app no-DFG blocker: {promoted_edge_update}")
-        for column in (
-            "dfg_report",
-            "dfg_report_fingerprint",
-            "mapping_artifact",
-            "mapping_artifact_fingerprint",
-            "cgra_report",
-            "cgra_report_fingerprint",
-            "comparison_report",
-            "comparison_report_fingerprint",
-        ):
-            if promoted_edge_update[column]:
-                raise AssertionError(
-                    f"no-DFG edge_update should not reference sim evidence in {column}: {promoted_edge_update}"
-                )
         promoted_string_compare = one_row(promoted_rows, "app", "string_compare")
         if (
             promoted_string_compare["status"] != "blocked"
@@ -2185,59 +2172,66 @@ def main() -> int:
         if "referenced comparison_report JSON status is not pass" not in failed_tampered.stderr:
             raise AssertionError(f"tampered pass should fail on referenced JSON content: {failed_tampered.stderr}")
 
-        forged_no_dfg_failure_rows = [dict(row) for row in promoted_rows]
-        forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", "edge_update")
-        forged_no_dfg_dfg = out_dir / "forged-edge-update-failed-dfg.report.json"
-        write_json(
-            forged_no_dfg_dfg,
-            {
-                "schema_version": 1,
-                "kind": "dfg_sim_report",
-                "workload": "edge_update",
-                "status": "fail",
-                "optimistic_cycles": 0,
-                **dfg_cycle_fixture_fields(0),
-                "final_outputs": [],
-                "final_memory_state": {},
-                "diagnostics": ["fixture DFG-sim failure"],
-                "metric_definition": "fixture",
-            },
-        )
-        forged_no_dfg_failure.update(
-            {
-                "dfg_report": str(forged_no_dfg_dfg),
-                "dfg_report_fingerprint": hashlib.sha256(forged_no_dfg_dfg.read_bytes()).hexdigest(),
-                "dfg_status": "fail",
-                "status": "blocked",
-                "diagnostic_class": "dfg_report_failed",
-                "owner": "sim_report",
-                "blocking_prerequisite": "dfg_report",
-                "diagnostic": "fixture DFG-sim failure",
-            }
-        )
-        forged_no_dfg_failure_csv = out_dir / "forged-no-dfg-failure-downgrade-cgra-status-summary.csv"
-        forged_no_dfg_failure_json = out_dir / "forged-no-dfg-failure-downgrade-cgra-status-summary.json"
-        write_rows(forged_no_dfg_failure_csv, forged_no_dfg_failure_rows)
-        write_json_projection(forged_no_dfg_failure_json, forged_no_dfg_failure_csv, forged_no_dfg_failure_rows)
-        failed_no_dfg_failure = run(
-            repo,
-            [
-                "bash",
-                "test/e2e/run_cgra_status_audit.sh",
-                "--input",
-                str(forged_no_dfg_failure_csv),
-                "--json-input",
-                str(forged_no_dfg_failure_json),
-                "--legacy-loombench-root",
-                str(legacy_root),
-            ],
-            expect_success=False,
-        )
-        if "evidenced app row without dfg tier failed stage requires status=fail" not in failed_no_dfg_failure.stderr:
-            raise AssertionError(
-                "forged no-DFG failure downgrade should fail CGRA status audit: "
-                f"{failed_no_dfg_failure.stderr}"
+        promoted_no_dfg_rows = [
+            row for row in promoted_rows
+            if row["suite"] == "app" and row["diagnostic_class"] == "app_dataflow_tier_missing"
+        ]
+        if len(promoted_no_dfg_rows) != APP_NO_DFG_TIER_COUNT:
+            raise AssertionError(f"unexpected promoted app no-DFG rows: {promoted_no_dfg_rows}")
+        if promoted_no_dfg_rows:
+            forged_no_dfg_failure_rows = [dict(row) for row in promoted_rows]
+            forged_no_dfg_failure = one_row(forged_no_dfg_failure_rows, "app", promoted_no_dfg_rows[0]["case"])
+            forged_no_dfg_dfg = out_dir / "forged-no-dfg-failed-dfg.report.json"
+            write_json(
+                forged_no_dfg_dfg,
+                {
+                    "schema_version": 1,
+                    "kind": "dfg_sim_report",
+                    "workload": promoted_no_dfg_rows[0]["case"],
+                    "status": "fail",
+                    "optimistic_cycles": 0,
+                    **dfg_cycle_fixture_fields(0),
+                    "final_outputs": [],
+                    "final_memory_state": {},
+                    "diagnostics": ["fixture DFG-sim failure"],
+                    "metric_definition": "fixture",
+                },
             )
+            forged_no_dfg_failure.update(
+                {
+                    "dfg_report": str(forged_no_dfg_dfg),
+                    "dfg_report_fingerprint": hashlib.sha256(forged_no_dfg_dfg.read_bytes()).hexdigest(),
+                    "dfg_status": "fail",
+                    "status": "blocked",
+                    "diagnostic_class": "dfg_report_failed",
+                    "owner": "sim_report",
+                    "blocking_prerequisite": "dfg_report",
+                    "diagnostic": "fixture DFG-sim failure",
+                }
+            )
+            forged_no_dfg_failure_csv = out_dir / "forged-no-dfg-failure-downgrade-cgra-status-summary.csv"
+            forged_no_dfg_failure_json = out_dir / "forged-no-dfg-failure-downgrade-cgra-status-summary.json"
+            write_rows(forged_no_dfg_failure_csv, forged_no_dfg_failure_rows)
+            write_json_projection(forged_no_dfg_failure_json, forged_no_dfg_failure_csv, forged_no_dfg_failure_rows)
+            failed_no_dfg_failure = run(
+                repo,
+                [
+                    "bash",
+                    "test/e2e/run_cgra_status_audit.sh",
+                    "--input",
+                    str(forged_no_dfg_failure_csv),
+                    "--json-input",
+                    str(forged_no_dfg_failure_json),
+                    "--legacy-loombench-root",
+                    str(legacy_root),
+                ],
+                expect_success=False,
+            )
+            if "evidenced app row without dfg tier failed stage requires status=fail" not in failed_no_dfg_failure.stderr:
+                raise AssertionError(
+                    "forged no-DFG failure downgrade should fail CGRA status audit: "
+                    f"{failed_no_dfg_failure.stderr}"
+                )
 
         run(
             repo,

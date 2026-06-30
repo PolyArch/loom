@@ -575,6 +575,36 @@ def write_cgra_report(
     )
 
 
+def cgra_status_row(**overrides: str) -> dict[str, str]:
+    row = {column: "" for column in intermediate_artifacts.csv_header("cgra_status")}
+    row.update(
+        {
+            "suite": "app",
+            "case": "edge_update",
+            "source_row": "app:edge_update",
+            "manifest_case": "edge_update",
+            "software_root": "test/app",
+            "graph_ids": "g_t_edge_update_kernel_0_0",
+            "required_slice_count": "1",
+            "hardware_system": "shared_reduction_adg",
+            "spatialcore_template": "shared_reduction_adg",
+            "dfg_status": "unsupported",
+            "mapping_status": "blocked",
+            "cgra_status": "blocked",
+            "comparison_status": "blocked",
+            "final_outputs_present": "false",
+            "final_memory_state_present": "false",
+            "status": "unsupported",
+            "diagnostic_class": "dfg_report_unsupported",
+            "owner": "sim_report",
+            "blocking_prerequisite": "dfg_report",
+            "diagnostic": "primary workload graph is partial: edge_update lowering boundary",
+        }
+    )
+    row.update(overrides)
+    return row
+
+
 def final_state_fingerprint(
     final_outputs: list[str],
     final_memory_state: dict[str, list[str]],
@@ -1079,6 +1109,30 @@ def main() -> int:
         messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
         if "DFG-sim cycles 64" not in messages or "CGRA-sim cycles 80" not in messages:
             raise AssertionError(f"duplicate simulator diagnostics missing: {audit_data}")
+
+        forged_app_unsupported_status = out_dir / "forged-app-unsupported-status-cgra-status-summary.csv"
+        intermediate_artifacts.write_csv_rows(
+            "cgra_status",
+            forged_app_unsupported_status,
+            [cgra_status_row(status="blocked")],
+        )
+        forged_app_unsupported_status_audit = out_dir / "artifact-audit-summary-forged-app-unsupported-status.json"
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_app_unsupported_status_audit),
+                str(forged_app_unsupported_status),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("app DFG unsupported row with blocked status unexpectedly passed audit")
+        audit_data = json.loads(forged_app_unsupported_status_audit.read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "DFG unsupported report row requires status=unsupported" not in messages:
+            raise AssertionError(f"app DFG unsupported status diagnostic missing: {audit_data}")
 
         duplicate_equivalence_sim = out_dir / "duplicate-equivalence-sim-cycle-summary.csv"
         duplicate_equivalence_sim.write_text(

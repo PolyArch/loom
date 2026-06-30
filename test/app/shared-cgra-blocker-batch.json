@@ -46,6 +46,14 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "edge_update",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "edge_update_batch",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "bitonic_stage-modified",
       "hardware": "shared_reduction_adg"
     },
@@ -71,6 +79,18 @@
     },
     {
       "case": "sort_insertion",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sort_merge",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sort_quick",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "spmspm",
       "hardware": "shared_reduction_adg"
     },
     {

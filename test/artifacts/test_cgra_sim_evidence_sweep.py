@@ -14,7 +14,7 @@ from pathlib import Path
 import artifact_test_common
 
 
-APP_NO_DFG_TIER_COUNT = 5
+APP_NO_DFG_TIER_COUNT = 0
 DEFAULT_SWEEP_CASES = (
     "autocorrelation",
     "vecsum",
@@ -89,6 +89,8 @@ DEFAULT_SWEEP_CASES = (
     "outer",
     "byte_swap",
     "scatter_add",
+    "edge_update",
+    "edge_update_batch",
     "bitonic_stage-modified",
     "col2im",
     "hist_bin",
@@ -96,6 +98,9 @@ DEFAULT_SWEEP_CASES = (
     "histogram_strided",
     "quantile",
     "sort_insertion",
+    "sort_merge",
+    "sort_quick",
+    "spmspm",
     "string_compare",
     "xor_block",
     "relu",
@@ -127,6 +132,8 @@ MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
+    "edge_update",
+    "edge_update_batch",
     "bitonic_stage-modified",
     "col2im",
     "hist_bin",
@@ -134,6 +141,9 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "histogram_strided",
     "quantile",
     "sort_insertion",
+    "sort_merge",
+    "sort_quick",
+    "spmspm",
     "string_compare",
 )
 PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str], ...] = (
@@ -151,9 +161,35 @@ GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
     "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
 )
 PARTIAL_LOWERING_SWEEP_CASES = {
+    "edge_update": (
+        "primary workload graph is partial: edge_update lowering covers the input-to-output copy loop "
+        "while the CSR lookup and update loop remains outside dataflow",
+        "edge_update_kernel",
+    ),
+    "edge_update_batch": (
+        "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
+        "while the batched CSR lookup and update loops remain outside dataflow",
+        "edge_update_batch_kernel",
+    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
-        "while the insertion-sort compare-and-shift loop remains outside dataflow"
+        "while the insertion-sort compare-and-shift loop remains outside dataflow",
+        "sort_insertion_kernel",
+    ),
+    "sort_merge": (
+        "primary workload graph is partial: sort_merge lowering covers copy and remainder-copy slices "
+        "while the merge compare loop remains outside dataflow",
+        "sort_merge_kernel",
+    ),
+    "sort_quick": (
+        "primary workload graph is partial: sort_quick lowering covers copy and partition slices "
+        "while iterative stack control remains outside dataflow",
+        "sort_quick_kernel",
+    ),
+    "spmspm": (
+        "primary workload graph is partial: spmspm lowering covers final nonzero compression "
+        "while sparse multiply-accumulate loops remain outside dataflow",
+        "spmspm_kernel",
     ),
 }
 MAPPING_FAILED_SWEEP_EVIDENCE: dict[str, dict[str, object]] = {}
@@ -4289,7 +4325,12 @@ def assert_primary_graph_missing(evidence_dir: Path, case: str, expected_token: 
         raise AssertionError(f"{case} should not expose its primary graph token yet: {dfg_path}: {dfg}")
 
 
-def assert_partial_lowering_blocker(evidence_dir: Path, case: str, expected_diagnostic: str) -> None:
+def assert_partial_lowering_blocker(
+    evidence_dir: Path,
+    case: str,
+    expected_diagnostic: str,
+    expected_graph_token: str,
+) -> None:
     dfg_path = evidence_dir / f"{case}.dfg.report.json"
     mapping_path = evidence_dir / f"{case}.mapping.json"
     dfg = json.loads(dfg_path.read_text())
@@ -4299,7 +4340,7 @@ def assert_partial_lowering_blocker(evidence_dir: Path, case: str, expected_diag
         if not isinstance(diagnostics, list) or expected_diagnostic not in diagnostics:
             raise AssertionError(f"{case} should report partial lowering: {artifact_path}: {artifact}")
     graph_ids = dfg.get("discovered_graph_ids")
-    if not isinstance(graph_ids, list) or not any("sort_insertion_kernel" in str(graph_id) for graph_id in graph_ids):
+    if not isinstance(graph_ids, list) or not any(expected_graph_token in str(graph_id) for graph_id in graph_ids):
         raise AssertionError(f"{case} should preserve the partial graph identity: {dfg_path}: {dfg}")
 
 
@@ -4555,6 +4596,10 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "scatter_add",
                 "--case",
+                "edge_update",
+                "--case",
+                "edge_update_batch",
+                "--case",
                 "bitonic_stage-modified",
                 "--case",
                 "col2im",
@@ -4568,6 +4613,12 @@ def main(argv: list[str]) -> int:
                 "quantile",
                 "--case",
                 "sort_insertion",
+                "--case",
+                "sort_merge",
+                "--case",
+                "sort_quick",
+                "--case",
+                "spmspm",
                 "--case",
                 "string_compare",
                 "--case",
@@ -5030,8 +5081,8 @@ def main(argv: list[str]) -> int:
             assert_primary_graph_missing(evidence_dir, case, expected_token)
         for case, expected_token in GRAPH_PRESENT_UNWIRED_SWEEP_CASES.items():
             assert_graph_present_unwired_blocker(evidence_dir, case, expected_token)
-        for case, expected_diagnostic in PARTIAL_LOWERING_SWEEP_CASES.items():
-            assert_partial_lowering_blocker(evidence_dir, case, expected_diagnostic)
+        for case, (expected_diagnostic, expected_graph_token) in PARTIAL_LOWERING_SWEEP_CASES.items():
+            assert_partial_lowering_blocker(evidence_dir, case, expected_diagnostic, expected_graph_token)
         assert_mapping_hardware(evidence_dir, "dotproduct", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dotprod", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
@@ -5584,8 +5635,8 @@ def main(argv: list[str]) -> int:
             "total": 110,
             "pass": 97,
             "fail": 0,
-            "blocked": 5,
-            "unsupported": 8,
+            "blocked": 0,
+            "unsupported": 13,
             "missing_status": 0,
         }
         if counts != expected_counts:

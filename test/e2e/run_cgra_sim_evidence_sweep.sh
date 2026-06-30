@@ -130,6 +130,8 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     outer
     byte_swap
     scatter_add
+    edge_update
+    edge_update_batch
     bitonic_stage-modified
     col2im
     hist_bin
@@ -137,6 +139,9 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     histogram_strided
     quantile
     sort_insertion
+    sort_merge
+    sort_quick
+    spmspm
     string_compare
     xor_block
     relu

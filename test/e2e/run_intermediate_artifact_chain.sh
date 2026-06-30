@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    bitonic_stage-modified|col2im|hist_bin|histogram|histogram_strided|quantile|sort_insertion|string_compare)
+    bitonic_stage-modified|col2im|edge_update|edge_update_batch|hist_bin|histogram|histogram_strided|quantile|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
       return 0
       ;;
     *)
@@ -125,6 +125,12 @@ case "${CASE}" in
     ;;
   col2im)
     case_graph="missing_primary_graph"
+    ;;
+  edge_update)
+    case_graph="g_t_edge_update_kernel_0_0"
+    ;;
+  edge_update_batch)
+    case_graph="g_t_edge_update_batch_kernel_0_0"
     ;;
   hist_bin)
     case_graph="missing_primary_graph"
@@ -389,6 +395,15 @@ case "${CASE}" in
     ;;
   sort_insertion)
     case_graph="g_t_sort_insertion_kernel_0_0"
+    ;;
+  sort_merge)
+    case_graph="g_t_sort_merge_kernel_red_0_0"
+    ;;
+  sort_quick)
+    case_graph="g_t_sort_quick_kernel_red_0_0"
+    ;;
+  spmspm)
+    case_graph="g_t_spmspm_kernel_red_0_0"
     ;;
   sort_bubble)
     case_graph="g_t_sort_bubble_kernel_red_0_0"
@@ -1910,6 +1925,22 @@ elif uses_primary_graph_absence_path "${CASE}"; then
     col2im)
       expected_primary_graph_token="col2im_kernel"
       ;;
+    edge_update)
+      expected_primary_graph_token="edge_update_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is partial: edge_update lowering covers the input-to-output copy loop while the CSR lookup and update loop remains outside dataflow"
+        --evidence "partial dataflow lowering boundary"
+      )
+      ;;
+    edge_update_batch)
+      expected_primary_graph_token="edge_update_batch_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop while the batched CSR lookup and update loops remain outside dataflow"
+        --evidence "partial dataflow lowering boundary"
+      )
+      ;;
     hist_bin)
       expected_primary_graph_token="hist_bin_kernel"
       ;;
@@ -1927,6 +1958,30 @@ elif uses_primary_graph_absence_path "${CASE}"; then
       graph_absence_args=(
         --expected-graph-presence present
         --diagnostic "primary workload graph is partial: sort_insertion lowering covers the copy loop while the insertion-sort compare-and-shift loop remains outside dataflow"
+        --evidence "partial dataflow lowering boundary"
+      )
+      ;;
+    sort_merge)
+      expected_primary_graph_token="sort_merge_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is partial: sort_merge lowering covers copy and remainder-copy slices while the merge compare loop remains outside dataflow"
+        --evidence "partial dataflow lowering boundary"
+      )
+      ;;
+    sort_quick)
+      expected_primary_graph_token="sort_quick_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is partial: sort_quick lowering covers copy and partition slices while iterative stack control remains outside dataflow"
+        --evidence "partial dataflow lowering boundary"
+      )
+      ;;
+    spmspm)
+      expected_primary_graph_token="spmspm_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --diagnostic "primary workload graph is partial: spmspm lowering covers final nonzero compression while sparse multiply-accumulate loops remain outside dataflow"
         --evidence "partial dataflow lowering boundary"
       )
       ;;
