@@ -146,15 +146,26 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "spmspm",
     "string_compare",
 )
+EMPTY_DISCOVERED_GRAPH_IDS = "__empty__"
 PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "bitonic_stage-modified",
         "bitonic_stage_modified_kernel",
-        "primary workload graph absent: expected token bitonic_stage_modified_kernel",
-        "",
-        "",
+        "primary workload graph absent: bitonic_stage_modified_kernel remains a residual call target "
+        "outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim "
+        "cannot observe the kernel return value",
+        EMPTY_DISCOVERED_GRAPH_IDS,
+        "bitonic_stage_modified_kernel",
     ),
-    ("col2im", "col2im_kernel", "primary workload graph absent: expected token col2im_kernel", "", ""),
+    (
+        "col2im",
+        "col2im_kernel",
+        "primary workload graph absent: col2im_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
+        "observe the kernel return value",
+        EMPTY_DISCOVERED_GRAPH_IDS,
+        "col2im_kernel",
+    ),
     (
         "hist_bin",
         "hist_bin_kernel",
@@ -4372,10 +4383,21 @@ def assert_primary_graph_missing(
         diagnostics = artifact.get("diagnostics")
         if not isinstance(diagnostics, list) or expected_diagnostic not in diagnostics:
             raise AssertionError(f"{case} should report primary graph absence: {artifact_path}: {artifact}")
+        stale_diagnostic = f"primary workload graph absent: expected token {expected_token}"
+        if stale_diagnostic != expected_diagnostic and stale_diagnostic in diagnostics:
+            raise AssertionError(
+                f"{case} should not keep stale generic primary graph diagnostic: {artifact_path}: {artifact}"
+            )
     graph_ids = dfg.get("discovered_graph_ids")
     if not isinstance(graph_ids, list) or any(expected_token in str(graph_id) for graph_id in graph_ids):
         raise AssertionError(f"{case} should not expose its primary graph token yet: {dfg_path}: {dfg}")
-    if expected_discovered_graph and expected_discovered_graph not in graph_ids:
+    if expected_discovered_graph == EMPTY_DISCOVERED_GRAPH_IDS and graph_ids:
+        raise AssertionError(f"{case} should not expose any discovered graph ids yet: {dfg_path}: {dfg}")
+    if (
+        expected_discovered_graph
+        and expected_discovered_graph != EMPTY_DISCOVERED_GRAPH_IDS
+        and expected_discovered_graph not in graph_ids
+    ):
         raise AssertionError(f"{case} should prove supporting graph {expected_discovered_graph}: {dfg_path}: {dfg}")
     residual_calls = dfg.get("residual_call_targets")
     if expected_residual_call and (

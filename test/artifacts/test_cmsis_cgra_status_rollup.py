@@ -867,9 +867,15 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "while the batched CSR lookup and update loops remain outside dataflow"
     ),
     "bitonic_stage-modified": (
-        "primary workload graph absent: expected token bitonic_stage_modified_kernel"
+        "primary workload graph absent: bitonic_stage_modified_kernel remains a residual call target "
+        "outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim "
+        "cannot observe the kernel return value"
     ),
-    "col2im": "primary workload graph absent: expected token col2im_kernel",
+    "col2im": (
+        "primary workload graph absent: col2im_kernel remains a residual call target outside "
+        "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
+        "observe the kernel return value"
+    ),
     "hist_bin": (
         "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
         "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
@@ -912,6 +918,7 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "g_t_main_2_0, so DFG-sim cannot observe the kernel return value"
     ),
 }
+EMPTY_DISCOVERED_GRAPH_IDS = "__empty__"
 
 SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS: dict[str, str] = {}
 
@@ -1225,6 +1232,9 @@ def assert_primary_graph_absence_attempt_mode(
         or expected_diagnostic not in row["diagnostic"]
     ):
         raise AssertionError(f"primary graph absence attempt should publish structured evidence: {row}")
+    stale_diagnostic = f"primary workload graph absent: expected token {expected_primary_graph_token}"
+    if stale_diagnostic != expected_diagnostic and stale_diagnostic in row["diagnostic"]:
+        raise AssertionError(f"primary graph absence attempt should not keep stale diagnostic: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
         artifact = out_dir / "current-sim-cycle" / Path(row[key]).name
@@ -1234,12 +1244,23 @@ def assert_primary_graph_absence_attempt_mode(
             raise AssertionError(f"primary graph absence attempt should emit {artifact}")
     dfg_report = out_dir / "current-sim-cycle" / Path(row["dfg_report"]).name
     dfg_data = json.loads(dfg_report.read_text())
+    diagnostics = dfg_data.get("diagnostics")
+    if not isinstance(diagnostics, list) or expected_diagnostic not in diagnostics:
+        raise AssertionError(f"primary graph absence attempt should emit exact DFG diagnostic: {dfg_data}")
+    if stale_diagnostic != expected_diagnostic and stale_diagnostic in diagnostics:
+        raise AssertionError(f"primary graph absence DFG report should not keep stale diagnostic: {dfg_data}")
     graph_ids = dfg_data.get("discovered_graph_ids")
     if not isinstance(graph_ids, list) or any(
         expected_primary_graph_token in str(graph_id) for graph_id in graph_ids
     ):
         raise AssertionError(f"primary graph absence attempt should not expose primary graph: {dfg_data}")
-    if expected_discovered_graph and expected_discovered_graph not in graph_ids:
+    if expected_discovered_graph == EMPTY_DISCOVERED_GRAPH_IDS and graph_ids:
+        raise AssertionError(f"primary graph absence attempt should not expose any graph ids: {dfg_data}")
+    if (
+        expected_discovered_graph
+        and expected_discovered_graph != EMPTY_DISCOVERED_GRAPH_IDS
+        and expected_discovered_graph not in graph_ids
+    ):
         raise AssertionError(
             f"primary graph absence attempt should prove graph {expected_discovered_graph}: {dfg_data}"
         )
@@ -1250,6 +1271,57 @@ def assert_primary_graph_absence_attempt_mode(
         raise AssertionError(
             f"primary graph absence attempt should prove residual call {expected_residual_call}: {dfg_data}"
         )
+
+
+def assert_primary_graph_absence_empty_graph_guard(repo: Path, out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dfg_mlir = out_dir / "helper-with-residual-call.mlir"
+    dfg_mlir.write_text(
+        "\n".join(
+            [
+                "module {",
+                "  dataflow.graph.func @g_t_helper_0_0() {",
+                "    dataflow.return",
+                "  }",
+                "  func.func @main() {",
+                "    call @col2im_kernel() : () -> ()",
+                "    return",
+                "  }",
+                "}",
+                "",
+            ]
+        )
+    )
+    proc = run(
+        repo,
+        [
+            "python3",
+            "test/e2e/emit_primary_graph_absence_artifacts.py",
+            "--workload",
+            "col2im",
+            "--dfg-mlir",
+            str(dfg_mlir),
+            "--expected-graph-token",
+            "col2im_kernel",
+            "--require-empty-discovered-graphs",
+            "--required-residual-call",
+            "col2im_kernel",
+            "--hardware",
+            "shared_reduction_adg",
+            "--dfg-output",
+            str(out_dir / "col2im.dfg.report.json"),
+            "--dfg-cycle-output",
+            str(out_dir / "col2im.dfg-cycle.csv"),
+            "--mapping-output",
+            str(out_dir / "col2im.mapping.json"),
+            "--mapping-summary-output",
+            str(out_dir / "col2im.mapping.csv"),
+        ],
+        expect_success=False,
+    )
+    combined = proc.stdout + proc.stderr
+    if "discovered graph ids should be empty" not in combined:
+        raise AssertionError(f"empty graph guard should explain discovered graph ids: {combined}")
 
 
 def assert_no_dfg_app_direct_attempt_mode(
@@ -4437,7 +4509,19 @@ def main() -> int:
             legacy_root,
             case="col2im",
             expected_primary_graph_token="col2im_kernel",
+            expected_discovered_graph=EMPTY_DISCOVERED_GRAPH_IDS,
+            expected_residual_call="col2im_kernel",
         )
+        assert_primary_graph_absence_attempt_mode(
+            repo,
+            out_dir / "no-dfg-app-attempt-bitonic-stage-modified",
+            legacy_root,
+            case="bitonic_stage-modified",
+            expected_primary_graph_token="bitonic_stage_modified_kernel",
+            expected_discovered_graph=EMPTY_DISCOVERED_GRAPH_IDS,
+            expected_residual_call="bitonic_stage_modified_kernel",
+        )
+        assert_primary_graph_absence_empty_graph_guard(repo, out_dir / "primary-graph-empty-guard")
         assert_primary_graph_absence_attempt_mode(
             repo,
             out_dir / "no-dfg-app-attempt-string-compare",

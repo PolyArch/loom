@@ -1921,9 +1921,21 @@ elif uses_primary_graph_absence_path "${CASE}"; then
   case "${CASE}" in
     bitonic_stage-modified)
       expected_primary_graph_token="bitonic_stage_modified_kernel"
+      graph_absence_args=(
+        --require-empty-discovered-graphs
+        --required-residual-call "bitonic_stage_modified_kernel"
+        --diagnostic "primary workload graph absent: bitonic_stage_modified_kernel remains a residual call target outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind a residual call target"
+      )
       ;;
     col2im)
       expected_primary_graph_token="col2im_kernel"
+      graph_absence_args=(
+        --require-empty-discovered-graphs
+        --required-residual-call "col2im_kernel"
+        --diagnostic "primary workload graph absent: col2im_kernel remains a residual call target outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot observe the kernel return value"
+        --evidence "kernel remains behind a residual call target"
+      )
       ;;
     edge_update)
       expected_primary_graph_token="edge_update_kernel"

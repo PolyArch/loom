@@ -24,6 +24,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--dfg-mlir", required=True)
     parser.add_argument("--expected-graph-token", required=True)
     parser.add_argument("--required-discovered-graph", action="append", default=[])
+    parser.add_argument("--require-empty-discovered-graphs", action="store_true")
     parser.add_argument("--required-residual-call", action="append", default=[])
     parser.add_argument(
         "--expected-graph-presence",
@@ -82,6 +83,12 @@ def emit_artifacts(args: argparse.Namespace) -> None:
     text = dfg_mlir.read_text(errors="replace")
     graph_ids = graph_ids_from_text(text)
     residual_calls = residual_call_targets_from_text(text)
+    if args.require_empty_discovered_graphs and args.required_discovered_graph:
+        raise SystemExit(
+            "--require-empty-discovered-graphs cannot be combined with --required-discovered-graph"
+        )
+    if args.require_empty_discovered_graphs and graph_ids:
+        raise SystemExit("discovered graph ids should be empty: " + ",".join(graph_ids))
     token_present = any(args.expected_graph_token in graph_id for graph_id in graph_ids)
     if args.expected_graph_presence == "absent" and token_present:
         raise SystemExit(
