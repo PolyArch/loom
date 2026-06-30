@@ -145,6 +145,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     window_hanning
     interpolate_linear
     distance_point
+    edit_distance_step
     normalize_vec3
     transpose
     transform_point

@@ -107,12 +107,13 @@
 // MEMREF-CAST-DAG: "unsupported op: builtin.unrealized_conversion_cast"
 
 // PARTIAL-CAPTURE-DAG: "graph": "structured_for_blocks_partial_dynamic_capture"
-// PARTIAL-CAPTURE-DAG: "status": "blocked"
-// PARTIAL-CAPTURE-DAG: "dataflow.graph.return value produced 1 of 2 dynamic work items"
+// PARTIAL-CAPTURE-DAG: "status": "pass"
+// PARTIAL-CAPTURE-DAG: "arith.addi": 4
+// PARTIAL-CAPTURE-DAG: "dataflow.store": 2
 // PARTIAL-CAPTURE-DAG: "arg8": [
 // PARTIAL-CAPTURE-DAG: "i32:13"
-// PARTIAL-CAPTURE-DAG: "i32:0"
-// PARTIAL-CAPTURE-NOT: "i32:23"
+// PARTIAL-CAPTURE-DAG: "i32:25"
+// PARTIAL-CAPTURE-NOT: "dataflow.graph.return value produced"
 
 // POINTER-MEMORY-DAG: "graph": "structured_for_pointer_memory"
 // POINTER-MEMORY-DAG: "status": "pass"

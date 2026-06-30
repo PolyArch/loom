@@ -3,9 +3,14 @@
 
 // CHECK-DAG: "workload": "partial_grid"
 // CHECK-DAG: "graph": "partial_grid"
-// CHECK-DAG: "status": "blocked"
+// CHECK-DAG: "status": "pass"
 // CHECK-DAG: "dynamic_work_items": 4
-// CHECK-DAG: "dataflow.graph.return value produced 1 of 4 dynamic work items"
+// CHECK-DAG: "dataflow.store": 4
+// CHECK-DAG: "arg3": [
+// CHECK-DAG: "i32:7"
+// CHECK-DAG: "i32:7"
+// CHECK-DAG: "i32:7"
+// CHECK-DAG: "i32:7"
 
 module {
   dataflow.graph.func private @partial_grid(%ctrl: none, %idx: index,

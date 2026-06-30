@@ -38,6 +38,7 @@ EXPECTED_CASES = {
     "ctz",
     "cumsum",
     "distance_point",
+    "edit_distance_step",
     "delta_decode",
     "delta_encode",
     "dot_product_3d",

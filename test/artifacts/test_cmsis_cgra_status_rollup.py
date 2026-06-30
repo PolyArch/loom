@@ -484,8 +484,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "app",
         {
-            "total": 109,
-            "pass": 96,
+            "total": 110,
+            "pass": 97,
             "fail": 0,
             "blocked": 12,
             "unsupported": 1,
@@ -563,12 +563,12 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         stale_data,
         "app",
         {
-            "total": 109,
+            "total": 110,
             "pass": 1,
             "fail": 0,
             "blocked": 12,
             "unsupported": 0,
-            "missing_status": 96,
+            "missing_status": 97,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -629,12 +629,12 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "app",
         {
-            "total": 109,
+            "total": 110,
             "pass": 18,
             "fail": 0,
             "blocked": 12,
             "unsupported": 0,
-            "missing_status": 79,
+            "missing_status": 80,
         },
     )
     assert_counts(
@@ -1059,12 +1059,12 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         data,
         "app",
         {
-            "total": 109,
+            "total": 110,
             "pass": 14,
             "fail": 0,
             "blocked": 12,
             "unsupported": 1,
-            "missing_status": 82,
+            "missing_status": 83,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
@@ -1956,8 +1956,8 @@ def assert_cmsis_cfft_component_evidence(
     red3_cgra_cycles = red3_cgra.get("hardware_aware_cycles")
     if (
         red3_cgra.get("status") != "pass"
-        or red3_cgra.get("dfg_cycles") != 87
-        or red3_cgra.get("hardware_aware_cycles") != 178
+        or red3_cgra.get("dfg_cycles") != 88
+        or red3_cgra.get("hardware_aware_cycles") != 179
         or red3_cgra.get("final_outputs") != ["none"]
         or red3_cgra.get("final_memory_state") != red3_memory
         or not isinstance(red3_dfg_cycles, int)
@@ -1972,7 +1972,7 @@ def assert_cmsis_cfft_component_evidence(
         or aggregate_dfg.get("graph") != "workload_graph_set"
         or set(aggregate_dfg.get("component_graphs", [])) != expected_graphs
         or aggregate_dfg.get("dynamic_work_items") != 10
-        or aggregate_dfg.get("optimistic_cycles") != 1280
+        or aggregate_dfg.get("optimistic_cycles") != 1281
         or aggregate_dfg.get("operation_fire_counts", {}).get("arith.addf") != 49
         or aggregate_dfg.get("operation_fire_counts", {}).get("arith.subf") != 55
         or aggregate_dfg.get("operation_fire_counts", {}).get("arith.mulf") != 56
@@ -1999,8 +1999,8 @@ def assert_cmsis_cfft_component_evidence(
         or aggregate_cgra.get("hardware") != "shared_signal_window_adg"
         or aggregate_cgra.get("graph") != "workload_graph_set"
         or set(aggregate_cgra.get("component_graphs", [])) != expected_graphs
-        or aggregate_cgra.get("dfg_cycles") != 1280
-        or aggregate_cgra.get("hardware_aware_cycles") != 3320
+        or aggregate_cgra.get("dfg_cycles") != 1281
+        or aggregate_cgra.get("hardware_aware_cycles") != 3321
         or aggregate_cgra.get("final_outputs") != ["none", "none", "none", "none"]
         or aggregate_cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
     ):
@@ -3197,7 +3197,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         or red1_dfg.get("workload") != "ActivationFunctions/arm_relu_q7.c"
         or red1_dfg.get("graph") != "g_t_arm_relu_q7_red_1_0"
         or red1_dfg.get("status") != "pass"
-        or red1_dfg.get("optimistic_cycles") != 100
+        or red1_dfg.get("optimistic_cycles") != 101
         or red1_dfg.get("dynamic_work_items") != 3
         or red1_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 3
         or red1_dfg.get("operation_fire_counts", {}).get("arith.cmpi") != 3
@@ -3266,8 +3266,8 @@ def assert_cmsis_relu_q7_cgra_evidence(
     red1_cgra = json.loads((sim_evidence / "arm_relu_q7.red1.cgra.report.json").read_text())
     if (
         red1_cgra.get("status") != "pass"
-        or red1_cgra.get("dfg_cycles") != 100
-        or red1_cgra.get("hardware_aware_cycles") != 199
+        or red1_cgra.get("dfg_cycles") != 101
+        or red1_cgra.get("hardware_aware_cycles") != 200
         or red1_cgra.get("fidelity_level") != "mapping_constraint_estimate"
         or red1_cgra.get("config_records") != 402
         or red1_cgra.get("route_segments") != 72
@@ -3290,7 +3290,7 @@ def assert_cmsis_relu_q7_cgra_evidence(
         or aggregate_dfg.get("aggregation_kind") != "workload_graph_set"
         or aggregate_dfg.get("component_graphs") != expected_graph_list
         or aggregate_dfg.get("status") != "pass"
-        or aggregate_dfg.get("optimistic_cycles") != 183
+        or aggregate_dfg.get("optimistic_cycles") != 188
         or aggregate_dfg.get("dynamic_work_items") != 5
         or aggregate_dfg.get("operation_fire_counts", {}).get("dataflow.load") != 5
         or aggregate_dfg.get("operation_fire_counts", {}).get("dataflow.store") != 5
@@ -3324,8 +3324,8 @@ def assert_cmsis_relu_q7_cgra_evidence(
         or aggregate_cgra.get("component_graphs") != expected_graph_list
         or aggregate_cgra.get("aggregation_kind") != "workload_graph_set"
         or aggregate_cgra.get("fidelity_level") != "mapping_constraint_estimate"
-        or aggregate_cgra.get("dfg_cycles") != 183
-        or aggregate_cgra.get("hardware_aware_cycles") != 420
+        or aggregate_cgra.get("dfg_cycles") != 188
+        or aggregate_cgra.get("hardware_aware_cycles") != 425
         or aggregate_cgra.get("performance_delta_cycles") != 237
         or aggregate_cgra.get("routed_edges") != 44
         or aggregate_cgra.get("config_records") != 991
@@ -3734,7 +3734,7 @@ def assert_cmsis_fill_shared_adg_evidence(sim_evidence: Path) -> None:
         "hardware": "shared_reduction_adg",
         "status": "pass",
         "fidelity_level": "mapping_constraint_estimate",
-        "hardware_aware_cycles": 134,
+        "hardware_aware_cycles": 135,
         "performance_delta_cycles": 60,
         "route_segments": 43,
         "config_records": 246,
@@ -3831,7 +3831,7 @@ def assert_cmsis_max_shared_adg_evidence(sim_evidence: Path) -> None:
         or dfg_report.get("workload") != "StatisticsFunctions/arm_max_f32.c"
         or dfg_report.get("graph") != "g_t_arm_max_f32_red_0_0"
         or dfg_report.get("status") != "pass"
-        or dfg_report.get("optimistic_cycles") != 104
+        or dfg_report.get("optimistic_cycles") != 105
         or dfg_report.get("dynamic_work_items") != 3
         or dfg_report.get("operation_fire_counts", {}).get("dataflow.load") != 3
         or dfg_report.get("operation_fire_counts", {}).get("arith.cmpf") != 3
@@ -3879,8 +3879,8 @@ def assert_cmsis_max_shared_adg_evidence(sim_evidence: Path) -> None:
         "hardware": "shared_reduction_adg",
         "status": "pass",
         "fidelity_level": "mapping_constraint_estimate",
-        "dfg_cycles": 104,
-        "hardware_aware_cycles": 246,
+        "dfg_cycles": 105,
+        "hardware_aware_cycles": 247,
         "performance_delta_cycles": 142,
         "route_segments": 122,
         "config_records": 653,
@@ -3905,7 +3905,7 @@ def assert_cmsis_biquad_shared_adg_evidence(sim_evidence: Path) -> None:
         or dfg_report.get("workload") != "FilteringFunctions/arm_biquad_cascade_df1_f32.c"
         or dfg_report.get("graph") != "g_t_arm_biquad_cascade_df1_f32_red_0_0"
         or dfg_report.get("status") != "pass"
-        or dfg_report.get("optimistic_cycles") != 286
+        or dfg_report.get("optimistic_cycles") != 291
         or dfg_report.get("dynamic_work_items") != 4
         or dfg_report.get("final_outputs") != expected_outputs
         or dfg_report.get("final_memory_state") != expected_memory
@@ -3955,8 +3955,8 @@ def assert_cmsis_biquad_shared_adg_evidence(sim_evidence: Path) -> None:
         "hardware": "shared_reduction_adg",
         "status": "pass",
         "fidelity_level": "mapping_constraint_estimate",
-        "dfg_cycles": 286,
-        "hardware_aware_cycles": 493,
+        "dfg_cycles": 291,
+        "hardware_aware_cycles": 498,
         "performance_delta_cycles": 207,
         "route_segments": 171,
         "config_records": 898,
@@ -3980,7 +3980,7 @@ def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
         or dfg_report.get("aggregation_kind") != "workload_graph_set"
         or dfg_report.get("component_graphs") != expected_graphs
         or dfg_report.get("status") != "pass"
-        or dfg_report.get("optimistic_cycles") != 195
+        or dfg_report.get("optimistic_cycles") != 196
         or dfg_report.get("dynamic_work_items") != 8
         or dfg_report.get("final_outputs") != expected_outputs
     ):
@@ -4020,8 +4020,8 @@ def assert_cmsis_var_shared_adg_evidence(sim_evidence: Path) -> None:
         "status": "pass",
         "aggregation_kind": "workload_graph_set",
         "fidelity_level": "mapping_constraint_estimate",
-        "dfg_cycles": 195,
-        "hardware_aware_cycles": 352,
+        "dfg_cycles": 196,
+        "hardware_aware_cycles": 353,
         "performance_delta_cycles": 157,
         "route_segments": 124,
         "config_records": 684,

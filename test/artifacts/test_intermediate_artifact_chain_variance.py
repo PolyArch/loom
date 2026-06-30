@@ -127,7 +127,7 @@ def main() -> int:
 
         dfg_report = json.loads((out_dir / "variance-dfg-sim-report.json").read_text())
         dfg_cycles = positive_int(dfg_report.get("optimistic_cycles"), "variance DFG-sim cycles")
-        if dfg_cycles != 659:
+        if dfg_cycles != 662:
             raise AssertionError(f"variance aggregate DFG cycles should include both passes: {dfg_report}")
         if set(dfg_report.get("component_graphs", [])) != EXPECTED_GRAPHS:
             raise AssertionError(f"variance aggregate DFG report missed component graphs: {dfg_report}")
@@ -136,7 +136,7 @@ def main() -> int:
         cgra_cycles = positive_int(cgra_report.get("hardware_aware_cycles"), "variance CGRA-sim cycles")
         if cgra_report.get("mapping_id") != AGGREGATE_MAPPING_ID:
             raise AssertionError(f"unexpected variance CGRA mapping identity: {cgra_report}")
-        if cgra_report.get("status") != "pass" or cgra_cycles != 772:
+        if cgra_report.get("status") != "pass" or cgra_cycles != 775:
             raise AssertionError(f"variance aggregate CGRA report should preserve routed component cost: {cgra_report}")
         if cgra_report.get("routed_edges") != 22 or cgra_report.get("config_records") != 472:
             raise AssertionError(f"variance aggregate CGRA report should expose fully routed evidence: {cgra_report}")
@@ -185,12 +185,12 @@ def main() -> int:
         if dse_row["mapping_id"] != AGGREGATE_MAPPING_ID or dse_row["selection_status"] != "selected":
             raise AssertionError(f"unexpected variance DSE row: {dse_row}")
         expected_dse = {
-            "cgra_sim_cycles": "772",
+            "cgra_sim_cycles": "775",
             "frequency_mhz": "50.000",
             "area_um2": "62250.000",
             "dynamic_power_mw": "50.000",
             "leakage_power_mw": "6.325",
-            "energy_nj": "869.658",
+            "energy_nj": "873.038",
             "hardware_evidence_kind": "analytic_model_only",
         }
         for key, value in expected_dse.items():
@@ -198,12 +198,12 @@ def main() -> int:
                 raise AssertionError(f"unexpected variance DSE {key}: {dse_row}")
         metric_records = {entry for entry in dse_row.get("metric_records", "").split(";") if entry}
         required_dse_metrics = {
-            "cgra_sim_cycles=772",
+            "cgra_sim_cycles=775",
             "frequency_mhz=50.000",
             "area_um2=62250.000",
             "dynamic_power_mw=50.000",
             "leakage_power_mw=6.325",
-            "energy_nj=869.658",
+            "energy_nj=873.038",
         }
         if not required_dse_metrics.issubset(metric_records):
             raise AssertionError(f"selected variance DSE row missed objective metrics: {dse_row}")

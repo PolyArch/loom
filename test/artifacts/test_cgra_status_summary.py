@@ -48,7 +48,7 @@ HEADER = [
     "diagnostic",
 ]
 LEGACY_CASE_COUNT = 127
-APP_CASE_COUNT = 109
+APP_CASE_COUNT = 110
 APP_NO_DFG_TIER_COUNT = 12
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
@@ -2075,7 +2075,7 @@ def main() -> int:
             "fail": 1,
             "blocked": 1 + APP_NO_DFG_TIER_COUNT,
             "unsupported": 0,
-            "missing_status": 105 - APP_NO_DFG_TIER_COUNT,
+            "missing_status": APP_CASE_COUNT - 2 - 1 - (1 + APP_NO_DFG_TIER_COUNT),
         }:
             raise AssertionError(f"unexpected promoted app counts: {app_counts}")
         vecsum = one_row(promoted_rows, "app", "vecsum")

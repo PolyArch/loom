@@ -104,6 +104,7 @@ DEFAULT_SWEEP_CASES = (
     "window_hanning",
     "interpolate_linear",
     "distance_point",
+    "edit_distance_step",
     "normalize_vec3",
     "transpose",
     "transform_point",
@@ -2035,7 +2036,7 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 3
-        or dfg.get("optimistic_cycles") != 107
+        or dfg.get("optimistic_cycles") != 110
         or dfg.get("final_outputs") != ["none", "f32:0.835938"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -2047,8 +2048,8 @@ def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 107
-        or cgra.get("hardware_aware_cycles") != 183
+        or cgra.get("dfg_cycles") != 110
+        or cgra.get("hardware_aware_cycles") != 186
         or cgra.get("routed_edges") != 14
         or cgra.get("route_segments") != 54
         or cgra.get("final_outputs") != ["none", "f32:0.835938"]
@@ -2361,7 +2362,7 @@ def assert_string_hash_evidence(evidence_dir: Path) -> None:
         "arith.remui": 8,
         "arith.shli": 9,
         "dataflow.carry": 9,
-        "dataflow.invariant": 20,
+        "dataflow.invariant": 22,
         "dataflow.load": 8,
         "dataflow.stream": 9,
         "dataflow.sync": 8,
@@ -2372,7 +2373,7 @@ def assert_string_hash_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 8
-        or dfg.get("optimistic_cycles") != 185
+        or dfg.get("optimistic_cycles") != 187
         or dfg.get("final_outputs") != ["none", "i32:38"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -2384,8 +2385,8 @@ def assert_string_hash_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 185
-        or cgra.get("hardware_aware_cycles") != 248
+        or cgra.get("dfg_cycles") != 187
+        or cgra.get("hardware_aware_cycles") != 250
         or cgra.get("routed_edges") != 12
         or cgra.get("route_segments") != 48
         or cgra.get("final_outputs") != ["none", "i32:38"]
@@ -2409,10 +2410,10 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
         "arg6": ["f32:4", "f32:3", "f32:2", "f32:1"],
     }
     expected_counts = {
-        "arith.index_cast": 11,
+        "arith.index_cast": 14,
         "arith.subi": 5,
         "dataflow.carry": 5,
-        "dataflow.invariant": 6,
+        "dataflow.invariant": 7,
         "dataflow.load": 8,
         "dataflow.stream": 5,
         "dataflow.sync": 4,
@@ -2425,7 +2426,7 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 4
-        or dfg.get("optimistic_cycles") != 122
+        or dfg.get("optimistic_cycles") != 126
         or dfg.get("final_outputs") != ["none", "f32:1.250000"]
         or dfg.get("final_memory_state") != expected_memory
         or dfg.get("diagnostics") != []
@@ -2437,7 +2438,7 @@ def assert_fir_filter_stateful_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 122
+        or cgra.get("dfg_cycles") != 126
         or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
         or cgra.get("routed_edges") != 13
         or cgra.get("route_segments") != 49
@@ -2476,7 +2477,7 @@ def assert_covariance_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 2048
-        or dfg.get("optimistic_cycles") != 48153
+        or dfg.get("optimistic_cycles") != 48155
         or dfg.get("final_outputs") != expected_outputs
         or dfg.get("component_graphs") != ["g_t_covariance_kernel_red_0_0", "g_t_covariance_kernel_red_1_0"]
     ):
@@ -2511,8 +2512,8 @@ def assert_covariance_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 48153
-        or cgra.get("hardware_aware_cycles") != 48293
+        or cgra.get("dfg_cycles") != 48155
+        or cgra.get("hardware_aware_cycles") != 48295
         or cgra.get("routed_edges") != 27
         or cgra.get("route_segments") != 107
         or cgra.get("final_outputs") != expected_outputs
@@ -2940,6 +2941,91 @@ def assert_bisection_step_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"bisection_step CGRA evidence should carry the real final interval state: {cgra_path}: {cgra}")
 
 
+def assert_edit_distance_step_evidence(evidence_dir: Path) -> None:
+    expected_output = [f"i32:{value}" for value in range(1, 65)]
+    expected_counts = {
+        "arith.addi": 192,
+        "arith.cmpi": 64,
+        "dataflow.load": 320,
+        "dataflow.store": 64,
+        "dataflow.sync": 64,
+        "llvm.intr.umin": 128,
+        "llvm.zext": 64,
+    }
+
+    dfg_path = evidence_dir / "edit_distance_step.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_edit_distance_step_kernel_0_0"
+        or dfg.get("dynamic_work_items") != 64
+        or dfg.get("event_count") != 896
+        or dfg.get("optimistic_cycles") != 2055
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"edit_distance_step DFG evidence should execute the full legacy input: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("edit_distance_step", dfg, expected_counts)
+    memory = dfg.get("final_memory_state", {})
+    if not isinstance(memory, dict) or memory.get("arg7") != expected_output:
+        raise AssertionError(f"edit_distance_step DFG should write the real DP output row: {dfg_path}: {dfg}")
+
+    mapping_path = evidence_dir / "edit_distance_step.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 14
+        or mapping.get("routed_edges") != 18
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 388
+    ):
+        raise AssertionError(f"edit_distance_step should route on shared memory reduction hardware: {mapping_path}: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    required_edges = {
+        "dataflow.load#0.result0->arith.cmpi#0.operand0",
+        "arith.addi#0.result0->llvm.intr.umin#0.operand0",
+        "llvm.intr.umin#0.result0->llvm.intr.umin#1.operand0",
+        "llvm.intr.umin#1.result0->dataflow.store#0.operand2",
+        "dataflow.store#0.result0->dataflow.sync#0.operand5",
+    }
+    if not required_edges <= route_edges:
+        raise AssertionError(f"edit_distance_step mapping missed required DP routes: {mapping_path}: {mapping}")
+    assert_mapping_edges_use_switch_multihop(evidence_dir, "edit_distance_step", required_edges)
+
+    cgra_path = evidence_dir / "edit_distance_step.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 2055
+        or cgra.get("hardware_aware_cycles") != 2161
+        or cgra.get("routed_edges") != 18
+        or cgra.get("route_segments") != 68
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state", {}).get("arg7") != expected_output
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"edit_distance_step CGRA evidence should carry the full DP output row: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "edit_distance_step.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 2055
+        or comparison.get("cgra_sim_cycles") != 2161
+    ):
+        raise AssertionError(f"edit_distance_step comparison should pass with real final-state checks: {comparison_path}: {comparison}")
+
+
 def assert_transform_point_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg2": [
@@ -3284,7 +3370,7 @@ def assert_compact_evidence(evidence_dir: Path) -> None:
         "arith.select": 12,
         "dataflow.carry": 13,
         "dataflow.demux": 36,
-        "dataflow.invariant": 28,
+        "dataflow.invariant": 30,
         "dataflow.load": 12,
         "dataflow.mux": 12,
         "dataflow.store": 7,
@@ -3333,8 +3419,8 @@ def assert_compact_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 339
-        or cgra.get("hardware_aware_cycles") != 480
+        or cgra.get("dfg_cycles") != 341
+        or cgra.get("hardware_aware_cycles") != 482
         or cgra.get("routed_edges") != 25
         or cgra.get("route_segments") != 113
         or cgra.get("final_outputs") != ["none", "i32:7"]
@@ -3402,7 +3488,7 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
         "arith.select": 20,
         "dataflow.carry": 22,
         "dataflow.demux": 60,
-        "dataflow.invariant": 48,
+        "dataflow.invariant": 52,
         "dataflow.load": 20,
         "dataflow.mux": 20,
         "dataflow.store": 10,
@@ -3415,7 +3501,7 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
     if (
         dfg.get("status") != "pass"
         or dfg.get("dynamic_work_items") != 20
-        or dfg.get("optimistic_cycles") != 582
+        or dfg.get("optimistic_cycles") != 586
         or dfg.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
         or dfg.get("final_memory_state") != expected_memory
         or "derived workload graph-set DFG report from component DFG simulator reports" not in dfg.get("diagnostics", [])
@@ -3441,8 +3527,8 @@ def assert_partition_evidence(evidence_dir: Path) -> None:
     cgra = json.loads(cgra_path.read_text())
     if (
         cgra.get("status") != "pass"
-        or cgra.get("dfg_cycles") != 582
-        or cgra.get("hardware_aware_cycles") != 864
+        or cgra.get("dfg_cycles") != 586
+        or cgra.get("hardware_aware_cycles") != 868
         or cgra.get("routed_edges") != 50
         or cgra.get("route_segments") != 226
         or cgra.get("final_outputs") != ["none", "i32:5", "none", "i32:10"]
@@ -4531,6 +4617,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "distance_point",
                 "--case",
+                "edit_distance_step",
+                "--case",
                 "normalize_vec3",
                 "--case",
                 "transpose",
@@ -4628,6 +4716,7 @@ def main(argv: list[str]) -> int:
             "window_hanning",
             "interpolate_linear",
             "distance_point",
+            "edit_distance_step",
             "normalize_vec3",
             "rotate_bits",
             "rle_decode",
@@ -4675,6 +4764,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "interpolate_linear", 63)
         assert_dfg_dynamic_work_items(evidence_dir, "distance_point", 16)
+        assert_dfg_dynamic_work_items(evidence_dir, "edit_distance_step", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "normalize_vec3", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "transform_point", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
@@ -4699,6 +4789,7 @@ def main(argv: list[str]) -> int:
             run(repo, ["python3", "test/artifacts/assert_signal_window_cgra_evidence.py", "--case", case, str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_interpolate_linear_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_distance_point_cgra_evidence.py", str(evidence_dir)])
+        assert_edit_distance_step_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_normalize_vec3_cgra_evidence.py", str(evidence_dir)])
         assert_mmtile_evidence(evidence_dir)
         assert_fir_filter_stateful_evidence(evidence_dir)
@@ -5011,6 +5102,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "batchnorm", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "edit_distance_step", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
@@ -5338,6 +5430,7 @@ def main(argv: list[str]) -> int:
             "window_hanning",
             "interpolate_linear",
             "distance_point",
+            "edit_distance_step",
             "normalize_vec3",
             "rotate_bits",
             "rle_decode",
@@ -5452,8 +5545,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 109,
-            "pass": 96,
+            "total": 110,
+            "pass": 97,
             "fail": 0,
             "blocked": 12,
             "unsupported": 1,

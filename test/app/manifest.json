@@ -299,6 +299,17 @@
       "expected_executables": ["distance_point_func", "distance_point_inline"]
     },
     {
+      "case": "edit_distance_step",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["string", "dynamic-programming", "integer", "vector", "minimum"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["edit_distance_step_func", "edit_distance_step_inline"]
+    },
+    {
       "case": "delta_encode",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],

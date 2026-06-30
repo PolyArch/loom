@@ -1157,6 +1157,32 @@ case "${CASE}" in
                 --emit dfg-args
         )
         ;;
+    edit_distance_step)
+        mapfile -t edit_distance_fixture < <(
+            python3 - <<'PY'
+size = 64
+print(",".join(str(ord("a") + (i % 2)) for i in range(size)))
+print(",".join(str(ord("a") + ((i + 1) % 2)) for i in range(size)))
+print(",".join(str(i + 2) for i in range(size)))
+print(",".join(str(i + 1) for i in range(size)))
+print(",".join(str(i) for i in range(size)))
+print(",".join("0" for _ in range(size)))
+PY
+        )
+        append_ctrl_tokens 64
+        append_index_tokens 8 64
+        sim_args+=(
+            --graph g_t_edit_distance_step_kernel_0_0
+            --workload edit_distance_step
+            --memref "1=${edit_distance_fixture[0]}"
+            --memref "2=${edit_distance_fixture[1]}"
+            --memref "3=${edit_distance_fixture[2]}"
+            --arg 4=1
+            --memref "5=${edit_distance_fixture[3]}"
+            --memref "6=${edit_distance_fixture[4]}"
+            --memref "7=${edit_distance_fixture[5]}"
+        )
+        ;;
     bit_reverse)
         append_ctrl_tokens 32
         sim_args+=(

@@ -3026,10 +3026,61 @@ bool hasDirectLLVMAddressUse(mlir::BlockArgument arg) {
   return false;
 }
 
-void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state) {
+bool hasDataflowStreamUse(mlir::BlockArgument arg) {
+  for (mlir::OpOperand &use : arg.getUses()) {
+    if (mlir::isa<dataflow::StreamOp>(use.getOwner()))
+      return true;
+  }
+  return false;
+}
+
+bool hasDataflowCarryUse(mlir::BlockArgument arg) {
+  for (mlir::OpOperand &use : arg.getUses()) {
+    if (mlir::isa<dataflow::CarryOp>(use.getOwner()))
+      return true;
+  }
+  return false;
+}
+
+bool isScalarBroadcastArgument(mlir::BlockArgument arg) {
+  mlir::Type type = arg.getType();
+  if (mlir::isa<mlir::NoneType, mlir::MemRefType,
+                mlir::LLVM::LLVMPointerType>(type))
+    return false;
+  if (hasDataflowStreamUse(arg) || hasDataflowCarryUse(arg))
+    return false;
+  return true;
+}
+
+std::uint64_t maxSeededArgumentCardinality(const SimulatorState &state) {
   std::uint64_t targetCount = 0;
   for (const auto &seeded : state.seededTokenCounts)
     targetCount = std::max(targetCount, seeded.second);
+  return targetCount;
+}
+
+void broadcastScalarArguments(mlir::Block &entry, SimulatorState &state) {
+  const std::uint64_t targetCount = maxSeededArgumentCardinality(state);
+  if (targetCount <= 1)
+    return;
+
+  for (mlir::BlockArgument arg : entry.getArguments()) {
+    if (!isScalarBroadcastArgument(arg))
+      continue;
+    auto countIt = state.seededTokenCounts.find(arg);
+    if (countIt == state.seededTokenCounts.end() || countIt->second != 1)
+      continue;
+    auto observedIt = state.observedOutputs.find(arg);
+    if (observedIt == state.observedOutputs.end() || observedIt->second.empty())
+      continue;
+    const Token token = observedIt->second.front();
+    while (state.seededTokenCounts[arg] < targetCount)
+      seedBlockArgument(state, arg, token);
+  }
+}
+
+void broadcastRawPointerArguments(mlir::Block &entry, SimulatorState &state) {
+  const std::uint64_t targetCount = maxSeededArgumentCardinality(state);
   if (targetCount <= 1)
     return;
 
@@ -3240,6 +3291,7 @@ loom::sim::simulateDataflowGraph(mlir::ModuleOp module,
       seedBlockArgument(state, arg, *tokenOrErr);
     }
   }
+  broadcastScalarArguments(entry, state);
   broadcastRawPointerArguments(entry, state);
 
   if (llvm::Error err = propagateMemoryAliases(entry, state))
