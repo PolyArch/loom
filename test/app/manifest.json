@@ -607,6 +607,17 @@
       "expected_executables": ["interpolate_linear_func", "interpolate_linear_inline"]
     },
     {
+      "case": "jacobi_stencil_5pt",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["stencil", "numeric", "float", "partitioned-output"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["jacobi_stencil_5pt_func", "jacobi_stencil_5pt_inline"]
+    },
+    {
       "case": "lower_bound",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

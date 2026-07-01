@@ -64,6 +64,7 @@ EXPECTED_CASES = {
     "im2col",
     "integrate_trapz",
     "interpolate_linear",
+    "jacobi_stencil_5pt",
     "lower_bound",
     "mean",
     "mat3x3_mult",

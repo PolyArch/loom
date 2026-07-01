@@ -266,6 +266,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "jacobi_stencil_5pt",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "lower_bound",
       "hardware": "shared_memory_reduction_adg"
     },

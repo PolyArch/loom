@@ -243,6 +243,9 @@ case "${CASE}" in
   interpolate_linear)
     case_graph="g_t_interpolate_linear_kernel_0_0"
     ;;
+  jacobi_stencil_5pt)
+    case_graph="g_t_jacobi_stencil_5pt_kernel_0_0"
+    ;;
   reduction)
     case_graph="g_t_reduce_sum_red_0_0"
     ;;
@@ -479,7 +482,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -914,6 +917,50 @@ elif [[ "${CASE}" == "interpolate_linear" ]]; then
   done
   interpolate_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${interpolate_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "jacobi_stencil_5pt" ]]; then
+  mapfile -t jacobi_fixture < <(
+    python3 "${ROOT}/test/artifacts/jacobi_stencil_5pt_fixtures.py" \
+      --source "${ROOT}/test/app/jacobi_stencil_5pt/main_func.cpp" \
+      --emit dfg-args
+  )
+  jacobi_input_arg="${jacobi_fixture[0]}"
+  jacobi_interior_arg="${jacobi_fixture[1]}"
+  jacobi_index_arg="${jacobi_fixture[2]}"
+  jacobi_interior_count="${jacobi_fixture[3]}"
+  jacobi_input_values="${jacobi_fixture[4]}"
+  jacobi_zero_values="${jacobi_fixture[5]}"
+  jacobi_scalar_args=("${jacobi_fixture[@]:6}")
+  jacobi_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --memref "${jacobi_input_arg}=${jacobi_input_values}"
+    --memref "${jacobi_interior_arg}=${jacobi_zero_values}"
+  )
+  for ((index = 0; index < jacobi_interior_count; index++)); do
+    for scalar_arg in "${jacobi_scalar_args[@]}"; do
+      jacobi_args+=(--arg "${scalar_arg}")
+    done
+    jacobi_args+=(--arg "${jacobi_index_arg}=${index}")
+  done
+  jacobi_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${jacobi_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"

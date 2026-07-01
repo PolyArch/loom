@@ -119,6 +119,7 @@ DEFAULT_SWEEP_CASES = (
     "window_hamming",
     "window_hanning",
     "interpolate_linear",
+    "jacobi_stencil_5pt",
     "distance_point",
     "edit_distance_step",
     "normalize_vec3",
@@ -5626,6 +5627,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "interpolate_linear",
                 "--case",
+                "jacobi_stencil_5pt",
+                "--case",
                 "distance_point",
                 "--case",
                 "edit_distance_step",
@@ -5732,6 +5735,7 @@ def main(argv: list[str]) -> int:
             "window_hamming",
             "window_hanning",
             "interpolate_linear",
+            "jacobi_stencil_5pt",
             "distance_point",
             "edit_distance_step",
             "normalize_vec3",
@@ -5809,6 +5813,7 @@ def main(argv: list[str]) -> int:
         assert_softmax_evidence(evidence_dir)
         for case in ("window_blackman", "window_hamming", "window_hanning"):
             run(repo, ["python3", "test/artifacts/assert_signal_window_cgra_evidence.py", "--case", case, str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_jacobi_stencil_5pt_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_interpolate_linear_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_distance_point_cgra_evidence.py", str(evidence_dir)])
         assert_edit_distance_step_evidence(evidence_dir)
@@ -6149,6 +6154,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "gather", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "jacobi_stencil_5pt", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_max", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "upsample_linear", "shared_signal_window_adg")
@@ -6333,6 +6339,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "window_hamming")
         assert_mapping_uses_switch_multihop(evidence_dir, "window_hanning")
         assert_mapping_uses_switch_multihop(evidence_dir, "interpolate_linear")
+        assert_mapping_uses_switch_multihop(evidence_dir, "jacobi_stencil_5pt")
         assert_mapping_uses_switch_multihop(evidence_dir, "moving_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "pool_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "pool_max")
@@ -6490,6 +6497,7 @@ def main(argv: list[str]) -> int:
             "window_hamming",
             "window_hanning",
             "interpolate_linear",
+            "jacobi_stencil_5pt",
             "distance_point",
             "edit_distance_step",
             "normalize_vec3",
@@ -6607,6 +6615,9 @@ def main(argv: list[str]) -> int:
         upsample_linear_row = one_row(rows, "upsample_linear")
         if upsample_linear_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"upsample_linear should use shared signal-window hardware: {upsample_linear_row}")
+        jacobi_row = one_row(rows, "jacobi_stencil_5pt")
+        if jacobi_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"jacobi_stencil_5pt should use shared signal-window hardware: {jacobi_row}")
         quantile_row = one_row(rows, "quantile")
         if quantile_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"quantile should use shared signal-window hardware: {quantile_row}")
@@ -6629,8 +6640,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 115,
-            "pass": 107,
+            "total": 116,
+            "pass": 108,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,
