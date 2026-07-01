@@ -126,6 +126,7 @@ DEFAULT_SWEEP_CASES = (
     "transform_point",
     "upper_bound",
     "upsample",
+    "upsample_linear",
     "vecadd",
     "vecmul",
     "vecscale",
@@ -3447,6 +3448,118 @@ def assert_pool_max_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"pool_max comparison should pass with CGRA cycles no lower than DFG: {comparison}")
 
 
+def assert_upsample_linear_evidence(evidence_dir: Path) -> None:
+    expected_input = [
+        "f32:0",
+        "f32:0.382683",
+        "f32:0.707106",
+        "f32:0.923879",
+    ]
+    expected_output = [
+        "f32:0",
+        "f32:0.095671",
+        "f32:0.191342",
+        "f32:0.287012",
+        "f32:0.382683",
+        "f32:0.463789",
+        "f32:0.544895",
+        "f32:0.626000",
+        "f32:0.707106",
+        "f32:0.761300",
+        "f32:0.815493",
+        "f32:0.869686",
+        "f32:0.923879",
+        "f32:0.923879",
+        "f32:0.923879",
+        "f32:0.923879",
+    ]
+    expected_memory = {
+        "arg5": expected_input,
+        "arg8": ["f32:0.923879"],
+        "arg9": expected_output,
+    }
+    expected_counts = {
+        "arith.andi": 16,
+        "arith.cmpi": 28,
+        "arith.index_cast": 40,
+        "arith.mulf": 18,
+        "arith.shrui": 28,
+        "arith.subf": 9,
+        "dataflow.constant": 13,
+        "dataflow.load": 25,
+        "dataflow.store": 16,
+        "dataflow.sync": 16,
+        "llvm.getelementptr": 18,
+        "llvm.intr.fmuladd": 9,
+        "llvm.trunc": 32,
+        "llvm.uitofp": 9,
+        "llvm.zext": 9,
+        "scf.if": 28,
+    }
+
+    dfg_path = evidence_dir / "upsample_linear.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("dynamic_work_items") != 16
+        or dfg.get("optimistic_cycles") != 604
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"upsample_linear DFG evidence should carry the real interpolated output: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("upsample_linear", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "upsample_linear.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("placed_records") != 22
+        or mapping.get("routed_edges") != 23
+        or mapping.get("config_records") != 588
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"upsample_linear should route on shared signal-window hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_route_edges = {
+        "arith.andi#0.result0->llvm.uitofp#0.operand0",
+        "arith.shrui#1.result0->dataflow.load#0.operand1",
+        "arith.shrui#2.result0->dataflow.load#1.operand1",
+        "dataflow.load#1.result0->llvm.intr.fmuladd#0.operand1",
+        "llvm.intr.fmuladd#0.result0->dataflow.store#0.operand2",
+    }
+    if not expected_route_edges.issubset(route_edges):
+        raise AssertionError(f"upsample_linear mapping should expose interpolation route edges: {mapping}")
+
+    cgra_path = evidence_dir / "upsample_linear.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("dfg_cycles") != 604
+        or cgra.get("hardware_aware_cycles") != 759
+        or cgra.get("placed_records") != 22
+        or cgra.get("routed_edges") != 23
+        or cgra.get("route_segments") != 105
+        or cgra.get("config_records") != 588
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"upsample_linear CGRA evidence should carry the real interpolated output: {cgra_path}: {cgra}")
+
+    comparison = json.loads((evidence_dir / "upsample_linear.sim-comparison-report.json").read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
+    ):
+        raise AssertionError(f"upsample_linear comparison should pass with CGRA cycles no lower than DFG: {comparison}")
+
+
 def assert_bisection_step_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:0", "f32:1", "f32:2"],
@@ -5391,6 +5504,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "pool_max",
                 "--case",
+                "upsample_linear",
+                "--case",
                 "newton_iter",
                 "--case",
                 "outer",
@@ -5609,6 +5724,7 @@ def main(argv: list[str]) -> int:
             "quantile",
             "relu",
             "upsample",
+            "upsample_linear",
             "sbox_lookup",
             "sigmoid",
             "softmax",
@@ -5673,6 +5789,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "normalize_vec3", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "transform_point", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "upsample", 4)
+        assert_dfg_dynamic_work_items(evidence_dir, "upsample_linear", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "string_hash", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
@@ -5704,6 +5821,7 @@ def main(argv: list[str]) -> int:
         assert_moving_avg_evidence(evidence_dir)
         assert_pool_avg_evidence(evidence_dir)
         assert_pool_max_evidence(evidence_dir)
+        assert_upsample_linear_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
         assert_quantile_evidence(evidence_dir)
@@ -6033,6 +6151,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_max", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "upsample_linear", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "batchnorm", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "edit_distance_step", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
@@ -6205,6 +6324,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "correlation")
         assert_mapping_uses_switch_multihop(evidence_dir, "covariance")
         assert_mapping_uses_switch_multihop(evidence_dir, "upsample")
+        assert_mapping_uses_switch_multihop(evidence_dir, "upsample_linear")
         assert_mapping_uses_switch_multihop(evidence_dir, "convolve_1d")
         assert_mapping_uses_switch_multihop(evidence_dir, "relu")
         assert_mapping_uses_switch_multihop(evidence_dir, "sbox_lookup")
@@ -6484,6 +6604,9 @@ def main(argv: list[str]) -> int:
         pool_max_row = one_row(rows, "pool_max")
         if pool_max_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"pool_max should use shared signal-window hardware: {pool_max_row}")
+        upsample_linear_row = one_row(rows, "upsample_linear")
+        if upsample_linear_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"upsample_linear should use shared signal-window hardware: {upsample_linear_row}")
         quantile_row = one_row(rows, "quantile")
         if quantile_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"quantile should use shared signal-window hardware: {quantile_row}")
@@ -6506,8 +6629,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 114,
-            "pass": 106,
+            "total": 115,
+            "pass": 107,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,

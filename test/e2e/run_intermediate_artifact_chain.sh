@@ -432,6 +432,9 @@ case "${CASE}" in
   upsample)
     case_graph="g_t_upsample_0_0"
     ;;
+  upsample_linear)
+    case_graph="g_t_upsample_linear_kernel_0_0"
+    ;;
   window_blackman)
     case_graph="g_t_window_blackman_kernel_0_0"
     ;;
@@ -476,7 +479,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -911,6 +914,52 @@ elif [[ "${CASE}" == "interpolate_linear" ]]; then
   done
   interpolate_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${interpolate_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "upsample_linear" ]]; then
+  upsample_linear_input_values="0.000000e+00,3.826831e-01,7.071063e-01,9.238792e-01"
+  upsample_linear_tail_values="9.238792e-01"
+  upsample_linear_zero_values="$(
+    python3 - <<'PY'
+print(",".join("0.000000e+00" for _ in range(16)))
+PY
+  )"
+  upsample_linear_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --memref "5=${upsample_linear_input_values}"
+    --memref "8=${upsample_linear_tail_values}"
+    --memref "9=${upsample_linear_zero_values}"
+  )
+  for ((index = 0; index < 16; index++)); do
+    upsample_linear_args+=(
+      --arg 0=none
+      --arg 1=2
+      --arg 2=3
+      --arg 3=3
+      --arg 4=0
+      --arg 6=2.500000e-01
+      --arg 7=1.000000e+00
+      --arg "10=${index}"
+    )
+  done
+  upsample_linear_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${upsample_linear_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"

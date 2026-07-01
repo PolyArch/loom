@@ -112,6 +112,7 @@ EXPECTED_CASES = {
     "transform_point",
     "unpack_bits",
     "upsample",
+    "upsample_linear",
     "upper_bound",
     "variance",
     "vecadd",

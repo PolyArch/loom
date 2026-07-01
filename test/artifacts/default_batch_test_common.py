@@ -105,6 +105,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "unpack_bits",
     "upper_bound",
     "upsample",
+    "upsample_linear",
     "variance",
     "vecadd",
     "vecmul",

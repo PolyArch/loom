@@ -354,6 +354,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "upsample_linear",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "sbox_lookup",
       "hardware": "shared_reduction_adg"
     },
