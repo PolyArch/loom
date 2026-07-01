@@ -129,6 +129,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     newton_iter
     outer
     byte_swap
+    cdma
     scatter_add
     edge_update
     edge_update_batch

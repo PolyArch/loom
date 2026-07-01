@@ -94,6 +94,10 @@
       "hardware": "shared_vector_alu_adg"
     },
     {
+      "case": "cdma",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "downsample",
       "hardware": "shared_reduction_adg"
     },

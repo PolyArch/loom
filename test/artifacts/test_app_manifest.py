@@ -21,6 +21,7 @@ EXPECTED_CASES = {
     "bitonic_stage-modified",
     "bitonic_stage-tweak",
     "byte_swap",
+    "cdma",
     "bisection_step",
     "binary_search",
     "clz",

@@ -1,0 +1,2 @@
+cdma weighted_checksum: 36432
+PASSED

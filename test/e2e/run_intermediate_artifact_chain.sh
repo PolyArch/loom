@@ -360,6 +360,9 @@ case "${CASE}" in
   byte_swap)
     case_graph="g_t__ZN12_GLOBAL__N_119byte_swap_candidateEPKjPjj_0_0"
     ;;
+  cdma)
+    case_graph="g_t_cdma_candidate_0_0"
+    ;;
   scatter_add)
     case_graph="g_scatter_add_0"
     ;;
@@ -1900,6 +1903,67 @@ for index, (got, want) in enumerate(zip(actual, expected)):
         raise SystemExit(f"im2col output[{index}] got {got}, expected {want}")
 if len({round(value, 6) for value in actual}) < 8:
     raise SystemExit("im2col output is not distinct enough for evidence")
+PY
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "cdma" ]]; then
+  cdma_input_values="$(
+    python3 - <<'PY'
+print(",".join(str(index * 3 + 7) for index in range(32)))
+PY
+  )"
+  cdma_zero_values="$(
+    python3 - <<'PY'
+print(",".join("0" for _ in range(32)))
+PY
+  )"
+  cdma_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "${case_graph}"
+    --workload "${CASE}"
+    --memref "1=${cdma_input_values}"
+    --memref "2=${cdma_zero_values}"
+  )
+  for ((index = 0; index < 32; index++)); do
+    cdma_args+=(--arg 0=none --arg "3=${index}")
+  done
+  cdma_args+=(--output "${dfg_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${cdma_args[@]}"
+  python3 - "${dfg_report}" "${cdma_input_values}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+expected = [int(value) for value in sys.argv[2].split(",") if value]
+actual_tokens = report.get("final_memory_state", {}).get("arg2")
+if not isinstance(actual_tokens, list):
+    raise SystemExit("cdma report lacks final_memory_state.arg2")
+if len(actual_tokens) != len(expected):
+    raise SystemExit(f"cdma output length mismatch: got {len(actual_tokens)}, expected {len(expected)}")
+actual = []
+for token in actual_tokens:
+    if not isinstance(token, str) or not token.startswith("i32:"):
+        raise SystemExit(f"unexpected cdma memory token {token!r}")
+    actual.append(int(token.split(":", 1)[1]))
+if actual != expected:
+    raise SystemExit(f"cdma output mismatch: got {actual}, expected {expected}")
+if len(set(actual)) != len(actual):
+    raise SystemExit("cdma output is not distinct enough for evidence")
 PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \

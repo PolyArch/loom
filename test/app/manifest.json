@@ -79,6 +79,17 @@
       "expected_executables": ["byte_swap_func", "byte_swap_inline"]
     },
     {
+      "case": "cdma",
+      "language": "c",
+      "sources": ["main_func.c", "main_inline.c"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["memory", "copy", "integer", "stream"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["cdma_func", "cdma_inline"]
+    },
+    {
       "case": "bisection_step",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

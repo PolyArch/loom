@@ -20,6 +20,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "bitrev",
     "bitrev_complex",
     "byte_swap",
+    "cdma",
     "clz",
     "compare_swap",
     "compact",
