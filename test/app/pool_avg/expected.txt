@@ -1,0 +1,2 @@
+pool_avg checksum: 103.000000
+PASSED

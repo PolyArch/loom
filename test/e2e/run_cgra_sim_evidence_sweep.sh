@@ -131,6 +131,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     outer
     byte_swap
     cdma
+    pool_avg
     scatter_add
     edge_update
     edge_update_batch

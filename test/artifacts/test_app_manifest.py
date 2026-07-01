@@ -80,6 +80,7 @@ EXPECTED_CASES = {
     "pack_bits",
     "partition",
     "parity",
+    "pool_avg",
     "prefix_sum",
     "prefix_sum_exclusive",
     "prefix_sum_inclusive",

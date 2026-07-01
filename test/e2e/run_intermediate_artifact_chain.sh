@@ -195,6 +195,9 @@ case "${CASE}" in
   downsample_avg)
     case_graph="g_t_downsample_avg_0_0"
     ;;
+  pool_avg)
+    case_graph="g_t_pool_avg_kernel_0_0"
+    ;;
   delta_encode)
     case_graph="g_t_delta_encode_0_0"
     ;;
@@ -470,7 +473,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "quantile" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "quantile" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -1607,6 +1610,77 @@ PY
       "${row_mapping_artifact}"
       "${row_cgra_report}"
     )
+  done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+elif [[ "${CASE}" == "pool_avg" ]]; then
+  pool_avg_input_values="1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00,5.000000e+00,6.000000e+00,7.000000e+00,8.000000e+00,9.000000e+00,1.000000e+01,1.100000e+01,1.200000e+01,1.300000e+01,1.400000e+01,1.500000e+01,1.600000e+01"
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for ((oh = 0; oh < 2; oh++)); do
+    for ((ow = 0; ow < 2; ow++)); do
+      component="oh${oh}-ow${ow}"
+      row_base=$((oh * 2))
+      col_base=$((ow * 2))
+      component_dfg_report="${OUT_DIR}/pool_avg-dfg-sim-${component}.report.json"
+      component_mapping_artifact="${OUT_DIR}/pnr-mapping-${component}.json"
+      component_mapping_summary="${OUT_DIR}/pnr-mapping-${component}-summary.csv"
+      component_cgra_report="${OUT_DIR}/pool_avg-cgra-sim-${component}-report.json"
+      ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+        "${case_dfg_dir}/main_func.dfg.mlir" \
+        --graph "${case_graph}" \
+        --workload "${CASE}" \
+        --arg 0=none \
+        --arg 1=0 \
+        --arg 2=2 \
+        --arg 3=1 \
+        --arg "4=${row_base}" \
+        --arg 5=4 \
+        --arg "6=${col_base}" \
+        --memref "7=${pool_avg_input_values}" \
+        --arg 8=4.000000e+00 \
+        --arg 9=0 \
+        --arg 10=2 \
+        --arg 11=1 \
+        --arg 12=false \
+        --arg 13=0.000000e+00 \
+        --output "${component_dfg_report}"
+      bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+        --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+        --graph "${case_graph}" \
+        --hardware-mlir "${hardware_mlir}" \
+        --hardware "${hardware_name}" \
+        --workload "${CASE}" \
+        --artifact "${component_mapping_artifact}" \
+        --output "${component_mapping_summary}"
+      ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+        --dfg-report "${component_dfg_report}" \
+        --mapping-artifact "${component_mapping_artifact}" \
+        --hardware-mlir "${hardware_mlir}" \
+        --output "${component_cgra_report}"
+      dfg_component_args+=(--dfg-report "${component_dfg_report}")
+      mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+      cgra_component_args+=(--cgra-report "${component_cgra_report}")
+      component_artifacts+=(
+        "${component_dfg_report}"
+        "${component_mapping_artifact}"
+        "${component_cgra_report}"
+      )
+    done
   done
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     "${dfg_component_args[@]}" \

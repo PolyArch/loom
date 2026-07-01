@@ -76,6 +76,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "parity",
     "partition",
     "popcount",
+    "pool_avg",
     "prefix_sum",
     "prefix_sum_exclusive",
     "prefix_sum_inclusive",
