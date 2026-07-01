@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-memory-reduction|shared-signal-window|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-vector-mesh|shared-memory-reduction|shared-signal-window|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -544,6 +544,20 @@ case "${HARDWARE_SOURCE}" in
     hardware_summary_recipe_args=(
       --input-recipe-identity
       "${hardware_mlir}=adg-builder::shared-vector-math"
+    )
+    ;;
+  shared-vector-mesh)
+    hardware_mlir="${OUT_DIR}/shared-vector-mesh-adg.mlir"
+    hardware_name="shared_vector_mesh_adg"
+    adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+    if [[ ! -x "${adg_builder_tool}" ]]; then
+      echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+      exit 1
+    fi
+    "${adg_builder_tool}" --shared-vector-mesh --output "${hardware_mlir}"
+    hardware_summary_recipe_args=(
+      --input-recipe-identity
+      "${hardware_mlir}=adg-builder::shared-vector-mesh"
     )
     ;;
   shared-memory-reduction)

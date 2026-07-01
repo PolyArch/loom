@@ -295,7 +295,7 @@ def assert_default_batch_rejects_non_pass_evidence(repo: Path, out_dir: Path) ->
         json.dumps(
             {
                 "schema_version": 1,
-                "cases": [{"case": "delta_encode", "hardware": "shared_reduction_adg"}],
+                "cases": [{"case": "byte_swap", "hardware": "shared_vector_mesh_adg"}],
             },
             indent=2,
             sort_keys=True,
@@ -309,13 +309,13 @@ def assert_default_batch_rejects_non_pass_evidence(repo: Path, out_dir: Path) ->
         "sim-comparison-report.json": "sim_comparison_report",
     }
     for suffix, kind in artifacts.items():
-        (evidence / f"delta_encode.{suffix}").write_text(
+        (evidence / f"byte_swap.{suffix}").write_text(
             json.dumps(
                 {
                     "schema_version": 1,
                     "kind": kind,
-                    "workload": "delta_encode",
-                    "hardware": "shared_reduction_adg",
+                    "workload": "byte_swap",
+                    "hardware": "shared_vector_mesh_adg",
                     "status": "blocked",
                     "diagnostics": ["fixture non-pass evidence"],
                 },
@@ -447,6 +447,13 @@ def assert_mapping_hardware(evidence_dir: Path, case: str, expected_hardware: st
     data = json.loads(path.read_text())
     if data.get("hardware") != expected_hardware:
         raise AssertionError(f"{case} should map to {expected_hardware}: {path}: {data}")
+
+
+def assert_cgra_hardware(evidence_dir: Path, case: str, expected_hardware: str) -> None:
+    path = evidence_dir / f"{case}.cgra.report.json"
+    data = json.loads(path.read_text())
+    if data.get("hardware") != expected_hardware:
+        raise AssertionError(f"{case} CGRA evidence should use {expected_hardware}: {path}: {data}")
 
 
 def assert_mapping_uses_switch_multihop(evidence_dir: Path, case: str) -> None:
@@ -5394,6 +5401,62 @@ def assert_app_no_dfg_tier_blocked_row(rows: list[dict[str, str]], case: str) ->
         raise AssertionError(f"{case} diagnostic should identify the app manifest no-DFG blocker: {row}")
 
 
+def assert_shared_vector_mesh_evidence(repo: Path, out_dir: Path) -> None:
+    evidence_dir = out_dir / "vector-mesh-current-sim-cycle"
+    sweep_result = run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_sim_evidence_sweep.sh",
+            "--output-dir",
+            str(evidence_dir),
+            "--case",
+            "byte_swap",
+            "--case",
+            "xor_block",
+            "--hardware-source",
+            "shared-vector-mesh",
+            "--jobs",
+            "2",
+        ],
+    )
+    statuses = parse_sweep_statuses(sweep_result.stdout)
+    if statuses != {"byte_swap": "pass", "xor_block": "pass"}:
+        raise AssertionError(f"vector mesh focused sweep should pass both rows: {statuses}")
+
+    for case in ("byte_swap", "xor_block"):
+        assert_sweep_artifact(evidence_dir, case, "dfg.report.json")
+        assert_sweep_artifact(evidence_dir, case, "mapping.json")
+        assert_sweep_artifact(evidence_dir, case, "cgra.report.json")
+        assert_comparison_artifact(evidence_dir, case, "pass")
+        assert_mapping_hardware(evidence_dir, case, "shared_vector_mesh_adg")
+        assert_cgra_hardware(evidence_dir, case, "shared_vector_mesh_adg")
+        assert_mapping_uses_switch_multihop(evidence_dir, case)
+
+    status_csv = out_dir / "vector-mesh-status.csv"
+    status_json = out_dir / "vector-mesh-status.json"
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_status_summary.sh",
+            "--output",
+            str(status_csv),
+            "--json-output",
+            str(status_json),
+            "--sim-evidence-dir",
+            str(evidence_dir),
+            "--no-legacy-loombench",
+            "--no-cmsis-dfg-auto",
+        ],
+    )
+    rows = read_rows(status_csv)
+    for case in ("byte_swap", "xor_block"):
+        row = one_row(rows, case)
+        if row["status"] != "pass" or row["hardware_system"] != "shared_vector_mesh_adg":
+            raise AssertionError(f"{case} should consume shared vector mesh evidence: {row}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit(f"usage: {argv[0]} <repo>")
@@ -6675,6 +6738,7 @@ def main(argv: list[str]) -> int:
         audit = json.loads(audit_json.read_text())
         if audit.get("verdict") != "pass":
             raise AssertionError(f"sweep evidence should pass artifact audit: {audit}")
+        assert_shared_vector_mesh_evidence(repo, out_dir)
     return 0
 
 

@@ -22,6 +22,7 @@ ALLOWED_HARDWARE = frozenset(
         "shared_reduction_adg",
         "shared_vector_alu_adg",
         "shared_vector_math_adg",
+        "shared_vector_mesh_adg",
         "shared_memory_reduction_adg",
         "shared_signal_window_adg",
     }
