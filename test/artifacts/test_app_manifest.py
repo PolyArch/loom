@@ -39,6 +39,7 @@ EXPECTED_CASES = {
     "cross_product",
     "ctz",
     "cumsum",
+    "database_join",
     "distance_point",
     "depthwise_conv",
     "edit_distance_step",

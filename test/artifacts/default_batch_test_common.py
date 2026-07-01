@@ -36,6 +36,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "quat_mult",
     "ctz",
     "cumsum",
+    "database_join",
     "delta_decode",
     "delta_encode",
     "distance_point",

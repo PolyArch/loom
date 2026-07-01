@@ -216,6 +216,9 @@ case "${CASE}" in
   cumsum)
     case_graph="g_t_cumsum_kernel_red_0_0"
     ;;
+  database_join)
+    case_graph="g_t_database_join_kernel_red_0_0"
+    ;;
   prefix_sum_inclusive)
     case_graph="g_t_prefix_sum_inclusive_kernel_red_0_0"
     ;;
@@ -517,7 +520,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -878,6 +881,36 @@ PY
   done
   sigmoid_args+=(--output "${dfg_report}")
   ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${sigmoid_args[@]}"
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_report}" \
+    --output "${dfg_cycle}"
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --hardware "${hardware_name}" \
+    --workload "${CASE}" \
+    --artifact "${mapping_artifact}" \
+    --output "${mapping}"
+  ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+    --dfg-report "${dfg_report}" \
+    --mapping-artifact "${mapping_artifact}" \
+    --hardware-mlir "${hardware_mlir}" \
+    --output "${cgra_report}"
+elif [[ "${CASE}" == "database_join" ]]; then
+  mapfile -t database_join_fixture < <(
+    python3 "${ROOT}/test/artifacts/database_join_fixtures.py" \
+      --source "${ROOT}/test/app/database_join/main_func.cpp" \
+      --emit dfg-args
+  )
+  database_join_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir" \
+    --graph "${case_graph}" \
+    --workload "${CASE}" \
+    "${database_join_fixture[@]}"
+    --output "${dfg_report}"
+  )
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${database_join_args[@]}"
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"

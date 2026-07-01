@@ -1,0 +1,2 @@
+database_join count: 2
+PASSED

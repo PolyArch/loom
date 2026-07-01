@@ -79,6 +79,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     find_first_set
     prefix_sum
     cumsum
+    database_join
     prefix_sum_inclusive
     prefix_sum_exclusive
     pack_bits

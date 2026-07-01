@@ -484,8 +484,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "app",
         {
-            "total": 119,
-            "pass": 111,
+            "total": 120,
+            "pass": 112,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,
@@ -496,8 +496,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "loombench",
         {
-            "total": 7,
-            "pass": 5,
+            "total": 8,
+            "pass": 6,
             "fail": 0,
             "blocked": 1,
             "unsupported": 1,
@@ -538,6 +538,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     assert_loombench_cgra_pass_row(repo, rows, "rle_decode", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "cdma", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "line_intersect", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "database_join", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "depthwise_conv", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "cdma", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
@@ -567,10 +568,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         stale_data,
         "app",
         {
-            "total": 119,
+            "total": 120,
             "pass": 1,
             "fail": 0,
-            "blocked": 118,
+            "blocked": 119,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -633,10 +634,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "app",
         {
-            "total": 119,
+            "total": 120,
             "pass": 20,
             "fail": 0,
-            "blocked": 99,
+            "blocked": 100,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -1098,10 +1099,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         data,
         "app",
         {
-            "total": 119,
+            "total": 120,
             "pass": 18,
             "fail": 0,
-            "blocked": 93,
+            "blocked": 94,
             "unsupported": 8,
             "missing_status": 0,
         },
@@ -4475,6 +4476,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "vecadd")
         write_legacy_case(legacy_root, "cdma")
         write_legacy_case(legacy_root, "line_intersect")
+        write_legacy_case(legacy_root, "database_join")
         write_legacy_case(legacy_root, "depthwise_conv")
         write_legacy_case(legacy_root, "rle_decode")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
@@ -4536,10 +4538,10 @@ def main() -> int:
             data,
             "loombench",
             {
-                "total": 7,
+                "total": 8,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 6,
+                "blocked": 7,
                 "unsupported": 1,
                 "missing_status": 0,
             },

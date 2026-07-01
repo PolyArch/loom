@@ -38,6 +38,7 @@ DEFAULT_SWEEP_CASES = (
     "find_first_set",
     "prefix_sum",
     "cumsum",
+    "database_join",
     "prefix_sum_inclusive",
     "prefix_sum_exclusive",
     "pack_bits",
@@ -5559,6 +5560,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "cumsum",
                 "--case",
+                "database_join",
+                "--case",
                 "prefix_sum_inclusive",
                 "--case",
                 "prefix_sum_exclusive",
@@ -5749,6 +5752,7 @@ def main(argv: list[str]) -> int:
             "vecscale",
             "prefix_sum",
             "cumsum",
+            "database_join",
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
             "pack_bits",
@@ -5866,6 +5870,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "jacobi_stencil_7pt", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "distance_point", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "line_intersect", 64)
+        assert_dfg_dynamic_work_items(evidence_dir, "database_join", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "depthwise_conv", 432)
         assert_dfg_dynamic_work_items(evidence_dir, "edit_distance_step", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "normalize_vec3", 64)
@@ -5896,6 +5901,7 @@ def main(argv: list[str]) -> int:
         run(repo, ["python3", "test/artifacts/assert_interpolate_linear_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_distance_point_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_line_intersect_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_depthwise_conv_cgra_evidence.py", str(evidence_dir)])
         assert_edit_distance_step_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_normalize_vec3_cgra_evidence.py", str(evidence_dir)])
@@ -6190,6 +6196,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "vecscale", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "cumsum", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "database_join", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_inclusive", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "prefix_sum_exclusive", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "pack_bits", "shared_reduction_adg")
@@ -6527,6 +6534,7 @@ def main(argv: list[str]) -> int:
             "vecmul",
             "prefix_sum",
             "cumsum",
+            "database_join",
             "prefix_sum_inclusive",
             "prefix_sum_exclusive",
             "pack_bits",
@@ -6643,6 +6651,9 @@ def main(argv: list[str]) -> int:
         cumsum_row = one_row(rows, "cumsum")
         if cumsum_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"cumsum should use shared reduction hardware: {cumsum_row}")
+        database_join_row = one_row(rows, "database_join")
+        if database_join_row["hardware_system"] != "shared_memory_reduction_adg":
+            raise AssertionError(f"database_join should use shared memory-reduction hardware: {database_join_row}")
         prefix_sum_inclusive_row = one_row(rows, "prefix_sum_inclusive")
         if prefix_sum_inclusive_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(
@@ -6736,8 +6747,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 119,
-            "pass": 111,
+            "total": 120,
+            "pass": 112,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,
