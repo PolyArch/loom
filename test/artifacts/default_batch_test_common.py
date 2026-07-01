@@ -24,6 +24,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "clz",
     "compare_swap",
     "compact",
+    "compact_predicate",
     "conv1d",
     "conv2d",
     "convolve_1d",

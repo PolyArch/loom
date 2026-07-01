@@ -223,6 +223,15 @@ append_compact_memrefs() {
     append_constant_memref "${output_index}" 12 "0"
 }
 
+append_compact_predicate_memrefs() {
+    local predicate_index="$1"
+    local input_index="$2"
+    local output_index="$3"
+    sim_args+=(--memref "${predicate_index}=1,0,1,0,1,1,0,1")
+    sim_args+=(--memref "${input_index}=10,20,30,40,50,60,70,80")
+    append_constant_memref "${output_index}" 8 "0"
+}
+
 append_merge_memrefs() {
     local lhs_index="$1"
     local rhs_index="$2"
@@ -1883,6 +1892,20 @@ PY
             --arg 5=0
             --arg 7=1
             --arg 8=0
+        )
+        ;;
+    compact_predicate)
+        append_ctrl_tokens 1
+        append_compact_predicate_memrefs 4 6 7
+        sim_args+=(
+            --graph g_t_compact_predicate_candidate_red_0_0
+            --workload compact_predicate
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 5=0
+            --arg 8=1
+            --arg 9=0
         )
         ;;
     hash_mix)

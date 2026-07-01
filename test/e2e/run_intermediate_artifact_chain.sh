@@ -270,6 +270,9 @@ case "${CASE}" in
   compact)
     case_graph="g_t_compact_red_0_0"
     ;;
+  compact_predicate)
+    case_graph="g_t_compact_predicate_candidate_red_0_0"
+    ;;
   hash_mix)
     case_graph="g_t_main_1_0"
     ;;

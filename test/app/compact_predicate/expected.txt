@@ -1,0 +1,2 @@
+compact_predicate checksum: 860 count: 5
+PASSED

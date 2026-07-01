@@ -95,6 +95,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     covariance
     compare_swap
     compact
+    compact_predicate
     hash_mix
     string_hash
     merge

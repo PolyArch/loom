@@ -54,6 +54,7 @@ DEFAULT_SWEEP_CASES = (
     "covariance",
     "compare_swap",
     "compact",
+    "compact_predicate",
     "hash_mix",
     "string_hash",
     "merge",
@@ -647,6 +648,65 @@ def assert_cdma_evidence(evidence_dir: Path) -> None:
         or comparison.get("performance_comparison_status") != "pass"
     ):
         raise AssertionError(f"cdma should preserve CGRA/comparison copy evidence: {cgra} {comparison}")
+
+
+def assert_compact_predicate_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": ["i32:1", "i32:0", "i32:1", "i32:0", "i32:1", "i32:1", "i32:0", "i32:1"],
+        "arg6": ["i32:10", "i32:20", "i32:30", "i32:40", "i32:50", "i32:60", "i32:70", "i32:80"],
+        "arg7": ["i32:10", "i32:30", "i32:50", "i32:60", "i32:80", "i32:0", "i32:0", "i32:0"],
+    }
+    expected_counts = {
+        "arith.addi": 5,
+        "arith.cmpi": 8,
+        "arith.index_cast": 18,
+        "dataflow.load": 13,
+        "dataflow.store": 5,
+        "scf.if": 8,
+    }
+
+    dfg = json.loads((evidence_dir / "compact_predicate.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_compact_predicate_candidate_red_0_0"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("optimistic_cycles") != 140
+        or dfg.get("final_outputs") != ["none", "i32:5"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("operation_fire_counts") != expected_counts
+    ):
+        raise AssertionError(f"compact_predicate should preserve true DFG predicate-compaction evidence: {dfg}")
+
+    mapping = json.loads((evidence_dir / "compact_predicate.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("graph") != "g_t_compact_predicate_candidate_red_0_0"
+        or mapping.get("placed_records") != 7
+        or mapping.get("routed_edges") != 4
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"compact_predicate should route on shared reduction hardware: {mapping}")
+    assert_mapping_uses_switch_multihop(evidence_dir, "compact_predicate")
+
+    cgra = json.loads((evidence_dir / "compact_predicate.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "compact_predicate.sim-comparison-report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_reduction_adg"
+        or cgra.get("dfg_cycles") != 140
+        or cgra.get("hardware_aware_cycles") != 182
+        or cgra.get("routed_edges") != 4
+        or cgra.get("route_segments") != 20
+        or cgra.get("final_outputs") != ["none", "i32:5"]
+        or cgra.get("final_memory_state") != expected_memory
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"compact_predicate should preserve CGRA/comparison predicate evidence: {cgra} {comparison}")
 
 
 def assert_scatter_add_evidence(evidence_dir: Path) -> None:
@@ -5076,6 +5136,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "compact",
                 "--case",
+                "compact_predicate",
+                "--case",
                 "hash_mix",
                 "--case",
                 "string_hash",
@@ -5733,6 +5795,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compare_swap", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "compact", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "compact_predicate", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "hash_mix", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "string_hash", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "merge", "shared_reduction_adg")
@@ -5959,6 +6022,7 @@ def main(argv: list[str]) -> int:
         run(repo, ["python3", "test/artifacts/assert_bitrev_complex_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_conv2d_cgra_evidence.py", str(evidence_dir)])
         assert_cdma_evidence(evidence_dir)
+        assert_compact_predicate_evidence(evidence_dir)
         assert_im2col_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
         assert_component_references_resolve(evidence_dir, "variance")
@@ -6191,8 +6255,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 111,
-            "pass": 103,
+            "total": 112,
+            "pass": 104,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,

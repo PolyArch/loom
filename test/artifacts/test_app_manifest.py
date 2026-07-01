@@ -28,6 +28,7 @@ EXPECTED_CASES = {
     "col2im",
     "compare_swap",
     "compact",
+    "compact_predicate",
     "convolve_1d",
     "convolve_1d_same",
     "conv2d",

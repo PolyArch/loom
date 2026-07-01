@@ -314,6 +314,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "compact_predicate",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "hash_mix",
       "hardware": "shared_reduction_adg"
     },
