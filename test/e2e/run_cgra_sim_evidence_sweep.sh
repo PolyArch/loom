@@ -163,6 +163,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     jacobi_stencil_5pt
     jacobi_stencil_7pt
     distance_point
+    line_intersect
     edit_distance_step
     normalize_vec3
     transpose

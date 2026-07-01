@@ -66,6 +66,7 @@ EXPECTED_CASES = {
     "interpolate_linear",
     "jacobi_stencil_5pt",
     "jacobi_stencil_7pt",
+    "line_intersect",
     "lower_bound",
     "mean",
     "mat3x3_mult",

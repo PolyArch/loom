@@ -270,6 +270,9 @@ case "${CASE}" in
   distance_point)
     case_graph="g_t_distance_point_kernel_0_0"
     ;;
+  line_intersect)
+    case_graph="g_t_line_intersect_kernel_0_0"
+    ;;
   edit_distance_step)
     case_graph="g_t_edit_distance_step_kernel_0_0"
     ;;
@@ -485,7 +488,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "line_intersect" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -858,6 +861,80 @@ elif [[ "${CASE}" == "distance_point" ]]; then
     --mapping-artifact "${mapping_artifact}" \
     --hardware-mlir "${hardware_mlir}" \
     --output "${cgra_report}"
+elif [[ "${CASE}" == "line_intersect" ]]; then
+  mapfile -t line_fixture < <(
+    python3 "${ROOT}/test/artifacts/line_intersect_fixtures.py" \
+      --source "${ROOT}/test/app/line_intersect/main_func.cpp" \
+      --emit dfg-args
+  )
+  line_a_arg="${line_fixture[0]}"
+  line_b_arg="${line_fixture[1]}"
+  line_output_arg="${line_fixture[2]}"
+  line_index_arg="${line_fixture[3]}"
+  line_count="${line_fixture[4]}"
+  line_a_values="${line_fixture[5]}"
+  line_b_values="${line_fixture[6]}"
+  line_zero_values="${line_fixture[7]}"
+  line_scalar_args=("${line_fixture[@]:8}")
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for ((index = 0; index < line_count; index++)); do
+    component_dfg_report="${OUT_DIR}/${CASE}.dfg-sim-idx${index}.report.json"
+    component_mapping_artifact="${OUT_DIR}/${CASE}.pnr-mapping-idx${index}.json"
+    component_mapping_summary="${OUT_DIR}/${CASE}.pnr-mapping-idx${index}.csv"
+    component_cgra_report="${OUT_DIR}/${CASE}.cgra-sim-idx${index}.report.json"
+    line_args=(
+      "${case_dfg_dir}/main_func.dfg.mlir"
+      --graph "${case_graph}"
+      --workload "${CASE}"
+      --memref "${line_a_arg}=${line_a_values}"
+      --memref "${line_b_arg}=${line_b_values}"
+      --memref "${line_output_arg}=${line_zero_values}"
+    )
+    for scalar_arg in "${line_scalar_args[@]}"; do
+      line_args+=(--arg "${scalar_arg}")
+    done
+    line_args+=(--arg "${line_index_arg}=${index}")
+    line_args+=(--output "${component_dfg_report}")
+    ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${line_args[@]}"
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${case_graph}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${component_mapping_artifact}" \
+      --output "${component_mapping_summary}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${component_dfg_report}" \
+      --mapping-artifact "${component_mapping_artifact}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${component_cgra_report}"
+    dfg_component_args+=(--dfg-report "${component_dfg_report}")
+    mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+    cgra_component_args+=(--cgra-report "${component_cgra_report}")
+    component_artifacts+=(
+      "${component_dfg_report}"
+      "${component_mapping_artifact}"
+      "${component_cgra_report}"
+    )
+  done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
 elif [[ "${CASE}" == "normalize_vec3" ]]; then
   mapfile -t normalize_fixture < <(
     python3 "${ROOT}/test/artifacts/normalize_vec3_fixtures.py" \

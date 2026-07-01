@@ -640,6 +640,17 @@
       "expected_executables": ["lower_bound_func", "lower_bound_inline"]
     },
     {
+      "case": "line_intersect",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["geometry", "segment-intersection", "float", "branch"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["line_intersect_func", "line_intersect_inline"]
+    },
+    {
       "case": "mean",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],
