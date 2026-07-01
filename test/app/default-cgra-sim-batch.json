@@ -398,6 +398,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "depthwise_conv",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "line_intersect",
       "hardware": "shared_signal_window_adg"
     },

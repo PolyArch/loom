@@ -164,6 +164,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     jacobi_stencil_7pt
     distance_point
     line_intersect
+    depthwise_conv
     edit_distance_step
     normalize_vec3
     transpose

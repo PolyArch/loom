@@ -321,6 +321,17 @@
       "expected_executables": ["distance_point_func", "distance_point_inline"]
     },
     {
+      "case": "depthwise_conv",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["convolution", "depthwise", "float", "partitioned-output"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["depthwise_conv_func", "depthwise_conv_inline"]
+    },
+    {
       "case": "edit_distance_step",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

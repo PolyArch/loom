@@ -40,6 +40,7 @@ EXPECTED_CASES = {
     "ctz",
     "cumsum",
     "distance_point",
+    "depthwise_conv",
     "edit_distance_step",
     "delta_decode",
     "delta_encode",

@@ -273,6 +273,9 @@ case "${CASE}" in
   line_intersect)
     case_graph="g_t_line_intersect_kernel_0_0"
     ;;
+  depthwise_conv)
+    case_graph="g_t_depthwise_conv_kernel_0_0"
+    ;;
   edit_distance_step)
     case_graph="g_t_edit_distance_step_kernel_0_0"
     ;;
@@ -514,7 +517,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -708,6 +711,83 @@ run_pool2d_window_components() {
         "${component_cgra_report}"
       )
     done
+  done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+}
+
+run_depthwise_conv_components() {
+  local -a depthwise_fixture
+  mapfile -t depthwise_fixture < <(
+    python3 "${ROOT}/test/artifacts/depthwise_conv_fixtures.py" \
+      --source "${ROOT}/test/app/depthwise_conv/main_func.cpp" \
+      --emit dfg-args
+  )
+  local depthwise_kernel_arg="${depthwise_fixture[0]}"
+  local depthwise_input_arg="${depthwise_fixture[1]}"
+  local depthwise_count="${depthwise_fixture[2]}"
+  local depthwise_input_values="${depthwise_fixture[3]}"
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for ((index = 0; index < depthwise_count; index++)); do
+    local row="${depthwise_fixture[$((4 + index))]}"
+    local -a depthwise_fields
+    IFS=';' read -r -a depthwise_fields <<< "${row}"
+    local depthwise_kernel_values="${depthwise_fields[0]}"
+    local -a depthwise_scalar_args=("${depthwise_fields[@]:1}")
+    component_dfg_report="${OUT_DIR}/${CASE}.dfg-sim-idx${index}.report.json"
+    component_mapping_artifact="${OUT_DIR}/${CASE}.pnr-mapping-idx${index}.json"
+    component_mapping_summary="${OUT_DIR}/${CASE}.pnr-mapping-idx${index}.csv"
+    component_cgra_report="${OUT_DIR}/${CASE}.cgra-sim-idx${index}.report.json"
+    local -a depthwise_args=(
+      "${case_dfg_dir}/main_func.dfg.mlir"
+      --graph "${case_graph}"
+      --workload "${CASE}"
+      --memref "${depthwise_kernel_arg}=${depthwise_kernel_values}"
+      --memref "${depthwise_input_arg}=${depthwise_input_values}"
+    )
+    local scalar_arg
+    for scalar_arg in "${depthwise_scalar_args[@]}"; do
+      depthwise_args+=(--arg "${scalar_arg}")
+    done
+    ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
+      "${depthwise_args[@]}" \
+      --output "${component_dfg_report}"
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${case_graph}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${component_mapping_artifact}" \
+      --output "${component_mapping_summary}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${component_dfg_report}" \
+      --mapping-artifact "${component_mapping_artifact}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${component_cgra_report}"
+    dfg_component_args+=(--dfg-report "${component_dfg_report}")
+    mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+    cgra_component_args+=(--cgra-report "${component_cgra_report}")
+    component_artifacts+=(
+      "${component_dfg_report}"
+      "${component_mapping_artifact}"
+      "${component_cgra_report}"
+    )
   done
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     "${dfg_component_args[@]}" \
@@ -1953,6 +2033,8 @@ PY
     --mapping-summary-output "${mapping}"
 elif [[ "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" ]]; then
   run_pool2d_window_components
+elif [[ "${CASE}" == "depthwise_conv" ]]; then
+  run_depthwise_conv_components
 elif [[ "${CASE}" == "conv2d" ]]; then
   conv2d_input_values="1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00,5.000000e+00,6.000000e+00,7.000000e+00,8.000000e+00,9.000000e+00,1.000000e+01,1.100000e+01,1.200000e+01,1.300000e+01,1.400000e+01,1.500000e+01,1.600000e+01"
   conv2d_kernel_values="1.000000e+00,0.000000e+00,5.000000e-01,-1.000000e+00,-5.000000e-01,1.000000e+00,2.500000e-01,7.500000e-01"

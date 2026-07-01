@@ -39,6 +39,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "delta_decode",
     "delta_encode",
     "distance_point",
+    "depthwise_conv",
     "edit_distance_step",
     "dot_product_3d",
     "dotprod",
