@@ -519,12 +519,12 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
                 "total": total,
                 "pass": 0,
                 "fail": 0,
-                "blocked": APP_NO_DFG_TIER_COUNT,
+                "blocked": total,
                 "unsupported": 0,
-                "missing_status": total - APP_NO_DFG_TIER_COUNT,
+                "missing_status": 0,
             }
             if suite_counts != expected:
-                raise AssertionError(f"app baseline should structure app rows without dfg tier: {suite_counts}")
+                raise AssertionError(f"app baseline should structure every app row as non-missing: {suite_counts}")
         elif suite == "cmsis-dsp":
             expected = {
                 "total": total,
@@ -586,26 +586,157 @@ def main() -> int:
             raise AssertionError(f"JSON should name CSV projection: {data}")
         assert_counts(rows, data)
 
+        def assert_app_not_attempted(row_data: dict[str, str], case: str) -> None:
+            if (
+                row_data["status"] != "blocked"
+                or row_data["diagnostic_class"] != "missing_dfg_report"
+                or row_data["owner"] != "sim_report"
+                or row_data["blocking_prerequisite"] != "dfg_report"
+                or row_data["dfg_status"] != "not_run"
+                or row_data["mapping_status"] != "not_run"
+                or row_data["cgra_status"] != "not_run"
+                or row_data["comparison_status"] != "not_run"
+                or row_data["final_outputs_present"] != "false"
+                or row_data["final_memory_state_present"] != "false"
+                or row_data["dfg_report"]
+                or row_data["mapping_artifact"]
+                or row_data["cgra_report"]
+                or row_data["comparison_report"]
+                or f"DFG-sim report is absent for app row {case}" not in row_data["diagnostic"]
+            ):
+                raise AssertionError(f"{case} baseline should publish structured not-attempted evidence: {row_data}")
+
         app_vecsum = one_row(rows, "app", "vecsum")
-        if app_vecsum["status"] != "not_run" or app_vecsum["diagnostic_class"] != "missing_status":
-            raise AssertionError(f"vecsum baseline must not claim pass: {app_vecsum}")
-        if app_vecsum["blocking_prerequisite"] != "mapping_artifact":
-            raise AssertionError(f"vecsum should be blocked on mapping artifact: {app_vecsum}")
+        assert_app_not_attempted(app_vecsum, "vecsum")
 
         app_batchnorm = one_row(rows, "app", "batchnorm")
-        if app_batchnorm["blocking_prerequisite"] != "mapping_artifact":
-            raise AssertionError(f"batchnorm should block on mapping evidence before simulation artifacts: {app_batchnorm}")
-        if app_batchnorm["status"] != "not_run" or app_batchnorm["diagnostic_class"] != "missing_status":
-            raise AssertionError(f"batchnorm should expose DFG-tier row status before mapping evidence: {app_batchnorm}")
+        assert_app_not_attempted(app_batchnorm, "batchnorm")
         if app_batchnorm["required_slice_count"] != "1":
             raise AssertionError(f"batchnorm should require one DFG slice after adding dfg_check.sh: {app_batchnorm}")
         app_interpolate = one_row(rows, "app", "interpolate_linear")
-        if app_interpolate["blocking_prerequisite"] != "mapping_artifact":
-            raise AssertionError(f"interpolate_linear should be blocked after DFG tier on mapping evidence: {app_interpolate}")
-        if app_interpolate["status"] != "not_run" or app_interpolate["diagnostic_class"] != "missing_status":
-            raise AssertionError(f"interpolate_linear should expose DFG-tier row status before mapping evidence: {app_interpolate}")
+        assert_app_not_attempted(app_interpolate, "interpolate_linear")
         if app_interpolate["required_slice_count"] != "1":
             raise AssertionError(f"interpolate_linear should require one DFG slice after adding dfg_check.sh: {app_interpolate}")
+        tampered_app_rows = [dict(row) for row in rows]
+        tampered_app = one_row(tampered_app_rows, "app", "vecsum")
+        tampered_app.update(
+            {
+                "status": "not_run",
+                "diagnostic_class": "missing_status",
+                "owner": "implementation",
+                "blocking_prerequisite": "mapping_artifact",
+                "diagnostic": "CGRA status missing after app dataflow tier; mapping artifact and CGRA-sim report are absent",
+            }
+        )
+        tampered_app_csv = out_dir / "tampered-app-missing-cgra-status-summary.csv"
+        tampered_app_json = out_dir / "tampered-app-missing-cgra-status-summary.json"
+        write_rows(tampered_app_csv, tampered_app_rows)
+        write_json_projection(tampered_app_json, tampered_app_csv, tampered_app_rows)
+        failed_app_missing_audit = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(tampered_app_csv),
+                "--json-input",
+                str(tampered_app_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "app row must not use missing_status" not in failed_app_missing_audit.stderr:
+            raise AssertionError(
+                f"tampered app missing_status row should fail status audit: {failed_app_missing_audit.stderr}"
+            )
+        tampered_app_missing_dfg_rows = [dict(row) for row in rows]
+        tampered_app_missing_dfg = one_row(tampered_app_missing_dfg_rows, "app", "vecsum")
+        tampered_app_missing_dfg.update(
+            {
+                "owner": "implementation",
+                "blocking_prerequisite": "dfg_report",
+                "dfg_status": "not_run",
+                "diagnostic": "DFG-sim report is absent for app row vecsum",
+            }
+        )
+        tampered_app_missing_dfg_csv = out_dir / "tampered-app-missing-dfg-cgra-status-summary.csv"
+        tampered_app_missing_dfg_json = out_dir / "tampered-app-missing-dfg-cgra-status-summary.json"
+        write_rows(tampered_app_missing_dfg_csv, tampered_app_missing_dfg_rows)
+        write_json_projection(tampered_app_missing_dfg_json, tampered_app_missing_dfg_csv, tampered_app_missing_dfg_rows)
+        failed_app_missing_dfg_audit = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(tampered_app_missing_dfg_csv),
+                "--json-input",
+                str(tampered_app_missing_dfg_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "app missing DFG report row requires owner=sim_report" not in failed_app_missing_dfg_audit.stderr:
+            raise AssertionError(
+                "tampered app missing_dfg_report row should fail status audit: "
+                f"{failed_app_missing_dfg_audit.stderr}"
+            )
+        tampered_app_missing_dfg_mapping = out_dir / "tampered-app-missing-dfg.mapping.json"
+        write_json(
+            tampered_app_missing_dfg_mapping,
+            {
+                "schema_version": 1,
+                "kind": "pnr_mapping",
+                "workload": "vecsum",
+                "graph": "g_vecsum_0",
+                "hardware": "shared_reduction_adg",
+                "mapping_id": "vecsum__shared_reduction_adg",
+                "status": "blocked",
+                "diagnostics": ["fixture blocked mapping"],
+            },
+        )
+        tampered_app_missing_dfg_later_rows = [dict(row) for row in rows]
+        tampered_app_missing_dfg_later = one_row(tampered_app_missing_dfg_later_rows, "app", "vecsum")
+        tampered_app_missing_dfg_later.update(
+            {
+                "mapping_artifact": str(tampered_app_missing_dfg_mapping),
+                "mapping_artifact_fingerprint": hashlib.sha256(
+                    tampered_app_missing_dfg_mapping.read_bytes()
+                ).hexdigest(),
+                "mapping_status": "blocked",
+                "final_outputs_present": "true",
+                "final_memory_state_present": "true",
+            }
+        )
+        tampered_app_missing_dfg_later_csv = out_dir / "tampered-app-missing-dfg-later-cgra-status-summary.csv"
+        tampered_app_missing_dfg_later_json = out_dir / "tampered-app-missing-dfg-later-cgra-status-summary.json"
+        write_rows(tampered_app_missing_dfg_later_csv, tampered_app_missing_dfg_later_rows)
+        write_json_projection(
+            tampered_app_missing_dfg_later_json,
+            tampered_app_missing_dfg_later_csv,
+            tampered_app_missing_dfg_later_rows,
+        )
+        failed_app_missing_dfg_later_audit = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_audit.sh",
+                "--input",
+                str(tampered_app_missing_dfg_later_csv),
+                "--json-input",
+                str(tampered_app_missing_dfg_later_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+            ],
+            expect_success=False,
+        )
+        if "app missing DFG report row must not claim final-state evidence" not in failed_app_missing_dfg_later_audit.stderr:
+            raise AssertionError(
+                "tampered app missing_dfg_report row with later artifacts should fail status audit: "
+                f"{failed_app_missing_dfg_later_audit.stderr}"
+            )
         no_dfg_rows = [
             row for row in rows
             if row["suite"] == "app" and row["diagnostic_class"] == "app_dataflow_tier_missing"
@@ -1106,8 +1237,11 @@ def main() -> int:
         ]
         if len(vecsum_gaps) != 1:
             raise AssertionError(f"expected one vecsum CGRA status gap, got {ledger_rows[:10]}")
-        if "not_run" not in vecsum_gaps[0]["reason"]:
-            raise AssertionError(f"ledger row should preserve not_run status: {vecsum_gaps[0]}")
+        if (
+            "status=blocked" not in vecsum_gaps[0]["reason"]
+            or "DFG-sim report is absent for app row vecsum" not in vecsum_gaps[0]["reason"]
+        ):
+            raise AssertionError(f"ledger row should preserve structured blocked status: {vecsum_gaps[0]}")
 
         basename_dfg_dir = out_dir / "basename-dfg"
         write_cmsis_dfg_mlir(basename_dfg_dir / "arm_source_name.dfg.mlir", symbol="different_exported_symbol", graph=True)
@@ -2079,9 +2213,9 @@ def main() -> int:
             "total": APP_CASE_COUNT,
             "pass": 2,
             "fail": 1,
-            "blocked": 2 + APP_NO_DFG_TIER_COUNT,
+            "blocked": APP_CASE_COUNT - 2 - 1,
             "unsupported": 0,
-            "missing_status": APP_CASE_COUNT - 2 - 1 - (2 + APP_NO_DFG_TIER_COUNT),
+            "missing_status": 0,
         }:
             raise AssertionError(f"unexpected promoted app counts: {app_counts}")
         vecsum = one_row(promoted_rows, "app", "vecsum")
@@ -2414,14 +2548,12 @@ def main() -> int:
             "total": APP_CASE_COUNT,
             "pass": 0,
             "fail": 0,
-            "blocked": len(CURRENT_SIM_CYCLE_CASES) + APP_NO_DFG_TIER_COUNT,
+            "blocked": APP_CASE_COUNT,
             "unsupported": 0,
-            "missing_status": APP_CASE_COUNT - len(CURRENT_SIM_CYCLE_CASES) - APP_NO_DFG_TIER_COUNT,
+            "missing_status": 0,
         }:
             raise AssertionError(
-                f"current-like evidence should produce "
-                f"{len(CURRENT_SIM_CYCLE_CASES) + APP_NO_DFG_TIER_COUNT} "
-                f"blocked app rows: {current_like_counts}"
+                f"current-like evidence should keep every app row non-missing: {current_like_counts}"
             )
         vecadd_like = one_row(current_like_rows, "app", "vecadd")
         if vecadd_like["diagnostic_class"] != "missing_aggregate_cgra_status_evidence":
@@ -2458,9 +2590,9 @@ def main() -> int:
             "total": APP_CASE_COUNT,
             "pass": 1,
             "fail": 0,
-            "blocked": APP_NO_DFG_TIER_COUNT,
+            "blocked": APP_CASE_COUNT - 1,
             "unsupported": 0,
-            "missing_status": APP_CASE_COUNT - APP_NO_DFG_TIER_COUNT - 1,
+            "missing_status": 0,
         }
         if chain_style_counts != expected_chain_style_counts:
             raise AssertionError(f"chain-style evidence should promote one app row: {chain_style_counts}")
@@ -2604,7 +2736,7 @@ def main() -> int:
 
         diverged_json = out_dir / "diverged-cgra-status-summary.json"
         diverged_rows = [dict(row) for row in rows]
-        one_row(diverged_rows, "app", "vecsum")["status"] = "blocked"
+        one_row(diverged_rows, "app", "vecsum")["status"] = "fail"
         write_json_projection(diverged_json, csv_output, diverged_rows)
         failed_json = run(
             repo,

@@ -1134,6 +1134,159 @@ def main() -> int:
         if "DFG unsupported report row requires status=unsupported" not in messages:
             raise AssertionError(f"app DFG unsupported status diagnostic missing: {audit_data}")
 
+        forged_app_missing_status = out_dir / "forged-app-missing-status-cgra-status-summary.csv"
+        intermediate_artifacts.write_csv_rows(
+            "cgra_status",
+            forged_app_missing_status,
+            [
+                cgra_status_row(
+                    status="not_run",
+                    diagnostic_class="missing_status",
+                    owner="implementation",
+                    blocking_prerequisite="mapping_artifact",
+                    diagnostic="CGRA status missing after app dataflow tier",
+                )
+            ],
+        )
+        forged_app_missing_status_audit = out_dir / "artifact-audit-summary-forged-app-missing-status.json"
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_app_missing_status_audit),
+                str(forged_app_missing_status),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("app missing_status CGRA status row unexpectedly passed audit")
+        audit_data = json.loads(forged_app_missing_status_audit.read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "app row must not use missing_status" not in messages:
+            raise AssertionError(f"app missing_status diagnostic missing: {audit_data}")
+
+        forged_dfg_report = out_dir / "forged-app-dfg-sim-report.json"
+        write_dfg_report(forged_dfg_report, "edge_update", "g_t_edge_update_kernel_0_0", 8)
+        forged_app_missing_dfg_with_report = out_dir / "forged-app-missing-dfg-with-report-cgra-status-summary.csv"
+        intermediate_artifacts.write_csv_rows(
+            "cgra_status",
+            forged_app_missing_dfg_with_report,
+            [
+                cgra_status_row(
+                    status="blocked",
+                    diagnostic_class="missing_dfg_report",
+                    owner="sim_report",
+                    blocking_prerequisite="dfg_report",
+                    dfg_status="pass",
+                    dfg_report=forged_dfg_report.name,
+                    dfg_report_fingerprint=artifact_test_common.fingerprint(forged_dfg_report),
+                    diagnostic="DFG-sim report is absent for app row edge_update",
+                )
+            ],
+        )
+        forged_app_missing_dfg_with_report_audit = (
+            out_dir / "artifact-audit-summary-forged-app-missing-dfg-with-report.json"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_app_missing_dfg_with_report_audit),
+                str(forged_app_missing_dfg_with_report),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("app missing_dfg_report row carrying DFG report evidence unexpectedly passed audit")
+        audit_data = json.loads(forged_app_missing_dfg_with_report_audit.read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "app missing DFG report row must not carry dfg_report evidence" not in messages:
+            raise AssertionError(f"app missing_dfg_report artifact diagnostic missing: {audit_data}")
+
+        forged_app_missing_dfg_wrong_owner = out_dir / "forged-app-missing-dfg-wrong-owner-cgra-status-summary.csv"
+        intermediate_artifacts.write_csv_rows(
+            "cgra_status",
+            forged_app_missing_dfg_wrong_owner,
+            [
+                cgra_status_row(
+                    status="blocked",
+                    diagnostic_class="missing_dfg_report",
+                    owner="implementation",
+                    blocking_prerequisite="dfg_report",
+                    dfg_status="not_run",
+                    diagnostic="DFG-sim report is absent for app row edge_update",
+                )
+            ],
+        )
+        forged_app_missing_dfg_wrong_owner_audit = (
+            out_dir / "artifact-audit-summary-forged-app-missing-dfg-wrong-owner.json"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_app_missing_dfg_wrong_owner_audit),
+                str(forged_app_missing_dfg_wrong_owner),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("app missing_dfg_report row with wrong owner unexpectedly passed audit")
+        audit_data = json.loads(forged_app_missing_dfg_wrong_owner_audit.read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "app missing DFG report row requires owner=sim_report" not in messages:
+            raise AssertionError(f"app missing_dfg_report owner diagnostic missing: {audit_data}")
+
+        forged_app_later_mapping = out_dir / "forged-app-later-pnr-mapping.json"
+        write_mapping_artifact(
+            forged_app_later_mapping,
+            "edge_update",
+            "g_t_edge_update_kernel_0_0",
+            "edge_update__shared_reduction_adg",
+        )
+        forged_app_missing_dfg_with_later = out_dir / "forged-app-missing-dfg-with-later-cgra-status-summary.csv"
+        intermediate_artifacts.write_csv_rows(
+            "cgra_status",
+            forged_app_missing_dfg_with_later,
+            [
+                cgra_status_row(
+                    status="blocked",
+                    diagnostic_class="missing_dfg_report",
+                    owner="sim_report",
+                    blocking_prerequisite="dfg_report",
+                    dfg_status="not_run",
+                    mapping_status="pass",
+                    mapping_artifact=forged_app_later_mapping.name,
+                    mapping_artifact_fingerprint=artifact_test_common.fingerprint(forged_app_later_mapping),
+                    final_outputs_present="true",
+                    final_memory_state_present="true",
+                    diagnostic="DFG-sim report is absent for app row edge_update",
+                )
+            ],
+        )
+        forged_app_missing_dfg_with_later_audit = (
+            out_dir / "artifact-audit-summary-forged-app-missing-dfg-with-later.json"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(forged_app_missing_dfg_with_later_audit),
+                str(forged_app_missing_dfg_with_later),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("app missing_dfg_report row with final-state evidence unexpectedly passed audit")
+        audit_data = json.loads(forged_app_missing_dfg_with_later_audit.read_text())
+        messages = " ".join(str(item) for item in audit_data.get("diagnostics", []))
+        if "app missing DFG report row must not claim final-state evidence" not in messages:
+            raise AssertionError(f"app missing_dfg_report final-state diagnostic missing: {audit_data}")
+
         duplicate_equivalence_sim = out_dir / "duplicate-equivalence-sim-cycle-summary.csv"
         duplicate_equivalence_sim.write_text(
             "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic,"

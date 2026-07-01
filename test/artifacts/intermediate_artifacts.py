@@ -1680,6 +1680,48 @@ def validate_cgra_status_cmsis_no_missing_status(
         diagnostics.append(f"row {row_index}: CMSIS row must not use missing_status")
 
 
+def validate_cgra_status_app_no_missing_status(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") != "app":
+        return
+    if row.get("diagnostic_class", "") == "missing_status":
+        diagnostics.append(f"row {row_index}: app row must not use missing_status")
+
+
+def validate_cgra_status_app_missing_dfg_report_row(
+    row: dict[str, str],
+    diagnostics: list[str],
+    row_index: int,
+) -> None:
+    if row.get("suite", "") != "app" or row.get("diagnostic_class", "") != "missing_dfg_report":
+        return
+    if row.get("status", "") != "blocked":
+        diagnostics.append(f"row {row_index}: app missing DFG report row requires status=blocked")
+    if row.get("owner", "") != "sim_report":
+        diagnostics.append(f"row {row_index}: app missing DFG report row requires owner=sim_report")
+    if row.get("blocking_prerequisite", "") != "dfg_report":
+        diagnostics.append(
+            f"row {row_index}: app missing DFG report row requires blocking_prerequisite=dfg_report"
+        )
+    if row.get("dfg_status", "") != "not_run":
+        diagnostics.append(f"row {row_index}: app missing DFG report row requires dfg_status=not_run")
+    if row.get("dfg_report", "") or row.get("dfg_report_fingerprint", ""):
+        diagnostics.append(f"row {row_index}: app missing DFG report row must not carry dfg_report evidence")
+    if row.get("final_outputs_present", "") != "false" or row.get("final_memory_state_present", "") != "false":
+        diagnostics.append(f"row {row_index}: app missing DFG report row must not claim final-state evidence")
+    has_later_artifacts = any(
+        row.get(column, "")
+        for column in ("mapping_artifact", "cgra_report", "comparison_report")
+    )
+    if not has_later_artifacts:
+        for column in ("mapping_status", "cgra_status", "comparison_status"):
+            if row.get(column, "") != "not_run":
+                diagnostics.append(f"row {row_index}: app missing DFG report row requires {column}=not_run")
+
+
 def validate_cgra_status_dfg_report_unsupported_status(
     row: dict[str, str],
     diagnostics: list[str],
@@ -1880,6 +1922,8 @@ def validate_kind_invariants(
             validate_cgra_status_non_pass_referenced_json(anchor, row, diagnostics, row_index)
             validate_cgra_status_cmsis_dfg_mlir_row(anchor, row, diagnostics, row_index)
         validate_cgra_status_cmsis_no_missing_status(row, diagnostics, row_index)
+        validate_cgra_status_app_no_missing_status(row, diagnostics, row_index)
+        validate_cgra_status_app_missing_dfg_report_row(row, diagnostics, row_index)
         validate_cgra_status_dfg_report_unsupported_status(row, diagnostics, row_index)
         validate_cgra_status_cmsis_dfg_mlir_reference(anchor, row, diagnostics, row_index)
         validate_cgra_status_cmsis_dfg_mlir_requirement(row, diagnostics, row_index)

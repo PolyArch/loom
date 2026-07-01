@@ -148,7 +148,16 @@ def app_rows() -> list[dict[str, str]]:
             blocking_prerequisite=prerequisite,
             diagnostic=diagnostic,
         )
-        if not has_dfg:
+        if has_dfg:
+            row_data["status"] = "blocked"
+            row_data["diagnostic_class"] = "missing_dfg_report"
+            row_data["owner"] = "sim_report"
+            row_data["blocking_prerequisite"] = "dfg_report"
+            row_data["diagnostic"] = (
+                f"DFG-sim report is absent for app row {case}; mapping, CGRA-sim, "
+                "and comparison evidence are also absent"
+            )
+        else:
             row_data["status"] = "blocked"
             row_data["diagnostic_class"] = "app_dataflow_tier_missing"
             row_data["owner"] = "compiler_pipeline"

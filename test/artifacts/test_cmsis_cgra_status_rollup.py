@@ -566,9 +566,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
             "total": 110,
             "pass": 1,
             "fail": 0,
-            "blocked": 0,
+            "blocked": 109,
             "unsupported": 0,
-            "missing_status": 109,
+            "missing_status": 0,
         },
     )
     assert_app_cgra_pass_row(repo, stale_rows, "vecsum", expected_hardware="shared_reduction_adg")
@@ -632,9 +632,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
             "total": 110,
             "pass": 18,
             "fail": 0,
-            "blocked": 0,
+            "blocked": 92,
             "unsupported": 0,
-            "missing_status": 92,
+            "missing_status": 0,
         },
     )
     assert_counts(
@@ -1118,9 +1118,9 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 110,
             "pass": 14,
             "fail": 0,
-            "blocked": 0,
+            "blocked": 83,
             "unsupported": 13,
-            "missing_status": 83,
+            "missing_status": 0,
         },
     )
     assert_app_cgra_pass_row(repo, rows, "crc32", expected_hardware="shared_reduction_adg")
