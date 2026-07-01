@@ -66,6 +66,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "bitonic_stage-modified",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "bitonic_stage-tweak",
       "hardware": "shared_memory_reduction_adg"
     },

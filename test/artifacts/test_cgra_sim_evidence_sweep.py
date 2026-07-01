@@ -134,7 +134,6 @@ DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update",
     "edge_update_batch",
-    "bitonic_stage-modified",
     "col2im",
     "hist_bin",
     "histogram",
@@ -147,15 +146,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
 )
 EMPTY_DISCOVERED_GRAPH_IDS = "__empty__"
 PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = (
-    (
-        "bitonic_stage-modified",
-        "bitonic_stage_modified_kernel",
-        "primary workload graph absent: bitonic_stage_modified_kernel remains a residual call target "
-        "outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim "
-        "cannot observe the kernel return value",
-        EMPTY_DISCOVERED_GRAPH_IDS,
-        "bitonic_stage_modified_kernel",
-    ),
     (
         "col2im",
         "col2im_kernel",
@@ -846,6 +836,121 @@ def assert_bitonic_stage_evidence(evidence_dir: Path) -> None:
         or comparison.get("performance_comparison_status") != "pass"
     ):
         raise AssertionError(f"bitonic_stage should preserve CGRA/comparison evidence: {cgra} {comparison}")
+
+
+def assert_bitonic_stage_modified_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg1": [
+            "f32:1",
+            "f32:2",
+            "f32:2",
+            "f32:3",
+            "f32:128",
+            "f32:94",
+            "f32:112",
+            "f32:79",
+        ]
+    }
+    expected_counts = {
+        "arith.addf": 4,
+        "arith.addi": 11,
+        "arith.andi": 17,
+        "arith.cmpf": 8,
+        "arith.cmpi": 21,
+        "arith.index_cast": 44,
+        "arith.mulf": 16,
+        "arith.select": 4,
+        "arith.shli": 9,
+        "arith.shrui": 4,
+        "arith.xori": 1,
+        "dataflow.constant": 7,
+        "dataflow.load": 28,
+        "dataflow.store": 24,
+        "llvm.trunc": 20,
+        "llvm.zext": 1,
+        "scf.forall": 4,
+        "scf.if": 17,
+    }
+
+    dfg = json.loads((evidence_dir / "bitonic_stage-modified.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_bitonic_stage_modified_kernel_0"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("optimistic_cycles") != 486
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(
+            f"bitonic_stage-modified should preserve true DFG memory evidence: {dfg}"
+        )
+    assert_operation_fire_counts("bitonic_stage-modified", dfg, expected_counts)
+
+    mapping = json.loads((evidence_dir / "bitonic_stage-modified.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 44
+        or mapping.get("routed_edges") != 50
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 1360
+    ):
+        raise AssertionError(
+            f"bitonic_stage-modified should route on shared memory reduction hardware: {mapping}"
+        )
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_edges = {
+        "arith.addf#0.result0->dataflow.store#3.operand2",
+        "arith.mulf#0.result0->dataflow.store#2.operand2",
+        "arith.index_cast#0.result0->dataflow.load#0.operand1",
+        "arith.index_cast#1.result0->dataflow.store#0.operand1",
+        "arith.index_cast#2.result0->dataflow.load#3.operand1",
+        "arith.index_cast#3.result0->dataflow.store#3.operand1",
+        "arith.cmpf#0.result0->arith.select#0.operand1",
+        "arith.cmpf#1.result0->arith.select#0.operand2",
+        "arith.cmpi#1.result0->arith.select#0.operand0",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(
+            f"bitonic_stage-modified mapping should expose compare, multiply, and memory routes: {mapping}"
+        )
+    assert_mapping_edges_use_switch_multihop(
+        evidence_dir,
+        "bitonic_stage-modified",
+        {
+            "arith.index_cast#2.result0->dataflow.load#3.operand1",
+            "arith.index_cast#3.result0->dataflow.store#3.operand1",
+        },
+    )
+
+    cgra = json.loads((evidence_dir / "bitonic_stage-modified.cgra.report.json").read_text())
+    comparison = json.loads(
+        (evidence_dir / "bitonic_stage-modified.sim-comparison-report.json").read_text()
+    )
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 486
+        or cgra.get("hardware_aware_cycles") != 822
+        or cgra.get("routed_edges") != 50
+        or cgra.get("route_segments") != 252
+        or cgra.get("config_records") != 1360
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra.get("fidelity_level") != "mapping_constraint_estimate"
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles") != 822
+        or comparison.get("dfg_sim_cycles") != 486
+    ):
+        raise AssertionError(
+            f"bitonic_stage-modified should preserve CGRA/comparison evidence: {cgra} {comparison}"
+        )
 
 
 def assert_bitonic_stage_tweak_evidence(evidence_dir: Path) -> None:
@@ -4860,6 +4965,7 @@ def main(argv: list[str]) -> int:
             "bisection_step",
             "byte_swap",
             "bitonic_stage",
+            "bitonic_stage-modified",
             "bitonic_stage-tweak",
             "clz",
             "ctz",
@@ -4964,6 +5070,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "matmul", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "mat3x3_mult", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "bitonic_stage", 4)
+        assert_dfg_dynamic_work_items(evidence_dir, "bitonic_stage-modified", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "bitonic_stage-tweak", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "bisection_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
@@ -5156,6 +5263,7 @@ def main(argv: list[str]) -> int:
         assert_popcount_evidence(evidence_dir)
         assert_binary_search_evidence(evidence_dir)
         assert_bitonic_stage_evidence(evidence_dir)
+        assert_bitonic_stage_modified_evidence(evidence_dir)
         assert_bitonic_stage_tweak_evidence(evidence_dir)
         assert_bound_search_evidence(
             evidence_dir,
@@ -5251,6 +5359,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "axpy", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "binary_search", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bitonic_stage", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "bitonic_stage-modified", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bitonic_stage-tweak", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bit_reverse", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "clz", "shared_memory_reduction_adg")
@@ -5774,10 +5883,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 110,
-            "pass": 98,
+            "pass": 99,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 12,
+            "unsupported": 11,
             "missing_status": 0,
         }
         if counts != expected_counts:

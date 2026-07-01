@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 110,
-            "pass": 98,
+            "pass": 99,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 12,
+            "unsupported": 11,
             "missing_status": 0,
         },
     )
@@ -866,11 +866,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
         "while the batched CSR lookup and update loops remain outside dataflow"
     ),
-    "bitonic_stage-modified": (
-        "primary workload graph absent: bitonic_stage_modified_kernel remains a residual call target "
-        "outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim "
-        "cannot observe the kernel return value"
-    ),
     "col2im": (
         "primary workload graph absent: col2im_kernel remains a residual call target outside "
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
@@ -1111,10 +1106,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 110,
-            "pass": 14,
+            "pass": 15,
             "fail": 0,
             "blocked": 84,
-            "unsupported": 12,
+            "unsupported": 11,
             "missing_status": 0,
         },
     )
@@ -1127,6 +1122,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "clz", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "ctz", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "binary_search", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "bitonic_stage-modified", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "lower_bound", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "upper_bound", expected_hardware="shared_memory_reduction_adg")
@@ -4506,15 +4502,6 @@ def main() -> int:
             expected_primary_graph_token="col2im_kernel",
             expected_discovered_graph=EMPTY_DISCOVERED_GRAPH_IDS,
             expected_residual_call="col2im_kernel",
-        )
-        assert_primary_graph_absence_attempt_mode(
-            repo,
-            out_dir / "no-dfg-app-attempt-bitonic-stage-modified",
-            legacy_root,
-            case="bitonic_stage-modified",
-            expected_primary_graph_token="bitonic_stage_modified_kernel",
-            expected_discovered_graph=EMPTY_DISCOVERED_GRAPH_IDS,
-            expected_residual_call="bitonic_stage_modified_kernel",
         )
         assert_primary_graph_absence_empty_graph_guard(repo, out_dir / "primary-graph-empty-guard")
         assert_primary_graph_absence_attempt_mode(

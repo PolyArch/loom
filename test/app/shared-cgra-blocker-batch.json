@@ -55,7 +55,7 @@
     },
     {
       "case": "bitonic_stage-modified",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_memory_reduction_adg"
     },
     {
       "case": "col2im",

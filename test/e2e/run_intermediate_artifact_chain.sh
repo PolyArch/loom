@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    bitonic_stage-modified|col2im|edge_update|edge_update_batch|hist_bin|histogram|histogram_strided|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
+    col2im|edge_update|edge_update_batch|hist_bin|histogram|histogram_strided|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
       return 0
       ;;
     *)
@@ -121,7 +121,7 @@ case "${CASE}" in
     case_graph="g_bitrev_complex_kernel_0"
     ;;
   bitonic_stage-modified)
-    case_graph="missing_primary_graph"
+    case_graph="g_bitonic_stage_modified_kernel_0"
     ;;
   col2im)
     case_graph="missing_primary_graph"
@@ -490,7 +490,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -1919,15 +1919,6 @@ PY
 elif uses_primary_graph_absence_path "${CASE}"; then
   graph_absence_args=()
   case "${CASE}" in
-    bitonic_stage-modified)
-      expected_primary_graph_token="bitonic_stage_modified_kernel"
-      graph_absence_args=(
-        --require-empty-discovered-graphs
-        --required-residual-call "bitonic_stage_modified_kernel"
-        --diagnostic "primary workload graph absent: bitonic_stage_modified_kernel remains a residual call target outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot observe the kernel return value"
-        --evidence "kernel remains behind a residual call target"
-      )
-      ;;
     col2im)
       expected_primary_graph_token="col2im_kernel"
       graph_absence_args=(

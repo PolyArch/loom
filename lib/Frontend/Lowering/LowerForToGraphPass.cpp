@@ -381,6 +381,20 @@ struct LowerForToGraphPass
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
+      if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(nested)) {
+        if (isEffectFormForallGraphCandidate(forall))
+          return ::mlir::WalkResult::advance();
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (auto inParallel =
+              ::llvm::dyn_cast<::mlir::scf::InParallelOp>(nested)) {
+        if (!inParallel.getRegion().empty() &&
+            inParallel.getRegion().front().empty())
+          return ::mlir::WalkResult::advance();
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
       if (nested->getNumRegions() != 0 &&
           !::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::WhileOp,
                        ::mlir::scf::IfOp, ::mlir::scf::IndexSwitchOp>(

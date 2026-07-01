@@ -25,7 +25,7 @@
 // HARDWARE-DAG: fabric.op [@llvm.fptoui]
 // HARDWARE-DAG: fabric.op [@arith.trunci]
 // HARDWARE-DAG: fabric.op [@arith.index_cast]
-// HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff", "0x3f800000", "0xbf800000", "0x322bcc77", "0x3727c5ac"]
+// HARDWARE-DAG: const_hex_value = ["0x00000000", "0x00000001", "0x00000002", "0x00000003", "0x00000004", "0x00000008", "0x00000010", "0xffffffff", "0x3f800000", "0x40000000", "0xbf800000", "0x322bcc77", "0x3727c5ac"]
 // HARDWARE-DAG: const_hex_value = ["0x0000000000000000", "0x0000000000000001", "0x0000000000000002", "0x0000000000000003", "0x0000000000000004", "0x0000000000000008", "0x0000000000000010"]
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]

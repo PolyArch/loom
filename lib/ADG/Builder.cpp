@@ -4246,6 +4246,10 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.wideUnsignedDivCount = 2;
   config.wideMuxCount = 1;
   config.wideRouteBridgeCount = 2;
+  config.constantHexValues = {
+      "0x00000000", "0x00000001", "0x00000002", "0x00000003",
+      "0x00000004", "0x00000008", "0x00000010", "0x3f800000",
+      "0x40000000", "0xbf800000", "0xffffffff"};
   return buildSharedMemoryLikeAdg(config);
 }
 
@@ -4305,7 +4309,8 @@ ModuleBuilder loom::adg::buildSharedSignalWindowAdg() {
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x00000010", "0xffffffff",
-      "0x3f800000", "0xbf800000", "0x322bcc77", "0x3727c5ac"};
+      "0x3f800000", "0x40000000", "0xbf800000", "0x322bcc77",
+      "0x3727c5ac"};
   config.wideConstantHexValues = {
       "0x0000000000000000", "0x0000000000000001",
       "0x0000000000000002", "0x0000000000000003",
