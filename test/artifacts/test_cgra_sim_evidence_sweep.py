@@ -136,7 +136,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update_batch",
     "col2im",
     "hist_bin",
-    "histogram_strided",
     "sort_insertion",
     "sort_merge",
     "sort_quick",
@@ -162,15 +161,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = 
         "cannot observe the kernel return value",
         "g_t_main_red_0_0",
         "hist_bin_kernel",
-    ),
-    (
-        "histogram_strided",
-        "histogram_strided_kernel",
-        "primary workload graph absent: histogram_strided_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
-        "cannot observe the kernel return value",
-        "g_t_main_red_0_0",
-        "histogram_strided_kernel",
     ),
     (
         "string_compare",
@@ -4545,6 +4535,99 @@ def assert_histogram_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"histogram comparison should pass with real memory-state checks: {comparison_path}: {comparison}")
 
 
+def assert_histogram_strided_evidence(evidence_dir: Path) -> None:
+    expected_hist = [f"i32:{value}" for value in range(2, 18)]
+    expected_counts = {
+        "arith.addi": 152,
+        "arith.cmpi": 154,
+        "arith.divui": 152,
+        "arith.index_cast": 457,
+        "dataflow.constant": 22,
+        "dataflow.load": 304,
+        "dataflow.store": 168,
+        "llvm.zext": 1,
+        "scf.if": 154,
+    }
+    dfg_path = evidence_dir / "histogram_strided.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_histogram_strided_kernel_0"
+        or dfg.get("dynamic_work_items") != 152
+        or dfg.get("event_count") != 1564
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("diagnostics") != []
+        or dfg.get("final_memory_state", {}).get("arg2") != expected_hist
+    ):
+        raise AssertionError(
+            f"histogram_strided DFG should execute the full clear-and-update kernel: {dfg_path}: {dfg}"
+        )
+    assert_operation_fire_counts("histogram_strided", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "histogram_strided.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 14
+        or mapping.get("routed_edges") != 11
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 312
+    ):
+        raise AssertionError(
+            f"histogram_strided should map on shared memory-reduction hardware: {mapping_path}: {mapping}"
+        )
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    required_edges = {
+        "arith.divui#0.result0->arith.cmpi#2.operand0",
+        "arith.divui#0.result0->dataflow.load#1.operand1",
+        "arith.divui#0.result0->dataflow.store#1.operand1",
+        "dataflow.load#0.result0->arith.divui#0.operand0",
+        "dataflow.load#1.result0->arith.addi#0.operand0",
+    }
+    if not required_edges <= route_edges:
+        raise AssertionError(
+            f"histogram_strided mapping missed required routed edges: {mapping_path}: {mapping}"
+        )
+
+    cgra_path = evidence_dir / "histogram_strided.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 4661
+        or cgra.get("hardware_aware_cycles") != 4752
+        or cgra.get("performance_delta_cycles") != 91
+        or cgra.get("placed_records") != 14
+        or cgra.get("routed_edges") != 11
+        or cgra.get("route_segments") != 53
+        or cgra.get("config_records") != 312
+        or cgra.get("final_memory_state", {}).get("arg2") != expected_hist
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(
+            f"histogram_strided CGRA report should carry the real final histogram: {cgra_path}: {cgra}"
+        )
+
+    comparison_path = evidence_dir / "histogram_strided.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 4661
+        or comparison.get("cgra_sim_cycles") != 4752
+    ):
+        raise AssertionError(
+            f"histogram_strided comparison should pass with real memory-state checks: {comparison_path}: {comparison}"
+        )
+
+
 def assert_unsupported_operation(
     evidence_dir: Path,
     case: str,
@@ -5204,6 +5287,7 @@ def main(argv: list[str]) -> int:
         assert_crc32_evidence(evidence_dir)
         assert_gather_evidence(evidence_dir)
         assert_histogram_evidence(evidence_dir)
+        assert_histogram_strided_evidence(evidence_dir)
         assert_pack_bits_evidence(evidence_dir)
         assert_unpack_bits_evidence(evidence_dir)
         assert_bit_scan_evidence(
@@ -5407,6 +5491,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bisection_step", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "histogram", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "histogram_strided", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mmtile", "shared_memory_reduction_adg")
         assert_component_references_resolve(evidence_dir, "dotprod")
         assert_component_references_resolve(evidence_dir, "dot_product_3d")
@@ -5953,6 +6038,11 @@ def main(argv: list[str]) -> int:
         histogram_row = one_row(rows, "histogram")
         if histogram_row["hardware_system"] != "shared_memory_reduction_adg":
             raise AssertionError(f"histogram should use shared memory-reduction hardware: {histogram_row}")
+        histogram_strided_row = one_row(rows, "histogram_strided")
+        if histogram_strided_row["hardware_system"] != "shared_memory_reduction_adg":
+            raise AssertionError(
+                f"histogram_strided should use shared memory-reduction hardware: {histogram_strided_row}"
+            )
         batchnorm_row = one_row(rows, "batchnorm")
         if batchnorm_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"batchnorm should use shared signal-window hardware: {batchnorm_row}")
@@ -5962,10 +6052,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 110,
-            "pass": 100,
+            "pass": 101,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 10,
+            "unsupported": 9,
             "missing_status": 0,
         }
         if counts != expected_counts:

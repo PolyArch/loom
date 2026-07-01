@@ -37,6 +37,7 @@ constexpr OperationCostEntry kOperationCosts[] = {
     {"arith.shrsi", 1, 1, true, true},
     {"arith.shrui", 1, 1, true, true},
     {"arith.divsi", 8, 8, true, true},
+    {"arith.divui", 8, 8, true, true},
     {"arith.remsi", 8, 8, true, true},
     {"arith.remui", 8, 8, true, true},
     {"arith.cmpi", 1, 1, true, true},
@@ -659,7 +660,7 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return integerFromSigned(0, bitWidth);
     return integerFromSigned(dividend % divisor, bitWidth);
   }
-  if (opName == "arith.remui") {
+  if (opName == "arith.divui" || opName == "arith.remui") {
     if (llvm::Error arity = requireArity(opName, operands, 2))
       return std::move(arity);
     const std::uint64_t divisor = toUnsignedBits(operands[1], bitWidth);
@@ -667,8 +668,15 @@ llvm::Expected<PrimitiveValue> loom::sim::evaluatePrimitiveOperation(
       return llvm::createStringError(std::errc::invalid_argument,
                                      "%s divisor must be non-zero",
                                      opName.str().c_str());
-    return integerFromBits(toUnsignedBits(operands[0], bitWidth) % divisor,
-                           bitWidth);
+    const std::uint64_t dividend = toUnsignedBits(operands[0], bitWidth);
+    if (opName == "arith.divui") {
+      if (descriptor.isExact && dividend % divisor != 0)
+        return llvm::createStringError(std::errc::invalid_argument,
+                                       "%s exact result would be poison",
+                                       opName.str().c_str());
+      return integerFromBits(dividend / divisor, bitWidth);
+    }
+    return integerFromBits(dividend % divisor, bitWidth);
   }
   if (opName == "arith.cmpi") {
     if (llvm::Error arity = requireArity(opName, operands, 2))

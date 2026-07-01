@@ -702,6 +702,8 @@ PrimitiveOperationDescriptor primitiveDescriptor(mlir::Operation *op,
       integerBitWidth(op->getOperand(0).getType())};
   if (auto div = mlir::dyn_cast<mlir::arith::DivSIOp>(op))
     descriptor.isExact = div.getIsExact();
+  if (auto div = mlir::dyn_cast<mlir::arith::DivUIOp>(op))
+    descriptor.isExact = div.getIsExact();
   if (auto shift = mlir::dyn_cast<mlir::arith::ShRSIOp>(op))
     descriptor.isExact = shift.getIsExact();
   if (auto shift = mlir::dyn_cast<mlir::arith::ShRUIOp>(op))
@@ -2847,7 +2849,8 @@ void collectStreamIndexSources(mlir::Value value,
   if (!owner)
     return;
   if (!mlir::isa<mlir::arith::AddIOp, mlir::arith::SubIOp, mlir::arith::MulIOp,
-                 mlir::arith::DivSIOp, mlir::arith::RemSIOp>(owner))
+                 mlir::arith::DivSIOp, mlir::arith::DivUIOp,
+                 mlir::arith::RemSIOp, mlir::arith::RemUIOp>(owner))
     return;
   for (mlir::Value operand : owner->getOperands())
     collectStreamIndexSources(operand, sources, seen, depth + 1);

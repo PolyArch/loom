@@ -52,6 +52,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "gather",
     "hash_mix",
     "histogram",
+    "histogram_strided",
     "im2col",
     "integrate_trapz",
     "interpolate_linear",

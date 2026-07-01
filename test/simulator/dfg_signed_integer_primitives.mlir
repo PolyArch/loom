@@ -1,5 +1,7 @@
 // RUN: loom-dfg-sim %s --graph signed_shift_div_rem --arg 0=none --output %t.signed.json
 // RUN: FileCheck %s --check-prefix=SIGNED < %t.signed.json
+// RUN: loom-dfg-sim %s --graph unsigned_division --arg 0=none --output %t.unsigned-div.json
+// RUN: FileCheck %s --check-prefix=UNSIGNED-DIV < %t.unsigned-div.json
 // RUN: loom-dfg-sim %s --graph extend_truncate --arg 0=none --output %t.cast.json
 // RUN: FileCheck %s --check-prefix=CAST < %t.cast.json
 // RUN: loom-dfg-sim %s --graph narrow_runtime_signed_compare --arg 0=none --arg 1=255 --arg 2=0 --arg 3=-1 --output %t.narrow-cmp.json
@@ -28,6 +30,12 @@
 // SIGNED-DAG: "arith.divsi": 1
 // SIGNED-DAG: "arith.remsi": 1
 // SIGNED-DAG: "i32:-5"
+
+// UNSIGNED-DIV-DAG: "workload": "unsigned_division"
+// UNSIGNED-DIV-DAG: "graph": "unsigned_division"
+// UNSIGNED-DIV-DAG: "status": "pass"
+// UNSIGNED-DIV-DAG: "arith.divui": 1
+// UNSIGNED-DIV-DAG: "i32:1431655765"
 
 // CAST-DAG: "workload": "extend_truncate"
 // CAST-DAG: "graph": "extend_truncate"
@@ -90,6 +98,13 @@ module {
     %remainder = arith.remsi %shifted, %divisor : i32
     %combined = arith.addi %quotient, %remainder : i32
     dataflow.graph.return %ctrl, %combined : none, i32
+  }
+
+  dataflow.graph.func private @unsigned_division(%ctrl: none) -> (none, i32) {
+    %wide = dataflow.constant %ctrl {const_value = -1 : i32} : i32
+    %divisor = dataflow.constant %ctrl {const_value = 3 : i32} : i32
+    %quotient = arith.divui %wide, %divisor : i32
+    dataflow.graph.return %ctrl, %quotient : none, i32
   }
 
   dataflow.graph.func private @extend_truncate(%ctrl: none) -> (none, i32, i8) {

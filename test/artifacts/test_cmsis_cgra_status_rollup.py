@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 110,
-            "pass": 100,
+            "pass": 101,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 10,
+            "unsupported": 9,
             "missing_status": 0,
         },
     )
@@ -630,9 +630,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 110,
-            "pass": 19,
+            "pass": 20,
             "fail": 0,
-            "blocked": 91,
+            "blocked": 90,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -659,6 +659,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("unpack_bits", "shared_reduction_adg"),
         ("mmtile", "shared_memory_reduction_adg"),
         ("histogram", "shared_memory_reduction_adg"),
+        ("histogram_strided", "shared_memory_reduction_adg"),
         ("outer", "shared_reduction_adg"),
         ("transpose", "shared_reduction_adg"),
         ("clz", "shared_memory_reduction_adg"),
@@ -687,6 +688,7 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_unpack_bits_evidence(evidence_dir)
     cgra_sweep.assert_mmtile_evidence(evidence_dir)
     cgra_sweep.assert_histogram_evidence(evidence_dir)
+    cgra_sweep.assert_histogram_strided_evidence(evidence_dir)
     cgra_sweep.assert_outer_evidence(evidence_dir)
     cgra_sweep.assert_transpose_evidence(evidence_dir)
     cgra_sweep.assert_binary_search_evidence(evidence_dir)
@@ -875,11 +877,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     ),
     "hist_bin": (
         "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
-        "cannot observe the kernel return value"
-    ),
-    "histogram_strided": (
-        "primary workload graph absent: histogram_strided_kernel remains a residual call target outside "
         "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
         "cannot observe the kernel return value"
     ),
@@ -1103,10 +1100,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 110,
-            "pass": 16,
+            "pass": 17,
             "fail": 0,
             "blocked": 84,
-            "unsupported": 10,
+            "unsupported": 9,
             "missing_status": 0,
         },
     )
@@ -1121,6 +1118,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "binary_search", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "bitonic_stage-modified", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "histogram", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "histogram_strided", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "lower_bound", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "upper_bound", expected_hardware="shared_memory_reduction_adg")

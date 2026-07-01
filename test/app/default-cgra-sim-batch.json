@@ -238,6 +238,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "histogram_strided",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "variance",
       "hardware": "shared_reduction_adg"
     },

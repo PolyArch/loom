@@ -325,13 +325,22 @@ struct LowerForToGraphPass
     return false;
   }
 
-  bool isBlockedStandaloneStructuredBodyOp(::mlir::Operation *op) {
+  bool isBlockedStandaloneStructuredSetupOp(::mlir::Operation *op) {
     ::llvm::StringRef name = op->getName().getStringRef();
     return name == "arith.divf" || name == "arith.divsi" ||
            name == "arith.divui" || name == "arith.remf" ||
            name == "arith.remsi" || name == "arith.remui" ||
            name == "llvm.fptosi" || name == "llvm.fptoui" ||
            name == "llvm.sitofp" || name == "llvm.uitofp";
+  }
+
+  bool isBlockedStandaloneStructuredBodyOp(::mlir::Operation *op) {
+    ::llvm::StringRef name = op->getName().getStringRef();
+    return name == "arith.divf" || name == "arith.divsi" ||
+           name == "arith.remf" || name == "arith.remsi" ||
+           name == "arith.remui" || name == "llvm.fptosi" ||
+           name == "llvm.fptoui" || name == "llvm.sitofp" ||
+           name == "llvm.uitofp";
   }
 
   bool isMemsetIntrinsic(::mlir::Operation *op) {
@@ -540,10 +549,11 @@ struct LowerForToGraphPass
 
     bool sawStructuredOp = false;
     bool sawMemset = false;
-    bool sawBlockedNumericOp = false;
+    bool sawBlockedSetupNumericOp = false;
+    bool sawBlockedBodyNumericOp = false;
     for (::mlir::Operation &op : entry.without_terminator()) {
-      if (isBlockedStandaloneStructuredBodyOp(&op))
-        sawBlockedNumericOp = true;
+      if (isBlockedStandaloneStructuredSetupOp(&op))
+        sawBlockedSetupNumericOp = true;
       if (isMemsetIntrinsic(&op))
         sawMemset = true;
       if (isSideEffectFreeSetupOp(op))
@@ -554,14 +564,16 @@ struct LowerForToGraphPass
         return false;
       op.walk([&](::mlir::Operation *nested) {
         if (isBlockedStandaloneStructuredBodyOp(nested))
-          sawBlockedNumericOp = true;
+          sawBlockedBodyNumericOp = true;
         if (isMemsetIntrinsic(nested))
           sawMemset = true;
       });
       sawStructuredOp = true;
     }
 
-    return sawStructuredOp && (!sawMemset || !sawBlockedNumericOp);
+    return sawStructuredOp &&
+           (!sawMemset ||
+            (!sawBlockedSetupNumericOp && !sawBlockedBodyNumericOp));
   }
 
   void promoteStandaloneStructuredFunctions(::mlir::ModuleOp module,
