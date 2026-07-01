@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 110,
-            "pass": 99,
+            "pass": 100,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 11,
+            "unsupported": 10,
             "missing_status": 0,
         },
     )
@@ -630,9 +630,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 110,
-            "pass": 18,
+            "pass": 19,
             "fail": 0,
-            "blocked": 92,
+            "blocked": 91,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -658,6 +658,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("autocorrelation", "shared_reduction_adg"),
         ("unpack_bits", "shared_reduction_adg"),
         ("mmtile", "shared_memory_reduction_adg"),
+        ("histogram", "shared_memory_reduction_adg"),
         ("outer", "shared_reduction_adg"),
         ("transpose", "shared_reduction_adg"),
         ("clz", "shared_memory_reduction_adg"),
@@ -685,6 +686,7 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_crc32_evidence(evidence_dir)
     cgra_sweep.assert_unpack_bits_evidence(evidence_dir)
     cgra_sweep.assert_mmtile_evidence(evidence_dir)
+    cgra_sweep.assert_histogram_evidence(evidence_dir)
     cgra_sweep.assert_outer_evidence(evidence_dir)
     cgra_sweep.assert_transpose_evidence(evidence_dir)
     cgra_sweep.assert_binary_search_evidence(evidence_dir)
@@ -873,11 +875,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
     ),
     "hist_bin": (
         "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
-        "cannot observe the kernel return value"
-    ),
-    "histogram": (
-        "primary workload graph absent: histogram_kernel remains a residual call target outside "
         "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
         "cannot observe the kernel return value"
     ),
@@ -1106,10 +1103,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 110,
-            "pass": 15,
+            "pass": 16,
             "fail": 0,
             "blocked": 84,
-            "unsupported": 11,
+            "unsupported": 10,
             "missing_status": 0,
         },
     )
@@ -1123,6 +1120,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "ctz", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "binary_search", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "bitonic_stage-modified", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "histogram", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "lower_bound", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "upper_bound", expected_hardware="shared_memory_reduction_adg")
@@ -4512,15 +4510,6 @@ def main() -> int:
             expected_primary_graph_token="string_compare_kernel",
             expected_discovered_graph="g_t_main_0_0",
             expected_residual_call="string_compare_kernel",
-        )
-        assert_primary_graph_absence_attempt_mode(
-            repo,
-            out_dir / "no-dfg-app-attempt-histogram",
-            legacy_root,
-            case="histogram",
-            expected_primary_graph_token="histogram_kernel",
-            expected_discovered_graph="g_t_main_red_0_0",
-            expected_residual_call="histogram_kernel",
         )
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)

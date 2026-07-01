@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|edge_update|edge_update_batch|hist_bin|histogram|histogram_strided|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
+    col2im|edge_update|edge_update_batch|hist_bin|histogram_strided|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
       return 0
       ;;
     *)
@@ -136,7 +136,7 @@ case "${CASE}" in
     case_graph="missing_primary_graph"
     ;;
   histogram)
-    case_graph="missing_primary_graph"
+    case_graph="g_histogram_kernel_0"
     ;;
   histogram_strided)
     case_graph="missing_primary_graph"
@@ -490,7 +490,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "stream_update" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -617,7 +617,8 @@ if ! bash "${ROOT}/test/app/run_compiler_pipeline_summary.sh" \
     exit 1
   fi
 fi
-bash "${ROOT}/test/cmsis/run_compiler_pipeline_summary.sh" \
+run_artifact_command "${cmsis_compiler_pipeline}" \
+  bash "${ROOT}/test/cmsis/run_compiler_pipeline_summary.sh" \
   --output "${cmsis_compiler_pipeline}"
 if ! bash "${ROOT}/test/dataflow/run_primitive_coverage.sh" \
     --case "${CASE}" \
@@ -1950,15 +1951,6 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --required-discovered-graph "g_t_main_red_0_0"
         --required-residual-call "hist_bin_kernel"
         --diagnostic "primary workload graph absent: hist_bin_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
-        --evidence "kernel remains behind a residual call target"
-      )
-      ;;
-    histogram)
-      expected_primary_graph_token="histogram_kernel"
-      graph_absence_args=(
-        --required-discovered-graph "g_t_main_red_0_0"
-        --required-residual-call "histogram_kernel"
-        --diagnostic "primary workload graph absent: histogram_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
         --evidence "kernel remains behind a residual call target"
       )
       ;;

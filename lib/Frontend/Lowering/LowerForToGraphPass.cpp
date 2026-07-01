@@ -315,54 +315,27 @@ struct LowerForToGraphPass
     return static_cast<bool>(candidate);
   }
 
-  bool isStandaloneStructuredRoot(::mlir::Operation *op) {
-    return ::llvm::isa<::mlir::scf::ForOp, ::mlir::scf::WhileOp>(op);
+  bool isSupportedStandaloneStructuredTopLevelOp(::mlir::Operation *op) {
+    if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(op))
+      return forOp.getInitArgs().empty();
+    if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op))
+      return whileOp->getNumOperands() == whileOp->getNumResults();
+    if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op))
+      return ifOp.getNumResults() == 0;
+    return false;
   }
 
-  bool findSingleTopLevelStructuredRoot(::mlir::Region &region,
-                                        ::mlir::Operation *&selectedRoot) {
-    if (!region.hasOneBlock())
-      return false;
-    for (::mlir::Operation &op : region.front().without_terminator()) {
-      if (isStandaloneStructuredRoot(&op)) {
-        if (selectedRoot)
-          return false;
-        selectedRoot = &op;
-        continue;
-      }
-      if (!isSideEffectFreeSetupOp(op))
-        return false;
-    }
-    return true;
+  bool isBlockedStandaloneStructuredBodyOp(::mlir::Operation *op) {
+    ::llvm::StringRef name = op->getName().getStringRef();
+    return name == "arith.divf" || name == "arith.divsi" ||
+           name == "arith.divui" || name == "arith.remf" ||
+           name == "arith.remsi" || name == "arith.remui" ||
+           name == "llvm.fptosi" || name == "llvm.fptoui" ||
+           name == "llvm.sitofp" || name == "llvm.uitofp";
   }
 
-  ::mlir::Operation *findStandaloneStructuredRoot(::mlir::Block &entry) {
-    ::mlir::Operation *selectedRoot = nullptr;
-    bool sawRoot = false;
-    for (::mlir::Operation &op : entry.without_terminator()) {
-      if (isStandaloneStructuredRoot(&op)) {
-        if (sawRoot)
-          return nullptr;
-        selectedRoot = &op;
-        sawRoot = true;
-        continue;
-      }
-      if (auto guard = ::llvm::dyn_cast<::mlir::scf::IfOp>(op)) {
-        if (sawRoot || guard.getNumResults() != 0)
-          return nullptr;
-        if (!findSingleTopLevelStructuredRoot(guard.getThenRegion(),
-                                             selectedRoot))
-          return nullptr;
-        if (!findSingleTopLevelStructuredRoot(guard.getElseRegion(),
-                                             selectedRoot))
-          return nullptr;
-        sawRoot = true;
-        continue;
-      }
-      if (!isSideEffectFreeSetupOp(op))
-        return nullptr;
-    }
-    return selectedRoot;
+  bool isMemsetIntrinsic(::mlir::Operation *op) {
+    return op->getName().getStringRef() == "llvm.intr.memset";
   }
 
   bool hasUnsupportedStandaloneStructuredBody(::mlir::Operation *root) {
@@ -380,6 +353,12 @@ struct LowerForToGraphPass
           !::llvm::isa<::mlir::LLVM::CallIntrinsicOp>(nested)) {
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
+      }
+      if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(nested)) {
+        if (!forOp.getInitArgs().empty()) {
+          unsupported = true;
+          return ::mlir::WalkResult::interrupt();
+        }
       }
       if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(nested)) {
         if (isEffectFormForallGraphCandidate(forall))
@@ -550,6 +529,8 @@ struct LowerForToGraphPass
       return false;
     if (func.getSymName() == "main")
       return false;
+    if (func.getSymName().starts_with("arm_"))
+      return false;
     if (!func.getFunctionType().getResults().empty())
       return false;
     ::mlir::Region &body = func.getBody();
@@ -557,17 +538,30 @@ struct LowerForToGraphPass
       return false;
     ::mlir::Block &entry = body.front();
 
-    ::mlir::Operation *topLevelRoot = findStandaloneStructuredRoot(entry);
-    if (!topLevelRoot)
-      return false;
-    if (auto forOp = ::llvm::dyn_cast<::mlir::scf::ForOp>(topLevelRoot))
-      if (!forOp.getInitArgs().empty())
+    bool sawStructuredOp = false;
+    bool sawMemset = false;
+    bool sawBlockedNumericOp = false;
+    for (::mlir::Operation &op : entry.without_terminator()) {
+      if (isBlockedStandaloneStructuredBodyOp(&op))
+        sawBlockedNumericOp = true;
+      if (isMemsetIntrinsic(&op))
+        sawMemset = true;
+      if (isSideEffectFreeSetupOp(op))
+        continue;
+      if (!isSupportedStandaloneStructuredTopLevelOp(&op))
         return false;
-    if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(topLevelRoot))
-      if (whileOp->getNumOperands() != whileOp->getNumResults())
+      if (hasUnsupportedStandaloneStructuredBody(&op))
         return false;
+      op.walk([&](::mlir::Operation *nested) {
+        if (isBlockedStandaloneStructuredBodyOp(nested))
+          sawBlockedNumericOp = true;
+        if (isMemsetIntrinsic(nested))
+          sawMemset = true;
+      });
+      sawStructuredOp = true;
+    }
 
-    return !hasUnsupportedStandaloneStructuredBody(topLevelRoot);
+    return sawStructuredOp && (!sawMemset || !sawBlockedNumericOp);
   }
 
   void promoteStandaloneStructuredFunctions(::mlir::ModuleOp module,

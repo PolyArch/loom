@@ -50,7 +50,7 @@ cat > "${TMP}/Source/Synthetic/synth_negative.c" <<'C'
    dataflow.graph.func from it. Drives the DFG runner's corpus-level
    safety net into the "no passing source emitted ..." failure path
    so the negative-control proves fail propagation works. */
-void synth_unrelated_helper(int *p, int n) {
+void arm_synth_unrelated_helper(int *p, int n) {
     for (int i = 0; i < n; ++i) {
         p[i] = 0;
     }
@@ -61,7 +61,7 @@ mkdir -p "${TMP}/Include" "${TMP}/PrivateInclude"
 # Empty stubs so the runner's -I flags resolve.
 
 cat > "${TMP}/cmsis_dsp_targets.txt" <<'T'
-Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0|>=0
+Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0|>=0
 T
 
 # Drive the actual runner with the synthetic corpus pointed at our

@@ -272,6 +272,33 @@ append_gather_memrefs() {
     append_constant_memref "${dst_index}" 16 "0"
 }
 
+histogram_input_values() {
+    local values=""
+    local bin=""
+    local count=""
+    for bin in $(seq 0 15); do
+        for count in $(seq 0 "${bin}"); do
+            if [[ -n "${values}" ]]; then
+                values+=","
+            fi
+            values+="${bin}"
+        done
+    done
+    printf "%s" "${values}"
+}
+
+configure_histogram_args() {
+    sim_args+=(
+        --arg 0=none
+        --memref "1=$(histogram_input_values)"
+        --memref "2=99,99,99,99,99,99,99,99,99,99,99,99,99,99,99,99"
+        --arg 3=136
+        --arg 4=16
+        --graph g_histogram_kernel_0
+        --workload histogram
+    )
+}
+
 to_i32_literal() {
     local value=$(( $1 & 0xffffffff ))
     if (( value >= 2147483648 )); then
@@ -1339,6 +1366,9 @@ PY
             --graph g_t_gather_0_0
             --workload gather
         )
+        ;;
+    histogram)
+        configure_histogram_args
         ;;
     scatter_add)
         append_ctrl_tokens 1

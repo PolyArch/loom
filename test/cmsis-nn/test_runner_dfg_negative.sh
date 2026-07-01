@@ -41,7 +41,7 @@ cat > "${TMP}/Source/Synthetic/synth_negative.c" <<'C'
    dataflow.graph.func from it. Drives the DFG runner's corpus-level
    safety net into the "no passing source emitted ..." failure path
    so the negative-control proves fail propagation works. */
-void synth_unrelated_helper(int *p, int n) {
+void arm_synth_unrelated_helper(int *p, int n) {
     for (int i = 0; i < n; ++i) {
         p[i] = 0;
     }
@@ -51,7 +51,7 @@ C
 mkdir -p "${TMP}/Include"
 
 cat > "${TMP}/cmsis_nn_targets.txt" <<'T'
-Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0|>=0
+Synthetic/synth_negative.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_synth_unrelated_helper||0|0|0|0|0|0|0|0|0|0|>=0
 T
 
 mkdir -p "${TMP}/repo-shim/test/cmsis-nn"
