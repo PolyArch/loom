@@ -67,7 +67,7 @@
     },
     {
       "case": "hist_bin",
-      "hardware": "shared_reduction_adg"
+      "hardware": "shared_signal_window_adg"
     },
     {
       "case": "histogram_strided",

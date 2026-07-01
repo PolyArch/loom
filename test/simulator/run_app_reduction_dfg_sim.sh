@@ -329,6 +329,37 @@ configure_histogram_strided_args() {
     )
 }
 
+hist_bin_input_values() {
+    local values=""
+    local bin=""
+    local count=""
+    local value=""
+    for bin in $(seq 0 9); do
+        value=$((bin * 10 + 1))
+        for count in $(seq 0 "${bin}"); do
+            if [[ -n "${values}" ]]; then
+                values+=","
+            fi
+            values+=$(printf "%.6e" "${value}")
+        done
+    done
+    printf "%s" "${values}"
+}
+
+configure_hist_bin_args() {
+    sim_args+=(
+        --arg 0=none
+        --memref "1=$(hist_bin_input_values)"
+        --memref "2=99,99,99,99,99,99,99,99,99,99"
+        --arg 3=55
+        --arg 4=10
+        --arg 5=0.000000e+00
+        --arg 6=1.000000e+02
+        --graph g_hist_bin_kernel_0
+        --workload hist_bin
+    )
+}
+
 to_i32_literal() {
     local value=$(( $1 & 0xffffffff ))
     if (( value >= 2147483648 )); then
@@ -1402,6 +1433,9 @@ PY
         ;;
     histogram_strided)
         configure_histogram_strided_args
+        ;;
+    hist_bin)
+        configure_hist_bin_args
         ;;
     scatter_add)
         append_ctrl_tokens 1

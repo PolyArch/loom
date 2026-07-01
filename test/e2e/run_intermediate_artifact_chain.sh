@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|edge_update|edge_update_batch|hist_bin|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
+    col2im|edge_update|edge_update_batch|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
       return 0
       ;;
     *)
@@ -133,7 +133,7 @@ case "${CASE}" in
     case_graph="g_t_edge_update_batch_kernel_0_0"
     ;;
   hist_bin)
-    case_graph="missing_primary_graph"
+    case_graph="g_hist_bin_kernel_0"
     ;;
   histogram)
     case_graph="g_histogram_kernel_0"
@@ -464,7 +464,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "quantile" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "quantile" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -1943,15 +1943,6 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --expected-graph-presence present
         --diagnostic "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop while the batched CSR lookup and update loops remain outside dataflow"
         --evidence "partial dataflow lowering boundary"
-      )
-      ;;
-    hist_bin)
-      expected_primary_graph_token="hist_bin_kernel"
-      graph_absence_args=(
-        --required-discovered-graph "g_t_main_red_0_0"
-        --required-residual-call "hist_bin_kernel"
-        --diagnostic "primary workload graph absent: hist_bin_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
-        --evidence "kernel remains behind a residual call target"
       )
       ;;
     sort_insertion)

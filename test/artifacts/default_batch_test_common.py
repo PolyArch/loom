@@ -51,6 +51,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "fir_filter_stateful",
     "gather",
     "hash_mix",
+    "hist_bin",
     "histogram",
     "histogram_strided",
     "im2col",

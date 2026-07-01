@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 110,
-            "pass": 101,
+            "pass": 102,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 9,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
@@ -875,11 +875,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
         "observe the kernel return value"
     ),
-    "hist_bin": (
-        "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
-        "cannot observe the kernel return value"
-    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -1100,10 +1095,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 110,
-            "pass": 17,
+            "pass": 18,
             "fail": 0,
             "blocked": 84,
-            "unsupported": 9,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
@@ -1118,6 +1113,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "binary_search", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "bitonic_stage-modified", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "histogram", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "hist_bin", expected_hardware="shared_signal_window_adg")
     assert_app_cgra_pass_row(repo, rows, "histogram_strided", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "find_first_set", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "lower_bound", expected_hardware="shared_memory_reduction_adg")
@@ -4481,15 +4477,6 @@ def main() -> int:
         assert_app_seed_batch_mode(repo, out_dir / "app-seed-batch")
         assert_app_attempt_manifest_mode(repo, out_dir / "app-attempt-manifest", legacy_root)
         assert_sort_insertion_attempt_manifest_mode(repo, out_dir / "sort-insertion-attempt", legacy_root)
-        assert_primary_graph_absence_attempt_mode(
-            repo,
-            out_dir / "no-dfg-app-attempt-hist-bin",
-            legacy_root,
-            case="hist_bin",
-            expected_primary_graph_token="hist_bin_kernel",
-            expected_discovered_graph="g_t_main_red_0_0",
-            expected_residual_call="hist_bin_kernel",
-        )
         assert_primary_graph_absence_attempt_mode(
             repo,
             out_dir / "no-dfg-app-attempt-col2im",

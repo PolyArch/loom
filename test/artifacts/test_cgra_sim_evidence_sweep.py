@@ -135,7 +135,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update",
     "edge_update_batch",
     "col2im",
-    "hist_bin",
     "sort_insertion",
     "sort_merge",
     "sort_quick",
@@ -152,15 +151,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = 
         "observe the kernel return value",
         EMPTY_DISCOVERED_GRAPH_IDS,
         "col2im_kernel",
-    ),
-    (
-        "hist_bin",
-        "hist_bin_kernel",
-        "primary workload graph absent: hist_bin_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
-        "cannot observe the kernel return value",
-        "g_t_main_red_0_0",
-        "hist_bin_kernel",
     ),
     (
         "string_compare",
@@ -4628,6 +4618,91 @@ def assert_histogram_strided_evidence(evidence_dir: Path) -> None:
         )
 
 
+def assert_hist_bin_evidence(evidence_dir: Path) -> None:
+    expected_hist = [f"i32:{value}" for value in range(1, 11)]
+    expected_counts = {
+        "arith.addi": 56,
+        "arith.cmpf": 110,
+        "arith.cmpi": 57,
+        "arith.divf": 56,
+        "dataflow.load": 110,
+        "dataflow.store": 65,
+        "llvm.fptoui": 55,
+        "llvm.uitofp": 1,
+        "scf.if": 57,
+    }
+    dfg_path = evidence_dir / "hist_bin.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_hist_bin_kernel_0"
+        or dfg.get("dynamic_work_items") != 55
+        or dfg.get("event_count") != 917
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("diagnostics") != []
+        or dfg.get("final_memory_state", {}).get("arg2") != expected_hist
+    ):
+        raise AssertionError(f"hist_bin DFG should execute the full clear-and-bin kernel: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("hist_bin", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "hist_bin.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("placed_records") != 25
+        or mapping.get("routed_edges") != 24
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 644
+    ):
+        raise AssertionError(f"hist_bin should map on shared signal-window hardware: {mapping_path}: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    required_edges = {
+        "arith.divf#0.result0->arith.divf#1.operand1",
+        "arith.divf#1.result0->llvm.fptoui#0.operand0",
+        "arith.select#0.result0->dataflow.load#1.operand1",
+        "arith.select#0.result0->dataflow.store#1.operand1",
+        "dataflow.load#1.result0->arith.addi#1.operand0",
+        "llvm.fptoui#0.result0->arith.select#0.operand1",
+        "llvm.uitofp#0.result0->arith.divf#0.operand1",
+    }
+    if not required_edges <= route_edges:
+        raise AssertionError(f"hist_bin mapping missed required routed edges: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "hist_bin.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 2571
+        or cgra.get("hardware_aware_cycles") != 2733
+        or cgra.get("performance_delta_cycles") != 162
+        or cgra.get("placed_records") != 25
+        or cgra.get("routed_edges") != 24
+        or cgra.get("route_segments") != 114
+        or cgra.get("config_records") != 644
+        or cgra.get("final_memory_state", {}).get("arg2") != expected_hist
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"hist_bin CGRA report should carry the real final histogram: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "hist_bin.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 2571
+        or comparison.get("cgra_sim_cycles") != 2733
+    ):
+        raise AssertionError(f"hist_bin comparison should pass with real memory-state checks: {comparison_path}: {comparison}")
+
+
 def assert_unsupported_operation(
     evidence_dir: Path,
     case: str,
@@ -5287,6 +5362,7 @@ def main(argv: list[str]) -> int:
         assert_crc32_evidence(evidence_dir)
         assert_gather_evidence(evidence_dir)
         assert_histogram_evidence(evidence_dir)
+        assert_hist_bin_evidence(evidence_dir)
         assert_histogram_strided_evidence(evidence_dir)
         assert_pack_bits_evidence(evidence_dir)
         assert_unpack_bits_evidence(evidence_dir)
@@ -5491,6 +5567,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "dot_product_3d", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "bisection_step", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "histogram", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "hist_bin", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "histogram_strided", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "mmtile", "shared_memory_reduction_adg")
         assert_component_references_resolve(evidence_dir, "dotprod")
@@ -6035,6 +6112,9 @@ def main(argv: list[str]) -> int:
         quantile_row = one_row(rows, "quantile")
         if quantile_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"quantile should use shared signal-window hardware: {quantile_row}")
+        hist_bin_row = one_row(rows, "hist_bin")
+        if hist_bin_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"hist_bin should use shared signal-window hardware: {hist_bin_row}")
         histogram_row = one_row(rows, "histogram")
         if histogram_row["hardware_system"] != "shared_memory_reduction_adg":
             raise AssertionError(f"histogram should use shared memory-reduction hardware: {histogram_row}")
@@ -6052,10 +6132,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 110,
-            "pass": 101,
+            "pass": 102,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 9,
+            "unsupported": 8,
             "missing_status": 0,
         }
         if counts != expected_counts:

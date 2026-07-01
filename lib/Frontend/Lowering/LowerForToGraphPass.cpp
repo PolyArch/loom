@@ -327,24 +327,55 @@ struct LowerForToGraphPass
 
   bool isBlockedStandaloneStructuredSetupOp(::mlir::Operation *op) {
     ::llvm::StringRef name = op->getName().getStringRef();
-    return name == "arith.divf" || name == "arith.divsi" ||
-           name == "arith.divui" || name == "arith.remf" ||
-           name == "arith.remsi" || name == "arith.remui" ||
-           name == "llvm.fptosi" || name == "llvm.fptoui" ||
-           name == "llvm.sitofp" || name == "llvm.uitofp";
+    return name == "arith.divsi" || name == "arith.divui" ||
+           name == "arith.remf" || name == "arith.remsi" ||
+           name == "arith.remui" || name == "llvm.fptosi" ||
+           name == "llvm.sitofp";
   }
 
   bool isBlockedStandaloneStructuredBodyOp(::mlir::Operation *op) {
     ::llvm::StringRef name = op->getName().getStringRef();
-    return name == "arith.divf" || name == "arith.divsi" ||
-           name == "arith.remf" || name == "arith.remsi" ||
-           name == "arith.remui" || name == "llvm.fptosi" ||
-           name == "llvm.fptoui" || name == "llvm.sitofp" ||
-           name == "llvm.uitofp";
+    return name == "arith.divsi" || name == "arith.remf" ||
+           name == "arith.remsi" || name == "arith.remui" ||
+           name == "llvm.fptosi" || name == "llvm.sitofp";
   }
 
   bool isMemsetIntrinsic(::mlir::Operation *op) {
     return op->getName().getStringRef() == "llvm.intr.memset";
+  }
+
+  bool isZeroIntegerConstant(::mlir::Value value) {
+    if (auto constant = value.getDefiningOp<::mlir::arith::ConstantOp>()) {
+      auto intAttr =
+          ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getValue());
+      return intAttr && intAttr.getValue().isZero();
+    }
+    if (auto constant = value.getDefiningOp<::dataflow::ConstantOp>()) {
+      auto intAttr =
+          ::llvm::dyn_cast<::mlir::IntegerAttr>(constant.getConstValue());
+      return intAttr && intAttr.getValue().isZero();
+    }
+    return false;
+  }
+
+  bool isSupportedStandaloneStructuredMemsetOp(::mlir::Operation *op) {
+    if (!isMemsetIntrinsic(op))
+      return false;
+    if (auto volatileAttr = op->getAttrOfType<::mlir::BoolAttr>("isVolatile")) {
+      if (volatileAttr.getValue())
+        return false;
+    }
+    if (op->getNumOperands() != 3)
+      return false;
+
+    ::mlir::Value dst = op->getOperand(0);
+    ::mlir::Value byteValue = op->getOperand(1);
+    ::mlir::Value byteCount = op->getOperand(2);
+    return ::llvm::isa<::mlir::LLVM::LLVMPointerType>(dst.getType()) &&
+           ::llvm::isa<::mlir::IntegerType>(byteValue.getType()) &&
+           ::llvm::isa<::mlir::IntegerType, ::mlir::IndexType>(
+               byteCount.getType()) &&
+           isZeroIntegerConstant(byteValue);
   }
 
   bool hasUnsupportedStandaloneStructuredBody(::mlir::Operation *root) {
@@ -355,6 +386,11 @@ struct LowerForToGraphPass
       if (::llvm::isa<::dataflow::GraphLaunchOp, ::dataflow::ThreadLaunchOp,
                       ::dataflow::GraphFuncOp, ::dataflow::ThreadOp,
                       ::mlir::func::FuncOp>(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      if (isMemsetIntrinsic(nested) &&
+          !isSupportedStandaloneStructuredMemsetOp(nested)) {
         unsupported = true;
         return ::mlir::WalkResult::interrupt();
       }
@@ -554,8 +590,12 @@ struct LowerForToGraphPass
     for (::mlir::Operation &op : entry.without_terminator()) {
       if (isBlockedStandaloneStructuredSetupOp(&op))
         sawBlockedSetupNumericOp = true;
-      if (isMemsetIntrinsic(&op))
+      if (isMemsetIntrinsic(&op)) {
+        if (!isSupportedStandaloneStructuredMemsetOp(&op))
+          return false;
         sawMemset = true;
+        continue;
+      }
       if (isSideEffectFreeSetupOp(op))
         continue;
       if (!isSupportedStandaloneStructuredTopLevelOp(&op))
