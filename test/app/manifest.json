@@ -409,6 +409,17 @@
       "expected_executables": ["pool_avg_func", "pool_avg_inline"]
     },
     {
+      "case": "pool_max",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["pooling", "signal", "window", "float", "selection"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["pool_max_func", "pool_max_inline"]
+    },
+    {
       "case": "dot_product_3d",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],

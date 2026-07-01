@@ -81,6 +81,7 @@ EXPECTED_CASES = {
     "partition",
     "parity",
     "pool_avg",
+    "pool_max",
     "prefix_sum",
     "prefix_sum_exclusive",
     "prefix_sum_inclusive",

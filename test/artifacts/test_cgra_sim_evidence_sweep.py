@@ -91,6 +91,7 @@ DEFAULT_SWEEP_CASES = (
     "byte_swap",
     "cdma",
     "pool_avg",
+    "pool_max",
     "scatter_add",
     "edge_update",
     "edge_update_batch",
@@ -3331,6 +3332,121 @@ def assert_pool_avg_evidence(evidence_dir: Path) -> None:
         raise AssertionError(f"pool_avg comparison should pass with CGRA cycles no lower than DFG: {comparison}")
 
 
+def assert_pool_max_evidence(evidence_dir: Path) -> None:
+    expected_outputs = [
+        "none",
+        "f32:6",
+        "none",
+        "f32:8",
+        "none",
+        "f32:14",
+        "none",
+        "f32:16",
+    ]
+    expected_input = [
+        "f32:1",
+        "f32:2",
+        "f32:3",
+        "f32:4",
+        "f32:5",
+        "f32:6",
+        "f32:7",
+        "f32:8",
+        "f32:9",
+        "f32:10",
+        "f32:11",
+        "f32:12",
+        "f32:13",
+        "f32:14",
+        "f32:15",
+        "f32:16",
+    ]
+    expected_counts = {
+        "arith.addi": 48,
+        "arith.cmpf": 16,
+        "arith.index_cast": 80,
+        "arith.muli": 16,
+        "arith.select": 16,
+        "dataflow.load": 16,
+        "llvm.trunc": 16,
+        "scf.if": 8,
+    }
+    expected_graphs = ["g_t_pool_max_kernel_0_0"] * 4
+
+    dfg_path = evidence_dir / "pool_max.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("aggregation_kind") != "workload_graph_set"
+        or dfg.get("component_graphs") != expected_graphs
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("optimistic_cycles") != 360
+        or dfg.get("final_outputs") != expected_outputs
+    ):
+        raise AssertionError(f"pool_max DFG evidence should cover all four real pooling outputs: {dfg_path}: {dfg}")
+    memory = dfg.get("final_memory_state", {})
+    if not isinstance(memory, dict) or len(memory) != 4:
+        raise AssertionError(f"pool_max DFG aggregate should retain four component input memories: {dfg}")
+    for key, values in memory.items():
+        if not key.startswith("pool_max-dfg-sim-") or values != expected_input:
+            raise AssertionError(f"pool_max DFG memory provenance changed: {key}: {values}")
+    assert_operation_fire_counts("pool_max", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "pool_max.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("aggregation_kind") != "workload_graph_set"
+        or mapping.get("component_graphs") != expected_graphs
+        or mapping.get("placed_records") != 32
+        or mapping.get("routed_edges") != 32
+        or mapping.get("route_segments") != 152
+        or mapping.get("config_records") != 848
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"pool_max should route four pooling components on shared signal-window hardware: {mapping_path}: {mapping}")
+    route_edges = {route.get("edge_ref") for route in mapping.get("routes", [])}
+    expected_route_edges = {
+        "arith.cmpf#0.result0->arith.select#0.operand0",
+        "dataflow.load#0.result0->arith.cmpf#0.operand0",
+        "dataflow.load#0.result0->arith.select#0.operand1",
+        "arith.addi#2.result0->dataflow.load#0.operand1",
+    }
+    if not expected_route_edges.issubset(route_edges):
+        raise AssertionError(f"pool_max mapping should expose load/cmp/select/address route edges: {mapping}")
+
+    cgra_path = evidence_dir / "pool_max.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("aggregation_kind") != "workload_graph_set"
+        or cgra.get("component_graphs") != expected_graphs
+        or cgra.get("dfg_cycles") != 360
+        or cgra.get("hardware_aware_cycles") != 568
+        or cgra.get("placed_records") != 32
+        or cgra.get("routed_edges") != 32
+        or cgra.get("route_segments") != 152
+        or cgra.get("config_records") != 848
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != memory
+        or cgra.get("functional_state_source") != "component_cgra_sim_reports_carried_from_dfg_sim_reports"
+    ):
+        raise AssertionError(f"pool_max CGRA evidence should carry real pooling outputs: {cgra_path}: {cgra}")
+
+    comparison = json.loads((evidence_dir / "pool_max.sim-comparison-report.json").read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
+    ):
+        raise AssertionError(f"pool_max comparison should pass with CGRA cycles no lower than DFG: {comparison}")
+
+
 def assert_bisection_step_evidence(evidence_dir: Path) -> None:
     expected_memory = {
         "arg1": ["f32:0", "f32:1", "f32:2"],
@@ -5273,6 +5389,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "pool_avg",
                 "--case",
+                "pool_max",
+                "--case",
                 "newton_iter",
                 "--case",
                 "outer",
@@ -5487,6 +5605,7 @@ def main(argv: list[str]) -> int:
             "modexp",
             "moving_avg",
             "pool_avg",
+            "pool_max",
             "quantile",
             "relu",
             "upsample",
@@ -5544,6 +5663,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "modexp", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "moving_avg", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "pool_avg", 8)
+        assert_dfg_dynamic_work_items(evidence_dir, "pool_max", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "quantile", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
@@ -5583,6 +5703,7 @@ def main(argv: list[str]) -> int:
         assert_modexp_evidence(evidence_dir)
         assert_moving_avg_evidence(evidence_dir)
         assert_pool_avg_evidence(evidence_dir)
+        assert_pool_max_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
         assert_quantile_evidence(evidence_dir)
@@ -5911,6 +6032,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_avg", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "pool_max", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "batchnorm", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "edit_distance_step", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "outer", "shared_reduction_adg")
@@ -6093,6 +6215,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "interpolate_linear")
         assert_mapping_uses_switch_multihop(evidence_dir, "moving_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "pool_avg")
+        assert_mapping_uses_switch_multihop(evidence_dir, "pool_max")
         assert_mapping_uses_switch_multihop(evidence_dir, "outer")
         assert_mapping_uses_switch_multihop(evidence_dir, "sort_bubble")
         assert_mapping_uses_switch_multihop(evidence_dir, "bitrev")
@@ -6358,6 +6481,9 @@ def main(argv: list[str]) -> int:
         pool_avg_row = one_row(rows, "pool_avg")
         if pool_avg_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"pool_avg should use shared signal-window hardware: {pool_avg_row}")
+        pool_max_row = one_row(rows, "pool_max")
+        if pool_max_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"pool_max should use shared signal-window hardware: {pool_max_row}")
         quantile_row = one_row(rows, "quantile")
         if quantile_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"quantile should use shared signal-window hardware: {quantile_row}")
@@ -6380,8 +6506,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 113,
-            "pass": 105,
+            "total": 114,
+            "pass": 106,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,
