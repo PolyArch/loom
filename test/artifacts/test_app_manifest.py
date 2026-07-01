@@ -65,6 +65,7 @@ EXPECTED_CASES = {
     "integrate_trapz",
     "interpolate_linear",
     "jacobi_stencil_5pt",
+    "jacobi_stencil_7pt",
     "lower_bound",
     "mean",
     "mat3x3_mult",

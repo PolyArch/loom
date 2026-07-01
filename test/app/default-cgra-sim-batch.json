@@ -270,6 +270,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "jacobi_stencil_7pt",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "lower_bound",
       "hardware": "shared_memory_reduction_adg"
     },

@@ -1,0 +1,2 @@
+jacobi_stencil_7pt checksum: 1073.258260
+PASSED

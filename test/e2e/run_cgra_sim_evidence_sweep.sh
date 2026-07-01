@@ -161,6 +161,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     window_hanning
     interpolate_linear
     jacobi_stencil_5pt
+    jacobi_stencil_7pt
     distance_point
     edit_distance_step
     normalize_vec3

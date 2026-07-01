@@ -60,6 +60,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "integrate_trapz",
     "interpolate_linear",
     "jacobi_stencil_5pt",
+    "jacobi_stencil_7pt",
     "lower_bound",
     "mat3x3_mult",
     "matmul",

@@ -120,6 +120,7 @@ DEFAULT_SWEEP_CASES = (
     "window_hanning",
     "interpolate_linear",
     "jacobi_stencil_5pt",
+    "jacobi_stencil_7pt",
     "distance_point",
     "edit_distance_step",
     "normalize_vec3",
@@ -5692,6 +5693,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "jacobi_stencil_5pt",
                 "--case",
+                "jacobi_stencil_7pt",
+                "--case",
                 "distance_point",
                 "--case",
                 "edit_distance_step",
@@ -5799,6 +5802,7 @@ def main(argv: list[str]) -> int:
             "window_hanning",
             "interpolate_linear",
             "jacobi_stencil_5pt",
+            "jacobi_stencil_7pt",
             "distance_point",
             "edit_distance_step",
             "normalize_vec3",
@@ -5851,6 +5855,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "interpolate_linear", 63)
+        assert_dfg_dynamic_work_items(evidence_dir, "jacobi_stencil_7pt", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "distance_point", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "edit_distance_step", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "normalize_vec3", 64)
@@ -5877,6 +5882,7 @@ def main(argv: list[str]) -> int:
         for case in ("window_blackman", "window_hamming", "window_hanning"):
             run(repo, ["python3", "test/artifacts/assert_signal_window_cgra_evidence.py", "--case", case, str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_jacobi_stencil_5pt_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_jacobi_stencil_7pt_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_interpolate_linear_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_distance_point_cgra_evidence.py", str(evidence_dir)])
         assert_edit_distance_step_evidence(evidence_dir)
@@ -6218,6 +6224,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "lower_bound", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "moving_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "jacobi_stencil_5pt", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "jacobi_stencil_7pt", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_avg", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "pool_max", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "upsample_linear", "shared_signal_window_adg")
@@ -6403,6 +6410,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_uses_switch_multihop(evidence_dir, "window_hanning")
         assert_mapping_uses_switch_multihop(evidence_dir, "interpolate_linear")
         assert_mapping_uses_switch_multihop(evidence_dir, "jacobi_stencil_5pt")
+        assert_mapping_uses_switch_multihop(evidence_dir, "jacobi_stencil_7pt")
         assert_mapping_uses_switch_multihop(evidence_dir, "moving_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "pool_avg")
         assert_mapping_uses_switch_multihop(evidence_dir, "pool_max")
@@ -6561,6 +6569,7 @@ def main(argv: list[str]) -> int:
             "window_hanning",
             "interpolate_linear",
             "jacobi_stencil_5pt",
+            "jacobi_stencil_7pt",
             "distance_point",
             "edit_distance_step",
             "normalize_vec3",
@@ -6681,6 +6690,9 @@ def main(argv: list[str]) -> int:
         jacobi_row = one_row(rows, "jacobi_stencil_5pt")
         if jacobi_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"jacobi_stencil_5pt should use shared signal-window hardware: {jacobi_row}")
+        jacobi7_row = one_row(rows, "jacobi_stencil_7pt")
+        if jacobi7_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"jacobi_stencil_7pt should use shared signal-window hardware: {jacobi7_row}")
         quantile_row = one_row(rows, "quantile")
         if quantile_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"quantile should use shared signal-window hardware: {quantile_row}")
@@ -6703,8 +6715,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 116,
-            "pass": 108,
+            "total": 117,
+            "pass": 109,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,
