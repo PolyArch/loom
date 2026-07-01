@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    bitonic_stage-modified|col2im|edge_update|edge_update_batch|hist_bin|histogram|histogram_strided|quantile|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
+    bitonic_stage-modified|col2im|edge_update|edge_update_batch|hist_bin|histogram|histogram_strided|sort_insertion|sort_merge|sort_quick|spmspm|string_compare)
       return 0
       ;;
     *)
@@ -142,7 +142,7 @@ case "${CASE}" in
     case_graph="missing_primary_graph"
     ;;
   quantile)
-    case_graph="missing_primary_graph"
+    case_graph="g_quantile_kernel_0"
     ;;
   im2col)
     case_graph="g_t_im2col_kernel_0_0"
@@ -464,7 +464,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "interpolate_linear" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "quantile" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -1977,15 +1977,6 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --required-discovered-graph "g_t_main_red_0_0"
         --required-residual-call "histogram_strided_kernel"
         --diagnostic "primary workload graph absent: histogram_strided_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim cannot observe the kernel return value"
-        --evidence "kernel remains behind a residual call target"
-      )
-      ;;
-    quantile)
-      expected_primary_graph_token="quantile_kernel"
-      graph_absence_args=(
-        --required-discovered-graph "g_t_main_0_0"
-        --required-residual-call "quantile_kernel"
-        --diagnostic "primary workload graph absent: quantile_kernel remains a residual call target outside the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim cannot observe the kernel return value"
         --evidence "kernel remains behind a residual call target"
       )
       ;;

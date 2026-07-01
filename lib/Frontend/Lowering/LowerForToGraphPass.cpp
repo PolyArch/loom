@@ -228,6 +228,7 @@ struct LowerForToGraphPass
     ::mlir::OpBuilder builder(ctx);
 
     promoteStandaloneMemcpyFunctions(module, builder);
+    promoteStandaloneScalarReturnFunctions(module, builder);
     promoteStandaloneStructuredFunctions(module, builder);
 
     // First, for any host-scope scf.for with iter_args (i.e., a
@@ -392,6 +393,70 @@ struct LowerForToGraphPass
     return unsupported;
   }
 
+  bool isScalarReturnGraphBodyOp(::mlir::Operation *op) {
+    if (::llvm::isa<::mlir::func::ReturnOp, ::mlir::scf::YieldOp>(op))
+      return true;
+    if (::llvm::isa<::mlir::scf::IfOp>(op))
+      return true;
+    if (::llvm::isa<::mlir::FunctionOpInterface>(op))
+      return false;
+    if (::llvm::isa<::mlir::CallOpInterface>(op) &&
+        !::llvm::isa<::mlir::LLVM::CallIntrinsicOp>(op))
+      return false;
+    if (::llvm::isa<::mlir::LLVM::MemcpyOp, ::mlir::LLVM::StoreOp>(op))
+      return false;
+    if (op->getNumRegions() != 0 || op->getNumSuccessors() != 0)
+      return false;
+    if (op->hasTrait<::mlir::OpTrait::SymbolTable>())
+      return false;
+    if (auto effects =
+            ::llvm::dyn_cast<::mlir::MemoryEffectOpInterface>(op)) {
+      if (effects.template hasEffect<::mlir::MemoryEffects::Write>() ||
+          effects.template hasEffect<::mlir::MemoryEffects::Allocate>() ||
+          effects.template hasEffect<::mlir::MemoryEffects::Free>())
+        return false;
+      return true;
+    }
+    return ::mlir::isPure(op);
+  }
+
+  bool isStandaloneScalarReturnFunctionCandidate(::mlir::func::FuncOp func) {
+    if (func.isExternal())
+      return false;
+    if (func.getSymName() == "main")
+      return false;
+    if (func.getFunctionType().getResults().empty())
+      return false;
+    if (!func.getBody().hasOneBlock())
+      return false;
+    auto returnOp =
+        ::llvm::dyn_cast<::mlir::func::ReturnOp>(
+            func.getBody().front().getTerminator());
+    if (!returnOp ||
+        returnOp.getNumOperands() != func.getFunctionType().getNumResults())
+      return false;
+
+    bool hasPointerInput = false;
+    for (::mlir::Type ty : func.getFunctionType().getInputs())
+      hasPointerInput |= isLlvmPointerType(ty);
+    if (!hasPointerInput)
+      return false;
+
+    bool hasLoad = false;
+    bool unsupported = false;
+    func.getBody().walk([&](::mlir::Operation *nested)
+                            -> ::mlir::WalkResult {
+      if (::llvm::isa<::mlir::LLVM::LoadOp>(nested))
+        hasLoad = true;
+      if (!isScalarReturnGraphBodyOp(nested)) {
+        unsupported = true;
+        return ::mlir::WalkResult::interrupt();
+      }
+      return ::mlir::WalkResult::advance();
+    });
+    return hasLoad && !unsupported;
+  }
+
   void promoteGraphOnlyFunction(::mlir::ModuleOp module,
                                 ::mlir::func::FuncOp func,
                                 ::mlir::OpBuilder &builder) {
@@ -406,8 +471,12 @@ struct LowerForToGraphPass
     inputTypes.push_back(noneType);
     for (::mlir::Type ty : func.getFunctionType().getInputs())
       inputTypes.push_back(ty);
+    ::llvm::SmallVector<::mlir::Type, 4> resultTypes;
+    resultTypes.push_back(noneType);
+    for (::mlir::Type ty : func.getFunctionType().getResults())
+      resultTypes.push_back(ty);
     ::mlir::FunctionType graphType =
-        builder.getFunctionType(inputTypes, {noneType});
+        builder.getFunctionType(inputTypes, resultTypes);
 
     builder.setInsertionPointToEnd(module.getBody());
     auto graph = ::dataflow::GraphFuncOp::create(
@@ -427,8 +496,15 @@ struct LowerForToGraphPass
     builder.setInsertionPointToEnd(graphEntry);
     for (::mlir::Operation &op : funcEntry.without_terminator())
       builder.clone(op, mapping);
-    ::dataflow::GraphReturnOp::create(
-        builder, loc, ::mlir::ValueRange{graphEntry->getArgument(0)});
+    ::llvm::SmallVector<::mlir::Value, 4> returnValues;
+    returnValues.push_back(graphEntry->getArgument(0));
+    if (auto returnOp =
+            ::llvm::dyn_cast<::mlir::func::ReturnOp>(
+                funcEntry.getTerminator())) {
+      for (::mlir::Value operand : returnOp.getOperands())
+        returnValues.push_back(mapping.lookupOrDefault(operand));
+    }
+    ::dataflow::GraphReturnOp::create(builder, loc, returnValues);
   }
 
   void promoteStandaloneMemcpyFunctions(::mlir::ModuleOp module,
@@ -436,6 +512,18 @@ struct LowerForToGraphPass
     ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
     module.walk([&](::mlir::func::FuncOp func) {
       if (isStandaloneMemcpyFunctionCandidate(func))
+        funcs.push_back(func);
+    });
+
+    for (::mlir::func::FuncOp func : funcs)
+      promoteGraphOnlyFunction(module, func, builder);
+  }
+
+  void promoteStandaloneScalarReturnFunctions(::mlir::ModuleOp module,
+                                              ::mlir::OpBuilder &builder) {
+    ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
+    module.walk([&](::mlir::func::FuncOp func) {
+      if (isStandaloneScalarReturnFunctionCandidate(func))
         funcs.push_back(func);
     });
 

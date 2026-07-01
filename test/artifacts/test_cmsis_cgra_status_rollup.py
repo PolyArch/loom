@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 110,
-            "pass": 97,
+            "pass": 98,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 13,
+            "unsupported": 12,
             "missing_status": 0,
         },
     )
@@ -891,11 +891,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "the discovered dataflow graphs; discovered graph ids include g_t_main_red_0_0, so DFG-sim "
         "cannot observe the kernel return value"
     ),
-    "quantile": (
-        "primary workload graph absent: quantile_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim "
-        "cannot observe the kernel return value"
-    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -1118,8 +1113,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 110,
             "pass": 14,
             "fail": 0,
-            "blocked": 83,
-            "unsupported": 13,
+            "blocked": 84,
+            "unsupported": 12,
             "missing_status": 0,
         },
     )

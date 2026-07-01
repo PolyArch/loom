@@ -139,7 +139,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "hist_bin",
     "histogram",
     "histogram_strided",
-    "quantile",
     "sort_insertion",
     "sort_merge",
     "sort_quick",
@@ -192,15 +191,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = 
         "cannot observe the kernel return value",
         "g_t_main_red_0_0",
         "histogram_strided_kernel",
-    ),
-    (
-        "quantile",
-        "quantile_kernel",
-        "primary workload graph absent: quantile_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0, so DFG-sim "
-        "cannot observe the kernel return value",
-        "g_t_main_0_0",
-        "quantile_kernel",
     ),
     (
         "string_compare",
@@ -1044,6 +1034,56 @@ def assert_dfg_dynamic_work_items(evidence_dir: Path, case: str, expected_count:
     data = json.loads(path.read_text())
     if data.get("dynamic_work_items") != expected_count:
         raise AssertionError(f"{case} should have {expected_count} dynamic work items: {path}: {data}")
+
+
+def assert_quantile_evidence(evidence_dir: Path) -> None:
+    dfg = json.loads((evidence_dir / "quantile.dfg.report.json").read_text())
+    mapping = json.loads((evidence_dir / "quantile.mapping.json").read_text())
+    cgra = json.loads((evidence_dir / "quantile.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "quantile.sim-comparison-report.json").read_text())
+    expected_outputs = ["none", "f32:511.500000"]
+    expected_counts = {
+        "arith.addi": 3,
+        "arith.cmpi": 1,
+        "arith.index_cast": 3,
+        "arith.mulf": 2,
+        "arith.subf": 2,
+        "dataflow.constant": 3,
+        "dataflow.load": 2,
+        "llvm.fptoui": 1,
+        "llvm.intr.fmuladd": 1,
+        "llvm.uitofp": 2,
+        "scf.if": 1,
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_quantile_kernel_0"
+        or dfg.get("dynamic_work_items") != 1
+        or dfg.get("final_outputs") != expected_outputs
+    ):
+        raise AssertionError(f"quantile should preserve scalar-return DFG evidence: {dfg}")
+    assert_operation_fire_counts("quantile", dfg, expected_counts)
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("placed_records") != 19
+        or mapping.get("routed_edges") != 23
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"quantile should map to shared signal-window hardware: {mapping}")
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("dfg_cycles") != dfg.get("optimistic_cycles")
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
+    ):
+        raise AssertionError(f"quantile should preserve CGRA/comparison evidence: {cgra} {comparison}")
 
 
 def assert_operation_fire_counts(case: str, dfg: dict, expected_counts: dict[str, int]) -> None:
@@ -4874,6 +4914,7 @@ def main(argv: list[str]) -> int:
             "modmul",
             "modexp",
             "moving_avg",
+            "quantile",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -4928,6 +4969,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "modmul", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "modexp", 8)
         assert_dfg_dynamic_work_items(evidence_dir, "moving_avg", 16)
+        assert_dfg_dynamic_work_items(evidence_dir, "quantile", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "newton_iter", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "runge_kutta_step", 1)
         assert_dfg_dynamic_work_items(evidence_dir, "interpolate_linear", 63)
@@ -4967,6 +5009,7 @@ def main(argv: list[str]) -> int:
         assert_moving_avg_evidence(evidence_dir)
         assert_newton_iter_evidence(evidence_dir)
         assert_bisection_step_evidence(evidence_dir)
+        assert_quantile_evidence(evidence_dir)
         assert_transform_point_evidence(evidence_dir)
         assert_rle_decode_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
@@ -5601,6 +5644,7 @@ def main(argv: list[str]) -> int:
             "lower_bound",
             "modmul",
             "modexp",
+            "quantile",
             "relu",
             "upsample",
             "sbox_lookup",
@@ -5718,6 +5762,9 @@ def main(argv: list[str]) -> int:
         moving_avg_row = one_row(rows, "moving_avg")
         if moving_avg_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"moving_avg should use shared signal-window hardware: {moving_avg_row}")
+        quantile_row = one_row(rows, "quantile")
+        if quantile_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"quantile should use shared signal-window hardware: {quantile_row}")
         batchnorm_row = one_row(rows, "batchnorm")
         if batchnorm_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"batchnorm should use shared signal-window hardware: {batchnorm_row}")
@@ -5727,10 +5774,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 110,
-            "pass": 97,
+            "pass": 98,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 13,
+            "unsupported": 12,
             "missing_status": 0,
         }
         if counts != expected_counts:

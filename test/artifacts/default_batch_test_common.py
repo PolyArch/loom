@@ -73,6 +73,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "prefix_sum",
     "prefix_sum_exclusive",
     "prefix_sum_inclusive",
+    "quantile",
     "reduction",
     "relu",
     "rotate_bits",

@@ -2053,6 +2053,16 @@ PY
     parity)
         configure_parity_args
         ;;
+    quantile)
+        append_linear_memref 1 1024 1 "%.6e"
+        sim_args+=(
+            --graph g_quantile_kernel_0
+            --workload quantile
+            --arg 0=none
+            --arg 2=1024
+            --arg 3=5.000000e-01
+        )
+        ;;
     popcount)
         configure_popcount_args
         ;;
