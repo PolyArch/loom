@@ -642,6 +642,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "bitonic_stage")
     write_legacy_case(legacy_root, "bitonic_stage-modified")
     write_legacy_case(legacy_root, "bitonic_stage-tweak")
+    write_legacy_case(legacy_root, "dot_product_3d")
+    write_legacy_case(legacy_root, "spmspv")
+    write_legacy_case(legacy_root, "sigmoid")
+    write_legacy_case(legacy_root, "softmax")
     run(
         repo,
         [
@@ -663,9 +667,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 122,
-            "pass": 46,
+            "pass": 50,
             "fail": 0,
-            "blocked": 76,
+            "blocked": 72,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -674,8 +678,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 27,
-            "pass": 27,
+            "total": 31,
+            "pass": 31,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -710,6 +714,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("bitonic_stage", "shared_memory_reduction_adg"),
         ("bitonic_stage-modified", "shared_memory_reduction_adg"),
         ("bitonic_stage-tweak", "shared_memory_reduction_adg"),
+        ("dot_product_3d", "shared_reduction_adg"),
+        ("spmspv", "shared_reduction_adg"),
+        ("sigmoid", "shared_signal_window_adg"),
+        ("softmax", "shared_signal_window_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("axpy", "shared_vector_alu_adg"),
         ("dotproduct", "shared_reduction_adg"),
@@ -759,6 +767,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "bitonic_stage", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "bitonic_stage-modified", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "bitonic_stage-tweak", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "dot_product_3d", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "spmspv", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "sigmoid", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "softmax", expected_hardware="shared_signal_window_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -796,6 +808,10 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_bitonic_stage_evidence(evidence_dir)
     cgra_sweep.assert_bitonic_stage_modified_evidence(evidence_dir)
     cgra_sweep.assert_bitonic_stage_tweak_evidence(evidence_dir)
+    cgra_sweep.assert_dot_product_3d_evidence(evidence_dir)
+    cgra_sweep.assert_spmspv_evidence(evidence_dir)
+    cgra_sweep.assert_sigmoid_evidence(evidence_dir)
+    cgra_sweep.assert_softmax_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],

@@ -110,6 +110,22 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "dot_product_3d",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "spmspv",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sigmoid",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "softmax",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
