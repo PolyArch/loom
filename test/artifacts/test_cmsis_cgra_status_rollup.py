@@ -496,8 +496,8 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "loombench",
         {
-            "total": 9,
-            "pass": 7,
+            "total": 10,
+            "pass": 8,
             "fail": 0,
             "blocked": 1,
             "unsupported": 1,
@@ -541,6 +541,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     assert_loombench_cgra_pass_row(repo, rows, "database_join", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "depthwise_conv", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "normalize", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "spmm", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "cdma", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
     sim_evidence = out_dir / "current-sim-cycle"
@@ -4480,6 +4481,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "database_join")
         write_legacy_case(legacy_root, "depthwise_conv")
         write_legacy_case(legacy_root, "normalize")
+        write_legacy_case(legacy_root, "spmm")
         write_legacy_case(legacy_root, "rle_decode")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_default_legacy_root_mode(repo, out_dir / "default-legacy")
@@ -4540,10 +4542,10 @@ def main() -> int:
             data,
             "loombench",
             {
-                "total": 9,
+                "total": 10,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 8,
+                "blocked": 9,
                 "unsupported": 1,
                 "missing_status": 0,
             },
@@ -4608,6 +4610,14 @@ def main() -> int:
             or loombench_rle_decode["manifest_case"] != "rle_decode"
         ):
             raise AssertionError(f"LoomBench rle_decode row should expose explicit evidence bridge: {loombench_rle_decode}")
+        loombench_spmm = one_row(rows, "loombench", "spmm")
+        if (
+            loombench_spmm["status"] != "blocked"
+            or loombench_spmm["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+            or loombench_spmm["blocking_prerequisite"] != "sim_evidence"
+            or loombench_spmm["manifest_case"] != "spmm"
+        ):
+            raise AssertionError(f"LoomBench spmm row should expose explicit evidence bridge: {loombench_spmm}")
         loombench_deferred = one_row(rows, "loombench", "legacy_missing")
         if (
             loombench_deferred["status"] != "blocked"
