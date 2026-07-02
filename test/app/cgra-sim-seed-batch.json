@@ -30,6 +30,22 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "pack_bits",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "partition",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "prefix_sum_exclusive",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "database_join",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
