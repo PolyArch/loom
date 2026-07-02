@@ -6122,6 +6122,64 @@ def validate_adg_inventory(
                     diagnostics.append(
                         f"ADG inventory candidate {index} consumer {consumer_index} status is unknown"
                     )
+                if not isinstance(consumer.get("diagnostic"), str):
+                    diagnostics.append(
+                        f"ADG inventory candidate {index} consumer {consumer_index} diagnostic must be a string"
+                    )
+                evidence_cases = consumer.get("evidence_cases")
+                valid_evidence_cases = False
+                if evidence_cases is not None:
+                    if not isinstance(evidence_cases, list) or not all(
+                        isinstance(case, str) and case for case in evidence_cases
+                    ):
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "evidence_cases must be a nonempty string list"
+                        )
+                    elif evidence_cases != sorted(set(evidence_cases)):
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "evidence_cases must be sorted and unique"
+                        )
+                    else:
+                        valid_evidence_cases = True
+                case_count = consumer.get("case_count")
+                if case_count is not None:
+                    if not isinstance(case_count, int) or case_count < 0:
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "case_count must be a nonnegative integer"
+                        )
+                    elif valid_evidence_cases and case_count != len(evidence_cases):
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "case_count must match evidence_cases"
+                        )
+                source_artifact = consumer.get("source_artifact")
+                source_fingerprint = consumer.get("source_artifact_fingerprint")
+                if source_artifact is not None or source_fingerprint is not None:
+                    if not isinstance(source_artifact, str) or not source_artifact:
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "source_artifact must be a nonempty string"
+                        )
+                    elif not valid_sha256_hex(source_fingerprint):
+                        diagnostics.append(
+                            f"ADG inventory candidate {index} consumer {consumer_index} "
+                            "source_artifact_fingerprint must be a SHA256 hex digest"
+                        )
+                    else:
+                        resolved_source = resolve_artifact_reference(path, source_artifact)
+                        if not resolved_source.is_file():
+                            diagnostics.append(
+                                f"ADG inventory candidate {index} consumer {consumer_index} "
+                                "source_artifact does not exist"
+                            )
+                        elif artifact_fingerprint(resolved_source) != source_fingerprint:
+                            diagnostics.append(
+                                f"ADG inventory candidate {index} consumer "
+                                f"source_artifact_fingerprint mismatch for consumer {consumer_index}"
+                            )
 
 
 def audit_json(path: Path, kind: str) -> dict[str, object]:

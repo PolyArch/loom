@@ -368,6 +368,113 @@ def assert_summary_fails(
         raise AssertionError(f"expected {expected!r} in projection diagnostics:\n{combined}")
 
 
+def assert_shared_vector_mesh_consumers(inventory: dict[str, object]) -> None:
+    candidates = {
+        str(candidate["candidate_id"]): candidate
+        for candidate in inventory.get("candidates", [])
+        if isinstance(candidate, dict)
+    }
+    candidate = candidates.get("adg-builder::shared-vector-mesh::shared_vector_mesh_adg")
+    if candidate is None:
+        raise AssertionError("shared_vector_mesh_adg candidate is missing")
+    consumers = candidate.get("downstream_consumers")
+    if not isinstance(consumers, list):
+        raise AssertionError(f"shared vector mesh candidate lacks consumers: {candidate}")
+    by_name = {
+        str(record.get("consumer")): record
+        for record in consumers
+        if isinstance(record, dict)
+    }
+    for consumer in ("pnr_mapping", "cgra_sim", "cgra_status_summary"):
+        record = by_name.get(consumer)
+        if record is None:
+            raise AssertionError(f"shared vector mesh missed {consumer} evidence: {consumers}")
+        if record.get("status") != "pass":
+            raise AssertionError(f"shared vector mesh {consumer} evidence is not pass: {record}")
+        cases = record.get("evidence_cases")
+        if cases != ["app:byte_swap", "app:xor_block"]:
+            raise AssertionError(
+                f"shared vector mesh {consumer} should name byte_swap/xor_block evidence: {record}"
+            )
+        if record.get("case_count") != 2:
+            raise AssertionError(f"shared vector mesh {consumer} case count mismatch: {record}")
+        if not record.get("source_artifact") or not record.get("source_artifact_fingerprint"):
+            raise AssertionError(f"shared vector mesh {consumer} missed source artifact identity: {record}")
+
+
+def assert_consumer_status_evidence(repo: Path, out_dir: Path) -> None:
+    evidence_dir = out_dir / "vector-mesh-current-sim-cycle"
+    artifact_test_common.require_success(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_sim_evidence_sweep.sh",
+            "--output-dir",
+            str(evidence_dir),
+            "--case",
+            "byte_swap",
+            "--case",
+            "xor_block",
+            "--hardware-source",
+            "shared-vector-mesh",
+            "--jobs",
+            "2",
+        ],
+        "shared-vector-mesh focused evidence sweep",
+    )
+    status_csv = out_dir / "vector-mesh-status.csv"
+    status_json = out_dir / "vector-mesh-status.json"
+    artifact_test_common.require_success(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_status_summary.sh",
+            "--output",
+            str(status_csv),
+            "--json-output",
+            str(status_json),
+            "--sim-evidence-dir",
+            str(evidence_dir),
+            "--no-legacy-loombench",
+            "--no-cmsis-dfg-auto",
+        ],
+        "shared-vector-mesh CGRA status summary",
+    )
+    inventory_path = out_dir / "adg-inventory-with-consumers.json"
+    artifact_test_common.require_success(
+        repo,
+        [
+            "bash",
+            "test/fabric/run_adg_inventory.sh",
+            "--output",
+            str(inventory_path),
+            "--mlir-output-dir",
+            str(out_dir / "adg-inventory-with-consumers-mlir"),
+            "--consumer-status-json",
+            str(status_json),
+        ],
+        "ADG inventory consumer evidence producer",
+    )
+    inventory = assert_inventory_shape(inventory_path)
+    assert_shared_vector_mesh_consumers(inventory)
+    assert_audit_passes([inventory_path])
+    forged = copy.deepcopy(inventory)
+    forged_candidate = next(
+        candidate
+        for candidate in forged["candidates"]
+        if candidate["candidate_id"] == "adg-builder::shared-vector-mesh::shared_vector_mesh_adg"
+    )
+    forged_consumer = next(
+        record
+        for record in forged_candidate["downstream_consumers"]
+        if record["consumer"] == "pnr_mapping"
+    )
+    forged_consumer["source_artifact_fingerprint"] = "0" * 64
+    forged_path = out_dir / "forged-consumer-source-fingerprint-adg-inventory.json"
+    forged_path.write_text(json.dumps(forged, indent=2, sort_keys=True) + "\n")
+    assert_audit_fails(forged_path, "consumer source_artifact_fingerprint mismatch")
+
+
 def load_inventory_producer(repo: Path):
     module_path = repo / "test" / "fabric" / "adg_inventory.py"
     spec = importlib.util.spec_from_file_location("loom_adg_inventory_producer", module_path)
@@ -425,6 +532,7 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-adg-inventory-") as tmp:
         out_dir = Path(tmp)
         assert_malformed_visual_metadata_is_not_safe(repo, out_dir)
+        assert_consumer_status_evidence(repo, out_dir)
 
         inventory_path = out_dir / "adg-inventory.json"
         mlir_dir = out_dir / "adg-inventory-mlir"

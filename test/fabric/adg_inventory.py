@@ -146,6 +146,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True)
     parser.add_argument("--mlir-output-dir")
+    parser.add_argument(
+        "--consumer-status-json",
+        action="append",
+        default=[],
+        help="CGRA status summary JSON artifact whose pass rows should be attached as downstream consumer evidence.",
+    )
     return parser.parse_args(argv)
 
 
@@ -329,6 +335,123 @@ def system_coverage(body: list[str]) -> dict[str, object]:
     }
 
 
+def cgra_status_root_keys(row: dict[str, object]) -> set[str]:
+    keys: set[str] = set()
+    for field in ("hardware_system", "spatialcore_template"):
+        value = row.get(field)
+        if isinstance(value, str) and value:
+            keys.add(value)
+            if "::" in value:
+                keys.add(value.rsplit("::", 1)[-1])
+    return keys
+
+
+def load_consumer_status_rows(
+    paths: list[str],
+    anchor_dir: Path,
+    diagnostics: list[str],
+) -> dict[str, list[dict[str, object]]]:
+    rows_by_root: dict[str, list[dict[str, object]]] = {}
+    for raw_path in paths:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = (ROOT / path).resolve()
+        if not path.is_file():
+            diagnostics.append(f"consumer status JSON is unavailable: {raw_path}")
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except json.JSONDecodeError as exc:
+            diagnostics.append(f"consumer status JSON {raw_path} is invalid: {exc}")
+            continue
+        if data.get("kind") != "cgra_status_summary":
+            diagnostics.append(f"consumer status JSON {raw_path} has wrong kind")
+            continue
+        rows = data.get("rows")
+        if not isinstance(rows, list):
+            diagnostics.append(f"consumer status JSON {raw_path} lacks rows")
+            continue
+        source_ref = path_reference(path, anchor_dir)
+        source_fingerprint = sha256_file(path)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            row_record = {
+                "row": row,
+                "source_artifact": source_ref,
+                "source_artifact_fingerprint": source_fingerprint,
+            }
+            for root in cgra_status_root_keys(row):
+                rows_by_root.setdefault(root, []).append(row_record)
+    return rows_by_root
+
+
+def evidence_case(row: dict[str, object]) -> str:
+    suite = row.get("suite")
+    case = row.get("case")
+    if isinstance(suite, str) and suite and isinstance(case, str) and case:
+        return f"{suite}:{case}"
+    if isinstance(case, str) and case:
+        return case
+    return ""
+
+
+def append_stage_consumer(
+    records: list[dict[str, object]],
+    *,
+    consumer: str,
+    stage_column: str,
+    rows: list[dict[str, object]],
+) -> None:
+    pass_rows = [
+        item
+        for item in rows
+        if isinstance(item.get("row"), dict)
+        and item["row"].get("status") == "pass"
+        and item["row"].get(stage_column) == "pass"
+    ]
+    if not pass_rows:
+        return
+    cases = sorted(
+        {
+            case
+            for item in pass_rows
+            for case in [evidence_case(item["row"])]
+            if case
+        }
+    )
+    source_artifacts = sorted(
+        {
+            str(item["source_artifact"])
+            for item in pass_rows
+            if item.get("source_artifact")
+        }
+    )
+    source_fingerprints = sorted(
+        {
+            str(item["source_artifact_fingerprint"])
+            for item in pass_rows
+            if item.get("source_artifact_fingerprint")
+        }
+    )
+    record: dict[str, object] = {
+        "consumer": consumer,
+        "status": "pass",
+        "case_count": len(cases),
+        "evidence_cases": cases,
+        "diagnostic": f"{consumer} consumed {len(cases)} CGRA status pass row(s)",
+    }
+    if len(source_artifacts) == 1:
+        record["source_artifact"] = source_artifacts[0]
+    if len(source_fingerprints) == 1:
+        record["source_artifact_fingerprint"] = source_fingerprints[0]
+    if len(source_artifacts) > 1:
+        record["source_artifacts"] = source_artifacts
+    if len(source_fingerprints) > 1:
+        record["source_artifact_fingerprints"] = source_fingerprints
+    records.append(record)
+
+
 def consumer_records(
     *,
     verifier_status: str,
@@ -336,8 +459,9 @@ def consumer_records(
     layout_class: str,
     visual_metadata_role: str,
     coordinates_semantic: bool,
-) -> list[dict[str, str]]:
-    records = [
+    consumer_status_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = [
         {
             "consumer": "fabric_verifier",
             "status": verifier_status,
@@ -381,6 +505,24 @@ def consumer_records(
                 "diagnostic": "regular candidate carries non-semantic visual metadata",
             }
         )
+    append_stage_consumer(
+        records,
+        consumer="pnr_mapping",
+        stage_column="mapping_status",
+        rows=consumer_status_rows,
+    )
+    append_stage_consumer(
+        records,
+        consumer="cgra_sim",
+        stage_column="cgra_status",
+        rows=consumer_status_rows,
+    )
+    append_stage_consumer(
+        records,
+        consumer="cgra_status_summary",
+        stage_column="status",
+        rows=consumer_status_rows,
+    )
     return records
 
 
@@ -394,6 +536,7 @@ def candidate_record(
     body: list[str],
     verifier_status: str,
     verifier_diagnostic: str,
+    consumer_status_rows: list[dict[str, object]],
 ) -> dict[str, object]:
     layout_class, topology_family = classify_layout(recipe_id, root_kind, root_symbol)
     coverage = module_coverage(body) if root_kind == "fabric.module" else system_coverage(body)
@@ -432,6 +575,7 @@ def candidate_record(
             layout_class=layout_class,
             visual_metadata_role=metadata_role,
             coordinates_semantic=coordinates_semantic,
+            consumer_status_rows=consumer_status_rows,
         ),
     }
 
@@ -467,11 +611,13 @@ def inventory_for_inputs(
     inputs: list[tuple[str, Path]],
     diagnostics: list[str],
     anchor_dir: Path,
+    consumer_status_rows_by_root: dict[str, list[dict[str, object]]] | None = None,
 ) -> list[dict[str, object]]:
     tool = loom_tool()
     if tool is None:
         diagnostics.append("loom verifier is unavailable")
         return []
+    consumer_status_rows_by_root = consumer_status_rows_by_root or {}
     candidates: list[dict[str, object]] = []
     for recipe_id, source_path in inputs:
         verified_text, diagnostic = run_loom(tool, source_path)
@@ -502,6 +648,7 @@ def inventory_for_inputs(
                         layout_class="irregular",
                         visual_metadata_role="absent",
                         coordinates_semantic=False,
+                        consumer_status_rows=[],
                     ),
                 }
             )
@@ -525,6 +672,9 @@ def inventory_for_inputs(
                     body=body,
                     verifier_status="pass",
                     verifier_diagnostic="",
+                    consumer_status_rows=consumer_status_rows_by_root.get(
+                        root_symbol, []
+                    ),
                 )
             )
     candidates.sort(key=lambda item: str(item["candidate_id"]))
@@ -537,8 +687,18 @@ def main(argv: list[str]) -> int:
     mlir_dir = Path(args.mlir_output_dir) if args.mlir_output_dir else output.parent / "adg-inventory-mlir"
     anchor_dir = output.parent
     diagnostics: list[str] = []
+    consumer_status_rows_by_root = load_consumer_status_rows(
+        args.consumer_status_json,
+        anchor_dir,
+        diagnostics,
+    )
     generated = generate_recipes(mlir_dir, diagnostics)
-    candidates = inventory_for_inputs(generated, diagnostics, anchor_dir)
+    candidates = inventory_for_inputs(
+        generated,
+        diagnostics,
+        anchor_dir,
+        consumer_status_rows_by_root,
+    )
     inventory = {
         "schema_version": 1,
         "kind": "adg_inventory",

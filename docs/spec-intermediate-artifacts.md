@@ -227,6 +227,16 @@ Rules:
   not complete full-stack evidence merely because it appears in the
   inventory; missing consumers must be `blocked`, `unsupported`, or
   otherwise structured non-pass.
+* Each downstream consumer record must include `consumer`, `status`,
+  and `diagnostic`. Records may also include `case_count`,
+  `evidence_cases`, `source_artifact`, and
+  `source_artifact_fingerprint` when the consumer evidence comes from a
+  separate JSON SSOT such as a CGRA status summary.
+* `evidence_cases`, when present, is a deterministic list of
+  `suite:case` identities from the consumer artifact. It must name real
+  rows in the referenced source artifact, not inferred workloads.
+* `source_artifact` resolves to the consumer evidence artifact, and
+  `source_artifact_fingerprint` must match that file when present.
 
 ### ADG Hardware Summary
 
