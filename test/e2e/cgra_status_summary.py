@@ -517,6 +517,30 @@ def string_field(data: dict[str, object], key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def hardware_metadata_from_artifacts(*artifacts: dict[str, object]) -> tuple[str, str]:
+    hardware_system = ""
+    spatialcore_template = ""
+    legacy_hardware = ""
+    for data in artifacts:
+        if not data:
+            continue
+        if not hardware_system:
+            hardware_system = string_field(data, "hardware_system")
+        if not spatialcore_template:
+            spatialcore_template = string_field(data, "spatialcore_template")
+        if not legacy_hardware:
+            legacy_hardware = string_field(data, "hardware")
+    if not hardware_system and legacy_hardware:
+        if "::" in legacy_hardware:
+            hardware_system = legacy_hardware.split("::", 1)[0]
+        else:
+            hardware_system = legacy_hardware
+    if not spatialcore_template and legacy_hardware:
+        if "::" not in legacy_hardware:
+            spatialcore_template = legacy_hardware
+    return hardware_system, spatialcore_template
+
+
 def valid_string_list(value: object) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
@@ -648,13 +672,13 @@ def apply_component_sim_evidence_to_row(
         component_path = first_component_path_with_status(paths, status)
         if component_path is not None:
             fill_artifact_fields(row_data, column, component_path)
-    for path in (*mapping_paths, *cgra_paths):
-        data = read_json(path)
-        hardware = string_field(data, "hardware")
-        if hardware:
-            row_data["hardware_system"] = hardware
-            row_data["spatialcore_template"] = hardware
-            break
+    hardware_system, spatialcore_template = hardware_metadata_from_artifacts(
+        *(read_json(path) for path in (*mapping_paths, *cgra_paths))
+    )
+    if hardware_system:
+        row_data["hardware_system"] = hardware_system
+    if spatialcore_template:
+        row_data["spatialcore_template"] = spatialcore_template
 
     row_data["status"] = "blocked"
     row_data["diagnostic_class"] = (
@@ -908,10 +932,11 @@ def apply_sim_evidence_to_row(row_data: dict[str, str], evidence_dir: Path, comp
     mapping_id = string_field(mapping, "mapping_id") or string_field(cgra, "mapping_id")
     if mapping_id:
         row_data["mapping_id"] = mapping_id
-    hardware = string_field(mapping, "hardware") or string_field(cgra, "hardware")
-    if hardware:
-        row_data["hardware_system"] = hardware
-        row_data["spatialcore_template"] = hardware
+    hardware_system, spatialcore_template = hardware_metadata_from_artifacts(mapping, cgra)
+    if hardware_system:
+        row_data["hardware_system"] = hardware_system
+    if spatialcore_template:
+        row_data["spatialcore_template"] = spatialcore_template
     if row_data.get("required_slice_count", "0") == "0":
         row_data["required_slice_count"] = "1"
 

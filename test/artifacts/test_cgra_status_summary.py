@@ -240,12 +240,14 @@ def write_sim_evidence_case(
     cgra_final_state: bool,
     workload_identity: str | None = None,
     functional_state_source: str = "carried_from_dfg_sim_report",
+    hardware_fields: dict[str, str] | None = None,
 ) -> None:
     workload = workload_identity or case
     graph = f"g_{workload}_0"
     mapping_id = f"{workload}__shared_reduction_adg"
     final_outputs = ["i32:7"]
     final_memory_state = {"arg0": ["i32:7"]}
+    artifact_hardware = hardware_fields or {"hardware": "shared_reduction_adg"}
     write_json(
         evidence_dir / f"{case}.dfg.report.json",
         {
@@ -268,7 +270,6 @@ def write_sim_evidence_case(
             "kind": "pnr_mapping",
             "workload": workload,
             "graph": graph,
-            "hardware": "shared_reduction_adg",
             "mapping_id": mapping_id,
             "status": "pass",
             "placed_records": 1,
@@ -280,13 +281,13 @@ def write_sim_evidence_case(
             "routes": [],
             "config_bitstream": [],
             "diagnostics": [],
+            **artifact_hardware,
         },
     )
     cgra_report = {
         "schema_version": 1,
         "kind": "cgra_sim_report",
         "workload": workload,
-        "hardware": "shared_reduction_adg",
         "hardware_artifact": "test/pnr/shared_reduction_adg.mlir",
         "mapping_id": mapping_id,
         "status": "pass",
@@ -297,6 +298,7 @@ def write_sim_evidence_case(
         "metric_definition": "fixture",
         "cycle_breakdown": [],
         "diagnostics": [],
+        **artifact_hardware,
     }
     if cgra_final_state:
         cgra_report["final_outputs"] = final_outputs
@@ -558,6 +560,14 @@ def assert_counts(rows: list[dict[str, str]], data: dict[str, object]) -> None:
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     cgra_status_summary = import_cgra_status_summary(repo)
+    if cgra_status_summary.hardware_metadata_from_artifacts(
+        {"hardware": "shared_reduction_adg"}
+    ) != ("shared_reduction_adg", "shared_reduction_adg"):
+        raise AssertionError("module-root legacy hardware should populate both hardware roots")
+    if cgra_status_summary.hardware_metadata_from_artifacts(
+        {"hardware": "system_dual_spatial_shared_memory_soc::acc1"}
+    ) != ("system_dual_spatial_shared_memory_soc", ""):
+        raise AssertionError("system-root legacy hardware should not populate a SpatialCore template")
     with artifact_test_common.repo_temp_dir(repo, "loom-cgra-status-") as tmp:
         out_dir = Path(tmp)
         csv_output = out_dir / "cgra-status-summary.csv"
@@ -2165,6 +2175,18 @@ def main() -> int:
         write_sim_evidence_case(sim_evidence, "axpy", cgra_final_state=False)
         write_sim_evidence_case(
             sim_evidence,
+            "byte_swap",
+            cgra_final_state=True,
+            hardware_fields={
+                "hardware": "system_dual_spatial_shared_memory_soc::acc1",
+                "hardware_root_kind": "fabric.system",
+                "hardware_system": "system_dual_spatial_shared_memory_soc",
+                "selected_acc_core": "acc1",
+                "spatialcore_template": "shared_vector_alu_adg",
+            },
+        )
+        write_sim_evidence_case(
+            sim_evidence,
             "reduction",
             cgra_final_state=True,
             functional_state_source="component_cgra_sim_reports_carried_from_dfg_sim_reports",
@@ -2212,13 +2234,19 @@ def main() -> int:
         app_counts = promoted_counts.get("app") if isinstance(promoted_counts, dict) else None
         if app_counts != {
             "total": APP_CASE_COUNT,
-            "pass": 2,
+            "pass": 3,
             "fail": 1,
-            "blocked": APP_CASE_COUNT - 2 - 1,
+            "blocked": APP_CASE_COUNT - 3 - 1,
             "unsupported": 0,
             "missing_status": 0,
         }:
             raise AssertionError(f"unexpected promoted app counts: {app_counts}")
+        system_byte_swap = one_row(promoted_rows, "app", "byte_swap")
+        if (
+            system_byte_swap["hardware_system"] != "system_dual_spatial_shared_memory_soc"
+            or system_byte_swap["spatialcore_template"] != "shared_vector_alu_adg"
+        ):
+            raise AssertionError(f"system-root evidence should preserve hardware roots: {system_byte_swap}")
         vecsum = one_row(promoted_rows, "app", "vecsum")
         if vecsum["status"] != "pass":
             raise AssertionError(f"vecsum should be promoted to pass: {vecsum}")

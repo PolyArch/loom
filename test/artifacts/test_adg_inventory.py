@@ -485,6 +485,45 @@ def load_inventory_producer(repo: Path):
     return module
 
 
+def assert_system_status_consumer_roots(repo: Path, out_dir: Path) -> None:
+    producer = load_inventory_producer(repo)
+    status_json = out_dir / "system-root-cgra-status.json"
+    row = {
+        "suite": "app",
+        "case": "byte_swap",
+        "hardware_system": "system_dual_spatial_shared_memory_soc",
+        "spatialcore_template": "shared_vector_alu_adg",
+        "status": "pass",
+        "mapping_status": "pass",
+        "cgra_status": "pass",
+    }
+    status_json.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "cgra_status_summary",
+                "rows": [row],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    diagnostics: list[str] = []
+    rows_by_root = producer.load_consumer_status_rows([str(status_json)], out_dir, diagnostics)
+    if diagnostics:
+        raise AssertionError(f"system status consumer roots should load cleanly: {diagnostics}")
+    for root in ("system_dual_spatial_shared_memory_soc", "shared_vector_alu_adg"):
+        records = rows_by_root.get(root)
+        if not records:
+            raise AssertionError(f"system status evidence missed root {root}: {rows_by_root}")
+        if records[0].get("row") != row:
+            raise AssertionError(f"system status root {root} kept wrong row evidence: {records}")
+    for root in ("system_dual_spatial_shared_memory_soc::acc1", "acc1"):
+        if root in rows_by_root:
+            raise AssertionError(f"system status evidence should not attach to acc-only root {root}: {rows_by_root}")
+
+
 def assert_malformed_visual_metadata_is_not_safe(repo: Path, out_dir: Path) -> None:
     source_path = out_dir / "malformed-visual.mlir"
     source_path.write_text(
@@ -532,6 +571,7 @@ def main() -> int:
     with artifact_test_common.repo_temp_dir(repo, "loom-adg-inventory-") as tmp:
         out_dir = Path(tmp)
         assert_malformed_visual_metadata_is_not_safe(repo, out_dir)
+        assert_system_status_consumer_roots(repo, out_dir)
         assert_consumer_status_evidence(repo, out_dir)
 
         inventory_path = out_dir / "adg-inventory.json"
