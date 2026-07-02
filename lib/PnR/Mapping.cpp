@@ -396,6 +396,37 @@ bool valueFeedsOnlyShiftedMemoryAddress(mlir::Value value) {
          sawShift;
 }
 
+bool valueFeedsOnlyComputedMemoryAddress(mlir::Value value,
+                                         llvm::DenseSet<mlir::Value> &active) {
+  if (value.use_empty())
+    return false;
+  if (!active.insert(value).second)
+    return false;
+
+  bool sawAddressPath = false;
+  for (mlir::OpOperand &use : value.getUses()) {
+    if (isDataflowMemoryAddressUse(use)) {
+      sawAddressPath = true;
+      continue;
+    }
+    mlir::Operation *owner = use.getOwner();
+    if (!isAddressArithmeticOp(owner) ||
+        !valueFeedsOnlyComputedMemoryAddress(owner->getResult(0), active)) {
+      active.erase(value);
+      return false;
+    }
+    sawAddressPath = true;
+  }
+
+  active.erase(value);
+  return sawAddressPath;
+}
+
+bool valueFeedsOnlyComputedMemoryAddress(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> active;
+  return valueFeedsOnlyComputedMemoryAddress(value, active);
+}
+
 bool isDataflowStreamIndex(mlir::Value value) {
   auto stream = value.getDefiningOp<::dataflow::StreamOp>();
   return stream && stream.getIndex() == value;
@@ -408,9 +439,11 @@ bool shouldMaterializeAdapterOp(mlir::Operation *op) {
     return false;
   bool directAddress = valueFeedsOnlyDirectMemoryAddress(op->getResult(0));
   bool shiftedAddress = valueFeedsOnlyShiftedMemoryAddress(op->getResult(0));
-  if (!directAddress && !shiftedAddress)
+  bool computedAddress = valueFeedsOnlyComputedMemoryAddress(op->getResult(0));
+  if (!directAddress && !shiftedAddress && !computedAddress)
     return false;
-  if (shiftedAddress && !directAddress && !op->getOperand(0).getDefiningOp())
+  if ((shiftedAddress || computedAddress) && !directAddress &&
+      !op->getOperand(0).getDefiningOp())
     return false;
   if (isDataflowStreamIndex(op->getOperand(0)))
     return false;
@@ -1799,6 +1832,13 @@ claimResource(SoftwareNode &node,
   return nullptr;
 }
 
+PlacementRecord makePlacementRecord(const SoftwareNode &node,
+                                    const HardwareResource &resource) {
+  return PlacementRecord{node.id, node.operation,
+                         resourceKindName(node.resourceKind).str(),
+                         resource.id, resource.schedule};
+}
+
 bool resourceIsCompatible(const SoftwareNode &node,
                           const HardwareResource &resource) {
   if (resource.kind != node.resourceKind)
@@ -1889,22 +1929,6 @@ void appendResourcePressureDiagnostic(MappingSummary &summary) {
     return;
   }
   summary.diagnostic += " (" + details + ")";
-}
-
-void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
-                                  llvm::ArrayRef<HardwareResource> resources) {
-  std::stable_sort(nodes.begin(), nodes.end(),
-                   [&](const SoftwareNode &lhs, const SoftwareNode &rhs) {
-                     unsigned lhsCount =
-                         compatibleResourceCount(lhs, resources);
-                     unsigned rhsCount =
-                         compatibleResourceCount(rhs, resources);
-                     if (lhsCount != rhsCount)
-                       return lhsCount < rhsCount;
-                     if (lhs.operation != rhs.operation)
-                       return lhs.operation < rhs.operation;
-                     return lhs.id < rhs.id;
-                   });
 }
 
 std::optional<std::string> configFor(const HardwareResource &resource,
@@ -2061,6 +2085,22 @@ void collectValueProducers(
     const llvm::DenseMap<mlir::Operation *, std::string> &nodeIds,
     RouteBuilder &builder) {
   collectValueProducers(graph->getRegion(0).front(), nodeIds, builder);
+}
+
+void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
+                                  llvm::ArrayRef<HardwareResource> resources) {
+  std::stable_sort(nodes.begin(), nodes.end(),
+                   [&](const SoftwareNode &lhs, const SoftwareNode &rhs) {
+                     unsigned lhsCount =
+                         compatibleResourceCount(lhs, resources);
+                     unsigned rhsCount =
+                         compatibleResourceCount(rhs, resources);
+                     if (lhsCount != rhsCount)
+                       return lhsCount < rhsCount;
+                     if (lhs.operation != rhs.operation)
+                       return lhs.operation < rhs.operation;
+                     return lhs.id < rhs.id;
+                   });
 }
 
 std::uint64_t routeSegmentCost(const HardwareRouteSegment &segment) {
@@ -2308,9 +2348,7 @@ bool chooseRouteFeasiblePlacements(
     if (resource.used || !resourceIsCompatible(node, resource))
       continue;
     resource.used = true;
-    placements.push_back(PlacementRecord{
-        node.id, node.operation, resourceKindName(node.resourceKind).str(),
-        resource.id, resource.schedule});
+    placements.push_back(makePlacementRecord(node, resource));
 
     if (partialPlacementRoutes(nodes, graph, placements, topology) &&
         chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
@@ -2339,9 +2377,7 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
       greedyComplete = false;
       break;
     }
-    placements.push_back(PlacementRecord{
-        node.id, node.operation, resourceKindName(node.resourceKind).str(),
-        resource->id, resource->schedule});
+    placements.push_back(makePlacementRecord(node, *resource));
   }
   if (greedyComplete &&
       partialPlacementRoutes(nodes, graph, placements, topology))
@@ -2690,9 +2726,7 @@ loom::pnr::createMapping(const MappingOptions &options) {
         ++summary.unplacedRecords;
         continue;
       }
-      summary.placements.push_back(PlacementRecord{
-          node.id, node.operation, resourceKindName(node.resourceKind).str(),
-          resource->id, resource->schedule});
+      summary.placements.push_back(makePlacementRecord(node, *resource));
     }
     appendResourcePressureRecords(summary, *nodesOrErr,
                                   hardwareModelOrErr->resources);
