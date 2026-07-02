@@ -6,6 +6,10 @@
       "hardware": "shared_vector_alu_adg"
     },
     {
+      "case": "xor_block",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },

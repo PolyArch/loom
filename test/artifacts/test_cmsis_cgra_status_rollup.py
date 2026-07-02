@@ -616,6 +616,7 @@ def assert_loombench_cgra_pass_row(
 def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     legacy_root = out_dir / "legacy-loombench"
     write_legacy_case(legacy_root, "byte_swap")
+    write_legacy_case(legacy_root, "xor_block")
     run(
         repo,
         [
@@ -637,9 +638,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 122,
-            "pass": 20,
+            "pass": 21,
             "fail": 0,
-            "blocked": 102,
+            "blocked": 101,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -648,8 +649,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 1,
-            "pass": 1,
+            "total": 2,
+            "pass": 2,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -658,6 +659,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     )
     seed_rows = (
         ("byte_swap", "shared_vector_alu_adg"),
+        ("xor_block", "shared_vector_alu_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("axpy", "shared_vector_alu_adg"),
         ("dotproduct", "shared_reduction_adg"),
@@ -681,6 +683,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     for case, hardware in seed_rows:
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
     assert_loombench_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "xor_block", expected_hardware="shared_vector_alu_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
