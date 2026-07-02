@@ -30,6 +30,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "spmm",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "spmspv",
       "hardware": "shared_reduction_adg"
     },

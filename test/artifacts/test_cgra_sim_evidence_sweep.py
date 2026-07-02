@@ -82,6 +82,7 @@ DEFAULT_SWEEP_CASES = (
     "matmul",
     "mmtile",
     "mat3x3_mult",
+    "spmm",
     "spmspv",
     "stream_update",
     "lower_bound",
@@ -5517,6 +5518,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "spmv",
                 "--case",
+                "spmm",
+                "--case",
                 "sort_bubble",
                 "--case",
                 "bitrev",
@@ -5733,6 +5736,7 @@ def main(argv: list[str]) -> int:
             "dotprod",
             "dot_product_3d",
             "spmv",
+            "spmm",
             "sort_bubble",
             "bitrev",
             "bitrev_complex",
@@ -5875,6 +5879,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "distance_point", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "line_intersect", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "database_join", 3)
+        assert_dfg_dynamic_work_items(evidence_dir, "spmm", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "depthwise_conv", 432)
         assert_dfg_dynamic_work_items(evidence_dir, "edit_distance_step", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "normalize", 23)
@@ -5895,6 +5900,7 @@ def main(argv: list[str]) -> int:
         assert_cross_product_evidence(evidence_dir)
         assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
+        run(repo, ["python3", "test/artifacts/assert_spmm_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_batchnorm_cgra_evidence.py", str(evidence_dir)])
         assert_mat3x3_mult_evidence(evidence_dir)
         assert_sigmoid_evidence(evidence_dir)
@@ -6193,6 +6199,7 @@ def main(argv: list[str]) -> int:
         )
         assert_mapping_hardware(evidence_dir, "find_first_set", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "spmm", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmspv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "stream_update", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
@@ -6528,6 +6535,7 @@ def main(argv: list[str]) -> int:
             "dotprod",
             "dot_product_3d",
             "spmv",
+            "spmm",
             "sort_bubble",
             "bitrev",
             "bitrev_complex",
@@ -6635,6 +6643,9 @@ def main(argv: list[str]) -> int:
         spmv_row = one_row(rows, "spmv")
         if spmv_row["hardware_system"] != "shared_reduction_adg":
             raise AssertionError(f"spmv should use shared reduction hardware: {spmv_row}")
+        spmm_row = one_row(rows, "spmm")
+        if spmm_row["hardware_system"] != "shared_memory_reduction_adg":
+            raise AssertionError(f"spmm should use shared memory-reduction hardware: {spmm_row}")
         axpy_row = one_row(rows, "axpy")
         if axpy_row["hardware_system"] != "shared_vector_alu_adg":
             raise AssertionError(f"axpy should use shared vector hardware: {axpy_row}")
@@ -6758,8 +6769,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 121,
-            "pass": 113,
+            "total": 122,
+            "pass": 114,
             "fail": 0,
             "blocked": 0,
             "unsupported": 8,

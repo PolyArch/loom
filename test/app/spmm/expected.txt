@@ -1,0 +1,2 @@
+spmm checksum: 270
+PASSED

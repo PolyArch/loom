@@ -97,6 +97,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "sbox_lookup",
     "sigmoid",
     "softmax",
+    "spmm",
     "window_blackman",
     "window_hamming",
     "window_hanning",

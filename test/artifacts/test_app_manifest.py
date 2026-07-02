@@ -104,6 +104,7 @@ EXPECTED_CASES = {
     "sbox_lookup",
     "sigmoid",
     "softmax",
+    "spmm",
     "spmv",
     "spmspm",
     "spmspv",

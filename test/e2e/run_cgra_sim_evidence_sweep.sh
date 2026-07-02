@@ -123,6 +123,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     matmul
     mmtile
     mat3x3_mult
+    spmm
     spmspv
     stream_update
     lower_bound
