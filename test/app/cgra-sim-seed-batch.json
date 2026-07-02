@@ -78,6 +78,22 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "compact",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "compact_predicate",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "gather",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "scatter_add",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
