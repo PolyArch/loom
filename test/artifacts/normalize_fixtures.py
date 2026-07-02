@@ -43,6 +43,14 @@ class NormalizeFixture:
             f"{self.scale_graph}:arg3": output_tokens,
         }
 
+    @property
+    def aggregate_fire_counts(self) -> dict[str, int]:
+        merged: dict[str, int] = {}
+        for counts in self.expected_fire_counts.values():
+            for name, value in counts.items():
+                merged[name] = merged.get(name, 0) + value
+        return dict(sorted(merged.items()))
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
@@ -117,19 +125,26 @@ def fixture_from_source(source: Path | None = None) -> NormalizeFixture:
         expected_fire_counts={
             "sum": {
                 "arith.addf": size,
-                "arith.index_cast": size,
+                "arith.index_cast": size + 1,
+                "dataflow.carry": size + 1,
                 "dataflow.load": size,
+                "dataflow.stream": size + 1,
+                "dataflow.sync": size,
             },
             "max": {
                 "arith.cmpf": size - 1,
-                "arith.index_cast": size - 1,
+                "arith.index_cast": size,
                 "arith.select": size - 1,
+                "dataflow.carry": size,
                 "dataflow.load": size - 1,
+                "dataflow.stream": size,
+                "dataflow.sync": size - 1,
             },
             "scale": {
                 "arith.mulf": size,
                 "dataflow.load": size,
                 "dataflow.store": size,
+                "dataflow.sync": size,
             },
         },
     )
@@ -154,6 +169,7 @@ def emit_json(fixture: NormalizeFixture) -> None:
                 "max_value": fixture.max_value,
                 "scale_value": fixture.scale_value,
                 "expected_fire_counts": fixture.expected_fire_counts,
+                "aggregate_fire_counts": fixture.aggregate_fire_counts,
             },
             sort_keys=True,
         )

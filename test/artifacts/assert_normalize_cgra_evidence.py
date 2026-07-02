@@ -147,18 +147,7 @@ def main(argv: list[str]) -> int:
         and dfg.get("graph") == "workload_graph_set"
         and dfg.get("component_graphs") == list(fixture.graphs)
         and dfg.get("dynamic_work_items") == fixture.size * 2 + fixture.size - 1
-        and dfg.get("operation_fire_counts") == {
-            "arith.addf": fixture.size,
-            "arith.cmpf": fixture.size - 1,
-            "arith.index_cast": fixture.size * 2 + 1,
-            "arith.mulf": fixture.size,
-            "arith.select": fixture.size - 1,
-            "dataflow.carry": fixture.size * 2 + 1,
-            "dataflow.load": fixture.size * 2 + fixture.size - 1,
-            "dataflow.store": fixture.size,
-            "dataflow.stream": fixture.size * 2 + 1,
-            "dataflow.sync": fixture.size * 2 + fixture.size - 1,
-        },
+        and dfg.get("operation_fire_counts") == fixture.aggregate_fire_counts,
         f"normalize DFG aggregate should carry source-derived component evidence: {dfg}",
     )
     require_outputs(dfg.get("final_outputs"), fixture, "DFG")
