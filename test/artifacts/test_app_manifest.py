@@ -79,6 +79,7 @@ EXPECTED_CASES = {
     "moving_avg",
     "modexp",
     "modmul",
+    "normalize",
     "normalize_vec3",
     "newton_iter",
     "outer",

@@ -167,6 +167,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     line_intersect
     depthwise_conv
     edit_distance_step
+    normalize
     normalize_vec3
     transpose
     transform_point

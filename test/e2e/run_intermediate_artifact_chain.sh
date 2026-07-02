@@ -282,6 +282,9 @@ case "${CASE}" in
   edit_distance_step)
     case_graph="g_t_edit_distance_step_kernel_0_0"
     ;;
+  normalize)
+    case_graph="g_t_normalize_sum_kernel_red_0_0"
+    ;;
   normalize_vec3)
     case_graph="g_normalize_vec3_kernel_0"
     ;;
@@ -494,7 +497,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "line_intersect" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "line_intersect" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "upsample_linear" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -854,7 +857,178 @@ else
   echo "[${CASE}] missing dfg_check.sh" >&2
   exit 1
 fi
-if [[ "${CASE}" == "sigmoid" ]]; then
+if [[ "${CASE}" == "normalize" ]]; then
+  mapfile -t normalize_fixture < <(
+    python3 "${ROOT}/test/artifacts/normalize_fixtures.py" \
+      --source "${ROOT}/test/app/normalize/main_func.cpp" \
+      --emit dfg-args
+  )
+  normalize_size="${normalize_fixture[0]}"
+  normalize_input_values="${normalize_fixture[1]}"
+  normalize_zero_values="${normalize_fixture[2]}"
+  normalize_first_value="${normalize_input_values%%,*}"
+
+  dfg_sum_report="${OUT_DIR}/normalize-dfg-sim-sum.report.json"
+  dfg_max_report="${OUT_DIR}/normalize-dfg-sim-max.report.json"
+  dfg_scale_report="${OUT_DIR}/normalize-dfg-sim-scale.report.json"
+  mapping_sum_artifact="${OUT_DIR}/pnr-mapping-sum.json"
+  mapping_max_artifact="${OUT_DIR}/pnr-mapping-max.json"
+  mapping_scale_artifact="${OUT_DIR}/pnr-mapping-scale.json"
+  mapping_sum_summary="${OUT_DIR}/pnr-mapping-sum-summary.csv"
+  mapping_max_summary="${OUT_DIR}/pnr-mapping-max-summary.csv"
+  mapping_scale_summary="${OUT_DIR}/pnr-mapping-scale-summary.csv"
+  cgra_sum_report="${OUT_DIR}/normalize-cgra-sim-sum-report.json"
+  cgra_max_report="${OUT_DIR}/normalize-cgra-sim-max-report.json"
+  cgra_scale_report="${OUT_DIR}/normalize-cgra-sim-scale-report.json"
+
+  normalize_sum_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_normalize_sum_kernel_red_0_0"
+    --workload "${CASE}"
+  )
+  for ((index = 0; index < normalize_size; index++)); do
+    normalize_sum_args+=(--arg 0=none)
+  done
+  normalize_sum_args+=(
+    --arg 1=0
+    --arg "2=${normalize_size}"
+    --arg 3=1
+    --memref "4=${normalize_input_values}"
+    --arg 5=0.000000000e+00
+    --output "${dfg_sum_report}"
+  )
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${normalize_sum_args[@]}"
+  normalize_sum="$(
+    python3 - "${dfg_sum_report}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+values = [
+    value.split(":", 1)[1]
+    for value in report.get("final_outputs", [])
+    if isinstance(value, str) and value.startswith("f32:")
+]
+if not values:
+    raise SystemExit("normalize sum graph did not emit an f32 sum")
+print(values[-1])
+PY
+  )"
+  normalize_scale="$(
+    python3 - "${normalize_sum}" <<'PY'
+import sys
+
+total = float(sys.argv[1])
+scale = 1.0 / total if total > 0.0 else 1.0
+print(f"{scale:.9e}")
+PY
+  )"
+
+  normalize_max_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_normalize_max_kernel_red_0_0"
+    --workload "${CASE}"
+  )
+  for ((index = 1; index < normalize_size; index++)); do
+    normalize_max_args+=(--arg 0=none)
+  done
+  normalize_max_args+=(
+    --arg 1=1
+    --arg "2=${normalize_size}"
+    --arg 3=1
+    --memref "4=${normalize_input_values}"
+    --arg "5=${normalize_first_value}"
+    --output "${dfg_max_report}"
+  )
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${normalize_max_args[@]}"
+
+  normalize_scale_args=(
+    "${case_dfg_dir}/main_func.dfg.mlir"
+    --graph "g_t_normalize_scale_kernel_0_0"
+    --workload "${CASE}"
+    --memref "1=${normalize_input_values}"
+    --memref "3=${normalize_zero_values}"
+  )
+  for ((index = 0; index < normalize_size; index++)); do
+    normalize_scale_args+=(
+      --arg 0=none
+      --arg "2=${normalize_scale}"
+      --arg "4=${index}"
+    )
+  done
+  normalize_scale_args+=(--output "${dfg_scale_report}")
+  ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${normalize_scale_args[@]}"
+
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    --dfg-report "${dfg_sum_report}" \
+    --dfg-report "${dfg_max_report}" \
+    --dfg-report "${dfg_scale_report}" \
+    --output "${dfg_cycle}"
+
+  normalize_graphs=(
+    "g_t_normalize_sum_kernel_red_0_0"
+    "g_t_normalize_max_kernel_red_0_0"
+    "g_t_normalize_scale_kernel_0_0"
+  )
+  normalize_dfg_reports=(
+    "${dfg_sum_report}"
+    "${dfg_max_report}"
+    "${dfg_scale_report}"
+  )
+  normalize_mapping_artifacts=(
+    "${mapping_sum_artifact}"
+    "${mapping_max_artifact}"
+    "${mapping_scale_artifact}"
+  )
+  normalize_mapping_summaries=(
+    "${mapping_sum_summary}"
+    "${mapping_max_summary}"
+    "${mapping_scale_summary}"
+  )
+  normalize_cgra_reports=(
+    "${cgra_sum_report}"
+    "${cgra_max_report}"
+    "${cgra_scale_report}"
+  )
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  for index in "${!normalize_graphs[@]}"; do
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${normalize_graphs[${index}]}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${normalize_mapping_artifacts[${index}]}" \
+      --output "${normalize_mapping_summaries[${index}]}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${normalize_dfg_reports[${index}]}" \
+      --mapping-artifact "${normalize_mapping_artifacts[${index}]}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${normalize_cgra_reports[${index}]}"
+    dfg_component_args+=(--dfg-report "${normalize_dfg_reports[${index}]}")
+    mapping_component_args+=(--mapping-artifact "${normalize_mapping_artifacts[${index}]}")
+    cgra_component_args+=(--cgra-report "${normalize_cgra_reports[${index}]}")
+    component_artifacts+=(
+      "${normalize_dfg_reports[${index}]}"
+      "${normalize_mapping_artifacts[${index}]}"
+      "${normalize_cgra_reports[${index}]}"
+    )
+  done
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+elif [[ "${CASE}" == "sigmoid" ]]; then
   sigmoid_input_values="$(
     python3 - <<'PY'
 print(",".join(f"{(float(index) / 1024.0 - 0.5) * 10.0:.9e}" for index in range(1024)))
