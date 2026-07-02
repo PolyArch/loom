@@ -94,6 +94,22 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "cdma",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "bitonic_stage",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "bitonic_stage-modified",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "bitonic_stage-tweak",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
