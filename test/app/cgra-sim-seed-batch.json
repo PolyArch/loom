@@ -62,6 +62,22 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "moving_avg",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "pool_avg",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "pool_max",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "upsample_linear",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },

@@ -630,6 +630,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "quat_mult")
     write_legacy_case(legacy_root, "hist_bin")
     write_legacy_case(legacy_root, "batchnorm")
+    write_legacy_case(legacy_root, "moving_avg")
+    write_legacy_case(legacy_root, "pool_avg")
+    write_legacy_case(legacy_root, "pool_max")
+    write_legacy_case(legacy_root, "upsample_linear")
     run(
         repo,
         [
@@ -651,9 +655,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 122,
-            "pass": 34,
+            "pass": 38,
             "fail": 0,
-            "blocked": 88,
+            "blocked": 84,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -662,8 +666,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 15,
-            "pass": 15,
+            "total": 19,
+            "pass": 19,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -686,6 +690,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("quat_mult", "shared_vector_math_adg"),
         ("hist_bin", "shared_signal_window_adg"),
         ("batchnorm", "shared_signal_window_adg"),
+        ("moving_avg", "shared_signal_window_adg"),
+        ("pool_avg", "shared_signal_window_adg"),
+        ("pool_max", "shared_signal_window_adg"),
+        ("upsample_linear", "shared_signal_window_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("axpy", "shared_vector_alu_adg"),
         ("dotproduct", "shared_reduction_adg"),
@@ -723,6 +731,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "quat_mult", expected_hardware="shared_vector_math_adg")
     assert_loombench_cgra_pass_row(repo, rows, "hist_bin", expected_hardware="shared_signal_window_adg")
     assert_loombench_cgra_pass_row(repo, rows, "batchnorm", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "moving_avg", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "pool_avg", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "pool_max", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "upsample_linear", expected_hardware="shared_signal_window_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -748,6 +760,10 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_cross_product_evidence(evidence_dir)
     cgra_sweep.assert_quat_mult_evidence(evidence_dir)
     cgra_sweep.assert_hist_bin_evidence(evidence_dir)
+    cgra_sweep.assert_moving_avg_evidence(evidence_dir)
+    cgra_sweep.assert_pool_avg_evidence(evidence_dir)
+    cgra_sweep.assert_pool_max_evidence(evidence_dir)
+    cgra_sweep.assert_upsample_linear_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],
