@@ -617,6 +617,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     legacy_root = out_dir / "legacy-loombench"
     write_legacy_case(legacy_root, "byte_swap")
     write_legacy_case(legacy_root, "xor_block")
+    write_legacy_case(legacy_root, "vecmul")
+    write_legacy_case(legacy_root, "vecscale")
     run(
         repo,
         [
@@ -638,9 +640,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 122,
-            "pass": 21,
+            "pass": 23,
             "fail": 0,
-            "blocked": 101,
+            "blocked": 99,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -649,8 +651,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 2,
-            "pass": 2,
+            "total": 4,
+            "pass": 4,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -660,6 +662,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     seed_rows = (
         ("byte_swap", "shared_vector_alu_adg"),
         ("xor_block", "shared_vector_alu_adg"),
+        ("vecmul", "shared_vector_alu_adg"),
+        ("vecscale", "shared_vector_alu_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("axpy", "shared_vector_alu_adg"),
         ("dotproduct", "shared_reduction_adg"),
@@ -684,6 +688,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         assert_app_cgra_pass_row(repo, rows, case, expected_hardware=hardware)
     assert_loombench_cgra_pass_row(repo, rows, "byte_swap", expected_hardware="shared_vector_alu_adg")
     assert_loombench_cgra_pass_row(repo, rows, "xor_block", expected_hardware="shared_vector_alu_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "vecmul", expected_hardware="shared_vector_alu_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "vecscale", expected_hardware="shared_vector_alu_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -703,6 +709,8 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_transpose_evidence(evidence_dir)
     cgra_sweep.assert_binary_search_evidence(evidence_dir)
     cgra_sweep.assert_popcount_evidence(evidence_dir)
+    cgra_sweep.assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
+    cgra_sweep.assert_mapping_uses_switch_multihop(evidence_dir, "vecscale")
     cgra_sweep.assert_bound_search_evidence(
         evidence_dir,
         "lower_bound",

@@ -10,6 +10,14 @@
       "hardware": "shared_vector_alu_adg"
     },
     {
+      "case": "vecmul",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
+      "case": "vecscale",
+      "hardware": "shared_vector_alu_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
