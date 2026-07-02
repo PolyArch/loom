@@ -626,6 +626,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "partition")
     write_legacy_case(legacy_root, "prefix_sum_exclusive")
     write_legacy_case(legacy_root, "database_join")
+    write_legacy_case(legacy_root, "cross_product")
+    write_legacy_case(legacy_root, "quat_mult")
+    write_legacy_case(legacy_root, "hist_bin")
+    write_legacy_case(legacy_root, "batchnorm")
     run(
         repo,
         [
@@ -647,9 +651,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 122,
-            "pass": 30,
+            "pass": 34,
             "fail": 0,
-            "blocked": 92,
+            "blocked": 88,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -658,8 +662,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 11,
-            "pass": 11,
+            "total": 15,
+            "pass": 15,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -678,6 +682,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("partition", "shared_reduction_adg"),
         ("prefix_sum_exclusive", "shared_reduction_adg"),
         ("database_join", "shared_memory_reduction_adg"),
+        ("cross_product", "shared_vector_math_adg"),
+        ("quat_mult", "shared_vector_math_adg"),
+        ("hist_bin", "shared_signal_window_adg"),
+        ("batchnorm", "shared_signal_window_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("axpy", "shared_vector_alu_adg"),
         ("dotproduct", "shared_reduction_adg"),
@@ -711,6 +719,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "partition", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "prefix_sum_exclusive", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "database_join", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "cross_product", expected_hardware="shared_vector_math_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "quat_mult", expected_hardware="shared_vector_math_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "hist_bin", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "batchnorm", expected_hardware="shared_signal_window_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -733,9 +745,16 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_pack_bits_evidence(evidence_dir)
     cgra_sweep.assert_partition_evidence(evidence_dir)
     cgra_sweep.assert_prefix_sum_exclusive_evidence(evidence_dir)
+    cgra_sweep.assert_cross_product_evidence(evidence_dir)
+    cgra_sweep.assert_quat_mult_evidence(evidence_dir)
+    cgra_sweep.assert_hist_bin_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],
+    )
+    run(
+        Path(__file__).resolve().parents[2],
+        ["python3", "test/artifacts/assert_batchnorm_cgra_evidence.py", str(evidence_dir)],
     )
     cgra_sweep.assert_mapping_uses_switch_multihop(evidence_dir, "vecmul")
     cgra_sweep.assert_mapping_uses_switch_multihop(evidence_dir, "vecscale")

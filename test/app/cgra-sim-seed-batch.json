@@ -46,6 +46,22 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "cross_product",
+      "hardware": "shared_vector_math_adg"
+    },
+    {
+      "case": "quat_mult",
+      "hardware": "shared_vector_math_adg"
+    },
+    {
+      "case": "hist_bin",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "batchnorm",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
