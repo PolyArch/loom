@@ -388,6 +388,35 @@ PeSpec makeMinimalAddPe(Schedule schedule, std::string boundaryType,
                           std::move(fuType), std::move(temporal));
 }
 
+struct VisualPoint {
+  llvm::StringRef node;
+  int x;
+  int y;
+};
+
+std::string visualLayoutAttr(llvm::ArrayRef<VisualPoint> points) {
+  std::string text = "[";
+  for (const VisualPoint &point : points) {
+    if (text.size() > 1)
+      text += ", ";
+    text += "{node = \"";
+    text += point.node.str();
+    text += "\", x = ";
+    text += std::to_string(point.x);
+    text += " : i32, y = ";
+    text += std::to_string(point.y);
+    text += " : i32}";
+  }
+  text += "]";
+  return text;
+}
+
+void addVisualLayout(ModuleBuilder &module,
+                     llvm::ArrayRef<VisualPoint> points) {
+  module.addAttribute("coordinates_semantic", "false");
+  module.addAttribute("visual_layout", visualLayoutAttr(points));
+}
+
 } // namespace
 
 ModuleBuilder::ModuleBuilder(std::string name) : name(std::move(name)) {}
@@ -410,6 +439,12 @@ ModuleBuilder &ModuleBuilder::addSwitch(SwitchSpec sw) {
 
 ModuleBuilder &ModuleBuilder::addMem(MemSpec mem) {
   mems.push_back(std::move(mem));
+  return *this;
+}
+
+ModuleBuilder &ModuleBuilder::addAttribute(std::string attrName,
+                                           std::string value) {
+  attributes.push_back(Attribute{std::move(attrName), std::move(value)});
   return *this;
 }
 
@@ -522,6 +557,16 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
                                      input.name.c_str());
     inputTypes[input.name] = input.type;
   }
+  llvm::StringSet<> seenAttributes;
+  for (const Attribute &attribute : attributes) {
+    if (attribute.name.empty() || attribute.value.empty())
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "ADG module attribute is incomplete");
+    if (!seenAttributes.insert(attribute.name).second)
+      return llvm::createStringError(std::errc::invalid_argument,
+                                     "duplicate ADG module attribute %s",
+                                     attribute.name.c_str());
+  }
 
   os << "fabric.module @" << name << '(';
   for (std::size_t i = 0; i < inputs.size(); ++i) {
@@ -529,7 +574,17 @@ llvm::Error ModuleBuilder::print(llvm::raw_ostream &os) const {
       os << ",\n                                    ";
     os << valueName(inputs[i].name) << " : " << inputs[i].type;
   }
-  os << ") {\n";
+  os << ')';
+  if (!attributes.empty()) {
+    os << " attributes {";
+    for (std::size_t i = 0; i < attributes.size(); ++i) {
+      if (i)
+        os << ", ";
+      os << attributes[i].name << " = " << attributes[i].value;
+    }
+    os << '}';
+  }
+  os << " {\n";
   for (const PeSpec &pe : pes)
     if (!pe.resultNames.empty() &&
         pe.resultNames.size() != pe.resultTypes.size())
@@ -783,9 +838,12 @@ void connectAxiMemoryPort(SystemBuilder &system, llvm::StringRef managerNode,
                  managerPort.str(), "r");
 }
 
-ModuleBuilder makeTopologyMatrixModule(llvm::StringRef name,
-                                       bool includeTemporal = false) {
+ModuleBuilder makeTopologyMatrixModule(
+    llvm::StringRef name, bool includeTemporal = false,
+    llvm::ArrayRef<VisualPoint> visualPoints = {}) {
   ModuleBuilder module(name.str());
+  if (!visualPoints.empty())
+    addVisualLayout(module, visualPoints);
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
       .addInput("a", "!fabric.bits<32>")
       .addInput("b", "!fabric.bits<32>")
@@ -1379,7 +1437,13 @@ void addMemoryReductionMem(ModuleBuilder &module, unsigned loadCount,
 }
 
 ModuleBuilder buildChain1DAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_chain1d_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_chain1d_adg", false,
+                               {{"mem", 0, 0},
+                                {"p0", 1, 0},
+                                {"s0", 2, 0},
+                                {"p1", 3, 0},
+                                {"p2", 4, 0}});
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "p0", "data", "a");
   addSpatialSwitch(module, {"s0"}, {"p0", "b"}, {"11"});
@@ -1389,7 +1453,13 @@ ModuleBuilder buildChain1DAdg() {
 }
 
 ModuleBuilder buildMesh2DAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_mesh2d_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_mesh2d_adg", false,
+                               {{"mem", 0, 0},
+                                {"n00", 1, 0},
+                                {"n01", 2, 0},
+                                {"n10", 1, 1},
+                                {"n11", 2, 1}});
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "n00", "data", "a");
   addSpatialAddPe(module, "n01", "data", "b");
@@ -1400,7 +1470,15 @@ ModuleBuilder buildMesh2DAdg() {
 }
 
 ModuleBuilder buildTorusEdgeAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_torus_edge_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_torus_edge_adg", false,
+                               {{"mem", 0, 0},
+                                {"n00", 1, 0},
+                                {"n01", 2, 0},
+                                {"n10", 1, 1},
+                                {"n11", 2, 1},
+                                {"wrap_north", 1, -1},
+                                {"wrap_west", 0, 1}});
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "n00", "data", "a");
   addSpatialAddPe(module, "n01", "data", "b");
@@ -1414,7 +1492,13 @@ ModuleBuilder buildTorusEdgeAdg() {
 }
 
 ModuleBuilder buildSystolicArrayAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_systolic_array_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_systolic_array_adg", false,
+                               {{"mem", 0, 0},
+                                {"broadcast", 1, 0},
+                                {"cell0", 2, 0},
+                                {"cell1", 3, 0},
+                                {"cell2", 4, 0}});
   addSpatialMemLoad(module);
   addSpatialSwitch(module, {"broadcast"}, {"data", "a", "b"}, {"111"});
   addSpatialAddPe(module, "cell0", "broadcast", "c", "arith.mulf");
@@ -1424,7 +1508,16 @@ ModuleBuilder buildSystolicArrayAdg() {
 }
 
 ModuleBuilder buildClusteredArrayAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_clustered_array_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_clustered_array_adg", false,
+                               {{"mem", 0, 0},
+                                {"c0a", 1, 0},
+                                {"c0b", 1, 1},
+                                {"cluster0", 2, 0},
+                                {"c1a", 3, 0},
+                                {"c1b", 3, 1},
+                                {"cluster1", 4, 0},
+                                {"out", 5, 0}});
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "c0a", "data", "a");
   addSpatialAddPe(module, "c0b", "data", "b");
@@ -1437,7 +1530,14 @@ ModuleBuilder buildClusteredArrayAdg() {
 }
 
 ModuleBuilder buildFoldedRingAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_folded_ring_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_folded_ring_adg", false,
+                               {{"mem", 0, 0},
+                                {"n0", 1, 0},
+                                {"n1", 2, 0},
+                                {"n2", 2, 1},
+                                {"n3", 1, 1},
+                                {"wrap", 0, 1}});
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "n0", "data", "a");
   addSpatialAddPe(module, "n1", "n0", "b");
@@ -1449,7 +1549,14 @@ ModuleBuilder buildFoldedRingAdg() {
 }
 
 ModuleBuilder buildMeshDiagonalAdg() {
-  ModuleBuilder module = makeTopologyMatrixModule("matrix_mesh_diagonal_adg");
+  ModuleBuilder module =
+      makeTopologyMatrixModule("matrix_mesh_diagonal_adg", false,
+                               {{"mem", 0, 0},
+                                {"n00", 1, 0},
+                                {"n01", 2, 0},
+                                {"n10", 1, 1},
+                                {"n11", 2, 1},
+                                {"diag", 2, 2}});
   addSpatialMemLoad(module);
   addSpatialAddPe(module, "n00", "data", "a");
   addSpatialAddPe(module, "n01", "data", "b");
@@ -1462,7 +1569,16 @@ ModuleBuilder buildMeshDiagonalAdg() {
 
 ModuleBuilder buildMultiLanePipelineAdg() {
   ModuleBuilder module =
-      makeTopologyMatrixModule("matrix_multi_lane_pipeline_adg");
+      makeTopologyMatrixModule("matrix_multi_lane_pipeline_adg", false,
+                               {{"mem", 0, 0},
+                                {"lane0_in", 1, 0},
+                                {"lane1_in", 1, 1},
+                                {"lane0_stage0", 2, 0},
+                                {"lane1_stage0", 2, 1},
+                                {"lane0_stage1", 3, 0},
+                                {"lane1_stage1", 3, 1},
+                                {"merged", 4, 0},
+                                {"out", 5, 0}});
   addSpatialMemLoad(module);
   addSpatialSwitch(module, {"lane0_in", "lane1_in"}, {"data", "a", "b"},
                    {"110", "101"});
@@ -1695,6 +1811,7 @@ llvm::Error printReusableSpatialTemplates(llvm::raw_ostream &os,
 
 ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
   ModuleBuilder module("minimal_spatial_adg");
+  addVisualLayout(module, {{"mem", 0, 0}, {"pe", 1, 0}, {"switch", 2, 0}});
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
       .addInput("lhs", "!fabric.bits<32>")
       .addInput("rhs", "!fabric.bits<32>")
@@ -1715,6 +1832,7 @@ ModuleBuilder loom::adg::buildMinimalSpatialAdg() {
 
 ModuleBuilder loom::adg::buildMinimalTemporalAdg() {
   ModuleBuilder module("minimal_temporal_adg");
+  addVisualLayout(module, {{"mem", 0, 0}, {"pe", 1, 0}, {"switch", 2, 0}});
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
       .addInput("lhs", "!fabric.bits_tag<32, 4>")
       .addInput("rhs", "!fabric.bits_tag<32, 4>")
@@ -4567,6 +4685,14 @@ ModuleBuilder loom::adg::buildSharedVectorMathAdg() {
 
 ModuleBuilder loom::adg::buildSharedVectorMeshAdg() {
   ModuleBuilder module("shared_vector_mesh_adg");
+  addVisualLayout(module, {{"mem", 0, 1},
+                           {"west0", 1, 0},
+                           {"west1", 1, 1},
+                           {"west_unary", 1, 2},
+                           {"xored", 2, 0},
+                           {"swapped", 2, 2},
+                           {"store_value", 3, 1},
+                           {"sync", 2, 3}});
   module.addInput("mgr", "memref<?x!fabric.bits<32>>")
       .addInput("idx0", "!fabric.bits<32>")
       .addInput("idx1", "!fabric.bits<32>")

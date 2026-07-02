@@ -2,7 +2,7 @@ fabric.module @minimal_temporal_adg(%mgr : memref<?x!fabric.bits<32>>,
                                     %lhs : !fabric.bits_tag<32, 4>,
                                     %rhs : !fabric.bits_tag<32, 4>,
                                     %addr : !fabric.bits_tag<32, 4>,
-                                    %ctrl : !fabric.bits_tag<0, 4>) {
+                                    %ctrl : !fabric.bits_tag<0, 4>) attributes {coordinates_semantic = false, visual_layout = [{node = "mem", x = 0 : i32, y = 0 : i32}, {node = "pe", x = 1 : i32, y = 0 : i32}, {node = "switch", x = 2 : i32, y = 0 : i32}]} {
   fabric.pe [temporal] (%pa = %lhs : !fabric.bits_tag<32, 4>,
                     %pb = %rhs : !fabric.bits_tag<32, 4>) -> !fabric.bits_tag<32, 4> attributes {
          tag_width = 4 : i32,

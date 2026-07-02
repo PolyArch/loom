@@ -98,6 +98,7 @@ public:
   ModuleBuilder &addPe(PeSpec pe);
   ModuleBuilder &addSwitch(SwitchSpec sw);
   ModuleBuilder &addMem(MemSpec mem);
+  ModuleBuilder &addAttribute(std::string name, std::string value);
   ModuleBuilder &addExactBodyLine(std::string line);
 
   llvm::Error print(llvm::raw_ostream &os) const;
@@ -108,8 +109,14 @@ private:
     std::string type;
   };
 
+  struct Attribute {
+    std::string name;
+    std::string value;
+  };
+
   std::string name;
   std::vector<Input> inputs;
+  std::vector<Attribute> attributes;
   std::vector<PeSpec> pes;
   std::vector<SwitchSpec> switches;
   std::vector<MemSpec> mems;

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import csv
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -191,6 +192,11 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
             raise AssertionError(f"{candidate_id} must not make visual coordinates semantic")
         if candidate.get("visual_metadata_role") not in {"metadata_only", "absent"}:
             raise AssertionError(f"{candidate_id} has invalid visual metadata role")
+        if root_kind == "fabric.module" and layout_class == "regular":
+            if candidate.get("visual_metadata_role") != "metadata_only":
+                raise AssertionError(
+                    f"{candidate_id} should carry non-semantic visual metadata"
+                )
         connectivity = candidate.get("semantic_connectivity_source")
         if root_kind == "fabric.module" and connectivity != "graph_region_ssa":
             raise AssertionError(f"{candidate_id} module connectivity should be graph_region_ssa")
@@ -233,6 +239,20 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
             for record in consumers
         ):
             raise AssertionError(f"{candidate_id} lacks fabric verifier consumer evidence")
+        if root_kind == "fabric.module" and layout_class == "regular":
+            visualization_records = [
+                record
+                for record in consumers
+                if isinstance(record, dict)
+                and record.get("consumer") == "mapping_visualization"
+            ]
+            if not visualization_records:
+                raise AssertionError(f"{candidate_id} lacks visualization consumer evidence")
+            if any(record.get("status") != "pass" for record in visualization_records):
+                raise AssertionError(
+                    f"{candidate_id} visualization metadata should be consumable: "
+                    f"{visualization_records}"
+                )
 
     if "fabric.module" not in root_kinds or "fabric.system" not in root_kinds:
         raise AssertionError(f"inventory should include module and system roots: {root_kinds}")
@@ -348,10 +368,64 @@ def assert_summary_fails(
         raise AssertionError(f"expected {expected!r} in projection diagnostics:\n{combined}")
 
 
+def load_inventory_producer(repo: Path):
+    module_path = repo / "test" / "fabric" / "adg_inventory.py"
+    spec = importlib.util.spec_from_file_location("loom_adg_inventory_producer", module_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load ADG inventory producer: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def assert_malformed_visual_metadata_is_not_safe(repo: Path, out_dir: Path) -> None:
+    source_path = out_dir / "malformed-visual.mlir"
+    source_path.write_text(
+        """fabric.module @matrix_mesh2d_adg(%a : !fabric.bits<32>, %b : !fabric.bits<32>) attributes {coordinates_semantic = true, visual_layout = [{node = \"p0\", x = 0 : i32, y = 0 : i32}]} {
+  fabric.pe [spatial] (%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>) -> !fabric.bits<32> {
+    fabric.fu(%fa = %pa : !fabric.bits<32>, %fb = %pb : !fabric.bits<32>) -> !fabric.bits<32> {
+      %sum = fabric.op [@arith.addi] (%fa, %fb) : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+      fabric.yield %sum : !fabric.bits<32>
+    }
+  }
+  fabric.yield
+}
+""",
+        encoding="utf-8",
+    )
+    producer = load_inventory_producer(repo)
+    diagnostics: list[str] = []
+    candidates = producer.inventory_for_inputs(
+        [("adg-builder::topology-mesh-2d", source_path)],
+        diagnostics,
+        out_dir,
+    )
+    if diagnostics:
+        raise AssertionError(f"malformed visual probe should verify cleanly: {diagnostics}")
+    if len(candidates) != 1:
+        raise AssertionError(f"expected one malformed visual candidate: {candidates}")
+    candidate = candidates[0]
+    if candidate.get("coordinates_semantic") is not True:
+        raise AssertionError(
+            f"producer must preserve semantic-coordinate evidence: {candidate}"
+        )
+    if any(
+        isinstance(record, dict)
+        and record.get("consumer") == "mapping_visualization"
+        and record.get("status") == "pass"
+        for record in candidate.get("downstream_consumers", [])
+    ):
+        raise AssertionError(
+            f"semantic coordinates must not be visualization-pass evidence: {candidate}"
+        )
+
+
 def main() -> int:
     repo = Path(sys.argv[1]).resolve()
     with artifact_test_common.repo_temp_dir(repo, "loom-adg-inventory-") as tmp:
         out_dir = Path(tmp)
+        assert_malformed_visual_metadata_is_not_safe(repo, out_dir)
+
         inventory_path = out_dir / "adg-inventory.json"
         mlir_dir = out_dir / "adg-inventory-mlir"
         artifact_test_common.require_success(

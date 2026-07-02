@@ -211,6 +211,36 @@ that emits or consumes these attributes must preserve them in the
 artifact configuration provenance. The attributes round-trip through the
 standard `attributes { ... }` keyword block.
 
+## Optional visualization metadata
+
+`fabric.module` may carry optional visualization metadata in the same
+attribute dictionary. Regular topology helpers may emit attributes such
+as `visual_layout` and `coordinates_semantic = false` so GUI and report
+tools can draw arrays, meshes, rings, or pipelines in an expected
+shape. These attributes are metadata only. They must not define
+connectivity, placement legality, routing cost, simulation behavior, RTL
+lowering, or hardware cost. A tool that does not render visualization
+must be able to ignore them without changing any hardware or mapping
+result. The ADG inventory records this with `visual_metadata_role =
+metadata_only` and `coordinates_semantic = false`; see
+`docs/spec-intermediate-artifacts.md` and
+`docs/spec-mapping-visualization.md`.
+
+The minimal module-local `visual_layout` form is an array of records:
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `node` | yes | Human-readable visual subject label. |
+| `x` | yes | Display x coordinate, integer. |
+| `y` | yes | Display y coordinate, integer. |
+
+The `node` labels are visualization subjects only; they do not create
+SSA values, ports, edges, or route endpoints. Duplicate labels or
+coordinates may be rejected by visualization consumers, but must not
+change base Fabric verification when the consumer ignores visualization.
+If `coordinates_semantic` is present, it must be `false` for any
+artifact that claims visualization evidence.
+
 ## Verifier rules
 
 * The body whitelist accepts only `fabric.pe` (both schedules),

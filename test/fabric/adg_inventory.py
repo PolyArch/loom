@@ -27,6 +27,8 @@ SYSTEM_NODE_RE = re.compile(r'\bfabric\.node\s+@\S+\s+kind\s*=\s*"(?P<kind>[^"]+
 TILE_RE = re.compile(r"\bfabric\.(pe|switch|mem)\b")
 SCHEDULE_RE = re.compile(r"\[(spatial|temporal)\]")
 LINK_RE = re.compile(r"\bfabric\.link\b")
+COORDINATES_SEMANTIC_RE = re.compile(r"\bcoordinates_semantic\s*=\s*(true|false)\b")
+VISUAL_METADATA_RE = re.compile(r"\bvisual(?:_layout|_layouts)?\b")
 
 
 TOPOLOGY_MATRIX_CASES = (
@@ -272,11 +274,15 @@ def classify_layout(recipe_id: str, root_kind: str, root_symbol: str) -> tuple[s
     return "irregular", "explicit_graph"
 
 
-def visual_role(body: Iterable[str]) -> str:
+def visual_metadata(body: Iterable[str]) -> tuple[str, bool]:
     text = "\n".join(body)
-    if "visual" in text or "visual_layout" in text:
-        return "metadata_only"
-    return "absent"
+    coordinates_semantic = False
+    match = COORDINATES_SEMANTIC_RE.search(text)
+    if match is not None:
+        coordinates_semantic = match.group(1) == "true"
+    if VISUAL_METADATA_RE.search(text) is not None:
+        return "metadata_only", coordinates_semantic
+    return "absent", coordinates_semantic
 
 
 def module_coverage(body: list[str]) -> dict[str, object]:
@@ -329,6 +335,7 @@ def consumer_records(
     verifier_diagnostic: str,
     layout_class: str,
     visual_metadata_role: str,
+    coordinates_semantic: bool,
 ) -> list[dict[str, str]]:
     records = [
         {
@@ -348,6 +355,30 @@ def consumer_records(
                 "consumer": "mapping_visualization",
                 "status": "blocked",
                 "diagnostic": "regular candidate has no visual metadata yet; coordinates remain non-semantic",
+            }
+        )
+    if (
+        layout_class == "regular"
+        and visual_metadata_role == "metadata_only"
+        and coordinates_semantic
+    ):
+        records.append(
+            {
+                "consumer": "mapping_visualization",
+                "status": "blocked",
+                "diagnostic": "visual coordinates are marked semantic",
+            }
+        )
+    if (
+        layout_class == "regular"
+        and visual_metadata_role == "metadata_only"
+        and not coordinates_semantic
+    ):
+        records.append(
+            {
+                "consumer": "mapping_visualization",
+                "status": "pass",
+                "diagnostic": "regular candidate carries non-semantic visual metadata",
             }
         )
     return records
@@ -373,7 +404,7 @@ def candidate_record(
         "root_symbol": root_symbol,
         "topology_family": topology_family,
     }
-    metadata_role = visual_role(body)
+    metadata_role, coordinates_semantic = visual_metadata(body)
     return {
         "candidate_id": f"{recipe_id}::{root_symbol}",
         "recipe_id": recipe_id,
@@ -392,7 +423,7 @@ def candidate_record(
         if root_kind == "fabric.module"
         else "fabric.link",
         "visual_metadata_role": metadata_role,
-        "coordinates_semantic": False,
+        "coordinates_semantic": coordinates_semantic,
         "verifier_status": verifier_status,
         "diagnostic": verifier_diagnostic or "Fabric verifier accepted candidate",
         "downstream_consumers": consumer_records(
@@ -400,6 +431,7 @@ def candidate_record(
             verifier_diagnostic=verifier_diagnostic,
             layout_class=layout_class,
             visual_metadata_role=metadata_role,
+            coordinates_semantic=coordinates_semantic,
         ),
     }
 
@@ -469,6 +501,7 @@ def inventory_for_inputs(
                         verifier_diagnostic=diagnostic,
                         layout_class="irregular",
                         visual_metadata_role="absent",
+                        coordinates_semantic=False,
                     ),
                 }
             )
