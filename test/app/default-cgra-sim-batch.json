@@ -350,6 +350,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "string_compare",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "stream_update",
       "hardware": "shared_memory_reduction_adg"
     },

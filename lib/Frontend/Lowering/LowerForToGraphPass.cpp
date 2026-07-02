@@ -229,6 +229,7 @@ struct LowerForToGraphPass
 
     promoteStandaloneMemcpyFunctions(module, builder);
     promoteStandaloneScalarReturnFunctions(module, builder);
+    promoteStandaloneStructuredOutParamFunctions(module, builder);
     promoteStandaloneStructuredFunctions(module, builder);
 
     // First, for any host-scope scf.for with iter_args (i.e., a
@@ -562,6 +563,97 @@ struct LowerForToGraphPass
     ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
     module.walk([&](::mlir::func::FuncOp func) {
       if (isStandaloneScalarReturnFunctionCandidate(func))
+        funcs.push_back(func);
+    });
+
+    for (::mlir::func::FuncOp func : funcs)
+      promoteGraphOnlyFunction(module, func, builder);
+  }
+
+  bool isResultBearingStandaloneStructuredTopLevelOp(::mlir::Operation *op) {
+    if (auto whileOp = ::llvm::dyn_cast<::mlir::scf::WhileOp>(op))
+      return whileOp->getNumResults() > 0 &&
+             whileOp->getNumOperands() <= whileOp->getNumResults();
+    if (auto ifOp = ::llvm::dyn_cast<::mlir::scf::IfOp>(op))
+      return ifOp.getNumResults() > 0;
+    if (auto switchOp = ::llvm::dyn_cast<::mlir::scf::IndexSwitchOp>(op))
+      return switchOp->getNumResults() > 0;
+    return false;
+  }
+
+  bool isEntryPointerArgument(::mlir::Value value, ::mlir::Block &entry) {
+    auto arg = ::llvm::dyn_cast<::mlir::BlockArgument>(value);
+    return arg && arg.getOwner() == &entry && isLlvmPointerType(arg.getType());
+  }
+
+  bool isStandaloneStructuredOutParamFunctionCandidate(
+      ::mlir::func::FuncOp func) {
+    if (func.isExternal())
+      return false;
+    if (func.getSymName() == "main")
+      return false;
+    if (func.getSymName().starts_with("arm_"))
+      return false;
+    if (!func.getFunctionType().getResults().empty())
+      return false;
+    if (!func.getBody().hasOneBlock())
+      return false;
+    ::mlir::Block &entry = func.getBody().front();
+
+    bool hasPointerInput = false;
+    for (::mlir::Type ty : func.getFunctionType().getInputs())
+      hasPointerInput |= isLlvmPointerType(ty);
+    if (!hasPointerInput)
+      return false;
+
+    bool sawStructuredOp = false;
+    bool sawStore = false;
+    bool sawBlockedSetupNumericOp = false;
+    bool sawBlockedBodyNumericOp = false;
+    ::llvm::DenseSet<::mlir::Value> structuredResults;
+    for (::mlir::Operation &op : entry.without_terminator()) {
+      if (!sawStructuredOp && isBlockedStandaloneStructuredSetupOp(&op))
+        sawBlockedSetupNumericOp = true;
+
+      if (!sawStructuredOp && isSideEffectFreeSetupOp(op))
+        continue;
+
+      if (!sawStructuredOp) {
+        if (!isResultBearingStandaloneStructuredTopLevelOp(&op))
+          return false;
+        if (hasUnsupportedStandaloneStructuredBody(&op))
+          return false;
+        op.walk([&](::mlir::Operation *nested) {
+          if (isBlockedStandaloneStructuredBodyOp(nested))
+            sawBlockedBodyNumericOp = true;
+        });
+        for (::mlir::Value result : op.getResults())
+          structuredResults.insert(result);
+        sawStructuredOp = true;
+        continue;
+      }
+
+      auto store = ::llvm::dyn_cast<::mlir::LLVM::StoreOp>(&op);
+      if (!store)
+        return false;
+      if (sawStore)
+        return false;
+      if (!structuredResults.contains(store.getValue()))
+        return false;
+      if (!isEntryPointerArgument(store.getAddr(), entry))
+        return false;
+      sawStore = true;
+    }
+
+    return sawStructuredOp && sawStore && !sawBlockedSetupNumericOp &&
+           !sawBlockedBodyNumericOp;
+  }
+
+  void promoteStandaloneStructuredOutParamFunctions(
+      ::mlir::ModuleOp module, ::mlir::OpBuilder &builder) {
+    ::llvm::SmallVector<::mlir::func::FuncOp, 4> funcs;
+    module.walk([&](::mlir::func::FuncOp func) {
+      if (isStandaloneStructuredOutParamFunctionCandidate(func))
         funcs.push_back(func);
     });
 

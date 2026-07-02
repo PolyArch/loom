@@ -1222,6 +1222,41 @@ append_modexp_memrefs() {
     append_constant_memref 9 8 "0"
 }
 
+string_compare_equal_values() {
+    python3 - <<'PY'
+print(",".join(str(ord("a") + (i % 26)) for i in range(128)))
+PY
+}
+
+assert_string_compare_equal_report() {
+    local report="$1"
+    python3 - "${report}" <<'PY'
+import json
+import sys
+
+report = json.loads(open(sys.argv[1]).read())
+errors = []
+if report.get("status") != "pass":
+    errors.append(f"status={report.get('status')!r}")
+if report.get("dynamic_work_items") != 128:
+    errors.append(f"dynamic_work_items={report.get('dynamic_work_items')!r}")
+fire_counts = report.get("operation_fire_counts", {})
+if fire_counts.get("dataflow.load") != 256:
+    errors.append(f"dataflow.load={fire_counts.get('dataflow.load')!r}")
+if fire_counts.get("dataflow.store") != 1:
+    errors.append(f"dataflow.store={fire_counts.get('dataflow.store')!r}")
+if report.get("final_outputs") != ["none"]:
+    errors.append(f"final_outputs={report.get('final_outputs')!r}")
+final_memory = report.get("final_memory_state", {})
+if final_memory.get("arg3") != ["i32:0"]:
+    errors.append(f"arg3={final_memory.get('arg3')!r}")
+if report.get("diagnostics"):
+    errors.append(f"diagnostics={report.get('diagnostics')!r}")
+if errors:
+    raise SystemExit("string_compare equal-case DFG evidence mismatch: " + "; ".join(errors))
+PY
+}
+
 case "${CASE}" in
     binary_search)
         configure_binary_search_args
@@ -1635,6 +1670,18 @@ PY
         sim_args+=(
             --graph g_t_main_2_0
             --workload sbox_lookup
+        )
+        ;;
+    string_compare)
+        equal_values="$(string_compare_equal_values)"
+        sim_args+=(
+            --graph g_string_compare_kernel_0
+            --workload string_compare
+            --arg 0=none
+            --memref "1=${equal_values}"
+            --memref "2=${equal_values}"
+            --memref 3=99
+            --arg 4=128
         )
         ;;
     upsample)
@@ -2208,6 +2255,9 @@ esac
 
 declare -a extra_reports=()
 "${LOOM_DFG_SIM}" "${DFG_MLIR}" "${sim_args[@]}" --output "${REPORT_JSON}"
+if [[ "${CASE}" == "string_compare" ]]; then
+    assert_string_compare_equal_report "${REPORT_JSON}"
+fi
 if [[ "${PRIMARY_ONLY}" != "1" && "${CASE}" == "vecadd" ]]; then
     extra_report="${REPORT_JSON%.report.json}.reduction.report.json"
     sim_args=()

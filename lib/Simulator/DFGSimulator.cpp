@@ -4,6 +4,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
@@ -1416,6 +1417,19 @@ bool fireLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool fireUBPoison(mlir::ub::PoisonOp op, SimulatorState &state) {
+  if (state.oneShotOps.contains(op.getOperation()))
+    return false;
+  auto tokenOrErr = zeroToken(op->getResult(0).getType());
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  emitToken(state, op->getResult(0), *tokenOrErr);
+  state.oneShotOps.insert(op.getOperation());
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state) {
   mlir::OpOperand &lhsOperand = op->getOpOperand(0);
   mlir::OpOperand &rhsOperand = op->getOpOperand(1);
@@ -1491,8 +1505,8 @@ bool isSupportedStructuredCast(mlir::UnrealizedConversionCastOp cast) {
 bool canBroadcastStructuredForCapture(mlir::Value value) {
   if (mlir::isa<mlir::BlockArgument>(value))
     return true;
-  return mlir::isa_and_nonnull<mlir::arith::ConstantOp, dataflow::ConstantOp>(
-      value.getDefiningOp());
+  return mlir::isa_and_nonnull<mlir::arith::ConstantOp, dataflow::ConstantOp,
+                               mlir::ub::PoisonOp>(value.getDefiningOp());
 }
 std::optional<Token> lookupToken(mlir::Value value, SimulatorState &state,
                                  const LocalValueMap &locals,
@@ -1588,6 +1602,17 @@ bool assignLocalPrimitiveResult(mlir::Operation *op, mlir::Value result,
 }
 
 bool assignLocalLLVMZero(mlir::LLVM::ZeroOp op, SimulatorState &state,
+                         LocalValueMap &locals) {
+  auto tokenOrErr = zeroToken(op->getResult(0).getType());
+  if (!tokenOrErr) {
+    state.diagnostics.push_back(llvm::toString(tokenOrErr.takeError()));
+    return false;
+  }
+  locals[op->getResult(0)] = *tokenOrErr;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalUBPoison(mlir::ub::PoisonOp op, SimulatorState &state,
                          LocalValueMap &locals) {
   auto tokenOrErr = zeroToken(op->getResult(0).getType());
   if (!tokenOrErr) {
@@ -2020,6 +2045,8 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalGEP(gep, state, locals, captureIndex);
   if (auto zero = mlir::dyn_cast<mlir::LLVM::ZeroOp>(op))
     return assignLocalLLVMZero(zero, state, locals);
+  if (auto poison = mlir::dyn_cast<mlir::ub::PoisonOp>(op))
+    return assignLocalUBPoison(poison, state, locals);
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op))
     return assignLocalLLVMICmp(icmp, state, locals, captureIndex);
   if (auto load = mlir::dyn_cast<dataflow::LoadOp>(op))
@@ -2107,8 +2134,8 @@ unsupportedStructuredYieldRegion(mlir::Operation *parent, mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
-            bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2194,8 +2221,8 @@ unsupportedStructuredForOperation(mlir::scf::ForOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
-            bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2253,8 +2280,8 @@ unsupportedStructuredWhileBody(mlir::Block *block,
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
-            bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2327,8 +2354,8 @@ unsupportedStructuredForallOperation(mlir::scf::ForallOp op) {
     }
     if (mlir::isa<dataflow::ConstantOp, dataflow::LoadOp, dataflow::StoreOp,
                   dataflow::GateOp, dataflow::MuxOp, dataflow::DemuxOp,
-                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp>(
-            bodyOp))
+                  mlir::LLVM::GEPOp, mlir::LLVM::ZeroOp, mlir::LLVM::MemcpyOp,
+                  mlir::ub::PoisonOp>(bodyOp))
       continue;
     if (bodyOp.getNumResults() == 1 &&
         isSupportedPrimitiveOperation(primitiveOperationName(&bodyOp)))
@@ -2901,6 +2928,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireGEP(typedOp, state); })
       .Case<mlir::LLVM::ZeroOp>(
           [&](auto typedOp) { return fireLLVMZero(typedOp, state); })
+      .Case<mlir::ub::PoisonOp>(
+          [&](auto typedOp) { return fireUBPoison(typedOp, state); })
       .Case<mlir::LLVM::ICmpOp>(
           [&](auto typedOp) { return fireLLVMICmp(typedOp, state); })
       .Case<mlir::LLVM::LoadOp>(
@@ -2965,7 +2994,8 @@ std::optional<std::string> unsupportedOperation(mlir::Operation *op) {
                 dataflow::LoadOp, dataflow::StoreOp,
                 mlir::UnrealizedConversionCastOp, mlir::LLVM::GEPOp,
                 mlir::LLVM::ZeroOp, mlir::LLVM::LoadOp, mlir::LLVM::StoreOp,
-                mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp>(op))
+                mlir::LLVM::MemcpyOp, mlir::arith::ConstantOp,
+                mlir::ub::PoisonOp>(op))
     return std::nullopt;
   return unsupportedOperationLabel(op);
 }

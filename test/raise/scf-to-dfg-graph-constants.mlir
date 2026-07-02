@@ -39,3 +39,17 @@ dataflow.graph.func private @g_no_streaming_user(%arg0: none,
   %0 = arith.addf %arg1, %cst : f32
   dataflow.graph.return %arg0, %0 : none, f32
 }
+
+// Integer poison in a graph is a hardware-visible zero seed. It must lower to
+// the same explicit constant source that PnR already maps onto fabric.op.
+
+// CHECK-LABEL: dataflow.graph.func private @g_poison_zero_promoted
+// CHECK-NOT: ub.poison
+// CHECK: %[[ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : i32} : i32
+// CHECK: arith.select %arg1, %[[ZERO]], %arg2 : i32
+dataflow.graph.func private @g_poison_zero_promoted(%arg0: none, %arg1: i1,
+                                                    %arg2: i32) -> (none, i32) {
+  %poison = ub.poison : i32
+  %selected = arith.select %arg1, %poison, %arg2 : i32
+  dataflow.graph.return %arg0, %selected : none, i32
+}

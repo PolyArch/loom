@@ -1,17 +1,20 @@
-// Replace `arith.constant` ops inside `dataflow.graph.func` bodies with a
-// `dataflow.constant` fired by the graph body's `thread_ctrl` block argument.
+// Replace graph-local scalar value sources inside `dataflow.graph.func` bodies
+// with a `dataflow.constant` fired by the graph body's `thread_ctrl` block
+// argument.
 //
-// Every constant that remains in a graph is a hardware-visible source. A
-// scalar literal may feed a stream primitive, a structured loop bound, or a
-// normal arithmetic op such as arith.cmpi. All of those cases must be visible
-// to PnR as configurable constant resources rather than residual arith ops.
+// Every scalar seed that remains in a graph is a hardware-visible source. A
+// scalar literal or poison seed may feed a stream primitive, a structured loop
+// bound, or a normal arithmetic op such as arith.cmpi. All of those cases must
+// be visible to PnR as configurable constant resources rather than residual
+// non-fabric ops.
 //
 // Bail conditions (graph left unchanged):
 //   * The graph.func is external (no body to walk).
-//   * The graph.func has no arith.constant ops with users.
+//   * The graph.func has no convertible scalar source ops with users.
 //
-// Per-constant skip (constant left in place):
-//   * The constant has no users at all (DCE will pick it up).
+// Per-source skip (source left in place):
+//   * The source has no users at all (DCE will pick it up).
+//   * A poison source has a type with no zero attribute.
 //
 // Rationale: this surfaces every graph-local scalar literal as an explicit
 // dataflow.constant source. That keeps the Fabric ADG/PnR boundary honest:
@@ -25,6 +28,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -46,35 +50,54 @@ namespace {
                                                         : ::mlir::Value{};
 }
 
-// Lift every used `arith.constant` anywhere inside `graph`'s body to a
+struct ScalarSource {
+  ::mlir::Operation *op = nullptr;
+  ::mlir::TypedAttr valueAttr;
+};
+
+::mlir::TypedAttr zeroAttrForPoison(::mlir::ub::PoisonOp poison,
+                                    ::mlir::OpBuilder &builder) {
+  ::mlir::Attribute attr = builder.getZeroAttr(poison.getType());
+  return ::llvm::dyn_cast_if_present<::mlir::TypedAttr>(attr);
+}
+
+// Lift every used scalar source anywhere inside `graph`'s body to a
 // `dataflow.constant` driven by `ctrl`. The walk descends into
 // nested scf regions because the memory pass routinely materializes
 // the `%c0 : index` constant inside an scf.for / scf.while body when
 // the graph's load/store ops are themselves nested. The graph.func's
 // `thread_ctrl` block argument is visible from every nested region,
 // so the rewrite is SSA-legal regardless of the constant's depth.
-// Returns the number of constants converted.
+// Returns the number of sources converted.
 unsigned rewriteOneGraph(::dataflow::GraphFuncOp graph, ::mlir::Value ctrl,
                          ::mlir::OpBuilder &builder) {
   // Collect targets up front so the walk is independent of the
   // mutations performed below.
-  ::llvm::SmallVector<::mlir::arith::ConstantOp, 16> targets;
-  graph.getBody().walk([&](::mlir::arith::ConstantOp cst) {
-    if (cst.use_empty())
+  ::llvm::SmallVector<ScalarSource, 16> targets;
+  graph.getBody().walk([&](::mlir::Operation *op) {
+    if (auto cst = ::mlir::dyn_cast<::mlir::arith::ConstantOp>(op)) {
+      if (!cst.use_empty())
+        targets.push_back(ScalarSource{cst.getOperation(), cst.getValue()});
       return;
-    targets.push_back(cst);
+    }
+    auto poison = ::mlir::dyn_cast<::mlir::ub::PoisonOp>(op);
+    if (!poison || poison.use_empty())
+      return;
+    ::mlir::TypedAttr zero = zeroAttrForPoison(poison, builder);
+    if (!zero)
+      return;
+    targets.push_back(ScalarSource{poison.getOperation(), zero});
   });
 
   unsigned converted = 0;
-  for (::mlir::arith::ConstantOp cst : targets) {
-    ::mlir::TypedAttr valueAttr = cst.getValue();
+  for (ScalarSource target : targets) {
     ::mlir::OpBuilder::InsertionGuard g(builder);
-    builder.setInsertionPointAfter(cst.getOperation());
+    builder.setInsertionPointAfter(target.op);
     auto dconst = ::dataflow::ConstantOp::create(
-        builder, cst.getLoc(), valueAttr.getType(), ctrl,
-        ::mlir::cast<::mlir::Attribute>(valueAttr));
-    cst.getResult().replaceAllUsesWith(dconst.getValue());
-    cst.erase();
+        builder, target.op->getLoc(), target.valueAttr.getType(), ctrl,
+        ::mlir::cast<::mlir::Attribute>(target.valueAttr));
+    target.op->getResult(0).replaceAllUsesWith(dconst.getValue());
+    target.op->erase();
     ++converted;
   }
   return converted;
@@ -96,7 +119,7 @@ struct LowerGraphConstantsPass
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
     registry.insert<::mlir::arith::ArithDialect, ::mlir::func::FuncDialect,
-                    ::dataflow::DataflowDialect>();
+                    ::mlir::ub::UBDialect, ::dataflow::DataflowDialect>();
   }
 
   void runOnOperation() final {

@@ -151,7 +151,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "sort_merge",
     "sort_quick",
     "spmspm",
-    "string_compare",
 )
 EMPTY_DISCOVERED_GRAPH_IDS = "__empty__"
 PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = (
@@ -163,15 +162,6 @@ PRIMARY_GRAPH_MISSING_SWEEP_CASES: tuple[tuple[str, str, str, str, str], ...] = 
         "observe the kernel return value",
         EMPTY_DISCOVERED_GRAPH_IDS,
         "col2im_kernel",
-    ),
-    (
-        "string_compare",
-        "string_compare_kernel",
-        "primary workload graph absent: string_compare_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0,g_t_main_1_0,"
-        "g_t_main_2_0, so DFG-sim cannot observe the kernel return value",
-        "g_t_main_0_0",
-        "string_compare_kernel",
     ),
 )
 GRAPH_PRESENT_UNWIRED_SWEEP_CASES = {
@@ -1289,6 +1279,58 @@ def assert_quantile_evidence(evidence_dir: Path) -> None:
         or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
     ):
         raise AssertionError(f"quantile should preserve CGRA/comparison evidence: {cgra} {comparison}")
+
+
+def assert_string_compare_evidence(evidence_dir: Path) -> None:
+    dfg = json.loads((evidence_dir / "string_compare.dfg.report.json").read_text())
+    mapping = json.loads((evidence_dir / "string_compare.mapping.json").read_text())
+    cgra = json.loads((evidence_dir / "string_compare.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "string_compare.sim-comparison-report.json").read_text())
+    expected_counts = {
+        "arith.addi": 128,
+        "arith.cmpi": 385,
+        "arith.extui": 256,
+        "arith.index_cast": 256,
+        "arith.trunci": 128,
+        "dataflow.constant": 5,
+        "dataflow.load": 256,
+        "dataflow.mux": 640,
+        "dataflow.store": 1,
+        "dataflow.sync": 1,
+        "scf.if": 1,
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_string_compare_kernel_0"
+        or dfg.get("dynamic_work_items") != 128
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state", {}).get("arg3") != ["i32:0"]
+    ):
+        raise AssertionError(f"string_compare should preserve source-derived DFG evidence: {dfg}")
+    assert_operation_fire_counts("string_compare", dfg, expected_counts)
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("placed_records") != 22
+        or mapping.get("routed_edges") != 29
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"string_compare should route on shared memory hardware: {mapping}")
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("final_outputs") != ["none"]
+        or cgra.get("final_memory_state", {}).get("arg3") != ["i32:0"]
+        or cgra.get("dfg_cycles") != dfg.get("optimistic_cycles")
+        or cgra.get("hardware_aware_cycles", 0) < cgra.get("dfg_cycles", 0)
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
+    ):
+        raise AssertionError(f"string_compare should preserve CGRA/comparison evidence: {cgra} {comparison}")
 
 
 def assert_operation_fire_counts(case: str, dfg: dict, expected_counts: dict[str, int]) -> None:
@@ -5801,6 +5843,7 @@ def main(argv: list[str]) -> int:
             "compact",
             "hash_mix",
             "string_hash",
+            "string_compare",
             "merge",
             "modmul",
             "modexp",
@@ -5889,6 +5932,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "upsample_linear", 16)
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "string_hash", 8)
+        assert_string_compare_evidence(evidence_dir)
         assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "covariance", 2048)
         assert_dfg_dynamic_work_items(evidence_dir, "popcount", 32)
@@ -6591,6 +6635,7 @@ def main(argv: list[str]) -> int:
             "histogram",
             "hash_mix",
             "string_hash",
+            "string_compare",
             "merge",
             "lower_bound",
             "modmul",
@@ -6770,10 +6815,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 122,
-            "pass": 114,
+            "pass": 115,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 8,
+            "unsupported": 7,
             "missing_status": 0,
         }
         if counts != expected_counts:

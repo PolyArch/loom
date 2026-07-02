@@ -106,6 +106,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "spmspv",
     "sort_bubble",
     "stream_update",
+    "string_compare",
     "string_hash",
     "transform_point",
     "transpose",

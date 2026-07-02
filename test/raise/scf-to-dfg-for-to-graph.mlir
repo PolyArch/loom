@@ -257,6 +257,42 @@ func.func private @guarded_carried_loop_candidate(%src: !llvm.ptr,
   return
 }
 
+// A standalone structured kernel that computes a scalar through result-bearing
+// control and writes it to an out pointer is an accelerator candidate.
+// CHECK-LABEL: func.func private @structured_outparam_candidate
+// CHECK: scf.if
+// CHECK: scf.while
+// CHECK: llvm.store
+func.func private @structured_outparam_candidate(%src: !llvm.ptr,
+                                                 %dst: !llvm.ptr,
+                                                 %n: i32) {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %empty = arith.cmpi eq, %n, %c0_i32 : i32
+  %selected = scf.if %empty -> (i32) {
+    scf.yield %c0_i32 : i32
+  } else {
+    %scan:2 = scf.while (%i = %c0_i32) : (i32) -> (i32, i32) {
+      %offset = llvm.zext %i : i32 to i64
+      %ptr = llvm.getelementptr %src[%offset]
+          : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x i8>
+      %value = llvm.load %ptr : !llvm.ptr -> i32
+      %is_match = arith.cmpi eq, %value, %c0_i32 : i32
+      %inc = arith.addi %i, %c1_i32 : i32
+      %in_bounds = arith.cmpi ult, %i, %n : i32
+      %keep_scanning = arith.andi %in_bounds, %is_match : i1
+      %next_i = arith.select %is_match, %n, %inc : i32
+      scf.condition(%keep_scanning) %next_i, %value : i32, i32
+    } do {
+    ^bb0(%i_next: i32, %unused: i32):
+      scf.yield %i_next : i32
+    }
+    scf.yield %scan#1 : i32
+  }
+  llvm.store %selected, %dst : i32, !llvm.ptr
+  return
+}
+
 // CHECK-LABEL: dataflow.graph.func private @g_standalone_memcpy_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
 // CHECK: llvm.intr.memcpy
@@ -267,6 +303,13 @@ func.func private @guarded_carried_loop_candidate(%src: !llvm.ptr,
 // CHECK: arith.muli
 // CHECK: llvm.getelementptr
 // CHECK: llvm.intr.memcpy
+// CHECK: dataflow.graph.return %arg0 : none
+// CHECK-LABEL: dataflow.graph.func private @g_structured_outparam_candidate_0
+// CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: i32) -> none
+// CHECK: scf.if
+// CHECK: scf.while
+// CHECK: llvm.load
+// CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
 // CHECK-LABEL: dataflow.graph.func private @g_scatter_add_candidate_0
 // CHECK-SAME: (%arg0: none, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) -> none
@@ -282,7 +325,6 @@ func.func private @guarded_carried_loop_candidate(%src: !llvm.ptr,
 // CHECK: llvm.load
 // CHECK: llvm.store
 // CHECK: dataflow.graph.return %arg0 : none
-
 // CHECK-LABEL: dataflow.graph.func private @g_t_unused_ptr_walk_0
 // CHECK-SAME: -> none
 // CHECK: dataflow.graph.return %{{.*}} : none

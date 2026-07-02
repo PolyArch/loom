@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 122,
-            "pass": 114,
+            "pass": 115,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 8,
+            "unsupported": 7,
             "missing_status": 0,
         },
     )
@@ -1044,11 +1044,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "primary workload graph is partial: spmspm lowering covers final nonzero compression "
         "while sparse multiply-accumulate loops remain outside dataflow"
     ),
-    "string_compare": (
-        "primary workload graph absent: string_compare_kernel remains a residual call target outside "
-        "the discovered dataflow graphs; discovered graph ids include g_t_main_0_0,g_t_main_1_0,"
-        "g_t_main_2_0, so DFG-sim cannot observe the kernel return value"
-    ),
 }
 EMPTY_DISCOVERED_GRAPH_IDS = "__empty__"
 
@@ -1248,10 +1243,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         "app",
         {
             "total": 122,
-            "pass": 18,
+            "pass": 19,
             "fail": 0,
             "blocked": 96,
-            "unsupported": 8,
+            "unsupported": 7,
             "missing_status": 0,
         },
     )
@@ -1273,6 +1268,7 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
     assert_app_cgra_pass_row(repo, rows, "upper_bound", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "parity", expected_hardware="shared_memory_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "popcount", expected_hardware="shared_memory_reduction_adg")
+    assert_app_cgra_pass_row(repo, rows, "string_compare", expected_hardware="shared_memory_reduction_adg")
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
 
 
@@ -4646,15 +4642,6 @@ def main() -> int:
             expected_residual_call="col2im_kernel",
         )
         assert_primary_graph_absence_empty_graph_guard(repo, out_dir / "primary-graph-empty-guard")
-        assert_primary_graph_absence_attempt_mode(
-            repo,
-            out_dir / "no-dfg-app-attempt-string-compare",
-            legacy_root,
-            case="string_compare",
-            expected_primary_graph_token="string_compare_kernel",
-            expected_discovered_graph="g_t_main_0_0",
-            expected_residual_call="string_compare_kernel",
-        )
         assert_direct_cmsis_dfg_mode(repo, out_dir / "direct-cmsis-dfg", legacy_root)
         assert_app_cgra_sweep_mode(repo, out_dir / "app-cgra-sweep", legacy_root)
         assert_cmsis_sim_default_mode(repo, out_dir / "cmsis-sim-default", legacy_root)

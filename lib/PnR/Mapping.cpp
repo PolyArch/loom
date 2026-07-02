@@ -2335,6 +2335,155 @@ bool partialPlacementRoutes(llvm::ArrayRef<SoftwareNode> nodes,
   return partial.unroutedEdges == 0;
 }
 
+const SoftwareNode *findNodeById(llvm::ArrayRef<SoftwareNode> nodes,
+                                 llvm::StringRef softwareId) {
+  for (const SoftwareNode &node : nodes)
+    if (node.id == softwareId)
+      return &node;
+  return nullptr;
+}
+
+const HardwareResource *
+findResourceById(llvm::ArrayRef<HardwareResource> resources,
+                 llvm::StringRef hardwareId) {
+  for (const HardwareResource &resource : resources)
+    if (resource.id == hardwareId)
+      return &resource;
+  return nullptr;
+}
+
+std::optional<std::size_t>
+findPlacementIndex(llvm::ArrayRef<PlacementRecord> placements,
+                   llvm::StringRef softwareId) {
+  for (auto [index, placement] : llvm::enumerate(placements))
+    if (placement.softwareId == softwareId)
+      return index;
+  return std::nullopt;
+}
+
+llvm::StringSet<>
+usedHardwareIds(llvm::ArrayRef<PlacementRecord> placements,
+                std::optional<std::size_t> exceptIndex = std::nullopt) {
+  llvm::StringSet<> used;
+  for (auto [index, placement] : llvm::enumerate(placements)) {
+    if (exceptIndex && index == *exceptIndex)
+      continue;
+    used.insert(placement.hardwareId);
+  }
+  return used;
+}
+
+bool replacementRoutes(llvm::ArrayRef<SoftwareNode> nodes,
+                       mlir::Operation *graph,
+                       llvm::ArrayRef<PlacementRecord> placements,
+                       const HardwareTopology &topology) {
+  RouteCollection routes = collectRoutes(nodes, graph, placements, topology);
+  return routes.unroutedEdges == 0;
+}
+
+bool tryReplacePlacement(
+    llvm::ArrayRef<SoftwareNode> nodes,
+    llvm::ArrayRef<HardwareResource> resources, mlir::Operation *graph,
+    const HardwareTopology &topology,
+    llvm::SmallVectorImpl<PlacementRecord> &placements, std::size_t index,
+    const HardwareResource &resource) {
+  const SoftwareNode *node = findNodeById(nodes, placements[index].softwareId);
+  if (!node || !resourceIsCompatible(*node, resource))
+    return false;
+
+  llvm::SmallVector<PlacementRecord, 32> candidate(placements.begin(),
+                                                   placements.end());
+  candidate[index] = makePlacementRecord(*node, resource);
+  if (!replacementRoutes(nodes, graph, candidate, topology))
+    return false;
+  placements.assign(candidate.begin(), candidate.end());
+  return true;
+}
+
+bool trySwapPlacements(llvm::ArrayRef<SoftwareNode> nodes,
+                       llvm::ArrayRef<HardwareResource> resources,
+                       mlir::Operation *graph,
+                       const HardwareTopology &topology,
+                       llvm::SmallVectorImpl<PlacementRecord> &placements,
+                       std::size_t lhsIndex, std::size_t rhsIndex) {
+  if (lhsIndex == rhsIndex)
+    return false;
+  const SoftwareNode *lhsNode =
+      findNodeById(nodes, placements[lhsIndex].softwareId);
+  const SoftwareNode *rhsNode =
+      findNodeById(nodes, placements[rhsIndex].softwareId);
+  const HardwareResource *lhsResource =
+      findResourceById(resources, placements[lhsIndex].hardwareId);
+  const HardwareResource *rhsResource =
+      findResourceById(resources, placements[rhsIndex].hardwareId);
+  if (!lhsNode || !rhsNode || !lhsResource || !rhsResource)
+    return false;
+  if (!resourceIsCompatible(*lhsNode, *rhsResource) ||
+      !resourceIsCompatible(*rhsNode, *lhsResource))
+    return false;
+
+  llvm::SmallVector<PlacementRecord, 32> candidate(placements.begin(),
+                                                   placements.end());
+  candidate[lhsIndex] = makePlacementRecord(*lhsNode, *rhsResource);
+  candidate[rhsIndex] = makePlacementRecord(*rhsNode, *lhsResource);
+  if (!replacementRoutes(nodes, graph, candidate, topology))
+    return false;
+  placements.assign(candidate.begin(), candidate.end());
+  return true;
+}
+
+bool tryRepairPlacementIndex(
+    llvm::ArrayRef<SoftwareNode> nodes,
+    llvm::ArrayRef<HardwareResource> resources, mlir::Operation *graph,
+    const HardwareTopology &topology,
+    llvm::SmallVectorImpl<PlacementRecord> &placements, std::size_t index) {
+  for (std::size_t otherIndex = 0; otherIndex < placements.size();
+       ++otherIndex)
+    if (trySwapPlacements(nodes, resources, graph, topology, placements, index,
+                          otherIndex))
+      return true;
+
+  llvm::StringSet<> used = usedHardwareIds(placements, index);
+  for (const HardwareResource &resource : resources) {
+    if (used.contains(resource.id))
+      continue;
+    if (tryReplacePlacement(nodes, resources, graph, topology, placements,
+                            index, resource))
+      return true;
+  }
+  return false;
+}
+
+bool repairUnroutedGreedyPlacements(
+    llvm::ArrayRef<SoftwareNode> nodes,
+    llvm::ArrayRef<HardwareResource> resources, mlir::Operation *graph,
+    const HardwareTopology &topology,
+    llvm::SmallVectorImpl<PlacementRecord> &placements) {
+  RouteCollection routes = collectRoutes(nodes, graph, placements, topology);
+  if (routes.unroutedEdges == 0)
+    return true;
+  for (const UnroutedEdgeRecord &edge : routes.unroutedEdgeDetails) {
+    std::optional<std::size_t> producer =
+        findPlacementIndex(placements, edge.fromSoftwareId);
+    if (producer && tryRepairPlacementIndex(nodes, resources, graph, topology,
+                                            placements, *producer))
+      return true;
+    std::optional<std::size_t> consumer =
+        findPlacementIndex(placements, edge.toSoftwareId);
+    if (consumer && tryRepairPlacementIndex(nodes, resources, graph, topology,
+                                            placements, *consumer))
+      return true;
+  }
+  return false;
+}
+
+void clearPlacementState(llvm::MutableArrayRef<HardwareResource> resources,
+                         llvm::SmallVectorImpl<PlacementRecord> &placements) {
+  for (HardwareResource &resource : resources)
+    resource.used = false;
+  placements.clear();
+}
+
 bool chooseRouteFeasiblePlacements(
     llvm::MutableArrayRef<SoftwareNode> nodes,
     llvm::MutableArrayRef<HardwareResource> resources, mlir::Operation *graph,
@@ -2367,9 +2516,7 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
                         const HardwareTopology &topology,
                         llvm::SmallVectorImpl<PlacementRecord> &placements) {
   sortNodesByPlacementPriority(nodes, resources);
-  for (HardwareResource &resource : resources)
-    resource.used = false;
-  placements.clear();
+  clearPlacementState(resources, placements);
   bool greedyComplete = true;
   for (SoftwareNode &node : nodes) {
     HardwareResource *resource = claimResource(node, resources);
@@ -2382,10 +2529,12 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
   if (greedyComplete &&
       partialPlacementRoutes(nodes, graph, placements, topology))
     return true;
+  if (greedyComplete &&
+      repairUnroutedGreedyPlacements(nodes, resources, graph, topology,
+                                     placements))
+    return true;
 
-  for (HardwareResource &resource : resources)
-    resource.used = false;
-  placements.clear();
+  clearPlacementState(resources, placements);
 
   if (nodes.size() > kExhaustivePlacementNodeLimit)
     return false;
@@ -2393,9 +2542,7 @@ bool placeRouteFeasible(llvm::MutableArrayRef<SoftwareNode> nodes,
   if (chooseRouteFeasiblePlacements(nodes, resources, graph, topology,
                                     placements, 0))
     return true;
-  for (HardwareResource &resource : resources)
-    resource.used = false;
-  placements.clear();
+  clearPlacementState(resources, placements);
   return false;
 }
 
