@@ -1146,6 +1146,17 @@
       "expected_executables": ["stream_update_func", "stream_update_inline"]
     },
     {
+      "case": "stream_nested",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["integer", "nested-loop", "modulo", "reduction", "indirect-load"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["stream_nested_func", "stream_nested_inline"]
+    },
+    {
       "case": "transpose",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],

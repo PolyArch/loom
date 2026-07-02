@@ -321,6 +321,9 @@ case "${CASE}" in
   spmspv)
     case_graph="g_t_spmspv_kernel_red_0_0"
     ;;
+  stream_nested)
+    case_graph="g_t_stream_nested_kernel_red_0_0"
+    ;;
   convolve_1d)
     case_graph="g_t_convolve_1d_kernel_0_0"
     ;;
@@ -526,7 +529,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(

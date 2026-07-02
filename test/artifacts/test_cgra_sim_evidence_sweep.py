@@ -84,6 +84,7 @@ DEFAULT_SWEEP_CASES = (
     "mat3x3_mult",
     "spmm",
     "spmspv",
+    "stream_nested",
     "stream_update",
     "lower_bound",
     "matvec",
@@ -2409,6 +2410,51 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"spmspv CGRA evidence should carry row-3 CSR dot final state: {cgra_path}: {cgra}")
+
+
+def assert_stream_nested_evidence(evidence_dir: Path) -> None:
+    expected_outputs = ["none", "i32:835"]
+    expected_counts = {
+        "arith.addi": 300,
+        "arith.andi": 100,
+        "arith.index_cast": 600,
+        "arith.shli": 200,
+        "arith.shrui": 100,
+        "dataflow.load": 100,
+    }
+    dfg = json.loads((evidence_dir / "stream_nested.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_stream_nested_kernel_red_0_0"
+        or dfg.get("dynamic_work_items") != 5
+        or dfg.get("final_outputs") != expected_outputs
+    ):
+        raise AssertionError(f"stream_nested should preserve true DFG nested stream evidence: {dfg}")
+    assert_operation_fire_counts("stream_nested", dfg, expected_counts)
+
+    mapping = json.loads((evidence_dir / "stream_nested.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("graph") != "g_t_stream_nested_kernel_red_0_0"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"stream_nested should route on shared memory-reduction hardware: {mapping}")
+    assert_mapping_uses_switch_multihop(evidence_dir, "stream_nested")
+
+    cgra = json.loads((evidence_dir / "stream_nested.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "stream_nested.sim-comparison-report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("routed_edges") <= 0
+        or cgra.get("final_outputs") != expected_outputs
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"stream_nested should preserve CGRA/comparison nested stream evidence: {cgra} {comparison}")
 
 
 def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
@@ -5570,6 +5616,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "spmspv",
                 "--case",
+                "stream_nested",
+                "--case",
                 "stream_update",
                 "--case",
                 "gather",
@@ -5944,6 +5992,7 @@ def main(argv: list[str]) -> int:
         assert_cross_product_evidence(evidence_dir)
         assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
+        assert_stream_nested_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_spmm_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_batchnorm_cgra_evidence.py", str(evidence_dir)])
         assert_mat3x3_mult_evidence(evidence_dir)
@@ -6245,6 +6294,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "spmv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmm", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmspv", "shared_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "stream_nested", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "stream_update", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "cdma", "shared_reduction_adg")
@@ -6580,6 +6630,7 @@ def main(argv: list[str]) -> int:
             "dot_product_3d",
             "spmv",
             "spmm",
+            "stream_nested",
             "sort_bubble",
             "bitrev",
             "bitrev_complex",
@@ -6814,8 +6865,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 122,
-            "pass": 115,
+            "total": 123,
+            "pass": 116,
             "fail": 0,
             "blocked": 0,
             "unsupported": 7,

@@ -114,6 +114,7 @@ EXPECTED_CASES = {
     "sort_quick",
     "string_compare",
     "string_hash",
+    "stream_nested",
     "stream_update",
     "transpose",
     "transform_point",
