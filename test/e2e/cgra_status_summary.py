@@ -1036,7 +1036,7 @@ def main(argv: list[str]) -> int:
     output = Path(args.output)
     cmsis_dsp_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-dsp", args.cmsis_dsp_dfg_dir)
     cmsis_nn_dfg_dir = default_cmsis_dfg_dir(output, "cmsis-nn", args.cmsis_nn_dfg_dir)
-    sim_evidence_dir = Path(args.sim_evidence_dir) if args.sim_evidence_dir else output.parent / "current-sim-cycle"
+    sim_evidence_dir = Path(args.sim_evidence_dir) if args.sim_evidence_dir else None
     comparison_dir = (
         Path(args.comparison_output_dir)
         if args.comparison_output_dir
@@ -1072,7 +1072,8 @@ def main(argv: list[str]) -> int:
             )
         )
 
-    apply_sim_evidence(rows, sim_evidence_dir, comparison_dir)
+    if sim_evidence_dir is not None:
+        apply_sim_evidence(rows, sim_evidence_dir, comparison_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     intermediate_artifacts.write_csv_rows("cgra_status", output, rows)
     write_json(json_path_for(output, args.json_output), output, rows)

@@ -471,6 +471,11 @@ Rules:
 * `pass` requires DFG-sim report, PnR mapping artifact, CGRA-sim report,
   simulation comparison report, and matching final output or memory-state
   evidence. `dfg_mlir` alone cannot contribute to pass status.
+* Simulator evidence directories must be explicit input edges to the
+  status producer. Default status generation must not infer a sibling
+  scratch directory such as `current-sim-cycle`, because stale evidence
+  from an earlier run would otherwise change row status without an
+  explicit producer/consumer edge.
 * Default status generation must not silently consume stale local CMSIS
   DFG evidence. A producer that wants to use compiler-lowering evidence
   must provide an explicit evidence directory or an equivalent

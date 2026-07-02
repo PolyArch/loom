@@ -564,6 +564,7 @@ def main() -> int:
         json_output = out_dir / "cgra-status-summary.json"
         legacy_root = out_dir / "legacy-loombench"
         write_legacy_fixture(legacy_root)
+        write_sim_evidence_case(out_dir / "current-sim-cycle", "vecsum", cgra_final_state=True)
 
         run(
             repo,
