@@ -42,6 +42,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "trsv_lower",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "sort_bubble",
       "hardware": "shared_memory_reduction_adg"
     },

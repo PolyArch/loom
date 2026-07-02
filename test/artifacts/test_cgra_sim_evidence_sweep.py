@@ -85,6 +85,7 @@ DEFAULT_SWEEP_CASES = (
     "spmm",
     "spmspv",
     "stream_nested",
+    "trsv_lower",
     "stream_update",
     "lower_bound",
     "matvec",
@@ -2455,6 +2456,100 @@ def assert_stream_nested_evidence(evidence_dir: Path) -> None:
         or comparison.get("performance_comparison_status") != "pass"
     ):
         raise AssertionError(f"stream_nested should preserve CGRA/comparison nested stream evidence: {cgra} {comparison}")
+
+
+def assert_trsv_lower_evidence(evidence_dir: Path) -> None:
+    expected_outputs = ["none", "i32:2751"]
+    expected_memory = {
+        "arg4": [
+            "i32:1",
+            "i32:2",
+            "i32:0",
+            "i32:1",
+            "i32:2",
+            "i32:0",
+            "i32:1",
+            "i32:2",
+            "i32:0",
+            "i32:1",
+            "i32:2",
+            "i32:0",
+            "i32:1",
+            "i32:2",
+            "i32:0",
+        ],
+        "arg5": [
+            "i32:1",
+            "i32:0",
+            "i32:3",
+            "i32:3",
+            "i32:-6",
+            "i32:6",
+            "i32:15",
+            "i32:-39",
+            "i32:36",
+            "i32:81",
+            "i32:-234",
+            "i32:201",
+            "i32:471",
+            "i32:-1374",
+            "i32:1176",
+        ],
+    }
+    expected_counts = {
+        "arith.index_cast": 16,
+        "arith.muli": 15,
+        "arith.subi": 15,
+        "dataflow.carry": 16,
+        "dataflow.load": 30,
+        "dataflow.stream": 16,
+        "dataflow.sync": 15,
+    }
+
+    dfg_path = evidence_dir / "trsv_lower.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_trsv_lower_kernel_red_0_0"
+        or dfg.get("dynamic_work_items") != 15
+        or dfg.get("optimistic_cycles") != 280
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"trsv_lower DFG evidence should match the row-15 forward-substitution slice: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("trsv_lower", dfg, expected_counts)
+
+    mapping = json.loads((evidence_dir / "trsv_lower.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("graph") != "g_t_trsv_lower_kernel_red_0_0"
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("routed_edges") != 10
+    ):
+        raise AssertionError(f"trsv_lower should route on shared reduction hardware: {mapping}")
+    assert_mapping_uses_switch_multihop(evidence_dir, "trsv_lower")
+
+    cgra_path = evidence_dir / "trsv_lower.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    comparison = json.loads((evidence_dir / "trsv_lower.sim-comparison-report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_reduction_adg"
+        or cgra.get("dfg_cycles") != 280
+        or cgra.get("hardware_aware_cycles") != 334
+        or cgra.get("routed_edges") != 10
+        or cgra.get("route_segments") != 38
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"trsv_lower should preserve CGRA/comparison row-15 solve evidence: {cgra_path}: {cgra} {comparison}")
 
 
 def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
@@ -5618,6 +5713,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "stream_nested",
                 "--case",
+                "trsv_lower",
+                "--case",
                 "stream_update",
                 "--case",
                 "gather",
@@ -5993,6 +6090,7 @@ def main(argv: list[str]) -> int:
         assert_quat_mult_evidence(evidence_dir)
         assert_spmspv_evidence(evidence_dir)
         assert_stream_nested_evidence(evidence_dir)
+        assert_trsv_lower_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_spmm_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_batchnorm_cgra_evidence.py", str(evidence_dir)])
         assert_mat3x3_mult_evidence(evidence_dir)
@@ -6295,6 +6393,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "spmm", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "spmspv", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "stream_nested", "shared_memory_reduction_adg")
+        assert_mapping_hardware(evidence_dir, "trsv_lower", "shared_reduction_adg")
         assert_mapping_hardware(evidence_dir, "stream_update", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "byte_swap", "shared_vector_alu_adg")
         assert_mapping_hardware(evidence_dir, "cdma", "shared_reduction_adg")
@@ -6865,8 +6964,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 123,
-            "pass": 116,
+            "total": 124,
+            "pass": 117,
             "fail": 0,
             "blocked": 0,
             "unsupported": 7,

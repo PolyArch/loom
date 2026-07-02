@@ -107,6 +107,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "sort_bubble",
     "stream_nested",
     "stream_update",
+    "trsv_lower",
     "string_compare",
     "string_hash",
     "transform_point",

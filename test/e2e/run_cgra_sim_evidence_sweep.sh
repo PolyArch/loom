@@ -126,6 +126,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     spmm
     spmspv
     stream_nested
+    trsv_lower
     stream_update
     lower_bound
     matvec

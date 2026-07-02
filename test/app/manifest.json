@@ -1157,6 +1157,17 @@
       "expected_executables": ["stream_nested_func", "stream_nested_inline"]
     },
     {
+      "case": "trsv_lower",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["matrix", "integer", "nested-loop", "reduction", "loop-carried"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["trsv_lower_func", "trsv_lower_inline"]
+    },
+    {
       "case": "transpose",
       "language": "c",
       "sources": ["main_func.c", "main_inline.c"],

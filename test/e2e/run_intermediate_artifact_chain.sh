@@ -324,6 +324,9 @@ case "${CASE}" in
   stream_nested)
     case_graph="g_t_stream_nested_kernel_red_0_0"
     ;;
+  trsv_lower)
+    case_graph="g_t_trsv_lower_kernel_red_0_0"
+    ;;
   convolve_1d)
     case_graph="g_t_convolve_1d_kernel_0_0"
     ;;

@@ -116,6 +116,7 @@ EXPECTED_CASES = {
     "string_hash",
     "stream_nested",
     "stream_update",
+    "trsv_lower",
     "transpose",
     "transform_point",
     "unpack_bits",
