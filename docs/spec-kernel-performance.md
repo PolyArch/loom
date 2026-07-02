@@ -569,19 +569,105 @@ Reports **SHOULD** present `util` as the primary pressure signal.
 transient list-schedule artifact and **MUST NOT** be presented as a steady-state
 quantity or a hardware queue depth.
 
-Like the rest of this section, `util` is computed from the exposed chunk's
-**global** class counts and therefore depends only on the product `P · U`; it
-does **not** distinguish `LOOM_PARALLEL(P)` from `LOOM_UNROLL(U)`. Those are
-orthogonal dimensions (see [`docs/spec-pragma.md`](./spec-pragma.md): `P` maps to
-separate worker groups over data partitions, `U` enlarges one worker's dataflow
-graph). Separating them in the pressure model would require a per-worker
-memory-port / banking model, which this section deliberately does not attempt.
+### Banking-aware P-vs-U distinction (load/store axis)
+
+`LOOM_PARALLEL(P)` and `LOOM_UNROLL(U)` are physically distinct (see
+[`docs/spec-pragma.md`](./spec-pragma.md)): `P` maps to separate worker groups
+over data partitions, `U` enlarges one worker's dataflow graph. Two physical
+asymmetries separate them, and they pull in **opposite directions**:
+
+- **Control-overhead amortization** (favors `U`): unrolling shares one loop
+  counter across `U` iterations (control scales `~T/U`); parallelism replicates
+  it (`~T`). This is an op-count-level effect.
+- **Memory ports / banking** (favors `P`): `P` workers can be given independent
+  memory ports/banks and load concurrently; `U`'s unrolled accesses share one
+  worker's port and serialize unless the array is banked further.
+
+This DSE **adopts the memory-port / banking asymmetry on the load/store axis**
+and deliberately leaves control-overhead unmodeled. This is a directed,
+**load/store-focused** choice: for the memory-bound kernels this model targets,
+port bandwidth is the dominant effect, and the resulting recommendation is
+intentionally **biased toward parallelism** (`P`) over unroll (`U`). The
+arithmetic (`P`-class) axis remains a **global pool** (product-only): `compute`
+and `CP` do not distinguish `P` from `U`. An implementation **MUST** state this
+asymmetry and **MUST NOT** claim it also models control-overhead amortization or
+place-and-route.
+
+**Effective ports.** Let `P_tot` be the total number of parallel workers (the
+product of the per-level `LOOM_PARALLEL` factors over parallelizable levels) and
+`B_L` / `B_S` the effective bank counts of the load / store arrays the loop
+strides over. The concurrent load- and store-issue widths available to a chunk
+are
+
+```
+active_L = min(P_tot, B_L, L)
+active_S = min(P_tot, B_S, S)
+```
+
+**Banking policy (stated assumption).** A `LOOM_PARALLEL(p, contiguous)` (or
+`block`) level is assumed to **partition** each array it strides over into `p`
+banks — one contiguous slice per worker — so absent an explicit pragma
+`B = P_tot` for a strided array. An explicit `LOOM_MEMORY_BANK(B, …)` on an array
+**caps** that array's bank count at `B`. `LOOM_UNROLL(U)` adds **no** banks:
+unrolled iterations run inside one worker and share that worker's single port. An
+array a worker does **not** partition (a broadcast/replicated input, or a
+single-element output) is **not** widened by `P_tot`; its `B` is its own bank
+count (default `1`). A different banking policy **MAY** be used but **MUST** be
+stated.
+
+**Wave formulas.** The exposed chunk (`E = Π_level p·u` iterations, reductions as
+balanced merge trees, inner-invariant loads amortized per the nested-loop note
+below) is scheduled with the effective configuration `(P, active_L, active_S)`.
+Thus
+
+```
+chunk_aggregate = max(CP, ceil(A / P), ceil(LD / active_L), ceil(ST / active_S))
+```
+
+and `pragma_exposure_aggregate` / `schedule_estimate` sum this over the waves as
+before. Because `active_L` / `active_S` grow with `P_tot` (up to `B` and `L`/`S`)
+but **not** with `U`, for a fixed product `E` a parallelism-heavy split issues
+memory faster than an unroll-heavy one: `LOOM_UNROLL` concentrates a worker's
+`U · ld_iter` accesses on one port (a per-body penalty), while `LOOM_PARALLEL`
+spreads traffic across independent ports (multiple streams, each with a smaller
+per-worker trip). This is the intended `P`-vs-`U` distinction.
+
+**Exposure selection under banking.** The steady-state load throughput floor is
+`trip · ld_iter / active_L`, minimized by maximizing
+`active_L = min(P_tot, B, L)`. An implementation **SHOULD** therefore recommend
+the split that saturates the binding memory class — `P_tot = min(trip, B, L)` on
+the parallelizable level(s) — with the **smallest** `U` that makes each wave
+resource-bound (its per-wave memory term reaches `CP`). It **SHOULD** flag
+lower-`P_tot` candidates as **bandwidth-starved** (memory ports idle) and, at
+equal `P_tot`, higher-`U` candidates as **port-serialized** (no throughput gain,
+more area). Only `absolute_cgra_lb` (the full-trip aggregate over full lanes
+`L`/`S`) remains a lower bound; every banked candidate sits above it.
+
+**When a kernel shows no `P`-vs-`U` distinction.** Because only the L/S axis is
+banking-aware, a kernel whose binding class is **arithmetic** (`compute`-bound)
+or whose aggregate is set by **`CP`** (latency-bound) is `P`/`U`-symmetric — the
+global arithmetic pool and the critical path do not separate the two. A
+**sequential** level cannot be parallelized at all (`P_tot = 1` there), so only
+`U` applies and no distinction arises on that level. An implementation that
+enumerates such a kernel **SHOULD** report that the distinction does not appear,
+and why.
+
+A **nested** loop adds a second, orthogonal effect: the per-level distribution of
+exposure (how much on the outer vs the inner loop) changes the chunk's op counts,
+because a value loop-invariant with respect to the inner loop is loaded once and
+reused across inner iterations — so exposing the inner loop **amortizes** that
+outer-invariant traffic while exposing the outer loop **replicates** it. (The
+same level-asymmetry arises when an inner level is a reduction.) This level effect
+composes with the banking distinction above, which still holds *within* any single
+level.
 
 This exploratory estimate is **not** the aggregate CGRA lower bound, **not** the
-fully-unrolled ASAP metric, **not** cycle-accurate RTL, and **not** a
-place-and-route or memory-bank-conflict model. It **MUST NOT** replace or rename
-the aggregate lower bound in eval files, and the phrase "lower bound" **MUST
-NOT** be applied to the Loom-pragma design-space estimate.
+fully-unrolled ASAP metric, and **not** cycle-accurate RTL. It models per-worker
+port **width** from the bank count (the banking asymmetry above) but **not**
+address-level bank **conflicts**, and it is **not** a place-and-route model. It
+**MUST NOT** replace or rename the aggregate lower bound in eval files, and the
+phrase "lower bound" **MUST NOT** be applied to the Loom-pragma design-space
+estimate.
 
 ## Eval Reporting Format
 

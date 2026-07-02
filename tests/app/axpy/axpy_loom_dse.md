@@ -1,8 +1,6 @@
-# AXPY Loom-Pragma DSE
+# AXPY Loom-Pragma DSE (banking-aware)
 
-Kernel: `tests/app/axpy/axpy.cpp`
-
-Loop: `compute_loop`
+Kernel: `tests/app/axpy/axpy.cpp` — loop `compute_loop`
 
 Current source pragma:
 
@@ -15,167 +13,123 @@ for (uint32_t i = 0; i < N; i++) {
 }
 ```
 
-This file evaluates finite Loom pragma choices separately from `axpy_eval.md`.
-The normal eval reports the fully-unrolled ASAP and CGRA full-DAG models; this
-file asks which `LOOM_PARALLEL(P)` / `LOOM_UNROLL(U)` pair to choose, and how far
-a measured DFG simulator run sits from the model. It implements the
-"Optional Loom-Pragma Design-Space Estimate" section of
-[`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md).
+This file selects `LOOM_PARALLEL(P)` / `LOOM_UNROLL(U)` under the **banking-aware
+load/store model** of the "Optional Loom-Pragma Design-Space Estimate" section of
+[`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It
+is a design-space *estimate*, not a lower bound, RTL, or bank-conflict model.
+
+Regenerate:
+
+```bash
+python3 tests/scripts/loom_dse.py axpy --config 6x6
+```
+
+## Why P and U now differ
+
+`compute_loop` is dependency-parallel (each iteration writes a distinct
+`output_y[i]`; `alpha` is read-only). Under the earlier product-only model, `P`
+and `U` were indistinguishable — only `P·U` mattered. This model separates them
+on the **load/store axis** through *banking*:
+
+- **`LOOM_PARALLEL(P)`** partitions `input_x`/`input_y`/`output_y` into `P`
+  contiguous banks, one per worker, so `P` workers load/store on **independent
+  ports** — bandwidth scales with `P`.
+- **`LOOM_UNROLL(U)`** enlarges one worker's body; its `U` iterations' accesses
+  share that one worker's **single port** and serialize — a per-body penalty.
+
+The concurrent load width a chunk can use is `active_L = min(P_tot, banks, L)`,
+which rises with `P` but **not** with `U`. Arithmetic stays a global pool, so the
+distinction lives entirely in loads/stores (which is where `axpy` is bound). The
+op counts of a chunk still depend only on `P·U`; only `active_L`/`active_S`
+change with the split.
 
 ## Setup
 
-`compute_loop` is dependency-parallel: each iteration reads `input_x[i]`,
-`input_y[i]`, and `alpha`, then writes a distinct `output_y[i]`. There is no
-carried scalar state, in-place memory dependence, or reduction.
-
 - Resource config: `6x6` (`P = 36`, `L = 12`, `S = 12`)
-- Trip count: `256` from the typical `LOOM_TRIPCOUNT_FULL` value
-- Schedule: `contiguous`
-- Candidate factors: powers of two up to `8` for both parallelism and unroll
-
-For this one parallel loop, with `E = exposed_iters = min(trip_count, P * U)`,
-`full_waves = trip_count // E`, and `tail = trip_count % E`:
-
-```text
-chunk(E)                  = E-iteration exposed chunk DAG
-pragma_exposure_aggregate = full_waves * aggregate(chunk(E)) + (aggregate(chunk(tail)) if tail else 0)
-schedule_estimate         = full_waves * scheduled(chunk(E)) + (scheduled(chunk(tail)) if tail else 0)
-```
-
-One iteration costs `P = 4` (mul, add, `i++`, compare), `L = 3` (`input_x`,
-`input_y`, `i`), `S = 2` (`output_y`, `i` writeback); `alpha`/`N` are hoisted
-loads charged once per wave, and `CP = 4`.
-
-## The bracket (only one of these is a lower bound)
-
-```text
-absolute_cgra_lb  <=  pragma_exposure_aggregate  <=  schedule_estimate
-```
-
-- `absolute_cgra_lb = 65` is the full-trip aggregate CGRA lower bound — the same
-  Metric-1 lower bound applied to the whole loop, independent of `P`/`U`. It is
-  load-bound: `ceil((3*256 + 2) / 12) = ceil(770/12) = 65`. **This is the only
-  lower bound here.**
-- `pragma_exposure_aggregate` and `schedule_estimate` both assume waves run
-  **sequentially** (no overlap). Real Loom dataflow pipelines waves, so both sit
-  **above** the hardware floor and **must not** be called lower bounds. Their
-  values therefore fall monotonically as exposure grows — which is exactly why
-  minimizing them is not how we pick `P`/`U` (see below).
-
-This is a design-space estimate, not a bound, RTL timing model, mapper model, or
-memory-bank-conflict model.
+- Trip count: `256`; distribution `contiguous`
+- Per-iteration demand: `L = 3` (`input_x`, `input_y`, `i`), `S = 2`
+  (`output_y`, `i`), `P = 4` (mul, add, `i++`, compare); `CP = 4`
+- Binding memory class: **loads** (`ld_iter = 3`, the largest term)
+- `absolute_cgra_lb = 65` — full-trip aggregate over full lanes
+  (`ceil(770/12) = 65`), the **only** lower bound. Reached only when `active_L`
+  hits `12`, i.e. `P_tot >= 12`.
 
 ## Results
 
-Command:
-
-```bash
-python3 tests/scripts/loom_dse.py axpy --config 6x6 --trip-count 256 --max-parallel 8 --max-unroll 8
-```
-
-Rows are grouped when multiple `P,U` pairs expose the same chunk. `wave_pen` is
-`pragma_exposure_aggregate / absolute_cgra_lb` (the wave-serialization penalty of
-that exposure, **not** a hardware cost — it vanishes as `E -> trip_count`).
-`util%` is steady-state per-class utilization (`term / aggregate`): the binding
-class reads `100%` exactly when the exposure is resource-bound.
-
-| candidates | exposed | waves | pragma_agg | sched_est | wave_pen | class | util% P/L/S |
-|------------|--------:|------:|-----------:|----------:|---------:|-------|-------------|
-| `P=8,U=8` *(oversub)* | 64 | 4 | 68 | 76 | 1.05 | resource-bound | 47/**100**/65 |
-| `P=4,U=8`, `P=8,U=4` *(oversub)* | 32 | 8 | 72 | 88 | 1.11 | resource-bound | 44/**100**/67 |
-| **`P=2,U=8`, `P=4,U=4`, `P=8,U=2` ◄ knee** | 16 | 16 | 80 | 112 | 1.23 | resource-bound | 40/**100**/60 |
-| `P=1,U=8`, `P=2,U=4`, `P=4,U=2`, `P=8,U=1` | 8 | 32 | 128 | 160 | 1.97 | latency-bound | 25/75/50 |
-| `P=1,U=4`, `P=2,U=2`, `P=4,U=1`* | 4 | 64 | 256 | 256 | 3.94 | latency-bound | 25/50/25 |
-| `P=1,U=2`, `P=2,U=1` | 2 | 128 | 512 | 512 | 7.88 | latency-bound | 25/25/25 |
-| `P=1,U=1` | 1 | 256 | 1024 | 1024 | 15.75 | latency-bound | 25/25/25 |
-
-`*` marks the pragma currently written in `axpy.cpp`. `◄ knee` marks the
-recommended exposure.
-
-## How the recommendation is made
-
-We do **not** pick `P`/`U` by minimizing `schedule_estimate` (that always selects
-the maximum `P * U`, because the wave-summed estimate falls monotonically with
-exposure — an artifact of the no-overlap assumption). We also do **not** require
-zero scheduler backlog (that always selects the *smallest* exposure and the
-*worst* throughput — the only zero-backlog rows here are `exposed ∈ {1, 2}` at
-512–1024 cycles).
-
-Instead we find the **saturation knee** `E_sat`: the smallest exposure at which
-the binding resource class is fully used every cycle within a wave rather than
-idling under the critical-path latency. The binding class is loads
-(`3 loads/iter`, `L = 12`), and `CP = 4`, so
-
 ```text
-E_sat = smallest E with ceil(E * 3 / 12) >= 4   ->   E_sat = 13
+flags  split    Ptot  aL  aS   exp  wav  cagg  p_agg  sched  class           util P/L/S
+------ -------- ----- --- --- ---- ---- ----- ------ ------ --------------- ------------
+o      i:P8U8      8   8   8   64    4    25    100    108  resource-bound  32/100/64
+o      i:P8U4      8   8   8   32    8    13    104    120  resource-bound  31/100/62
+o      i:P8U2      8   8   8   16   16     7    112    144  resource-bound  29/100/57
+K      i:P8U1      8   8   8    8   32     4    128    192  resource-bound  25/100/50
+b      i:P4U8      4   4   4   32    8    25    200    216  resource-bound  16/100/64
+b      i:P4U4      4   4   4   16   16    13    208    240  resource-bound  15/100/62
+b      i:P4U2      4   4   4    8   32     7    224    288  resource-bound  14/100/57
+b      i:P4U1*     4   4   4    4   64     4    256    384  resource-bound  25/100/50
+b      i:P2U8      2   2   2   16   16    25    400    432  resource-bound   8/100/64
+b      i:P1U1      1   1   1    1  256     5   1280   1536  resource-bound  20/100/40
 ```
 
-Below `E_sat` the load lanes idle part of each wave (`latency-bound`); at and
-above `E_sat` each wave is `resource-bound`. The smallest enumerated exposure
-`>= E_sat` is **16**, so the recommended pragmas are `P=2,U=8`, `P=4,U=4`, or
-`P=8,U=2`.
+`K` = recommended (saturation knee at max bandwidth), `b` = bandwidth-starved
+(memory ports idle, raise `P`), `o` = oversubscribed (extra exposure past the
+knee, no throughput gain), `*` = current source pragma. `p_agg` =
+`pragma_exposure_aggregate` (wave-summed; above the floor), `sched` =
+`schedule_estimate`.
 
-- The current source pragma `P=4,U=1` (`exposed = 4`) is **below** the knee:
-  latency-bound, `64` waves, `pragma_exposure_aggregate = 256` (3.94× the floor);
-  its load lane sits at only `50%` utilization.
-- The knee `exposed = 16` reaches `pragma_exposure_aggregate = 80` (1.23× the
-  floor) and is the first exposure whose load lane is fully utilized (`100%`),
-  with compute and store still holding headroom (`40%`/`60%`).
-- The largest candidate `P=8,U=8` (`exposed = 64`) only improves the aggregate to
-  `68` (1.05×) and its load lane is **still** at `100%` — exactly the same
-  binding-class saturation as the knee. Past the knee, extra exposure is
-  **oversubscription**: the steady-state throughput floor is unchanged, so the
-  shrinking aggregate is just per-wave ceiling rounding and invariant-reload
-  amortization, bought with more hardware and routing for no throughput gain.
+## The P-vs-U distinction, made concrete
 
-Pressure is reported as steady-state per-class **utilization**, not as a
-constraint. `util%` measures `term / aggregate` for each class, so the binding
-class reads `100%` exactly when the exposure is resource-bound and all classes
-read `<100%` when latency-bound (resources idle while the critical path drains).
-This supersedes the scheduler's `peak_ready_backlog`, which is a transient
-artifact of releasing a fully-unrolled chunk's loads at cycle 1 and overstates
-instantaneous pressure. Note that `util%` (like the rest of this model) depends
-only on the product `P · U`; it does **not** distinguish `LOOM_PARALLEL(P)` from
-`LOOM_UNROLL(U)` — those are orthogonal dimensions, and separating them in the
-pressure model would require a per-worker memory-port / banking model.
+At a **fixed product** `P·U = 8`, the split alone changes the estimate by up to
+~6×:
+
+| split | P_tot | active_L | p_agg | reading |
+|-------|------:|---------:|------:|---------|
+| `P=8,U=1` | 8 | 8 | 128 | best — all 8 ports stream |
+| `P=4,U=2` | 4 | 4 | 224 | 1.8× slower — 4 ports |
+| `P=2,U=4` | 2 | 2 | 416 | 3.2× slower |
+| `P=1,U=8` | 1 | 1 | 832 | 6.5× slower — one port, fully serialized |
+
+Same total work, same op counts, same `P·U`; the only difference is that eight
+parallel workers stream on eight banks while one fully-unrolled worker piles all
+8× the traffic onto one port. This is exactly "unroll increases the penalty per
+loop body; parallel enables multiple streams."
+
+## Recommendation
+
+**`LOOM_PARALLEL(8)` with `LOOM_UNROLL(1)`** (the `K` row): the smallest exposure
+that saturates the load ports at the maximum bandwidth reachable with
+`P <= 8`. Reasoning:
+
+- The current source pragma **`P=4, U=1`** is *bandwidth-starved*: it uses only
+  4 of the (up to 8) worker banks and 4 of the 12 load lanes, leaving load
+  bandwidth on the floor (`p_agg = 256`, `4.0×` the lower bound). Its load lane
+  sits at only `4/12` of the fabric.
+- **`P=8, U=1`** doubles the banks to 8 (`active_L = 8`), cutting `p_agg` to
+  `128` (`2.0×`). This is the knee: the load class is fully used every cycle
+  within a wave.
+- Rows past the knee (`P=8, U=2/4/8`, flagged `o`) shave `p_agg` further only
+  through per-wave invariant-reload amortization and ceiling rounding — the
+  steady-state load rate is unchanged (`active_L` is still 8) — while adding
+  unroll area. They are oversubscription, not speed.
+- **To beat `128` you must add banks, not unroll.** `active_L` is capped at
+  `P_tot` here; raising `LOOM_PARALLEL` to `12` (or banking the arrays to 12)
+  would reach `active_L = 12` and the `65`-cycle floor. Unrolling never will.
 
 ## Comparing against measured DFG simulator cycles
 
-DFG simulator **execution** cycles are imported measured data (from a separate
-sheet); this model does not run the simulator. Provide them per candidate via a
-CSV, or a single value for the current source pragma:
+The estimate brackets the true cost as
+`absolute_cgra_lb (65) <= pragma_exposure_aggregate <= schedule_estimate`. When
+measured DFG execution cycles are available for a candidate, read
+`sim / absolute_cgra_lb` as total distance from the resource floor, and
+`sim / schedule_estimate` as overhead beyond the finite-resource schedule (DFG
+lowering, mapping, handshake backpressure, memory latency). Real dataflow
+pipelines the waves, so it can fall **below** `p_agg`/`sched` toward the floor.
 
-```bash
-python3 tests/scripts/loom_dse.py axpy --config 6x6 --trip-count 256 \
-    --max-parallel 8 --max-unroll 8 --sim-metrics-csv temp/axpy_sim_metrics.csv
+## Notes
 
-python3 tests/scripts/loom_dse.py axpy --sim-exec-cycles 1234
-```
-
-CSV schema (header required; `candidate_id`/`notes` are for traceability only):
-
-```text
-kernel,candidate_id,parallel,unroll,schedule,trip_count,sim_exec_cycles,notes
-axpy,axpy-P4-U1,4,1,contiguous,256,1234,current source pragma
-```
-
-When measured data is present, the report adds `sim_exec`, `sim/abs`,
-`sim/pragma`, and `sim/sched` columns (`n/a` for candidates with no measured
-value). Read them as:
-
-- `sim / absolute_cgra_lb` — total distance from the true resource floor;
-- `sim / pragma_exposure_aggregate` — distance from the chosen exposure's
-  wave-serialized aggregate;
-- `sim / schedule_estimate` — overhead **not** explained by the finite-resource
-  schedule model (DFG lowering, mapping, handshake backpressure, memory latency,
-  routing).
-
-## Extension Notes
-
-For nested loops, keep pragma placement explicit, for example outer `P=4` with
-inner `U=2` versus outer `U=2` with inner `P=4`. Equal exposure can still differ
-by carried dependencies, reduction trees, memory grouping, and tail behavior.
-
-For reductions, record whether `LOOM_REDUCE` is present and model the per-worker
-partials plus the final merge tree; the binding class and `E_sat` reasoning
-carries over, with the merge tree adding to the per-wave critical path.
+`util%(P/L/S)` is steady-state per-class utilization (`term / aggregate`). The
+binding class (loads) reads `100%` at and beyond the knee. Unlike the earlier
+model, `util_L` and the load term now depend on `P` (via `active_L`), not just
+`P·U` — that is the banking asymmetry. This model deliberately captures only the
+memory-port asymmetry (favoring `P`) and not control-overhead amortization
+(which would favor `U`); see the spec.
