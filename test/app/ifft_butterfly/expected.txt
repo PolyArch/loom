@@ -1,0 +1,2 @@
+ifft_butterfly checksum: 31.446
+PASSED

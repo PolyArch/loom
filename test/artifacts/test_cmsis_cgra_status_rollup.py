@@ -484,11 +484,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "app",
         {
-            "total": 129,
+            "total": 130,
             "pass": 121,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 8,
+            "unsupported": 9,
             "missing_status": 0,
         },
     )
@@ -496,11 +496,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "loombench",
         {
-            "total": 14,
+            "total": 15,
             "pass": 12,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 1,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )
@@ -546,6 +546,13 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     assert_loombench_cgra_pass_row(repo, rows, "stream_nested", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "trsv_lower", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "trsv_upper", expected_hardware="shared_reduction_adg")
+    assert_loombench_dfg_unsupported_row(
+        repo,
+        rows,
+        "ifft_butterfly",
+        expected_graph="g_t_ifft_butterfly_kernel_red_0_0",
+        expected_diagnostic=SHARED_APP_BLOCKER_DIAGNOSTICS["ifft_butterfly"],
+    )
     assert_app_cgra_pass_row(repo, rows, "cdma", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
     sim_evidence = out_dir / "current-sim-cycle"
@@ -575,10 +582,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         stale_data,
         "app",
         {
-            "total": 129,
+            "total": 130,
             "pass": 1,
             "fail": 0,
-            "blocked": 128,
+            "blocked": 129,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -614,6 +621,36 @@ def assert_loombench_cgra_pass_row(
         or row["final_memory_state_present"] != "true"
     ):
         raise AssertionError(f"LoomBench row should expose real CGRA-sim evidence: {row}")
+    for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+        assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
+
+
+def assert_loombench_dfg_unsupported_row(
+    repo: Path,
+    rows: list[dict[str, str]],
+    case: str,
+    *,
+    expected_graph: str,
+    expected_diagnostic: str,
+) -> None:
+    row = one_row(rows, "loombench", case)
+    if (
+        row["status"] != "unsupported"
+        or row["diagnostic_class"] != "dfg_report_unsupported"
+        or row["owner"] != "sim_report"
+        or row["blocking_prerequisite"] != "dfg_report"
+        or row["dfg_status"] != "unsupported"
+        or row["mapping_status"] != "unsupported"
+        or row["cgra_status"] != "blocked"
+        or row["comparison_status"] != "blocked"
+        or row["hardware_system"] != "shared_reduction_adg"
+        or row["graph_ids"] != expected_graph
+        or row["manifest_case"] != case
+        or row["final_outputs_present"] != "false"
+        or row["final_memory_state_present"] != "false"
+        or expected_diagnostic not in row["diagnostic"]
+    ):
+        raise AssertionError(f"LoomBench row should expose structured DFG unsupported evidence: {row}")
     for key in ("dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
         assert_sha256_file(row[key], row[f"{key}_fingerprint"], repo)
 
@@ -674,10 +711,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "app",
         {
-            "total": 129,
+            "total": 130,
             "pass": 53,
             "fail": 0,
-            "blocked": 76,
+            "blocked": 77,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -1038,6 +1075,11 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "micro-kernel while full stage scheduling and cross-stage feedback remain outside row-level "
         "aggregate evidence"
     ),
+    "ifft_butterfly": (
+        "primary workload graph is partial: ifft_butterfly lowering covers copy, per-stage butterfly, "
+        "and scale micro-kernels while full inverse FFT stage scheduling and cross-stage feedback remain "
+        "outside row-level aggregate evidence"
+    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -1267,11 +1309,11 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         data,
         "app",
         {
-            "total": 129,
+            "total": 130,
             "pass": 19,
             "fail": 0,
             "blocked": 102,
-            "unsupported": 8,
+            "unsupported": 9,
             "missing_status": 0,
         },
     )
@@ -4654,6 +4696,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "trsv_lower")
         write_legacy_case(legacy_root, "trsv_upper")
         write_legacy_case(legacy_root, "rle_decode")
+        write_legacy_case(legacy_root, "ifft_butterfly")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_default_legacy_root_mode(repo, out_dir / "default-legacy")
         assert_explicit_legacy_root_must_exist(repo, out_dir / "missing-explicit-legacy")
@@ -4704,10 +4747,10 @@ def main() -> int:
             data,
             "loombench",
             {
-                "total": 14,
+                "total": 15,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 13,
+                "blocked": 14,
                 "unsupported": 1,
                 "missing_status": 0,
             },

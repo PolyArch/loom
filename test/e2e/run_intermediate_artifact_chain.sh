@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|edge_update|edge_update_batch|fft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
+    col2im|edge_update|edge_update_batch|fft_butterfly|ifft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
       return 0
       ;;
     *)
@@ -134,6 +134,9 @@ case "${CASE}" in
     ;;
   fft_butterfly)
     case_graph="g_t_fft_butterfly_kernel_red_0_0"
+    ;;
+  ifft_butterfly)
+    case_graph="g_t_ifft_butterfly_kernel_red_0_0"
     ;;
   hist_bin)
     case_graph="g_hist_bin_kernel_0"
@@ -2692,6 +2695,15 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --required-discovered-graph "g_t_fft_butterfly_kernel_red_0_0"
         --diagnostic "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly micro-kernel while full stage scheduling and cross-stage feedback remain outside row-level aggregate evidence"
         --evidence "partial FFT butterfly lowering boundary"
+      )
+      ;;
+    ifft_butterfly)
+      expected_primary_graph_token="ifft_butterfly_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --required-discovered-graph "g_t_ifft_butterfly_kernel_red_0_0"
+        --diagnostic "primary workload graph is partial: ifft_butterfly lowering covers copy, per-stage butterfly, and scale micro-kernels while full inverse FFT stage scheduling and cross-stage feedback remain outside row-level aggregate evidence"
+        --evidence "partial IFFT butterfly lowering boundary"
       )
       ;;
     sort_insertion)
