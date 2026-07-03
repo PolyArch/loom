@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|edge_update|edge_update_batch|sort_insertion|sort_merge|sort_quick|spmspm)
+    col2im|edge_update|edge_update_batch|fft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
       return 0
       ;;
     *)
@@ -131,6 +131,9 @@ case "${CASE}" in
     ;;
   edge_update_batch)
     case_graph="g_t_edge_update_batch_kernel_0_0"
+    ;;
+  fft_butterfly)
+    case_graph="g_t_fft_butterfly_kernel_red_0_0"
     ;;
   hist_bin)
     case_graph="g_hist_bin_kernel_0"
@@ -2680,6 +2683,15 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --expected-graph-presence present
         --diagnostic "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop while the batched CSR lookup and update loops remain outside dataflow"
         --evidence "partial dataflow lowering boundary"
+      )
+      ;;
+    fft_butterfly)
+      expected_primary_graph_token="fft_butterfly_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --required-discovered-graph "g_t_fft_butterfly_kernel_red_0_0"
+        --diagnostic "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly micro-kernel while full stage scheduling and cross-stage feedback remain outside row-level aggregate evidence"
+        --evidence "partial FFT butterfly lowering boundary"
       )
       ;;
     sort_insertion)

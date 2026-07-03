@@ -55,6 +55,7 @@ EXPECTED_CASES = {
     "find_first_set",
     "fir_filter",
     "fir_filter_stateful",
+    "fft_butterfly",
     "gemm",
     "gemv",
     "gf_mul",

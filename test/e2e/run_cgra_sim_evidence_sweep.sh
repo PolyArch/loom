@@ -116,6 +116,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     quat_mult
     fir_filter
     fir_filter_stateful
+    fft_butterfly
     gather
     gauss_seidel_step
     gf_mul

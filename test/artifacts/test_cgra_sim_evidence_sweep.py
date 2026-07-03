@@ -75,6 +75,7 @@ DEFAULT_SWEEP_CASES = (
     "quat_mult",
     "fir_filter",
     "fir_filter_stateful",
+    "fft_butterfly",
     "gather",
     "gauss_seidel_step",
     "gf_mul",
@@ -154,6 +155,7 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update",
     "edge_update_batch",
     "col2im",
+    "fft_butterfly",
     "sort_insertion",
     "sort_merge",
     "sort_quick",
@@ -186,6 +188,11 @@ PARTIAL_LOWERING_SWEEP_CASES = {
         "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
         "while the batched CSR lookup and update loops remain outside dataflow",
         "edge_update_batch_kernel",
+    ),
+    "fft_butterfly": (
+        "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly micro-kernel "
+        "while full stage scheduling and cross-stage feedback remain outside row-level aggregate evidence",
+        "fft_butterfly_kernel",
     ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
@@ -6338,6 +6345,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "fir_filter_stateful",
                 "--case",
+                "fft_butterfly",
+                "--case",
                 "gemm",
                 "--case",
                 "matmul",
@@ -7490,11 +7499,11 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 128,
+            "total": 129,
             "pass": 121,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 7,
+            "unsupported": 8,
             "missing_status": 0,
         }
         if counts != expected_counts:

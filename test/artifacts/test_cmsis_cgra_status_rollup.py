@@ -484,11 +484,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "app",
         {
-            "total": 128,
+            "total": 129,
             "pass": 121,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 7,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
@@ -575,10 +575,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         stale_data,
         "app",
         {
-            "total": 128,
+            "total": 129,
             "pass": 1,
             "fail": 0,
-            "blocked": 127,
+            "blocked": 128,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -674,10 +674,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "app",
         {
-            "total": 128,
+            "total": 129,
             "pass": 53,
             "fail": 0,
-            "blocked": 75,
+            "blocked": 76,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -1033,6 +1033,11 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
         "observe the kernel return value"
     ),
+    "fft_butterfly": (
+        "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly "
+        "micro-kernel while full stage scheduling and cross-stage feedback remain outside row-level "
+        "aggregate evidence"
+    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -1065,7 +1070,22 @@ SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS: dict[str, str] = {}
 SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {}
 
 
+def assert_shared_app_attempted_blockers_are_classified(repo: Path, rows: list[dict[str, str]]) -> None:
+    manifest = json.loads((repo / "test/app/shared-cgra-blocker-batch.json").read_text())
+    expected_non_pass = set(SHARED_APP_BLOCKER_DIAGNOSTICS)
+    expected_non_pass.update(SHARED_APP_MAPPING_FAILURE_DIAGNOSTICS)
+    expected_non_pass.update(SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS)
+    expected_non_pass.update(SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS)
+
+    for entry in manifest["cases"]:
+        case = entry["case"]
+        row = one_row(rows, "app", case)
+        if row["status"] != "pass" and case not in expected_non_pass:
+            raise AssertionError(f"attempted shared-ADG non-pass app row lacks explicit diagnostic checks: {row}")
+
+
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
+    assert_shared_app_attempted_blockers_are_classified(repo, rows)
     for case, diagnostic in SHARED_APP_BLOCKER_DIAGNOSTICS.items():
         row = one_row(rows, "app", case)
         if (
@@ -1247,11 +1267,11 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         data,
         "app",
         {
-            "total": 128,
+            "total": 129,
             "pass": 19,
             "fail": 0,
             "blocked": 102,
-            "unsupported": 7,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
