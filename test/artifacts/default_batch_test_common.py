@@ -109,6 +109,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "sort_bubble",
     "stream_nested",
     "stream_update",
+    "tridiag_solve",
     "trsv_lower",
     "trsv_upper",
     "string_compare",

@@ -129,6 +129,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     stream_nested
     trsv_lower
     trsv_upper
+    tridiag_solve
     stream_update
     lower_bound
     matvec

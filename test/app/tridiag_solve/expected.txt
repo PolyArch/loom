@@ -1,0 +1,2 @@
+tridiag_solve checksum: 89.426
+PASSED

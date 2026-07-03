@@ -118,6 +118,7 @@ EXPECTED_CASES = {
     "string_hash",
     "stream_nested",
     "stream_update",
+    "tridiag_solve",
     "trsv_lower",
     "trsv_upper",
     "transpose",

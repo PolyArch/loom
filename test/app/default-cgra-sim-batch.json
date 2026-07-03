@@ -50,6 +50,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "tridiag_solve",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "sort_bubble",
       "hardware": "shared_memory_reduction_adg"
     },

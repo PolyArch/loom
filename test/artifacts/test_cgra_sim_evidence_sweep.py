@@ -88,6 +88,7 @@ DEFAULT_SWEEP_CASES = (
     "stream_nested",
     "trsv_lower",
     "trsv_upper",
+    "tridiag_solve",
     "stream_update",
     "lower_bound",
     "matvec",
@@ -2895,6 +2896,144 @@ def assert_trsv_upper_evidence(evidence_dir: Path) -> None:
         or comparison.get("performance_comparison_status") != "pass"
     ):
         raise AssertionError(f"trsv_upper should preserve CGRA/comparison row-0 solve evidence: {cgra_path}: {cgra} {comparison}")
+
+
+def assert_tridiag_solve_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg4": [
+            "f32:4",
+            "f32:4",
+            "f32:4",
+            "f32:4",
+            "f32:4",
+            "f32:4",
+            "f32:4",
+            "f32:4",
+        ],
+        "arg5": [
+            "f32:0",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+        ],
+        "arg6": [
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:-1",
+            "f32:0",
+        ],
+        "arg7": [
+            "f32:-0.250000",
+            "f32:-0.266667",
+            "f32:-0.267857",
+            "f32:-0.267943",
+            "f32:-0.267949",
+            "f32:-0.267949",
+            "f32:-0.267949",
+            "f32:0",
+        ],
+        "arg8": [
+            "f32:1",
+            "f32:2",
+            "f32:3",
+            "f32:4",
+            "f32:5",
+            "f32:6",
+            "f32:7",
+            "f32:8",
+        ],
+        "arg9": [
+            "f32:0.250000",
+            "f32:0.600000",
+            "f32:0.964286",
+            "f32:1.330144",
+            "f32:1.696154",
+            "f32:2.062178",
+            "f32:2.428203",
+            "f32:2.794229",
+        ],
+    }
+    expected_outputs = ["none", "f32:2.794229", "f32:0"]
+    expected_counts = {
+        "arith.divf": 14,
+        "arith.index_cast": 8,
+        "dataflow.carry": 16,
+        "dataflow.load": 35,
+        "dataflow.store": 14,
+        "dataflow.stream": 8,
+        "dataflow.sync": 7,
+        "llvm.fneg": 14,
+        "llvm.intr.fmuladd": 14,
+    }
+
+    dfg_path = evidence_dir / "tridiag_solve.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_tridiag_solve_kernel_red_0_0"
+        or dfg.get("dynamic_work_items") != 7
+        or dfg.get("optimistic_cycles") != 601
+        or dfg.get("final_outputs") != expected_outputs
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(
+            "tridiag_solve DFG evidence should match real tridiagonal "
+            f"forward elimination: {dfg_path}: {dfg}"
+        )
+    assert_operation_fire_counts("tridiag_solve", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "tridiag_solve.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_signal_window_adg"
+        or mapping.get("graph") != "g_t_tridiag_solve_kernel_red_0_0"
+        or mapping.get("placed_records") != 17
+        or mapping.get("routed_edges") != 32
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 711
+    ):
+        raise AssertionError(
+            f"tridiag_solve should route on shared signal-window hardware: {mapping_path}: {mapping}"
+        )
+    assert_mapping_uses_switch_multihop(evidence_dir, "tridiag_solve")
+
+    cgra_path = evidence_dir / "tridiag_solve.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    comparison = json.loads((evidence_dir / "tridiag_solve.sim-comparison-report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_signal_window_adg"
+        or cgra.get("dfg_cycles") != 601
+        or cgra.get("hardware_aware_cycles") != 792
+        or cgra.get("placed_records") != 17
+        or cgra.get("routed_edges") != 32
+        or cgra.get("route_segments") != 136
+        or cgra.get("config_records") != 711
+        or cgra.get("final_outputs") != expected_outputs
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 601
+        or comparison.get("cgra_sim_cycles") != 792
+    ):
+        raise AssertionError(
+            f"tridiag_solve should preserve CGRA/comparison tridiagonal evidence: {cgra_path}: {cgra} "
+            f"{comparison}"
+        )
 
 
 def assert_mat3x3_mult_evidence(evidence_dir: Path) -> None:
@@ -6065,6 +6204,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "trsv_upper",
                 "--case",
+                "tridiag_solve",
+                "--case",
                 "stream_update",
                 "--case",
                 "gather",
@@ -6366,6 +6507,7 @@ def main(argv: list[str]) -> int:
             "distance_point",
             "line_intersect",
             "kmp_table",
+            "tridiag_solve",
             "depthwise_conv",
             "edit_distance_step",
             "normalize",
@@ -6424,6 +6566,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "line_intersect", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "database_join", 3)
         assert_dfg_dynamic_work_items(evidence_dir, "spmm", 4)
+        assert_dfg_dynamic_work_items(evidence_dir, "tridiag_solve", 7)
         assert_dfg_dynamic_work_items(evidence_dir, "depthwise_conv", 432)
         assert_dfg_dynamic_work_items(evidence_dir, "edit_distance_step", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "normalize", 23)
@@ -6448,6 +6591,7 @@ def main(argv: list[str]) -> int:
         assert_stream_nested_evidence(evidence_dir)
         assert_trsv_lower_evidence(evidence_dir)
         assert_trsv_upper_evidence(evidence_dir)
+        assert_tridiag_solve_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_spmm_cgra_evidence.py", str(evidence_dir)])
         run(repo, ["python3", "test/artifacts/assert_batchnorm_cgra_evidence.py", str(evidence_dir)])
         assert_mat3x3_mult_evidence(evidence_dir)
@@ -6855,6 +6999,7 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "line_intersect", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "kmp_table", "shared_memory_reduction_adg")
         assert_kmp_table_evidence(evidence_dir)
+        assert_mapping_hardware(evidence_dir, "tridiag_solve", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "depthwise_conv", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "normalize", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "normalize_vec3", "shared_signal_window_adg")
@@ -7293,6 +7438,9 @@ def main(argv: list[str]) -> int:
         kmp_table_row = one_row(rows, "kmp_table")
         if kmp_table_row["hardware_system"] != "shared_memory_reduction_adg":
             raise AssertionError(f"kmp_table should use shared memory-reduction hardware: {kmp_table_row}")
+        tridiag_solve_row = one_row(rows, "tridiag_solve")
+        if tridiag_solve_row["hardware_system"] != "shared_signal_window_adg":
+            raise AssertionError(f"tridiag_solve should use shared signal-window hardware: {tridiag_solve_row}")
         depthwise_conv_row = one_row(rows, "depthwise_conv")
         if depthwise_conv_row["hardware_system"] != "shared_memory_reduction_adg":
             raise AssertionError(f"depthwise_conv should use shared memory-reduction hardware: {depthwise_conv_row}")
@@ -7342,8 +7490,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 127,
-            "pass": 120,
+            "total": 128,
+            "pass": 121,
             "fail": 0,
             "blocked": 0,
             "unsupported": 7,

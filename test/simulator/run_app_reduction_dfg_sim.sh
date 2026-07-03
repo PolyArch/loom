@@ -973,6 +973,25 @@ configure_trsv_upper_args() {
     )
 }
 
+configure_tridiag_solve_args() {
+    append_ctrl_tokens 7
+    sim_args+=(
+        --graph g_t_tridiag_solve_kernel_red_0_0
+        --workload tridiag_solve
+        --arg 1=1
+        --arg 2=8
+        --arg 3=1
+        --memref 4=4.000000e+00,4.000000e+00,4.000000e+00,4.000000e+00,4.000000e+00,4.000000e+00,4.000000e+00,4.000000e+00
+        --memref 5=0.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00
+        --memref 6=-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,-1.000000e+00,0.000000e+00
+        --memref 7=-2.500000e-01,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00
+        --memref 8=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00,5.000000e+00,6.000000e+00,7.000000e+00,8.000000e+00
+        --memref 9=2.500000e-01,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00
+        --arg 10=2.500000e-01
+        --arg 11=-2.500000e-01
+    )
+}
+
 configure_dot_product_3d_core_args() {
     append_ctrl_tokens 16
     append_raw_memref 2 "$(dot_product_3d_lhs_values)"
@@ -2092,6 +2111,9 @@ PY
         ;;
     trsv_upper)
         configure_trsv_upper_args
+        ;;
+    tridiag_solve)
+        configure_tridiag_solve_args
         ;;
     merge)
         append_ctrl_tokens 1
