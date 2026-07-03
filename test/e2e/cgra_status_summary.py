@@ -22,6 +22,7 @@ import sim_comparison_report  # noqa: E402
 
 
 STATUS_KEYS = ("pass", "fail", "blocked", "unsupported")
+MLIR_SYMBOL_REF_PATTERN = r'@(?:"[^"]+"|[A-Za-z_.$][\w.$-]*)'
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -219,10 +220,60 @@ def ordered_unique(items: Iterable[str]) -> list[str]:
     return result
 
 
+def mlir_symbol_name(symbol_ref: str) -> str:
+    if symbol_ref.startswith("@"):
+        return symbol_ref[1:]
+    return symbol_ref
+
+
 def dfg_graph_ids_from_text(text: str) -> list[str]:
-    definitions = re.findall(r"\bdataflow\.graph\.func\s+(?:private\s+)?@([A-Za-z_.$][\w.$-]*)", text)
-    launches = re.findall(r"\bdataflow\.graph\.launch\s+@([A-Za-z_.$][\w.$-]*)", text)
-    return ordered_unique([*definitions, *launches])
+    definitions = re.findall(
+        rf"\bdataflow\.graph\.func\s+(?:private\s+)?({MLIR_SYMBOL_REF_PATTERN})",
+        text,
+    )
+    launches = re.findall(rf"\bdataflow\.graph\.launch\s+({MLIR_SYMBOL_REF_PATTERN})", text)
+    return ordered_unique(mlir_symbol_name(symbol_ref) for symbol_ref in [*definitions, *launches])
+
+
+def residual_call_targets_from_text(text: str) -> list[str]:
+    return ordered_unique(
+        re.findall(
+            rf"\b(?:llvm\.call|func\.call)\b(?:\s+[A-Za-z_.$][\w.$-]*)*\s+({MLIR_SYMBOL_REF_PATTERN})",
+            text,
+        )
+    )
+
+
+def residual_intrinsics_from_text(text: str) -> list[str]:
+    call_intrinsics = re.findall(r'\bllvm\.call_intrinsic\s+"([^"]+)"', text)
+    unquoted_intrinsics = re.findall(r'(?<![\w."])(llvm\.intr\.[A-Za-z_.$][\w.$-]*)\b', text)
+    quoted_intrinsics = re.findall(r'"(llvm\.intr\.[^"]+)"', text)
+    return ordered_unique([*call_intrinsics, *unquoted_intrinsics, *quoted_intrinsics])
+
+
+def residual_control_ops_from_text(text: str) -> list[str]:
+    return ordered_unique(re.findall(r"\bscf\.(?:forall|parallel|for|while|if|index_switch)\b", text))
+
+
+def residual_globals_from_text(text: str) -> list[str]:
+    return ordered_unique(re.findall(rf"\bllvm\.mlir\.addressof\s+({MLIR_SYMBOL_REF_PATTERN})", text))
+
+
+def residual_no_graph_detail(text: str) -> str:
+    details: list[str] = []
+    calls = residual_call_targets_from_text(text)
+    if calls:
+        details.append(f"residual calls: {','.join(calls)}")
+    intrinsics = residual_intrinsics_from_text(text)
+    if intrinsics:
+        details.append(f"residual intrinsics: {','.join(intrinsics)}")
+    controls = residual_control_ops_from_text(text)
+    if controls:
+        details.append(f"residual control ops: {','.join(controls)}")
+    globals_ = residual_globals_from_text(text)
+    if globals_:
+        details.append(f"residual globals: {','.join(globals_)}")
+    return "; ".join(details)
 
 
 def mlir_mentions_symbol(text: str, symbol: str) -> bool:
@@ -299,9 +350,11 @@ def apply_cmsis_dfg_mlir_evidence(
     row_data["status"] = "unsupported"
     row_data["diagnostic_class"] = "cmsis_no_dataflow_graph"
     row_data["blocking_prerequisite"] = "dataflow_graph"
+    blocker_detail = residual_no_graph_detail(text)
     row_data["diagnostic"] = (
         f"CMSIS DFG MLIR evidence exists at {evidence_path} but contains no "
         "dataflow.graph.func or dataflow.graph.launch operation"
+        + (f"; {blocker_detail}" if blocker_detail else "")
     )
 
 

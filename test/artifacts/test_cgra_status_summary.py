@@ -373,7 +373,14 @@ def write_chain_style_sim_evidence_case(evidence_dir: Path, case: str) -> Path:
     return chain_dir
 
 
-def write_cmsis_dfg_mlir(path: Path, *, symbol: str, graph: bool) -> None:
+def write_cmsis_dfg_mlir(
+    path: Path,
+    *,
+    symbol: str,
+    graph: bool,
+    residual_call: str = "",
+    residual_body: str = "",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if graph:
         body = f"""
@@ -388,6 +395,18 @@ module {{
   dataflow.graph.func private @g_{symbol}_0(%arg0: none) -> none {{
     dataflow.graph.return %arg0 : none
   }}
+}}
+"""
+    elif residual_body:
+        body = residual_body
+    elif residual_call:
+        body = f"""
+module {{
+  func.func @{symbol}() {{
+    %0 = llvm.call @{residual_call}() : () -> i32
+    return
+  }}
+  llvm.func @{residual_call}() -> i32
 }}
 """
     else:
@@ -568,6 +587,25 @@ def main() -> int:
         {"hardware": "system_dual_spatial_shared_memory_soc::acc1"}
     ) != ("system_dual_spatial_shared_memory_soc", ""):
         raise AssertionError("system-root legacy hardware should not populate a SpatialCore template")
+    quoted_graph_ids = cgra_status_summary.dfg_graph_ids_from_text(
+        """
+module {
+  dataflow.thread private @t() ctrl (%arg0: none) iv (%arg1: index) {
+    %done0 = dataflow.graph.launch @"g.quoted"(%arg0) : (none) -> none
+    %done1 = dataflow.graph.launch @g_plain(%arg0) : (none) -> none
+    dataflow.thread.yield
+  }
+  dataflow.graph.func private @"g.quoted"(%arg0: none) -> none {
+    dataflow.graph.return %arg0 : none
+  }
+  dataflow.graph.func private @g_plain(%arg0: none) -> none {
+    dataflow.graph.return %arg0 : none
+  }
+}
+"""
+    )
+    if quoted_graph_ids != ['"g.quoted"', "g_plain"]:
+        raise AssertionError(f"quoted dataflow graph symbols should be preserved: {quoted_graph_ids}")
     with artifact_test_common.repo_temp_dir(repo, "loom-cgra-status-") as tmp:
         out_dir = Path(tmp)
         csv_output = out_dir / "cgra-status-summary.csv"
@@ -1323,7 +1361,31 @@ def main() -> int:
         cmsis_nn_dfg_dir = out_dir / "cmsis-nn-fixture-dfg"
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_add_q15.dfg.mlir", symbol="arm_add_q15", graph=True)
         write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_mult_f32.dfg.mlir", symbol="wrong_symbol", graph=True)
-        write_cmsis_dfg_mlir(cmsis_dsp_dfg_dir / "arm_sin_f32.dfg.mlir", symbol="arm_sin_f32", graph=False)
+        write_cmsis_dfg_mlir(
+            cmsis_dsp_dfg_dir / "arm_sin_f32.dfg.mlir",
+            symbol="arm_sin_f32",
+            graph=False,
+            residual_body="""
+module {
+  llvm.mlir.global external constant @".sin.table"() : !llvm.array<16 x f32>
+  func.func @arm_sin_f32(%arg0: f32, %arg1: i1) -> f32 {
+    %table = llvm.mlir.addressof @".sin.table" : !llvm.ptr
+    %zero = arith.constant 0.0 : f32
+    %fma = llvm.intr.fmuladd(%arg0, %arg0, %zero) : (f32, f32, f32) -> f32
+    %qzero = arith.constant 0 : i32
+    %call = llvm.call @arm_sin_f32_table_lookup(%table) : (!llvm.ptr) -> f32
+    %quoted = llvm.call @"quoted.helper"() : () -> f32
+    "llvm.intr.memcpy"(%table, %table, %qzero) : (!llvm.ptr, !llvm.ptr, i32) -> ()
+    scf.if %arg1 {
+      %qadd = llvm.call_intrinsic "llvm.arm.qadd"(%qzero, %qzero) : (i32, i32) -> i32
+    }
+    return %fma : f32
+  }
+  llvm.func @arm_sin_f32_table_lookup(!llvm.ptr) -> f32
+  llvm.func @"quoted.helper"() -> f32
+}
+""",
+        )
         write_cmsis_dfg_mlir(cmsis_nn_dfg_dir / "arm_relu_q15.dfg.mlir", symbol="arm_relu_q15", graph=True)
         write_cmsis_dfg_mlir(cmsis_nn_dfg_dir / "arm_reshape_s8.dfg.mlir", symbol="arm_reshape_s8", graph=False)
         cmsis_sim_evidence = out_dir / "cmsis-sim-evidence"
@@ -1643,6 +1705,18 @@ def main() -> int:
             or cmsis_sin["required_slice_count"] != "0"
         ):
             raise AssertionError(f"CMSIS-DSP no-graph DFG MLIR should become structured unsupported: {cmsis_sin}")
+        if "residual calls: @arm_sin_f32_table_lookup" not in cmsis_sin["diagnostic"]:
+            raise AssertionError(f"CMSIS-DSP no-graph row should expose residual calls: {cmsis_sin}")
+        for expected in (
+            '@"quoted.helper"',
+            "llvm.arm.qadd",
+            "llvm.intr.fmuladd",
+            "llvm.intr.memcpy",
+            "scf.if",
+            '@".sin.table"',
+        ):
+            if expected not in cmsis_sin["diagnostic"]:
+                raise AssertionError(f"CMSIS-DSP no-graph row should expose {expected}: {cmsis_sin}")
         assert_sha256_file(cmsis_sin["dfg_mlir"], cmsis_sin["dfg_mlir_fingerprint"], repo)
         cmsis_mult = one_row(cmsis_evidence_rows, "cmsis-dsp", "BasicMathFunctions/arm_mult_f32.c")
         if (
