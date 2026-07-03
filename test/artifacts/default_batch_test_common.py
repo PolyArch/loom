@@ -54,6 +54,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "fir_filter",
     "fir_filter_stateful",
     "gather",
+    "gauss_seidel_step",
     "hash_mix",
     "hist_bin",
     "histogram",

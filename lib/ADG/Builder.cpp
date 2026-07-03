@@ -1304,6 +1304,21 @@ void addControlSyncPe(ModuleBuilder &module, llvm::StringRef prefix,
 void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
                  llvm::StringRef pred, llvm::StringRef trueValue,
                  llvm::StringRef falseValue) {
+  auto addSelectFu = [&](llvm::StringRef opName) {
+    module.addExactBodyLine(
+        "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
+    module.addExactBodyLine(
+        "                %a = %true_value : !fabric.bits<32>,");
+    module.addExactBodyLine("                %b = %false_value : "
+                            "!fabric.bits<32>) -> !fabric.bits<32> {");
+    module.addExactBodyLine(std::string("        %value = fabric.op [@") +
+                            opName.str() + "] (%sel, %a, %b)");
+    module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<32>, "
+                            "!fabric.bits<32>) -> !fabric.bits<32>");
+    module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
+    module.addExactBodyLine("      }");
+  };
+
   module.addExactBodyLine(valueName(result) + " =");
   module.addExactBodyLine("    fabric.pe [spatial] (%pred = " +
                           valueName(pred) + " : !fabric.bits<32>,");
@@ -1312,18 +1327,8 @@ void addSelectPe(ModuleBuilder &module, llvm::StringRef result,
   module.addExactBodyLine("                         %false_value = " +
                           valueName(falseValue) + " : !fabric.bits<32>)");
   module.addExactBodyLine("        -> !fabric.bits<32> {");
-  module.addExactBodyLine(
-      "      fabric.fu(%sel = %pred : !fabric.bits<32> to !fabric.bits<1>,");
-  module.addExactBodyLine(
-      "                %a = %true_value : !fabric.bits<32>,");
-  module.addExactBodyLine("                %b = %false_value : "
-                          "!fabric.bits<32>) -> !fabric.bits<32> {");
-  module.addExactBodyLine("        %value = fabric.op [@arith.select] "
-                          "(%sel, %a, %b)");
-  module.addExactBodyLine("            : (!fabric.bits<1>, !fabric.bits<32>, "
-                          "!fabric.bits<32>) -> !fabric.bits<32>");
-  module.addExactBodyLine("        fabric.yield %value : !fabric.bits<32>");
-  module.addExactBodyLine("      }");
+  addSelectFu("arith.select");
+  addSelectFu("llvm.select");
   module.addExactBodyLine("    }");
 }
 
@@ -2647,27 +2652,35 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   addCmpPe("cmpi_pred_aux", {"arith.cmpi", "llvm.icmp"},
            std::move(integerCmpPredicates));
 
-  PeSpec wideCmpPe;
-  wideCmpPe.inputs = {{"pa", "cmp64_lhs", "!fabric.bits<64>", ""},
-                      {"pb", "cmp64_rhs", "!fabric.bits<64>", ""}};
-  wideCmpPe.resultNames = {"cmpi64_pred"};
-  wideCmpPe.resultTypes = {"!fabric.bits<64>"};
-  wideCmpPe.fus.push_back(
-      FuSpec{{{"lhs", "pa", "!fabric.bits<64>", ""},
-              {"rhs", "pb", "!fabric.bits<64>", ""}},
-             {"!fabric.bits<64>"},
-             {FabricOpSpec{{"pred"},
-                           {"arith.cmpi"},
-                           {"lhs", "rhs"},
-                           {"!fabric.bits<64>", "!fabric.bits<64>"},
-                           {"!fabric.bits<1>"},
-                           {{"predicate",
-                             {"eq", "ne", "slt", "sle", "sgt", "sge", "ult",
-                              "ule", "ugt", "uge"}}},
-                           {}}},
-             {"pred"},
-             {"!fabric.bits<1>"}});
-  module.addPe(std::move(wideCmpPe));
+  auto addWideCmpPe = [&](std::string resultName, std::string resultType) {
+    PeSpec pe;
+    pe.inputs = {{"pa", "cmp64_lhs", "!fabric.bits<64>", ""},
+                 {"pb", "cmp64_rhs", "!fabric.bits<64>", ""}};
+    pe.resultNames = {std::move(resultName)};
+    pe.resultTypes = {resultType};
+    pe.fus.push_back(
+        FuSpec{{{"lhs", "pa", "!fabric.bits<64>", ""},
+                {"rhs", "pb", "!fabric.bits<64>", ""}},
+               {resultType},
+               {FabricOpSpec{{"pred"},
+                             {"arith.cmpi"},
+                             {"lhs", "rhs"},
+                             {"!fabric.bits<64>", "!fabric.bits<64>"},
+                             {"!fabric.bits<1>"},
+                             {{"predicate",
+                               {"eq", "ne", "slt", "sle", "sgt", "sge",
+                                "ult", "ule", "ugt", "uge"}}},
+                             {}}},
+               {"pred"},
+               {"!fabric.bits<1>"}});
+    module.addPe(std::move(pe));
+  };
+  addWideCmpPe("cmpi64_pred", "!fabric.bits<64>");
+  addWideCmpPe("cmpi64_pred_aux", "!fabric.bits<64>");
+  module.addExactBodyLine(
+      "%cmpi64_pred_aux_narrow = fabric.fifo %cmpi64_pred_aux "
+      "[max_depth = 1, bypassable = true] {bypassed = true}");
+  module.addExactBodyLine("  : !fabric.bits<64> to !fabric.bits<32>");
 
   PeSpec widePredExtuiPe;
   widePredExtuiPe.inputs = {{"pa", "cmpi64_pred", "!fabric.bits<64>", ""}};
@@ -2692,13 +2705,13 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                      {"pc", "select_false", "!fabric.bits<32>", ""}};
   selectPe.resultNames = {"selected"};
   selectPe.resultTypes = {"!fabric.bits<32>"};
-  auto makeSelectFu = []() {
+  auto makeSelectFu = [](llvm::StringRef opName) {
     return FuSpec{{{"sel", "pa", "!fabric.bits<32>", "!fabric.bits<1>"},
                    {"when_true", "pb", "!fabric.bits<32>", ""},
                    {"when_false", "pc", "!fabric.bits<32>", ""}},
                   {"!fabric.bits<32>"},
                   {FabricOpSpec{{"selected_value"},
-                                {"arith.select"},
+                                {opName.str()},
                                 {"sel", "when_true", "when_false"},
                                 {"!fabric.bits<1>", "!fabric.bits<32>",
                                  "!fabric.bits<32>"},
@@ -2707,8 +2720,9 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                 {}}},
                   {"selected_value"}};
   };
-  selectPe.fus.push_back(makeSelectFu());
-  selectPe.fus.push_back(makeSelectFu());
+  selectPe.fus.push_back(makeSelectFu("arith.select"));
+  selectPe.fus.push_back(makeSelectFu("arith.select"));
+  selectPe.fus.push_back(makeSelectFu("llvm.select"));
   module.addPe(std::move(selectPe));
 
   auto addDemuxPe = [&](llvm::StringRef valueInput, llvm::StringRef falseResult,
@@ -3153,10 +3167,12 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                           "bit_invariant_aux1", "aux_masked"});
   addSingleResultBits32Switch(
       "int_extui_input", {"i32a", "cmpi_pred", "cmpi_pred_aux", "cmpf_pred",
-                          "logic_masked", "addr_masked", "int_xor", "aux_xor"});
+                          "cmpi64_pred_aux_narrow", "logic_masked",
+                          "addr_masked", "int_xor", "aux_xor"});
   addSingleResultBits32Switch(
       "select_pred", {"i32a", "logic_masked", "addr_masked", "cmpi_pred",
-                      "cmpi_pred_aux", "cmpf_pred", "aux_masked"});
+                      "cmpi_pred_aux", "cmpi64_pred_aux_narrow", "cmpf_pred",
+                      "aux_masked"});
   addSingleResultBits32Switch(
       "select_true",
       {"i32b", "idx", "data1", "rotated", "data0", "int_sum", "addr_sum",
@@ -3170,13 +3186,15 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                                "running", "addr_shifted"});
   addSingleResultBits32Switch(
       "gate_cond", {"aux_rwc", "logic_masked", "addr_masked", "cmpi_pred",
-                    "cmpi_pred_aux", "cmpf_pred", "fp_gate", "i32a"});
+                    "cmpi_pred_aux", "cmpi64_pred_aux_narrow", "cmpf_pred",
+                    "fp_gate", "i32a"});
   addSingleResultBits32Switch(
       "gate_value", {"aux_idx", "idx", "running", "addr_sum", "int_sum",
                      "squared_data", "carried_scan", "cast0_result",
                      "cast1_result", "cast2_result", "cast3_result"});
   addSingleResultBits32Switch("demux_sel", {"logic_masked", "addr_masked",
                                             "cmpi_pred", "cmpi_pred_aux",
+                                            "cmpi64_pred_aux_narrow",
                                             "cmpf_pred", "fp_gate", "i32a"});
   addSingleResultBits32Switch("demux_value",
                               {"carried_scan", "bit_carry", "state_carry",
@@ -3188,7 +3206,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
        "addr_sum", "int_product", "int_product_aux", "selected"});
   addSingleResultBits32Switch("mux_sel", {"logic_masked", "addr_masked",
                                           "cmpi_pred", "cmpi_pred_aux",
-                                          "cmpf_pred", "fp_gate", "i32a"});
+                                          "cmpi64_pred_aux_narrow", "cmpf_pred",
+                                          "fp_gate", "i32a"});
   addSingleResultBits32Switch("mux_false",
                               {"control_demux_false", "carried_scan",
                                "bit_carry", "state_carry", "fp_invariant"});
@@ -3198,8 +3217,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
                    "scaled_reduction", "data0", "data1"});
   addSingleResultBits32Switch("control_token_demux_sel",
                               {"logic_masked", "addr_masked", "cmpi_pred",
-                               "cmpi_pred_aux", "cmpf_pred", "fp_gate",
-                               "i32a"});
+                               "cmpi_pred_aux", "cmpi64_pred_aux_narrow",
+                               "cmpf_pred", "fp_gate", "i32a"});
   module.addExactBodyLine(
       "%control_token_demux_false_token = fabric.fifo "
       "%control_token_demux_false [max_depth = 1, bypassable = true] "
@@ -3216,8 +3235,8 @@ ModuleBuilder loom::adg::buildSharedReductionAdg() {
   module.addExactBodyLine("  : !fabric.bits<32> to !fabric.bits<0>");
   addSingleResultBits32Switch("control_token_mux_sel",
                               {"logic_masked", "addr_masked", "cmpi_pred",
-                               "cmpi_pred_aux", "cmpf_pred", "fp_gate",
-                               "i32a"});
+                               "cmpi_pred_aux", "cmpi64_pred_aux_narrow",
+                               "cmpf_pred", "fp_gate", "i32a"});
   module.addExactBodyLine(
       "%control_token_mux_false = fabric.switch [spatial] "
       "%control_token_demux_false_token, %store_done0, %ctrl");

@@ -145,12 +145,8 @@ DEFAULT_SWEEP_CASES = (
 )
 MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
-MAPPING_UNSUPPORTED_SWEEP_CASES = (
-    "gauss_seidel_step",
-)
-MAPPING_UNSUPPORTED_OPERATIONS = {
-    "gauss_seidel_step": "llvm.select",
-}
+MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_UNSUPPORTED_OPERATIONS: dict[str, str] = {}
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update",
@@ -612,6 +608,136 @@ def assert_promoted_row(repo: Path, rows: list[dict[str, str]], case: str) -> No
         actual = artifact_test_common.fingerprint(path)
         if actual != row[fingerprint_column]:
             raise AssertionError(f"{case} row has stale {artifact_column} fingerprint: {row}")
+
+
+GAUSS_SEIDEL_EXPECTED_FINAL_OUTPUTS = ["none", "f32:0.100000"]
+
+GAUSS_SEIDEL_EXPECTED_FIRE_COUNTS = {
+    "arith.cmpi": 15,
+    "arith.index_cast": 15,
+    "dataflow.load": 15,
+    "llvm.intr.fmuladd": 8,
+    "llvm.select": 7,
+    "scf.if": 8,
+}
+
+GAUSS_SEIDEL_EXPECTED_MEMORY = {
+    "arg6": [
+        "f32:0.100000",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+    ],
+    "arg7": [
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+        "f32:0",
+    ],
+    "arg8": [
+        "f32:1",
+        "f32:10",
+        "f32:1",
+        "f32:1",
+        "f32:1",
+        "f32:1",
+        "f32:1",
+        "f32:1",
+    ],
+}
+
+
+def assert_gauss_seidel_step_evidence(evidence_dir: Path) -> None:
+    case = "gauss_seidel_step"
+    dfg = json.loads((evidence_dir / f"{case}.dfg.report.json").read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_gauss_seidel_step_kernel_0_0"
+        or dfg.get("dynamic_work_items") != 8
+        or dfg.get("final_outputs") != GAUSS_SEIDEL_EXPECTED_FINAL_OUTPUTS
+        or dfg.get("final_memory_state") != GAUSS_SEIDEL_EXPECTED_MEMORY
+    ):
+        raise AssertionError(f"gauss_seidel_step DFG evidence changed: {dfg}")
+    for op_name, expected_count in GAUSS_SEIDEL_EXPECTED_FIRE_COUNTS.items():
+        actual_count = dfg.get("operation_fire_counts", {}).get(op_name)
+        if actual_count != expected_count:
+            raise AssertionError(
+                f"gauss_seidel_step {op_name} fire count should be {expected_count}, "
+                f"got {actual_count}: {dfg}"
+            )
+
+    mapping = json.loads((evidence_dir / f"{case}.mapping.json").read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_reduction_adg"
+        or mapping.get("placed_records") != 8
+        or mapping.get("routed_edges") != 5
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+    ):
+        raise AssertionError(f"gauss_seidel_step mapping evidence changed: {mapping}")
+    placed_ops = {
+        str(placement.get("operation"))
+        for placement in mapping.get("placements", [])
+        if isinstance(placement, dict)
+    }
+    expected_ops = {
+        "llvm.select",
+        "arith.cmpi",
+        "arith.index_cast",
+        "llvm.intr.fmuladd",
+        "dataflow.load",
+    }
+    if not expected_ops.issubset(placed_ops):
+        raise AssertionError(f"gauss_seidel_step mapping missed expected operations: {mapping}")
+    route_edges = {
+        str(route.get("edge_ref"))
+        for route in mapping.get("routes", [])
+        if isinstance(route, dict)
+    }
+    expected_edges = {
+        "arith.cmpi#1.result0->llvm.select#0.operand0",
+        "arith.index_cast#0.result0->dataflow.load#0.operand1",
+        "arith.index_cast#1.result0->dataflow.load#1.operand1",
+        "dataflow.load#0.result0->llvm.intr.fmuladd#0.operand1",
+        "dataflow.load#1.result0->llvm.intr.fmuladd#0.operand0",
+    }
+    if not expected_edges.issubset(route_edges):
+        raise AssertionError(f"gauss_seidel_step mapping missed expected routes: {mapping}")
+    assert_mapping_edges_use_switch_multihop(evidence_dir, case, expected_edges)
+
+    cgra = json.loads((evidence_dir / f"{case}.cgra.report.json").read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_reduction_adg"
+        or cgra.get("dfg_cycles") != 190
+        or cgra.get("hardware_aware_cycles") != 234
+        or cgra.get("final_outputs") != GAUSS_SEIDEL_EXPECTED_FINAL_OUTPUTS
+        or cgra.get("final_memory_state") != GAUSS_SEIDEL_EXPECTED_MEMORY
+    ):
+        raise AssertionError(f"gauss_seidel_step CGRA evidence changed: {cgra}")
+    if cgra["hardware_aware_cycles"] < cgra["dfg_cycles"]:
+        raise AssertionError(f"gauss_seidel_step CGRA-sim must not be optimistic: {cgra}")
+
+    comparison = json.loads((evidence_dir / f"{case}.sim-comparison-report.json").read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 190
+        or comparison.get("cgra_sim_cycles") != 234
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("performance_delta_cycles") != 44
+    ):
+        raise AssertionError(f"gauss_seidel_step comparison evidence changed: {comparison}")
 
 
 def assert_cdma_evidence(evidence_dir: Path) -> None:
@@ -1463,10 +1589,10 @@ def assert_pack_bits_evidence(evidence_dir: Path) -> None:
         for placement in mapping.get("placements", [])
         if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
     }
-    if index_cast_sites != {
-        "shared_reduction_adg::fabric.op#97",
-        "shared_reduction_adg::fabric.op#98",
-    }:
+    if len(index_cast_sites) != 2 or any(
+        not site.startswith("shared_reduction_adg::fabric.op#")
+        for site in index_cast_sites
+    ):
         raise AssertionError(f"pack_bits should place both computed address casts on shared ADG: {mapping}")
     route_edges = {
         str(route.get("edge_ref"))
@@ -4882,10 +5008,10 @@ def assert_merge_dfg_evidence(evidence_dir: Path) -> None:
         for placement in mapping.get("placements", [])
         if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
     }
-    if index_cast_sites != {
-        "shared_reduction_adg::fabric.op#97",
-        "shared_reduction_adg::fabric.op#98",
-    }:
+    if len(index_cast_sites) != 2 or any(
+        not site.startswith("shared_reduction_adg::fabric.op#")
+        for site in index_cast_sites
+    ):
         raise AssertionError(f"merge should place both store address casts on shared ADG: {mapping_path}: {mapping}")
 
     cgra_path = evidence_dir / "merge.cgra.report.json"
@@ -5069,7 +5195,10 @@ def assert_crc32_evidence(evidence_dir: Path) -> None:
         for placement in mapping.get("placements", [])
         if isinstance(placement, dict) and placement.get("operation") == "arith.index_cast"
     }
-    if index_cast_sites != {"shared_reduction_adg::fabric.op#97"}:
+    if len(index_cast_sites) != 1 or any(
+        not site.startswith("shared_reduction_adg::fabric.op#")
+        for site in index_cast_sites
+    ):
         raise AssertionError(f"crc32 should place its computed address cast on shared ADG: {mapping_path}: {mapping}")
     route_edges = {
         str(route.get("edge_ref"))
@@ -6100,6 +6229,7 @@ def main(argv: list[str]) -> int:
             "fir_filter",
             "fir_filter_stateful",
             "find_first_set",
+            "gauss_seidel_step",
             "gf_mul",
             "compare_swap",
             "compact",
@@ -6936,6 +7066,7 @@ def main(argv: list[str]) -> int:
             "rle_encode",
             "runge_kutta_step",
             "autocorrelation",
+            "gauss_seidel_step",
             "upper_bound",
             "scatter_add",
             "quat_mult",
@@ -6954,6 +7085,7 @@ def main(argv: list[str]) -> int:
             )
         assert_dfg_dynamic_work_items(evidence_dir, "gauss_seidel_step", 8)
         assert_dfg_fire_count(evidence_dir, "gauss_seidel_step", "llvm.select", 7)
+        assert_gauss_seidel_step_evidence(evidence_dir)
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_dfg_blocked_row(repo, rows, case)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
@@ -7096,9 +7228,9 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 126,
-            "pass": 118,
+            "pass": 119,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 7,
             "missing_status": 0,
         }

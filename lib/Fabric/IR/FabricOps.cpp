@@ -692,11 +692,12 @@ static const llvm::StringMap<OpSchema> &opSchemas() {
     add("dataflow.mux", {}, {}, OpSchema::VariadicMux);
     add("dataflow.demux", {}, {}, OpSchema::VariadicDemux);
 
-    // --- arith.select: i1 sel + 2 data of type T -> T ---
+    // --- select: i1 sel + 2 data of type T -> T ---
     // Strict-SSA eager-evaluation semantics. Distinct from dataflow.mux
-    // (which has data-dependent gating and is variadic). Belongs to no
-    // hardware-share group, so it must occupy its fabric.op alone.
+    // (which has data-dependent gating and is variadic). Each spelling belongs
+    // to no hardware-share group, so it must occupy its fabric.op alone.
     add("arith.select", {pF(1), pT(0), pT(0)}, {pT(0)});
+    add("llvm.select", {pF(1), pT(0), pT(0)}, {pT(0)});
 
     return m;
   }();

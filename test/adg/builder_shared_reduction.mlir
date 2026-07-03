@@ -91,6 +91,8 @@
 // HARDWARE-DAG: fabric.op [@arith.index_cast]
 // HARDWARE-DAG: fabric.op [@llvm.sext, @llvm.zext]
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
+// HARDWARE-DAG: fabric.op [@llvm.select]
+// HARDWARE-DAG: fabric.fifo
 // HARDWARE-DAG: fabric.op [@dataflow.sync]
 // HARDWARE-DAG: fabric.mem [spatial]
 

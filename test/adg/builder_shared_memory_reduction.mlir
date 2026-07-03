@@ -30,6 +30,7 @@
 // HARDWARE-DAG: fabric.op [@llvm.intr.smin]
 // HARDWARE-DAG: fabric.op [@llvm.intr.smax]
 // HARDWARE-DAG: fabric.op [@arith.select]
+// HARDWARE-DAG: fabric.op [@llvm.select]
 // HARDWARE-DAG: fabric.op [@llvm.trunc]
 // HARDWARE-DAG: fabric.op [@llvm.zext]
 // HARDWARE-DAG: fabric.mem [spatial]

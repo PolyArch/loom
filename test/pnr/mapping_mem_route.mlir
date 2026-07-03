@@ -221,6 +221,40 @@
 // LLVMLOAD-JSON-NOT: ".out"
 // LLVMLOAD-JSON-NOT: ".in"
 
+// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_map --output %t.llvmselect.mapping.csv --artifact %t.llvmselect.mapping.json
+// RUN: FileCheck %s --check-prefix=LLVMSELECT-CSV < %t.llvmselect.mapping.csv
+// RUN: FileCheck %s --check-prefix=LLVMSELECT-JSON < %t.llvmselect.mapping.json
+
+// LLVMSELECT-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// LLVMSELECT-CSV-NEXT: llvm_select_pointer_map,shared_reduction_adg,llvm_select_pointer_map__llvm_select_pointer_map__shared_reduction_adg,4,2,0,0,pass
+
+// LLVMSELECT-JSON-DAG: "status": "pass"
+// LLVMSELECT-JSON-DAG: "operation": "llvm.select"
+// LLVMSELECT-JSON-DAG: "resource_kind": "fabric.op"
+// LLVMSELECT-JSON-DAG: "edge_ref": "arith.cmpi#0.result0->llvm.select#0.operand0"
+// LLVMSELECT-JSON-DAG: "edge_ref": "llvm.load#0.result0->arith.addi#0.operand0"
+// LLVMSELECT-JSON-NOT: "unsupported PnR graph operation: llvm.select"
+// LLVMSELECT-JSON-NOT: ".out"
+// LLVMSELECT-JSON-NOT: ".in"
+
+// RUN: loom-pnr-map --dfg-mlir %s --graph llvm_select_pointer_wide_cmp_map --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_select_pointer_wide_cmp_map --output %t.llvmselectwide.mapping.csv --artifact %t.llvmselectwide.mapping.json
+// RUN: FileCheck %s --check-prefix=LLVMSELECTWIDE-CSV < %t.llvmselectwide.mapping.csv
+// RUN: FileCheck %s --check-prefix=LLVMSELECTWIDE-JSON < %t.llvmselectwide.mapping.json
+
+// LLVMSELECTWIDE-CSV: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// LLVMSELECTWIDE-CSV-NEXT: llvm_select_pointer_wide_cmp_map,shared_reduction_adg,llvm_select_pointer_wide_cmp_map__llvm_select_pointer_wide_cmp_map__shared_reduction_adg,5,2,0,0,pass
+
+// LLVMSELECTWIDE-JSON-DAG: "status": "pass"
+// LLVMSELECTWIDE-JSON-DAG: "operation": "llvm.select"
+// LLVMSELECTWIDE-JSON-DAG: "operation": "arith.cmpi"
+// LLVMSELECTWIDE-JSON-DAG: "hardware": "shared_reduction_adg::fabric.op#77"
+// LLVMSELECTWIDE-JSON-DAG: "hardware": "shared_reduction_adg::fabric.op#78"
+// LLVMSELECTWIDE-JSON-DAG: "edge_ref": "arith.cmpi#1.result0->llvm.select#0.operand0"
+// LLVMSELECTWIDE-JSON-DAG: "edge_ref": "llvm.load#0.result0->arith.addf#0.operand0"
+// LLVMSELECTWIDE-JSON-NOT: "missing hardware resource for software op arith.cmpi"
+// LLVMSELECTWIDE-JSON-NOT: ".out"
+// LLVMSELECTWIDE-JSON-NOT: ".in"
+
 // RUN: loom-pnr-map --dfg-mlir %s --graph llvm_store_pointer --hardware-mlir %S/shared_reduction_adg.mlir --hardware shared_reduction_adg --workload llvm_store_pointer --output %t.llvmstore.mapping.csv --artifact %t.llvmstore.mapping.json
 // RUN: FileCheck %s --check-prefix=LLVMSTORE-CSV < %t.llvmstore.mapping.csv
 // RUN: FileCheck %s --check-prefix=LLVMSTORE-JSON < %t.llvmstore.mapping.json
@@ -537,6 +571,32 @@ module {
     %data = llvm.load %next {alignment = 4 : i64} : !llvm.ptr -> i32
     %sum = arith.addi %data, %rhs : i32
     dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @llvm_select_pointer_map(
+      %ctrl: none, %lhs_value: i32, %rhs_value: i32, %lhs: !llvm.ptr,
+      %rhs: !llvm.ptr, %bias: i32) -> (none, i32) {
+    %pred = arith.cmpi sgt, %lhs_value, %rhs_value : i32
+    %selected = llvm.select %pred, %lhs, %rhs : i1, !llvm.ptr
+    %data = llvm.load %selected {alignment = 4 : i64} : !llvm.ptr -> i32
+    %sum = arith.addi %data, %bias : i32
+    dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @llvm_select_pointer_wide_cmp_map(
+      %ctrl: none, %iv: i64, %pivot: i64, %limit: i64, %lhs: !llvm.ptr,
+      %rhs: !llvm.ptr, %bias: f32) -> (none, f32) {
+    %same = arith.cmpi eq, %iv, %pivot : i64
+    %value = scf.if %same -> (f32) {
+      scf.yield %bias : f32
+    } else {
+      %before = arith.cmpi ult, %iv, %limit : i64
+      %selected = llvm.select %before, %lhs, %rhs : i1, !llvm.ptr
+      %data = llvm.load %selected {alignment = 4 : i64} : !llvm.ptr -> f32
+      scf.yield %data : f32
+    }
+    %sum = arith.addf %value, %bias : f32
+    dataflow.graph.return %ctrl, %sum : none, f32
   }
 
   dataflow.graph.func private @llvm_store_pointer(%ctrl: none, %src: !llvm.ptr,

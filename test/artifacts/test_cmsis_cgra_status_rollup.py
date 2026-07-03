@@ -485,9 +485,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 126,
-            "pass": 118,
+            "pass": 119,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 7,
             "missing_status": 0,
         },
@@ -553,6 +553,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     )
     assert_cmsis_reshape_memcpy_cgra_evidence(repo, rows, sim_evidence)
     assert_shared_app_blocker_rows(repo, rows, out_dir / "current-sim-cycle")
+    cgra_sweep.assert_gauss_seidel_step_evidence(sim_evidence)
 
     run(
         repo,
@@ -1058,57 +1059,9 @@ SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
 SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {}
 
-SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS = {
-    "gauss_seidel_step": "unsupported PnR graph operation: llvm.select",
-}
+SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS: dict[str, str] = {}
 
-SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {
-    "gauss_seidel_step": {
-        "graph": "g_t_gauss_seidel_step_kernel_0_0",
-        "dynamic_work_items": 8,
-        "final_outputs": ["none", "f32:0.100000"],
-        "operation_fire_counts": {
-            "arith.cmpi": 15,
-            "arith.index_cast": 15,
-            "dataflow.load": 15,
-            "llvm.intr.fmuladd": 8,
-            "llvm.select": 7,
-            "scf.if": 8,
-        },
-        "final_memory_state": {
-            "arg6": [
-                "f32:0.100000",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-            ],
-            "arg7": [
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-                "f32:0",
-            ],
-            "arg8": [
-                "f32:1",
-                "f32:10",
-                "f32:1",
-                "f32:1",
-                "f32:1",
-                "f32:1",
-                "f32:1",
-                "f32:1",
-            ],
-        },
-    },
-}
+SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {}
 
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
