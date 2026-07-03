@@ -662,6 +662,17 @@
       "expected_executables": ["jacobi_stencil_7pt_func", "jacobi_stencil_7pt_inline"]
     },
     {
+      "case": "kmp_table",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["string", "prefix-table", "integer", "control"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["kmp_table_func", "kmp_table_inline"]
+    },
+    {
       "case": "lower_bound",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

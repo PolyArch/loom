@@ -1538,6 +1538,22 @@ PY
     histogram_strided)
         configure_histogram_strided_args
         ;;
+    kmp_table)
+        sim_args+=(
+            --graph g_t_kmp_table_kernel_red_0_0
+            --workload kmp_table
+            --arg 0=none
+            --arg 1=1
+            --arg 2=16
+            --arg 3=1
+            --arg 4=0
+            --memref 5=65,66,65,66,67,65,66,65,66,65,65,66,65,66,67,68
+            --arg 6=16
+            --arg 7=-1
+            --memref 8=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+            --arg 9=0
+        )
+        ;;
     hist_bin)
         configure_hist_bin_args
         ;;

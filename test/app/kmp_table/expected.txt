@@ -1,0 +1,2 @@
+kmp_table checksum: 326
+PASSED

@@ -129,6 +129,7 @@ DEFAULT_SWEEP_CASES = (
     "jacobi_stencil_7pt",
     "distance_point",
     "line_intersect",
+    "kmp_table",
     "depthwise_conv",
     "edit_distance_step",
     "normalize",
@@ -2554,6 +2555,111 @@ def assert_spmspv_evidence(evidence_dir: Path) -> None:
         or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
     ):
         raise AssertionError(f"spmspv CGRA evidence should carry row-3 CSR dot final state: {cgra_path}: {cgra}")
+
+
+def assert_kmp_table_evidence(evidence_dir: Path) -> None:
+    expected_memory = {
+        "arg5": [
+            "i32:65",
+            "i32:66",
+            "i32:65",
+            "i32:66",
+            "i32:67",
+            "i32:65",
+            "i32:66",
+            "i32:65",
+            "i32:66",
+            "i32:65",
+            "i32:65",
+            "i32:66",
+            "i32:65",
+            "i32:66",
+            "i32:67",
+            "i32:68",
+        ],
+        "arg8": [
+            "i32:0",
+            "i32:0",
+            "i32:1",
+            "i32:2",
+            "i32:0",
+            "i32:1",
+            "i32:2",
+            "i32:3",
+            "i32:4",
+            "i32:3",
+            "i32:1",
+            "i32:2",
+            "i32:3",
+            "i32:4",
+            "i32:5",
+            "i32:0",
+        ],
+    }
+    expected_counts = {
+        "arith.addi": 20,
+        "arith.cmpi": 49,
+        "arith.extui": 5,
+        "arith.index_cast": 81,
+        "arith.select": 14,
+        "arith.trunci": 14,
+        "dataflow.load": 61,
+        "dataflow.store": 15,
+        "llvm.zext": 15,
+        "scf.if": 29,
+    }
+
+    dfg_path = evidence_dir / "kmp_table.dfg.report.json"
+    dfg = json.loads(dfg_path.read_text())
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_kmp_table_kernel_red_0_0"
+        or dfg.get("dynamic_work_items") != 15
+        or dfg.get("optimistic_cycles") != 632
+        or dfg.get("final_outputs") != ["none", "i32:0"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"kmp_table DFG evidence should carry the real prefix table: {dfg_path}: {dfg}")
+    assert_operation_fire_counts("kmp_table", dfg, expected_counts)
+
+    mapping_path = evidence_dir / "kmp_table.mapping.json"
+    mapping = json.loads(mapping_path.read_text())
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("graph") != "g_t_kmp_table_kernel_red_0_0"
+        or mapping.get("placed_records") != 19
+        or mapping.get("routed_edges") != 17
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 461
+    ):
+        raise AssertionError(f"kmp_table should map on shared memory-reduction hardware: {mapping_path}: {mapping}")
+
+    cgra_path = evidence_dir / "kmp_table.cgra.report.json"
+    cgra = json.loads(cgra_path.read_text())
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("dfg_cycles") != 632
+        or cgra.get("hardware_aware_cycles") != 759
+        or cgra.get("final_outputs") != ["none", "i32:0"]
+        or cgra.get("final_memory_state") != expected_memory
+        or cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+    ):
+        raise AssertionError(f"kmp_table CGRA evidence should carry the real prefix table: {cgra_path}: {cgra}")
+
+    comparison_path = evidence_dir / "kmp_table.sim-comparison-report.json"
+    comparison = json.loads(comparison_path.read_text())
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("dfg_sim_cycles") != 632
+        or comparison.get("cgra_sim_cycles") != 759
+    ):
+        raise AssertionError(f"kmp_table comparison should pass with real memory checks: {comparison_path}: {comparison}")
 
 
 def assert_stream_nested_evidence(evidence_dir: Path) -> None:
@@ -6141,6 +6247,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "line_intersect",
                 "--case",
+                "kmp_table",
+                "--case",
                 "depthwise_conv",
                 "--case",
                 "edit_distance_step",
@@ -6257,6 +6365,7 @@ def main(argv: list[str]) -> int:
             "jacobi_stencil_7pt",
             "distance_point",
             "line_intersect",
+            "kmp_table",
             "depthwise_conv",
             "edit_distance_step",
             "normalize",
@@ -6744,6 +6853,8 @@ def main(argv: list[str]) -> int:
         assert_mapping_hardware(evidence_dir, "interpolate_linear", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "distance_point", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "line_intersect", "shared_signal_window_adg")
+        assert_mapping_hardware(evidence_dir, "kmp_table", "shared_memory_reduction_adg")
+        assert_kmp_table_evidence(evidence_dir)
         assert_mapping_hardware(evidence_dir, "depthwise_conv", "shared_memory_reduction_adg")
         assert_mapping_hardware(evidence_dir, "normalize", "shared_signal_window_adg")
         assert_mapping_hardware(evidence_dir, "normalize_vec3", "shared_signal_window_adg")
@@ -7058,6 +7169,7 @@ def main(argv: list[str]) -> int:
             "jacobi_stencil_7pt",
             "distance_point",
             "line_intersect",
+            "kmp_table",
             "edit_distance_step",
             "normalize",
             "normalize_vec3",
@@ -7178,6 +7290,9 @@ def main(argv: list[str]) -> int:
         line_intersect_row = one_row(rows, "line_intersect")
         if line_intersect_row["hardware_system"] != "shared_signal_window_adg":
             raise AssertionError(f"line_intersect should use shared signal-window hardware: {line_intersect_row}")
+        kmp_table_row = one_row(rows, "kmp_table")
+        if kmp_table_row["hardware_system"] != "shared_memory_reduction_adg":
+            raise AssertionError(f"kmp_table should use shared memory-reduction hardware: {kmp_table_row}")
         depthwise_conv_row = one_row(rows, "depthwise_conv")
         if depthwise_conv_row["hardware_system"] != "shared_memory_reduction_adg":
             raise AssertionError(f"depthwise_conv should use shared memory-reduction hardware: {depthwise_conv_row}")
@@ -7227,8 +7342,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 126,
-            "pass": 119,
+            "total": 127,
+            "pass": 120,
             "fail": 0,
             "blocked": 0,
             "unsupported": 7,

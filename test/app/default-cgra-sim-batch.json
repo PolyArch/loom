@@ -434,6 +434,10 @@
       "hardware": "shared_signal_window_adg"
     },
     {
+      "case": "kmp_table",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "edit_distance_step",
       "hardware": "shared_memory_reduction_adg"
     },

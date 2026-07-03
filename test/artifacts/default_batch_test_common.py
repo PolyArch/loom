@@ -64,6 +64,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "interpolate_linear",
     "jacobi_stencil_5pt",
     "jacobi_stencil_7pt",
+    "kmp_table",
     "line_intersect",
     "lower_bound",
     "mat3x3_mult",
