@@ -2099,7 +2099,7 @@ void sortNodesByPlacementPriority(llvm::MutableArrayRef<SoftwareNode> nodes,
                        return lhsCount < rhsCount;
                      if (lhs.operation != rhs.operation)
                        return lhs.operation < rhs.operation;
-                     return lhs.id < rhs.id;
+                     return false;
                    });
 }
 
