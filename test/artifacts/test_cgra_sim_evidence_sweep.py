@@ -158,7 +158,6 @@ DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update",
     "edge_update_batch",
     "col2im",
-    "fft_butterfly",
     "ifft_butterfly",
     "sort_insertion",
     "sort_merge",
@@ -192,11 +191,6 @@ PARTIAL_LOWERING_SWEEP_CASES = {
         "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop "
         "while the batched CSR lookup and update loops remain outside dataflow",
         "edge_update_batch_kernel",
-    ),
-    "fft_butterfly": (
-        "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly micro-kernel "
-        "while full stage scheduling and cross-stage feedback remain outside row-level aggregate evidence",
-        "fft_butterfly_kernel",
     ),
     "ifft_butterfly": (
         "primary workload graph is partial: ifft_butterfly lowering covers copy, per-stage butterfly, "
@@ -6652,6 +6646,7 @@ def main(argv: list[str]) -> int:
             "crc32",
             "fir_filter",
             "fir_filter_stateful",
+            "fft_butterfly",
             "find_first_set",
             "gauss_seidel_step",
             "gf_mul",
@@ -6801,6 +6796,7 @@ def main(argv: list[str]) -> int:
         assert_transform_point_evidence(evidence_dir)
         assert_rle_decode_evidence(evidence_dir)
         run(repo, ["python3", "test/artifacts/assert_rle_encode_cgra_evidence.py", str(evidence_dir)])
+        run(repo, ["python3", "test/artifacts/assert_fft_butterfly_cgra_evidence.py", str(evidence_dir)])
         assert_runge_kutta_step_evidence(evidence_dir)
         assert_gf_mul_evidence(evidence_dir)
         assert_compact_evidence(evidence_dir)
@@ -7466,6 +7462,7 @@ def main(argv: list[str]) -> int:
             "bitonic_stage",
             "bitonic_stage-tweak",
             "fir_filter_stateful",
+            "fft_butterfly",
             "compare_swap",
             "compact",
             "gather",
@@ -7669,10 +7666,10 @@ def main(argv: list[str]) -> int:
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
             "total": 132,
-            "pass": 122,
+            "pass": 123,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 9,
+            "unsupported": 8,
             "missing_status": 0,
         }
         if counts != expected_counts:

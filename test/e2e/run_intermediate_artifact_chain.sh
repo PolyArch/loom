@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    breadth_first_search|col2im|edge_update|edge_update_batch|fft_butterfly|ifft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
+    breadth_first_search|col2im|edge_update|edge_update_batch|ifft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
       return 0
       ;;
     *)
@@ -530,7 +530,7 @@ hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
 case "${HARDWARE_SOURCE}" in
   checked-in)
-    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "line_intersect" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "tridiag_solve" || "${CASE}" == "upsample_linear" ]]; then
+    if [[ "${CASE}" == "batchnorm" || "${CASE}" == "fft_butterfly" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "line_intersect" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "tridiag_solve" || "${CASE}" == "upsample_linear" ]]; then
       hardware_mlir="${OUT_DIR}/shared-signal-window-adg.mlir"
       hardware_name="shared_signal_window_adg"
       adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -809,6 +809,164 @@ run_depthwise_conv_components() {
     bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${case_graph}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${component_mapping_artifact}" \
+      --output "${component_mapping_summary}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${component_dfg_report}" \
+      --mapping-artifact "${component_mapping_artifact}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${component_cgra_report}"
+    dfg_component_args+=(--dfg-report "${component_dfg_report}")
+    mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+    cgra_component_args+=(--cgra-report "${component_cgra_report}")
+    component_artifacts+=(
+      "${component_dfg_report}"
+      "${component_mapping_artifact}"
+      "${component_cgra_report}"
+    )
+  done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+}
+
+run_fft_butterfly_components() {
+  mapfile -t fft_fixture < <(
+    python3 "${ROOT}/test/artifacts/fft_butterfly_fixtures.py" \
+      --source "${ROOT}/test/app/fft_butterfly/main_func.cpp" \
+      --emit plan
+  )
+  local input_real_values=""
+  local input_imag_values=""
+  local output_real_values=""
+  local output_imag_values=""
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  local fixture_line
+  for fixture_line in "${fft_fixture[@]}"; do
+    local -a fft_fields=()
+    IFS=';' read -r -a fft_fields <<< "${fixture_line}"
+    local record_kind="${fft_fields[0]}"
+    local component="${fft_fields[1]:-}"
+    case "${record_kind}" in
+      input_real)
+        input_real_values="${component}"
+        continue
+        ;;
+      input_imag)
+        input_imag_values="${component}"
+        continue
+        ;;
+      output_real)
+        output_real_values="${component}"
+        continue
+        ;;
+      output_imag)
+        output_imag_values="${component}"
+        continue
+        ;;
+    esac
+
+    local component_dfg_report="${OUT_DIR}/${CASE}.dfg-sim-${component}.report.json"
+    local component_mapping_artifact="${OUT_DIR}/${CASE}.pnr-mapping-${component}.json"
+    local component_mapping_summary="${OUT_DIR}/${CASE}.pnr-mapping-${component}.csv"
+    local component_cgra_report="${OUT_DIR}/${CASE}.cgra-sim-${component}.report.json"
+    local component_graph=""
+    local -a fft_args=()
+    case "${record_kind}" in
+      copy)
+        component_graph="g_t_fft_butterfly_kernel_0_0"
+        fft_args=(
+          "${case_dfg_dir}/main_func.dfg.mlir"
+          --graph "${component_graph}"
+          --workload "${CASE}"
+          --arg 0=none
+          --memref "1=${input_real_values}"
+          --memref "2=${output_real_values}"
+          --memref "3=${input_imag_values}"
+          --memref "4=${output_imag_values}"
+          --arg "5=${fft_fields[2]}"
+          --output "${component_dfg_report}"
+        )
+        ;;
+      butterfly)
+        component_graph="g_t_fft_butterfly_kernel_red_0_0"
+        fft_args=(
+          "${case_dfg_dir}/main_func.dfg.mlir"
+          --graph "${component_graph}"
+          --workload "${CASE}"
+          --arg 0=none
+          --arg "1=${fft_fields[4]}"
+          --arg "2=${fft_fields[5]}"
+          --arg 3=1
+          --arg "4=${fft_fields[2]}"
+          --arg "5=${fft_fields[3]}"
+          --memref "6=${output_real_values}"
+          --memref "7=${output_imag_values}"
+          --arg "8=${fft_fields[6]}"
+          --arg "9=${fft_fields[7]}"
+          --arg "10=${fft_fields[8]}"
+          --arg "11=${fft_fields[9]}"
+          --arg "12=${fft_fields[10]}"
+          --output "${component_dfg_report}"
+        )
+        ;;
+      *)
+        echo "unknown fft_butterfly fixture row: ${fixture_line}" >&2
+        exit 1
+        ;;
+    esac
+
+    ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${fft_args[@]}"
+    case "${record_kind}" in
+      copy)
+        output_real_values="$(
+          python3 "${ROOT}/test/artifacts/fft_butterfly_fixtures.py" \
+            --emit memory-csv \
+            --report "${component_dfg_report}" \
+            --memory-key arg2
+        )"
+        output_imag_values="$(
+          python3 "${ROOT}/test/artifacts/fft_butterfly_fixtures.py" \
+            --emit memory-csv \
+            --report "${component_dfg_report}" \
+            --memory-key arg4
+        )"
+        ;;
+      butterfly)
+        output_real_values="$(
+          python3 "${ROOT}/test/artifacts/fft_butterfly_fixtures.py" \
+            --emit memory-csv \
+            --report "${component_dfg_report}" \
+            --memory-key arg6
+        )"
+        output_imag_values="$(
+          python3 "${ROOT}/test/artifacts/fft_butterfly_fixtures.py" \
+            --emit memory-csv \
+            --report "${component_dfg_report}" \
+            --memory-key arg7
+        )"
+        ;;
+    esac
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${component_graph}" \
       --hardware-mlir "${hardware_mlir}" \
       --hardware "${hardware_name}" \
       --workload "${CASE}" \
@@ -2368,6 +2526,8 @@ elif [[ "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" ]]; then
   run_pool2d_window_components
 elif [[ "${CASE}" == "depthwise_conv" ]]; then
   run_depthwise_conv_components
+elif [[ "${CASE}" == "fft_butterfly" ]]; then
+  run_fft_butterfly_components
 elif [[ "${CASE}" == "conv2d" ]]; then
   conv2d_input_values="1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00,5.000000e+00,6.000000e+00,7.000000e+00,8.000000e+00,9.000000e+00,1.000000e+01,1.100000e+01,1.200000e+01,1.300000e+01,1.400000e+01,1.500000e+01,1.600000e+01"
   conv2d_kernel_values="1.000000e+00,0.000000e+00,5.000000e-01,-1.000000e+00,-5.000000e-01,1.000000e+00,2.500000e-01,7.500000e-01"
@@ -2764,15 +2924,6 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --expected-graph-presence present
         --diagnostic "primary workload graph is partial: edge_update_batch lowering covers the input-to-output copy loop while the batched CSR lookup and update loops remain outside dataflow"
         --evidence "partial dataflow lowering boundary"
-      )
-      ;;
-    fft_butterfly)
-      expected_primary_graph_token="fft_butterfly_kernel"
-      graph_absence_args=(
-        --expected-graph-presence present
-        --required-discovered-graph "g_t_fft_butterfly_kernel_red_0_0"
-        --diagnostic "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly micro-kernel while full stage scheduling and cross-stage feedback remain outside row-level aggregate evidence"
-        --evidence "partial FFT butterfly lowering boundary"
       )
       ;;
     ifft_butterfly)

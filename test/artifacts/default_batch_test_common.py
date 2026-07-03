@@ -48,6 +48,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "downsample",
     "downsample_avg",
     "find_first_set",
+    "fft_butterfly",
     "gemm",
     "gemv",
     "gf_mul",

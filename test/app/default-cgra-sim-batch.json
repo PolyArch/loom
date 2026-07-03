@@ -342,6 +342,10 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "fft_butterfly",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "find_first_set",
       "hardware": "shared_memory_reduction_adg"
     },

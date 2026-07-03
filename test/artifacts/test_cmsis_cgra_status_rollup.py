@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 132,
-            "pass": 122,
+            "pass": 123,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 10,
+            "unsupported": 9,
             "missing_status": 0,
         },
     )
@@ -1082,11 +1082,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
         "observe the kernel return value"
     ),
-    "fft_butterfly": (
-        "primary workload graph is partial: fft_butterfly lowering covers the per-stage butterfly "
-        "micro-kernel while full stage scheduling and cross-stage feedback remain outside row-level "
-        "aggregate evidence"
-    ),
     "ifft_butterfly": (
         "primary workload graph is partial: ifft_butterfly lowering covers copy, per-stage butterfly, "
         "and scale micro-kernels while full inverse FFT stage scheduling and cross-stage feedback remain "
@@ -1324,8 +1319,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 132,
             "pass": 19,
             "fail": 0,
-            "blocked": 103,
-            "unsupported": 10,
+            "blocked": 104,
+            "unsupported": 9,
             "missing_status": 0,
         },
     )
