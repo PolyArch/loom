@@ -484,11 +484,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "app",
         {
-            "total": 131,
+            "total": 132,
             "pass": 122,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 9,
+            "unsupported": 10,
             "missing_status": 0,
         },
     )
@@ -496,11 +496,11 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "loombench",
         {
-            "total": 16,
+            "total": 17,
             "pass": 13,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 2,
+            "unsupported": 3,
             "missing_status": 0,
         },
     )
@@ -554,6 +554,13 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         expected_graph="g_t_ifft_butterfly_kernel_red_0_0",
         expected_diagnostic=SHARED_APP_BLOCKER_DIAGNOSTICS["ifft_butterfly"],
     )
+    assert_loombench_dfg_unsupported_row(
+        repo,
+        rows,
+        "breadth_first_search",
+        expected_graph="g_t_breadth_first_search_kernel_0_0",
+        expected_diagnostic=SHARED_APP_BLOCKER_DIAGNOSTICS["breadth_first_search"],
+    )
     assert_app_cgra_pass_row(repo, rows, "cdma", expected_hardware="shared_reduction_adg")
     assert_app_cgra_pass_row(repo, rows, "conv2d", expected_hardware="shared_memory_reduction_adg")
     sim_evidence = out_dir / "current-sim-cycle"
@@ -583,10 +590,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         stale_data,
         "app",
         {
-            "total": 131,
+            "total": 132,
             "pass": 1,
             "fail": 0,
-            "blocked": 130,
+            "blocked": 131,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -712,10 +719,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "app",
         {
-            "total": 131,
+            "total": 132,
             "pass": 53,
             "fail": 0,
-            "blocked": 78,
+            "blocked": 79,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -1058,6 +1065,10 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
 
 
 SHARED_APP_BLOCKER_DIAGNOSTICS = {
+    "breadth_first_search": (
+        "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update "
+        "slices while the queue-driven CSR traversal remains outside row-level aggregate evidence"
+    ),
     "edge_update": (
         "primary workload graph is partial: edge_update lowering covers the input-to-output copy loop "
         "while the CSR lookup and update loop remains outside dataflow"
@@ -1310,11 +1321,11 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         data,
         "app",
         {
-            "total": 131,
+            "total": 132,
             "pass": 19,
             "fail": 0,
             "blocked": 103,
-            "unsupported": 9,
+            "unsupported": 10,
             "missing_status": 0,
         },
     )
@@ -4699,6 +4710,7 @@ def main() -> int:
         write_legacy_case(legacy_root, "rle_decode")
         write_legacy_case(legacy_root, "ifft_butterfly")
         write_legacy_case(legacy_root, "wildcard_match")
+        write_legacy_case(legacy_root, "breadth_first_search")
         write_legacy_case(legacy_root, "blocked_case", with_header=False)
         assert_default_legacy_root_mode(repo, out_dir / "default-legacy")
         assert_explicit_legacy_root_must_exist(repo, out_dir / "missing-explicit-legacy")
@@ -4749,10 +4761,10 @@ def main() -> int:
             data,
             "loombench",
             {
-                "total": 16,
+                "total": 17,
                 "pass": 0,
                 "fail": 0,
-                "blocked": 15,
+                "blocked": 16,
                 "unsupported": 1,
                 "missing_status": 0,
             },

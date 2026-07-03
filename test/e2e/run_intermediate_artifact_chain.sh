@@ -76,7 +76,7 @@ PY
 
 uses_primary_graph_absence_path() {
   case "$1" in
-    col2im|edge_update|edge_update_batch|fft_butterfly|ifft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
+    breadth_first_search|col2im|edge_update|edge_update_batch|fft_butterfly|ifft_butterfly|sort_insertion|sort_merge|sort_quick|spmspm)
       return 0
       ;;
     *)
@@ -122,6 +122,9 @@ case "${CASE}" in
     ;;
   bitonic_stage-modified)
     case_graph="g_bitonic_stage_modified_kernel_0"
+    ;;
+  breadth_first_search)
+    case_graph="g_t_breadth_first_search_kernel_0_0"
     ;;
   col2im)
     case_graph="missing_primary_graph"
@@ -2736,6 +2739,15 @@ elif uses_primary_graph_absence_path "${CASE}"; then
         --required-residual-call "col2im_kernel"
         --diagnostic "primary workload graph absent: col2im_kernel remains a residual call target outside the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot observe the kernel return value"
         --evidence "kernel remains behind a residual call target"
+      )
+      ;;
+    breadth_first_search)
+      expected_primary_graph_token="breadth_first_search_kernel"
+      graph_absence_args=(
+        --expected-graph-presence present
+        --required-discovered-graph "g_t_breadth_first_search_kernel_0_0"
+        --diagnostic "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update slices while the queue-driven CSR traversal remains outside row-level aggregate evidence"
+        --evidence "partial queue-driven graph traversal lowering boundary"
       )
       ;;
     edge_update)

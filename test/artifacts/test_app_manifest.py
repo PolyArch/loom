@@ -24,6 +24,7 @@ EXPECTED_CASES = {
     "cdma",
     "bisection_step",
     "binary_search",
+    "breadth_first_search",
     "clz",
     "col2im",
     "compare_swap",

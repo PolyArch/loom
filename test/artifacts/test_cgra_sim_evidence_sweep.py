@@ -7668,15 +7668,23 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 131,
+            "total": 132,
             "pass": 122,
             "fail": 0,
-            "blocked": 0,
+            "blocked": 1,
             "unsupported": 9,
             "missing_status": 0,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
+        bfs_row = one_row(rows, "breadth_first_search")
+        if (
+            bfs_row["status"] != "blocked"
+            or bfs_row["diagnostic_class"] != "missing_dfg_report"
+            or bfs_row["blocking_prerequisite"] != "dfg_report"
+            or bfs_row["owner"] != "sim_report"
+        ):
+            raise AssertionError(f"default pass-only sweep should leave BFS as an exact DFG-report blocker: {bfs_row}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
             "bash",

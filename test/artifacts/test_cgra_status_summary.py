@@ -48,7 +48,7 @@ HEADER = [
     "diagnostic",
 ]
 LEGACY_CASE_COUNT = 127
-APP_CASE_COUNT = 131
+APP_CASE_COUNT = 132
 APP_NO_DFG_TIER_COUNT = 0
 REQUIRED_LEGACY_CASE = "breadth_first_search"
 CURRENT_SIM_CYCLE_CASES = [
@@ -939,6 +939,7 @@ module {
         write_ready_legacy_case(default_legacy_root, "vecadd")
         write_ready_legacy_case(default_legacy_root, "batchnorm")
         write_ready_legacy_case(default_legacy_root, "breadth_first_search")
+        write_ready_legacy_case(default_legacy_root, "legacy_deferred")
         (default_legacy_root / "blocked_case").mkdir(parents=True)
         default_legacy_out_dir = out_dir / "default-legacy-root"
         default_legacy_csv = default_legacy_out_dir / "cgra-status-summary.csv"
@@ -962,16 +963,16 @@ module {
             raise AssertionError("default legacy root should emit LoomBench rows when the root exists")
         default_legacy_counts = suite_counts(default_legacy_loombench).get("loombench")
         if default_legacy_counts != {
-            "total": 4,
+            "total": 5,
             "pass": 0,
             "fail": 0,
-            "blocked": 3,
+            "blocked": 4,
             "unsupported": 1,
             "missing_status": 0,
         }:
             raise AssertionError(f"default legacy root should produce row-specific LoomBench counts: {default_legacy_counts}")
         expected_default_classes = {
-            "loombench_workload_identity_bridge_ready": 2,
+            "loombench_workload_identity_bridge_ready": 3,
             "loombench_import_deferred": 1,
             "loombench_import_excluded": 1,
         }
@@ -1001,7 +1002,15 @@ module {
             or default_batchnorm["manifest_case"] != "batchnorm"
         ):
             raise AssertionError(f"default legacy batchnorm should expose bridge-ready status: {default_batchnorm}")
-        default_deferred = one_row(default_legacy_rows, "loombench", "breadth_first_search")
+        default_bfs = one_row(default_legacy_rows, "loombench", "breadth_first_search")
+        if (
+            default_bfs["status"] != "blocked"
+            or default_bfs["diagnostic_class"] != "loombench_workload_identity_bridge_ready"
+            or default_bfs["blocking_prerequisite"] != "sim_evidence"
+            or default_bfs["manifest_case"] != "breadth_first_search"
+        ):
+            raise AssertionError(f"default legacy BFS should expose bridge-ready status: {default_bfs}")
+        default_deferred = one_row(default_legacy_rows, "loombench", "legacy_deferred")
         if (
             default_deferred["status"] != "blocked"
             or default_deferred["diagnostic_class"] != "loombench_import_deferred"
