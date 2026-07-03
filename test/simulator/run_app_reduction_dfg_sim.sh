@@ -958,6 +958,21 @@ configure_trsv_lower_args() {
     )
 }
 
+configure_trsv_upper_args() {
+    append_ctrl_tokens 15
+    append_raw_memref 5 "2,0,1,2,0,1,2,0,1,2,0,1,2,0,1"
+    append_raw_memref 6 "-2224,326,761,-379,56,131,-64,11,23,-10,2,5,-1,2,1"
+    sim_args+=(
+        --graph g_t_trsv_upper_kernel_red_0_0
+        --workload trsv_upper
+        --arg 1=0
+        --arg 2=15
+        --arg 3=1
+        --arg 4=0
+        --arg 7=16
+    )
+}
+
 configure_dot_product_3d_core_args() {
     append_ctrl_tokens 16
     append_raw_memref 2 "$(dot_product_3d_lhs_values)"
@@ -2042,6 +2057,9 @@ PY
         ;;
     trsv_lower)
         configure_trsv_lower_args
+        ;;
+    trsv_upper)
+        configure_trsv_upper_args
         ;;
     merge)
         append_ctrl_tokens 1

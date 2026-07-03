@@ -117,6 +117,7 @@ EXPECTED_CASES = {
     "stream_nested",
     "stream_update",
     "trsv_lower",
+    "trsv_upper",
     "transpose",
     "transform_point",
     "unpack_bits",
