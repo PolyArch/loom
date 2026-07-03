@@ -113,6 +113,7 @@ EXPECTED_DEFAULT_BATCH_CASES = {
     "trsv_lower",
     "trsv_upper",
     "string_compare",
+    "wildcard_match",
     "string_hash",
     "transform_point",
     "transpose",

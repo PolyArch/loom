@@ -117,6 +117,7 @@ EXPECTED_CASES = {
     "sort_merge",
     "sort_quick",
     "string_compare",
+    "wildcard_match",
     "string_hash",
     "stream_nested",
     "stream_update",

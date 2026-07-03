@@ -374,6 +374,10 @@
       "hardware": "shared_memory_reduction_adg"
     },
     {
+      "case": "wildcard_match",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "stream_update",
       "hardware": "shared_memory_reduction_adg"
     },

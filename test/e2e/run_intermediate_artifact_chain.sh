@@ -447,6 +447,9 @@ case "${CASE}" in
   string_compare)
     case_graph="g_string_compare_kernel_0"
     ;;
+  wildcard_match)
+    case_graph="g_wildcard_match_kernel_0"
+    ;;
   softmax)
     case_graph="workload_graph_set"
     ;;
@@ -550,7 +553,7 @@ case "${HARDWARE_SOURCE}" in
         --input-recipe-identity
         "${hardware_mlir}=adg-builder::shared-vector-math"
       )
-    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" ]]; then
+    elif [[ "${CASE}" == "binary_search" || "${CASE}" == "bisection_step" || "${CASE}" == "bitonic_stage" || "${CASE}" == "bitonic_stage-modified" || "${CASE}" == "bitonic_stage-tweak" || "${CASE}" == "bitrev" || "${CASE}" == "bitrev_complex" || "${CASE}" == "clz" || "${CASE}" == "conv2d" || "${CASE}" == "ctz" || "${CASE}" == "database_join" || "${CASE}" == "depthwise_conv" || "${CASE}" == "edit_distance_step" || "${CASE}" == "find_first_set" || "${CASE}" == "histogram" || "${CASE}" == "histogram_strided" || "${CASE}" == "im2col" || "${CASE}" == "kmp_table" || "${CASE}" == "lower_bound" || "${CASE}" == "mmtile" || "${CASE}" == "modexp" || "${CASE}" == "parity" || "${CASE}" == "popcount" || "${CASE}" == "rle_decode" || "${CASE}" == "scatter_add" || "${CASE}" == "sort_bubble" || "${CASE}" == "spmm" || "${CASE}" == "stream_nested" || "${CASE}" == "stream_update" || "${CASE}" == "string_compare" || "${CASE}" == "transform_point" || "${CASE}" == "upper_bound" || "${CASE}" == "wildcard_match" ]]; then
       hardware_mlir="${ROOT}/test/pnr/shared_memory_reduction_adg.mlir"
       hardware_name="shared_memory_reduction_adg"
       hardware_summary_recipe_args=(
@@ -1264,6 +1267,69 @@ elif [[ "${CASE}" == "line_intersect" ]]; then
       "${component_cgra_report}"
     )
   done
+  bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
+    "${dfg_component_args[@]}" \
+    --output "${dfg_cycle}"
+  python3 "${ROOT}/test/e2e/aggregate_workload_graph_artifacts.py" \
+    --workload "${CASE}" \
+    --hardware "${hardware_name}" \
+    --mapping-id "${CASE}__workload_graph_set__${hardware_name}" \
+    --source-dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+    "${dfg_component_args[@]}" \
+    "${mapping_component_args[@]}" \
+    "${cgra_component_args[@]}" \
+    --dfg-output "${dfg_report}" \
+    --mapping-output "${mapping_artifact}" \
+    --cgra-output "${cgra_report}" \
+    --mapping-summary-output "${mapping}"
+elif [[ "${CASE}" == "wildcard_match" ]]; then
+  dfg_component_args=()
+  mapping_component_args=()
+  cgra_component_args=()
+  while IFS= read -r component; do
+    mapfile -t wildcard_fixture < <(
+      python3 "${ROOT}/test/artifacts/wildcard_match_fixtures.py" \
+        --source "${ROOT}/test/app/wildcard_match/main_func.cpp" \
+        --case "${component}" \
+        --emit dfg-args
+    )
+    component_dfg_report="${OUT_DIR}/${CASE}.dfg-sim-${component}.report.json"
+    component_mapping_artifact="${OUT_DIR}/${CASE}.pnr-mapping-${component}.json"
+    component_mapping_summary="${OUT_DIR}/${CASE}.pnr-mapping-${component}.csv"
+    component_cgra_report="${OUT_DIR}/${CASE}.cgra-sim-${component}.report.json"
+    wildcard_args=(
+      "${case_dfg_dir}/main_func.dfg.mlir"
+      --graph "${case_graph}"
+      --workload "${CASE}"
+      "${wildcard_fixture[@]}"
+      --output "${component_dfg_report}"
+    )
+    ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${wildcard_args[@]}"
+    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
+      --graph "${case_graph}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --hardware "${hardware_name}" \
+      --workload "${CASE}" \
+      --artifact "${component_mapping_artifact}" \
+      --output "${component_mapping_summary}"
+    ${ROOT}/build/tools/loom-cgra-sim/loom-cgra-sim \
+      --dfg-report "${component_dfg_report}" \
+      --mapping-artifact "${component_mapping_artifact}" \
+      --hardware-mlir "${hardware_mlir}" \
+      --output "${component_cgra_report}"
+    dfg_component_args+=(--dfg-report "${component_dfg_report}")
+    mapping_component_args+=(--mapping-artifact "${component_mapping_artifact}")
+    cgra_component_args+=(--cgra-report "${component_cgra_report}")
+    component_artifacts+=(
+      "${component_dfg_report}"
+      "${component_mapping_artifact}"
+      "${component_cgra_report}"
+    )
+  done < <(
+    python3 "${ROOT}/test/artifacts/wildcard_match_fixtures.py" \
+      --emit case-names
+  )
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     "${dfg_component_args[@]}" \
     --output "${dfg_cycle}"

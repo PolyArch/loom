@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import artifact_test_common
+import wildcard_match_fixtures
 
 
 APP_NO_DFG_TIER_COUNT = 0
@@ -115,6 +116,7 @@ DEFAULT_SWEEP_CASES = (
     "sort_quick",
     "spmspm",
     "string_compare",
+    "wildcard_match",
     "xor_block",
     "relu",
     "rotate_bits",
@@ -1493,6 +1495,158 @@ def assert_string_compare_evidence(evidence_dir: Path) -> None:
         or comparison.get("cgra_sim_cycles", 0) < comparison.get("dfg_sim_cycles", 0)
     ):
         raise AssertionError(f"string_compare should preserve CGRA/comparison evidence: {cgra} {comparison}")
+
+
+def assert_wildcard_match_evidence(evidence_dir: Path) -> None:
+    dfg = json.loads((evidence_dir / "wildcard_match.dfg.report.json").read_text())
+    mapping = json.loads((evidence_dir / "wildcard_match.mapping.json").read_text())
+    cgra = json.loads((evidence_dir / "wildcard_match.cgra.report.json").read_text())
+    comparison = json.loads((evidence_dir / "wildcard_match.sim-comparison-report.json").read_text())
+    expected_counts = {
+        "match": {
+            "arith.addi": 45,
+            "arith.andi": 18,
+            "arith.cmpi": 87,
+            "arith.extui": 38,
+            "arith.index_cast": 50,
+            "arith.index_castui": 18,
+            "arith.subi": 1,
+            "arith.trunci": 11,
+            "dataflow.constant": 9,
+            "dataflow.load": 34,
+            "dataflow.mux": 22,
+            "dataflow.store": 1,
+            "dataflow.sync": 1,
+            "llvm.trunc": 16,
+            "llvm.zext": 1,
+            "scf.if": 30,
+            "scf.index_switch": 18,
+        },
+        "no_match": {
+            "arith.addi": 171,
+            "arith.andi": 57,
+            "arith.cmpi": 344,
+            "arith.extui": 171,
+            "arith.index_cast": 171,
+            "arith.index_castui": 57,
+            "arith.subi": 1,
+            "arith.trunci": 57,
+            "dataflow.constant": 9,
+            "dataflow.load": 114,
+            "dataflow.mux": 114,
+            "dataflow.store": 1,
+            "dataflow.sync": 1,
+            "llvm.trunc": 57,
+            "llvm.zext": 1,
+            "scf.if": 115,
+            "scf.index_switch": 57,
+        },
+        "all_wildcards": {
+            "arith.addi": 9,
+            "arith.andi": 8,
+            "arith.cmpi": 21,
+            "arith.extui": 2,
+            "arith.index_cast": 8,
+            "arith.index_castui": 8,
+            "arith.subi": 1,
+            "arith.trunci": 1,
+            "dataflow.constant": 9,
+            "dataflow.load": 8,
+            "dataflow.mux": 2,
+            "dataflow.store": 1,
+            "dataflow.sync": 1,
+            "llvm.zext": 1,
+            "scf.if": 10,
+            "scf.index_switch": 8,
+        },
+    }
+    expected_cycles = {
+        "match": (580, 805),
+        "no_match": (2090, 2315),
+        "all_wildcards": (153, 378),
+    }
+    source = Path(__file__).resolve().parents[2] / "test" / "app" / "wildcard_match" / "main_func.cpp"
+    for component in wildcard_match_fixtures.CASE_NAMES:
+        fixture = wildcard_match_fixtures.fixture_from_source(component, source)
+        component_dfg_path = evidence_dir / f"wildcard_match.wildcard_match.dfg-sim-{component}.report.json"
+        component_mapping_path = evidence_dir / f"wildcard_match.wildcard_match.pnr-mapping-{component}.json"
+        component_cgra_path = evidence_dir / f"wildcard_match.wildcard_match.cgra-sim-{component}.report.json"
+        component_dfg = json.loads(component_dfg_path.read_text())
+        component_mapping = json.loads(component_mapping_path.read_text())
+        component_cgra = json.loads(component_cgra_path.read_text())
+        expected_memory = fixture.expected_memory
+        actual_memory = component_dfg.get("final_memory_state", {})
+        if component != "all_wildcards" and actual_memory.get("arg1") != expected_memory["arg1"]:
+            raise AssertionError(f"wildcard_match {component} text memory should be source-derived: {component_dfg}")
+        if (
+            component_dfg.get("status") != "pass"
+            or component_dfg.get("graph") != "g_wildcard_match_kernel_0"
+            or component_dfg.get("final_outputs") != ["none"]
+            or actual_memory.get("arg2") != expected_memory["arg2"]
+            or actual_memory.get("arg3") != expected_memory["arg3"]
+            or component_dfg.get("operation_fire_counts") != expected_counts[component]
+        ):
+            raise AssertionError(f"wildcard_match {component} DFG evidence should preserve source semantics: {component_dfg_path}: {component_dfg}")
+        if (
+            component_mapping.get("status") != "pass"
+            or component_mapping.get("hardware") != "shared_memory_reduction_adg"
+            or component_mapping.get("graph") != "g_wildcard_match_kernel_0"
+            or component_mapping.get("placed_records") != 35
+            or component_mapping.get("routed_edges") != 37
+            or component_mapping.get("unrouted_edges") != 0
+            or component_mapping.get("unplaced_records") != 0
+            or component_mapping.get("config_records") != 1013
+        ):
+            raise AssertionError(f"wildcard_match {component} should route on shared memory-reduction hardware: {component_mapping_path}: {component_mapping}")
+        expected_dfg_cycles, expected_cgra_cycles = expected_cycles[component]
+        if (
+            component_cgra.get("status") != "pass"
+            or component_cgra.get("final_outputs") != ["none"]
+            or component_cgra.get("final_memory_state", {}).get("arg2") != expected_memory["arg2"]
+            or component_cgra.get("final_memory_state", {}).get("arg3") != expected_memory["arg3"]
+            or component_cgra.get("dfg_cycles") != expected_dfg_cycles
+            or component_cgra.get("hardware_aware_cycles") != expected_cgra_cycles
+            or component_cgra.get("functional_state_source") != "carried_from_dfg_sim_report"
+        ):
+            raise AssertionError(f"wildcard_match {component} CGRA evidence should carry source-derived memory: {component_cgra_path}: {component_cgra}")
+
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "workload_graph_set"
+        or dfg.get("dynamic_work_items") != 76
+        or dfg.get("optimistic_cycles") != 2823
+        or dfg.get("final_outputs") != ["none", "none", "none"]
+        or dfg.get("final_memory_state", {}).get("wildcard_match.dfg-sim-match.report:arg3") != ["i32:1"]
+        or dfg.get("final_memory_state", {}).get("wildcard_match.dfg-sim-no_match.report:arg3") != ["i32:0"]
+        or dfg.get("final_memory_state", {}).get("wildcard_match.dfg-sim-all_wildcards.report:arg3") != ["i32:1"]
+    ):
+        raise AssertionError(f"wildcard_match aggregate DFG report should preserve all three cases: {dfg}")
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != "shared_memory_reduction_adg"
+        or mapping.get("graph") != "workload_graph_set"
+        or mapping.get("placed_records") != 105
+        or mapping.get("routed_edges") != 111
+        or mapping.get("unrouted_edges") != 0
+        or mapping.get("unplaced_records") != 0
+        or mapping.get("config_records") != 3039
+    ):
+        raise AssertionError(f"wildcard_match aggregate mapping should route all component cases: {mapping}")
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != "shared_memory_reduction_adg"
+        or cgra.get("dfg_cycles") != 2823
+        or cgra.get("hardware_aware_cycles") != 3498
+        or cgra.get("final_memory_state", {}).get("wildcard_match.dfg-sim-match.report:arg3") != ["i32:1"]
+        or cgra.get("final_memory_state", {}).get("wildcard_match.dfg-sim-no_match.report:arg3") != ["i32:0"]
+        or cgra.get("final_memory_state", {}).get("wildcard_match.dfg-sim-all_wildcards.report:arg3") != ["i32:1"]
+        or comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+        or comparison.get("cgra_sim_cycles") != 3498
+    ):
+        raise AssertionError(f"wildcard_match aggregate CGRA/comparison evidence should pass: {cgra} {comparison}")
 
 
 def assert_operation_fire_counts(case: str, dfg: dict, expected_counts: dict[str, int]) -> None:
@@ -6315,6 +6469,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "string_compare",
                 "--case",
+                "wildcard_match",
+                "--case",
                 "unpack_bits",
                 "--case",
                 "mean",
@@ -6504,6 +6660,7 @@ def main(argv: list[str]) -> int:
             "hash_mix",
             "string_hash",
             "string_compare",
+            "wildcard_match",
             "merge",
             "modmul",
             "modexp",
@@ -6596,6 +6753,7 @@ def main(argv: list[str]) -> int:
         assert_dfg_dynamic_work_items(evidence_dir, "sbox_lookup", 64)
         assert_dfg_dynamic_work_items(evidence_dir, "string_hash", 8)
         assert_string_compare_evidence(evidence_dir)
+        assert_wildcard_match_evidence(evidence_dir)
         assert_dfg_dynamic_work_items(evidence_dir, "fir_filter_stateful", 4)
         assert_dfg_dynamic_work_items(evidence_dir, "covariance", 2048)
         assert_dfg_dynamic_work_items(evidence_dir, "popcount", 32)
@@ -7315,6 +7473,7 @@ def main(argv: list[str]) -> int:
             "hash_mix",
             "string_hash",
             "string_compare",
+            "wildcard_match",
             "merge",
             "lower_bound",
             "modmul",
@@ -7509,8 +7668,8 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 130,
-            "pass": 121,
+            "total": 131,
+            "pass": 122,
             "fail": 0,
             "blocked": 0,
             "unsupported": 9,

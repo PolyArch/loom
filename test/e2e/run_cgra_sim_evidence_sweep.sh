@@ -156,6 +156,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     sort_quick
     spmspm
     string_compare
+    wildcard_match
     xor_block
     relu
     rotate_bits

@@ -4388,7 +4388,7 @@ ModuleBuilder loom::adg::buildSharedMemoryReductionAdg() {
   config.constantHexValues = {
       "0x00000000", "0x00000001", "0x00000002", "0x00000003",
       "0x00000004", "0x00000008", "0x00000010", "0x3f800000",
-      "0x40000000", "0xbf800000", "0xffffffff"};
+      "0x40000000", "0xbf800000", "0x0000003f", "0xffffffff"};
   return buildSharedMemoryLikeAdg(config);
 }
 
