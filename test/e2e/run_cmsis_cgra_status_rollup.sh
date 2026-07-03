@@ -12,6 +12,8 @@ outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
 attempts into that directory before consuming the reports. --cmsis-sim-default
 runs all bounded CMSIS attempts into the default status evidence directory.
+CMSIS attempt selectors without --sim-evidence-dir also use that default
+status evidence directory, restricted to the selected rows.
 --cmsis-sim-default-batch runs the tracked default CMSIS attempt manifest into
 the default status evidence directory. --cmsis-sim-seed-batch is accepted as a
 compatibility alias for the same tracked default CMSIS batch.
@@ -306,9 +308,7 @@ if [[ "${NO_LEGACY_LOOMBENCH}" -eq 0 && ( "${LEGACY_ROOT_SUPPLIED}" -eq 1 || "${
 fi
 
 if [[ "${CMSIS_SIM_DEFAULT}" -eq 0 && -z "${SIM_EVIDENCE_DIR}" && ( ${#CMSIS_SIM_ATTEMPT_STEMS[@]} -gt 0 || ${#CMSIS_SIM_CASES[@]} -gt 0 ) ]]; then
-    echo "CMSIS sim selectors require --cmsis-sim-default or --sim-evidence-dir" >&2
-    usage
-    exit 2
+    CMSIS_SIM_DEFAULT=1
 fi
 
 mkdir -p "${OUT_DIR}"

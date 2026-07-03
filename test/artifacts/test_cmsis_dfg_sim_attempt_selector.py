@@ -359,14 +359,17 @@ def main() -> int:
     if "not_a_cmsis_attempt" not in bad_cli.stderr or "not executable" in bad_cli.stderr:
         raise AssertionError(f"CLI should validate selectors before tools: {bad_cli.stderr}")
 
-    no_mode = subprocess.run(
+    selector_default = subprocess.run(
         [
             "bash",
             "test/e2e/run_cmsis_cgra_status_rollup.sh",
             "--output-dir",
             "temp/cmsis-selector-no-mode",
+            "--no-legacy-loombench",
             "--cmsis-sim-attempt-stem",
             "arm_add_q15",
+            "--jobs",
+            "8",
         ],
         cwd=repo,
         text=True,
@@ -374,10 +377,42 @@ def main() -> int:
         stderr=subprocess.PIPE,
         check=False,
     )
-    if no_mode.returncode == 0:
-        raise AssertionError("CMSIS sim selector without a sim evidence mode unexpectedly passed")
-    if "require --cmsis-sim-default or --sim-evidence-dir" not in no_mode.stderr:
-        raise AssertionError(f"CMSIS sim selector mode diagnostic is not actionable: {no_mode.stderr}")
+    if selector_default.returncode != 0:
+        raise AssertionError(
+            "CMSIS sim selector without an explicit sim evidence mode should run the selected row\n"
+            f"stdout:\n{selector_default.stdout}\nstderr:\n{selector_default.stderr}"
+        )
+    selector_default_data = json.loads((repo / "temp/cmsis-selector-no-mode/cgra-status-summary.json").read_text())
+    selector_default_counts = selector_default_data.get("counts", {}).get("cmsis-dsp")
+    if selector_default_counts != {
+        "total": 16,
+        "pass": 1,
+        "fail": 0,
+        "blocked": 13,
+        "unsupported": 2,
+        "missing_status": 0,
+    }:
+        raise AssertionError(f"selected default CMSIS counts are wrong: {selector_default_counts}")
+    selector_default_row = row_by_case(
+        repo / "temp/cmsis-selector-no-mode/cgra-status-summary.csv",
+        "cmsis-dsp",
+        "BasicMathFunctions/arm_add_q15.c",
+    )
+    if (
+        selector_default_row["status"] != "pass"
+        or selector_default_row["dfg_status"] != "pass"
+        or selector_default_row["mapping_status"] != "pass"
+        or selector_default_row["cgra_status"] != "pass"
+        or selector_default_row["comparison_status"] != "pass"
+    ):
+        raise AssertionError(f"selected default CMSIS row should expose real CGRA-sim evidence: {selector_default_row}")
+    for artifact in (
+        repo / "temp/cmsis-selector-no-mode/current-sim-cycle/arm_add_q15.dfg.report.json",
+        repo / "temp/cmsis-selector-no-mode/current-sim-cycle/arm_add_q15.mapping.json",
+        repo / "temp/cmsis-selector-no-mode/current-sim-cycle/arm_add_q15.cgra.report.json",
+    ):
+        if not artifact.is_file():
+            raise AssertionError(f"selected default CMSIS rollup did not emit {artifact}")
 
     legacy_alias = subprocess.run(
         [
