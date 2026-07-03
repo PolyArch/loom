@@ -166,6 +166,30 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "bitrev",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "conv2d",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "depthwise_conv",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "interpolate_linear",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "jacobi_stencil_5pt",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "normalize_vec3",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
       "case": "axpy",
       "hardware": "shared_vector_alu_adg"
     },
