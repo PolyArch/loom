@@ -366,6 +366,9 @@ case "${CASE}" in
   gf_mul)
     case_graph="g_t_gf_mul_kernel_0_0"
     ;;
+  gauss_seidel_step)
+    case_graph="g_t_gauss_seidel_step_kernel_0_0"
+    ;;
   gemm)
     case_graph="g_t__ZN12_GLOBAL__N_14gemmEPKfS1_Pfiii_0_0"
     ;;

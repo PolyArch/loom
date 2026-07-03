@@ -484,10 +484,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         data,
         "app",
         {
-            "total": 125,
+            "total": 126,
             "pass": 118,
             "fail": 0,
-            "blocked": 0,
+            "blocked": 1,
             "unsupported": 7,
             "missing_status": 0,
         },
@@ -573,10 +573,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         stale_data,
         "app",
         {
-            "total": 125,
+            "total": 126,
             "pass": 1,
             "fail": 0,
-            "blocked": 124,
+            "blocked": 125,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -672,10 +672,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "app",
         {
-            "total": 125,
+            "total": 126,
             "pass": 53,
             "fail": 0,
-            "blocked": 72,
+            "blocked": 73,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -1058,9 +1058,57 @@ SHARED_APP_MAPPING_BLOCKED_DIAGNOSTICS: dict[str, str] = {}
 
 SHARED_APP_MAPPING_BLOCKED_EVIDENCE: dict[str, dict[str, object]] = {}
 
-SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS: dict[str, str] = {}
+SHARED_APP_MAPPING_UNSUPPORTED_DIAGNOSTICS = {
+    "gauss_seidel_step": "unsupported PnR graph operation: llvm.select",
+}
 
-SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {}
+SHARED_APP_MAPPING_UNSUPPORTED_EVIDENCE: dict[str, dict[str, object]] = {
+    "gauss_seidel_step": {
+        "graph": "g_t_gauss_seidel_step_kernel_0_0",
+        "dynamic_work_items": 8,
+        "final_outputs": ["none", "f32:0.100000"],
+        "operation_fire_counts": {
+            "arith.cmpi": 15,
+            "arith.index_cast": 15,
+            "dataflow.load": 15,
+            "llvm.intr.fmuladd": 8,
+            "llvm.select": 7,
+            "scf.if": 8,
+        },
+        "final_memory_state": {
+            "arg6": [
+                "f32:0.100000",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+            ],
+            "arg7": [
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+                "f32:0",
+            ],
+            "arg8": [
+                "f32:1",
+                "f32:10",
+                "f32:1",
+                "f32:1",
+                "f32:1",
+                "f32:1",
+                "f32:1",
+                "f32:1",
+            ],
+        },
+    },
+}
 
 
 def assert_shared_app_blocker_rows(repo: Path, rows: list[dict[str, str]], sim_evidence: Path) -> None:
@@ -1245,10 +1293,10 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
         data,
         "app",
         {
-            "total": 125,
+            "total": 126,
             "pass": 19,
             "fail": 0,
-            "blocked": 99,
+            "blocked": 100,
             "unsupported": 7,
             "missing_status": 0,
         },

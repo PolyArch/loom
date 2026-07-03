@@ -1447,6 +1447,47 @@ bool fireLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state) {
   return recordEvent(state, op->getName().getStringRef());
 }
 
+bool isPointerSelect(mlir::LLVM::SelectOp op) {
+  return op->getNumOperands() == 3 && op->getNumResults() == 1 &&
+         mlir::isa<mlir::LLVM::LLVMPointerType>(op->getResult(0).getType());
+}
+
+std::optional<Token> evaluatePointerSelect(mlir::LLVM::SelectOp op,
+                                           const Token &condition,
+                                           const Token &trueValue,
+                                           const Token &falseValue,
+                                           SimulatorState &state) {
+  if (!isPointerSelect(op))
+    return std::nullopt;
+  if (trueValue.kind != TokenKind::Pointer ||
+      falseValue.kind != TokenKind::Pointer) {
+    state.diagnostics.push_back("llvm.select pointer operands are not pointers");
+    return std::nullopt;
+  }
+  return boolToken(condition) ? trueValue : falseValue;
+}
+
+bool fireLLVMSelect(mlir::LLVM::SelectOp op, SimulatorState &state) {
+  if (!isPointerSelect(op))
+    return firePrimitiveOperation(op.getOperation(), op->getResult(0), state);
+  mlir::OpOperand &conditionOperand = op->getOpOperand(0);
+  mlir::OpOperand &trueOperand = op->getOpOperand(1);
+  mlir::OpOperand &falseOperand = op->getOpOperand(2);
+  if (!hasToken(state.channels, conditionOperand) ||
+      !hasToken(state.channels, trueOperand) ||
+      !hasToken(state.channels, falseOperand))
+    return false;
+  Token condition = popToken(state.channels, conditionOperand);
+  Token trueValue = popToken(state.channels, trueOperand);
+  Token falseValue = popToken(state.channels, falseOperand);
+  std::optional<Token> selected =
+      evaluatePointerSelect(op, condition, trueValue, falseValue, state);
+  if (!selected)
+    return false;
+  emitToken(state, op->getResult(0), *selected);
+  return recordEvent(state, op->getName().getStringRef());
+}
+
 bool fireGenericPrimitive(mlir::Operation *op, SimulatorState &state) {
   if (op->getNumResults() != 1)
     return false;
@@ -1637,6 +1678,27 @@ bool assignLocalLLVMICmp(mlir::LLVM::ICmpOp op, SimulatorState &state,
     return false;
   }
   locals[op->getResult(0)] = *resultOrErr;
+  return recordEvent(state, op->getName().getStringRef());
+}
+
+bool assignLocalLLVMSelect(mlir::LLVM::SelectOp op, SimulatorState &state,
+                           LocalValueMap &locals, unsigned captureIndex) {
+  if (!isPointerSelect(op))
+    return assignLocalPrimitiveResult(op.getOperation(), op->getResult(0), state,
+                                      locals, captureIndex);
+  std::optional<Token> condition =
+      lookupToken(op->getOperand(0), state, locals, captureIndex);
+  std::optional<Token> trueValue =
+      lookupToken(op->getOperand(1), state, locals, captureIndex);
+  std::optional<Token> falseValue =
+      lookupToken(op->getOperand(2), state, locals, captureIndex);
+  if (!condition || !trueValue || !falseValue)
+    return false;
+  std::optional<Token> selected =
+      evaluatePointerSelect(op, *condition, *trueValue, *falseValue, state);
+  if (!selected)
+    return false;
+  locals[op->getResult(0)] = *selected;
   return recordEvent(state, op->getName().getStringRef());
 }
 
@@ -2049,6 +2111,8 @@ bool executeStructuredForBodyOp(mlir::Operation *op, SimulatorState &state,
     return assignLocalUBPoison(poison, state, locals);
   if (auto icmp = mlir::dyn_cast<mlir::LLVM::ICmpOp>(op))
     return assignLocalLLVMICmp(icmp, state, locals, captureIndex);
+  if (auto select = mlir::dyn_cast<mlir::LLVM::SelectOp>(op))
+    return assignLocalLLVMSelect(select, state, locals, captureIndex);
   if (auto load = mlir::dyn_cast<dataflow::LoadOp>(op))
     return assignLocalDataflowLoad(load, state, locals, captureIndex);
   if (auto store = mlir::dyn_cast<dataflow::StoreOp>(op))
@@ -2932,6 +2996,8 @@ bool fireOperation(mlir::Operation *op, SimulatorState &state) {
           [&](auto typedOp) { return fireUBPoison(typedOp, state); })
       .Case<mlir::LLVM::ICmpOp>(
           [&](auto typedOp) { return fireLLVMICmp(typedOp, state); })
+      .Case<mlir::LLVM::SelectOp>(
+          [&](auto typedOp) { return fireLLVMSelect(typedOp, state); })
       .Case<mlir::LLVM::LoadOp>(
           [&](auto typedOp) { return fireLLVMLoad(typedOp, state); })
       .Case<mlir::LLVM::StoreOp>(

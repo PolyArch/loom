@@ -552,6 +552,17 @@
       "expected_executables": ["gather_func", "gather_inline"]
     },
     {
+      "case": "gauss_seidel_step",
+      "language": "cxx",
+      "sources": ["main_func.cpp", "main_inline.cpp"],
+      "expected_stdout": "expected.txt",
+      "tiers": ["run", "raise", "dfg"],
+      "feature_tags": ["stencil", "numeric", "float", "dependency", "reduction"],
+      "compiler_flags": [],
+      "link_flags": [],
+      "expected_executables": ["gauss_seidel_step_func", "gauss_seidel_step_inline"]
+    },
+    {
       "case": "hash_mix",
       "language": "cxx",
       "sources": ["main_func.cpp", "main_inline.cpp"],

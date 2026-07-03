@@ -76,6 +76,7 @@ DEFAULT_SWEEP_CASES = (
     "fir_filter",
     "fir_filter_stateful",
     "gather",
+    "gauss_seidel_step",
     "gf_mul",
     "gemv",
     "gemm",
@@ -144,7 +145,12 @@ DEFAULT_SWEEP_CASES = (
 )
 MAPPING_FAILED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
-MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
+MAPPING_UNSUPPORTED_SWEEP_CASES = (
+    "gauss_seidel_step",
+)
+MAPPING_UNSUPPORTED_OPERATIONS = {
+    "gauss_seidel_step": "llvm.select",
+}
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
     "edge_update",
@@ -1232,6 +1238,16 @@ def assert_dfg_dynamic_work_items(evidence_dir: Path, case: str, expected_count:
     data = json.loads(path.read_text())
     if data.get("dynamic_work_items") != expected_count:
         raise AssertionError(f"{case} should have {expected_count} dynamic work items: {path}: {data}")
+
+
+def assert_dfg_fire_count(evidence_dir: Path, case: str, op_name: str, expected_count: int) -> None:
+    path = evidence_dir / f"{case}.dfg.report.json"
+    data = json.loads(path.read_text())
+    actual_count = data.get("operation_fire_counts", {}).get(op_name)
+    if actual_count != expected_count:
+        raise AssertionError(
+            f"{case} {op_name} fire count should be {expected_count}, got {actual_count}: {path}: {data}"
+        )
 
 
 def assert_quantile_evidence(evidence_dir: Path) -> None:
@@ -5818,6 +5834,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "gather",
                 "--case",
+                "gauss_seidel_step",
+                "--case",
                 "gf_mul",
                 "--case",
                 "modmul",
@@ -6609,6 +6627,11 @@ def main(argv: list[str]) -> int:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
         for case in MAPPING_UNSUPPORTED_SWEEP_CASES:
             assert_mapping_hardware(evidence_dir, case, "shared_reduction_adg")
+            assert_mapping_unsupported_operation(
+                evidence_dir,
+                case,
+                MAPPING_UNSUPPORTED_OPERATIONS[case],
+            )
         assert_mapping_edges_use_switch_multihop(
             evidence_dir,
             "compare_swap",
@@ -6924,6 +6947,13 @@ def main(argv: list[str]) -> int:
             assert_structured_blocker_row(repo, rows, case, "blocked", "blocked")
         for case in MAPPING_UNSUPPORTED_SWEEP_CASES:
             assert_structured_blocker_row(repo, rows, case, "blocked", "unsupported")
+            assert_mapping_unsupported_operation(
+                evidence_dir,
+                case,
+                MAPPING_UNSUPPORTED_OPERATIONS[case],
+            )
+        assert_dfg_dynamic_work_items(evidence_dir, "gauss_seidel_step", 8)
+        assert_dfg_fire_count(evidence_dir, "gauss_seidel_step", "llvm.select", 7)
         for case in DFG_BLOCKED_SWEEP_CASES:
             assert_dfg_blocked_row(repo, rows, case)
         for case in DFG_UNSUPPORTED_SWEEP_CASES:
@@ -7065,10 +7095,10 @@ def main(argv: list[str]) -> int:
             raise AssertionError(f"downsample_avg should use shared reduction hardware: {downsample_row}")
         counts = json.loads(status_json.read_text())["counts"]["app"]
         expected_counts = {
-            "total": 125,
+            "total": 126,
             "pass": 118,
             "fail": 0,
-            "blocked": 0,
+            "blocked": 1,
             "unsupported": 7,
             "missing_status": 0,
         }

@@ -59,6 +59,7 @@ EXPECTED_CASES = {
     "gemv",
     "gf_mul",
     "gather",
+    "gauss_seidel_step",
     "hash_mix",
     "hist_bin",
     "histogram",

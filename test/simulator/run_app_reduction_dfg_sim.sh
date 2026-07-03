@@ -1516,6 +1516,22 @@ PY
             --workload gather
         )
         ;;
+    gauss_seidel_step)
+        sim_args+=(
+            --graph g_t_gauss_seidel_step_kernel_0_0
+            --workload gauss_seidel_step
+            --arg 0=none
+            --arg 1=0
+            --arg 2=8
+            --arg 3=1
+            --arg 4=1
+            --arg 5=0.000000e+00
+            --memref 6=1.000000e-01,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00
+            --memref 7=0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00,0.000000e+00
+            --memref 8=1.000000e+00,1.000000e+01,1.000000e+00,1.000000e+00,1.000000e+00,1.000000e+00,1.000000e+00,1.000000e+00
+            --arg 9=0.000000e+00
+        )
+        ;;
     histogram)
         configure_histogram_args
         ;;

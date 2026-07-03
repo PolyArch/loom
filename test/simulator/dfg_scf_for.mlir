@@ -26,6 +26,8 @@
 // RUN: FileCheck %s --check-prefix=POINTER-MEMORY-OOB < %t.pointer_memory_oob.json
 // RUN: loom-dfg-sim %s --graph structured_for_carried_pointer_memory --arg 0=none --memref 1=1 --arg 2=0 --arg 3=1 --arg 4=1 --arg 5=0 --output %t.carried_pointer_memory.json
 // RUN: FileCheck %s --check-prefix=CARRIED-POINTER-MEMORY < %t.carried_pointer_memory.json
+// RUN: loom-dfg-sim %s --graph structured_for_pointer_select_memory --arg 0=none --arg 1=false --memref 2=11 --memref 3=22 --arg 4=0 --output %t.pointer_select_memory.json
+// RUN: FileCheck %s --check-prefix=POINTER-SELECT-MEMORY < %t.pointer_select_memory.json
 // RUN: loom-dfg-sim %s --graph structured_if_nested_for_pointer_memory --arg 0=none --arg 1=true --arg 2=0 --arg 3=3 --arg 4=1 --memref 5=1.000000e+00,2.000000e+00,3.000000e+00 --arg 6=0.000000e+00 --output %t.if_nested_for_memory.json
 // RUN: FileCheck %s --check-prefix=IF-NESTED-FOR-MEMORY < %t.if_nested_for_memory.json
 // RUN: loom-dfg-sim %s --graph structured_for_autocorr_slice --arg 0=none --arg 1=0 --arg 2=3 --arg 3=1 --arg 4=0 --arg 5=0.000000e+00 --arg 6=2 --memref 7=1.000000e+00,2.000000e+00,3.000000e+00,4.000000e+00 --arg 8=3 --memref 9=0.000000e+00,0.000000e+00,0.000000e+00 --arg 10=0 --arg 11=0 --output %t.autocorr_slice.json
@@ -143,6 +145,14 @@
 // CARRIED-POINTER-MEMORY-DAG: "none"
 // CARRIED-POINTER-MEMORY-DAG: "i32:1"
 // CARRIED-POINTER-MEMORY-DAG: "arg1": [
+
+// POINTER-SELECT-MEMORY-DAG: "graph": "structured_for_pointer_select_memory"
+// POINTER-SELECT-MEMORY-DAG: "status": "pass"
+// POINTER-SELECT-MEMORY-DAG: "llvm.select": 1
+// POINTER-SELECT-MEMORY-DAG: "dataflow.load": 1
+// POINTER-SELECT-MEMORY-DAG: "final_outputs": [
+// POINTER-SELECT-MEMORY-DAG: "none"
+// POINTER-SELECT-MEMORY-DAG: "i32:22"
 // CARRIED-POINTER-MEMORY-DAG: "i32:2"
 // CARRIED-POINTER-MEMORY-NOT: "i32:3"
 
@@ -372,6 +382,16 @@ module {
       scf.yield %next, %carried : i32, memref<?xi32>
     }
     dataflow.graph.return %ctrl, %sum : none, i32
+  }
+
+  dataflow.graph.func private @structured_for_pointer_select_memory(
+      %ctrl: none, %cond: i1, %lhs: !llvm.ptr, %rhs: !llvm.ptr,
+      %slot: index) -> (none, i32) {
+    %selected = llvm.select %cond, %lhs, %rhs : i1, !llvm.ptr
+    %view = builtin.unrealized_conversion_cast %selected
+        : !llvm.ptr to memref<?xi32>
+    %value, %done = dataflow.load %view[%slot] %ctrl : memref<?xi32>
+    dataflow.graph.return %done, %value : none, i32
   }
 
   dataflow.graph.func private @structured_if_nested_for_pointer_memory(

@@ -117,6 +117,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     fir_filter
     fir_filter_stateful
     gather
+    gauss_seidel_step
     gf_mul
     gemv
     gemm
