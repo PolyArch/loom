@@ -29,6 +29,7 @@ DEFAULT_SWEEP_CASES = (
     "bitonic_stage",
     "bitonic_stage-tweak",
     "bit_reverse",
+    "breadth_first_search",
     "bisection_step",
     "clz",
     "ctz",
@@ -155,6 +156,7 @@ MAPPING_UNSUPPORTED_SWEEP_CASES: tuple[str, ...] = ()
 MAPPING_UNSUPPORTED_OPERATIONS: dict[str, str] = {}
 DFG_BLOCKED_SWEEP_CASES: tuple[str, ...] = ()
 DFG_UNSUPPORTED_SWEEP_CASES = (
+    "breadth_first_search",
     "edge_update",
     "edge_update_batch",
     "col2im",
@@ -181,6 +183,11 @@ GRAPH_PRESENT_UNWIRED_DIAGNOSTIC = (
     "primary workload graph is present but app simulator fixture is not wired for search-style control flow"
 )
 PARTIAL_LOWERING_SWEEP_CASES = {
+    "breadth_first_search": (
+        "primary workload graph is partial: breadth_first_search lowering covers initialization and queue update "
+        "slices while the queue-driven CSR traversal remains outside row-level aggregate evidence",
+        "breadth_first_search_kernel",
+    ),
     "edge_update": (
         "primary workload graph is partial: edge_update lowering covers the input-to-output copy loop "
         "while the CSR lookup and update loop remains outside dataflow",
@@ -6328,6 +6335,8 @@ def main(argv: list[str]) -> int:
                 "--case",
                 "bit_reverse",
                 "--case",
+                "breadth_first_search",
+                "--case",
                 "bisection_step",
                 "--case",
                 "clz",
@@ -7664,20 +7673,12 @@ def main(argv: list[str]) -> int:
             "total": 132,
             "pass": 124,
             "fail": 0,
-            "blocked": 1,
-            "unsupported": 7,
+            "blocked": 0,
+            "unsupported": 8,
             "missing_status": 0,
         }
         if counts != expected_counts:
             raise AssertionError(f"app counter shape should reflect promoted app coverage: {counts}")
-        bfs_row = one_row(rows, "breadth_first_search")
-        if (
-            bfs_row["status"] != "blocked"
-            or bfs_row["diagnostic_class"] != "missing_dfg_report"
-            or bfs_row["blocking_prerequisite"] != "dfg_report"
-            or bfs_row["owner"] != "sim_report"
-        ):
-            raise AssertionError(f"default pass-only sweep should leave BFS as an exact DFG-report blocker: {bfs_row}")
         sim_cycle = out_dir / "sim-cycle-summary.csv"
         sim_args = [
             "bash",

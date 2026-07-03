@@ -69,6 +69,7 @@ if [[ ${#CASES[@]} -eq 0 ]]; then
     bitonic_stage
     bitonic_stage-tweak
     bit_reverse
+    breadth_first_search
     bisection_step
     clz
     ctz
