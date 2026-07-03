@@ -20,6 +20,17 @@ def assert_script_has_jobs_option(path: Path) -> str:
     return text
 
 
+def assert_script_unit_has_jobs_option(path: Path, helper: Path) -> str:
+    text = path.read_text()
+    helper_text = helper.read_text()
+    combined = f"{text}\n{helper_text}"
+    require(str(helper.relative_to(path.parents[2])) in text, f"{path} must source {helper}")
+    require("--jobs", f"{path} must expose an explicit --jobs option")
+    require("LOOM_TEST_JOBS" in combined, f"{path} must honor LOOM_TEST_JOBS through its shell unit")
+    require("JOBS" in combined, f"{path} must honor JOBS through its shell unit")
+    return text
+
+
 def assert_sweep_parallelized(path: Path) -> None:
     text = assert_script_has_jobs_option(path)
     require("wait -n" in text, f"{path} must throttle independent case jobs with wait -n")
@@ -43,7 +54,7 @@ def assert_app_runner_parallelized(path: Path) -> None:
 
 
 def assert_rollup_parallelized(path: Path) -> None:
-    text = assert_script_has_jobs_option(path)
+    text = assert_script_unit_has_jobs_option(path, path.with_name("cmsis_sim_status_lib.sh"))
     require("wait -n" in text, f"{path} must join independent producer jobs with wait -n")
     require("run_rollup_producer_job" in text, f"{path} must isolate independent producer lanes")
     require(

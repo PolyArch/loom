@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${ROOT}/test/e2e/cmsis_sim_status_lib.sh"
 
 usage() {
     cat >&2 <<'EOF'
@@ -185,37 +186,6 @@ load_app_sim_attempt_manifest_cases() {
         --emit-cases
 }
 
-load_cmsis_sim_default_batch_stems() {
-    python3 - "${ROOT}" "${DEFAULT_CMSIS_SIM_DEFAULT_BATCH}" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-
-root = Path(sys.argv[1])
-manifest = Path(sys.argv[2])
-sys.path.insert(0, str(root / "test" / "e2e"))
-import run_cmsis_dfg_sim_attempts as attempts  # noqa: E402
-
-data = json.loads(manifest.read_text())
-if data.get("schema_version") != 1:
-    raise SystemExit(f"{manifest} schema_version must be 1")
-stems = data.get("attempt_stems")
-if not isinstance(stems, list) or not stems:
-    raise SystemExit(f"{manifest} attempt_stems must be a non-empty list")
-seen: set[str] = set()
-for stem in stems:
-    if not isinstance(stem, str) or not stem.strip():
-        raise SystemExit(f"{manifest} attempt_stems entries must be non-empty strings")
-    if stem in seen:
-        raise SystemExit(f"{manifest} contains duplicate CMSIS attempt stem {stem}")
-    if not any(attempts.attempt_matches_stem(attempt, stem) for attempt in attempts.ATTEMPTS):
-        raise SystemExit(f"{manifest} contains unknown CMSIS attempt stem {stem}")
-    seen.add(stem)
-    print(stem)
-PY
-}
-
 if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
     if ! default_case_output="$(load_app_sim_manifest_cases)"; then
         exit 1
@@ -262,7 +232,9 @@ for attempt_manifest in "${APP_SIM_ATTEMPT_MANIFESTS[@]}"; do
 done
 
 if [[ "${CMSIS_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
-    if ! default_batch_stems_output="$(load_cmsis_sim_default_batch_stems)"; then
+    if ! default_batch_stems_output="$(
+        load_cmsis_sim_default_batch_stems "${ROOT}" "${DEFAULT_CMSIS_SIM_DEFAULT_BATCH}"
+    )"; then
         exit 1
     fi
     while IFS= read -r default_batch_stem; do
@@ -341,19 +313,7 @@ if [[ -z "${STATUS_SIM_EVIDENCE_DIR}" ]]; then
     rm -rf "${STATUS_SIM_EVIDENCE_DIR}"
 fi
 
-default_jobs() {
-    local value="${JOBS_ARG:-${LOOM_TEST_JOBS:-${JOBS:-}}}"
-    if [[ -z "${value}" ]]; then
-        value="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
-    fi
-    if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 )); then
-        echo "invalid --jobs value: ${value}" >&2
-        exit 2
-    fi
-    printf '%s\n' "${value}"
-}
-
-PARALLEL_JOBS="$(default_jobs)"
+PARALLEL_JOBS="$(cmsis_status_default_jobs "${JOBS_ARG}")"
 
 clean_app_sim_evidence() {
     local evidence_dir="$1"
@@ -396,60 +356,6 @@ for case in cases:
             path.unlink()
         elif path.is_dir():
             shutil.rmtree(path)
-PY
-}
-
-clean_cmsis_sim_evidence() {
-    local evidence_dir="$1"
-    local comparison_dir="$2"
-    python3 - "${ROOT}" "${evidence_dir}" "${comparison_dir}" <<'PY'
-import shutil
-import sys
-from pathlib import Path
-
-
-root = Path(sys.argv[1])
-evidence_dir = Path(sys.argv[2])
-comparison_dir = Path(sys.argv[3])
-sys.path.insert(0, str(root / "test" / "e2e"))
-import run_cmsis_dfg_sim_attempts as attempts  # noqa: E402
-
-evidence_dir.mkdir(parents=True, exist_ok=True)
-
-labels: set[str] = set()
-cases: set[str] = set()
-for attempt in attempts.ATTEMPTS:
-    cases.add(attempt.case)
-    for label in (attempt.stem, attempt.artifact_stem, attempt.aggregate_stem):
-        if label:
-            labels.add(label)
-
-suffixes = (
-    ".dfg.report.json",
-    ".mapping.csv",
-    ".mapping.json",
-    ".cgra.report.json",
-    ".lowered.dfg.mlir",
-)
-for label in labels:
-    for suffix in suffixes:
-        path = evidence_dir / f"{label}{suffix}"
-        if path.is_file() or path.is_symlink():
-            path.unlink()
-        elif path.is_dir():
-            shutil.rmtree(path)
-
-for case in cases:
-    comparison = comparison_dir / f"{case}.sim-comparison-report.json"
-    if comparison.is_file() or comparison.is_symlink():
-        comparison.unlink()
-
-for directory in sorted(comparison_dir.glob("**/*"), reverse=True):
-    if directory.is_dir():
-        try:
-            directory.rmdir()
-        except OSError:
-            pass
 PY
 }
 
@@ -555,7 +461,7 @@ if (( producer_failed != 0 )); then
 fi
 
 if [[ -n "${SIM_EVIDENCE_DIR}" || "${CMSIS_SIM_DEFAULT}" -eq 1 ]]; then
-    clean_cmsis_sim_evidence "${STATUS_SIM_EVIDENCE_DIR}" "${OUT_DIR}/cgra-status-comparisons"
+    clean_cmsis_sim_evidence "${ROOT}" "${STATUS_SIM_EVIDENCE_DIR}" "${OUT_DIR}/cgra-status-comparisons"
     cmsis_sim_args=(
         --cmsis-dsp-dfg-dir "${CMSIS_DSP_DFG_DIR}"
         --cmsis-nn-dfg-dir "${CMSIS_NN_DFG_DIR}"

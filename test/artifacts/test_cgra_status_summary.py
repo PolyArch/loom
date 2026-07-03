@@ -893,6 +893,150 @@ module {
         ):
             raise AssertionError(f"opt-out CMSIS row should preserve missing-DFG blocker: {no_cmsis_auto_dsp}")
 
+        selected_cmsis_csv = out_dir / "selected-cmsis-cgra-status-summary.csv"
+        selected_cmsis_json = out_dir / "selected-cmsis-cgra-status-summary.json"
+        run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(selected_cmsis_csv),
+                "--json-output",
+                str(selected_cmsis_json),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--cmsis-sim-attempt-stem",
+                "arm_add_q15",
+            ],
+        )
+        selected_cmsis_rows = read_rows(selected_cmsis_csv)
+        selected_cmsis_data = json.loads(selected_cmsis_json.read_text())
+        selected_cmsis_counts = selected_cmsis_data.get("counts", {})
+        if selected_cmsis_counts.get("cmsis-dsp") != {
+            "total": 16,
+            "pass": 1,
+            "fail": 0,
+            "blocked": 13,
+            "unsupported": 2,
+            "missing_status": 0,
+        }:
+            raise AssertionError(
+                f"selected CMSIS attempt should advance exactly one DSP row: "
+                f"{selected_cmsis_counts.get('cmsis-dsp')}"
+            )
+        if selected_cmsis_counts.get("cmsis-nn") != {
+            "total": 18,
+            "pass": 0,
+            "fail": 0,
+            "blocked": 13,
+            "unsupported": 5,
+            "missing_status": 0,
+        }:
+            raise AssertionError(
+                f"selected CMSIS attempt should not alter NN rows: {selected_cmsis_counts.get('cmsis-nn')}"
+            )
+        if selected_cmsis_counts.get("app") != {
+            "total": APP_CASE_COUNT,
+            "pass": 0,
+            "fail": 0,
+            "blocked": APP_CASE_COUNT,
+            "unsupported": 0,
+            "missing_status": 0,
+        }:
+            raise AssertionError(
+                f"selected CMSIS default evidence directory must not consume stale app evidence: "
+                f"{selected_cmsis_counts.get('app')}"
+            )
+        selected_app_vecsum = one_row(selected_cmsis_rows, "app", "vecsum")
+        assert_app_not_attempted(selected_app_vecsum, "vecsum")
+        selected_cmsis_add = one_row(selected_cmsis_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
+        if (
+            selected_cmsis_add["status"] != "pass"
+            or selected_cmsis_add["diagnostic_class"] != "cgra_sim_pass"
+            or selected_cmsis_add["blocking_prerequisite"]
+            or selected_cmsis_add["owner"] != "sim_report"
+            or selected_cmsis_add["hardware_system"] != "shared_reduction_adg"
+            or selected_cmsis_add["spatialcore_template"] != "shared_reduction_adg"
+            or selected_cmsis_add["dfg_status"] != "pass"
+            or selected_cmsis_add["mapping_status"] != "pass"
+            or selected_cmsis_add["cgra_status"] != "pass"
+            or selected_cmsis_add["comparison_status"] != "pass"
+            or selected_cmsis_add["final_outputs_present"] != "true"
+            or selected_cmsis_add["final_memory_state_present"] != "true"
+        ):
+            raise AssertionError(f"selected CMSIS row should consume complete CGRA evidence: {selected_cmsis_add}")
+        for column in ("dfg_mlir", "dfg_report", "mapping_artifact", "cgra_report", "comparison_report"):
+            if not selected_cmsis_add[column]:
+                raise AssertionError(f"selected CMSIS pass row should name {column}: {selected_cmsis_add}")
+        assert_sha256_file(
+            selected_cmsis_add["dfg_mlir"],
+            selected_cmsis_add["dfg_mlir_fingerprint"],
+            repo,
+        )
+        assert_sha256_file(
+            selected_cmsis_add["dfg_report"],
+            selected_cmsis_add["dfg_report_fingerprint"],
+            repo,
+        )
+        assert_sha256_file(
+            selected_cmsis_add["mapping_artifact"],
+            selected_cmsis_add["mapping_artifact_fingerprint"],
+            repo,
+        )
+        assert_sha256_file(
+            selected_cmsis_add["cgra_report"],
+            selected_cmsis_add["cgra_report_fingerprint"],
+            repo,
+        )
+        assert_sha256_file(
+            selected_cmsis_add["comparison_report"],
+            selected_cmsis_add["comparison_report_fingerprint"],
+            repo,
+        )
+
+        missing_cmsis_stem_value = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(out_dir / "missing-cmsis-stem-value.csv"),
+                "--json-output",
+                str(out_dir / "missing-cmsis-stem-value.json"),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--cmsis-sim-attempt-stem",
+                "--jobs",
+                "4",
+            ],
+            expect_success=False,
+        )
+        if "--cmsis-sim-attempt-stem requires a value" not in missing_cmsis_stem_value.stderr:
+            raise AssertionError(
+                "CMSIS attempt selector should reject a missing value before running producers: "
+                f"{missing_cmsis_stem_value.stderr}"
+            )
+        missing_jobs_value = run(
+            repo,
+            [
+                "bash",
+                "test/e2e/run_cgra_status_summary.sh",
+                "--output",
+                str(out_dir / "missing-jobs-value.csv"),
+                "--json-output",
+                str(out_dir / "missing-jobs-value.json"),
+                "--legacy-loombench-root",
+                str(legacy_root),
+                "--cmsis-sim-attempt-stem",
+                "arm_add_q15",
+                "--jobs",
+            ],
+            expect_success=False,
+        )
+        if "--jobs requires a value" not in missing_jobs_value.stderr:
+            raise AssertionError(f"bare --jobs should fail before running producers: {missing_jobs_value.stderr}")
+
         tampered_cmsis_rows = [dict(row) for row in rows]
         tampered_cmsis = one_row(tampered_cmsis_rows, "cmsis-dsp", "BasicMathFunctions/arm_add_q15.c")
         tampered_cmsis.update(
