@@ -146,6 +146,26 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "bit_reverse",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "compare_swap",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "cumsum",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "dotprod",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "mean",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "axpy",
       "hardware": "shared_vector_alu_adg"
     },
