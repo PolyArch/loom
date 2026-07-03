@@ -485,10 +485,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "app",
         {
             "total": 132,
-            "pass": 123,
+            "pass": 124,
             "fail": 0,
             "blocked": 0,
-            "unsupported": 9,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
@@ -497,10 +497,10 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "loombench",
         {
             "total": 17,
-            "pass": 13,
+            "pass": 14,
             "fail": 0,
             "blocked": 1,
-            "unsupported": 3,
+            "unsupported": 2,
             "missing_status": 0,
         },
     )
@@ -547,13 +547,7 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
     assert_loombench_cgra_pass_row(repo, rows, "trsv_lower", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "trsv_upper", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "wildcard_match", expected_hardware="shared_memory_reduction_adg")
-    assert_loombench_dfg_unsupported_row(
-        repo,
-        rows,
-        "ifft_butterfly",
-        expected_graph="g_t_ifft_butterfly_kernel_red_0_0",
-        expected_diagnostic=SHARED_APP_BLOCKER_DIAGNOSTICS["ifft_butterfly"],
-    )
+    assert_loombench_cgra_pass_row(repo, rows, "ifft_butterfly", expected_hardware="shared_signal_window_adg")
     assert_loombench_dfg_unsupported_row(
         repo,
         rows,
@@ -1082,11 +1076,6 @@ SHARED_APP_BLOCKER_DIAGNOSTICS = {
         "the discovered dataflow graphs; no discovered graph ids were emitted, so DFG-sim cannot "
         "observe the kernel return value"
     ),
-    "ifft_butterfly": (
-        "primary workload graph is partial: ifft_butterfly lowering covers copy, per-stage butterfly, "
-        "and scale micro-kernels while full inverse FFT stage scheduling and cross-stage feedback remain "
-        "outside row-level aggregate evidence"
-    ),
     "sort_insertion": (
         "primary workload graph is partial: sort_insertion lowering covers the copy loop "
         "while the insertion-sort compare-and-shift loop remains outside dataflow"
@@ -1319,8 +1308,8 @@ def assert_app_attempt_manifest_mode(repo: Path, out_dir: Path, legacy_root: Pat
             "total": 132,
             "pass": 19,
             "fail": 0,
-            "blocked": 104,
-            "unsupported": 9,
+            "blocked": 105,
+            "unsupported": 8,
             "missing_status": 0,
         },
     )
