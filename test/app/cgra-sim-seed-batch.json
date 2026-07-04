@@ -138,6 +138,38 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "covariance",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "gauss_seidel_step",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "modexp",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "stream_nested",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "tridiag_solve",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "trsv_lower",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "trsv_upper",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "wildcard_match",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
