@@ -55,6 +55,14 @@ REQUIRED_SYSTEM_FAMILIES = {
     "cached_dual_accel",
     "dma_scratchpad",
     "fixed_and_spatial",
+    "tri_spatial_shared_memory",
+    "dual_host_shared_memory",
+    "private_scratchpad_pair",
+    "host_cache_dual_memory",
+    "dma_dual_memory",
+    "cached_accelerator_cluster",
+    "mixed_fixed_spatial_pipeline",
+    "signal_quantized_pair",
 }
 
 EXPECTED_TOPOLOGY_SIGNATURES = {
@@ -129,6 +137,104 @@ EXPECTED_TOPOLOGY_SIGNATURES = {
         "fabric_root": "matrix_heterogeneous_islands_adg",
         "tile_counts": {"mem": 1, "pe": 4, "switch": 1},
         "schedule_kinds": {"spatial", "temporal"},
+    },
+}
+
+EXPECTED_SYSTEM_SIGNATURES = {
+    "heterogeneous_soc": {
+        "fabric_root": "heterogeneous_dual_accel_soc",
+        "node_count": 6,
+        "link_count": 25,
+        "node_kinds": {
+            "acc_core",
+            "cache",
+            "dma_engine",
+            "fixed_accelerator",
+            "host_core",
+            "memory",
+        },
+    },
+    "dual_spatial_shared_memory": {
+        "fabric_root": "system_dual_spatial_shared_memory_soc",
+        "node_count": 4,
+        "link_count": 15,
+        "node_kinds": {"acc_core", "host_core", "memory"},
+    },
+    "cached_dual_accel": {
+        "fabric_root": "system_cached_dual_accel_soc",
+        "node_count": 6,
+        "link_count": 25,
+        "node_kinds": {"acc_core", "cache", "host_core", "memory"},
+    },
+    "dma_scratchpad": {
+        "fabric_root": "system_dma_scratchpad_soc",
+        "node_count": 4,
+        "link_count": 15,
+        "node_kinds": {"acc_core", "dma_engine", "host_core", "memory"},
+    },
+    "fixed_and_spatial": {
+        "fabric_root": "system_fixed_and_spatial_soc",
+        "node_count": 4,
+        "link_count": 15,
+        "node_kinds": {
+            "acc_core",
+            "fixed_accelerator",
+            "host_core",
+            "memory",
+        },
+    },
+    "tri_spatial_shared_memory": {
+        "fabric_root": "system_tri_spatial_shared_memory_soc",
+        "node_count": 5,
+        "link_count": 20,
+        "node_kinds": {"acc_core", "host_core", "memory"},
+    },
+    "dual_host_shared_memory": {
+        "fabric_root": "system_dual_host_shared_memory_soc",
+        "node_count": 5,
+        "link_count": 20,
+        "node_kinds": {"acc_core", "host_core", "memory"},
+    },
+    "private_scratchpad_pair": {
+        "fabric_root": "system_private_scratchpad_pair_soc",
+        "node_count": 5,
+        "link_count": 20,
+        "node_kinds": {"acc_core", "host_core", "memory"},
+    },
+    "host_cache_dual_memory": {
+        "fabric_root": "system_host_cache_dual_memory_soc",
+        "node_count": 6,
+        "link_count": 25,
+        "node_kinds": {"acc_core", "cache", "host_core", "memory"},
+    },
+    "dma_dual_memory": {
+        "fabric_root": "system_dma_dual_memory_soc",
+        "node_count": 5,
+        "link_count": 20,
+        "node_kinds": {"acc_core", "dma_engine", "host_core", "memory"},
+    },
+    "cached_accelerator_cluster": {
+        "fabric_root": "system_cached_accelerator_cluster_soc",
+        "node_count": 7,
+        "link_count": 30,
+        "node_kinds": {"acc_core", "cache", "host_core", "memory"},
+    },
+    "mixed_fixed_spatial_pipeline": {
+        "fabric_root": "system_mixed_fixed_spatial_pipeline_soc",
+        "node_count": 6,
+        "link_count": 25,
+        "node_kinds": {
+            "acc_core",
+            "fixed_accelerator",
+            "host_core",
+            "memory",
+        },
+    },
+    "signal_quantized_pair": {
+        "fabric_root": "system_signal_quantized_pair_soc",
+        "node_count": 4,
+        "link_count": 15,
+        "node_kinds": {"acc_core", "host_core", "memory"},
     },
 }
 
@@ -229,6 +335,16 @@ def assert_inventory_shape(inventory_path: Path) -> dict[str, object]:
             topology_fingerprints[str(topology_family)] = str(
                 candidate.get("source_mlir_fingerprint")
             )
+        if root_kind == "fabric.system" and str(topology_family) in EXPECTED_SYSTEM_SIGNATURES:
+            signature = EXPECTED_SYSTEM_SIGNATURES[str(topology_family)]
+            if candidate.get("fabric_root") != signature["fabric_root"]:
+                raise AssertionError(f"{candidate_id} has wrong system root")
+            if coverage.get("node_count") != signature["node_count"]:
+                raise AssertionError(f"{candidate_id} has wrong system node count")
+            if coverage.get("link_count") != signature["link_count"]:
+                raise AssertionError(f"{candidate_id} has wrong system link count")
+            if set(coverage.get("node_kinds", [])) != signature["node_kinds"]:
+                raise AssertionError(f"{candidate_id} has wrong system node kinds")
         consumers = candidate.get("downstream_consumers")
         if not isinstance(consumers, list) or not consumers:
             raise AssertionError(f"{candidate_id} lacks downstream consumer records")

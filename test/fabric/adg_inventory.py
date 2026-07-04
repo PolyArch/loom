@@ -54,6 +54,14 @@ SYSTEM_MATRIX_CASES = (
     ("cached-dual-accel", "irregular", "cached_dual_accel"),
     ("dma-scratchpad", "irregular", "dma_scratchpad"),
     ("fixed-and-spatial", "irregular", "fixed_and_spatial"),
+    ("tri-spatial-shared-memory", "irregular", "tri_spatial_shared_memory"),
+    ("dual-host-shared-memory", "irregular", "dual_host_shared_memory"),
+    ("private-scratchpad-pair", "irregular", "private_scratchpad_pair"),
+    ("host-cache-dual-memory", "irregular", "host_cache_dual_memory"),
+    ("dma-dual-memory", "irregular", "dma_dual_memory"),
+    ("cached-accelerator-cluster", "irregular", "cached_accelerator_cluster"),
+    ("mixed-fixed-spatial-pipeline", "irregular", "mixed_fixed_spatial_pipeline"),
+    ("signal-quantized-pair", "irregular", "signal_quantized_pair"),
 )
 
 TOPOLOGY_CLASSIFICATION_BY_RECIPE = {

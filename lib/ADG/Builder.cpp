@@ -1830,13 +1830,254 @@ SystemBuilder buildFixedAndSpatialSocAdg() {
   return system;
 }
 
+SystemBuilder buildTriSpatialSharedMemorySocAdg() {
+  SystemBuilder system("system_tri_spatial_shared_memory_soc", "sequential");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc2", "shared_memory_reduction_adg",
+                               "rv32im", axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1"));
+  appendPorts(dramPorts, axiSubordinatePort("acc2"));
+  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
+  connectAxiMemoryPort(system, "acc2", "mem", "dram0", "acc2");
+  return system;
+}
+
+SystemBuilder buildDualHostSharedMemorySocAdg() {
+  SystemBuilder system("system_dual_host_shared_memory_soc",
+                       "release_acquire");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addHostCore("host1", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host0"));
+  appendPorts(dramPorts, axiSubordinatePort("host1"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1"));
+  system.addMemory("dram0", 8 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
+  connectAxiMemoryPort(system, "host1", "mem", "dram0", "host1");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
+  return system;
+}
+
+SystemBuilder buildPrivateScratchpadPairSocAdg() {
+  SystemBuilder system("system_private_scratchpad_pair_soc", "sequential");
+  std::vector<std::string> hostPorts;
+  appendPorts(hostPorts, axiManagerPort("mem0"));
+  appendPorts(hostPorts, axiManagerPort("mem1"));
+  system.addHostCore("host0", "rv64gc", std::move(hostPorts));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> scratch0Ports;
+  appendPorts(scratch0Ports, axiSubordinatePort("host"));
+  appendPorts(scratch0Ports, axiSubordinatePort("acc0"));
+  system.addMemory("scratch0", 256 * 1024, std::move(scratch0Ports));
+
+  std::vector<std::string> scratch1Ports;
+  appendPorts(scratch1Ports, axiSubordinatePort("host"));
+  appendPorts(scratch1Ports, axiSubordinatePort("acc1"));
+  system.addMemory("scratch1", 256 * 1024, std::move(scratch1Ports));
+
+  connectAxiMemoryPort(system, "host0", "mem0", "scratch0", "host");
+  connectAxiMemoryPort(system, "host0", "mem1", "scratch1", "host");
+  connectAxiMemoryPort(system, "acc0", "mem", "scratch0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "scratch1", "acc1");
+  return system;
+}
+
+SystemBuilder buildHostCacheDualMemorySocAdg() {
+  SystemBuilder system("system_host_cache_dual_memory_soc",
+                       "release_acquire");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> cachePorts;
+  appendPorts(cachePorts, axiSubordinatePort("host"));
+  appendPorts(cachePorts, axiManagerPort("mem0"));
+  appendPorts(cachePorts, axiManagerPort("mem1"));
+  system.addCache("l1d0", 64, 64 * 1024, std::move(cachePorts));
+
+  std::vector<std::string> dram0Ports;
+  appendPorts(dram0Ports, axiSubordinatePort("cache"));
+  appendPorts(dram0Ports, axiSubordinatePort("acc0"));
+  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dram0Ports));
+
+  std::vector<std::string> dram1Ports;
+  appendPorts(dram1Ports, axiSubordinatePort("cache"));
+  appendPorts(dram1Ports, axiSubordinatePort("acc1"));
+  system.addMemory("dram1", 4 * 1024 * 1024, std::move(dram1Ports));
+
+  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
+  connectAxiMemoryPort(system, "l1d0", "mem0", "dram0", "cache");
+  connectAxiMemoryPort(system, "l1d0", "mem1", "dram1", "cache");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram1", "acc1");
+  return system;
+}
+
+SystemBuilder buildDmaDualMemorySocAdg() {
+  SystemBuilder system("system_dma_dual_memory_soc", "tso");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> dmaPorts;
+  appendPorts(dmaPorts, axiSubordinatePort("ctrl"));
+  appendPorts(dmaPorts, axiManagerPort("src"));
+  appendPorts(dmaPorts, axiManagerPort("dst"));
+  system.addDmaEngine("dma0", 16, std::move(dmaPorts));
+
+  std::vector<std::string> srcPorts;
+  appendPorts(srcPorts, axiSubordinatePort("dma0"));
+  system.addMemory("src_mem", 1024 * 1024, std::move(srcPorts));
+
+  std::vector<std::string> dstPorts;
+  appendPorts(dstPorts, axiSubordinatePort("dma0"));
+  appendPorts(dstPorts, axiSubordinatePort("acc0"));
+  system.addMemory("dst_mem", 1024 * 1024, std::move(dstPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dma0", "ctrl");
+  connectAxiMemoryPort(system, "dma0", "src", "src_mem", "dma0");
+  connectAxiMemoryPort(system, "dma0", "dst", "dst_mem", "dma0");
+  connectAxiMemoryPort(system, "acc0", "mem", "dst_mem", "acc0");
+  return system;
+}
+
+SystemBuilder buildCachedAcceleratorClusterSocAdg() {
+  SystemBuilder system("system_cached_accelerator_cluster_soc",
+                       "release_acquire");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+
+  std::vector<std::string> hostCachePorts;
+  appendPorts(hostCachePorts, axiSubordinatePort("host"));
+  appendPorts(hostCachePorts, axiManagerPort("mem"));
+  system.addCache("l1d0", 64, 32 * 1024, std::move(hostCachePorts));
+
+  std::vector<std::string> acc0CachePorts;
+  appendPorts(acc0CachePorts, axiSubordinatePort("acc"));
+  appendPorts(acc0CachePorts, axiManagerPort("mem"));
+  system.addCache("acc_l1d0", 64, 16 * 1024, std::move(acc0CachePorts));
+
+  std::vector<std::string> acc1CachePorts;
+  appendPorts(acc1CachePorts, axiSubordinatePort("acc"));
+  appendPorts(acc1CachePorts, axiManagerPort("mem"));
+  system.addCache("acc_l1d1", 64, 16 * 1024, std::move(acc1CachePorts));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host_cache"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0_cache"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1_cache"));
+  system.addMemory("dram0", 8 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "l1d0", "host");
+  connectAxiMemoryPort(system, "l1d0", "mem", "dram0", "host_cache");
+  connectAxiMemoryPort(system, "acc0", "mem", "acc_l1d0", "acc");
+  connectAxiMemoryPort(system, "acc_l1d0", "mem", "dram0", "acc0_cache");
+  connectAxiMemoryPort(system, "acc1", "mem", "acc_l1d1", "acc");
+  connectAxiMemoryPort(system, "acc_l1d1", "mem", "dram0", "acc1_cache");
+  return system;
+}
+
+SystemBuilder buildMixedFixedSpatialPipelineSocAdg() {
+  SystemBuilder system("system_mixed_fixed_spatial_pipeline_soc",
+                       "sequential");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_reduction_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_vector_alu_adg", "rv32imc",
+                               axiManagerPort("mem"));
+  system.addFixedAccelerator("fft0", "fft", axiManagerPort("mem"));
+  system.addFixedAccelerator("crypto0", "xor_block", axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1"));
+  appendPorts(dramPorts, axiSubordinatePort("fft0"));
+  appendPorts(dramPorts, axiSubordinatePort("crypto0"));
+  system.addMemory("dram0", 4 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
+  connectAxiMemoryPort(system, "fft0", "mem", "dram0", "fft0");
+  connectAxiMemoryPort(system, "crypto0", "mem", "dram0", "crypto0");
+  return system;
+}
+
+SystemBuilder buildSignalQuantizedPairSocAdg() {
+  SystemBuilder system("system_signal_quantized_pair_soc", "sequential");
+  system.addHostCore("host0", "rv64gc", axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc0", "shared_signal_window_adg", "rv32im",
+                               axiManagerPort("mem"));
+  system.addSpatialAccelerator("acc1", "shared_quantized_window_adg",
+                               "rv32imc", axiManagerPort("mem"));
+
+  std::vector<std::string> dramPorts;
+  appendPorts(dramPorts, axiSubordinatePort("host0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc0"));
+  appendPorts(dramPorts, axiSubordinatePort("acc1"));
+  system.addMemory("dram0", 8 * 1024 * 1024, std::move(dramPorts));
+
+  connectAxiMemoryPort(system, "host0", "mem", "dram0", "host0");
+  connectAxiMemoryPort(system, "acc0", "mem", "dram0", "acc0");
+  connectAxiMemoryPort(system, "acc1", "mem", "dram0", "acc1");
+  return system;
+}
+
 llvm::Error printReusableSpatialTemplates(llvm::raw_ostream &os,
-                                          bool includeVectorAlu) {
+                                          bool includeVectorAlu,
+                                          bool includeMemoryReduction = false,
+                                          bool includeSignalWindow = false,
+                                          bool includeQuantizedWindow = false) {
   if (llvm::Error err = buildSharedReductionAdg().print(os))
     return err;
   if (includeVectorAlu) {
     os << '\n';
     if (llvm::Error err = buildSharedVectorAluAdg().print(os))
+      return err;
+  }
+  if (includeMemoryReduction) {
+    os << '\n';
+    if (llvm::Error err = buildSharedMemoryReductionAdg().print(os))
+      return err;
+  }
+  if (includeSignalWindow) {
+    os << '\n';
+    if (llvm::Error err = buildSharedSignalWindowAdg().print(os))
+      return err;
+  }
+  if (includeQuantizedWindow) {
+    os << '\n';
+    if (llvm::Error err = buildSharedQuantizedWindowAdg().print(os))
       return err;
   }
   os << '\n';
@@ -5088,6 +5329,48 @@ llvm::Error loom::adg::writeSystemTopologyMatrixAdg(llvm::raw_ostream &os,
     if (llvm::Error err = printReusableSpatialTemplates(os, false))
       return err;
     return buildFixedAndSpatialSocAdg().print(os);
+  }
+  if (family == "tri-spatial-shared-memory") {
+    if (llvm::Error err =
+            printReusableSpatialTemplates(os, true, true, false, false))
+      return err;
+    return buildTriSpatialSharedMemorySocAdg().print(os);
+  }
+  if (family == "dual-host-shared-memory") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildDualHostSharedMemorySocAdg().print(os);
+  }
+  if (family == "private-scratchpad-pair") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildPrivateScratchpadPairSocAdg().print(os);
+  }
+  if (family == "host-cache-dual-memory") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildHostCacheDualMemorySocAdg().print(os);
+  }
+  if (family == "dma-dual-memory") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, false))
+      return err;
+    return buildDmaDualMemorySocAdg().print(os);
+  }
+  if (family == "cached-accelerator-cluster") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildCachedAcceleratorClusterSocAdg().print(os);
+  }
+  if (family == "mixed-fixed-spatial-pipeline") {
+    if (llvm::Error err = printReusableSpatialTemplates(os, true))
+      return err;
+    return buildMixedFixedSpatialPipelineSocAdg().print(os);
+  }
+  if (family == "signal-quantized-pair") {
+    if (llvm::Error err =
+            printReusableSpatialTemplates(os, false, false, true, true))
+      return err;
+    return buildSignalQuantizedPairSocAdg().print(os);
   }
   return llvm::createStringError(std::errc::invalid_argument,
                                  "unknown system topology matrix case %s",
