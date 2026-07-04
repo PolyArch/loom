@@ -18,7 +18,7 @@ is the escape hatch for a loop-carried dependence (contrast
 [`tridiag_solve`](../tridiag_solve/tridiag_solve_loom_dse.md), whose carry is
 **not** associative and stays serial).
 
-Regenerate: `python3 tests/scripts/loom_dse.py vecsum --config 6x6`
+Regenerate: `python3 tests/scripts/loom_dse.py vecsum --config 6x6 --max-parallel 16`
 
 ## Banking
 
@@ -35,19 +35,21 @@ result), so loads drive the choice.
 - `absolute_cgra_lb = 43` (`ceil(514/12)`), reached only at `active_L = 12`
   (`P_tot >= 12`). The `CP = 11` is the reduction-tree depth `ceil(log2 256)`.
 
-## Results
+## Results (`--max-parallel 16`)
 
 ```text
 flags  split       Ptot  aL  aS   exp  wav  cagg  p_agg  sched  class           util P/L/S
 ------ ----------- ----- --- --- ---- ---- ----- ------ ------ --------------- ------------
-K      i:P8U1  x4     8   8   8  256    1    65     65     67  resource-bound  34/100/51
+K      i:P16U1 x4    16  12  12  256    1    43     43     45  resource-bound  51/100/51
+b      i:P8U1  x4     8   8   8  256    1    65     65     67  resource-bound  34/100/51
 b      i:P4U1* x4     4   4   4  256    1   129    129    131  resource-bound  17/100/50
 b      i:P2U1  x4     2   2   2  256    1   257    257    259  resource-bound   9/100/50
 b      i:P1U1  x4     1   1   1  256    1   514    514    515  resource-bound   4/100/50
 ```
 
 `x4` = four `P·U` factorings collapse to one row (op counts are product-only;
-only `active_L` differs). `*` = current source pragma (`P=4`).
+only `active_L` differs). `*` = current source pragma (`P=4`). `K` reaches
+`active_L = 12` (all lanes) at `p_agg = 43` — **exactly the lower bound**.
 
 ## The P-vs-U distinction
 
@@ -59,9 +61,15 @@ distinction is entirely on the load ports.
 
 ## Recommendation
 
-**`LOOM_PARALLEL(8)` (reduction), `LOOM_UNROLL(1)`** — the knee at maximum
-reachable load bandwidth. The current `P=4` is *bandwidth-starved*: `active_L=4`,
-`p_agg=129` (`3.0×` the floor) with the load lane at only `4/12` of the fabric.
-Doubling to `P=8` halves it to `65` (`1.5×`). Reaching the `43` floor needs
-`active_L=12`, i.e. `P>=12` reduction workers (banking `A` to 12) — unroll cannot
-get there.
+Within the **default `--max-parallel 8` sweep**, the best row is
+**`LOOM_PARALLEL(8)` (reduction), `LOOM_UNROLL(1)`** (`active_L=8`, `p_agg=65`,
+`1.5×` the floor). But this is sweep-limited, not the spec-level saturation: the
+load class does not fill the fabric until `active_L = L = 12` (`P_tot >= 12`).
+
+- The current `P=4` is *bandwidth-starved*: `active_L=4`, `p_agg=129` (`3.0×`),
+  load lane at `4/12`.
+- **The true knee is `active_L=12`.** On the powers-of-two grid that is `P=16`
+  (`--max-parallel 16`), which gives `active_L=12` and `p_agg=43` — **exactly the
+  `43`-cycle floor** (`1.00×`). So a 12-to-16-way reduction fully saturates the
+  load lanes here. Unroll cannot get there — only more reduction workers
+  (banking `A`) can.

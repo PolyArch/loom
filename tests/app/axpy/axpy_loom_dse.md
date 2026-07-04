@@ -18,10 +18,10 @@ load/store model** of the "Optional Loom-Pragma Design-Space Estimate" section o
 [`docs/spec-kernel-performance.md`](../../../docs/spec-kernel-performance.md). It
 is a design-space *estimate*, not a lower bound, RTL, or bank-conflict model.
 
-Regenerate:
+Regenerate (sweep parallel up to 16 so the 12 load lanes can be saturated):
 
 ```bash
-python3 tests/scripts/loom_dse.py axpy --config 6x6
+python3 tests/scripts/loom_dse.py axpy --config 6x6 --max-parallel 16
 ```
 
 ## Why P and U now differ
@@ -54,26 +54,53 @@ change with the split.
   (`ceil(770/12) = 65`), the **only** lower bound. Reached only when `active_L`
   hits `12`, i.e. `P_tot >= 12`.
 
-## Results
+## Results (`--max-parallel 16`)
 
 ```text
-flags  split    Ptot  aL  aS   exp  wav  cagg  p_agg  sched  class           util P/L/S
------- -------- ----- --- --- ---- ---- ----- ------ ------ --------------- ------------
-o      i:P8U8      8   8   8   64    4    25    100    108  resource-bound  32/100/64
-o      i:P8U4      8   8   8   32    8    13    104    120  resource-bound  31/100/62
-o      i:P8U2      8   8   8   16   16     7    112    144  resource-bound  29/100/57
-K      i:P8U1      8   8   8    8   32     4    128    192  resource-bound  25/100/50
-b      i:P4U8      4   4   4   32    8    25    200    216  resource-bound  16/100/64
-b      i:P4U4      4   4   4   16   16    13    208    240  resource-bound  15/100/62
-b      i:P4U2      4   4   4    8   32     7    224    288  resource-bound  14/100/57
-b      i:P4U1*     4   4   4    4   64     4    256    384  resource-bound  25/100/50
-b      i:P2U8      2   2   2   16   16    25    400    432  resource-bound   8/100/64
-b      i:P1U1      1   1   1    1  256     5   1280   1536  resource-bound  20/100/40
+flags  split     Ptot  aL  aS   exp  wav  cagg  p_agg  sched  class           util P/L/S
+------ --------- ----- --- --- ---- ---- ----- ------ ------ --------------- ------------
+o      i:P16U8     16  12  12  128    2    33     66     70  resource-bound  45/100/67
+o      i:P16U4     16  12  12   64    4    17     68     76  resource-bound  47/100/65
+o      i:P16U2     16  12  12   32    8     9     72     88  resource-bound  44/100/67
+K      i:P16U1     16  12  12   16   16     5     80    112  resource-bound  40/100/60
+b      i:P8U1      8    8   8    8   32     4    128    192  resource-bound  25/100/50
+b      i:P4U1*     4    4   4    4   64     4    256    384  resource-bound  25/100/50
+b      i:P2U1      2    2   2    2  128     4    512    768  resource-bound  25/100/50
+b      i:P1U1      1    1   1    1  256     5   1280   1536  resource-bound  20/100/40
 ```
 
-`K` = recommended (saturation knee at max bandwidth), `b` = bandwidth-starved
-(memory ports idle, raise `P`), `o` = oversubscribed (extra exposure past the
-knee, no throughput gain), `*` = current source pragma. `p_agg` =
+### Column glossary
+
+- `flags`: quick status markers for the candidate. `K` is the recommended knee,
+  `b` is bandwidth-starved, `o` is oversubscribed, and `*` marks the current
+  source pragma.
+- `split`: the loop pragma split being tested. For example, `i:P16U1` means
+  `LOOM_PARALLEL(16)` and `LOOM_UNROLL(1)` on loop `i`.
+- `Ptot`: total parallel workers requested by the split.
+- `aL` / `aS`: active load/store lanes after banking and hardware caps. These
+  are the lanes the candidate can actually use; for example, `P16` exposes 16
+  workers, but `aL` clamps to 12 on the `6x6` config because only 12 load lanes
+  exist.
+- `exp`: exposed iterations per wave, roughly `P * U` for this single loop.
+- `wav`: number of waves needed to cover the 256 loop iterations.
+- `cagg`: aggregate estimate for one exposed wave.
+- `p_agg`: wave-summed `pragma_exposure_aggregate`; lower is better for comparing
+  candidates, but this is still an estimate above the `absolute_cgra_lb` floor,
+  not a lower bound.
+- `sched`: finite-resource `schedule_estimate`; also an estimate, not a lower
+  bound.
+- `class`: whether the wave is limited by critical-path latency or by a resource
+  class. Every shown AXPY row is load-resource-bound.
+- `util P/L/S`: per-class utilization within the active resources for compute,
+  loads, and stores. `L = 100` means the candidate saturates its active load
+  lanes; it does not necessarily mean all 12 physical load lanes are reachable
+  unless `aL = 12`.
+
+`K` = recommended (fills the 12 load lanes, `active_L = 12`), `b` =
+bandwidth-starved (memory ports idle, raise `P`), `o` = oversubscribed (extra
+exposure past the knee, no throughput gain), `*` = current source pragma.
+`active_L` reaches the full `L = 12` only at `P_tot >= 12`; the powers-of-two
+grid's first such value is `16` (rows abbreviated). `p_agg` =
 `pragma_exposure_aggregate` (wave-summed; above the floor), `sched` =
 `schedule_estimate`.
 
@@ -96,34 +123,39 @@ loop body; parallel enables multiple streams."
 
 ## Recommendation
 
-**`LOOM_PARALLEL(8)` with `LOOM_UNROLL(1)`** (the `K` row): the smallest exposure
-that saturates the load ports at the maximum bandwidth reachable with
-`P <= 8`. Reasoning:
+The binding load class saturates the fabric only at `active_L = L = 12`, i.e.
+`P_tot >= 12`. Walking the table:
 
 - The current source pragma **`P=4, U=1`** is *bandwidth-starved*: it uses only
-  4 of the (up to 8) worker banks and 4 of the 12 load lanes, leaving load
-  bandwidth on the floor (`p_agg = 256`, `4.0×` the lower bound). Its load lane
-  sits at only `4/12` of the fabric.
-- **`P=8, U=1`** doubles the banks to 8 (`active_L = 8`), cutting `p_agg` to
-  `128` (`2.0×`). This is the knee: the load class is fully used every cycle
-  within a wave.
-- Rows past the knee (`P=8, U=2/4/8`, flagged `o`) shave `p_agg` further only
-  through per-wave invariant-reload amortization and ceiling rounding — the
-  steady-state load rate is unchanged (`active_L` is still 8) — while adding
-  unroll area. They are oversubscription, not speed.
-- **To beat `128` you must add banks, not unroll.** `active_L` is capped at
-  `P_tot` here; raising `LOOM_PARALLEL` to `12` (or banking the arrays to 12)
-  would reach `active_L = 12` and the `65`-cycle floor. Unrolling never will.
+  4 of the 12 load lanes, leaving load bandwidth on the floor (`p_agg = 256`,
+  `4.0×` the lower bound).
+- **`P=8, U=1`** doubles the banks to 8 (`active_L = 8`, `p_agg = 128`, `2.0×`) —
+  better, but still four lanes idle. This is the ceiling if the fabric caps
+  workers at 8.
+- **`P=16, U=1` is the recommended knee** (`K`): it fills all 12 lanes
+  (`active_L = 12`), reaching `p_agg = 80` (`1.23×` the `65`-cycle floor).
+  `P_tot = 12` would hit `active_L = 12` exactly; the powers-of-two grid can only
+  land on `16` (with 4 workers beyond the 12 lanes), so an arbitrary Loom factor
+  of `12` is the ideal and `16` the grid's approximation.
+- Rows with more unroll at fixed `P` (flagged `o`) shave `p_agg` only through
+  per-wave invariant-reload amortization and ceiling rounding — the steady-state
+  load rate is unchanged — while adding area. **Unroll never raises `active_L`;
+  only more parallel/banks do.**
 
 ## Comparing against measured DFG simulator cycles
 
-The estimate brackets the true cost as
-`absolute_cgra_lb (65) <= pragma_exposure_aggregate <= schedule_estimate`. When
-measured DFG execution cycles are available for a candidate, read
-`sim / absolute_cgra_lb` as total distance from the resource floor, and
-`sim / schedule_estimate` as overhead beyond the finite-resource schedule (DFG
-lowering, mapping, handshake backpressure, memory latency). Real dataflow
-pipelines the waves, so it can fall **below** `p_agg`/`sched` toward the floor.
+The bracket `absolute_cgra_lb (65) <= pragma_exposure_aggregate <=
+schedule_estimate` relates **model quantities only** — it is *not* a bound on
+measured DFG cycles. Only `absolute_cgra_lb` is a lower bound (on the resource
+model); `p_agg` and `schedule_estimate` embed the no-overlap wave assumption and
+sit above it, and neither is an upper bound on real hardware. When measured DFG
+execution cycles are available for a candidate, compare them: `sim /
+absolute_cgra_lb` is the total distance from the resource floor, `sim / p_agg`
+the distance from the wave-serialized aggregate, and `sim / schedule_estimate`
+the overhead beyond the finite-resource schedule (DFG lowering, mapping,
+handshake backpressure, memory latency). Real pipelined dataflow can fall
+**below** `p_agg`/`sched` toward the floor, and real overheads can push measured
+cycles **above** `sched` — so measured cycles may land on either side.
 
 ## Notes
 

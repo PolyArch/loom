@@ -294,14 +294,19 @@ def _register():
     KERNELS["conv2d"] = KernelSpec(
         name="conv2d",
         levels=(Level("out", n_out, "parallel"), Level("tap", K, "reduction")),
-        load_binding=BindingArray("input", None, ("out",)),
+        # input carries LOOM_MEMORY_BANK(4, block) in conv2d.cpp, so its bank
+        # count is capped at 4 regardless of output-pixel parallelism:
+        # active_L = min(P_tot, 4, L).
+        load_binding=BindingArray("input", 4, ("out",)),
         store_binding=BindingArray("output", None, ("out",)),
         build_chunk=_conv2d_chunk,
         banking_note=(
             "Output pixels (out = C_out*OH*OW) parallel; the K = C_in*KH*KW taps "
-            "are a reduction fully consumed per pixel. input/weight modeled as "
-            "partitioned over the output-pixel workers (B = P_tot); input halo "
-            "reuse and weight sharing are not modeled (conservative loads)."),
+            "are a reduction fully consumed per pixel. input carries "
+            "LOOM_MEMORY_BANK(4, block) -> B_L capped at 4 (active_L <= 4). "
+            "weight is uncapped but rides the same modeled load width (single "
+            "binding array); input halo reuse and weight sharing are not modeled "
+            "(conservative loads)."),
     )
     KERNELS["tridiag_solve"] = KernelSpec(
         name="tridiag_solve",

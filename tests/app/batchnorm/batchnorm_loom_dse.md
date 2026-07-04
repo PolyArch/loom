@@ -23,7 +23,12 @@ invariants (loaded once per exposed channel).
   ~4 arithmetic ops per pixel against ~1 input load, so it sits close to the
   compute/load boundary — see below.
 
-## Results (top of the sweep; `+N equiv` = P/U factorings and inner splits)
+## Results (selected rows; `+N equiv` = P/U factorings and inner splits)
+
+These are three illustrative rows — the widest-exposure `o` row, a mid `o` row,
+and the recommended `K` knee — hand-picked to bracket the sweep, **not** the
+verbatim `--top 8` listing (which shows several more `o` rows between the first
+and the `K` row). Regenerate the full ranking with the command above.
 
 ```text
 flags  split                 Ptot  aL  aS   exp  wav  cagg  p_agg  sched  class           util P/L/S
@@ -51,10 +56,25 @@ since arithmetic is a global pool, P and U would then *stop* differing (see the
 
 ## Recommendation
 
-**Distribute `P·U ≈ 16` across the parallel dims to reach `active_L = 12`** (all
-load lanes) with the smallest exposure — e.g. `h=4, w=4` parallel (`P_tot = 16`),
-minimal unroll. This hits `active_L = 12` and `p_agg = 64` (`1.33×` the floor,
-the tightest of the six kernels because three parallel dims can fully fill the
-lanes). Rows past the knee (`o`) squeeze the last few percent only by amortizing
-the per-channel invariant reloads over larger tiles — a wave-serialization
-artifact, not more bandwidth.
+**Distribute parallelism across the dims until `active_L = 12`** (all load
+lanes), with minimal unroll. The spec-level saturation target is
+`P_tot = 12` — the smallest worker count that fills the 12 load lanes. The helper
+enumerates **powers of two**, so its grid can only land on `P_tot = 16` (e.g.
+`h=4, w=4`), which also gives `active_L = min(16, 12) = 12` but overshoots the
+true target of 12; an arbitrary Loom factoring (e.g. `c=3, h=2, w=2` → 12, or
+`c=4, h=3`) would hit `P_tot = 12` exactly.
+
+Keep two things separate here: the **port-width target** and the **wave-summed
+estimate**. `active_L = 12` is only the port-width condition — it says the load
+lanes are full; it does **not** by itself pin `p_agg`, which also depends on the
+tiling's exposure (and hence its wave count). The `p_agg = 64` figure (`1.33×`
+the floor — the tightest of the six kernels, because three parallel dims can fill
+the lanes) belongs specifically to the recommended `c:P1U2 h:P4U1 w:P4U1` row:
+`P_tot = 16` at exposure `32`, i.e. 8 waves. Other configurations that also reach
+`active_L = 12` land higher, because their smaller tiles run more waves — the
+powers-of-two `h=4, w=4` (exposure 16) gives `p_agg = 128`, and the arbitrary
+`P_tot = 12` factorings above (exposure 12) give `p_agg = 192–256`. So the
+guidance is: hit `active_L = 12` for full ports, then take the smallest exposure
+that still saturates. Rows past that knee (`o`) squeeze the last few percent only
+by amortizing the per-channel invariant reloads over larger tiles — a
+wave-serialization artifact, not more bandwidth.
