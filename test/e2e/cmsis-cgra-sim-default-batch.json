@@ -24,6 +24,7 @@
     "arm_minimum_s8",
     "arm_maximum_s8",
     "arm_max_pool_s8",
+    "arm_depthwise_conv_s8",
     "arm_softmax_u8",
     "arm_vector_sum_s8",
     "arm_fully_connected_s8"

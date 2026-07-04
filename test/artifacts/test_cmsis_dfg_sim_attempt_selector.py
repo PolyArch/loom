@@ -130,9 +130,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 12,
+                "pass": 13,
                 "fail": 0,
-                "blocked": 1,
+                "blocked": 0,
                 "unsupported": 5,
                 "missing_status": 0,
             },
@@ -165,7 +165,7 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn",
             "FullyConnectedFunctions/arm_fully_connected_s8.c",
         )
-        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, vector_sum, fully_connected):
+        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, depthwise, vector_sum, fully_connected):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (
@@ -191,18 +191,14 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
         ):
             raise AssertionError(f"default-batch rollup should promote softmax with real CGRA-sim evidence: {softmax}")
         if (
-            depthwise["status"] != "blocked"
-            or depthwise["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
-            or depthwise["dfg_status"] != "not_run"
-            or depthwise["mapping_status"] != "not_run"
-            or depthwise["cgra_status"] != "not_run"
-            or depthwise["comparison_status"] != "not_run"
-            or not depthwise["dfg_mlir"]
-            or depthwise["dfg_report"]
-            or depthwise["mapping_artifact"]
-            or depthwise["cgra_report"]
+            depthwise["diagnostic_class"] != "cgra_sim_pass"
+            or depthwise["blocking_prerequisite"] != ""
+            or depthwise["dfg_status"] != "pass"
+            or depthwise["mapping_status"] != "pass"
+            or depthwise["final_outputs_present"] != "true"
+            or depthwise["final_memory_state_present"] != "true"
         ):
-            raise AssertionError(f"default-batch rollup should not retain stale depthwise sim evidence: {depthwise}")
+            raise AssertionError(f"default-batch rollup should promote depthwise with real CGRA-sim evidence: {depthwise}")
 
         evidence_dir = out_dir / "current-sim-cycle"
         for artifact in (
@@ -227,6 +223,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             evidence_dir / "arm_softmax_u8.dfg.report.json",
             evidence_dir / "arm_softmax_u8.mapping.json",
             evidence_dir / "arm_softmax_u8.cgra.report.json",
+            evidence_dir / "arm_depthwise_conv_s8.dfg.report.json",
+            evidence_dir / "arm_depthwise_conv_s8.mapping.json",
+            evidence_dir / "arm_depthwise_conv_s8.cgra.report.json",
         ):
             if not artifact.is_file():
                 raise AssertionError(f"default-batch rollup did not emit {artifact}")

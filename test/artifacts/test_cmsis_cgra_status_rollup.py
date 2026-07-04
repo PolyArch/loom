@@ -521,9 +521,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 5,
             "missing_status": 0,
         },
@@ -1846,9 +1846,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 5,
             "missing_status": 0,
         },
@@ -1876,7 +1876,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_depthwise_conv_s8_blocker(repo, rows, sim_evidence)
+    assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_fully_connected_s8_cgra_evidence(repo, rows, sim_evidence)
     run(
@@ -3477,40 +3477,22 @@ def assert_cmsis_softmax_u8_cgra_evidence(
         )
 
 
-def assert_cmsis_depthwise_conv_s8_blocker(
+def assert_cmsis_depthwise_conv_s8_cgra_evidence(
     repo: Path,
     rows: list[dict[str, str]],
     sim_evidence: Path,
 ) -> None:
     case = "ConvolutionFunctions/arm_depthwise_conv_s8.c"
     stem = "arm_depthwise_conv_s8"
+    hardware = "shared_quantized_window_adg"
     expected_graphs = [
         "g_t_arm_depthwise_conv_s8_red_0_0",
         "g_t_arm_depthwise_conv_s8_red_1_0",
     ]
+    assert_cmsis_cgra_pass_row(repo, rows, sim_evidence, "cmsis-nn", case, stem, expected_hardware=hardware)
     row = one_row(rows, "cmsis-nn", case)
-    if (
-        row["status"] != "blocked"
-        or row["diagnostic_class"] != "cmsis_dfg_mlir_ready_for_dfg_sim"
-        or row["owner"] != "compiler_pipeline"
-        or row["blocking_prerequisite"] != "dfg_sim_report"
-        or row["dfg_status"] != "not_run"
-        or row["mapping_status"] != "not_run"
-        or row["cgra_status"] != "not_run"
-        or row["comparison_status"] != "not_run"
-        or row["required_slice_count"] != "2"
-        or row["graph_ids"].split(",") != expected_graphs
-        or not row["dfg_mlir"]
-        or row["dfg_report"]
-        or row["mapping_artifact"]
-        or row["cgra_report"]
-        or row["comparison_report"]
-        or row["final_outputs_present"] != "false"
-        or row["final_memory_state_present"] != "false"
-        or "DFG-sim, mapping, and CGRA-sim reports are absent" not in row["diagnostic"]
-    ):
-        raise AssertionError(f"{stem} should expose an honest DFG-ready blocker: {row}")
-    assert_sha256_file(row["dfg_mlir"], row["dfg_mlir_fingerprint"], repo)
+    if row["required_slice_count"] != "2" or row["graph_ids"].split(",") != expected_graphs:
+        raise AssertionError(f"{stem} should remain a two-slice CMSIS row: {row}")
     for artifact_name in (
         f"{stem}.red0.dfg.report.json",
         f"{stem}.red0.mapping.json",
@@ -3524,8 +3506,39 @@ def assert_cmsis_depthwise_conv_s8_blocker(
         f"{stem}.cgra.report.json",
     ):
         artifact = sim_evidence / artifact_name
-        if artifact.exists():
-            raise AssertionError(f"{stem} default batch should not emit stale evidence {artifact}")
+        if not artifact.is_file():
+            raise AssertionError(f"{stem} evidence should emit {artifact}")
+
+    dfg_report = json.loads((repo / row["dfg_report"]).read_text())
+    mapping = json.loads((repo / row["mapping_artifact"]).read_text())
+    cgra = json.loads((repo / row["cgra_report"]).read_text())
+    comparison = json.loads((repo / row["comparison_report"]).read_text())
+    if (
+        dfg_report.get("status") != "pass"
+        or dfg_report.get("aggregation_kind") != "workload_graph_set"
+        or dfg_report.get("component_graphs") != expected_graphs
+        or dfg_report.get("dynamic_work_items") != 2
+        or dfg_report.get("final_outputs") != ["none", "i32:0", "none", "i32:1"]
+    ):
+        raise AssertionError(f"{stem} aggregate DFG evidence changed: {dfg_report}")
+    memory_state = dfg_report.get("final_memory_state")
+    if not isinstance(memory_state, dict) or "g_t_arm_depthwise_conv_s8_red_1_0:arg43" not in memory_state:
+        raise AssertionError(f"{stem} aggregate DFG memory evidence is incomplete: {dfg_report}")
+    if mapping.get("status") != "pass" or mapping.get("hardware") != hardware:
+        raise AssertionError(f"{stem} mapping should use shared quantized hardware: {mapping}")
+    if (
+        cgra.get("status") != "pass"
+        or cgra.get("hardware") != hardware
+        or cgra.get("hardware_aware_cycles", 0) < dfg_report.get("optimistic_cycles", 0)
+    ):
+        raise AssertionError(f"{stem} CGRA evidence changed: {cgra}")
+    if (
+        comparison.get("status") != "pass"
+        or comparison.get("functional_comparison_status") != "pass"
+        or comparison.get("memory_comparison_status") != "pass"
+        or comparison.get("performance_comparison_status") != "pass"
+    ):
+        raise AssertionError(f"{stem} comparison should pass: {comparison}")
 
 
 def assert_cmsis_max_pool_s8_cgra_evidence(
@@ -4764,9 +4777,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 5,
             "missing_status": 0,
         },
@@ -4824,7 +4837,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_minimum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_maximum_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_depthwise_conv_s8_blocker(repo, rows, sim_evidence)
+    assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_fully_connected_s8_cgra_evidence(repo, rows, sim_evidence)
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
