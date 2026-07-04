@@ -130,9 +130,9 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             },
             "cmsis-nn": {
                 "total": 18,
-                "pass": 12,
+                "pass": 13,
                 "fail": 0,
-                "blocked": 1,
+                "blocked": 0,
                 "unsupported": 5,
                 "missing_status": 0,
             },
@@ -159,24 +159,18 @@ def assert_default_batch_rollup_promotes_bounded_rows(repo: Path) -> None:
             "cmsis-nn",
             "FullyConnectedFunctions/arm_fully_connected_s8.c",
         )
-        fully_connected_call_blocker = "unsupported PnR graph operation: llvm.call"
-        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, vector_sum):
+        for row in (add, abs_f32, fill, relu_q15, relu_q7, relu6, reshape, vector_sum, fully_connected):
             if row["status"] != "pass" or row["cgra_status"] != "pass" or row["comparison_status"] != "pass":
                 raise AssertionError(f"default-batch row should expose CGRA-sim pass evidence: {row}")
         if (
-            fully_connected["status"] != "blocked"
-            or fully_connected["diagnostic_class"] != "mapping_artifact_unsupported"
-            or fully_connected["blocking_prerequisite"] != "mapping_artifact"
-            or fully_connected["dfg_status"] != "pass"
-            or fully_connected["mapping_status"] != "unsupported"
-            or fully_connected["cgra_status"] != "blocked"
-            or fully_connected["comparison_status"] != "blocked"
+            fully_connected["diagnostic_class"] != "cgra_sim_pass"
+            or fully_connected["blocking_prerequisite"] != ""
+            or fully_connected["mapping_status"] != "pass"
             or fully_connected["final_outputs_present"] != "true"
             or fully_connected["final_memory_state_present"] != "true"
-            or fully_connected_call_blocker not in fully_connected["diagnostic"]
         ):
             raise AssertionError(
-                "default-batch rollup should record the fully connected row's exact mapping blocker: "
+                "default-batch rollup should record fully connected as real CGRA-sim pass evidence: "
                 f"{fully_connected}"
             )
 

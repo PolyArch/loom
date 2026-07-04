@@ -12,6 +12,9 @@
 // RUN: loom-pnr-map --dfg-mlir %s --graph shared_constant_eight --hardware-mlir %S/shared_memory_reduction_adg.mlir --hardware shared_memory_reduction_adg --workload shared_constant_eight --output %t.shared-eight.csv --artifact %t.shared-eight.json
 // RUN: FileCheck %s --check-prefix=CSV-SHARED-EIGHT < %t.shared-eight.csv
 // RUN: FileCheck %s --check-prefix=JSON-SHARED-EIGHT < %t.shared-eight.json
+// RUN: loom-pnr-map --dfg-mlir %s --graph wide_constant_thirty_one --hardware-mlir %s --hardware wide_constant_adg --workload wide_constant_thirty_one --output %t.wide.csv --artifact %t.wide.json
+// RUN: FileCheck %s --check-prefix=CSV-WIDE < %t.wide.csv
+// RUN: FileCheck %s --check-prefix=JSON-WIDE < %t.wide.json
 
 // CSV-PASS: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
 // CSV-PASS-NEXT: constant_two,constant_adg,constant_two__constant_two__constant_adg,1,0,0,0,pass
@@ -47,6 +50,13 @@
 // JSON-SHARED-EIGHT-DAG: "software": "dataflow.constant#0"
 // JSON-SHARED-EIGHT-DAG: "value": "0x00000008"
 // JSON-SHARED-EIGHT-DAG: "status": "pass"
+
+// CSV-WIDE: workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,unplaced_records,status,diagnostic
+// CSV-WIDE-NEXT: wide_constant_thirty_one,wide_constant_adg,wide_constant_thirty_one__wide_constant_thirty_one__wide_constant_adg,1,0,0,0,pass
+
+// JSON-WIDE-DAG: "software": "dataflow.constant#0"
+// JSON-WIDE-DAG: "value": "0x000000000000001f"
+// JSON-WIDE-DAG: "status": "pass"
 
 module {
   dataflow.graph.func private @constant_two(%ctrl: none) -> (none, i32) {
@@ -90,6 +100,12 @@ module {
     dataflow.graph.return %ctrl, %value : none, i32
   }
 
+  dataflow.graph.func private @wide_constant_thirty_one(%ctrl: none)
+      -> (none, i64) {
+    %value = dataflow.constant %ctrl {const_value = 31 : i64} : i64
+    dataflow.graph.return %ctrl, %value : none, i64
+  }
+
   fabric.module @constant_adg(%ctrl: !fabric.bits<0>) {
     fabric.pe [spatial] (%pa = %ctrl : !fabric.bits<0> to !fabric.bits<32>)
         -> !fabric.bits<32> {
@@ -126,6 +142,20 @@ module {
                 {hw_params = [{predicate = ["ult"]}]}
                 : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<1>
         fabric.yield
+      }
+    }
+    fabric.yield
+  }
+
+  fabric.module @wide_constant_adg(%ctrl: !fabric.bits<0>) {
+    fabric.pe [spatial] (%pa = %ctrl : !fabric.bits<0> to !fabric.bits<64>)
+        -> !fabric.bits<64> {
+      fabric.fu(%input = %pa : !fabric.bits<64> to !fabric.bits<0>)
+          -> !fabric.bits<64> {
+        %value = fabric.op [@dataflow.constant] (%input)
+                 {hw_params = [{const_hex_value = ["0x000000000000001f"]}]}
+                 : (!fabric.bits<0>) -> !fabric.bits<64>
+        fabric.yield %value : !fabric.bits<64>
       }
     }
     fabric.yield

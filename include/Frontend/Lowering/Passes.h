@@ -44,6 +44,12 @@ std::unique_ptr<::mlir::Pass> createLowerForToGraphPass();
 // multiple top-level loops) are left in place with a remark.
 std::unique_ptr<::mlir::Pass> createLowerReductionToStreamPass();
 
+// Module-scope pass that expands known library helper calls inside
+// dataflow.graph.func bodies into primitive operations before PnR.
+// Unknown calls are left in place for the existing unsupported-call
+// diagnostics.
+std::unique_ptr<::mlir::Pass> createLowerKnownLibraryCallsPass();
+
 // Module-scope pass that walks every dataflow.graph.func body and
 // rewrites residual `llvm.load` / `llvm.store` ops into
 // `dataflow.load` / `dataflow.store` streaming primitives. The
@@ -96,6 +102,7 @@ void registerLoweringPasses();
 //   loom-lower-for-to-graph            (module-level)
 //   --canonicalize                     (upstream)
 //   loom-lower-reduction-to-stream     (module-level)
+//   loom-lower-known-library-calls     (module-level)
 //   loom-lower-graph-memory            (module-level)
 //   loom-lower-graph-invariant         (module-level)
 //   loom-lower-graph-control           (module-level)

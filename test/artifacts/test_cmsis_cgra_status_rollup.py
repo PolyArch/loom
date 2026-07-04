@@ -521,9 +521,9 @@ def assert_app_cgra_sweep_mode(repo: Path, out_dir: Path, legacy_root: Path) -> 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 5,
             "missing_status": 0,
         },
@@ -1846,9 +1846,9 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 5,
             "missing_status": 0,
         },
@@ -1878,16 +1878,7 @@ def assert_cmsis_sim_default_mode(repo: Path, out_dir: Path, legacy_root: Path) 
     assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_mapping_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-nn",
-        "FullyConnectedFunctions/arm_fully_connected_s8.c",
-        "arm_fully_connected_s8",
-        "g_t_arm_fully_connected_s8_red_0_0",
-        "unsupported PnR graph operation: llvm.call",
-    )
+    assert_cmsis_fully_connected_s8_cgra_evidence(repo, rows, sim_evidence)
     run(
         repo,
         [
@@ -2107,6 +2098,84 @@ def assert_cmsis_mapping_unsupported_row(
     mapping = json.loads((sim_evidence / f"{stem}.mapping.json").read_text())
     if mapping.get("status") != "unsupported" or diagnostic not in mapping.get("diagnostics", []):
         raise AssertionError(f"unexpected CMSIS mapping unsupported report: {mapping}")
+
+
+def assert_cmsis_fully_connected_s8_cgra_evidence(
+    repo: Path,
+    rows: list[dict[str, str]],
+    sim_evidence: Path,
+) -> None:
+    case = "FullyConnectedFunctions/arm_fully_connected_s8.c"
+    stem = "arm_fully_connected_s8"
+    graph = "g_t_arm_fully_connected_s8_red_0_0"
+    hardware = "shared_memory_reduction_adg"
+    assert_cmsis_cgra_pass_row(
+        repo,
+        rows,
+        sim_evidence,
+        "cmsis-nn",
+        case,
+        stem,
+        expected_hardware=hardware,
+    )
+    row = one_row(rows, "cmsis-nn", case)
+    if row["graph_ids"] != graph:
+        raise AssertionError(f"unexpected fully connected graph id: {row}")
+    lowered_dfg = sim_evidence / f"{stem}.lowered.dfg.mlir"
+    if not lowered_dfg.is_file():
+        raise AssertionError(f"CMSIS evidence mode should emit {lowered_dfg}")
+    lowered_text = lowered_dfg.read_text()
+    graph_marker = f"dataflow.graph.func private @{graph}"
+    if graph_marker not in lowered_text:
+        raise AssertionError(f"fully connected graph missing from lowered DFG: {lowered_dfg}")
+    graph_text = lowered_text.split(graph_marker, 1)[1]
+    if "llvm.call" in graph_text or "arm_nn_vec_mat_mult_t_s8" in graph_text:
+        raise AssertionError(f"fully connected helper should lower before mapping: {lowered_dfg}")
+    expected_memory = {
+        "arg10": ["i32:-128"],
+        "arg11": ["i32:127"],
+        "arg12": ["i32:-2"],
+        "arg13": ["i8:4", "i8:-1", "i8:2", "i8:-3", "i8:5", "i8:1"],
+        "arg15": ["i32:10", "i32:-4"],
+        "arg17": ["i8:1", "i8:-2", "i8:3"],
+        "arg18": ["i8:20", "i8:-18"],
+        "arg4": ["i32:1"],
+        "arg5": ["i32:3"],
+        "arg6": ["i32:1073741824"],
+        "arg7": ["i32:1"],
+        "arg8": ["i32:3"],
+        "arg9": ["i32:2"],
+    }
+    dfg_report = json.loads((sim_evidence / f"{stem}.dfg.report.json").read_text())
+    cgra_report = json.loads((sim_evidence / f"{stem}.cgra.report.json").read_text())
+    mapping = json.loads((sim_evidence / f"{stem}.mapping.json").read_text())
+    if (
+        dfg_report.get("kind") != "dfg_sim_report"
+        or dfg_report.get("workload") != case
+        or dfg_report.get("graph") != graph
+        or dfg_report.get("status") != "pass"
+        or dfg_report.get("dynamic_work_items") != 3
+        or dfg_report.get("final_outputs") != ["none"]
+        or dfg_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected fully connected DFG report: {dfg_report}")
+    if (
+        mapping.get("status") != "pass"
+        or mapping.get("hardware") != hardware
+        or mapping.get("placed_records", 0) <= 0
+        or mapping.get("routed_edges", 0) <= 0
+        or mapping.get("unrouted_edges") != 0
+        or any(p.get("operation") == "llvm.call" for p in mapping.get("placements", []))
+    ):
+        raise AssertionError(f"unexpected fully connected mapping report: {mapping}")
+    if (
+        cgra_report.get("status") != "pass"
+        or cgra_report.get("hardware") != hardware
+        or cgra_report.get("functional_state_source") != "carried_from_dfg_sim_report"
+        or cgra_report.get("final_outputs") != ["none"]
+        or cgra_report.get("final_memory_state") != expected_memory
+    ):
+        raise AssertionError(f"unexpected fully connected CGRA report: {cgra_report}")
 
 
 def assert_cmsis_mat_mult_f32_cgra_evidence(
@@ -4819,9 +4888,9 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
         "cmsis-nn",
         {
             "total": 18,
-            "pass": 12,
+            "pass": 13,
             "fail": 0,
-            "blocked": 1,
+            "blocked": 0,
             "unsupported": 5,
             "missing_status": 0,
         },
@@ -4881,16 +4950,7 @@ def assert_cmsis_dfg_sim_evidence_mode(repo: Path, out_dir: Path, legacy_root: P
     assert_cmsis_softmax_u8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_depthwise_conv_s8_cgra_evidence(repo, rows, sim_evidence)
     assert_cmsis_max_pool_s8_cgra_evidence(repo, rows, sim_evidence)
-    assert_cmsis_mapping_unsupported_row(
-        repo,
-        rows,
-        sim_evidence,
-        "cmsis-nn",
-        "FullyConnectedFunctions/arm_fully_connected_s8.c",
-        "arm_fully_connected_s8",
-        "g_t_arm_fully_connected_s8_red_0_0",
-        "unsupported PnR graph operation: llvm.call",
-    )
+    assert_cmsis_fully_connected_s8_cgra_evidence(repo, rows, sim_evidence)
     fake_cgra_tool = out_dir / "not-executable-cgra-sim"
     fake_cgra_tool.write_text("#!/bin/sh\nexit 99\n")
     no_cgra_evidence = out_dir / "cmsis-sim-evidence-no-cgra"

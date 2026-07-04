@@ -5,6 +5,7 @@
 //     loom-lower-for-to-graph           (module-level)
 //     --canonicalize                    (upstream)
 //     loom-lower-reduction-to-stream    (module-level)
+//     loom-lower-known-library-calls    (module-level)
 //     loom-lower-graph-memory           (module-level)
 //     loom-lower-graph-invariant        (module-level)
 //     loom-lower-graph-control          (module-level)
@@ -45,6 +46,7 @@ void registerLowerForToGraphPass();
 void registerLowerGraphConstantsPass();
 void registerLowerGraphControlPass();
 void registerLowerGraphInvariantPass();
+void registerLowerKnownLibraryCallsPass();
 void registerLowerGraphMemoryPass();
 void registerLowerGraphSyncPass();
 void registerLowerReductionToStreamPass();
@@ -54,6 +56,7 @@ static void buildPipelineOnOpPassManager(::mlir::OpPassManager &pm) {
   pm.addPass(createLowerForToGraphPass());
   pm.addPass(::mlir::createCanonicalizerPass());
   pm.addPass(createLowerReductionToStreamPass());
+  pm.addPass(createLowerKnownLibraryCallsPass());
   pm.addPass(createLowerGraphMemoryPass());
   pm.addPass(createLowerGraphInvariantPass());
   pm.addPass(createLowerGraphControlPass());
@@ -68,6 +71,7 @@ void registerLoweringPasses() {
   registerLowerGraphConstantsPass();
   registerLowerGraphControlPass();
   registerLowerGraphInvariantPass();
+  registerLowerKnownLibraryCallsPass();
   registerLowerGraphMemoryPass();
   registerLowerGraphSyncPass();
   registerLowerReductionToStreamPass();

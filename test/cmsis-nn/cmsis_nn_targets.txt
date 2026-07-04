@@ -74,7 +74,7 @@ ConcatenationFunctions/arm_concatenation_s8_w.c|thumbv7em-none-eabi|cortex-m4|th
 ConcatenationFunctions/arm_concatenation_s8_x.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_concatenation_s8_x||1|1|2|1|1|2|1|1|0|0|3
 ConvolutionFunctions/arm_depthwise_conv_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_depthwise_conv_s8||2|2|0|22|5|20|0|0|4|0|152
 ConvolutionFunctions/arm_convolve_1x1_s8_fast.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_convolve_1x1_s8_fast||0|0|0|0|0|0|0|0|0|0|10
-FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|11|0|11|0|0|0|0|5
+FullyConnectedFunctions/arm_fully_connected_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_fully_connected_s8||1|1|0|14|1|19|0|0|1|0|11
 FullyConnectedFunctions/arm_vector_sum_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_vector_sum_s8||1|1|0|2|1|3|0|0|0|0|16
 NNSupportFunctions/arm_q7_to_q15_with_offset.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_q7_to_q15_with_offset||0|0|0|0|0|0|0|0|0|0|10
 PoolingFunctions/arm_avgpool_s8.c|thumbv7em-none-eabi|cortex-m4|thumbv7em-unknown-none-eabi|arm_avgpool_s8||0|0|0|0|0|0|0|0|0|0|52
