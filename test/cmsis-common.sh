@@ -58,7 +58,10 @@ cmsis_common_default_out_dir() {
 
 cmsis_common_libc_defines() {
     local -n _arr=$1
+    local common_dir
+    common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     _arr=(
+        -isystem "${common_dir}/cmsis/include"
         -isystem /usr/include
         -D__STDC_HOSTED__=1
         -D__x86_64__=1

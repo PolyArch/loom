@@ -206,6 +206,13 @@ while [[ "${index}" -lt "${#ARGS[@]}" ]]; do
 done
 ARGS=("${FORWARD_ARGS[@]}")
 
+if [[ ( "${CMSIS_SIM_DEFAULT}" -eq 1 || ( "${CMSIS_SIM_REQUESTED}" -eq 1 && "${SIM_EVIDENCE_DIR_SUPPLIED}" -eq 1 ) ) \
+    && "${CMSIS_SIM_DEFAULT_BATCH}" -eq 0 \
+    && ${#CMSIS_SIM_ATTEMPT_STEMS[@]} -eq 0 \
+    && ${#CMSIS_SIM_CASES[@]} -eq 0 ]]; then
+    CMSIS_SIM_DEFAULT_BATCH=1
+fi
+
 if [[ "${CMSIS_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
     if ! default_batch_stems_output="$(
         load_cmsis_sim_default_batch_stems "${ROOT}" "${DEFAULT_CMSIS_SIM_DEFAULT_BATCH}"

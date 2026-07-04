@@ -21,7 +21,6 @@
     "arm_concatenation_s8_w",
     "arm_concatenation_s8_x",
     "arm_reshape_s8",
-    "arm_depthwise_conv_s8",
     "arm_minimum_s8",
     "arm_maximum_s8",
     "arm_max_pool_s8",

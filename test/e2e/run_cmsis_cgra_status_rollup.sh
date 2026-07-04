@@ -12,9 +12,10 @@ Runs the real CMSIS-DSP and CMSIS-NN DFG producers, then consumes their
 outputs through the CGRA status summary and both status audits. When
 --sim-evidence-dir is supplied, the rollup also runs bounded CMSIS DFG-sim
 attempts into that directory before consuming the reports. --cmsis-sim-default
-runs all bounded CMSIS attempts into the default status evidence directory.
-CMSIS attempt selectors without --sim-evidence-dir also use that default
-status evidence directory, restricted to the selected rows.
+runs the tracked default CMSIS batch into the default status evidence directory
+unless a CMSIS attempt selector restricts the selected rows.
+CMSIS attempt selectors without --sim-evidence-dir also use that default status
+evidence directory, restricted to the selected rows.
 --cmsis-sim-default-batch runs the tracked default CMSIS attempt manifest into
 the default status evidence directory. --cmsis-sim-seed-batch is accepted as a
 compatibility alias for the same tracked default CMSIS batch.
@@ -185,6 +186,13 @@ load_app_sim_attempt_manifest_cases() {
         --allow-missing-primary-graph \
         --emit-cases
 }
+
+if [[ ( "${CMSIS_SIM_DEFAULT}" -eq 1 || -n "${SIM_EVIDENCE_DIR}" ) \
+    && "${CMSIS_SIM_DEFAULT_BATCH}" -eq 0 \
+    && ${#CMSIS_SIM_ATTEMPT_STEMS[@]} -eq 0 \
+    && ${#CMSIS_SIM_CASES[@]} -eq 0 ]]; then
+    CMSIS_SIM_DEFAULT_BATCH=1
+fi
 
 if [[ "${APP_SIM_DEFAULT_BATCH}" -eq 1 ]]; then
     if ! default_case_output="$(load_app_sim_manifest_cases)"; then
