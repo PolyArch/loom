@@ -709,6 +709,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "newton_iter")
     write_legacy_case(legacy_root, "fir_filter_stateful")
     write_legacy_case(legacy_root, "string_hash")
+    write_legacy_case(legacy_root, "correlation")
+    write_legacy_case(legacy_root, "downsample_avg")
+    write_legacy_case(legacy_root, "integrate_trapz")
+    write_legacy_case(legacy_root, "rotate_bits")
+    write_legacy_case(legacy_root, "rle_encode")
+    write_legacy_case(legacy_root, "stream_update")
+    write_legacy_case(legacy_root, "jacobi_stencil_7pt")
+    write_legacy_case(legacy_root, "vecnorm_l1")
     run(
         repo,
         [
@@ -730,9 +738,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 93,
+            "pass": 101,
             "fail": 0,
-            "blocked": 39,
+            "blocked": 31,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -741,8 +749,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 50,
-            "pass": 50,
+            "total": 58,
+            "pass": 58,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -800,6 +808,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("newton_iter", "shared_reduction_adg"),
         ("fir_filter_stateful", "shared_reduction_adg"),
         ("string_hash", "shared_reduction_adg"),
+        ("correlation", "shared_reduction_adg"),
+        ("downsample_avg", "shared_reduction_adg"),
+        ("integrate_trapz", "shared_reduction_adg"),
+        ("rotate_bits", "shared_reduction_adg"),
+        ("rle_encode", "shared_reduction_adg"),
+        ("stream_update", "shared_memory_reduction_adg"),
+        ("jacobi_stencil_7pt", "shared_signal_window_adg"),
+        ("vecnorm_l1", "shared_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
         ("bit_reverse", "shared_reduction_adg"),
@@ -896,6 +912,14 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "newton_iter", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "fir_filter_stateful", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "string_hash", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "correlation", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "downsample_avg", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "integrate_trapz", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "rotate_bits", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "rle_encode", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "stream_update", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "jacobi_stencil_7pt", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "vecnorm_l1", expected_hardware="shared_reduction_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -905,6 +929,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
 
 
 def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
+    import cgra_seed_bridge_evidence as seed_bridge
+
     cgra_sweep.assert_autocorrelation_dfg_evidence(evidence_dir)
     cgra_sweep.assert_crc32_evidence(evidence_dir)
     cgra_sweep.assert_unpack_bits_evidence(evidence_dir)
@@ -956,6 +982,14 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     cgra_sweep.assert_newton_iter_evidence(evidence_dir)
     cgra_sweep.assert_fir_filter_stateful_evidence(evidence_dir)
     cgra_sweep.assert_string_hash_evidence(evidence_dir)
+    seed_bridge.assert_correlation_evidence(evidence_dir)
+    seed_bridge.assert_downsample_avg_evidence(evidence_dir)
+    seed_bridge.assert_integrate_trapz_evidence(evidence_dir)
+    seed_bridge.assert_rotate_bits_evidence(evidence_dir)
+    seed_bridge.assert_rle_encode_evidence(evidence_dir)
+    seed_bridge.assert_stream_update_evidence(evidence_dir)
+    seed_bridge.assert_jacobi_stencil_7pt_evidence(evidence_dir)
+    seed_bridge.assert_vecnorm_l1_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],

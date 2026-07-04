@@ -202,6 +202,38 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "correlation",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "downsample_avg",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "integrate_trapz",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "rotate_bits",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "rle_encode",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "stream_update",
+      "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "jacobi_stencil_7pt",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "vecnorm_l1",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },
