@@ -85,13 +85,15 @@ def string_field(data: dict[str, object], key: str) -> str:
 
 
 def hardware_identity_matches(candidate: str, hardware: str) -> bool:
-    if not candidate or not hardware:
-        return False
-    return (
-        candidate == hardware
-        or candidate.rsplit("::", 1)[-1] == hardware
-        or hardware.rsplit("::", 1)[-1] == candidate
-    )
+    return intermediate_artifacts.hardware_identity_matches(candidate, hardware)
+
+
+def hardware_matches_mapping_record(hardware_identity: str, mapping: dict[str, object]) -> bool:
+    hardware = string_field(mapping, "hardware")
+    return hardware_identity_matches(
+        hardware_identity,
+        hardware,
+    ) or intermediate_artifacts.mapping_system_child_matches(hardware_identity, mapping)
 
 
 def pass_hardware_rows(path: Path) -> list[dict[str, str]]:
@@ -347,7 +349,7 @@ def read_mapping_evidence(path: Path, hardware_identity: str) -> MappingEvidence
             "invalid_mapping_artifact",
             f"mapping artifact lacks {', '.join(missing)}",
         )
-    if not hardware_identity_matches(hardware_identity, hardware):
+    if not hardware_matches_mapping_record(hardware_identity, raw_data):
         raise MappingArtifactError(
             "mapping_hardware_mismatch",
             f"mapping hardware {hardware} does not match RTL hardware {hardware_identity}",
@@ -360,16 +362,16 @@ def read_mapping_evidence(path: Path, hardware_identity: str) -> MappingEvidence
     )
 
 
-def mapping_hardware_hint(path: Path | None) -> str:
+def read_mapping_artifact_object(path: Path | None) -> dict[str, object]:
     if path is None or not path.is_file():
-        return ""
+        return {}
     try:
         raw_data = json.loads(path.read_text())
     except json.JSONDecodeError:
-        return ""
+        return {}
     if not isinstance(raw_data, dict):
-        return ""
-    return string_field(raw_data, "hardware")
+        return {}
+    return raw_data
 
 
 def mapping_selection_blocked_manifest(
@@ -590,10 +592,13 @@ def main(argv: list[str]) -> int:
     mapping_artifact = Path(args.mapping_artifact) if args.mapping_artifact else None
     rows = pass_hardware_rows(hardware_summary)
     sorted_rows = sorted(rows, key=lambda row: row["hardware"])
-    hardware_hint = mapping_hardware_hint(mapping_artifact)
+    mapping_data = read_mapping_artifact_object(mapping_artifact)
+    hardware_hint = string_field(mapping_data, "hardware")
     if hardware_hint:
         matching_rows = [
-            row for row in sorted_rows if hardware_identity_matches(row["hardware"], hardware_hint)
+            row
+            for row in sorted_rows
+            if hardware_matches_mapping_record(row["hardware"], mapping_data)
         ]
         if len(matching_rows) == 1:
             sorted_rows = matching_rows

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 usage() {
   cat <<'USAGE'
-usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-vector-mesh|shared-memory-reduction|shared-signal-window|adg-builder] [--legacy-app-root DIR]
+usage: run_intermediate_artifact_chain.sh --output-dir DIR [--case NAME] [--hardware-source checked-in|dotproduct-fmuladd|byte-swap-store|shared-vector-alu|shared-vector-math|shared-vector-mesh|shared-memory-reduction|shared-signal-window|system-dual-spatial|adg-builder] [--legacy-app-root DIR]
 USAGE
 }
 
@@ -528,6 +528,12 @@ run_artifact_command() {
 hardware_mlir="${ROOT}/test/pnr/shared_reduction_adg.mlir"
 hardware_name="shared_reduction_adg"
 hardware_summary_recipe_args=()
+pnr_hardware_root_args=()
+
+run_mapping_summary() {
+  bash "${ROOT}/test/pnr/run_mapping_summary.sh" "$@" "${pnr_hardware_root_args[@]}"
+}
+
 case "${HARDWARE_SOURCE}" in
   checked-in)
     if [[ "${CASE}" == "batchnorm" || "${CASE}" == "fft_butterfly" || "${CASE}" == "ifft_butterfly" || "${CASE}" == "hist_bin" || "${CASE}" == "sigmoid" || "${CASE}" == "softmax" || "${CASE}" == window_* || "${CASE}" == "distance_point" || "${CASE}" == "line_intersect" || "${CASE}" == "interpolate_linear" || "${CASE}" == "jacobi_stencil_5pt" || "${CASE}" == "jacobi_stencil_7pt" || "${CASE}" == "moving_avg" || "${CASE}" == "normalize" || "${CASE}" == "normalize_vec3" || "${CASE}" == "pool_avg" || "${CASE}" == "pool_max" || "${CASE}" == "quantile" || "${CASE}" == "tridiag_solve" || "${CASE}" == "upsample_linear" ]]; then
@@ -630,6 +636,24 @@ case "${HARDWARE_SOURCE}" in
       "${hardware_mlir}=adg-builder::shared-signal-window"
     )
     ;;
+  system-dual-spatial)
+    hardware_mlir="${OUT_DIR}/system-dual-spatial-adg.mlir"
+    hardware_name="system_dual_spatial_shared_memory_soc"
+    adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
+    if [[ ! -x "${adg_builder_tool}" ]]; then
+      echo "missing loom-adg-builder-test: ${adg_builder_tool}" >&2
+      exit 1
+    fi
+    "${adg_builder_tool}" --system-matrix-case dual-spatial-shared-memory --output "${hardware_mlir}"
+    hardware_summary_recipe_args=(
+      --input-recipe-identity
+      "${hardware_mlir}=adg-builder::system-dual-spatial-shared-memory"
+    )
+    pnr_hardware_root_args=(
+      --hardware-root-kind system
+      --acc-core acc1
+    )
+    ;;
   adg-builder)
     hardware_mlir="${OUT_DIR}/adg-builder-shared-reduction-adg.mlir"
     adg_builder_tool="${LOOM_ADG_BUILDER_TEST:-${ROOT}/build/tools/loom-adg-builder-test/loom-adg-builder-test}"
@@ -728,7 +752,7 @@ run_pool2d_window_components() {
       ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
         "${dfg_args[@]}" \
         --output "${component_dfg_report}"
-      bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+      run_mapping_summary \
         --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
         --graph "${case_graph}" \
         --hardware-mlir "${hardware_mlir}" \
@@ -806,7 +830,7 @@ run_depthwise_conv_components() {
     ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim \
       "${depthwise_args[@]}" \
       --output "${component_dfg_report}"
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${case_graph}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -997,7 +1021,7 @@ run_butterfly_components() {
         )"
         ;;
     esac
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${component_graph}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -1218,7 +1242,7 @@ PY
   mapping_component_args=()
   cgra_component_args=()
   for index in "${!normalize_graphs[@]}"; do
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${normalize_graphs[${index}]}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -1282,7 +1306,7 @@ PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1312,7 +1336,7 @@ elif [[ "${CASE}" == "database_join" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1342,7 +1366,7 @@ elif [[ "${CASE}" == "spmm" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1389,7 +1413,7 @@ elif [[ "${CASE}" == "distance_point" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1439,7 +1463,7 @@ elif [[ "${CASE}" == "line_intersect" ]]; then
     line_args+=(--arg "${line_index_arg}=${index}")
     line_args+=(--output "${component_dfg_report}")
     ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${line_args[@]}"
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${case_graph}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -1499,7 +1523,7 @@ elif [[ "${CASE}" == "wildcard_match" ]]; then
       --output "${component_dfg_report}"
     )
     ${ROOT}/build/tools/loom-dfg-sim/loom-dfg-sim "${wildcard_args[@]}"
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${case_graph}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -1568,7 +1592,7 @@ elif [[ "${CASE}" == "normalize_vec3" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1618,7 +1642,7 @@ elif [[ "${CASE}" == "interpolate_linear" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1662,7 +1686,7 @@ elif [[ "${CASE}" == "jacobi_stencil_5pt" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1706,7 +1730,7 @@ elif [[ "${CASE}" == "jacobi_stencil_7pt" ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1752,7 +1776,7 @@ PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1797,7 +1821,7 @@ elif [[ "${CASE}" == window_* ]]; then
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -1967,7 +1991,7 @@ PY
   mapping_component_args=()
   cgra_component_args=()
   for index in "${!softmax_graphs[@]}"; do
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${softmax_graphs[${index}]}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -2016,7 +2040,7 @@ elif [[ "${CASE}" == "vecadd" ]]; then
     "${case_dfg_dir}/main_func.dfg.mlir" \
     "${dfg_main_report}" \
     "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_vecadd_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2024,7 +2048,7 @@ elif [[ "${CASE}" == "vecadd" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_main_artifact}" \
     --output "${mapping_main_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_main_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2081,7 +2105,7 @@ elif [[ "${CASE}" == "dot_product_3d" ]]; then
     "${dfg_core_report}" \
     "${dfg_cycle}"
   mv "${dfg_reduction_generated_report}" "${dfg_reduction_report}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_dot_product_3d_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2089,7 +2113,7 @@ elif [[ "${CASE}" == "dot_product_3d" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_core_artifact}" \
     --output "${mapping_core_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_main_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2146,7 +2170,7 @@ elif [[ "${CASE}" == "dotprod" ]]; then
     "${dfg_mul_report}" \
     "${dfg_cycle}"
   mv "${dfg_sum_generated_report}" "${dfg_sum_report}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_dotprod_mul_kernel_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2154,7 +2178,7 @@ elif [[ "${CASE}" == "dotprod" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_mul_artifact}" \
     --output "${mapping_mul_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_dotprod_sum_kernel_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2211,7 +2235,7 @@ elif [[ "${CASE}" == "relu" ]]; then
     "${dfg_main_report}" \
     "${dfg_cycle}"
   mv "${dfg_checksum_generated_report}" "${dfg_checksum_report}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_relu_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2219,7 +2243,7 @@ elif [[ "${CASE}" == "relu" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_main_artifact}" \
     --output "${mapping_main_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_main_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2276,7 +2300,7 @@ elif [[ "${CASE}" == "variance" ]]; then
     "${dfg_mean_report}" \
     "${dfg_cycle}"
   mv "${dfg_var_generated_report}" "${dfg_var_report}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_variance_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2284,7 +2308,7 @@ elif [[ "${CASE}" == "variance" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_mean_artifact}" \
     --output "${mapping_mean_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_variance_red_1_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2341,7 +2365,7 @@ elif [[ "${CASE}" == "covariance" ]]; then
     "${dfg_sums_report}" \
     "${dfg_cycle}"
   mv "${dfg_cov_generated_report}" "${dfg_cov_report}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_covariance_kernel_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2349,7 +2373,7 @@ elif [[ "${CASE}" == "covariance" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_sums_artifact}" \
     --output "${mapping_sums_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_covariance_kernel_red_1_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2406,7 +2430,7 @@ elif [[ "${CASE}" == "partition" ]]; then
     "${dfg_lower_report}" \
     "${dfg_cycle}"
   mv "${dfg_upper_generated_report}" "${dfg_upper_report}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_partition_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2414,7 +2438,7 @@ elif [[ "${CASE}" == "partition" ]]; then
     --workload "${CASE}" \
     --artifact "${mapping_lower_artifact}" \
     --output "${mapping_lower_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_partition_red_1_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2518,7 +2542,7 @@ for value in values:
 print(",".join(clean))
 PY
     )"
-    bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+    run_mapping_summary \
       --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
       --graph "${tiled_graph}" \
       --hardware-mlir "${hardware_mlir}" \
@@ -2599,7 +2623,7 @@ elif [[ "${CASE}" == "conv2d" ]]; then
           --arg 17=false \
           --arg 18=0.000000e+00 \
           --output "${component_dfg_report}"
-        bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+        run_mapping_summary \
           --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
           --graph "${case_graph}" \
           --hardware-mlir "${hardware_mlir}" \
@@ -2733,7 +2757,7 @@ PY
     --dfg-report "${copy_dfg_report}" \
     --dfg-report "${sort_dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_sort_bubble_kernel_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2741,7 +2765,7 @@ PY
     --workload "${CASE}" \
     --artifact "${copy_mapping_artifact}" \
     --output "${copy_mapping_summary}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "g_t_sort_bubble_kernel_red_0_0" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2848,7 +2872,7 @@ PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2909,7 +2933,7 @@ PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -2972,7 +2996,7 @@ PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -3040,7 +3064,7 @@ PY
   bash "${ROOT}/test/app/run_sim_cycle_summary.sh" \
     --dfg-report "${dfg_report}" \
     --output "${dfg_cycle}"
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \
@@ -3131,7 +3155,7 @@ else
     "${dfg_report}" \
     "${dfg_cycle}" \
     --primary-only
-  bash "${ROOT}/test/pnr/run_mapping_summary.sh" \
+  run_mapping_summary \
     --dfg-mlir "${case_dfg_dir}/main_func.dfg.mlir" \
     --graph "${case_graph}" \
     --hardware-mlir "${hardware_mlir}" \

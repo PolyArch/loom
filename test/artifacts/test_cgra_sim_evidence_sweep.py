@@ -6284,6 +6284,150 @@ def assert_shared_vector_mesh_evidence(repo: Path, out_dir: Path) -> None:
             raise AssertionError(f"{case} should consume shared vector mesh evidence: {row}")
 
 
+def assert_system_dual_spatial_evidence(repo: Path, out_dir: Path) -> None:
+    evidence_dir = out_dir / "system-dual-spatial-current-sim-cycle"
+    sweep_result = run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_sim_evidence_sweep.sh",
+            "--output-dir",
+            str(evidence_dir),
+            "--case",
+            "byte_swap",
+            "--hardware-source",
+            "system-dual-spatial",
+            "--jobs",
+            "1",
+        ],
+    )
+    statuses = parse_sweep_statuses(sweep_result.stdout)
+    if statuses != {"byte_swap": "pass"}:
+        raise AssertionError(f"system dual-spatial focused sweep should pass byte_swap: {statuses}")
+
+    assert_sweep_artifact(evidence_dir, "byte_swap", "dfg.report.json")
+    assert_sweep_artifact(evidence_dir, "byte_swap", "mapping.json")
+    assert_sweep_artifact(evidence_dir, "byte_swap", "cgra.report.json")
+    assert_comparison_artifact(evidence_dir, "byte_swap", "pass")
+    assert_mapping_hardware(
+        evidence_dir,
+        "byte_swap",
+        "system_dual_spatial_shared_memory_soc::acc1",
+    )
+    assert_cgra_hardware(
+        evidence_dir,
+        "byte_swap",
+        "system_dual_spatial_shared_memory_soc::acc1",
+    )
+
+    mapping = json.loads((evidence_dir / "byte_swap.mapping.json").read_text())
+    if mapping.get("hardware_root_kind") != "fabric.system":
+        raise AssertionError(f"system sweep mapping should preserve system root kind: {mapping}")
+    if mapping.get("hardware_system") != "system_dual_spatial_shared_memory_soc":
+        raise AssertionError(f"system sweep mapping should name the system root: {mapping}")
+    if mapping.get("selected_acc_core") != "acc1":
+        raise AssertionError(f"system sweep mapping should select acc1: {mapping}")
+    if mapping.get("spatialcore_template") != "shared_vector_alu_adg":
+        raise AssertionError(f"system sweep mapping should retain SpatialCore template: {mapping}")
+
+    status_csv = out_dir / "system-dual-spatial-status.csv"
+    status_json = out_dir / "system-dual-spatial-status.json"
+    run(
+        repo,
+        [
+            "bash",
+            "test/e2e/run_cgra_status_summary.sh",
+            "--output",
+            str(status_csv),
+            "--json-output",
+            str(status_json),
+            "--sim-evidence-dir",
+            str(evidence_dir),
+            "--no-legacy-loombench",
+            "--no-cmsis-dfg-auto",
+        ],
+    )
+    rows = read_rows(status_csv)
+    row = one_row(rows, "byte_swap")
+    if row["status"] != "pass":
+        raise AssertionError(f"byte_swap should consume system-root evidence: {row}")
+    if row["hardware_system"] != "system_dual_spatial_shared_memory_soc":
+        raise AssertionError(f"byte_swap should preserve system root in status: {row}")
+    if row["spatialcore_template"] != "shared_vector_alu_adg":
+        raise AssertionError(f"byte_swap should preserve SpatialCore template in status: {row}")
+
+    sim_cycle = out_dir / "system-dual-spatial-sim-cycle-summary.csv"
+    sim_args = [
+        "bash",
+        "test/app/run_sim_cycle_summary.sh",
+        "--output",
+        str(sim_cycle),
+    ]
+    for report in sorted(evidence_dir.glob("*.dfg.report.json")):
+        sim_args.extend(["--dfg-report", str(report)])
+    for report in sorted(evidence_dir.glob("*.cgra.report.json")):
+        sim_args.extend(["--cgra-report", str(report)])
+    run(repo, sim_args)
+    audit_json = out_dir / "system-dual-spatial-artifact-audit-summary.json"
+    audit_args = [
+        "python3",
+        "test/e2e/audit_intermediate_artifacts.py",
+        "--output",
+        str(audit_json),
+        str(evidence_dir / "_chains" / "byte_swap" / "dataflow-primitive-coverage.csv"),
+        str(evidence_dir / "_chains" / "byte_swap" / "adg-hardware-summary.csv"),
+        str(evidence_dir / "_chains" / "byte_swap" / "pnr-mapping-summary.csv"),
+        str(sim_cycle),
+    ]
+    audit_args.extend(str(path) for path in sorted(evidence_dir.glob("*.json")))
+    run(repo, audit_args)
+    audit = json.loads(audit_json.read_text())
+    if audit.get("verdict") != "pass":
+        raise AssertionError(f"system dual-spatial evidence should pass artifact audit: {audit}")
+
+    inventory_path = out_dir / "system-dual-spatial-adg-inventory.json"
+    run(
+        repo,
+        [
+            "bash",
+            "test/fabric/run_adg_inventory.sh",
+            "--output",
+            str(inventory_path),
+            "--mlir-output-dir",
+            str(out_dir / "system-dual-spatial-adg-inventory-mlir"),
+            "--consumer-status-json",
+            str(status_json),
+        ],
+    )
+    inventory = json.loads(inventory_path.read_text())
+    candidates = {
+        str(candidate.get("candidate_id")): candidate
+        for candidate in inventory.get("candidates", [])
+        if isinstance(candidate, dict)
+    }
+    expected_consumers = {
+        "adg-builder::system-dual-spatial-shared-memory::system_dual_spatial_shared_memory_soc",
+        "adg-builder::shared-vector-alu::shared_vector_alu_adg",
+    }
+    for candidate_id in expected_consumers:
+        candidate = candidates.get(candidate_id)
+        if candidate is None:
+            raise AssertionError(f"inventory missed system-root consumer candidate {candidate_id}")
+        consumers = candidate.get("downstream_consumers")
+        if not isinstance(consumers, list):
+            raise AssertionError(f"{candidate_id} lacks downstream consumers: {candidate}")
+        cgra_records = [
+            record
+            for record in consumers
+            if isinstance(record, dict) and record.get("consumer") == "cgra_sim"
+        ]
+        if len(cgra_records) != 1:
+            raise AssertionError(f"{candidate_id} should have one CGRA consumer record: {consumers}")
+        record = cgra_records[0]
+        if record.get("status") != "pass" or record.get("evidence_cases") != ["app:byte_swap"]:
+            raise AssertionError(f"{candidate_id} has wrong CGRA consumer evidence: {record}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit(f"usage: {argv[0]} <repo>")
@@ -7696,6 +7840,7 @@ def main(argv: list[str]) -> int:
         if audit.get("verdict") != "pass":
             raise AssertionError(f"sweep evidence should pass artifact audit: {audit}")
         assert_shared_vector_mesh_evidence(repo, out_dir)
+        assert_system_dual_spatial_evidence(repo, out_dir)
     return 0
 
 

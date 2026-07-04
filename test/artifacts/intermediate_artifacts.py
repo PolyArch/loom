@@ -2841,6 +2841,7 @@ def matching_adg_hardware_rows(
     mapping_hardware: object,
     ids_by_kind: dict[str, list[str]],
     artifact_paths_by_id: dict[str, Path],
+    mapping_record: dict[str, object] | None = None,
 ) -> list[tuple[str, str]]:
     if not isinstance(mapping_hardware, str) or not mapping_hardware:
         return []
@@ -2851,7 +2852,12 @@ def matching_adg_hardware_rows(
             continue
         for row in read_csv_rows(path):
             hardware = row.get("hardware")
-            if row.get("verify_status") == "pass" and hardware_identity_matches(hardware, mapping_hardware):
+            if row.get("verify_status") != "pass":
+                continue
+            if hardware_identity_matches(hardware, mapping_hardware) or mapping_system_child_matches(
+                hardware,
+                mapping_record,
+            ):
                 matches.append((hardware_id, hardware))
     return matches
 
@@ -2874,7 +2880,12 @@ def validate_mapped_rtl_manifest_hardware_uniqueness(
         mapping = read_manifest_json_artifact(mapping_path)
         if mapping is None or mapping.get("kind") != "pnr_mapping":
             continue
-        matches = matching_adg_hardware_rows(mapping.get("hardware"), ids_by_kind, artifact_paths_by_id)
+        matches = matching_adg_hardware_rows(
+            mapping.get("hardware"),
+            ids_by_kind,
+            artifact_paths_by_id,
+            mapping,
+        )
         if len(matches) == 1:
             continue
         if matches:
@@ -5200,10 +5211,94 @@ def hardware_identity_matches(candidate: object, hardware: object) -> bool:
         return False
     if not candidate or not hardware:
         return False
+    candidate_symbol = candidate.rsplit("::", 1)[-1]
     return (
         candidate == hardware
-        or candidate.rsplit("::", 1)[-1] == hardware
+        or candidate_symbol == hardware
         or hardware.rsplit("::", 1)[-1] == candidate
+    )
+
+
+def hardware_source_root(identity: object) -> tuple[Path, str] | None:
+    if not isinstance(identity, str) or "::" not in identity:
+        return None
+    raw_path, symbol = identity.rsplit("::", 1)
+    if not raw_path or not symbol:
+        return None
+    path = Path(raw_path)
+    if not path.is_file():
+        return None
+    return path, symbol
+
+
+def fabric_system_contains_acc_core(
+    system_identity: object,
+    acc_core: object,
+    spatial_template: object = None,
+) -> bool:
+    if not isinstance(acc_core, str) or not acc_core:
+        return False
+    source = hardware_source_root(system_identity)
+    if source is None:
+        return False
+    path, system_symbol = source
+    try:
+        text = path.read_text()
+    except OSError:
+        return False
+    system_match = re.search(rf"(?m)^\s*fabric\.system\s+@{re.escape(system_symbol)}\b", text)
+    if system_match is None:
+        return False
+    system_tail = text[system_match.end() :]
+    body_end = re.search(r"(?m)^\}", system_tail)
+    system_body = system_tail[: body_end.start()] if body_end else system_tail
+    node_match = re.search(
+        rf"^\s*fabric\.node\s+@{re.escape(acc_core)}\b\s+kind\s*=\s*\"acc_core\""
+        r"(?P<body>.*?)(?=\n\s*fabric\.(?:node|link)|\n\})",
+        system_body,
+        flags=re.S | re.M,
+    )
+    if node_match is None:
+        return False
+    if isinstance(spatial_template, str) and spatial_template:
+        template_symbol = spatial_template.rsplit("::", 1)[-1]
+        return re.search(rf"spatial\s*=\s*@{re.escape(template_symbol)}\b", node_match.group("body")) is not None
+    return True
+
+
+def mapping_system_child_matches(system_identity: object, mapping: object) -> bool:
+    if not isinstance(mapping, dict):
+        return False
+    hardware = mapping.get("hardware")
+    root_kind = mapping.get("hardware_root_kind")
+    hardware_system = mapping.get("hardware_system")
+    selected_acc_core = mapping.get("selected_acc_core")
+    spatialcore_template = mapping.get("spatialcore_template")
+    if (
+        not isinstance(hardware, str)
+        or not isinstance(hardware_system, str)
+        or not isinstance(selected_acc_core, str)
+        or root_kind != "fabric.system"
+        or "::" not in hardware
+    ):
+        return False
+    declared_system, child_core = hardware.rsplit("::", 1)
+    if child_core != selected_acc_core:
+        return False
+    if not (
+        hardware_identity_matches(declared_system, hardware_system)
+        or hardware_identity_matches(hardware_system, declared_system)
+    ):
+        return False
+    if not (
+        hardware_identity_matches(system_identity, hardware_system)
+        or hardware_identity_matches(system_identity, declared_system)
+    ):
+        return False
+    return fabric_system_contains_acc_core(
+        system_identity,
+        selected_acc_core,
+        spatialcore_template,
     )
 
 
@@ -5479,6 +5574,8 @@ def validate_rtl_manifest_mapping_reference(
     if not (
         hardware_identity_matches(mapping_hardware, data.get("source_fabric_adg_identity"))
         or hardware_identity_matches(mapping_hardware, data.get("source_hardware_root"))
+        or mapping_system_child_matches(data.get("source_fabric_adg_identity"), mapping)
+        or mapping_system_child_matches(data.get("source_hardware_root"), mapping)
     ):
         diagnostics.append("mapped-workload RTL manifest mapping hardware does not match source hardware")
     lowering = data.get("lowering_configuration")
@@ -8522,11 +8619,65 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
             return candidate
         if candidate in hardware:
             return candidate
+        matching_refs = [
+            full_ref for full_ref in hardware if hardware_identity_matches(full_ref, candidate)
+        ]
+        if len(matching_refs) == 1:
+            return matching_refs[0]
         if hardware_symbol_counts.get(candidate, 0) == 1:
             for full_ref in hardware:
                 if full_ref.rsplit("::", 1)[-1] == candidate:
                     return full_ref
         return None
+
+    def canonical_mapping_hardware_ref(record: dict[str, object] | dict[str, str]) -> str | None:
+        candidate = record.get("hardware")
+        if not isinstance(candidate, str):
+            return None
+        direct = canonical_hardware_ref(candidate)
+        if direct is not None:
+            return direct
+        matching_refs = [
+            full_ref for full_ref in hardware if mapping_system_child_matches(full_ref, record)
+        ]
+        if len(matching_refs) == 1:
+            return matching_refs[0]
+        return None
+
+    def canonical_pnr_row_hardware_ref(row: dict[str, str]) -> str | None:
+        direct = canonical_hardware_ref(row.get("hardware"))
+        if direct is not None:
+            return direct
+        workload = row.get("workload")
+        mapping_id = row.get("mapping_id")
+        row_hardware = row.get("hardware")
+        for artifact in pass_mapping_artifacts_by_workload.get(workload, []):
+            if artifact.get("mapping_id") != mapping_id:
+                continue
+            if artifact.get("hardware") != row_hardware:
+                continue
+            resolved = canonical_mapping_hardware_ref(artifact)
+            if resolved is not None:
+                return resolved
+        return None
+
+    def cgra_report_matches_hardware_ref(
+        report: dict[str, object],
+        workload: str,
+        target: str,
+    ) -> bool:
+        report_hardware = report.get("hardware")
+        if isinstance(report_hardware, str) and canonical_hardware_ref(report_hardware) == target:
+            return True
+        report_mapping_id = report.get("mapping_id")
+        for mapping in pass_mapping_artifacts_by_workload.get(workload, []):
+            if mapping.get("mapping_id") != report_mapping_id:
+                continue
+            if mapping.get("hardware") != report_hardware:
+                continue
+            if canonical_mapping_hardware_ref(mapping) == target:
+                return True
+        return False
 
     pnr_rows = [
         row
@@ -8780,7 +8931,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                 continue
             if candidate.get("mapping_id") != mapping_id:
                 continue
-            if canonical_hardware_ref(candidate.get("hardware")) == canonical_target:
+            if canonical_pnr_row_hardware_ref(candidate) == canonical_target:
                 matches.append(candidate)
         return matches
 
@@ -8821,7 +8972,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                 continue
             if artifact.get("mapping_id") != mapping_id:
                 continue
-            if canonical_hardware_ref(artifact_hardware) == canonical_target:
+            if canonical_mapping_hardware_ref(artifact) == canonical_target:
                 matches.append(artifact)
         return matches
 
@@ -8840,7 +8991,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                 continue
             if report.get("mapping_id") != mapping_id:
                 continue
-            if canonical_hardware_ref(report_hardware) == canonical_target:
+            if cgra_report_matches_hardware_ref(report, workload, canonical_target):
                 matches.append(report)
         return matches
 
@@ -9037,18 +9188,18 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                     matching_mapping_reports = []
                     for report in matching_reports:
                         report_mapping_id = report.get("mapping_id")
-                        report_hardware = canonical_hardware_ref(
-                            report.get("hardware") if isinstance(report.get("hardware"), str) else None
-                        )
-                        if not isinstance(report_mapping_id, str) or report_hardware is None:
+                        report_hardware = report.get("hardware")
+                        if not isinstance(report_mapping_id, str) or not isinstance(report_hardware, str):
                             continue
                         for mapping in pass_mapping_artifacts:
-                            mapping_hardware = canonical_hardware_ref(
-                                mapping.get("hardware") if isinstance(mapping.get("hardware"), str) else None
-                            )
+                            mapping_hardware = canonical_mapping_hardware_ref(mapping)
                             if (
                                 mapping.get("mapping_id") == report_mapping_id
-                                and mapping_hardware == report_hardware
+                                and mapping_hardware is not None
+                                and (
+                                    cgra_report_matches_hardware_ref(report, kernel, mapping_hardware)
+                                    or report_hardware == mapping.get("hardware")
+                                )
                             ):
                                 route_segments = report.get("route_segments")
                                 if isinstance(route_segments, int):
@@ -9125,9 +9276,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
                     )
                 )
             elif hardware and not any(
-                canonical_hardware_ref(
-                    mapping.get("hardware") if isinstance(mapping.get("hardware"), str) else None
-                )
+                canonical_mapping_hardware_ref(mapping)
                 for mapping in pass_mapping_artifacts
             ):
                 findings.append(
@@ -9154,7 +9303,7 @@ def cross_artifact_findings(paths: Iterable[Path]) -> list[dict[str, object]]:
 
     if hardware:
         for row in pnr_rows:
-            if canonical_hardware_ref(row.get("hardware")) is None:
+            if canonical_pnr_row_hardware_ref(row) is None:
                 findings.append(
                     cross_finding(
                         "pnr_hardware_resolves",

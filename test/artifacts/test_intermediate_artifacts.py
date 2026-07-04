@@ -1932,6 +1932,113 @@ def main() -> int:
 
         valid_cgra_report = out_dir / "valid-cgra-sim-report.json"
         write_cgra_report(valid_cgra_report, "vecadd", "map0", 10, 12)
+        system_mlir = out_dir / "system-child-validation.mlir"
+        system_mlir.write_text(
+            "fabric.module @shared_vector_alu_adg() {\n"
+            "}\n"
+            "fabric.system @soc0 memory_model = \"sequential\" {\n"
+            "  // fabric.node @not_an_acc kind = \"acc_core\" attributes {spatial = @shared_vector_alu_adg}\n"
+            "  fabric.node @acc0 kind = \"acc_core\"\n"
+            "      ports = [\"mem.aw:output\"] attributes {spatial = @shared_vector_alu_adg}\n"
+            "  fabric.node @mem0 kind = \"memory\"\n"
+            "      ports = [\"acc0.aw:input\"] attributes {bytes = 4096 : i64}\n"
+            "  fabric.link src = @acc0 src_port = \"mem\" src_channel = \"aw\" dst = @mem0 dst_port = \"acc0\" dst_channel = \"aw\"\n"
+            "}\n"
+        )
+        system_hardware = out_dir / "system-child-adg-hardware-summary.csv"
+        system_hardware.write_text(
+            "hardware,topology_class,node_count,link_count,verify_status,diagnostic,"
+            "tile_kinds,schedule_kinds,adg_builder_recipe_identity,node_kinds\n"
+            f"{system_mlir}::soc0,fabric_system,2,1,pass,verified,,,,acc_core;memory\n"
+        )
+        bad_system_mapping = out_dir / "bad-system-child-pnr-mapping-summary.csv"
+        bad_system_mapping.write_text(
+            "workload,hardware,mapping_id,placed_records,routed_edges,unrouted_edges,"
+            "unplaced_records,status,diagnostic\n"
+            "vecadd,soc0::not_an_acc,map_system_bad,1,1,0,0,pass,invalid child view\n"
+        )
+        bad_system_mapping_artifact = out_dir / "bad-system-child-pnr-mapping.json"
+        bad_system_mapping_artifact.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "pnr_mapping",
+                    "workload": "vecadd",
+                    "hardware": "soc0::not_an_acc",
+                    "hardware_root_kind": "fabric.system",
+                    "hardware_system": "soc0",
+                    "selected_acc_core": "not_an_acc",
+                    "spatialcore_template": "shared_vector_alu_adg",
+                    "graph": "g_vecadd",
+                    "mapping_id": "map_system_bad",
+                    "status": "pass",
+                    "placed_records": 1,
+                    "routed_edges": 1,
+                    "unrouted_edges": 0,
+                    "unplaced_records": 0,
+                    "config_records": 0,
+                    "placements": [
+                        {
+                            "software": "g_vecadd#op0",
+                            "operation": "arith.addi",
+                            "resource_kind": "fabric.op",
+                            "hardware": "soc0::not_an_acc::fabric.op#0",
+                            "schedule": "spatial",
+                        }
+                    ],
+                    "routes": [
+                        {
+                            "record_id": "route#0",
+                            "edge_ref": "g_vecadd#op0.result0->g_vecadd#op1.operand0",
+                            "producer_binding": "placement:g_vecadd#op0",
+                            "consumer_binding": "placement:g_vecadd#op1",
+                            "payload_kind": "data",
+                            "from": "g_vecadd#op0",
+                            "to": "g_vecadd#op1",
+                            "status": "routed",
+                            "segments": [
+                                {
+                                    "segment_id": "seg0",
+                                    "segment_kind": "resource_edge",
+                                    "source_endpoint": "soc0::not_an_acc::fabric.op#0.result0",
+                                    "sink_endpoint": "soc0::not_an_acc::fabric.op#1.operand0",
+                                }
+                            ],
+                        }
+                    ],
+                    "unrouted_edge_details": [],
+                    "config_bitstream": [],
+                }
+            )
+        )
+        bad_system_cgra_report = out_dir / "bad-system-child-cgra-sim-report.json"
+        write_cgra_report(bad_system_cgra_report, "vecadd", "map_system_bad", 10, 12)
+        bad_system_cgra_data = json.loads(bad_system_cgra_report.read_text())
+        bad_system_cgra_data["hardware"] = "soc0::not_an_acc"
+        bad_system_cgra_report.write_text(json.dumps(bad_system_cgra_data))
+        bad_system_sim_cycle = out_dir / "bad-system-child-sim-cycle-summary.csv"
+        bad_system_sim_cycle.write_text(
+            "kernel,dfg_sim_cycles,cgra_sim_cycles,status,diagnostic\n"
+            "vecadd,10,12,pass,synthetic child hardware must resolve through system MLIR\n"
+        )
+        result = run_command(
+            repo,
+            [
+                sys.executable,
+                "test/e2e/audit_intermediate_artifacts.py",
+                "--output",
+                str(out_dir / "artifact-audit-summary-invalid-system-child.json"),
+                str(valid_primitive),
+                str(system_hardware),
+                str(bad_system_mapping),
+                str(bad_system_mapping_artifact),
+                str(valid_dfg_report),
+                str(bad_system_cgra_report),
+                str(bad_system_sim_cycle),
+            ],
+        )
+        if result.returncode == 0:
+            raise AssertionError("invalid system child hardware unexpectedly passed audit")
         invalid_delta_cgra_report = out_dir / "invalid-delta-cgra-sim-report.json"
         invalid_delta_cgra_report.write_text(
             json.dumps(
