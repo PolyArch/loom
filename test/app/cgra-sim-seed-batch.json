@@ -234,6 +234,22 @@
       "hardware": "shared_reduction_adg"
     },
     {
+      "case": "gemv",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "matmul",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "matvec",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "upsample",
+      "hardware": "shared_reduction_adg"
+    },
+    {
       "case": "vecsum",
       "hardware": "shared_reduction_adg"
     },

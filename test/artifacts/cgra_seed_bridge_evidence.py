@@ -717,3 +717,267 @@ def assert_vecnorm_l1_evidence(evidence_dir: Path) -> None:
         route_segments=27,
         final_outputs=final_outputs,
     )
+
+
+def assert_gemv_evidence(evidence_dir: Path) -> None:
+    case = "gemv"
+    dfg, mapping, cgra, comparison = _load_reports(evidence_dir, case)
+    final_outputs = ["none", "i32:55", "i32:110"]
+    expected_memory = {
+        "arg4": ["i32:1", "i32:2", "i32:3", "i32:4", "i32:5"],
+        "arg5": ["i32:1", "i32:2", "i32:3", "i32:4", "i32:5"],
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_gemv_kernel_0_0"
+        or dfg.get("dynamic_work_items") != 5
+        or dfg.get("optimistic_cycles") != 116
+        or dfg.get("event_count") != 57
+        or dfg.get("final_outputs") != final_outputs
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG evidence should match real matrix-vector inputs: {dfg}")
+    _assert_operation_fire_counts(
+        case,
+        dfg,
+        {
+            "arith.addi": 5,
+            "arith.index_cast": 6,
+            "arith.muli": 5,
+            "arith.shli": 6,
+            "dataflow.carry": 6,
+            "dataflow.invariant": 8,
+            "dataflow.load": 10,
+            "dataflow.stream": 6,
+            "dataflow.sync": 5,
+        },
+    )
+    _assert_mapping(
+        case,
+        mapping,
+        hardware="shared_reduction_adg",
+        placed_records=9,
+        routed_edges=13,
+        config_records=282,
+        required_edges={
+            "dataflow.load#0.result0->arith.muli#0.operand1",
+            "dataflow.load#1.result0->arith.muli#0.operand0",
+            "arith.muli#0.result0->arith.addi#0.operand0",
+        },
+    )
+    if cgra.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"{case} CGRA evidence should carry real matrix-vector inputs: {cgra}")
+    _assert_cgra_and_comparison(
+        case,
+        dfg,
+        cgra,
+        comparison,
+        hardware="shared_reduction_adg",
+        dfg_cycles=116,
+        cgra_cycles=186,
+        routed_edges=13,
+        route_segments=51,
+        final_outputs=final_outputs,
+    )
+
+
+def assert_matmul_evidence(evidence_dir: Path) -> None:
+    case = "matmul"
+    dfg, mapping, cgra, comparison = _load_reports(evidence_dir, case)
+    final_outputs = ["none", "i32:58"]
+    expected_memory = {
+        "arg5": ["i32:1", "i32:2", "i32:3", "i32:4", "i32:5", "i32:6"],
+        "arg8": ["i32:7", "i32:8", "i32:9", "i32:10", "i32:11", "i32:12"],
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_matmul_kernel_0_0"
+        or dfg.get("dynamic_work_items") != 3
+        or dfg.get("optimistic_cycles") != 125
+        or dfg.get("event_count") != 78
+        or dfg.get("final_outputs") != final_outputs
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG evidence should match real matrix product inputs: {dfg}")
+    _assert_operation_fire_counts(
+        case,
+        dfg,
+        {
+            "arith.addi": 11,
+            "arith.index_cast": 17,
+            "arith.muli": 7,
+            "dataflow.carry": 4,
+            "dataflow.invariant": 18,
+            "dataflow.load": 6,
+            "dataflow.stream": 4,
+            "dataflow.sync": 3,
+            "llvm.trunc": 8,
+        },
+    )
+    _assert_mapping(
+        case,
+        mapping,
+        hardware="shared_reduction_adg",
+        placed_records=15,
+        routed_edges=21,
+        config_records=470,
+        required_edges={
+            "dataflow.load#0.result0->arith.muli#1.operand1",
+            "dataflow.load#1.result0->arith.muli#1.operand0",
+            "arith.muli#1.result0->arith.addi#2.operand0",
+        },
+    )
+    if cgra.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"{case} CGRA evidence should carry real matrix product inputs: {cgra}")
+    _assert_cgra_and_comparison(
+        case,
+        dfg,
+        cgra,
+        comparison,
+        hardware="shared_reduction_adg",
+        dfg_cycles=125,
+        cgra_cycles=235,
+        routed_edges=21,
+        route_segments=85,
+        final_outputs=final_outputs,
+    )
+
+
+def assert_matvec_evidence(evidence_dir: Path) -> None:
+    case = "matvec"
+    dfg, mapping, cgra, comparison = _load_reports(evidence_dir, case)
+    final_outputs = ["none", "i32:55"]
+    expected_memory = {
+        "arg4": ["i32:1", "i32:2", "i32:3", "i32:4", "i32:5"],
+        "arg5": ["i32:1", "i32:2", "i32:3", "i32:4", "i32:5"],
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_matvec_kernel_0_0"
+        or dfg.get("dynamic_work_items") != 5
+        or dfg.get("optimistic_cycles") != 100
+        or dfg.get("event_count") != 43
+        or dfg.get("final_outputs") != final_outputs
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG evidence should match real matrix-vector reduction: {dfg}")
+    _assert_operation_fire_counts(
+        case,
+        dfg,
+        {
+            "arith.addi": 5,
+            "arith.index_cast": 6,
+            "arith.muli": 5,
+            "dataflow.carry": 6,
+            "dataflow.load": 10,
+            "dataflow.stream": 6,
+            "dataflow.sync": 5,
+        },
+    )
+    _assert_mapping(
+        case,
+        mapping,
+        hardware="shared_reduction_adg",
+        placed_records=7,
+        routed_edges=10,
+        config_records=221,
+        required_edges={
+            "dataflow.load#0.result0->arith.muli#0.operand1",
+            "dataflow.load#1.result0->arith.muli#0.operand0",
+            "arith.muli#0.result0->arith.addi#0.operand0",
+        },
+    )
+    if cgra.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"{case} CGRA evidence should carry real matrix-vector reduction inputs: {cgra}")
+    _assert_cgra_and_comparison(
+        case,
+        dfg,
+        cgra,
+        comparison,
+        hardware="shared_reduction_adg",
+        dfg_cycles=100,
+        cgra_cycles=156,
+        routed_edges=10,
+        route_segments=40,
+        final_outputs=final_outputs,
+    )
+
+
+def assert_upsample_evidence(evidence_dir: Path) -> None:
+    case = "upsample"
+    dfg, mapping, cgra, comparison = _load_reports(evidence_dir, case)
+    expected_memory = {
+        "arg1": ["f32:2", "f32:5", "f32:8", "f32:11"],
+        "arg3": [
+            "f32:2",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:5",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:8",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+            "f32:11",
+            "f32:0",
+            "f32:0",
+            "f32:0",
+        ],
+    }
+    if (
+        dfg.get("status") != "pass"
+        or dfg.get("graph") != "g_t_upsample_0_0"
+        or dfg.get("dynamic_work_items") != 4
+        or dfg.get("optimistic_cycles") != 67
+        or dfg.get("event_count") != 28
+        or dfg.get("final_outputs") != ["none"]
+        or dfg.get("final_memory_state") != expected_memory
+        or dfg.get("diagnostics") != []
+    ):
+        raise AssertionError(f"{case} DFG evidence should match real sparse upsample output: {dfg}")
+    _assert_operation_fire_counts(
+        case,
+        dfg,
+        {
+            "arith.index_cast": 4,
+            "arith.shli": 4,
+            "arith.shrui": 4,
+            "dataflow.constant": 4,
+            "dataflow.load": 4,
+            "dataflow.store": 4,
+            "dataflow.sync": 4,
+        },
+    )
+    _assert_mapping(
+        case,
+        mapping,
+        hardware="shared_reduction_adg",
+        placed_records=6,
+        routed_edges=6,
+        config_records=141,
+        required_edges={
+            "arith.shli#0.result0->arith.shrui#0.operand0",
+            "arith.shrui#0.result0->dataflow.store#0.operand1",
+            "dataflow.load#0.result0->dataflow.store#0.operand2",
+        },
+    )
+    if cgra.get("final_memory_state") != expected_memory:
+        raise AssertionError(f"{case} CGRA evidence should carry real sparse upsample output: {cgra}")
+    _assert_cgra_and_comparison(
+        case,
+        dfg,
+        cgra,
+        comparison,
+        hardware="shared_reduction_adg",
+        dfg_cycles=67,
+        cgra_cycles=111,
+        routed_edges=6,
+        route_segments=24,
+        final_outputs=["none"],
+    )

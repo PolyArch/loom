@@ -717,6 +717,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "stream_update")
     write_legacy_case(legacy_root, "jacobi_stencil_7pt")
     write_legacy_case(legacy_root, "vecnorm_l1")
+    write_legacy_case(legacy_root, "gemv")
+    write_legacy_case(legacy_root, "matmul")
+    write_legacy_case(legacy_root, "matvec")
+    write_legacy_case(legacy_root, "upsample")
     run(
         repo,
         [
@@ -738,9 +742,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 101,
+            "pass": 105,
             "fail": 0,
-            "blocked": 31,
+            "blocked": 27,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -749,8 +753,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 58,
-            "pass": 58,
+            "total": 62,
+            "pass": 62,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -816,6 +820,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("stream_update", "shared_memory_reduction_adg"),
         ("jacobi_stencil_7pt", "shared_signal_window_adg"),
         ("vecnorm_l1", "shared_reduction_adg"),
+        ("gemv", "shared_reduction_adg"),
+        ("matmul", "shared_reduction_adg"),
+        ("matvec", "shared_reduction_adg"),
+        ("upsample", "shared_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
         ("bit_reverse", "shared_reduction_adg"),
@@ -920,6 +928,10 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "stream_update", expected_hardware="shared_memory_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "jacobi_stencil_7pt", expected_hardware="shared_signal_window_adg")
     assert_loombench_cgra_pass_row(repo, rows, "vecnorm_l1", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "gemv", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "matmul", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "matvec", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "upsample", expected_hardware="shared_reduction_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -990,6 +1002,10 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     seed_bridge.assert_stream_update_evidence(evidence_dir)
     seed_bridge.assert_jacobi_stencil_7pt_evidence(evidence_dir)
     seed_bridge.assert_vecnorm_l1_evidence(evidence_dir)
+    seed_bridge.assert_gemv_evidence(evidence_dir)
+    seed_bridge.assert_matmul_evidence(evidence_dir)
+    seed_bridge.assert_matvec_evidence(evidence_dir)
+    seed_bridge.assert_upsample_evidence(evidence_dir)
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],
