@@ -259,14 +259,43 @@ def artifact_gate_jobs(command_count: int) -> int:
     return max(1, min(command_count, 4, shared_budget))
 
 
+def artifact_gate_inner_jobs() -> int:
+    explicit = positive_env_int("LOOM_ARTIFACT_GATE_INNER_JOBS")
+    if explicit is not None:
+        return explicit
+    shared_budget = positive_env_int("LOOM_TEST_JOBS") or positive_env_int("JOBS") or (os.cpu_count() or 1)
+    return max(1, min(4, shared_budget))
+
+
+def csv_producer_command(
+    out_dir: Path,
+    script: str,
+    filename: str,
+) -> tuple[Path, list[str]]:
+    if filename == "cgra-status-summary.csv":
+        output = out_dir / "cgra-status-rollup" / filename
+        command = [
+            "bash",
+            "test/e2e/run_cmsis_cgra_status_rollup.sh",
+            "--output-dir",
+            str(output.parent),
+            "--cmsis-sim-default",
+            "--jobs",
+            str(artifact_gate_inner_jobs()),
+        ]
+        return output, command
+    output = out_dir / filename
+    return output, ["bash", script, "--output", str(output)]
+
+
 def run_csv_command(
     repo: Path,
     out_dir: Path,
     script: str,
     filename: str,
 ) -> tuple[Path, subprocess.CompletedProcess[str]]:
-    output = out_dir / filename
-    return output, run_command(repo, ["bash", script, "--output", str(output)])
+    output, command = csv_producer_command(out_dir, script, filename)
+    return output, run_command(repo, command)
 
 
 def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
@@ -308,6 +337,34 @@ def assert_csv_artifact(
         )
     if "pass" in statuses and not allow_pass_rows:
         raise AssertionError(f"{path.name}: scaffold rows must not claim pass evidence")
+
+
+def assert_cgra_status_default_evidence(path: Path) -> None:
+    _header, rows = read_csv(path)
+    by_suite: dict[str, dict[str, int]] = {}
+    for row in rows:
+        suite = row.get("suite", "")
+        status = row.get("status", "")
+        by_suite.setdefault(suite, {}).setdefault(status, 0)
+        by_suite[suite][status] += 1
+    expected = {
+        "cmsis-dsp": {"pass": 14, "unsupported": 2},
+        "cmsis-nn": {"pass": 13, "unsupported": 5},
+    }
+    for suite, statuses in expected.items():
+        actual = by_suite.get(suite, {})
+        if sum(actual.values()) != sum(statuses.values()):
+            raise AssertionError(
+                f"{path.name}: {suite} total count {sum(actual.values())} != {sum(statuses.values())}"
+            )
+        for status, count in statuses.items():
+            if actual.get(status, 0) != count:
+                raise AssertionError(
+                    f"{path.name}: {suite} {status} count {actual.get(status, 0)} != {count}"
+                )
+        extras = {status: count for status, count in actual.items() if status not in statuses and count}
+        if extras:
+            raise AssertionError(f"{path.name}: {suite} has unexpected default CMSIS statuses: {actual}")
 
 
 def assert_json_artifact(path: Path, required_keys: set[str]) -> None:
@@ -712,11 +769,14 @@ def main() -> int:
                     "dataflow-primitive-coverage.csv",
                     "adg-hardware-summary.csv",
                     "sim-cycle-summary.csv",
+                    "cgra-status-summary.csv",
                     "rtl-fpa-summary.csv",
                     "dse-candidate-summary.csv",
                 },
             )
             produced.append(output)
+            if filename == "cgra-status-summary.csv":
+                assert_cgra_status_default_evidence(output)
             if filename == "adg-hardware-summary.csv":
                 rtl_manifest = out_dir / "rtl-manifest.json"
                 result = run_command(
