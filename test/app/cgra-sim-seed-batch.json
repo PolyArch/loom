@@ -452,6 +452,46 @@
     {
       "case": "popcount",
       "hardware": "shared_memory_reduction_adg"
+    },
+    {
+      "case": "fft_butterfly",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "gemm",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "hash_mix",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "ifft_butterfly",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "line_intersect",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "merge",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "normalize",
+      "hardware": "shared_signal_window_adg"
+    },
+    {
+      "case": "relu",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sbox_lookup",
+      "hardware": "shared_reduction_adg"
+    },
+    {
+      "case": "sort_bubble",
+      "hardware": "shared_memory_reduction_adg"
     }
   ]
 }

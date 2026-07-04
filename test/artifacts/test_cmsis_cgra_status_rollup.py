@@ -729,6 +729,15 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     write_legacy_case(legacy_root, "variance")
     write_legacy_case(legacy_root, "spmv")
     write_legacy_case(legacy_root, "spmm")
+    write_legacy_case(legacy_root, "fft_butterfly")
+    write_legacy_case(legacy_root, "hash_mix")
+    write_legacy_case(legacy_root, "ifft_butterfly")
+    write_legacy_case(legacy_root, "line_intersect")
+    write_legacy_case(legacy_root, "merge")
+    write_legacy_case(legacy_root, "normalize")
+    write_legacy_case(legacy_root, "relu")
+    write_legacy_case(legacy_root, "sbox_lookup")
+    write_legacy_case(legacy_root, "sort_bubble")
     run(
         repo,
         [
@@ -750,9 +759,9 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         "app",
         {
             "total": 132,
-            "pass": 113,
+            "pass": 123,
             "fail": 0,
-            "blocked": 19,
+            "blocked": 9,
             "unsupported": 0,
             "missing_status": 0,
         },
@@ -761,8 +770,8 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         data,
         "loombench",
         {
-            "total": 70,
-            "pass": 70,
+            "total": 79,
+            "pass": 79,
             "fail": 0,
             "blocked": 0,
             "unsupported": 0,
@@ -840,6 +849,16 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
         ("variance", "shared_reduction_adg"),
         ("spmv", "shared_reduction_adg"),
         ("spmm", "shared_memory_reduction_adg"),
+        ("fft_butterfly", "shared_signal_window_adg"),
+        ("gemm", "shared_reduction_adg"),
+        ("hash_mix", "shared_reduction_adg"),
+        ("ifft_butterfly", "shared_signal_window_adg"),
+        ("line_intersect", "shared_signal_window_adg"),
+        ("merge", "shared_reduction_adg"),
+        ("normalize", "shared_signal_window_adg"),
+        ("relu", "shared_reduction_adg"),
+        ("sbox_lookup", "shared_reduction_adg"),
+        ("sort_bubble", "shared_memory_reduction_adg"),
         ("vecsum", "shared_reduction_adg"),
         ("vecadd", "shared_reduction_adg"),
         ("bit_reverse", "shared_reduction_adg"),
@@ -956,6 +975,15 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
     assert_loombench_cgra_pass_row(repo, rows, "variance", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "spmv", expected_hardware="shared_reduction_adg")
     assert_loombench_cgra_pass_row(repo, rows, "spmm", expected_hardware="shared_memory_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "fft_butterfly", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "hash_mix", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "ifft_butterfly", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "line_intersect", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "merge", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "normalize", expected_hardware="shared_signal_window_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "relu", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "sbox_lookup", expected_hardware="shared_reduction_adg")
+    assert_loombench_cgra_pass_row(repo, rows, "sort_bubble", expected_hardware="shared_memory_reduction_adg")
     for case, _hardware in seed_rows:
         for suffix in ("dfg.report.json", "mapping.json", "cgra.report.json", "sim-comparison-report.json"):
             artifact = out_dir / "current-sim-cycle" / f"{case}.{suffix}"
@@ -966,6 +994,7 @@ def assert_app_seed_batch_mode(repo: Path, out_dir: Path) -> None:
 
 def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     import cgra_seed_bridge_evidence as seed_bridge
+    import cgra_seed_remaining_evidence as remaining_bridge
 
     cgra_sweep.assert_autocorrelation_dfg_evidence(evidence_dir)
     cgra_sweep.assert_crc32_evidence(evidence_dir)
@@ -1038,6 +1067,31 @@ def assert_seed_batch_candidate_evidence(evidence_dir: Path) -> None:
     seed_bridge.assert_variance_evidence(evidence_dir)
     seed_bridge.assert_spmv_evidence(evidence_dir)
     seed_bridge.assert_spmm_evidence(evidence_dir)
+    remaining_bridge.assert_gemm_evidence(evidence_dir)
+    remaining_bridge.assert_hash_mix_evidence(evidence_dir)
+    remaining_bridge.assert_relu_evidence(evidence_dir)
+    remaining_bridge.assert_sbox_lookup_evidence(evidence_dir)
+    cgra_sweep.assert_merge_dfg_evidence(evidence_dir)
+    run(
+        Path(__file__).resolve().parents[2],
+        ["python3", "test/artifacts/assert_fft_butterfly_cgra_evidence.py", str(evidence_dir)],
+    )
+    run(
+        Path(__file__).resolve().parents[2],
+        ["python3", "test/artifacts/assert_ifft_butterfly_cgra_evidence.py", str(evidence_dir)],
+    )
+    run(
+        Path(__file__).resolve().parents[2],
+        ["python3", "test/artifacts/assert_line_intersect_cgra_evidence.py", str(evidence_dir)],
+    )
+    run(
+        Path(__file__).resolve().parents[2],
+        ["python3", "test/artifacts/assert_normalize_cgra_evidence.py", str(evidence_dir)],
+    )
+    run(
+        Path(__file__).resolve().parents[2],
+        ["python3", "test/artifacts/assert_sort_bubble_cgra_evidence.py", str(evidence_dir)],
+    )
     run(
         Path(__file__).resolve().parents[2],
         ["python3", "test/artifacts/assert_database_join_cgra_evidence.py", str(evidence_dir)],
